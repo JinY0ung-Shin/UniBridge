@@ -1,0 +1,188 @@
+.permissions {
+  max-width: 1100px;
+}
+
+.permissions .page-header {
+  margin-bottom: 24px;
+}
+
+.permissions .page-header h1 {
+  font-size: 24px;
+  font-weight: 700;
+  color: #1a1a2e;
+  margin-bottom: 4px;
+}
+
+/* ── Add permission row ── */
+
+.add-perm-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 24px;
+  align-items: center;
+}
+
+.perm-input,
+.perm-select {
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.perm-input:focus,
+.perm-select:focus {
+  border-color: #4361ee;
+  box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.1);
+}
+
+.perm-input {
+  width: 180px;
+}
+
+.perm-select {
+  width: 200px;
+}
+
+/* ── Table tweaks ── */
+
+.th-center,
+.td-center {
+  text-align: center !important;
+}
+
+.perm-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: #4361ee;
+  cursor: pointer;
+}
+
+/* Shared styles (duplicated here for standalone use) */
+
+.table-container {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  overflow-x: auto;
+}
+
+.data-table {
+  width: 100%;
+  font-size: 13px;
+}
+
+.data-table thead {
+  background: #fafafa;
+}
+
+.data-table th {
+  text-align: left;
+  padding: 10px 14px;
+  font-weight: 600;
+  color: #888;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  border-bottom: 1px solid #eee;
+}
+
+.data-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid #f2f2f2;
+  color: #444;
+}
+
+.data-table tbody tr:hover {
+  background: #fafcff;
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.cell-alias {
+  font-weight: 600;
+  color: #1a1a2e !important;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  padding: 8px 16px;
+  font-size: 13px;
+  transition: all 0.15s ease;
+}
+
+.btn-primary {
+  background: #4361ee;
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: #3651d4;
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-sm {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.btn-danger-outline {
+  background: transparent;
+  border: 1px solid rgba(239, 71, 111, 0.3);
+  color: #ef476f;
+}
+
+.btn-danger-outline:hover {
+  background: rgba(239, 71, 111, 0.06);
+}
+
+.loading-message {
+  text-align: center;
+  padding: 48px;
+  color: #888;
+  font-size: 14px;
+}
+
+.error-banner {
+  background: rgba(239, 71, 111, 0.08);
+  color: #ef476f;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 24px;
+  border: 1px solid rgba(239, 71, 111, 0.2);
+}
+
+.page-subtitle {
+  color: #888;
+  font-size: 13px;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 64px 24px;
+  color: #888;
+}
+
+.empty-state h3 {
+  font-size: 18px;
+  color: #555;
+  margin-bottom: 8px;
+}
+
+.empty-state p {
+  font-size: 14px;
+}

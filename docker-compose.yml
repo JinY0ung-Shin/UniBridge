@@ -1,0 +1,65 @@
+version: "3.9"
+
+services:
+  etcd:
+    image: bitnami/etcd:3.5
+    environment:
+      - ALLOW_NONE_AUTHENTICATION=yes
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
+    expose:
+      - "2379"
+    networks:
+      - apihub-net
+
+  apisix:
+    image: apache/apisix:3.9-debian
+    ports:
+      - "9080:9080"
+      - "9443:9443"
+      - "9180:9180"
+    volumes:
+      - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+    depends_on:
+      - etcd
+    networks:
+      - apihub-net
+
+  apisix-dashboard:
+    image: apache/apisix-dashboard:3.0-alpine
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./apisix/dashboard.yaml:/usr/local/apisix-dashboard/conf/conf.yaml:ro
+    depends_on:
+      - apisix
+    networks:
+      - apihub-net
+
+  query-service:
+    build: ./query-service
+    ports:
+      - "8000:8000"
+    environment:
+      - META_DB_URL=${META_DB_URL}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+    volumes:
+      - query-data:/app/data
+    networks:
+      - apihub-net
+
+  query-ui:
+    build: ./query-ui
+    ports:
+      - "3000:80"
+    depends_on:
+      - query-service
+    networks:
+      - apihub-net
+
+networks:
+  apihub-net:
+    driver: bridge
+
+volumes:
+  query-data:
