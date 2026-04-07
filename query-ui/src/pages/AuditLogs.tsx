@@ -169,10 +169,18 @@ function AuditLogs() {
                               <h4>Full SQL</h4>
                               <pre className="detail-sql">{log.sql}</pre>
                             </div>
-                            {log.params && Object.keys(log.params).length > 0 && (
+                            {log.params && (
                               <div className="detail-section">
                                 <h4>Parameters</h4>
-                                <pre className="detail-sql">{JSON.stringify(log.params, null, 2)}</pre>
+                                <pre className="detail-sql">
+                                  {(() => {
+                                    try {
+                                      return JSON.stringify(JSON.parse(log.params), null, 2);
+                                    } catch {
+                                      return log.params;
+                                    }
+                                  })()}
+                                </pre>
                               </div>
                             )}
                             {log.error_message && (

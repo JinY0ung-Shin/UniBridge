@@ -96,7 +96,9 @@ function Connections() {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (editingAlias) {
-      updateMutation.mutate({ alias: editingAlias, data: form });
+      const { password, ...rest } = form;
+      const data = password ? form : rest;
+      updateMutation.mutate({ alias: editingAlias, data });
     } else {
       createMutation.mutate(form);
     }

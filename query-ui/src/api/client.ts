@@ -15,6 +15,23 @@ client.interceptors.request.use((config) => {
   return config;
 });
 
+// Handle 401 responses: clear stale token and reload to trigger login
+client.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      const token = localStorage.getItem('auth_token');
+      if (token) {
+        localStorage.removeItem('auth_token');
+        window.location.reload();
+      } else {
+        console.warn('Received 401 but no token stored. User needs to authenticate.');
+      }
+    }
+    return Promise.reject(error);
+  },
+);
+
 /* ── Types ── */
 
 export interface DatabaseConfig {
@@ -28,6 +45,7 @@ export interface DatabaseConfig {
   pool_size: number;
   max_overflow: number;
   query_timeout: number;
+  status?: string;
 }
 
 export interface DatabaseHealth {
@@ -57,7 +75,7 @@ export interface AuditLog {
   user: string;
   database_alias: string;
   sql: string;
-  params?: Record<string, unknown>;
+  params?: string | null;
   row_count: number;
   elapsed_ms: number;
   status: 'success' | 'error';
@@ -84,6 +102,7 @@ export interface QueryResult {
   rows: unknown[][];
   row_count: number;
   elapsed_ms: number;
+  truncated: boolean;
 }
 
 /* ── Query endpoints ── */

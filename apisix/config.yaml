@@ -1,12 +1,6 @@
 apisix:
   node_listen: 9080
   enable_admin: true
-  admin_listen:
-    ip: 0.0.0.0
-    port: 9180
-  # Restrict admin API to Docker bridge network only
-  allow_admin:
-    - 172.16.0.0/12
 
 deployment:
   admin:
@@ -14,20 +8,29 @@ deployment:
       - name: admin
         key: edd1c9f034335f136f87ad84b625c8f1
         role: admin
-    # Restrict admin API to Docker bridge network only
+    admin_listen:
+      ip: 0.0.0.0
+      port: 9180
     allow_admin:
       - 172.16.0.0/12
+      - 127.0.0.1/32
   etcd:
     host:
       - "http://etcd:2379"
+
+plugin_attr:
+  prometheus:
+    export_addr:
+      ip: 0.0.0.0
+      port: 9091
 
 plugins:
   - jwt-auth
   - proxy-rewrite
   - prometheus
   - http-logger
+  - error-log-logger
   - ip-restriction
   - limit-req
   - limit-count
   - cors
-  - error-log-logger

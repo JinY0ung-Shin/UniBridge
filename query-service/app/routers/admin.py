@@ -56,9 +56,9 @@ async def create_connection(
         database=body.database,
         username=body.username,
         password_encrypted=encrypt_password(body.password),
-        pool_size=body.pool_size or 5,
-        max_overflow=body.max_overflow or 3,
-        query_timeout=body.query_timeout or 30,
+        pool_size=body.pool_size if body.pool_size is not None else 5,
+        max_overflow=body.max_overflow if body.max_overflow is not None else 3,
+        query_timeout=body.query_timeout if body.query_timeout is not None else 30,
     )
     db.add(conn)
     await db.commit()
@@ -106,9 +106,9 @@ async def list_connections(
                 port=conn.port,
                 database=conn.database,
                 username=conn.username,
-                pool_size=conn.pool_size or 5,
-                max_overflow=conn.max_overflow or 3,
-                query_timeout=conn.query_timeout or 30,
+                pool_size=conn.pool_size if conn.pool_size is not None else 5,
+                max_overflow=conn.max_overflow if conn.max_overflow is not None else 3,
+                query_timeout=conn.query_timeout if conn.query_timeout is not None else 30,
                 status=pool_status.get("status", "unknown"),
             )
         )
@@ -140,9 +140,9 @@ async def get_connection(
         port=conn.port,
         database=conn.database,
         username=conn.username,
-        pool_size=conn.pool_size or 5,
-        max_overflow=conn.max_overflow or 3,
-        query_timeout=conn.query_timeout or 30,
+        pool_size=conn.pool_size if conn.pool_size is not None else 5,
+        max_overflow=conn.max_overflow if conn.max_overflow is not None else 3,
+        query_timeout=conn.query_timeout if conn.query_timeout is not None else 30,
         status=pool_status.get("status", "unknown"),
     )
 
@@ -194,9 +194,9 @@ async def update_connection(
         port=conn.port,
         database=conn.database,
         username=conn.username,
-        pool_size=conn.pool_size or 5,
-        max_overflow=conn.max_overflow or 3,
-        query_timeout=conn.query_timeout or 30,
+        pool_size=conn.pool_size if conn.pool_size is not None else 5,
+        max_overflow=conn.max_overflow if conn.max_overflow is not None else 3,
+        query_timeout=conn.query_timeout if conn.query_timeout is not None else 30,
         status=conn_status,
     )
 

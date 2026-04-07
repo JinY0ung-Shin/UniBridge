@@ -1,13 +1,20 @@
-version: "3.9"
-
 services:
   etcd:
     image: bitnami/etcd:3.5
     environment:
       - ALLOW_NONE_AUTHENTICATION=yes
       - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
     expose:
       - "2379"
+    volumes:
+      - etcd-data:/bitnami/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks:
       - apihub-net
 
@@ -20,7 +27,8 @@ services:
     volumes:
       - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
     depends_on:
-      - etcd
+      etcd:
+        condition: service_healthy
     networks:
       - apihub-net
 
@@ -43,8 +51,15 @@ services:
       - META_DB_URL=${META_DB_URL}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - JWT_SECRET=${JWT_SECRET}
+      - ENABLE_DEV_TOKEN_ENDPOINT=${ENABLE_DEV_TOKEN_ENDPOINT:-false}
     volumes:
       - query-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
       - apihub-net
 
@@ -53,7 +68,8 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      - query-service
+      query-service:
+        condition: service_healthy
     networks:
       - apihub-net
 
@@ -63,3 +79,4 @@ networks:
 
 volumes:
   query-data:
+  etcd-data:

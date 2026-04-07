@@ -8,11 +8,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
-from app.auth import create_token
+from app.config import settings
 from app.database import get_db, init_db
 from app.models import DBConnection
 from app.routers import admin, query
-from app.schemas import TokenRequest, TokenResponse
 from app.services.connection_manager import connection_manager
 
 logging.basicConfig(
@@ -68,13 +67,16 @@ app.include_router(admin.router)
 
 # ── Dev/Testing token endpoint ───────────────────────────────────────────────
 
+if settings.ENABLE_DEV_TOKEN_ENDPOINT:
+    from app.auth import create_token
+    from app.schemas import TokenRequest, TokenResponse
 
-@app.post("/auth/token", response_model=TokenResponse, tags=["Auth"])
-async def issue_token(body: TokenRequest) -> TokenResponse:
-    """
-    Issue a JWT token for development/testing.
+    @app.post("/auth/token", response_model=TokenResponse, tags=["Auth"])
+    async def issue_token(body: TokenRequest) -> TokenResponse:
+        """
+        Issue a JWT token for development/testing.
 
-    This endpoint should be disabled or protected in production.
-    """
-    token = create_token(username=body.username, role=body.role)
-    return TokenResponse(access_token=token)
+        This endpoint should be disabled or protected in production.
+        """
+        token = create_token(username=body.username, role=body.role)
+        return TokenResponse(access_token=token)

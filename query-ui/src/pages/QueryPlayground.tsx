@@ -15,7 +15,7 @@ function QueryPlayground() {
   });
 
   const execMutation = useMutation({
-    mutationFn: () => executeQuery({ database: selectedDb, sql }),
+    mutationFn: (req: { database: string; sql: string }) => executeQuery(req),
     onSuccess: (data) => {
       setResult(data);
       setError(null);
@@ -39,7 +39,7 @@ function QueryPlayground() {
     if (!selectedDb || !sql.trim()) return;
     setResult(null);
     setError(null);
-    execMutation.mutate();
+    execMutation.mutate({ database: selectedDb, sql });
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -107,13 +107,19 @@ function QueryPlayground() {
             <span>{result.elapsed_ms}ms</span>
           </div>
 
+          {result.truncated && (
+            <div className="truncated-warning">
+              Results were truncated. Only the first {result.row_count} rows are shown.
+            </div>
+          )}
+
           {result.columns.length > 0 && result.rows.length > 0 ? (
             <div className="results-table-container">
               <table className="results-table">
                 <thead>
                   <tr>
-                    {result.columns.map((col) => (
-                      <th key={col}>{col}</th>
+                    {result.columns.map((col, idx) => (
+                      <th key={`${col}-${idx}`}>{col}</th>
                     ))}
                   </tr>
                 </thead>
@@ -121,7 +127,7 @@ function QueryPlayground() {
                   {result.rows.map((row, idx) => (
                     <tr key={idx}>
                       {result.columns.map((col, colIdx) => (
-                        <td key={col} className="mono">
+                        <td key={colIdx} className="mono">
                           {row[colIdx] === null ? (
                             <span className="null-value">NULL</span>
                           ) : typeof row[colIdx] === 'object' ? (

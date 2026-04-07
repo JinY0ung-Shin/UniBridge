@@ -76,32 +76,39 @@ async def execute(
             db_type=db_type,
         )
     except asyncio.TimeoutError:
-        await log_query(
-            db,
-            user=user.username,
-            database_alias=req.database,
-            sql=req.sql,
-            params=req.params,
-            status="error",
-            error_message="Query timed out",
-        )
+        try:
+            await log_query(
+                db,
+                user=user.username,
+                database_alias=req.database,
+                sql=req.sql,
+                params=req.params,
+                status="error",
+                error_message="Query timed out",
+            )
+        except Exception:
+            logger.exception("Failed to write audit log for timed-out query")
         raise HTTPException(
             status_code=status.HTTP_408_REQUEST_TIMEOUT,
             detail="Query timed out",
         )
     except Exception as exc:
-        await log_query(
-            db,
-            user=user.username,
-            database_alias=req.database,
-            sql=req.sql,
-            params=req.params,
-            status="error",
-            error_message=str(exc),
-        )
+        try:
+            await log_query(
+                db,
+                user=user.username,
+                database_alias=req.database,
+                sql=req.sql,
+                params=req.params,
+                status="error",
+                error_message=str(exc),
+            )
+        except Exception:
+            logger.exception("Failed to write audit log for failed query")
+        logger.exception("Query execution failed")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Query execution failed: {exc}",
+            detail="Query execution failed. Check server logs for details.",
         )
 
     # 4. Audit log (success)
@@ -155,9 +162,9 @@ async def list_databases(
                 port=conn.port,
                 database=conn.database,
                 username=conn.username,
-                pool_size=conn.pool_size or 5,
-                max_overflow=conn.max_overflow or 3,
-                query_timeout=conn.query_timeout or 30,
+                pool_size=conn.pool_size if conn.pool_size is not None else 5,
+                max_overflow=conn.max_overflow if conn.max_overflow is not None else 3,
+                query_timeout=conn.query_timeout if conn.query_timeout is not None else 30,
                 status=pool_status.get("status", "unknown"),
             )
         )

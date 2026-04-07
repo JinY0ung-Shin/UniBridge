@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
+import { getToken } from '../api/client';
 import './Layout.css';
 
 const navItems = [
@@ -15,6 +16,66 @@ interface LayoutProps {
 }
 
 function Layout({ children }: LayoutProps) {
+  const [hasToken, setHasToken] = useState(() => !!localStorage.getItem('auth_token'));
+  const [loginUsername, setLoginUsername] = useState('');
+  const [loginRole, setLoginRole] = useState('admin');
+  const [loginError, setLoginError] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
+    if (!loginUsername.trim()) return;
+    setLoginLoading(true);
+    setLoginError('');
+    try {
+      const { access_token } = await getToken(loginUsername.trim(), loginRole);
+      localStorage.setItem('auth_token', access_token);
+      setHasToken(true);
+    } catch {
+      setLoginError('Failed to obtain token. Please try again.');
+    } finally {
+      setLoginLoading(false);
+    }
+  }
+
+  if (!hasToken) {
+    return (
+      <div className="login-overlay">
+        <form className="login-form" onSubmit={handleLogin}>
+          <h2>API Hub Login</h2>
+          <div className="login-field">
+            <label htmlFor="login-username">Username</label>
+            <input
+              id="login-username"
+              type="text"
+              value={loginUsername}
+              onChange={(e) => setLoginUsername(e.target.value)}
+              placeholder="Enter username"
+              autoFocus
+              required
+            />
+          </div>
+          <div className="login-field">
+            <label htmlFor="login-role">Role</label>
+            <select
+              id="login-role"
+              value={loginRole}
+              onChange={(e) => setLoginRole(e.target.value)}
+            >
+              <option value="admin">admin</option>
+              <option value="backend-dev">backend-dev</option>
+              <option value="readonly">readonly</option>
+            </select>
+          </div>
+          {loginError && <div className="login-error">{loginError}</div>}
+          <button type="submit" className="login-btn" disabled={loginLoading}>
+            {loginLoading ? 'Logging in...' : 'Login'}
+          </button>
+        </form>
+      </div>
+    );
+  }
+
   return (
     <div className="layout">
       <aside className="sidebar">

@@ -42,6 +42,17 @@ def decrypt_password(encrypted: str) -> str:
         raise ValueError("Failed to decrypt password. Check ENCRYPTION_KEY.") from exc
 
 
+def validate_encryption_key() -> None:
+    """Validate the encryption key at startup. Raises RuntimeError if invalid."""
+    try:
+        _get_fernet()
+    except (ValueError, Exception) as exc:
+        raise RuntimeError(
+            "Invalid ENCRYPTION_KEY configuration. Cannot initialize encryption. "
+            "Please check your ENCRYPTION_KEY environment variable."
+        ) from exc
+
+
 def _build_url(conn: DBConnection, password: str) -> str:
     """Build an async SQLAlchemy connection URL."""
     user = quote_plus(conn.username)
@@ -74,6 +85,7 @@ class ConnectionManager:
 
     async def initialize(self, connections: list[DBConnection]) -> None:
         """Create engines for all saved connections on startup."""
+        validate_encryption_key()
         for conn in connections:
             try:
                 await self.add_connection(conn)
@@ -92,8 +104,8 @@ class ConnectionManager:
         # SQLite (used for meta-DB) doesn't support pool_size, but target DBs always
         # use asyncpg or aioodbc which do.
         if conn.db_type in ("postgres", "mssql"):
-            engine_kwargs["pool_size"] = conn.pool_size or 5
-            engine_kwargs["max_overflow"] = conn.max_overflow or 3
+            engine_kwargs["pool_size"] = conn.pool_size if conn.pool_size is not None else 5
+            engine_kwargs["max_overflow"] = conn.max_overflow if conn.max_overflow is not None else 3
 
         engine = create_async_engine(url, **engine_kwargs)
         self._engines[conn.alias] = engine

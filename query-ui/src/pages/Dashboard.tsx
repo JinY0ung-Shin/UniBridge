@@ -5,8 +5,6 @@ import './Dashboard.css';
 interface DashboardDbEntry {
   alias: string;
   status: 'connected' | 'error';
-  pool_active?: number;
-  pool_idle?: number;
 }
 
 function Dashboard() {
@@ -28,15 +26,13 @@ function Dashboard() {
   const healthEntries: DashboardDbEntry[] = Object.entries(dbHealthMap).map(([alias, h]) => ({
     alias,
     status: h.status === 'ok' ? 'connected' : 'error',
-    pool_active: h.pool_active,
-    pool_idle: h.pool_idle,
   }));
   const totalDbs = databases.length || healthEntries.length;
   const connectedCount = healthEntries.filter((h) => h.status === 'connected').length;
   const errorCount = healthEntries.filter((h) => h.status === 'error').length;
 
-  const isLoading = healthQuery.isLoading && dbsQuery.isLoading;
-  const isError = healthQuery.isError && dbsQuery.isError;
+  const isLoading = healthQuery.isLoading || dbsQuery.isLoading;
+  const isError = healthQuery.isError || dbsQuery.isError;
 
   return (
     <div className="dashboard">
@@ -82,16 +78,7 @@ function Dashboard() {
                 </div>
                 <div className="db-card__body">
                   {db.status === 'connected' ? (
-                    <div className="pool-stats">
-                      <div className="pool-stat">
-                        <span className="pool-stat__label">Pool Active</span>
-                        <span className="pool-stat__value">{db.pool_active ?? '-'}</span>
-                      </div>
-                      <div className="pool-stat">
-                        <span className="pool-stat__label">Pool Idle</span>
-                        <span className="pool-stat__value">{db.pool_idle ?? '-'}</span>
-                      </div>
-                    </div>
+                    <div className="db-card__connected">Connected</div>
                   ) : (
                     <div className="db-card__error">Connection failed</div>
                   )}

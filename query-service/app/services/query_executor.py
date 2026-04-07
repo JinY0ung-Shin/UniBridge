@@ -21,11 +21,35 @@ _SQL_TYPE_RE = re.compile(
 )
 
 
+def check_multi_statement(sql: str) -> bool:
+    """
+    Detect semicolons outside of single-quoted string literals.
+
+    Uses a simple state machine to track whether we are inside a string.
+    Returns True if a semicolon is found outside of quotes.
+    """
+    in_single_quote = False
+    for char in sql:
+        if char == "'" :
+            in_single_quote = not in_single_quote
+        elif char == ";" and not in_single_quote:
+            return True
+    return False
+
+
+# DML keywords to scan for inside WITH CTE bodies
+_CTE_DML_RE = re.compile(
+    r"\b(INSERT|UPDATE|DELETE)\b",
+    re.IGNORECASE,
+)
+
+
 def detect_statement_type(sql: str) -> str:
     """
     Return the SQL statement type as a lowercase string.
 
-    WITH ... SELECT is treated as 'select'.
+    WITH ... SELECT is treated as 'select' unless the CTE body contains
+    DML keywords (INSERT, UPDATE, DELETE), in which case the DML type is returned.
     EXEC/EXECUTE/CALL is treated as 'execute'.
     Returns 'unknown' if not detected.
     """
@@ -34,6 +58,10 @@ def detect_statement_type(sql: str) -> str:
         return "unknown"
     keyword = match.group(1).upper()
     if keyword == "WITH":
+        # Scan for DML keywords in the full SQL text
+        dml_match = _CTE_DML_RE.search(sql)
+        if dml_match:
+            return dml_match.group(1).lower()
         return "select"
     if keyword in ("EXEC", "EXECUTE", "CALL"):
         return "execute"
@@ -101,10 +129,21 @@ async def _execute(
         else:
             # DML / DDL - commit and return rowcount
             await conn.commit()
-            columns = []
-            rows = []
-            row_count = result.rowcount if result.rowcount >= 0 else 0
-            truncated = False
+            if result.returns_rows:
+                # Handle RETURNING clauses
+                columns = list(result.keys())
+                all_rows = result.fetchmany(limit + 1) if limit else result.fetchall()
+                truncated = False
+                if limit and len(all_rows) > limit:
+                    all_rows = all_rows[:limit]
+                    truncated = True
+                rows = [list(row) for row in all_rows]
+                row_count = len(rows)
+            else:
+                columns = []
+                rows = []
+                row_count = result.rowcount if result.rowcount is not None and result.rowcount >= 0 else 0
+                truncated = False
 
     elapsed_ms = int((time.monotonic() - start) * 1000)
 
@@ -133,6 +172,12 @@ async def execute_query(
     """
     effective_limit = limit or settings.DEFAULT_ROW_LIMIT
     effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
+
+    # Reject multi-statement SQL for non-admin users
+    if check_multi_statement(sql):
+        raise ValueError(
+            "Multi-statement SQL is not allowed. Remove semicolons or contact an admin."
+        )
 
     try:
         return await asyncio.wait_for(
