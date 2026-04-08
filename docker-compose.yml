@@ -33,7 +33,12 @@ services:
       - apihub-net
 
   query-service:
-    build: ./query-service
+    build:
+      context: ./query-service
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
     ports:
       - "8000:8000"
     environment:
@@ -53,7 +58,12 @@ services:
       - apihub-net
 
   query-ui:
-    build: ./query-ui
+    build:
+      context: ./query-ui
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
     ports:
       - "3000:80"
     depends_on:
