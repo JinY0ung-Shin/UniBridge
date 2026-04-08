@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import get_db, init_db
 from app.models import DBConnection
-from app.routers import admin, query
+from app.routers import admin, gateway, query
 from app.services.connection_manager import connection_manager
 
 logging.basicConfig(
@@ -63,6 +63,7 @@ app.add_middleware(
 # Include routers
 app.include_router(query.router)
 app.include_router(admin.router)
+app.include_router(gateway.router)
 
 
 # ── Dev/Testing token endpoint ───────────────────────────────────────────────
