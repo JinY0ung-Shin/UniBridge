@@ -1,0 +1,252 @@
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import {
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Legend,
+} from 'recharts';
+import {
+  getMetricsSummary,
+  getMetricsRequests,
+  getMetricsStatusCodes,
+  getMetricsLatency,
+  getMetricsTopRoutes,
+} from '../api/client';
+import './GatewayMonitoring.css';
+
+const TIME_RANGES = ['15m', '1h', '6h', '24h'];
+
+function formatTime(ts: number): string {
+  const d = new Date(ts * 1000);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+const STATUS_COLORS: Record<string, string> = {
+  '200': '#50e3c2',
+  '201': '#50e3c2',
+  '204': '#50e3c2',
+  '301': '#0070f3',
+  '302': '#0070f3',
+  '304': '#0070f3',
+  '400': '#f5a623',
+  '401': '#f5a623',
+  '403': '#f5a623',
+  '404': '#f5a623',
+  '500': '#f31260',
+  '502': '#f31260',
+  '503': '#f31260',
+};
+
+function getStatusColor(code: string): string {
+  if (STATUS_COLORS[code]) return STATUS_COLORS[code];
+  if (code.startsWith('2')) return '#50e3c2';
+  if (code.startsWith('3')) return '#0070f3';
+  if (code.startsWith('4')) return '#f5a623';
+  if (code.startsWith('5')) return '#f31260';
+  return '#666666';
+}
+
+function GatewayMonitoring() {
+  const [range, setRange] = useState('1h');
+
+  const summaryQuery = useQuery({
+    queryKey: ['metrics-summary', range],
+    queryFn: () => getMetricsSummary(range),
+    refetchInterval: 30_000,
+  });
+
+  const requestsQuery = useQuery({
+    queryKey: ['metrics-requests', range],
+    queryFn: () => getMetricsRequests(range),
+    refetchInterval: 30_000,
+  });
+
+  const statusQuery = useQuery({
+    queryKey: ['metrics-status-codes', range],
+    queryFn: () => getMetricsStatusCodes(range),
+    refetchInterval: 30_000,
+  });
+
+  const latencyQuery = useQuery({
+    queryKey: ['metrics-latency', range],
+    queryFn: () => getMetricsLatency(range),
+    refetchInterval: 30_000,
+  });
+
+  const topRoutesQuery = useQuery({
+    queryKey: ['metrics-top-routes', range],
+    queryFn: () => getMetricsTopRoutes(range),
+    refetchInterval: 30_000,
+  });
+
+  const summary = summaryQuery.data;
+  const requestsData = (requestsQuery.data ?? []).map((p) => ({
+    time: formatTime(p.timestamp),
+    rps: p.value,
+  }));
+
+  const latencyData = latencyQuery.data;
+  const latencyChartData = (latencyData?.p50 ?? []).map((p, i) => ({
+    time: formatTime(p.timestamp),
+    p50: p.value,
+    p95: latencyData?.p95?.[i]?.value ?? 0,
+    p99: latencyData?.p99?.[i]?.value ?? 0,
+  }));
+
+  const isLoading = summaryQuery.isLoading;
+  const isError = summaryQuery.isError;
+
+  return (
+    <div className="gateway-monitoring">
+      <div className="page-header">
+        <div>
+          <h1>Gateway Monitoring</h1>
+          <p className="page-subtitle">Real-time API traffic and performance metrics</p>
+        </div>
+        <div className="time-range-toggle">
+          {TIME_RANGES.map((r) => (
+            <button
+              key={r}
+              className={`time-range-btn ${r === range ? 'time-range-btn--active' : ''}`}
+              onClick={() => setRange(r)}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {isLoading && <div className="loading-message">Loading metrics...</div>}
+      {isError && <div className="error-banner">Failed to load metrics. Is Prometheus running?</div>}
+
+      {/* Summary Cards */}
+      {summary && (
+        <div className="metric-cards">
+          <div className="metric-card">
+            <div className="metric-card__value">{summary.total_requests.toLocaleString()}</div>
+            <div className="metric-card__label">Total Requests ({range})</div>
+          </div>
+          <div className="metric-card">
+            <div className="metric-card__value" style={{ color: summary.error_rate > 5 ? 'var(--accent-red)' : 'var(--accent-green)' }}>
+              {summary.error_rate}%
+            </div>
+            <div className="metric-card__label">Error Rate (5xx)</div>
+          </div>
+          <div className="metric-card">
+            <div className="metric-card__value">{summary.avg_latency_ms}ms</div>
+            <div className="metric-card__label">Avg Latency</div>
+          </div>
+        </div>
+      )}
+
+      {/* Request Trend */}
+      <div className="chart-panel">
+        <div className="chart-panel__title">Request Trend</div>
+        {requestsData.length > 0 ? (
+          <div className="chart-container">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={requestsData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1a" />
+                <XAxis dataKey="time" stroke="#666" tick={{ fontSize: 11 }} />
+                <YAxis stroke="#666" tick={{ fontSize: 11 }} />
+                <Tooltip
+                  contentStyle={{ background: '#111', border: '1px solid #222', borderRadius: 6 }}
+                  labelStyle={{ color: '#666' }}
+                  itemStyle={{ color: '#a1a1a1' }}
+                />
+                <Line type="monotone" dataKey="rps" stroke="#0070f3" strokeWidth={2} dot={false} name="req/s" />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="no-data">No request data available</div>
+        )}
+      </div>
+
+      {/* Status Code Distribution */}
+      <div className="chart-panel">
+        <div className="chart-panel__title">Status Code Distribution</div>
+        {(statusQuery.data ?? []).length > 0 ? (
+          <div className="chart-container">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={statusQuery.data}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1a" />
+                <XAxis dataKey="code" stroke="#666" tick={{ fontSize: 11 }} />
+                <YAxis stroke="#666" tick={{ fontSize: 11 }} />
+                <Tooltip
+                  contentStyle={{ background: '#111', border: '1px solid #222', borderRadius: 6 }}
+                  labelStyle={{ color: '#666' }}
+                  itemStyle={{ color: '#a1a1a1' }}
+                />
+                <Bar dataKey="count" name="Requests">
+                  {(statusQuery.data ?? []).map((entry, index) => (
+                    <rect key={index} fill={getStatusColor(entry.code)} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="no-data">No status code data available</div>
+        )}
+      </div>
+
+      {/* Latency */}
+      <div className="chart-panel">
+        <div className="chart-panel__title">Latency (ms)</div>
+        {latencyChartData.length > 0 ? (
+          <div className="chart-container">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={latencyChartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1a" />
+                <XAxis dataKey="time" stroke="#666" tick={{ fontSize: 11 }} />
+                <YAxis stroke="#666" tick={{ fontSize: 11 }} />
+                <Tooltip
+                  contentStyle={{ background: '#111', border: '1px solid #222', borderRadius: 6 }}
+                  labelStyle={{ color: '#666' }}
+                  itemStyle={{ color: '#a1a1a1' }}
+                />
+                <Legend wrapperStyle={{ color: '#666', fontSize: 11 }} />
+                <Line type="monotone" dataKey="p50" stroke="#50e3c2" strokeWidth={2} dot={false} name="P50" />
+                <Line type="monotone" dataKey="p95" stroke="#f5a623" strokeWidth={2} dot={false} name="P95" />
+                <Line type="monotone" dataKey="p99" stroke="#f31260" strokeWidth={2} dot={false} name="P99" />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="no-data">No latency data available</div>
+        )}
+      </div>
+
+      {/* Top Routes */}
+      <div className="chart-panel">
+        <div className="chart-panel__title">Top Routes by Traffic</div>
+        {(topRoutesQuery.data ?? []).length > 0 ? (
+          <div className="table-container" style={{ border: 'none' }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Route</th>
+                  <th style={{ textAlign: 'right' }}>Requests</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(topRoutesQuery.data ?? []).map((r) => (
+                  <tr key={r.route}>
+                    <td className="cell-alias">{r.route}</td>
+                    <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                      {r.requests.toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="no-data">No route traffic data available</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default GatewayMonitoring;

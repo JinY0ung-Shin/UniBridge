@@ -281,4 +281,58 @@ export async function deleteGatewayConsumer(username: string): Promise<void> {
   await client.delete(`/admin/gateway/consumers/${username}`);
 }
 
+/* ── Gateway: Metrics ── */
+
+export interface MetricsSummary {
+  total_requests: number;
+  error_rate: number;
+  avg_latency_ms: number;
+}
+
+export interface TimeSeriesPoint {
+  timestamp: number;
+  value: number;
+}
+
+export interface StatusCodeData {
+  code: string;
+  count: number;
+}
+
+export interface TopRoute {
+  route: string;
+  requests: number;
+}
+
+export interface LatencyData {
+  p50: TimeSeriesPoint[];
+  p95: TimeSeriesPoint[];
+  p99: TimeSeriesPoint[];
+}
+
+export async function getMetricsSummary(range = '1h'): Promise<MetricsSummary> {
+  const { data } = await client.get('/admin/gateway/metrics/summary', { params: { range } });
+  return data;
+}
+
+export async function getMetricsRequests(range = '1h'): Promise<TimeSeriesPoint[]> {
+  const { data } = await client.get('/admin/gateway/metrics/requests', { params: { range } });
+  return data;
+}
+
+export async function getMetricsStatusCodes(range = '1h'): Promise<StatusCodeData[]> {
+  const { data } = await client.get('/admin/gateway/metrics/status-codes', { params: { range } });
+  return data;
+}
+
+export async function getMetricsLatency(range = '1h'): Promise<LatencyData> {
+  const { data } = await client.get('/admin/gateway/metrics/latency', { params: { range } });
+  return data;
+}
+
+export async function getMetricsTopRoutes(range = '1h'): Promise<TopRoute[]> {
+  const { data } = await client.get('/admin/gateway/metrics/top-routes', { params: { range } });
+  return data;
+}
+
 export default client;

@@ -12,6 +12,7 @@ const navItems = [
   { to: '/gateway/routes', label: 'Gateway Routes', section: 'gateway' },
   { to: '/gateway/upstreams', label: 'Gateway Upstreams', section: 'gateway' },
   { to: '/gateway/consumers', label: 'Gateway Consumers', section: 'gateway' },
+  { to: '/gateway/monitoring', label: 'Gateway Monitoring', section: 'gateway' },
 ];
 
 interface LayoutProps {
@@ -158,6 +159,12 @@ function Layout({ children }: LayoutProps) {
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <circle cx="9" cy="6" r="3.5" stroke="currentColor" strokeWidth="1.5" />
                         <path d="M2 16c0-3.3 3.1-6 7-6s7 2.7 7 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                    )}
+                    {item.label === 'Gateway Monitoring' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <path d="M1 14l4-6 3 3 4-7 5 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        <path d="M1 17h16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                       </svg>
                     )}
                   </span>

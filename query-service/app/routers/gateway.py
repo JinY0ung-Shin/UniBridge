@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from httpx import HTTPStatusError
 
 from app.auth import CurrentUser, require_admin
 from app.services import apisix_client
+from app.services import prometheus_client
 
 logger = logging.getLogger(__name__)
 
@@ -287,3 +288,173 @@ async def delete_consumer(username: str, _admin: CurrentUser = Depends(require_a
         _handle_apisix_error(exc, "Consumer")
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+
+
+# ── Metrics ─────────────────────────────────────────────────────────────────
+
+RANGE_STEPS = {"15m": "15s", "1h": "60s", "6h": "300s", "24h": "600s"}
+VALID_RANGES = set(RANGE_STEPS.keys())
+
+
+def _get_step(time_range: str) -> str:
+    return RANGE_STEPS.get(time_range, "60s")
+
+
+def _extract_scalar(results: list[dict[str, Any]]) -> float:
+    """Extract single scalar value from Prometheus instant query result."""
+    if not results:
+        return 0.0
+    value = results[0].get("value", [0, "0"])
+    try:
+        v = float(value[1])
+        return 0.0 if v != v else v  # NaN check
+    except (IndexError, ValueError, TypeError):
+        return 0.0
+
+
+def _extract_timeseries(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract time series points from Prometheus range query result."""
+    if not results:
+        return []
+    values = results[0].get("values", [])
+    points = []
+    for ts, val in values:
+        try:
+            v = float(val)
+            if v != v:  # NaN
+                v = 0.0
+            points.append({"timestamp": int(ts), "value": round(v, 4)})
+        except (ValueError, TypeError):
+            points.append({"timestamp": int(ts), "value": 0.0})
+    return points
+
+
+@router.get("/metrics/summary")
+async def metrics_summary(
+    range: str = Query("1h", description="Time range: 15m, 1h, 6h, 24h"),
+    _admin: CurrentUser = Depends(require_admin),
+) -> dict[str, Any]:
+    if range not in VALID_RANGES:
+        range = "1h"
+    try:
+        total_results = await prometheus_client.instant_query(
+            f"sum(increase(apisix_http_status[{range}]))"
+        )
+        error_rate_results = await prometheus_client.instant_query(
+            f"sum(rate(apisix_http_status{{code=~\"5..\"}}[5m])) / sum(rate(apisix_http_status[5m])) * 100"
+        )
+        latency_results = await prometheus_client.instant_query(
+            f"sum(rate(apisix_http_latency_sum[5m])) / sum(rate(apisix_http_latency_count[5m]))"
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+
+    return {
+        "total_requests": round(_extract_scalar(total_results)),
+        "error_rate": round(_extract_scalar(error_rate_results), 2),
+        "avg_latency_ms": round(_extract_scalar(latency_results), 2),
+    }
+
+
+@router.get("/metrics/requests")
+async def metrics_requests(
+    range: str = Query("1h", description="Time range"),
+    _admin: CurrentUser = Depends(require_admin),
+) -> list[dict[str, Any]]:
+    if range not in VALID_RANGES:
+        range = "1h"
+    try:
+        results = await prometheus_client.range_query(
+            "sum(rate(apisix_http_status[5m]))",
+            duration=range,
+            step=_get_step(range),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+    return _extract_timeseries(results)
+
+
+@router.get("/metrics/status-codes")
+async def metrics_status_codes(
+    range: str = Query("1h", description="Time range"),
+    _admin: CurrentUser = Depends(require_admin),
+) -> list[dict[str, Any]]:
+    if range not in VALID_RANGES:
+        range = "1h"
+    try:
+        results = await prometheus_client.instant_query(
+            f"sum by (code) (increase(apisix_http_status[{range}]))"
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+
+    codes = []
+    for r in results:
+        code = r.get("metric", {}).get("code", "unknown")
+        value = r.get("value", [0, "0"])
+        try:
+            count = round(float(value[1]))
+        except (IndexError, ValueError, TypeError):
+            count = 0
+        if count > 0:
+            codes.append({"code": code, "count": count})
+    codes.sort(key=lambda x: x["count"], reverse=True)
+    return codes
+
+
+@router.get("/metrics/latency")
+async def metrics_latency(
+    range: str = Query("1h", description="Time range"),
+    _admin: CurrentUser = Depends(require_admin),
+) -> dict[str, list[dict[str, Any]]]:
+    if range not in VALID_RANGES:
+        range = "1h"
+    step = _get_step(range)
+    try:
+        p50 = await prometheus_client.range_query(
+            "histogram_quantile(0.5, sum(rate(apisix_http_latency_bucket[5m])) by (le))",
+            duration=range, step=step,
+        )
+        p95 = await prometheus_client.range_query(
+            "histogram_quantile(0.95, sum(rate(apisix_http_latency_bucket[5m])) by (le))",
+            duration=range, step=step,
+        )
+        p99 = await prometheus_client.range_query(
+            "histogram_quantile(0.99, sum(rate(apisix_http_latency_bucket[5m])) by (le))",
+            duration=range, step=step,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+
+    return {
+        "p50": _extract_timeseries(p50),
+        "p95": _extract_timeseries(p95),
+        "p99": _extract_timeseries(p99),
+    }
+
+
+@router.get("/metrics/top-routes")
+async def metrics_top_routes(
+    range: str = Query("1h", description="Time range"),
+    _admin: CurrentUser = Depends(require_admin),
+) -> list[dict[str, Any]]:
+    if range not in VALID_RANGES:
+        range = "1h"
+    try:
+        results = await prometheus_client.instant_query(
+            f"topk(10, sum by (route) (increase(apisix_http_status[{range}])))"
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+
+    routes = []
+    for r in results:
+        route = r.get("metric", {}).get("route", "unknown")
+        value = r.get("value", [0, "0"])
+        try:
+            requests = round(float(value[1]))
+        except (IndexError, ValueError, TypeError):
+            requests = 0
+        if requests > 0:
+            routes.append({"route": route, "requests": requests})
+    return routes

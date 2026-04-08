@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     ENABLE_DEV_TOKEN_ENDPOINT: bool = False
     APISIX_ADMIN_URL: str = "http://apisix:9180"
     APISIX_ADMIN_KEY: str = ""
+    PROMETHEUS_URL: str = "http://prometheus:9090"
 
     model_config = {"env_file": ".env"}
 

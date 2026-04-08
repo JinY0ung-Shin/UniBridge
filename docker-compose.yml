@@ -48,6 +48,7 @@ services:
       - ENABLE_DEV_TOKEN_ENDPOINT=${ENABLE_DEV_TOKEN_ENDPOINT:-false}
       - APISIX_ADMIN_URL=${APISIX_ADMIN_URL:-http://apisix:9180}
       - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:-edd1c9f034335f136f87ad84b625c8f1}
+      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
     volumes:
       - query-data:/app/data
     healthcheck:
@@ -56,6 +57,19 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+    networks:
+      - apihub-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      apisix:
+        condition: service_started
     networks:
       - apihub-net
 
@@ -81,3 +95,4 @@ networks:
 volumes:
   query-data:
   etcd-data:
+  prometheus-data:
