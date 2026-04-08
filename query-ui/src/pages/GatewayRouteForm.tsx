@@ -45,7 +45,7 @@ function GatewayRouteForm() {
       setMethods(r.methods || ['GET', 'POST']);
       setUpstreamId(r.upstream_id || '');
       setStatusVal(r.status ?? 1);
-      setRequireAuth(!!(r as unknown as Record<string, unknown>).require_auth);
+      setRequireAuth(!!r.require_auth);
       if (r.service_key) {
         setKeyHeader(r.service_key.header_name || '');
       }

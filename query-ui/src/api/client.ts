@@ -194,6 +194,7 @@ export interface GatewayRoute {
   methods?: string[];
   upstream_id?: string;
   status: number;
+  require_auth?: boolean;
   service_key?: GatewayServiceKey | null;
   plugins?: Record<string, unknown>;
 }

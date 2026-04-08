@@ -201,12 +201,22 @@ def _extract_api_key(consumer: dict[str, Any], mask: bool = True) -> str | None:
     return key
 
 
-def _inject_consumer_key(body: dict[str, Any]) -> dict[str, Any]:
-    """Convert api_key field to key-auth plugin config."""
+def _inject_consumer_key(body: dict[str, Any], existing_plugins: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Convert api_key field to key-auth plugin config, preserving existing plugins."""
     api_key = body.pop("api_key", None)
+    plugins = dict(existing_plugins or {})
     if api_key:
-        body["plugins"] = {"key-auth": {"key": api_key}}
+        plugins["key-auth"] = {"key": api_key}
+    if plugins:
+        body["plugins"] = plugins
     return body
+
+
+def _strip_consumer_secrets(consumer: dict[str, Any]) -> None:
+    """Remove raw key from plugins to prevent leakage via plugins field."""
+    plugins = consumer.get("plugins", {})
+    key_auth = plugins.get("key-auth", {})
+    key_auth.pop("key", None)
 
 
 @router.get("/consumers")
@@ -219,6 +229,7 @@ async def list_consumers(_admin: CurrentUser = Depends(require_admin)) -> dict[s
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
     for item in result.get("items", []):
         item["api_key"] = _extract_api_key(item, mask=True)
+        _strip_consumer_secrets(item)
     return result
 
 
@@ -231,16 +242,19 @@ async def get_consumer(username: str, _admin: CurrentUser = Depends(require_admi
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
     consumer["api_key"] = _extract_api_key(consumer, mask=True)
+    _strip_consumer_secrets(consumer)
     return consumer
 
 
 @router.put("/consumers/{username}")
 async def save_consumer(username: str, body: dict[str, Any], _admin: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
-    # Check if this is a new consumer (for unmasked key return)
+    # Check if this is a new consumer and fetch existing plugins
     is_new = True
+    existing_plugins: dict[str, Any] | None = None
     try:
-        await apisix_client.get_resource("consumers", username)
+        existing = await apisix_client.get_resource("consumers", username)
         is_new = False
+        existing_plugins = existing.get("plugins")
     except HTTPStatusError:
         pass
     except Exception:
@@ -248,7 +262,7 @@ async def save_consumer(username: str, body: dict[str, Any], _admin: CurrentUser
 
     body["username"] = username
     has_new_key = bool(body.get("api_key"))
-    body = _inject_consumer_key(body)
+    body = _inject_consumer_key(body, existing_plugins)
 
     try:
         result = await apisix_client.put_resource("consumers", username, body)
@@ -261,6 +275,7 @@ async def save_consumer(username: str, body: dict[str, Any], _admin: CurrentUser
     show_key = is_new or has_new_key
     result["api_key"] = _extract_api_key(result, mask=not show_key)
     result["key_created"] = show_key
+    _strip_consumer_secrets(result)
     return result
 
 
