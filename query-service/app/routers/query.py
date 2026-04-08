@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import CurrentUser, get_current_user
+from app.auth import CurrentUser, get_current_user, require_permission
 from app.database import get_db
 from app.models import Permission
 from app.schemas import DBConnectionResponse, HealthResponse, QueryRequest, QueryResponse
@@ -23,7 +23,7 @@ router = APIRouter(tags=["Query"])
 @router.post("/query/execute", response_model=QueryResponse)
 async def execute(
     req: QueryRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_permission("query.execute")),
     db: AsyncSession = Depends(get_db),
 ) -> QueryResponse:
     """Execute an SQL query against a registered database."""

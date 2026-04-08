@@ -119,6 +119,35 @@ class HealthResponse(BaseModel):
     databases: dict[str, Any] = {}
 
 
+# ── Roles (RBAC) ────────────────────────────────────────────────────────────
+
+class RoleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = ""
+    permissions: list[str] = []
+
+
+class RoleUpdate(BaseModel):
+    description: str | None = None
+    permissions: list[str] | None = None
+
+
+class RoleResponse(BaseModel):
+    id: int
+    name: str
+    description: str
+    is_system: bool
+    permissions: list[str]
+
+    model_config = {"from_attributes": True}
+
+
+class UserInfoResponse(BaseModel):
+    username: str
+    role: str
+    permissions: list[str]
+
+
 # ── Auth (dev/testing) ───────────────────────────────────────────────────────
 
 class TokenRequest(BaseModel):

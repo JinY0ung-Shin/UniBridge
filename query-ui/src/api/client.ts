@@ -335,4 +335,59 @@ export async function getMetricsTopRoutes(range = '1h'): Promise<TopRoute[]> {
   return data;
 }
 
+/* ── Roles (RBAC) ── */
+
+export interface RoleInfo {
+  id: number;
+  name: string;
+  description: string;
+  is_system: boolean;
+  permissions: string[];
+}
+
+export interface UserInfo {
+  username: string;
+  role: string;
+  permissions: string[];
+}
+
+export async function getAuthRoles(): Promise<string[]> {
+  const { data } = await client.get('/auth/roles');
+  return data;
+}
+
+export async function getCurrentUser(): Promise<UserInfo> {
+  const { data } = await client.get('/auth/me');
+  return data;
+}
+
+export async function getRoles(): Promise<RoleInfo[]> {
+  const { data } = await client.get('/admin/roles');
+  return data;
+}
+
+export async function getRole(id: number): Promise<RoleInfo> {
+  const { data } = await client.get(`/admin/roles/${id}`);
+  return data;
+}
+
+export async function createRole(body: { name: string; description?: string; permissions: string[] }): Promise<RoleInfo> {
+  const { data } = await client.post('/admin/roles', body);
+  return data;
+}
+
+export async function updateRole(id: number, body: { description?: string; permissions?: string[] }): Promise<RoleInfo> {
+  const { data } = await client.put(`/admin/roles/${id}`, body);
+  return data;
+}
+
+export async function deleteRole(id: number): Promise<void> {
+  await client.delete(`/admin/roles/${id}`);
+}
+
+export async function getAllPermissions(): Promise<string[]> {
+  const { data } = await client.get('/admin/permissions');
+  return data;
+}
+
 export default client;

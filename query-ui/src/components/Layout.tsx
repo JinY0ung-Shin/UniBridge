@@ -1,18 +1,19 @@
-import { useState, type ReactNode } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
-import { getToken } from '../api/client';
+import { getToken, getAuthRoles, getCurrentUser } from '../api/client';
 import './Layout.css';
 
 const navItems = [
-  { to: '/', label: 'Dashboard', section: 'data' },
-  { to: '/connections', label: 'Connections', section: 'data' },
-  { to: '/permissions', label: 'Permissions', section: 'data' },
-  { to: '/audit-logs', label: 'Audit Logs', section: 'data' },
-  { to: '/query', label: 'Query Playground', section: 'data' },
-  { to: '/gateway/routes', label: 'Gateway Routes', section: 'gateway' },
-  { to: '/gateway/upstreams', label: 'Gateway Upstreams', section: 'gateway' },
-  { to: '/gateway/consumers', label: 'Gateway Consumers', section: 'gateway' },
-  { to: '/gateway/monitoring', label: 'Gateway Monitoring', section: 'gateway' },
+  { to: '/', label: 'Dashboard', section: 'data', permission: null },
+  { to: '/connections', label: 'Connections', section: 'data', permission: 'query.databases.read' },
+  { to: '/permissions', label: 'Permissions', section: 'data', permission: 'query.permissions.read' },
+  { to: '/audit-logs', label: 'Audit Logs', section: 'data', permission: 'query.audit.read' },
+  { to: '/query', label: 'Query Playground', section: 'data', permission: 'query.execute' },
+  { to: '/gateway/routes', label: 'Gateway Routes', section: 'gateway', permission: 'gateway.routes.read' },
+  { to: '/gateway/upstreams', label: 'Gateway Upstreams', section: 'gateway', permission: 'gateway.upstreams.read' },
+  { to: '/gateway/consumers', label: 'Gateway Consumers', section: 'gateway', permission: 'gateway.consumers.read' },
+  { to: '/gateway/monitoring', label: 'Gateway Monitoring', section: 'gateway', permission: 'gateway.monitoring.read' },
+  { to: '/roles', label: 'Roles', section: 'admin', permission: 'admin.roles.read' },
 ];
 
 interface LayoutProps {
@@ -22,9 +23,35 @@ interface LayoutProps {
 function Layout({ children }: LayoutProps) {
   const [hasToken, setHasToken] = useState(() => !!localStorage.getItem('auth_token'));
   const [loginUsername, setLoginUsername] = useState('');
-  const [loginRole, setLoginRole] = useState('admin');
+  const [loginRole, setLoginRole] = useState('');
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
+  const [availableRoles, setAvailableRoles] = useState<string[]>([]);
+  const [userPermissions, setUserPermissions] = useState<string[]>([]);
+
+  // Load available roles for login form
+  useEffect(() => {
+    if (!hasToken) {
+      getAuthRoles().then((roles) => {
+        setAvailableRoles(roles);
+        if (roles.length > 0 && !loginRole) setLoginRole(roles[0]);
+      }).catch(() => setAvailableRoles(['admin']));
+    }
+  }, [hasToken]);
+
+  // Load current user permissions after login
+  useEffect(() => {
+    if (hasToken) {
+      getCurrentUser().then((user) => {
+        setUserPermissions(user.permissions);
+      }).catch(() => setUserPermissions([]));
+    }
+  }, [hasToken]);
+
+  function hasPermission(perm: string | null): boolean {
+    if (perm === null) return true;
+    return userPermissions.includes(perm);
+  }
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -66,9 +93,9 @@ function Layout({ children }: LayoutProps) {
               value={loginRole}
               onChange={(e) => setLoginRole(e.target.value)}
             >
-              <option value="admin">admin</option>
-              <option value="backend-dev">backend-dev</option>
-              <option value="readonly">readonly</option>
+              {availableRoles.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
             </select>
           </div>
           {loginError && <div className="login-error">{loginError}</div>}
@@ -94,8 +121,8 @@ function Layout({ children }: LayoutProps) {
           </div>
         </div>
         <nav className="sidebar-nav">
-          {navItems.map((item, index) => {
-            const prevItem = navItems[index - 1];
+          {navItems.filter((item) => hasPermission(item.permission)).map((item, index, filtered) => {
+            const prevItem = filtered[index - 1];
             const showDivider = prevItem && prevItem.section !== item.section;
             return (
               <span key={item.to}>
@@ -165,6 +192,14 @@ function Layout({ children }: LayoutProps) {
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <path d="M1 14l4-6 3 3 4-7 5 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                         <path d="M1 17h16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                    )}
+                    {item.label === 'Roles' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <path d="M9 2l2 2-2 2-2-2 2-2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                        <path d="M3 9h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                        <rect x="2" y="12" width="5" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+                        <rect x="11" y="12" width="5" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
                       </svg>
                     )}
                   </span>

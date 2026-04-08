@@ -23,9 +23,56 @@ async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit
 
 
 async def init_db() -> None:
-    """Create all meta-DB tables if they don't exist."""
+    """Create all meta-DB tables if they don't exist, then seed default roles."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _seed_roles()
+
+
+async def _seed_roles() -> None:
+    """Create default system roles if they don't exist."""
+    from app.auth import ALL_PERMISSIONS
+    from app.models import Role, RolePermission
+
+    SEED_ROLES = {
+        "admin": {
+            "description": "Full access to all features",
+            "permissions": ALL_PERMISSIONS,
+        },
+        "developer": {
+            "description": "Read access to queries and gateway, can execute queries",
+            "permissions": [
+                "query.databases.read", "query.permissions.read", "query.audit.read",
+                "query.execute",
+                "gateway.routes.read", "gateway.upstreams.read",
+                "gateway.consumers.read", "gateway.monitoring.read",
+            ],
+        },
+        "viewer": {
+            "description": "Read-only access to monitoring and audit logs",
+            "permissions": [
+                "gateway.monitoring.read", "query.audit.read",
+            ],
+        },
+    }
+
+    async with async_session() as db:
+        from sqlalchemy import select as sa_select
+        for role_name, config in SEED_ROLES.items():
+            existing = await db.execute(
+                sa_select(Role).where(Role.name == role_name)
+            )
+            if existing.scalar_one_or_none() is not None:
+                continue
+
+            role = Role(name=role_name, description=config["description"], is_system=True)
+            db.add(role)
+            await db.flush()
+
+            for perm in config["permissions"]:
+                db.add(RolePermission(role_id=role.id, permission=perm))
+
+            await db.commit()
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

@@ -7,7 +7,7 @@ from typing import Any, NoReturn
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from httpx import HTTPStatusError
 
-from app.auth import CurrentUser, require_admin
+from app.auth import CurrentUser, require_permission
 from app.services import apisix_client
 from app.services import prometheus_client
 
@@ -81,7 +81,7 @@ def _handle_apisix_error(exc: HTTPStatusError, resource: str) -> NoReturn:
 
 
 @router.get("/routes")
-async def list_routes(_admin: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
+async def list_routes(_admin: CurrentUser = Depends(require_permission("gateway.routes.read"))) -> dict[str, Any]:
     try:
         result = await apisix_client.list_resources("routes")
     except HTTPStatusError as exc:
@@ -95,7 +95,7 @@ async def list_routes(_admin: CurrentUser = Depends(require_admin)) -> dict[str,
 
 
 @router.get("/routes/{route_id}")
-async def get_route(route_id: str, _admin: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
+async def get_route(route_id: str, _admin: CurrentUser = Depends(require_permission("gateway.routes.read"))) -> dict[str, Any]:
     try:
         route = await apisix_client.get_resource("routes", route_id)
     except HTTPStatusError as exc:
@@ -108,7 +108,7 @@ async def get_route(route_id: str, _admin: CurrentUser = Depends(require_admin))
 
 
 @router.put("/routes/{route_id}")
-async def save_route(route_id: str, body: dict[str, Any], _admin: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
+async def save_route(route_id: str, body: dict[str, Any], _admin: CurrentUser = Depends(require_permission("gateway.routes.write"))) -> dict[str, Any]:
     # Reject inline upstream
     if "upstream" in body or "nodes" in body:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Inline upstream not allowed. Use upstream_id.")
@@ -136,7 +136,7 @@ async def save_route(route_id: str, body: dict[str, Any], _admin: CurrentUser = 
 
 
 @router.delete("/routes/{route_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
-async def delete_route(route_id: str, _admin: CurrentUser = Depends(require_admin)) -> None:
+async def delete_route(route_id: str, _admin: CurrentUser = Depends(require_permission("gateway.routes.write"))) -> None:
     try:
         await apisix_client.delete_resource("routes", route_id)
     except HTTPStatusError as exc:
@@ -146,7 +146,7 @@ async def delete_route(route_id: str, _admin: CurrentUser = Depends(require_admi
 
 
 @router.get("/upstreams")
-async def list_upstreams(_admin: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
+async def list_upstreams(_admin: CurrentUser = Depends(require_permission("gateway.upstreams.read"))) -> dict[str, Any]:
     try:
         return await apisix_client.list_resources("upstreams")
     except HTTPStatusError as exc:
@@ -157,7 +157,7 @@ async def list_upstreams(_admin: CurrentUser = Depends(require_admin)) -> dict[s
 
 
 @router.get("/upstreams/{upstream_id}")
-async def get_upstream(upstream_id: str, _admin: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
+async def get_upstream(upstream_id: str, _admin: CurrentUser = Depends(require_permission("gateway.upstreams.read"))) -> dict[str, Any]:
     try:
         return await apisix_client.get_resource("upstreams", upstream_id)
     except HTTPStatusError as exc:
@@ -168,7 +168,7 @@ async def get_upstream(upstream_id: str, _admin: CurrentUser = Depends(require_a
 
 
 @router.put("/upstreams/{upstream_id}")
-async def save_upstream(upstream_id: str, body: dict[str, Any], _admin: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
+async def save_upstream(upstream_id: str, body: dict[str, Any], _admin: CurrentUser = Depends(require_permission("gateway.upstreams.write"))) -> dict[str, Any]:
     try:
         return await apisix_client.put_resource("upstreams", upstream_id, body)
     except HTTPStatusError as exc:
@@ -179,7 +179,7 @@ async def save_upstream(upstream_id: str, body: dict[str, Any], _admin: CurrentU
 
 
 @router.delete("/upstreams/{upstream_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
-async def delete_upstream(upstream_id: str, _admin: CurrentUser = Depends(require_admin)) -> None:
+async def delete_upstream(upstream_id: str, _admin: CurrentUser = Depends(require_permission("gateway.upstreams.write"))) -> None:
     try:
         await apisix_client.delete_resource("upstreams", upstream_id)
     except HTTPStatusError as exc:
@@ -222,7 +222,7 @@ def _strip_consumer_secrets(consumer: dict[str, Any]) -> None:
 
 
 @router.get("/consumers")
-async def list_consumers(_admin: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
+async def list_consumers(_admin: CurrentUser = Depends(require_permission("gateway.consumers.read"))) -> dict[str, Any]:
     try:
         result = await apisix_client.list_resources("consumers")
     except HTTPStatusError as exc:
@@ -236,7 +236,7 @@ async def list_consumers(_admin: CurrentUser = Depends(require_admin)) -> dict[s
 
 
 @router.get("/consumers/{username}")
-async def get_consumer(username: str, _admin: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
+async def get_consumer(username: str, _admin: CurrentUser = Depends(require_permission("gateway.consumers.read"))) -> dict[str, Any]:
     try:
         consumer = await apisix_client.get_resource("consumers", username)
     except HTTPStatusError as exc:
@@ -249,7 +249,7 @@ async def get_consumer(username: str, _admin: CurrentUser = Depends(require_admi
 
 
 @router.put("/consumers/{username}")
-async def save_consumer(username: str, body: dict[str, Any], _admin: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
+async def save_consumer(username: str, body: dict[str, Any], _admin: CurrentUser = Depends(require_permission("gateway.consumers.write"))) -> dict[str, Any]:
     # Check if this is a new consumer and fetch existing plugins
     is_new = True
     existing_plugins: dict[str, Any] | None = None
@@ -282,7 +282,7 @@ async def save_consumer(username: str, body: dict[str, Any], _admin: CurrentUser
 
 
 @router.delete("/consumers/{username}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
-async def delete_consumer(username: str, _admin: CurrentUser = Depends(require_admin)) -> None:
+async def delete_consumer(username: str, _admin: CurrentUser = Depends(require_permission("gateway.consumers.write"))) -> None:
     try:
         await apisix_client.delete_resource("consumers", username)
     except HTTPStatusError as exc:
@@ -333,7 +333,7 @@ def _extract_timeseries(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
 @router.get("/metrics/summary")
 async def metrics_summary(
     time_range: str = Query("1h", alias="range", description="Time range: 15m, 1h, 6h, 24h"),
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
     if time_range not in VALID_RANGES:
         time_range = "1h"
@@ -362,7 +362,7 @@ async def metrics_summary(
 @router.get("/metrics/requests")
 async def metrics_requests(
     time_range: str = Query("1h", alias="range", description="Time range"),
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     if time_range not in VALID_RANGES:
         time_range = "1h"
@@ -380,7 +380,7 @@ async def metrics_requests(
 @router.get("/metrics/status-codes")
 async def metrics_status_codes(
     time_range: str = Query("1h", alias="range", description="Time range"),
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     if time_range not in VALID_RANGES:
         time_range = "1h"
@@ -408,7 +408,7 @@ async def metrics_status_codes(
 @router.get("/metrics/latency")
 async def metrics_latency(
     time_range: str = Query("1h", alias="range", description="Time range"),
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, list[dict[str, Any]]]:
     if time_range not in VALID_RANGES:
         time_range = "1h"
@@ -441,7 +441,7 @@ async def metrics_latency(
 @router.get("/metrics/top-routes")
 async def metrics_top_routes(
     time_range: str = Query("1h", alias="range", description="Time range"),
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     if time_range not in VALID_RANGES:
         time_range = "1h"

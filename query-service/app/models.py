@@ -2,6 +2,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    ForeignKey,
     Integer,
     String,
     Text,
@@ -45,6 +46,25 @@ class Permission(Base):
     allow_delete = Column(Boolean, default=False)
 
     __table_args__ = (UniqueConstraint("role", "db_alias", name="uq_role_db_alias"),)
+
+
+class Role(Base):
+    __tablename__ = "roles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), unique=True, nullable=False)
+    description = Column(String(255), default="")
+    is_system = Column(Boolean, default=False)
+
+
+class RolePermission(Base):
+    __tablename__ = "role_permissions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    role_id = Column(Integer, ForeignKey("roles.id", ondelete="CASCADE"), nullable=False)
+    permission = Column(String(100), nullable=False)
+
+    __table_args__ = (UniqueConstraint("role_id", "permission", name="uq_role_permission"),)
 
 
 class AuditLog(Base):

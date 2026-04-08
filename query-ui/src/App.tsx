@@ -10,6 +10,7 @@ import GatewayRouteForm from './pages/GatewayRouteForm';
 import GatewayUpstreams from './pages/GatewayUpstreams';
 import GatewayConsumers from './pages/GatewayConsumers';
 import GatewayMonitoring from './pages/GatewayMonitoring';
+import Roles from './pages/Roles';
 
 function App() {
   return (
@@ -26,6 +27,7 @@ function App() {
         <Route path="/gateway/upstreams" element={<GatewayUpstreams />} />
         <Route path="/gateway/consumers" element={<GatewayConsumers />} />
         <Route path="/gateway/monitoring" element={<GatewayMonitoring />} />
+        <Route path="/roles" element={<Roles />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

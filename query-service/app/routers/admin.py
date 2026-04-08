@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import CurrentUser, require_admin
+from app.auth import CurrentUser, require_permission
 from app.database import get_db
 from app.models import AuditLog, DBConnection, Permission
 from app.schemas import (
@@ -34,7 +34,7 @@ router = APIRouter(tags=["Admin"])
 )
 async def create_connection(
     body: DBConnectionCreate,
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("query.databases.write")),
     db: AsyncSession = Depends(get_db),
 ) -> DBConnectionResponse:
     """Register a new database connection."""
@@ -88,7 +88,7 @@ async def create_connection(
 
 @router.get("/admin/query/databases", response_model=list[DBConnectionResponse])
 async def list_connections(
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("query.databases.read")),
     db: AsyncSession = Depends(get_db),
 ) -> list[DBConnectionResponse]:
     """List all registered database connections."""
@@ -118,7 +118,7 @@ async def list_connections(
 @router.get("/admin/query/databases/{alias}", response_model=DBConnectionResponse)
 async def get_connection(
     alias: str,
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("query.databases.read")),
     db: AsyncSession = Depends(get_db),
 ) -> DBConnectionResponse:
     """Get details of a single database connection."""
@@ -151,7 +151,7 @@ async def get_connection(
 async def update_connection(
     alias: str,
     body: DBConnectionUpdate,
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("query.databases.write")),
     db: AsyncSession = Depends(get_db),
 ) -> DBConnectionResponse:
     """Update an existing database connection."""
@@ -208,7 +208,7 @@ async def update_connection(
 )
 async def delete_connection(
     alias: str,
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("query.databases.write")),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Delete a database connection."""
@@ -233,7 +233,7 @@ async def delete_connection(
 @router.post("/admin/query/databases/{alias}/test")
 async def test_connection(
     alias: str,
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("query.databases.read")),
 ) -> dict:
     """Test connectivity to a registered database."""
     try:
@@ -256,7 +256,7 @@ async def test_connection(
 
 @router.get("/admin/query/permissions", response_model=list[PermissionResponse])
 async def list_permissions(
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("query.permissions.read")),
     db: AsyncSession = Depends(get_db),
 ) -> list[PermissionResponse]:
     """List all permission entries."""
@@ -267,7 +267,7 @@ async def list_permissions(
 @router.put("/admin/query/permissions", response_model=PermissionResponse)
 async def upsert_permission(
     body: PermissionCreate,
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("query.permissions.write")),
     db: AsyncSession = Depends(get_db),
 ) -> PermissionResponse:
     """Create or update a permission entry (upsert by role + db_alias)."""
@@ -307,7 +307,7 @@ async def upsert_permission(
 )
 async def delete_permission(
     permission_id: int,
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("query.permissions.write")),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Delete a permission entry by ID."""
@@ -335,7 +335,7 @@ async def list_audit_logs(
     to_date: str | None = Query(None, description="Filter to date (ISO format)"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
-    _admin: CurrentUser = Depends(require_admin),
+    _admin: CurrentUser = Depends(require_permission("query.audit.read")),
     db: AsyncSession = Depends(get_db),
 ) -> list[AuditLogResponse]:
     """Query audit logs with optional filters."""
