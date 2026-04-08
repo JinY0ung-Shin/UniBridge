@@ -50,8 +50,7 @@
 
 | 컴포넌트 | 기술 스택 | 포트 | 역할 |
 |----------|----------|------|------|
-| APISIX | Nginx + etcd | 9080 (API), 9180 (Admin) | 단일 진입점, 라우팅, 인증, 플러그인 |
-| APISIX Dashboard | React (내장) | 9000 | 게이트웨이 + API 서비스 관리 UI |
+| APISIX | Nginx + etcd | 9080 (API), 9180 (Admin + Dashboard) | 단일 진입점, 라우팅, 인증, 플러그인, 내장 관리 UI |
 | Query Service | FastAPI + SQLAlchemy | 8000 | 임의 SQL 실행, DB 커넥션 관리, 권한, 감사 로그 |
 | Query Service UI | React (Vite) | 3000 | Query Service 관리 UI |
 | etcd | etcd | 2379 | APISIX 설정 저장소 |
@@ -67,7 +66,7 @@ apihub.internal:9080
   ├── /query/databases        → Query Service (연결된 DB 목록)
   ├── /query/health           → Query Service (헬스체크)
   │
-  ├── /admin/gateway/*        → APISIX Dashboard
+  ├── /admin/gateway/*        → APISIX 내장 Dashboard (9180/ui/)
   └── /admin/query/*          → Query Service 관리 UI
 ```
 
@@ -259,20 +258,14 @@ apihub/
 services:
   # --- Gateway ---
   apisix:
-    image: apache/apisix:3.9
+    image: apache/apisix:3.15.0-debian
     ports:
       - "9080:9080"     # API 진입점
-      - "9180:9180"     # Admin API
+      - "9180:9180"     # Admin API + 내장 Dashboard (/ui/)
     depends_on: [etcd]
 
-  apisix-dashboard:
-    image: apache/apisix-dashboard:3.0
-    ports:
-      - "9000:9000"
-    depends_on: [apisix]
-
   etcd:
-    image: bitnami/etcd:3.5
+    image: bitnamilegacy/etcd:3.5.11
 
   # --- Query Service ---
   query-service:
@@ -300,7 +293,7 @@ volumes:
 ```
 외부 접근:
   :9080  → APISIX (유일한 API 진입점)
-  :9000  → APISIX Dashboard (관리자만)
+  :9180  → APISIX Admin API + 내장 Dashboard (/ui/) (관리자만)
   :3000  → Query Service 관리 UI (관리자만)
 
 내부 통신 (docker network):

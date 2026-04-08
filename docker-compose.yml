@@ -1,6 +1,6 @@
 services:
   etcd:
-    image: bitnami/etcd:3.5
+    image: bitnamilegacy/etcd:3.5.11
     environment:
       - ALLOW_NONE_AUTHENTICATION=yes
       - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
@@ -19,7 +19,7 @@ services:
       - apihub-net
 
   apisix:
-    image: apache/apisix:3.9-debian
+    image: apache/apisix:3.15.0-debian
     ports:
       - "9080:9080"
       - "9443:9443"
@@ -29,17 +29,6 @@ services:
     depends_on:
       etcd:
         condition: service_healthy
-    networks:
-      - apihub-net
-
-  apisix-dashboard:
-    image: apache/apisix-dashboard:3.0-alpine
-    ports:
-      - "9000:9000"
-    volumes:
-      - ./apisix/dashboard.yaml:/usr/local/apisix-dashboard/conf/conf.yaml:ro
-    depends_on:
-      - apisix
     networks:
       - apihub-net
 
