@@ -21,9 +21,9 @@ services:
   apisix:
     image: apache/apisix:3.15.0-debian
     ports:
-      - "9080:9080"
-      - "9443:9443"
-      - "9180:9180"
+      - "${APISIX_PORT:-9080}:9080"
+      - "${APISIX_SSL_PORT:-9443}:9443"
+      - "${APISIX_ADMIN_PORT:-9180}:9180"
     volumes:
       - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
     depends_on:
@@ -40,7 +40,7 @@ services:
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}
     ports:
-      - "8000:8000"
+      - "${QUERY_SERVICE_PORT:-8000}:8000"
     environment:
       - META_DB_URL=${META_DB_URL}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
@@ -65,7 +65,7 @@ services:
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}
     ports:
-      - "3000:80"
+      - "${QUERY_UI_PORT:-3000}:80"
     depends_on:
       query-service:
         condition: service_healthy
