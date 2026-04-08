@@ -126,7 +126,7 @@ function QueryPlayground() {
                 <tbody>
                   {result.rows.map((row, idx) => (
                     <tr key={idx}>
-                      {result.columns.map((col, colIdx) => (
+                      {result.columns.map((_col, colIdx) => (
                         <td key={colIdx} className="mono">
                           {row[colIdx] === null ? (
                             <span className="null-value">NULL</span>
