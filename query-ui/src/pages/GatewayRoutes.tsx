@@ -21,6 +21,14 @@ function GatewayRoutes() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['gateway-routes'] });
     },
+    onError: (err: unknown) => {
+      if (err && typeof err === 'object' && 'response' in err) {
+        const axiosErr = err as { response?: { data?: { detail?: string } } };
+        alert(axiosErr.response?.data?.detail ?? 'Failed to delete route');
+      } else {
+        alert('Failed to delete route');
+      }
+    },
   });
 
   const routes = routesQuery.data?.items ?? [];

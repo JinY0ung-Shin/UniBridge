@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from httpx import HTTPStatusError
@@ -19,7 +19,7 @@ MASK_KEEP = 4
 def _mask_value(value: str) -> str:
     if len(value) <= MASK_KEEP:
         return "***"
-    return value[:MASK_KEEP] + "***"
+    return "***" + value[-MASK_KEEP:]
 
 
 def _extract_service_key(route: dict[str, Any]) -> dict[str, str] | None:
@@ -51,7 +51,7 @@ def _inject_service_key(body: dict[str, Any], existing_plugins: dict[str, Any] |
     return body
 
 
-def _handle_apisix_error(exc: HTTPStatusError, resource: str) -> None:
+def _handle_apisix_error(exc: HTTPStatusError, resource: str) -> NoReturn:
     detail = f"APISIX error: {exc.response.text}"
     try:
         err_data = exc.response.json()
@@ -72,6 +72,8 @@ async def list_routes(_admin: CurrentUser = Depends(require_admin)) -> dict[str,
         result = await apisix_client.list_resources("routes")
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Routes")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
     for item in result.get("items", []):
         item["service_key"] = _extract_service_key(item)
     return result
@@ -83,18 +85,26 @@ async def get_route(route_id: str, _admin: CurrentUser = Depends(require_admin))
         route = await apisix_client.get_resource("routes", route_id)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Route")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
     route["service_key"] = _extract_service_key(route)
     return route
 
 
 @router.put("/routes/{route_id}")
 async def save_route(route_id: str, body: dict[str, Any], _admin: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
+    # Reject inline upstream
+    if "upstream" in body or "nodes" in body:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Inline upstream not allowed. Use upstream_id.")
+
     existing_plugins: dict[str, Any] | None = None
     try:
         existing = await apisix_client.get_resource("routes", route_id)
         existing_plugins = existing.get("plugins")
     except HTTPStatusError:
         pass
+    except Exception:
+        pass  # New route, APISIX unreachable for existing check is non-fatal
 
     body = _inject_service_key(body, existing_plugins)
 
@@ -102,6 +112,8 @@ async def save_route(route_id: str, body: dict[str, Any], _admin: CurrentUser = 
         result = await apisix_client.put_resource("routes", route_id, body)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Route")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
     result["service_key"] = _extract_service_key(result)
     return result
 
@@ -112,6 +124,8 @@ async def delete_route(route_id: str, _admin: CurrentUser = Depends(require_admi
         await apisix_client.delete_resource("routes", route_id)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Route")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
 
 
 @router.get("/upstreams")
@@ -120,6 +134,9 @@ async def list_upstreams(_admin: CurrentUser = Depends(require_admin)) -> dict[s
         return await apisix_client.list_resources("upstreams")
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Upstreams")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+    return {"items": [], "total": 0}  # unreachable, satisfies type checker
 
 
 @router.get("/upstreams/{upstream_id}")
@@ -128,6 +145,9 @@ async def get_upstream(upstream_id: str, _admin: CurrentUser = Depends(require_a
         return await apisix_client.get_resource("upstreams", upstream_id)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Upstream")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+    return {}  # unreachable, satisfies type checker
 
 
 @router.put("/upstreams/{upstream_id}")
@@ -136,6 +156,9 @@ async def save_upstream(upstream_id: str, body: dict[str, Any], _admin: CurrentU
         return await apisix_client.put_resource("upstreams", upstream_id, body)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Upstream")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+    return {}  # unreachable, satisfies type checker
 
 
 @router.delete("/upstreams/{upstream_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
@@ -144,3 +167,5 @@ async def delete_upstream(upstream_id: str, _admin: CurrentUser = Depends(requir
         await apisix_client.delete_resource("upstreams", upstream_id)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Upstream")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
