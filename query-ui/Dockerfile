@@ -7,7 +7,7 @@ COPY package*.json ./
 RUN npm config set strict-ssl false && \
     if [ -n "$HTTP_PROXY" ]; then npm config set proxy $HTTP_PROXY; fi && \
     if [ -n "$HTTPS_PROXY" ]; then npm config set https-proxy $HTTPS_PROXY; fi && \
-    npm ci --include=dev
+    npm install
 COPY . .
 RUN npm run build
 
