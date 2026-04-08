@@ -149,7 +149,7 @@ function Permissions() {
                   ))}
                   <td>
                     <button
-                      className="btn btn-sm btn-danger-outline"
+                      className="btn btn-sm btn-danger"
                       onClick={() => handleDelete(perm)}
                       disabled={deleteMut.isPending}
                     >

@@ -171,30 +171,30 @@ function Connections() {
                     <td>{db.pool_size}</td>
                     <td>
                       {testResult ? (
-                        <span className={`status-badge ${testResult.status === 'error' ? 'status-badge--error' : 'status-badge--ok'}`}>
+                        <span className={`badge ${testResult.status === 'error' ? 'badge-error' : 'badge-ok'}`}>
                           {testResult.status === 'error' ? 'Error' : 'OK'}
                         </span>
                       ) : (
-                        <span className="status-badge status-badge--unknown">--</span>
+                        <span className="badge badge-unknown">--</span>
                       )}
                     </td>
                     <td>
                       <div className="action-buttons">
                         <button
-                          className="btn btn-sm btn-outline"
+                          className="btn btn-sm btn-secondary"
                           onClick={() => handleTest(db.alias)}
                           disabled={testMutation.isPending}
                         >
                           Test
                         </button>
                         <button
-                          className="btn btn-sm btn-outline"
+                          className="btn btn-sm btn-secondary"
                           onClick={() => openEdit(db)}
                         >
                           Edit
                         </button>
                         <button
-                          className="btn btn-sm btn-danger-outline"
+                          className="btn btn-sm btn-danger"
                           onClick={() => handleDelete(db.alias)}
                           disabled={deleteMutation.isPending}
                         >

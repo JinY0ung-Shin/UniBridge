@@ -155,7 +155,7 @@ function AuditLogs() {
                       <td>{log.elapsed_ms}ms</td>
                       <td>
                         <span
-                          className={`status-badge ${log.status === 'error' ? 'status-badge--error' : 'status-badge--ok'}`}
+                          className={`badge ${log.status === 'error' ? 'badge-error' : 'badge-ok'}`}
                         >
                           {log.status}
                         </span>
@@ -206,7 +206,7 @@ function AuditLogs() {
           {/* Pagination */}
           <div className="pagination">
             <button
-              className="btn btn-sm btn-outline"
+              className="btn btn-sm btn-secondary"
               disabled={page === 0}
               onClick={() => goToPage(page - 1)}
             >
@@ -216,7 +216,7 @@ function AuditLogs() {
               Page {page + 1}
             </span>
             <button
-              className="btn btn-sm btn-outline"
+              className="btn btn-sm btn-secondary"
               disabled={!hasMore}
               onClick={() => goToPage(page + 1)}
             >

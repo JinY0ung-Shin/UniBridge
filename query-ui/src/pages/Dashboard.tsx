@@ -47,12 +47,12 @@ function Dashboard() {
           <div className="summary-card__value">{totalDbs}</div>
           <div className="summary-card__label">Total Databases</div>
         </div>
-        <div className="summary-card summary-card--success">
-          <div className="summary-card__value">{connectedCount}</div>
+        <div className="summary-card">
+          <div className="summary-card__value" style={{ color: 'var(--accent-green)' }}>{connectedCount}</div>
           <div className="summary-card__label">Connected</div>
         </div>
-        <div className="summary-card summary-card--danger">
-          <div className="summary-card__value">{errorCount}</div>
+        <div className="summary-card">
+          <div className="summary-card__value" style={{ color: 'var(--accent-red)' }}>{errorCount}</div>
           <div className="summary-card__label">Errors</div>
         </div>
       </div>

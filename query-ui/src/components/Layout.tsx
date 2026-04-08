@@ -81,16 +81,12 @@ function Layout({ children }: LayoutProps) {
       <aside className="sidebar">
         <div className="sidebar-header">
           <div className="sidebar-logo">
-            <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-              <rect width="28" height="28" rx="6" fill="#4361ee" />
-              <path
-                d="M7 10h14M7 14h14M7 18h10"
-                stroke="#fff"
-                strokeWidth="2"
-                strokeLinecap="round"
-              />
-            </svg>
-            <span className="sidebar-title">API Hub Admin</span>
+            <div className="sidebar-logo-icon">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M3 5h10M3 8h10M3 11h7" stroke="#000" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </div>
+            <span className="sidebar-title">API Hub</span>
           </div>
         </div>
         <nav className="sidebar-nav">

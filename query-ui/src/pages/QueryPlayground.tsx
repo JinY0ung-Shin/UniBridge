@@ -80,9 +80,17 @@ function QueryPlayground() {
         <span className="shortcut-hint">Ctrl+Enter to run</span>
       </div>
 
-      <div className="editor-area">
+      <div className="editor-container">
+        <div className="editor-topbar">
+          <span className="editor-topbar-label">SQL</span>
+          <div className="editor-topbar-dots">
+            <span className="editor-topbar-dot" />
+            <span className="editor-topbar-dot" />
+            <span className="editor-topbar-dot" />
+          </div>
+        </div>
         <textarea
-          className="sql-editor mono"
+          className="sql-editor"
           placeholder="SELECT * FROM users LIMIT 10;"
           value={sql}
           onChange={(e) => setSql(e.target.value)}
