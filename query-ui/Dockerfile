@@ -1,7 +1,13 @@
 FROM node:20-alpine AS build
 WORKDIR /app
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
 COPY package*.json ./
-RUN npm config set strict-ssl false && npm ci --include=dev
+RUN npm config set strict-ssl false && \
+    if [ -n "$HTTP_PROXY" ]; then npm config set proxy $HTTP_PROXY; fi && \
+    if [ -n "$HTTPS_PROXY" ]; then npm config set https-proxy $HTTPS_PROXY; fi && \
+    npm ci --include=dev
 COPY . .
 RUN npm run build
 
