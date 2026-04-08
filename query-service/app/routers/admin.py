@@ -204,6 +204,7 @@ async def update_connection(
 @router.delete(
     "/admin/query/databases/{alias}",
     status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
 )
 async def delete_connection(
     alias: str,
@@ -302,6 +303,7 @@ async def upsert_permission(
 @router.delete(
     "/admin/query/permissions/{permission_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
 )
 async def delete_permission(
     permission_id: int,
