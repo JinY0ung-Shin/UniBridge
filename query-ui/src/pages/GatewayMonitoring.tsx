@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend,
+  Tooltip, ResponsiveContainer, Legend, Cell,
 } from 'recharts';
 import {
   getMetricsSummary,
@@ -179,7 +179,7 @@ function GatewayMonitoring() {
                 />
                 <Bar dataKey="count" name="Requests">
                   {(statusQuery.data ?? []).map((entry, index) => (
-                    <rect key={index} fill={getStatusColor(entry.code)} />
+                    <Cell key={index} fill={getStatusColor(entry.code)} />
                   ))}
                 </Bar>
               </BarChart>
