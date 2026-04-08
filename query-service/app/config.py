@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     DEFAULT_QUERY_TIMEOUT: int = 30
     DEFAULT_ROW_LIMIT: int = 10000
     ENABLE_DEV_TOKEN_ENDPOINT: bool = False
+    APISIX_ADMIN_URL: str = "http://apisix:9180"
+    APISIX_ADMIN_KEY: str = ""
 
     model_config = {"env_file": ".env"}
 
