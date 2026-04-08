@@ -5,6 +5,9 @@ import Connections from './pages/Connections';
 import Permissions from './pages/Permissions';
 import AuditLogs from './pages/AuditLogs';
 import QueryPlayground from './pages/QueryPlayground';
+import GatewayRoutes from './pages/GatewayRoutes';
+import GatewayRouteForm from './pages/GatewayRouteForm';
+import GatewayUpstreams from './pages/GatewayUpstreams';
 
 function App() {
   return (
@@ -15,6 +18,10 @@ function App() {
         <Route path="/permissions" element={<Permissions />} />
         <Route path="/audit-logs" element={<AuditLogs />} />
         <Route path="/query" element={<QueryPlayground />} />
+        <Route path="/gateway/routes" element={<GatewayRoutes />} />
+        <Route path="/gateway/routes/new" element={<GatewayRouteForm />} />
+        <Route path="/gateway/routes/:id/edit" element={<GatewayRouteForm />} />
+        <Route path="/gateway/upstreams" element={<GatewayUpstreams />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

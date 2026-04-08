@@ -1,0 +1,63 @@
+.gateway-routes {
+  max-width: 1000px;
+}
+
+.gateway-routes .page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 28px;
+}
+
+.method-badges {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.method-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.method-badge--get {
+  background: rgba(0, 112, 243, 0.1);
+  color: var(--accent-blue);
+}
+
+.method-badge--post {
+  background: rgba(80, 227, 194, 0.1);
+  color: var(--accent-green);
+}
+
+.method-badge--put {
+  background: rgba(245, 166, 35, 0.1);
+  color: var(--accent-yellow);
+}
+
+.method-badge--delete {
+  background: rgba(243, 18, 96, 0.1);
+  color: var(--accent-red);
+}
+
+.method-badge--patch {
+  background: rgba(161, 161, 161, 0.1);
+  color: var(--text-secondary);
+}
+
+.cell-uri {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.cell-service-key {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}

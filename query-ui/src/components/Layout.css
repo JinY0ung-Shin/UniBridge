@@ -101,6 +101,12 @@
   color: var(--text-tertiary);
 }
 
+.nav-divider {
+  height: 1px;
+  background: var(--border-default);
+  margin: 8px 12px;
+}
+
 /* ── Login overlay ── */
 
 .login-overlay {

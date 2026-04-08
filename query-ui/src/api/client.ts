@@ -180,4 +180,76 @@ export async function getToken(username: string, role: string): Promise<{ access
   return data;
 }
 
+/* ── Gateway Types ── */
+
+export interface GatewayServiceKey {
+  header_name: string;
+  header_value: string;
+}
+
+export interface GatewayRoute {
+  id: string;
+  name?: string;
+  uri: string;
+  methods?: string[];
+  upstream_id?: string;
+  status: number;
+  service_key?: GatewayServiceKey | null;
+  plugins?: Record<string, unknown>;
+}
+
+export interface GatewayUpstream {
+  id: string;
+  name?: string;
+  type: string;
+  nodes: Record<string, number>;
+}
+
+export interface GatewayListResponse<T> {
+  items: T[];
+  total: number;
+}
+
+/* ── Gateway: Routes ── */
+
+export async function getGatewayRoutes(): Promise<GatewayListResponse<GatewayRoute>> {
+  const { data } = await client.get('/admin/gateway/routes');
+  return data;
+}
+
+export async function getGatewayRoute(id: string): Promise<GatewayRoute> {
+  const { data } = await client.get(`/admin/gateway/routes/${id}`);
+  return data;
+}
+
+export async function saveGatewayRoute(id: string, route: Record<string, unknown>): Promise<GatewayRoute> {
+  const { data } = await client.put(`/admin/gateway/routes/${id}`, route);
+  return data;
+}
+
+export async function deleteGatewayRoute(id: string): Promise<void> {
+  await client.delete(`/admin/gateway/routes/${id}`);
+}
+
+/* ── Gateway: Upstreams ── */
+
+export async function getGatewayUpstreams(): Promise<GatewayListResponse<GatewayUpstream>> {
+  const { data } = await client.get('/admin/gateway/upstreams');
+  return data;
+}
+
+export async function getGatewayUpstream(id: string): Promise<GatewayUpstream> {
+  const { data } = await client.get(`/admin/gateway/upstreams/${id}`);
+  return data;
+}
+
+export async function saveGatewayUpstream(id: string, upstream: Record<string, unknown>): Promise<GatewayUpstream> {
+  const { data } = await client.put(`/admin/gateway/upstreams/${id}`, upstream);
+  return data;
+}
+
+export async function deleteGatewayUpstream(id: string): Promise<void> {
+  await client.delete(`/admin/gateway/upstreams/${id}`);
+}
+
 export default client;

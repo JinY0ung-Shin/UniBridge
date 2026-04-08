@@ -4,11 +4,13 @@ import { getToken } from '../api/client';
 import './Layout.css';
 
 const navItems = [
-  { to: '/', label: 'Dashboard', icon: '/' },
-  { to: '/connections', label: 'Connections', icon: '/' },
-  { to: '/permissions', label: 'Permissions', icon: '/' },
-  { to: '/audit-logs', label: 'Audit Logs', icon: '/' },
-  { to: '/query', label: 'Query Playground', icon: '/' },
+  { to: '/', label: 'Dashboard', section: 'data' },
+  { to: '/connections', label: 'Connections', section: 'data' },
+  { to: '/permissions', label: 'Permissions', section: 'data' },
+  { to: '/audit-logs', label: 'Audit Logs', section: 'data' },
+  { to: '/query', label: 'Query Playground', section: 'data' },
+  { to: '/gateway/routes', label: 'Gateway Routes', section: 'gateway' },
+  { to: '/gateway/upstreams', label: 'Gateway Upstreams', section: 'gateway' },
 ];
 
 interface LayoutProps {
@@ -90,53 +92,73 @@ function Layout({ children }: LayoutProps) {
           </div>
         </div>
         <nav className="sidebar-nav">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/'}
-              className={({ isActive }) =>
-                `nav-link ${isActive ? 'nav-link--active' : ''}`
-              }
-            >
-              <span className="nav-icon">
-                {item.label === 'Dashboard' && (
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <rect x="1" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-                    <rect x="10" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-                    <rect x="1" y="10" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-                    <rect x="10" y="10" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-                  </svg>
-                )}
-                {item.label === 'Connections' && (
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <circle cx="5" cy="5" r="3" stroke="currentColor" strokeWidth="1.5" />
-                    <circle cx="13" cy="13" r="3" stroke="currentColor" strokeWidth="1.5" />
-                    <path d="M7.5 7.5l3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  </svg>
-                )}
-                {item.label === 'Permissions' && (
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <rect x="3" y="8" width="12" height="8" rx="2" stroke="currentColor" strokeWidth="1.5" />
-                    <path d="M6 8V5a3 3 0 016 0v3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  </svg>
-                )}
-                {item.label === 'Audit Logs' && (
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <path d="M5 1h8l4 4v12H1V1h4z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" fill="none" />
-                    <path d="M5 7h8M5 10h8M5 13h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  </svg>
-                )}
-                {item.label === 'Query Playground' && (
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <path d="M2 4l5 4-5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M9 14h7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  </svg>
-                )}
+          {navItems.map((item, index) => {
+            const prevItem = navItems[index - 1];
+            const showDivider = prevItem && prevItem.section !== item.section;
+            return (
+              <span key={item.to}>
+                {showDivider && <div className="nav-divider" />}
+                <NavLink
+                  to={item.to}
+                  end={item.to === '/'}
+                  className={({ isActive }) =>
+                    `nav-link ${isActive ? 'nav-link--active' : ''}`
+                  }
+                >
+                  <span className="nav-icon">
+                    {item.label === 'Dashboard' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <rect x="1" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+                        <rect x="10" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+                        <rect x="1" y="10" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+                        <rect x="10" y="10" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+                      </svg>
+                    )}
+                    {item.label === 'Connections' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <circle cx="5" cy="5" r="3" stroke="currentColor" strokeWidth="1.5" />
+                        <circle cx="13" cy="13" r="3" stroke="currentColor" strokeWidth="1.5" />
+                        <path d="M7.5 7.5l3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                    )}
+                    {item.label === 'Permissions' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <rect x="3" y="8" width="12" height="8" rx="2" stroke="currentColor" strokeWidth="1.5" />
+                        <path d="M6 8V5a3 3 0 016 0v3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                    )}
+                    {item.label === 'Audit Logs' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <path d="M5 1h8l4 4v12H1V1h4z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" fill="none" />
+                        <path d="M5 7h8M5 10h8M5 13h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                    )}
+                    {item.label === 'Query Playground' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <path d="M2 4l5 4-5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        <path d="M9 14h7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                    )}
+                    {item.label === 'Gateway Routes' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <path d="M1 9h16M9 1v16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                        <circle cx="9" cy="9" r="3" stroke="currentColor" strokeWidth="1.5" />
+                      </svg>
+                    )}
+                    {item.label === 'Gateway Upstreams' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <rect x="1" y="3" width="16" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+                        <rect x="1" y="11" width="16" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+                        <circle cx="4" cy="5" r="1" fill="currentColor" />
+                        <circle cx="4" cy="13" r="1" fill="currentColor" />
+                      </svg>
+                    )}
+                  </span>
+                  {item.label}
+                </NavLink>
               </span>
-              {item.label}
-            </NavLink>
-          ))}
+            );
+          })}
         </nav>
         <div className="sidebar-footer">
           <span className="sidebar-version">Query Service v1.0</span>
