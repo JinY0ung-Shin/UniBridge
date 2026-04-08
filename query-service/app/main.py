@@ -70,15 +70,28 @@ app.include_router(roles.router)
 # ── Dev/Testing token endpoint ───────────────────────────────────────────────
 
 if settings.ENABLE_DEV_TOKEN_ENDPOINT:
+    logger.warning("DEV TOKEN ENDPOINT IS ENABLED — disable in production (ENABLE_DEV_TOKEN_ENDPOINT=false)")
+
+    from fastapi import Depends, HTTPException, status
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from app.auth import create_token
     from app.schemas import TokenRequest, TokenResponse
 
     @app.post("/auth/token", response_model=TokenResponse, tags=["Auth"])
-    async def issue_token(body: TokenRequest) -> TokenResponse:
+    async def issue_token(body: TokenRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
         """
         Issue a JWT token for development/testing.
 
         This endpoint should be disabled or protected in production.
         """
+        from app.models import Role
+
+        result = await db.execute(select(Role).where(Role.name == body.role))
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Role '{body.role}' does not exist",
+            )
         token = create_token(username=body.username, role=body.role)
         return TokenResponse(access_token=token)

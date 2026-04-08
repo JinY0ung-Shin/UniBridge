@@ -57,17 +57,23 @@ async def _seed_roles() -> None:
     }
 
     async with async_session() as db:
-        from sqlalchemy import select as sa_select
+        from sqlalchemy import delete as sa_delete, select as sa_select
         for role_name, config in SEED_ROLES.items():
-            existing = await db.execute(
+            result = await db.execute(
                 sa_select(Role).where(Role.name == role_name)
             )
-            if existing.scalar_one_or_none() is not None:
-                continue
+            role = result.scalar_one_or_none()
 
-            role = Role(name=role_name, description=config["description"], is_system=True)
-            db.add(role)
-            await db.flush()
+            if role is None:
+                role = Role(name=role_name, description=config["description"], is_system=True)
+                db.add(role)
+                await db.flush()
+            else:
+                # Update description and sync permissions for existing system roles
+                role.description = config["description"]
+                await db.execute(
+                    sa_delete(RolePermission).where(RolePermission.role_id == role.id)
+                )
 
             for perm in config["permissions"]:
                 db.add(RolePermission(role_id=role.id, permission=perm))

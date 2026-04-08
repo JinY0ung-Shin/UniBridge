@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -41,15 +42,17 @@ ALL_PERMISSIONS = [
 _perm_cache: dict[str, set[str]] = {}
 _perm_cache_ts: float = 0.0
 _CACHE_TTL = 60.0  # seconds
+_cache_lock = asyncio.Lock()
 
 
 async def get_role_permissions(db: AsyncSession, role_name: str) -> set[str]:
     """Get permissions for a role, using in-memory cache with 60s TTL."""
-    global _perm_cache, _perm_cache_ts
-
     now = time.time()
     if now - _perm_cache_ts > _CACHE_TTL:
-        await _refresh_cache(db)
+        async with _cache_lock:
+            # Double-check after acquiring lock to avoid thundering herd
+            if time.time() - _perm_cache_ts > _CACHE_TTL:
+                await _refresh_cache(db)
 
     return _perm_cache.get(role_name, set())
 
@@ -71,7 +74,8 @@ async def _refresh_cache(db: AsyncSession) -> None:
 
 def invalidate_permission_cache() -> None:
     """Call after role/permission changes to force cache refresh."""
-    global _perm_cache_ts
+    global _perm_cache, _perm_cache_ts
+    _perm_cache = {}
     _perm_cache_ts = 0.0
 
 
@@ -134,20 +138,3 @@ def require_permission(*perms: str) -> Callable:
             )
         return user
     return checker
-
-
-# Keep require_admin as shortcut for backward compatibility
-async def require_admin(
-    user: CurrentUser = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> CurrentUser:
-    """Require admin.roles.write permission (full admin access)."""
-    user_perms = await get_role_permissions(db, user.role)
-    if "admin.roles.write" not in user_perms:
-        # Fallback: also accept if role is literally "admin" (bootstrap)
-        if user.role != "admin":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Admin role required",
-            )
-    return user

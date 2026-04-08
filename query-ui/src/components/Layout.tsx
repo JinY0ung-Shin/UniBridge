@@ -1,6 +1,7 @@
 import { useState, useEffect, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import { getToken, getAuthRoles, getCurrentUser } from '../api/client';
+import { PermissionProvider } from './PermissionContext';
 import './Layout.css';
 
 const navItems = [
@@ -213,7 +214,11 @@ function Layout({ children }: LayoutProps) {
           <span className="sidebar-version">Query Service v1.0</span>
         </div>
       </aside>
-      <main className="main-content">{children}</main>
+      <main className="main-content">
+          <PermissionProvider permissions={userPermissions}>
+            {children}
+          </PermissionProvider>
+        </main>
     </div>
   );
 }

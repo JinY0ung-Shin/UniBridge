@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import CurrentUser, get_current_user, require_permission
+from app.auth import CurrentUser, get_role_permissions, require_permission
 from app.database import get_db
 from app.models import Permission
 from app.schemas import DBConnectionResponse, HealthResponse, QueryRequest, QueryResponse
@@ -38,9 +38,10 @@ async def execute(
 
     db_type = connection_manager.get_db_type(req.database)
 
-    # 2. Check permissions (admin bypasses)
+    # 2. Check per-database permissions (users with query.databases.write bypass)
     statement_type = detect_statement_type(req.sql)
-    if user.role != "admin":
+    user_perms = await get_role_permissions(db, user.role)
+    if "query.databases.write" not in user_perms:
         result = await db.execute(
             select(Permission).where(
                 Permission.role == user.role,
@@ -128,14 +129,15 @@ async def execute(
 
 @router.get("/query/databases", response_model=list[DBConnectionResponse])
 async def list_databases(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_permission("query.databases.read")),
     db: AsyncSession = Depends(get_db),
 ) -> list[DBConnectionResponse]:
     """List available databases filtered by the current user's permissions."""
     from app.models import DBConnection as DBConn
 
-    if user.role == "admin":
-        # Admin sees all databases
+    user_perms = await get_role_permissions(db, user.role)
+    if "query.databases.write" in user_perms:
+        # Users with write permission see all databases
         result = await db.execute(select(DBConn))
         connections = result.scalars().all()
     else:
