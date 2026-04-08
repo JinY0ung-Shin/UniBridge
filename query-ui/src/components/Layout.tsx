@@ -11,6 +11,7 @@ const navItems = [
   { to: '/query', label: 'Query Playground', section: 'data' },
   { to: '/gateway/routes', label: 'Gateway Routes', section: 'gateway' },
   { to: '/gateway/upstreams', label: 'Gateway Upstreams', section: 'gateway' },
+  { to: '/gateway/consumers', label: 'Gateway Consumers', section: 'gateway' },
 ];
 
 interface LayoutProps {
@@ -151,6 +152,12 @@ function Layout({ children }: LayoutProps) {
                         <rect x="1" y="11" width="16" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
                         <circle cx="4" cy="5" r="1" fill="currentColor" />
                         <circle cx="4" cy="13" r="1" fill="currentColor" />
+                      </svg>
+                    )}
+                    {item.label === 'Gateway Consumers' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <circle cx="9" cy="6" r="3.5" stroke="currentColor" strokeWidth="1.5" />
+                        <path d="M2 16c0-3.3 3.1-6 7-6s7 2.7 7 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                       </svg>
                     )}
                   </span>

@@ -21,6 +21,7 @@ function GatewayRouteForm() {
   const [methods, setMethods] = useState<string[]>(['GET', 'POST']);
   const [upstreamId, setUpstreamId] = useState('');
   const [statusVal, setStatusVal] = useState(1);
+  const [requireAuth, setRequireAuth] = useState(false);
   const [keyHeader, setKeyHeader] = useState('');
   const [keyValue, setKeyValue] = useState('');
   const [error, setError] = useState('');
@@ -44,6 +45,7 @@ function GatewayRouteForm() {
       setMethods(r.methods || ['GET', 'POST']);
       setUpstreamId(r.upstream_id || '');
       setStatusVal(r.status ?? 1);
+      setRequireAuth(!!(r as unknown as Record<string, unknown>).require_auth);
       if (r.service_key) {
         setKeyHeader(r.service_key.header_name || '');
       }
@@ -80,6 +82,7 @@ function GatewayRouteForm() {
       methods,
       upstream_id: upstreamId || undefined,
       status: statusVal,
+      require_auth: requireAuth,
     };
 
     if (keyHeader.trim() && keyValue.trim()) {
@@ -158,6 +161,14 @@ function GatewayRouteForm() {
               </select>
             </div>
           </div>
+        </div>
+
+        <div className="form-section">
+          <div className="form-section-title">Authentication</div>
+          <label className="method-check">
+            <input type="checkbox" checked={requireAuth} onChange={(e) => setRequireAuth(e.target.checked)} />
+            Require Authentication (key-auth)
+          </label>
         </div>
 
         <div className="form-section">

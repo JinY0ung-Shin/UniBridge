@@ -8,6 +8,7 @@ import QueryPlayground from './pages/QueryPlayground';
 import GatewayRoutes from './pages/GatewayRoutes';
 import GatewayRouteForm from './pages/GatewayRouteForm';
 import GatewayUpstreams from './pages/GatewayUpstreams';
+import GatewayConsumers from './pages/GatewayConsumers';
 
 function App() {
   return (
@@ -22,6 +23,7 @@ function App() {
         <Route path="/gateway/routes/new" element={<GatewayRouteForm />} />
         <Route path="/gateway/routes/:id/edit" element={<GatewayRouteForm />} />
         <Route path="/gateway/upstreams" element={<GatewayUpstreams />} />
+        <Route path="/gateway/consumers" element={<GatewayConsumers />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

@@ -33,10 +33,13 @@ def _extract_service_key(route: dict[str, Any]) -> dict[str, str] | None:
     return None
 
 
-def _inject_service_key(body: dict[str, Any], existing_plugins: dict[str, Any] | None = None) -> dict[str, Any]:
+def _inject_plugins(body: dict[str, Any], existing_plugins: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Inject service_key and require_auth into APISIX plugins config, preserving others."""
     service_key = body.pop("service_key", None)
+    require_auth = body.pop("require_auth", None)
     plugins = dict(existing_plugins or {})
 
+    # Service key → proxy-rewrite
     if service_key and service_key.get("header_name") and service_key.get("header_value"):
         plugins["proxy-rewrite"] = {
             "headers": {
@@ -46,8 +49,17 @@ def _inject_service_key(body: dict[str, Any], existing_plugins: dict[str, Any] |
             }
         }
 
+    # Authentication toggle → key-auth
+    if require_auth is True:
+        plugins["key-auth"] = {}
+    elif require_auth is False:
+        plugins.pop("key-auth", None)
+    # require_auth is None → preserve existing state
+
     if plugins:
         body["plugins"] = plugins
+    elif "plugins" in body:
+        del body["plugins"]
     return body
 
 
@@ -76,6 +88,7 @@ async def list_routes(_admin: CurrentUser = Depends(require_admin)) -> dict[str,
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
     for item in result.get("items", []):
         item["service_key"] = _extract_service_key(item)
+        item["require_auth"] = "key-auth" in item.get("plugins", {})
     return result
 
 
@@ -88,6 +101,7 @@ async def get_route(route_id: str, _admin: CurrentUser = Depends(require_admin))
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
     route["service_key"] = _extract_service_key(route)
+    route["require_auth"] = "key-auth" in route.get("plugins", {})
     return route
 
 
@@ -106,7 +120,7 @@ async def save_route(route_id: str, body: dict[str, Any], _admin: CurrentUser = 
     except Exception:
         pass  # New route, APISIX unreachable for existing check is non-fatal
 
-    body = _inject_service_key(body, existing_plugins)
+    body = _inject_plugins(body, existing_plugins)
 
     try:
         result = await apisix_client.put_resource("routes", route_id, body)
@@ -115,6 +129,7 @@ async def save_route(route_id: str, body: dict[str, Any], _admin: CurrentUser = 
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
     result["service_key"] = _extract_service_key(result)
+    result["require_auth"] = "key-auth" in result.get("plugins", {})
     return result
 
 
@@ -167,5 +182,93 @@ async def delete_upstream(upstream_id: str, _admin: CurrentUser = Depends(requir
         await apisix_client.delete_resource("upstreams", upstream_id)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Upstream")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+
+
+# ── Consumers ───────────────────────────────────────────────────────────────
+
+
+def _extract_api_key(consumer: dict[str, Any], mask: bool = True) -> str | None:
+    """Extract API key from consumer's key-auth plugin config."""
+    plugins = consumer.get("plugins", {})
+    key_auth = plugins.get("key-auth", {})
+    key = key_auth.get("key")
+    if not key:
+        return None
+    if mask:
+        return _mask_value(key)
+    return key
+
+
+def _inject_consumer_key(body: dict[str, Any]) -> dict[str, Any]:
+    """Convert api_key field to key-auth plugin config."""
+    api_key = body.pop("api_key", None)
+    if api_key:
+        body["plugins"] = {"key-auth": {"key": api_key}}
+    return body
+
+
+@router.get("/consumers")
+async def list_consumers(_admin: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        result = await apisix_client.list_resources("consumers")
+    except HTTPStatusError as exc:
+        _handle_apisix_error(exc, "Consumers")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+    for item in result.get("items", []):
+        item["api_key"] = _extract_api_key(item, mask=True)
+    return result
+
+
+@router.get("/consumers/{username}")
+async def get_consumer(username: str, _admin: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        consumer = await apisix_client.get_resource("consumers", username)
+    except HTTPStatusError as exc:
+        _handle_apisix_error(exc, "Consumer")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+    consumer["api_key"] = _extract_api_key(consumer, mask=True)
+    return consumer
+
+
+@router.put("/consumers/{username}")
+async def save_consumer(username: str, body: dict[str, Any], _admin: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
+    # Check if this is a new consumer (for unmasked key return)
+    is_new = True
+    try:
+        await apisix_client.get_resource("consumers", username)
+        is_new = False
+    except HTTPStatusError:
+        pass
+    except Exception:
+        pass
+
+    body["username"] = username
+    has_new_key = bool(body.get("api_key"))
+    body = _inject_consumer_key(body)
+
+    try:
+        result = await apisix_client.put_resource("consumers", username, body)
+    except HTTPStatusError as exc:
+        _handle_apisix_error(exc, "Consumer")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+
+    # Return unmasked key only on creation or when key was changed
+    show_key = is_new or has_new_key
+    result["api_key"] = _extract_api_key(result, mask=not show_key)
+    result["key_created"] = show_key
+    return result
+
+
+@router.delete("/consumers/{username}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+async def delete_consumer(username: str, _admin: CurrentUser = Depends(require_admin)) -> None:
+    try:
+        await apisix_client.delete_resource("consumers", username)
+    except HTTPStatusError as exc:
+        _handle_apisix_error(exc, "Consumer")
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")

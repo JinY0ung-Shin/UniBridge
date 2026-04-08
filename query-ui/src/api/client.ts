@@ -252,4 +252,32 @@ export async function deleteGatewayUpstream(id: string): Promise<void> {
   await client.delete(`/admin/gateway/upstreams/${id}`);
 }
 
+/* ── Gateway: Consumers ── */
+
+export interface GatewayConsumer {
+  username: string;
+  api_key?: string | null;
+  key_created?: boolean;
+  plugins?: Record<string, unknown>;
+}
+
+export async function getGatewayConsumers(): Promise<GatewayListResponse<GatewayConsumer>> {
+  const { data } = await client.get('/admin/gateway/consumers');
+  return data;
+}
+
+export async function getGatewayConsumer(username: string): Promise<GatewayConsumer> {
+  const { data } = await client.get(`/admin/gateway/consumers/${username}`);
+  return data;
+}
+
+export async function saveGatewayConsumer(username: string, body: Record<string, unknown>): Promise<GatewayConsumer> {
+  const { data } = await client.put(`/admin/gateway/consumers/${username}`, body);
+  return data;
+}
+
+export async function deleteGatewayConsumer(username: string): Promise<void> {
+  await client.delete(`/admin/gateway/consumers/${username}`);
+}
+
 export default client;

@@ -25,6 +25,7 @@ plugin_attr:
 
 plugins:
   - jwt-auth
+  - key-auth
   - proxy-rewrite
   - prometheus
   - http-logger
