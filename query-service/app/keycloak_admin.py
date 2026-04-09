@@ -1,6 +1,7 @@
 """Keycloak Admin REST API client for user management."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -27,6 +28,8 @@ class KeycloakAdminClient:
 
         self._token: str | None = None
         self._token_expires_at: float = 0.0
+        self._client = httpx.AsyncClient(timeout=10.0, verify=False)
+        self._token_lock = asyncio.Lock()
 
     # ── Token management ─────────────────────────────────────────────────
 
@@ -36,14 +39,19 @@ class KeycloakAdminClient:
         The token is cached until it expires (with a 30-second safety margin).
         """
         now = time.time()
-        if self._token and now < self._token_expires_at:
+        if self._token and now < self._token_expires_at - 30:
             return self._token
 
-        token_url = (
-            f"{self.base_url}/realms/{self.realm}/protocol/openid-connect/token"
-        )
-        async with httpx.AsyncClient(verify=False, timeout=10.0) as client:
-            resp = await client.post(
+        async with self._token_lock:
+            # Double-check after acquiring lock
+            now = time.time()
+            if self._token and now < self._token_expires_at - 30:
+                return self._token
+
+            token_url = (
+                f"{self.base_url}/realms/{self.realm}/protocol/openid-connect/token"
+            )
+            resp = await self._client.post(
                 token_url,
                 data={
                     "grant_type": "client_credentials",
@@ -60,7 +68,7 @@ class KeycloakAdminClient:
             data = resp.json()
             self._token = data["access_token"]
             # Cache with 30-second safety margin
-            self._token_expires_at = now + data.get("expires_in", 300) - 30
+            self._token_expires_at = now + data.get("expires_in", 300)
             return self._token
 
     # ── HTTP helper ──────────────────────────────────────────────────────
@@ -69,16 +77,26 @@ class KeycloakAdminClient:
         """Send an authenticated request to the Keycloak Admin API."""
         token = await self.get_token()
         url = f"{self.base_url}/admin/realms/{self.realm}{path}"
-        async with httpx.AsyncClient(verify=False, timeout=10.0) as client:
-            resp = await client.request(
-                method,
-                url,
-                headers={"Authorization": f"Bearer {token}"},
-                **kwargs,
-            )
+        resp = await self._client.request(
+            method.upper(),
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            **kwargs,
+        )
         return resp
 
     # ── User CRUD ────────────────────────────────────────────────────────
+
+    async def get_user(self, user_id: str) -> dict:
+        """Get a single user by Keycloak ID."""
+        resp = await self._request("GET", f"/users/{user_id}")
+        if resp.status_code == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found",
+            )
+        resp.raise_for_status()
+        return resp.json()
 
     async def list_users(
         self,

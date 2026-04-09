@@ -1,9 +1,10 @@
 """User management endpoints (Keycloak Admin REST API proxy)."""
 from __future__ import annotations
 
+import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status
 
 from app.auth import ROLE_PRIORITY, CurrentUser, require_permission
 from app.config import settings
@@ -20,26 +21,32 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Users"])
 
+_UUID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+_kc_admin: KeycloakAdminClient | None = None
+
 
 def _get_kc_admin() -> KeycloakAdminClient:
-    """Create a KeycloakAdminClient from application settings.
+    """Return a module-level singleton KeycloakAdminClient.
 
     Raises HTTP 503 if KEYCLOAK_URL is not configured.
     """
-    if not settings.KEYCLOAK_URL:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Keycloak is not configured (KEYCLOAK_URL is empty)",
+    global _kc_admin
+    if _kc_admin is None:
+        if not settings.KEYCLOAK_URL:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Keycloak is not configured (KEYCLOAK_URL is empty)",
+            )
+        _kc_admin = KeycloakAdminClient(
+            base_url=settings.KEYCLOAK_URL,
+            realm=settings.KEYCLOAK_REALM,
+            client_id=settings.KEYCLOAK_SERVICE_CLIENT_ID,
+            client_secret=settings.KEYCLOAK_SERVICE_CLIENT_SECRET,
         )
-    return KeycloakAdminClient(
-        base_url=settings.KEYCLOAK_URL,
-        realm=settings.KEYCLOAK_REALM,
-        client_id=settings.KEYCLOAK_SERVICE_CLIENT_ID,
-        client_secret=settings.KEYCLOAK_SERVICE_CLIENT_SECRET,
-    )
+    return _kc_admin
 
 
 def _resolve_role(realm_roles: list[dict]) -> str | None:
@@ -78,8 +85,8 @@ async def list_users(
     """List Keycloak users with role enrichment."""
     kc = _get_kc_admin()
     users, total = await kc.list_users(search=search, first=first, max_results=max)
-    enriched = [await _enrich_user(kc, u) for u in users]
-    return KeycloakUserList(users=enriched, total=total)
+    enriched = await asyncio.gather(*[_enrich_user(kc, u) for u in users])
+    return KeycloakUserList(users=list(enriched), total=total)
 
 
 @router.post("/admin/users", response_model=KeycloakUser, status_code=status.HTTP_201_CREATED)
@@ -109,36 +116,25 @@ async def create_user(
 
 @router.put("/admin/users/{user_id}/role", response_model=KeycloakUser)
 async def change_role(
-    user_id: str,
-    body: ChangeRoleRequest,
+    user_id: str = Path(..., pattern=_UUID_PATTERN),
+    body: ChangeRoleRequest = ...,
     user: CurrentUser = Depends(require_permission("admin.roles.write")),
 ) -> KeycloakUser:
-    """Change a user's application role (remove old app roles, assign new)."""
+    """Change a user's application role (assign new first, then remove old)."""
     kc = _get_kc_admin()
 
-    # Remove existing application roles
-    current_roles = await kc.get_user_realm_roles(user_id)
-    for role_dict in current_roles:
-        if role_dict["name"] in ROLE_PRIORITY:
-            await kc.remove_realm_role(user_id, role_dict["name"])
-
-    # Assign the new role
+    # Assign new role first (so user is never without a role)
     await kc.assign_realm_role(user_id, body.role)
 
-    # Return updated user info
-    # Fetch user details to build the response
-    users, _ = await kc.list_users()
-    target = next((u for u in users if u["id"] == user_id), None)
-    if target is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    # Then remove old app roles (excluding the newly assigned one)
+    current_roles = await kc.get_user_realm_roles(user_id)
+    for role_dict in current_roles:
+        if role_dict["name"] in ROLE_PRIORITY and role_dict["name"] != body.role:
+            await kc.remove_realm_role(user_id, role_dict["name"])
 
-    return KeycloakUser(
-        id=user_id,
-        username=target.get("username", ""),
-        email=target.get("email"),
-        enabled=target.get("enabled", True),
-        role=body.role,
-    )
+    # Return updated user info via direct get_user lookup
+    user_data = await kc.get_user(user_id)
+    return await _enrich_user(kc, user_data)
 
 
 @router.put(
@@ -147,8 +143,8 @@ async def change_role(
     response_model=None,
 )
 async def reset_password(
-    user_id: str,
-    body: ResetPasswordRequest,
+    user_id: str = Path(..., pattern=_UUID_PATTERN),
+    body: ResetPasswordRequest = ...,
     user: CurrentUser = Depends(require_permission("admin.roles.write")),
 ) -> None:
     """Reset a user's password."""
@@ -162,16 +158,15 @@ async def reset_password(
     response_model=None,
 )
 async def delete_user(
-    user_id: str,
+    user_id: str = Path(..., pattern=_UUID_PATTERN),
     user: CurrentUser = Depends(require_permission("admin.roles.write")),
 ) -> None:
     """Delete a Keycloak user. Prevents self-deletion."""
     kc = _get_kc_admin()
 
     # Prevent self-deletion: look up the user to check username
-    users, _ = await kc.list_users()
-    target = next((u for u in users if u["id"] == user_id), None)
-    if target and target.get("username") == user.username:
+    target = await kc.get_user(user_id)
+    if target["username"] == user.username:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete your own account",
