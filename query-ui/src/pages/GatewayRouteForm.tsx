@@ -22,7 +22,7 @@ function GatewayRouteForm() {
   const [upstreamId, setUpstreamId] = useState('');
   const [statusVal, setStatusVal] = useState(1);
   const [requireAuth, setRequireAuth] = useState(false);
-  const [stripPrefix, setStripPrefix] = useState(false);
+  const [stripPrefix, setStripPrefix] = useState(true);
   const [keyHeader, setKeyHeader] = useState('');
   const [keyValue, setKeyValue] = useState('');
   const [error, setError] = useState('');
