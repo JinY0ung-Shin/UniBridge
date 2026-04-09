@@ -10,7 +10,8 @@
     "gatewayConsumers": "Gateway Consumers",
     "gatewayMonitoring": "Gateway Monitoring",
     "roles": "Roles",
-    "users": "Users"
+    "users": "Users",
+    "querySettings": "Query Settings"
   },
   "common": {
     "save": "Save",
@@ -96,7 +97,10 @@
     "role": "Role",
     "noPermissions": "No permissions configured",
     "noPermissionsDesc": "Add a role-database permission using the form above.",
-    "removeConfirm": "Remove permissions for role \"{{role}}\" on \"{{db}}\"?"
+    "removeConfirm": "Remove permissions for role \"{{role}}\" on \"{{db}}\"?",
+    "allowedTables": "Allowed Tables",
+    "allTables": "All tables",
+    "noTablesFound": "No tables found"
   },
   "auditLogs": {
     "title": "Audit Logs",
@@ -278,5 +282,20 @@
     "enableConfirm": "Enable user \"{{name}}\"?",
     "disableConfirm": "Disable user \"{{name}}\"?",
     "deleteConfirm": "Delete user \"{{name}}\"?"
+  },
+  "querySettings": {
+    "title": "Query Settings",
+    "subtitle": "Configure query execution limits and SQL restrictions",
+    "loadFailed": "Failed to load settings.",
+    "rateLimiting": "Rate Limiting",
+    "rateLimit": "Requests per minute (per user)",
+    "rateLimitHint": "Maximum number of query requests a single user can make per minute",
+    "maxConcurrent": "Max concurrent queries (per user)",
+    "maxConcurrentHint": "Maximum number of queries a single user can run simultaneously",
+    "sqlBlacklist": "SQL Keyword Blacklist",
+    "blockedKeywords": "Additional blocked keywords",
+    "blockedKeywordsHint": "Comma-separated list of SQL keywords to block (e.g. VACUUM, ANALYZE). Built-in blocks: GRANT, REVOKE, SHUTDOWN, KILL, etc.",
+    "saved": "Settings saved.",
+    "saveFailed": "Failed to save settings."
   }
 }

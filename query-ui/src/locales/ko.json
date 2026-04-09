@@ -10,7 +10,8 @@
     "gatewayConsumers": "게이트웨이 컨슈머",
     "gatewayMonitoring": "게이트웨이 모니터링",
     "roles": "역할",
-    "users": "사용자"
+    "users": "사용자",
+    "querySettings": "쿼리 설정"
   },
   "common": {
     "save": "저장",
@@ -96,7 +97,10 @@
     "role": "역할",
     "noPermissions": "권한이 설정되지 않았습니다",
     "noPermissionsDesc": "위의 폼을 사용하여 역할-데이터베이스 권한을 추가하세요.",
-    "removeConfirm": "역할 \"{{role}}\"의 \"{{db}}\" 권한을 제거하시겠습니까?"
+    "removeConfirm": "역할 \"{{role}}\"의 \"{{db}}\" 권한을 제거하시겠습니까?",
+    "allowedTables": "허용 테이블",
+    "allTables": "전체 허용",
+    "noTablesFound": "테이블을 찾을 수 없습니다"
   },
   "auditLogs": {
     "title": "감사 로그",
@@ -278,5 +282,20 @@
     "enableConfirm": "사용자 \"{{name}}\"을 활성화하시겠습니까?",
     "disableConfirm": "사용자 \"{{name}}\"을 비활성화하시겠습니까?",
     "deleteConfirm": "사용자 \"{{name}}\"을 삭제하시겠습니까?"
+  },
+  "querySettings": {
+    "title": "쿼리 설정",
+    "subtitle": "쿼리 실행 제한 및 SQL 제약 조건 설정",
+    "loadFailed": "설정을 불러오지 못했습니다.",
+    "rateLimiting": "요청 제한",
+    "rateLimit": "분당 요청 수 (사용자별)",
+    "rateLimitHint": "한 사용자가 분당 실행할 수 있는 최대 쿼리 요청 수",
+    "maxConcurrent": "최대 동시 쿼리 수 (사용자별)",
+    "maxConcurrentHint": "한 사용자가 동시에 실행할 수 있는 최대 쿼리 수",
+    "sqlBlacklist": "SQL 키워드 블랙리스트",
+    "blockedKeywords": "추가 차단 키워드",
+    "blockedKeywordsHint": "차단할 SQL 키워드를 쉼표로 구분 (예: VACUUM, ANALYZE). 기본 차단: GRANT, REVOKE, SHUTDOWN, KILL 등",
+    "saved": "설정이 저장되었습니다.",
+    "saveFailed": "설정 저장에 실패했습니다."
   }
 }
