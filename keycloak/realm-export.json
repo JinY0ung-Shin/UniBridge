@@ -12,7 +12,23 @@
       { "name": "viewer", "description": "Read-only access" }
     ]
   },
+  "scopeMappings": [
+    {
+      "client": "apihub-service",
+      "roles": ["admin"]
+    }
+  ],
   "clients": [
+    {
+      "clientId": "apihub-service",
+      "name": "API Hub Service Account",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "apihub-service-secret",
+      "serviceAccountsEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "standardFlowEnabled": false
+    },
     {
       "clientId": "apihub-ui",
       "name": "API Hub UI",
