@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -16,8 +17,11 @@ from app.schemas import (
     DBConnectionUpdate,
     PermissionCreate,
     PermissionResponse,
+    SystemConfigResponse,
+    SystemConfigUpdate,
 )
 from app.services.connection_manager import connection_manager, encrypt_password
+from app.services.settings_manager import settings_manager
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +255,39 @@ async def test_connection(
         return {"alias": alias, "status": "error", "message": "Connection failed"}
 
 
+@router.get("/admin/query/databases/{alias}/tables")
+async def list_tables(
+    alias: str,
+    _admin: CurrentUser = Depends(require_permission("query.databases.read")),
+) -> list[str]:
+    """List all table names in a registered database."""
+    try:
+        engine = connection_manager.get_engine(alias)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Database alias '{alias}' is not registered",
+        )
+
+    db_type = connection_manager.get_db_type(alias)
+
+    if db_type == "mssql":
+        sql = "SELECT TABLE_SCHEMA + '.' + TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME"
+    else:
+        sql = "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename"
+
+    from sqlalchemy import text
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(text(sql))
+            return [row[0] for row in result.fetchall()]
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list tables: {exc}",
+        )
+
+
 # ── Permissions ──────────────────────────────────────────────────────────────
 
 
@@ -261,7 +298,12 @@ async def list_permissions(
 ) -> list[PermissionResponse]:
     """List all permission entries."""
     result = await db.execute(select(Permission))
-    return [PermissionResponse.model_validate(p) for p in result.scalars().all()]
+    perms = []
+    for p in result.scalars().all():
+        resp = PermissionResponse.model_validate(p)
+        resp.allowed_tables = json.loads(p.allowed_tables) if p.allowed_tables else None
+        perms.append(resp)
+    return perms
 
 
 @router.put("/admin/query/permissions", response_model=PermissionResponse)
@@ -271,6 +313,42 @@ async def upsert_permission(
     db: AsyncSession = Depends(get_db),
 ) -> PermissionResponse:
     """Create or update a permission entry (upsert by role + db_alias)."""
+    # Validate allowed_tables against actual DB tables
+    if body.allowed_tables is not None and len(body.allowed_tables) > 0:
+        try:
+            engine = connection_manager.get_engine(body.db_alias)
+            db_type = connection_manager.get_db_type(body.db_alias)
+
+            if db_type == "mssql":
+                table_sql = "SELECT TABLE_SCHEMA + '.' + TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'"
+            else:
+                table_sql = "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public'"
+
+            from sqlalchemy import text
+            async with engine.connect() as conn:
+                result_tables = await conn.execute(text(table_sql))
+                actual_tables = {row[0].lower() for row in result_tables.fetchall()}
+
+            requested = {t.lower() for t in body.allowed_tables}
+            invalid = requested - actual_tables
+            if invalid:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Tables not found in database '{body.db_alias}': {', '.join(sorted(invalid))}",
+                )
+        except KeyError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Database alias '{body.db_alias}' is not registered or not connected",
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to validate tables: {exc}",
+            )
+
     result = await db.execute(
         select(Permission).where(
             Permission.role == body.role,
@@ -278,6 +356,8 @@ async def upsert_permission(
         )
     )
     perm = result.scalar_one_or_none()
+
+    allowed_tables_json = json.dumps(body.allowed_tables) if body.allowed_tables is not None else None
 
     if perm is None:
         perm = Permission(
@@ -287,6 +367,7 @@ async def upsert_permission(
             allow_insert=body.allow_insert,
             allow_update=body.allow_update,
             allow_delete=body.allow_delete,
+            allowed_tables=allowed_tables_json,
         )
         db.add(perm)
     else:
@@ -294,10 +375,14 @@ async def upsert_permission(
         perm.allow_insert = body.allow_insert
         perm.allow_update = body.allow_update
         perm.allow_delete = body.allow_delete
+        perm.allowed_tables = allowed_tables_json
 
     await db.commit()
     await db.refresh(perm)
-    return PermissionResponse.model_validate(perm)
+
+    resp = PermissionResponse.model_validate(perm)
+    resp.allowed_tables = json.loads(perm.allowed_tables) if perm.allowed_tables else None
+    return resp
 
 
 @router.delete(
@@ -370,3 +455,41 @@ async def list_audit_logs(
 
     result = await db.execute(stmt)
     return [AuditLogResponse.model_validate(log) for log in result.scalars().all()]
+
+
+# ── System Settings ─────────────────────────────────────────────────────────
+
+
+@router.get("/admin/query/settings", response_model=SystemConfigResponse)
+async def get_settings(
+    _admin: CurrentUser = Depends(require_permission("query.settings.read")),
+) -> SystemConfigResponse:
+    """Get current system settings."""
+    data = settings_manager.get_all()
+    return SystemConfigResponse(**data)
+
+
+@router.put("/admin/query/settings", response_model=SystemConfigResponse)
+async def update_settings(
+    body: SystemConfigUpdate,
+    _admin: CurrentUser = Depends(require_permission("query.settings.write")),
+    db: AsyncSession = Depends(get_db),
+) -> SystemConfigResponse:
+    """Update system settings."""
+    from app.middleware.rate_limiter import rate_limiter
+
+    await settings_manager.update(
+        db,
+        rate_limit_per_minute=body.rate_limit_per_minute,
+        max_concurrent_queries=body.max_concurrent_queries,
+        blocked_sql_keywords=body.blocked_sql_keywords,
+    )
+
+    # Sync rate limiter with new settings
+    rate_limiter.update_limits(
+        rate_limit=body.rate_limit_per_minute,
+        max_concurrent=body.max_concurrent_queries,
+    )
+
+    data = settings_manager.get_all()
+    return SystemConfigResponse(**data)

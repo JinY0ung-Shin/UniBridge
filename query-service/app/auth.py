@@ -30,6 +30,8 @@ ALL_PERMISSIONS = [
     "query.permissions.write",
     "query.audit.read",
     "query.execute",
+    "query.settings.read",
+    "query.settings.write",
     "gateway.routes.read",
     "gateway.routes.write",
     "gateway.upstreams.read",
