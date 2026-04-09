@@ -20,7 +20,7 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["http://localhost:3000/*", "http://localhost:3001/*"],
+      "redirectUris": ["*"],
       "webOrigins": ["+"],
       "protocolMappers": [
         {
