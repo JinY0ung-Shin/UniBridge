@@ -13,7 +13,9 @@ from app.config import settings, validate_settings
 from app.database import get_db, init_db
 from app.models import DBConnection
 from app.routers import admin, gateway, query, roles, users
+from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
 from app.services.connection_manager import connection_manager
+from app.services.settings_manager import settings_manager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,6 +38,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         connections = result.scalars().all()
         await connection_manager.initialize(list(connections))
         logger.info("Loaded %d database connection(s)", len(connections))
+        break
+
+    logger.info("Loading system settings...")
+    async for db in get_db():
+        await settings_manager.load_from_db(db)
+        rate_limiter.update_limits(
+            rate_limit=settings_manager.rate_limit_per_minute,
+            max_concurrent=settings_manager.max_concurrent_queries,
+        )
         break
 
     yield
@@ -71,6 +82,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RateLimitMiddleware)
 
 # ── CORS ────────────────────────────────────────────────────────────────────
 _cors_origins = [
