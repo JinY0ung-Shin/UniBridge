@@ -178,6 +178,8 @@ async def _verify_keycloak_token(token: str) -> CurrentUser:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}") from exc
 
     username = payload.get("preferred_username") or payload.get("sub")
+    logger.info("JWT username=%s, roles claim=%s, realm_access=%s",
+                username, payload.get("roles"), payload.get("realm_access"))
 
     # Extract role: check custom "roles" claim, then standard realm_access
     # Uses priority ordering so admin > developer > viewer
@@ -192,6 +194,8 @@ async def _verify_keycloak_token(token: str) -> CurrentUser:
     if not role:
         realm_roles = set(payload.get("realm_access", {}).get("roles", []))
         role = next((r for r in ROLE_PRIORITY if r in realm_roles), None)
+
+    logger.info("Resolved role=%s for user=%s", role, username)
 
     if not username or not role:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing username or valid role")
