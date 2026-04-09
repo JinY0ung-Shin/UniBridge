@@ -107,8 +107,10 @@ def create_token(username: str, role: str, expires_delta: timedelta | None = Non
 _jwks_cache: dict | None = None
 _jwks_cache_ts: float = 0.0
 _JWKS_CACHE_TTL = 300.0  # 5 minutes
+_jwks_lock = asyncio.Lock()
 
-KNOWN_ROLES = {"admin", "developer", "viewer"}
+# Priority order: first match wins (highest privilege first)
+ROLE_PRIORITY = ["admin", "developer", "viewer"]
 
 
 async def _get_jwks() -> dict:
@@ -116,12 +118,16 @@ async def _get_jwks() -> dict:
     now = time.time()
     if _jwks_cache and (now - _jwks_cache_ts < _JWKS_CACHE_TTL):
         return _jwks_cache
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(settings.KEYCLOAK_JWKS_URL)
-        resp.raise_for_status()
-        _jwks_cache = resp.json()
-        _jwks_cache_ts = now
-        return _jwks_cache
+    async with _jwks_lock:
+        # Double-check after acquiring lock
+        if _jwks_cache and (time.time() - _jwks_cache_ts < _JWKS_CACHE_TTL):
+            return _jwks_cache
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(settings.KEYCLOAK_JWKS_URL)
+            resp.raise_for_status()
+            _jwks_cache = resp.json()
+            _jwks_cache_ts = time.time()
+            return _jwks_cache
 
 
 async def _verify_keycloak_token(token: str) -> CurrentUser:
@@ -168,18 +174,18 @@ async def _verify_keycloak_token(token: str) -> CurrentUser:
     username = payload.get("preferred_username") or payload.get("sub")
 
     # Extract role: check custom "roles" claim, then standard realm_access
+    # Uses priority ordering so admin > developer > viewer
     role = None
     role_claim = payload.get("roles")
     if isinstance(role_claim, list):
-        matched = [r for r in role_claim if r in KNOWN_ROLES]
-        role = matched[0] if matched else None
-    elif isinstance(role_claim, str) and role_claim in KNOWN_ROLES:
+        role_set = set(role_claim)
+        role = next((r for r in ROLE_PRIORITY if r in role_set), None)
+    elif isinstance(role_claim, str) and role_claim in ROLE_PRIORITY:
         role = role_claim
 
     if not role:
-        realm_roles = payload.get("realm_access", {}).get("roles", [])
-        matched = [r for r in realm_roles if r in KNOWN_ROLES]
-        role = matched[0] if matched else None
+        realm_roles = set(payload.get("realm_access", {}).get("roles", []))
+        role = next((r for r in ROLE_PRIORITY if r in realm_roles), None)
 
     if not username or not role:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing username or valid role")

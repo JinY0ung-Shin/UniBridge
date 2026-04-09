@@ -13,7 +13,8 @@ client.interceptors.request.use(async (config) => {
     try {
       await keycloak.updateToken(5);
     } catch {
-      // refresh failed, proceed with current token
+      keycloak.login();
+      return Promise.reject(new Error('Session expired'));
     }
     if (keycloak.token) {
       config.headers.Authorization = `Bearer ${keycloak.token}`;

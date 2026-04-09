@@ -72,7 +72,12 @@ services:
       - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
       - KEYCLOAK_ISSUER_URL=${KEYCLOAK_ISSUER_URL:-http://localhost:8080/realms/apihub}
       - KEYCLOAK_JWKS_URL=${KEYCLOAK_JWKS_URL:-http://keycloak:8080/realms/apihub/protocol/openid-connect/certs}
+      # KEYCLOAK_ISSUER_URL must match the URL the browser uses to access Keycloak
+      # (since Keycloak embeds the browser-facing URL as the JWT issuer claim)
       - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
+    depends_on:
+      keycloak:
+        condition: service_healthy
     volumes:
       - query-data:/app/data
     healthcheck:
@@ -104,10 +109,9 @@ services:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}
+        VITE_KEYCLOAK_URL: ${KEYCLOAK_EXTERNAL_URL:-http://localhost:8080}
     ports:
       - "${QUERY_UI_PORT:-3000}:80"
-    environment:
-      - VITE_KEYCLOAK_URL=${KEYCLOAK_EXTERNAL_URL:-http://localhost:8080}
     depends_on:
       query-service:
         condition: service_healthy

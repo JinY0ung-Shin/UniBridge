@@ -791,26 +791,28 @@ class TestAuthMeEndpoint:
 
 
 class TestAuthRolesEndpoint:
-    async def test_list_roles_no_auth_required(self, client):
-        """GET /auth/roles is a public endpoint — no authorization needed."""
+    async def test_list_roles_requires_auth(self, client):
+        """GET /auth/roles requires authentication."""
         resp = await client.get("/auth/roles")
-        assert resp.status_code == 200
+        assert resp.status_code == 403
 
-    async def test_list_roles_returns_role_names(self, client):
-        resp = await client.get("/auth/roles")
+    async def test_list_roles_returns_role_names(self, client, admin_token):
+        resp = await client.get("/auth/roles", headers=auth_header(admin_token))
         data = resp.json()
         assert isinstance(data, list)
         assert "admin" in data
         assert "developer" in data
         assert "viewer" in data
 
-    async def test_list_roles_returns_sorted(self, client):
-        resp = await client.get("/auth/roles")
+    async def test_list_roles_returns_sorted(self, client, admin_token):
+        resp = await client.get("/auth/roles", headers=auth_header(admin_token))
         data = resp.json()
         assert data == sorted(data)
 
-    async def test_list_roles_returns_strings(self, client):
-        resp = await client.get("/auth/roles")
+    async def test_list_roles_returns_strings(self, client, viewer_token):
+        """Any authenticated user can list roles."""
+        resp = await client.get("/auth/roles", headers=auth_header(viewer_token))
+        assert resp.status_code == 200
         data = resp.json()
         assert all(isinstance(name, str) for name in data)
 

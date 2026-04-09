@@ -409,10 +409,10 @@ class TestListDatabases:
 
 
 class TestAuthRolesPublic:
-    """Tests for GET /auth/roles (public, no auth needed)."""
+    """Tests for GET /auth/roles (requires authentication)."""
 
-    async def test_list_auth_roles_returns_seeded_roles(self, client):
-        resp = await client.get("/auth/roles")
+    async def test_list_auth_roles_returns_seeded_roles(self, client, admin_token):
+        resp = await client.get("/auth/roles", headers=auth_header(admin_token))
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)

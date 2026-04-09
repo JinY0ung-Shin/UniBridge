@@ -40,8 +40,11 @@ async def _role_to_response(db: AsyncSession, role: Role) -> RoleResponse:
 # ── Public: role list for login ─────────────────────────────────────────────
 
 @router.get("/auth/roles", response_model=list[str])
-async def list_auth_roles(db: AsyncSession = Depends(get_db)) -> list[str]:
-    """List role names for the login form. No authentication required."""
+async def list_auth_roles(
+    _user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[str]:
+    """List role names. Requires authentication."""
     result = await db.execute(select(Role.name).order_by(Role.name))
     return [row[0] for row in result.all()]
 
