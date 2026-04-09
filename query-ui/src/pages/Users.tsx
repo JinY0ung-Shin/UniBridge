@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import {
   getUsers,
   createKeycloakUser,
@@ -34,6 +35,7 @@ function extractErrorMessage(err: unknown, fallback: string): string {
 type ModalMode = 'create' | 'role' | 'password';
 
 function Users() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { permissions } = usePermissions();
   const { username: currentUsername } = useAuth();
@@ -80,7 +82,7 @@ function Users() {
       queryClient.invalidateQueries({ queryKey: ['users'] });
       closeModal();
     },
-    onError: (err: unknown) => setError(extractErrorMessage(err, 'Failed to create user')),
+    onError: (err: unknown) => setError(extractErrorMessage(err, t('users.createFailed'))),
   });
 
   const changeRoleMutation = useMutation({
@@ -89,7 +91,7 @@ function Users() {
       queryClient.invalidateQueries({ queryKey: ['users'] });
       closeModal();
     },
-    onError: (err: unknown) => setError(extractErrorMessage(err, 'Failed to change role')),
+    onError: (err: unknown) => setError(extractErrorMessage(err, t('users.changeRoleFailed'))),
   });
 
   const resetPasswordMutation = useMutation({
@@ -98,7 +100,7 @@ function Users() {
     onSuccess: () => {
       closeModal();
     },
-    onError: (err: unknown) => setError(extractErrorMessage(err, 'Failed to reset password')),
+    onError: (err: unknown) => setError(extractErrorMessage(err, t('users.resetPasswordFailed'))),
   });
 
   const toggleEnabledMutation = useMutation({
@@ -108,7 +110,7 @@ function Users() {
       queryClient.invalidateQueries({ queryKey: ['users'] });
     },
     onError: (err: unknown) => {
-      alert(extractErrorMessage(err, 'Failed to update user status'));
+      alert(extractErrorMessage(err, t('users.toggleFailed')));
     },
   });
 
@@ -118,7 +120,7 @@ function Users() {
       queryClient.invalidateQueries({ queryKey: ['users'] });
     },
     onError: (err: unknown) => {
-      alert(extractErrorMessage(err, 'Failed to delete user'));
+      alert(extractErrorMessage(err, t('users.deleteFailed')));
     },
   });
 
@@ -187,14 +189,16 @@ function Users() {
   }
 
   function handleToggleEnabled(user: KeycloakUser) {
-    const action = user.enabled ? 'Disable' : 'Enable';
-    if (window.confirm(`${action} user "${user.username}"?`)) {
+    const msg = user.enabled
+      ? t('users.disableConfirm', { name: user.username })
+      : t('users.enableConfirm', { name: user.username });
+    if (window.confirm(msg)) {
       toggleEnabledMutation.mutate({ userId: user.id, enabled: !user.enabled });
     }
   }
 
   function handleDelete(user: KeycloakUser) {
-    if (window.confirm(`Delete user "${user.username}"?`)) {
+    if (window.confirm(t('users.deleteConfirm', { name: user.username }))) {
       deleteMutation.mutate(user.id);
     }
   }
@@ -205,36 +209,36 @@ function Users() {
     <div className="users-page">
       <div className="page-header">
         <div>
-          <h1>Users</h1>
-          <p className="page-subtitle">Manage Keycloak users and roles</p>
+          <h1>{t('users.title')}</h1>
+          <p className="page-subtitle">{t('users.subtitle')}</p>
         </div>
         {canWrite && (
-          <button className="btn btn-primary" onClick={openCreate}>+ Add User</button>
+          <button className="btn btn-primary" onClick={openCreate}>{t('users.addUser')}</button>
         )}
       </div>
 
       <div className="search-bar">
         <input
           type="text"
-          placeholder="Search users..."
+          placeholder={t('users.searchPlaceholder')}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
 
-      {usersQuery.isLoading && <div className="loading-message">Loading users...</div>}
-      {usersQuery.isError && <div className="error-banner">Failed to load users.</div>}
+      {usersQuery.isLoading && <div className="loading-message">{t('users.loadingUsers')}</div>}
+      {usersQuery.isError && <div className="error-banner">{t('users.loadFailed')}</div>}
 
       {users.length > 0 && (
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Username</th>
-                <th>Email</th>
-                <th>Role</th>
-                <th>Status</th>
-                <th>Actions</th>
+                <th>{t('connections.username')}</th>
+                <th>{t('users.email')}</th>
+                <th>{t('users.role')}</th>
+                <th>{t('common.status')}</th>
+                <th>{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -249,27 +253,27 @@ function Users() {
                   </td>
                   <td>
                     <span className={user.enabled ? 'status-active' : 'status-disabled'}>
-                      {user.enabled ? 'Active' : 'Disabled'}
+                      {user.enabled ? t('common.active') : t('common.disabled')}
                     </span>
                   </td>
                   <td>
                     {canWrite && user.username !== currentUsername && (
                       <div className="action-buttons">
-                        <button className="btn btn-sm btn-secondary" onClick={() => openRoleChange(user)}>Role</button>
-                        <button className="btn btn-sm btn-secondary" onClick={() => openPasswordReset(user)}>Reset PW</button>
+                        <button className="btn btn-sm btn-secondary" onClick={() => openRoleChange(user)}>{t('users.role')}</button>
+                        <button className="btn btn-sm btn-secondary" onClick={() => openPasswordReset(user)}>{t('users.resetPw')}</button>
                         <button
                           className={`btn btn-sm ${user.enabled ? 'btn-warning' : 'btn-success'}`}
                           onClick={() => handleToggleEnabled(user)}
                           disabled={toggleEnabledMutation.isPending}
                         >
-                          {user.enabled ? 'Disable' : 'Enable'}
+                          {user.enabled ? t('users.disable') : t('users.enable')}
                         </button>
                         <button
                           className="btn btn-sm btn-danger"
                           onClick={() => handleDelete(user)}
                           disabled={deleteMutation.isPending}
                         >
-                          Delete
+                          {t('common.delete')}
                         </button>
                       </div>
                     )}
@@ -286,13 +290,13 @@ function Users() {
         <div className="modal-overlay" onClick={closeModal}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>Add User</h2>
+              <h2>{t('users.addTitle')}</h2>
               <button className="modal-close" onClick={closeModal}>&times;</button>
             </div>
             <form onSubmit={handleCreateSubmit}>
               <div className="form-grid">
                 <div className="form-group form-group--full">
-                  <label>Username</label>
+                  <label>{t('connections.username')}</label>
                   <input
                     value={newUsername}
                     onChange={(e) => setNewUsername(e.target.value)}
@@ -301,7 +305,7 @@ function Users() {
                   />
                 </div>
                 <div className="form-group form-group--full">
-                  <label>Email (optional)</label>
+                  <label>{t('users.emailOptional')}</label>
                   <input
                     type="email"
                     value={newEmail}
@@ -310,7 +314,7 @@ function Users() {
                   />
                 </div>
                 <div className="form-group form-group--full">
-                  <label>Password (min 8 characters)</label>
+                  <label>{t('users.passwordMin')}</label>
                   <input
                     type="password"
                     value={newPassword}
@@ -321,7 +325,7 @@ function Users() {
                   />
                 </div>
                 <div className="form-group form-group--full">
-                  <label>Role</label>
+                  <label>{t('users.role')}</label>
                   <select value={newRole} onChange={(e) => setNewRole(e.target.value)} required>
                     {roles.map((r) => (
                       <option key={r} value={r}>{r}</option>
@@ -333,9 +337,9 @@ function Users() {
               {error && <div className="form-error">{error}</div>}
 
               <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeModal}>Cancel</button>
+                <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
                 <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                  {createMutation.isPending ? 'Creating...' : 'Create'}
+                  {createMutation.isPending ? t('users.creating') : t('common.create')}
                 </button>
               </div>
             </form>
@@ -348,13 +352,13 @@ function Users() {
         <div className="modal-overlay" onClick={closeModal}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>Change Role for &quot;{selectedUser.username}&quot;</h2>
+              <h2>{t('users.changeRoleTitle', { name: selectedUser.username })}</h2>
               <button className="modal-close" onClick={closeModal}>&times;</button>
             </div>
             <form onSubmit={handleRoleSubmit}>
               <div className="form-grid">
                 <div className="form-group form-group--full">
-                  <label>Role</label>
+                  <label>{t('users.role')}</label>
                   <select value={changeRoleValue} onChange={(e) => setChangeRoleValue(e.target.value)} required>
                     {roles.map((r) => (
                       <option key={r} value={r}>{r}</option>
@@ -366,9 +370,9 @@ function Users() {
               {error && <div className="form-error">{error}</div>}
 
               <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeModal}>Cancel</button>
+                <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
                 <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                  {changeRoleMutation.isPending ? 'Saving...' : 'Update Role'}
+                  {changeRoleMutation.isPending ? t('common.saving') : t('users.updateRole')}
                 </button>
               </div>
             </form>
@@ -381,13 +385,13 @@ function Users() {
         <div className="modal-overlay" onClick={closeModal}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>Reset Password for &quot;{selectedUser.username}&quot;</h2>
+              <h2>{t('users.resetPasswordTitle', { name: selectedUser.username })}</h2>
               <button className="modal-close" onClick={closeModal}>&times;</button>
             </div>
             <form onSubmit={handlePasswordSubmit}>
               <div className="form-grid">
                 <div className="form-group form-group--full">
-                  <label>New Password (min 8 characters)</label>
+                  <label>{t('users.newPassword')}</label>
                   <input
                     type="password"
                     value={resetPwValue}
@@ -404,7 +408,7 @@ function Users() {
                       checked={resetPwTemporary}
                       onChange={(e) => setResetPwTemporary(e.target.checked)}
                     />
-                    Temporary (user must change on next login)
+                    {t('users.temporary')}
                   </label>
                 </div>
               </div>
@@ -412,9 +416,9 @@ function Users() {
               {error && <div className="form-error">{error}</div>}
 
               <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeModal}>Cancel</button>
+                <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
                 <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                  {resetPasswordMutation.isPending ? 'Resetting...' : 'Reset Password'}
+                  {resetPasswordMutation.isPending ? t('users.resetting') : t('users.resetPassword')}
                 </button>
               </div>
             </form>

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import {
   getGatewayUpstreams,
   saveGatewayUpstream,
@@ -34,6 +35,7 @@ function entriesToNodes(entries: NodeEntry[]): Record<string, number> {
 }
 
 function GatewayUpstreams() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
 
   const [showModal, setShowModal] = useState(false);
@@ -58,9 +60,9 @@ function GatewayUpstreams() {
     onError: (err: unknown) => {
       if (err && typeof err === 'object' && 'response' in err) {
         const axiosErr = err as { response?: { data?: { detail?: string } } };
-        setError(axiosErr.response?.data?.detail ?? 'Failed to save upstream');
+        setError(axiosErr.response?.data?.detail ?? t('gatewayUpstreams.saveFailed'));
       } else {
-        setError('Failed to save upstream');
+        setError(t('gatewayUpstreams.saveFailed'));
       }
     },
   });
@@ -73,7 +75,7 @@ function GatewayUpstreams() {
     onError: (err: unknown) => {
       if (err && typeof err === 'object' && 'response' in err) {
         const axiosErr = err as { response?: { data?: { detail?: string } } };
-        alert(axiosErr.response?.data?.detail ?? 'Failed to delete upstream');
+        alert(axiosErr.response?.data?.detail ?? t('gatewayUpstreams.deleteFailed'));
       }
     },
   });
@@ -118,7 +120,7 @@ function GatewayUpstreams() {
 
   function handleDelete(u: GatewayUpstream) {
     const label = u.name || u.id;
-    if (window.confirm(`Delete upstream "${label}"?`)) {
+    if (window.confirm(t('gatewayUpstreams.deleteConfirm', { name: label }))) {
       deleteMutation.mutate(u.id);
     }
   }
@@ -145,24 +147,24 @@ function GatewayUpstreams() {
     <div className="gateway-upstreams">
       <div className="page-header">
         <div>
-          <h1>Gateway Upstreams</h1>
-          <p className="page-subtitle">Manage backend server groups</p>
+          <h1>{t('gatewayUpstreams.title')}</h1>
+          <p className="page-subtitle">{t('gatewayUpstreams.subtitle')}</p>
         </div>
-        <button className="btn btn-primary" onClick={openCreate}>+ Add Upstream</button>
+        <button className="btn btn-primary" onClick={openCreate}>{t('gatewayUpstreams.addUpstream')}</button>
       </div>
 
-      {upstreamsQuery.isLoading && <div className="loading-message">Loading upstreams...</div>}
-      {upstreamsQuery.isError && <div className="error-banner">Failed to load upstreams.</div>}
+      {upstreamsQuery.isLoading && <div className="loading-message">{t('gatewayUpstreams.loadingUpstreams')}</div>}
+      {upstreamsQuery.isError && <div className="error-banner">{t('gatewayUpstreams.loadFailed')}</div>}
 
       {upstreams.length > 0 && (
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Nodes</th>
-                <th>Actions</th>
+                <th>{t('common.name')}</th>
+                <th>{t('common.type')}</th>
+                <th>{t('gatewayUpstreams.nodes')}</th>
+                <th>{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -173,8 +175,8 @@ function GatewayUpstreams() {
                   <td className="cell-nodes">{formatNodes(u.nodes || {})}</td>
                   <td>
                     <div className="action-buttons">
-                      <button className="btn btn-sm btn-secondary" onClick={() => openEdit(u)}>Edit</button>
-                      <button className="btn btn-sm btn-danger" onClick={() => handleDelete(u)} disabled={deleteMutation.isPending}>Delete</button>
+                      <button className="btn btn-sm btn-secondary" onClick={() => openEdit(u)}>{t('common.edit')}</button>
+                      <button className="btn btn-sm btn-danger" onClick={() => handleDelete(u)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
                     </div>
                   </td>
                 </tr>
@@ -186,8 +188,8 @@ function GatewayUpstreams() {
 
       {!upstreamsQuery.isLoading && upstreams.length === 0 && !upstreamsQuery.isError && (
         <div className="empty-state">
-          <h3>No upstreams</h3>
-          <p>Click "Add Upstream" to register a backend server group.</p>
+          <h3>{t('gatewayUpstreams.noUpstreams')}</h3>
+          <p>{t('gatewayUpstreams.noUpstreamsDesc')}</p>
         </div>
       )}
 
@@ -195,34 +197,34 @@ function GatewayUpstreams() {
         <div className="modal-overlay" onClick={closeModal}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>{editingId ? 'Edit Upstream' : 'Add Upstream'}</h2>
+              <h2>{editingId ? t('gatewayUpstreams.editTitle') : t('gatewayUpstreams.addTitle')}</h2>
               <button className="modal-close" onClick={closeModal}>&times;</button>
             </div>
             <form onSubmit={handleSubmit}>
               <div className="form-grid">
                 <div className="form-group">
-                  <label>Name</label>
+                  <label>{t('common.name')}</label>
                   <input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-backend" />
-                  <span className="field-hint">식별을 위한 이름 (선택사항, 예: user-api, payment-server)</span>
+                  <span className="field-hint">{t('gatewayUpstreams.nameHint')}</span>
                 </div>
                 <div className="form-group">
-                  <label>Type</label>
+                  <label>{t('common.type')}</label>
                   <select value={type} onChange={(e) => setType(e.target.value)}>
                     <option value="roundrobin">Round Robin</option>
                     <option value="chash">Consistent Hash</option>
                     <option value="ewma">EWMA</option>
                     <option value="least_conn">Least Connections</option>
                   </select>
-                  <span className="field-hint">트래픽을 노드에 분배하는 로드밸런싱 알고리즘</span>
+                  <span className="field-hint">{t('gatewayUpstreams.typeHint')}</span>
                 </div>
                 <div className="form-group form-group--full">
-                  <label>Nodes</label>
-                  <span className="field-hint">요청을 처리할 백엔드 서버 목록. Weight가 높을수록 더 많은 트래픽을 받습니다</span>
+                  <label>{t('gatewayUpstreams.nodesLabel')}</label>
+                  <span className="field-hint">{t('gatewayUpstreams.nodesHint')}</span>
                   <div className="nodes-list">
                     <div className="node-row node-row--header">
-                      <span className="node-label node-host">Host / IP</span>
-                      <span className="node-label node-port">Port</span>
-                      <span className="node-label node-weight">Weight</span>
+                      <span className="node-label node-host">{t('gatewayUpstreams.hostIp')}</span>
+                      <span className="node-label node-port">{t('gatewayUpstreams.port')}</span>
+                      <span className="node-label node-weight">{t('gatewayUpstreams.weight')}</span>
                     </div>
                     {nodes.map((node, idx) => (
                       <div key={idx} className="node-row">
@@ -253,7 +255,7 @@ function GatewayUpstreams() {
                       </div>
                     ))}
                     <button type="button" className="btn btn-sm btn-secondary add-node-btn" onClick={addNode}>
-                      + Add Node
+                      {t('gatewayUpstreams.addNode')}
                     </button>
                   </div>
                 </div>
@@ -262,9 +264,9 @@ function GatewayUpstreams() {
               {error && <div className="form-error">{error}</div>}
 
               <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeModal}>Cancel</button>
+                <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
                 <button type="submit" className="btn btn-primary" disabled={saveMutation.isPending}>
-                  {saveMutation.isPending ? 'Saving...' : editingId ? 'Update' : 'Create'}
+                  {saveMutation.isPending ? t('common.saving') : editingId ? t('common.update') : t('common.create')}
                 </button>
               </div>
             </form>

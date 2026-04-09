@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import {
   getGatewayConsumers,
   saveGatewayConsumer,
@@ -13,6 +14,7 @@ function generateKey(): string {
 }
 
 function GatewayConsumers() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
 
   const [showModal, setShowModal] = useState(false);
@@ -42,9 +44,9 @@ function GatewayConsumers() {
     onError: (err: unknown) => {
       if (err && typeof err === 'object' && 'response' in err) {
         const axiosErr = err as { response?: { data?: { detail?: string } } };
-        setError(axiosErr.response?.data?.detail ?? 'Failed to save consumer');
+        setError(axiosErr.response?.data?.detail ?? t('gatewayConsumers.saveFailed'));
       } else {
-        setError('Failed to save consumer');
+        setError(t('gatewayConsumers.saveFailed'));
       }
     },
   });
@@ -57,7 +59,7 @@ function GatewayConsumers() {
     onError: (err: unknown) => {
       if (err && typeof err === 'object' && 'response' in err) {
         const axiosErr = err as { response?: { data?: { detail?: string } } };
-        alert(axiosErr.response?.data?.detail ?? 'Failed to delete consumer');
+        alert(axiosErr.response?.data?.detail ?? t('gatewayConsumers.deleteFailed'));
       }
     },
   });
@@ -104,7 +106,7 @@ function GatewayConsumers() {
   }
 
   function handleDelete(c: GatewayConsumer) {
-    if (window.confirm(`Delete consumer "${c.username}"?`)) {
+    if (window.confirm(t('gatewayConsumers.deleteConfirm', { name: c.username }))) {
       deleteMutation.mutate(c.username);
     }
   }
@@ -121,23 +123,23 @@ function GatewayConsumers() {
     <div className="gateway-consumers">
       <div className="page-header">
         <div>
-          <h1>Gateway Consumers</h1>
-          <p className="page-subtitle">Manage API consumers and their authentication keys</p>
+          <h1>{t('gatewayConsumers.title')}</h1>
+          <p className="page-subtitle">{t('gatewayConsumers.subtitle')}</p>
         </div>
-        <button className="btn btn-primary" onClick={openCreate}>+ Add Consumer</button>
+        <button className="btn btn-primary" onClick={openCreate}>{t('gatewayConsumers.addConsumer')}</button>
       </div>
 
-      {consumersQuery.isLoading && <div className="loading-message">Loading consumers...</div>}
-      {consumersQuery.isError && <div className="error-banner">Failed to load consumers.</div>}
+      {consumersQuery.isLoading && <div className="loading-message">{t('gatewayConsumers.loadingConsumers')}</div>}
+      {consumersQuery.isError && <div className="error-banner">{t('gatewayConsumers.loadFailed')}</div>}
 
       {consumers.length > 0 && (
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Username</th>
-                <th>API Key</th>
-                <th>Actions</th>
+                <th>{t('gatewayConsumers.username')}</th>
+                <th>{t('gatewayConsumers.apiKey')}</th>
+                <th>{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -147,8 +149,8 @@ function GatewayConsumers() {
                   <td className="cell-key">{c.api_key || '—'}</td>
                   <td>
                     <div className="action-buttons">
-                      <button className="btn btn-sm btn-secondary" onClick={() => openEdit(c)}>Edit</button>
-                      <button className="btn btn-sm btn-danger" onClick={() => handleDelete(c)} disabled={deleteMutation.isPending}>Delete</button>
+                      <button className="btn btn-sm btn-secondary" onClick={() => openEdit(c)}>{t('common.edit')}</button>
+                      <button className="btn btn-sm btn-danger" onClick={() => handleDelete(c)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
                     </div>
                   </td>
                 </tr>
@@ -160,8 +162,8 @@ function GatewayConsumers() {
 
       {!consumersQuery.isLoading && consumers.length === 0 && !consumersQuery.isError && (
         <div className="empty-state">
-          <h3>No consumers</h3>
-          <p>Click "Add Consumer" to create an API consumer with a key.</p>
+          <h3>{t('gatewayConsumers.noConsumers')}</h3>
+          <p>{t('gatewayConsumers.noConsumersDesc')}</p>
         </div>
       )}
 
@@ -169,30 +171,30 @@ function GatewayConsumers() {
         <div className="modal-overlay" onClick={createdKey ? undefined : closeModal}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>{editingUsername ? 'Edit Consumer' : 'Add Consumer'}</h2>
+              <h2>{editingUsername ? t('gatewayConsumers.editTitle') : t('gatewayConsumers.addTitle')}</h2>
               <button className="modal-close" onClick={closeModal}>&times;</button>
             </div>
 
             {createdKey ? (
               <>
                 <div className="key-created-banner">
-                  <p>API key created. Copy it now — you won't be able to see it again.</p>
+                  <p>{t('gatewayConsumers.keyCreatedMessage')}</p>
                   <div className="key-display">
                     <code>{createdKey}</code>
                     <button className="copy-btn" onClick={handleCopy}>
-                      {copied ? 'Copied!' : 'Copy'}
+                      {copied ? t('gatewayConsumers.copied') : t('gatewayConsumers.copy')}
                     </button>
                   </div>
                 </div>
                 <div className="modal-actions">
-                  <button className="btn btn-primary" onClick={closeModal}>Done</button>
+                  <button className="btn btn-primary" onClick={closeModal}>{t('common.done')}</button>
                 </div>
               </>
             ) : (
               <form onSubmit={handleSubmit}>
                 <div className="form-grid">
                   <div className="form-group form-group--full">
-                    <label>Username</label>
+                    <label>{t('gatewayConsumers.username')}</label>
                     <input
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
@@ -202,18 +204,18 @@ function GatewayConsumers() {
                     />
                   </div>
                   <div className="form-group form-group--full">
-                    <label>API Key</label>
+                    <label>{t('gatewayConsumers.apiKey')}</label>
                     <input
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
-                      placeholder={editingUsername ? 'Leave empty to keep current' : 'Auto-generated key'}
+                      placeholder={editingUsername ? t('gatewayConsumers.apiKeyPlaceholderEdit') : t('gatewayConsumers.apiKeyPlaceholderNew')}
                     />
                     <button
                       type="button"
                       className="btn btn-sm btn-secondary generate-btn"
                       onClick={() => setApiKey(generateKey())}
                     >
-                      Generate New Key
+                      {t('gatewayConsumers.generateKey')}
                     </button>
                   </div>
                 </div>
@@ -221,9 +223,9 @@ function GatewayConsumers() {
                 {error && <div className="form-error">{error}</div>}
 
                 <div className="modal-actions">
-                  <button type="button" className="btn btn-secondary" onClick={closeModal}>Cancel</button>
+                  <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
                   <button type="submit" className="btn btn-primary" disabled={saveMutation.isPending}>
-                    {saveMutation.isPending ? 'Saving...' : editingUsername ? 'Update' : 'Create'}
+                    {saveMutation.isPending ? t('common.saving') : editingUsername ? t('common.update') : t('common.create')}
                   </button>
                 </div>
               </form>

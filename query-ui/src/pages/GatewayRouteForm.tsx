@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import {
   getGatewayRoute,
   saveGatewayRoute,
@@ -11,6 +12,7 @@ import './GatewayRouteForm.css';
 const ALL_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
 
 function GatewayRouteForm() {
+  const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const isEdit = !!id;
   const navigate = useNavigate();
@@ -64,9 +66,9 @@ function GatewayRouteForm() {
     onError: (err: unknown) => {
       if (err && typeof err === 'object' && 'response' in err) {
         const axiosErr = err as { response?: { data?: { detail?: string } } };
-        setError(axiosErr.response?.data?.detail ?? 'Failed to save route');
+        setError(axiosErr.response?.data?.detail ?? t('gatewayRouteForm.saveFailed'));
       } else {
-        setError('Failed to save route');
+        setError(t('gatewayRouteForm.saveFailed'));
       }
     },
   });
@@ -115,29 +117,29 @@ function GatewayRouteForm() {
   }
 
   if (isEdit && routeQuery.isLoading) {
-    return <div className="loading-message">Loading route...</div>;
+    return <div className="loading-message">{t('gatewayRouteForm.loadingRoute')}</div>;
   }
 
   return (
     <div className="route-form">
       <div className="page-header">
-        <h1>{isEdit ? 'Edit Route' : 'New Route'}</h1>
-        <p className="page-subtitle">{isEdit ? `Editing route ${id}` : 'Create a new API gateway route'}</p>
+        <h1>{isEdit ? t('gatewayRouteForm.editTitle') : t('gatewayRouteForm.newTitle')}</h1>
+        <p className="page-subtitle">{isEdit ? t('gatewayRouteForm.editSubtitle', { id }) : t('gatewayRouteForm.newSubtitle')}</p>
       </div>
 
       <form onSubmit={handleSubmit}>
         <div className="form-section">
-          <div className="form-section-title">Basic Info</div>
+          <div className="form-section-title">{t('gatewayRouteForm.basicInfo')}</div>
           <div className="form-row">
             <div className="field">
-              <label>Name</label>
+              <label>{t('common.name')}</label>
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="My API Route" />
             </div>
             <div className="field">
-              <label>Status</label>
+              <label>{t('common.status')}</label>
               <select value={statusVal} onChange={(e) => setStatusVal(Number(e.target.value))}>
-                <option value={1}>Active</option>
-                <option value={0}>Disabled</option>
+                <option value={1}>{t('common.active')}</option>
+                <option value={0}>{t('common.disabled')}</option>
               </select>
             </div>
           </div>
@@ -145,7 +147,7 @@ function GatewayRouteForm() {
             <div className="field">
               <label>URI</label>
               <input value={uri} onChange={(e) => setUri(e.target.value)} placeholder="/api/service/*" required />
-              <span className="field-hint">/* 를 붙이면 하위 모든 경로를 포함합니다</span>
+              <span className="field-hint">{t('gatewayRouteForm.uriHint')}</span>
             </div>
           </div>
           <div className="field">
@@ -162,7 +164,7 @@ function GatewayRouteForm() {
         </div>
 
         <div className="form-section">
-          <div className="form-section-title">Upstream</div>
+          <div className="form-section-title">{t('gatewayRouteForm.upstream')}</div>
           <div className="routing-flow-hint">
             {uri.trim() ? (
               <>
@@ -182,9 +184,9 @@ function GatewayRouteForm() {
           </div>
           <div className="form-row form-row--full">
             <div className="field">
-              <label>Upstream</label>
+              <label>{t('gatewayRouteForm.upstream')}</label>
               <select value={upstreamId} onChange={(e) => setUpstreamId(e.target.value)}>
-                <option value="">Select upstream...</option>
+                <option value="">{t('gatewayRouteForm.selectUpstream')}</option>
                 {upstreams.map((u) => (
                   <option key={u.id} value={u.id}>{u.name || u.id}</option>
                 ))}
@@ -193,38 +195,38 @@ function GatewayRouteForm() {
           </div>
           <label className="method-check" style={{ marginTop: 12 }}>
             <input type="checkbox" checked={stripPrefix} onChange={(e) => setStripPrefix(e.target.checked)} />
-            Strip URI Prefix
+            {t('gatewayRouteForm.stripPrefix')}
           </label>
         </div>
 
         <div className="form-section">
-          <div className="form-section-title">Authentication</div>
+          <div className="form-section-title">{t('gatewayRouteForm.authentication')}</div>
           <label className="method-check">
             <input type="checkbox" checked={requireAuth} onChange={(e) => setRequireAuth(e.target.checked)} />
-            Require Authentication (key-auth)
+            {t('gatewayRouteForm.requireAuth')}
           </label>
-          <span className="field-hint">Consumer 등록이 필요합니다</span>
+          <span className="field-hint">{t('gatewayRouteForm.requireAuthHint')}</span>
         </div>
 
         <div className="form-section">
-          <div className="form-section-title">Service Key (Optional)</div>
+          <div className="form-section-title">{t('gatewayRouteForm.serviceKeyTitle')}</div>
           <span className="field-hint" style={{ marginBottom: 12, display: 'block' }}>
-            Upstream에 요청 시 자동 추가할 인증 헤더 (예: 외부 API의 Bearer 토큰)
+            {t('gatewayRouteForm.serviceKeyDesc')}
           </span>
           <div className="form-row">
             <div className="field">
-              <label>Header Name</label>
+              <label>{t('gatewayRouteForm.headerName')}</label>
               <input value={keyHeader} onChange={(e) => setKeyHeader(e.target.value)} placeholder="Authorization" />
             </div>
             <div className="field">
-              <label>Header Value</label>
+              <label>{t('gatewayRouteForm.headerValue')}</label>
               <input
                 type="password"
                 value={keyValue}
                 onChange={(e) => setKeyValue(e.target.value)}
-                placeholder={isEdit ? 'Leave empty to keep current' : 'Bearer sk-xxx...'}
+                placeholder={isEdit ? t('gatewayRouteForm.headerValueEditPlaceholder') : t('gatewayRouteForm.headerValueNewHint')}
               />
-              {isEdit && <span className="field-hint">변경하지 않으려면 비워두세요</span>}
+              {isEdit && <span className="field-hint">{t('gatewayRouteForm.headerValueEditHint')}</span>}
             </div>
           </div>
         </div>
@@ -233,10 +235,10 @@ function GatewayRouteForm() {
 
         <div className="form-actions">
           <button type="button" className="btn btn-secondary" onClick={() => navigate('/gateway/routes')}>
-            Cancel
+            {t('common.cancel')}
           </button>
           <button type="submit" className="btn btn-primary" disabled={saveMutation.isPending || !upstreamId}>
-            {saveMutation.isPending ? 'Saving...' : isEdit ? 'Update Route' : 'Create Route'}
+            {saveMutation.isPending ? t('common.saving') : isEdit ? t('gatewayRouteForm.updateRoute') : t('gatewayRouteForm.createRoute')}
           </button>
         </div>
       </form>

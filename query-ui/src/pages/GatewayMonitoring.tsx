@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend, Cell,
@@ -46,6 +47,7 @@ function getStatusColor(code: string): string {
 }
 
 function GatewayMonitoring() {
+  const { t } = useTranslation();
   const [range, setRange] = useState('1h');
 
   const summaryQuery = useQuery({
@@ -99,8 +101,8 @@ function GatewayMonitoring() {
     <div className="gateway-monitoring">
       <div className="page-header">
         <div>
-          <h1>Gateway Monitoring</h1>
-          <p className="page-subtitle">Real-time API traffic and performance metrics</p>
+          <h1>{t('gatewayMonitoring.title')}</h1>
+          <p className="page-subtitle">{t('gatewayMonitoring.subtitle')}</p>
         </div>
         <div className="time-range-toggle">
           {TIME_RANGES.map((r) => (
@@ -115,32 +117,32 @@ function GatewayMonitoring() {
         </div>
       </div>
 
-      {isLoading && <div className="loading-message">Loading metrics...</div>}
-      {isError && <div className="error-banner">Failed to load metrics. Is Prometheus running?</div>}
+      {isLoading && <div className="loading-message">{t('gatewayMonitoring.loadingMetrics')}</div>}
+      {isError && <div className="error-banner">{t('gatewayMonitoring.loadFailed')}</div>}
 
       {/* Summary Cards */}
       {summary && (
         <div className="metric-cards">
           <div className="metric-card">
             <div className="metric-card__value">{summary.total_requests.toLocaleString()}</div>
-            <div className="metric-card__label">Total Requests ({range})</div>
+            <div className="metric-card__label">{t('gatewayMonitoring.totalRequests', { range })}</div>
           </div>
           <div className="metric-card">
             <div className="metric-card__value" style={{ color: summary.error_rate > 5 ? 'var(--accent-red)' : 'var(--accent-green)' }}>
               {summary.error_rate}%
             </div>
-            <div className="metric-card__label">Error Rate (5xx)</div>
+            <div className="metric-card__label">{t('gatewayMonitoring.errorRate')}</div>
           </div>
           <div className="metric-card">
             <div className="metric-card__value">{summary.avg_latency_ms}ms</div>
-            <div className="metric-card__label">Avg Latency</div>
+            <div className="metric-card__label">{t('gatewayMonitoring.avgLatency')}</div>
           </div>
         </div>
       )}
 
       {/* Request Trend */}
       <div className="chart-panel">
-        <div className="chart-panel__title">Request Trend</div>
+        <div className="chart-panel__title">{t('gatewayMonitoring.requestTrend')}</div>
         {requestsData.length > 0 ? (
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%">
@@ -158,13 +160,13 @@ function GatewayMonitoring() {
             </ResponsiveContainer>
           </div>
         ) : (
-          <div className="no-data">No request data available</div>
+          <div className="no-data">{t('gatewayMonitoring.noRequestData')}</div>
         )}
       </div>
 
       {/* Status Code Distribution */}
       <div className="chart-panel">
-        <div className="chart-panel__title">Status Code Distribution</div>
+        <div className="chart-panel__title">{t('gatewayMonitoring.statusCodeDist')}</div>
         {(statusQuery.data ?? []).length > 0 ? (
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%">
@@ -186,13 +188,13 @@ function GatewayMonitoring() {
             </ResponsiveContainer>
           </div>
         ) : (
-          <div className="no-data">No status code data available</div>
+          <div className="no-data">{t('gatewayMonitoring.noStatusData')}</div>
         )}
       </div>
 
       {/* Latency */}
       <div className="chart-panel">
-        <div className="chart-panel__title">Latency (ms)</div>
+        <div className="chart-panel__title">{t('gatewayMonitoring.latency')}</div>
         {latencyChartData.length > 0 ? (
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%">
@@ -213,20 +215,20 @@ function GatewayMonitoring() {
             </ResponsiveContainer>
           </div>
         ) : (
-          <div className="no-data">No latency data available</div>
+          <div className="no-data">{t('gatewayMonitoring.noLatencyData')}</div>
         )}
       </div>
 
       {/* Top Routes */}
       <div className="chart-panel">
-        <div className="chart-panel__title">Top Routes by Traffic</div>
+        <div className="chart-panel__title">{t('gatewayMonitoring.topRoutes')}</div>
         {(topRoutesQuery.data ?? []).length > 0 ? (
           <div className="table-container" style={{ border: 'none' }}>
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Route</th>
-                  <th style={{ textAlign: 'right' }}>Requests</th>
+                  <th>{t('gatewayMonitoring.route')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.requests')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -242,7 +244,7 @@ function GatewayMonitoring() {
             </table>
           </div>
         ) : (
-          <div className="no-data">No route traffic data available</div>
+          <div className="no-data">{t('gatewayMonitoring.noRouteData')}</div>
         )}
       </div>
     </div>

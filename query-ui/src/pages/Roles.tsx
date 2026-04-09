@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import {
   getRoles,
   createRole,
@@ -22,6 +23,7 @@ function groupPermissions(perms: string[]): Record<string, string[]> {
 }
 
 function Roles() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
 
   const [showModal, setShowModal] = useState(false);
@@ -50,9 +52,9 @@ function Roles() {
     onError: (err: unknown) => {
       if (err && typeof err === 'object' && 'response' in err) {
         const axiosErr = err as { response?: { data?: { detail?: string } } };
-        setError(axiosErr.response?.data?.detail ?? 'Failed to create role');
+        setError(axiosErr.response?.data?.detail ?? t('roles.createFailed'));
       } else {
-        setError('Failed to create role');
+        setError(t('roles.createFailed'));
       }
     },
   });
@@ -67,9 +69,9 @@ function Roles() {
     onError: (err: unknown) => {
       if (err && typeof err === 'object' && 'response' in err) {
         const axiosErr = err as { response?: { data?: { detail?: string } } };
-        setError(axiosErr.response?.data?.detail ?? 'Failed to update role');
+        setError(axiosErr.response?.data?.detail ?? t('roles.updateFailed'));
       } else {
-        setError('Failed to update role');
+        setError(t('roles.updateFailed'));
       }
     },
   });
@@ -82,7 +84,7 @@ function Roles() {
     onError: (err: unknown) => {
       if (err && typeof err === 'object' && 'response' in err) {
         const axiosErr = err as { response?: { data?: { detail?: string } } };
-        alert(axiosErr.response?.data?.detail ?? 'Failed to delete role');
+        alert(axiosErr.response?.data?.detail ?? t('roles.deleteFailed'));
       }
     },
   });
@@ -144,7 +146,7 @@ function Roles() {
   }
 
   function handleDelete(role: RoleInfo) {
-    if (window.confirm(`Delete role "${role.name}"?`)) {
+    if (window.confirm(t('roles.deleteConfirm', { name: role.name }))) {
       deleteMutation.mutate(role.id);
     }
   }
@@ -155,25 +157,25 @@ function Roles() {
     <div className="roles-page">
       <div className="page-header">
         <div>
-          <h1>Roles</h1>
-          <p className="page-subtitle">Manage roles and their permissions</p>
+          <h1>{t('roles.title')}</h1>
+          <p className="page-subtitle">{t('roles.subtitle')}</p>
         </div>
-        <button className="btn btn-primary" onClick={openCreate}>+ Add Role</button>
+        <button className="btn btn-primary" onClick={openCreate}>{t('roles.addRole')}</button>
       </div>
 
-      {rolesQuery.isLoading && <div className="loading-message">Loading roles...</div>}
-      {rolesQuery.isError && <div className="error-banner">Failed to load roles.</div>}
+      {rolesQuery.isLoading && <div className="loading-message">{t('roles.loadingRoles')}</div>}
+      {rolesQuery.isError && <div className="error-banner">{t('roles.loadFailed')}</div>}
 
       {roles.length > 0 && (
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Description</th>
-                <th>Permissions</th>
-                <th>Type</th>
-                <th>Actions</th>
+                <th>{t('common.name')}</th>
+                <th>{t('roles.description')}</th>
+                <th>{t('permissions.title')}</th>
+                <th>{t('common.type')}</th>
+                <th>{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -181,13 +183,13 @@ function Roles() {
                 <tr key={role.id}>
                   <td className="cell-alias">{role.name}</td>
                   <td>{role.description || '—'}</td>
-                  <td className="perm-count">{role.permissions.length} permissions</td>
-                  <td>{role.is_system ? <span className="system-badge">System</span> : '—'}</td>
+                  <td className="perm-count">{t('roles.permissionCount', { count: role.permissions.length })}</td>
+                  <td>{role.is_system ? <span className="system-badge">{t('roles.system')}</span> : '—'}</td>
                   <td>
                     <div className="action-buttons">
-                      <button className="btn btn-sm btn-secondary" onClick={() => openEdit(role)}>Edit</button>
+                      <button className="btn btn-sm btn-secondary" onClick={() => openEdit(role)}>{t('common.edit')}</button>
                       {!role.is_system && (
-                        <button className="btn btn-sm btn-danger" onClick={() => handleDelete(role)} disabled={deleteMutation.isPending}>Delete</button>
+                        <button className="btn btn-sm btn-danger" onClick={() => handleDelete(role)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
                       )}
                     </div>
                   </td>
@@ -202,13 +204,13 @@ function Roles() {
         <div className="modal-overlay" onClick={closeModal}>
           <div className="modal" style={{ width: 600 }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>{editingRole ? `Edit "${editingRole.name}"` : 'Add Role'}</h2>
+              <h2>{editingRole ? t('roles.editTitle', { name: editingRole.name }) : t('roles.addTitle')}</h2>
               <button className="modal-close" onClick={closeModal}>&times;</button>
             </div>
             <form onSubmit={handleSubmit}>
               <div className="form-grid">
                 <div className="form-group form-group--full">
-                  <label>Name</label>
+                  <label>{t('common.name')}</label>
                   <input
                     value={name}
                     onChange={(e) => setName(e.target.value)}
@@ -218,7 +220,7 @@ function Roles() {
                   />
                 </div>
                 <div className="form-group form-group--full">
-                  <label>Description</label>
+                  <label>{t('roles.description')}</label>
                   <input
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
@@ -250,9 +252,9 @@ function Roles() {
               {error && <div className="form-error">{error}</div>}
 
               <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeModal}>Cancel</button>
+                <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
                 <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                  {isSaving ? 'Saving...' : editingRole ? 'Update' : 'Create'}
+                  {isSaving ? t('common.saving') : editingRole ? t('common.update') : t('common.create')}
                 </button>
               </div>
             </form>
