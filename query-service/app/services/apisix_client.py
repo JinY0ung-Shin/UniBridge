@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -10,6 +11,24 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 APISIX_TIMEOUT = 10.0
+
+# Only allow safe characters in resource types and IDs
+_SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
+
+# Whitelist of valid APISIX admin resource types
+_VALID_RESOURCE_TYPES = {"routes", "upstreams", "consumers", "services", "ssl", "global_rules", "plugins"}
+
+
+def _validate_resource_type(resource: str) -> None:
+    """Validate resource type against known APISIX admin resources."""
+    if resource not in _VALID_RESOURCE_TYPES:
+        raise ValueError(f"Invalid APISIX resource type: {resource!r}")
+
+
+def _validate_resource_id(resource_id: str) -> None:
+    """Validate resource ID to prevent path traversal."""
+    if not _SAFE_ID_RE.match(resource_id):
+        raise ValueError(f"Invalid resource ID: {resource_id!r}")
 
 
 def _headers() -> dict[str, str]:
@@ -25,6 +44,7 @@ async def list_resources(resource: str) -> dict[str, Any]:
 
     Returns {"items": [...], "total": N} with flattened values.
     """
+    _validate_resource_type(resource)
     url = f"{_base_url()}/apisix/admin/{resource}"
     async with httpx.AsyncClient(timeout=APISIX_TIMEOUT) as client:
         resp = await client.get(url, headers=_headers())
@@ -38,6 +58,8 @@ async def list_resources(resource: str) -> dict[str, Any]:
 
 async def get_resource(resource: str, resource_id: str) -> dict[str, Any]:
     """Get a single APISIX resource by ID."""
+    _validate_resource_type(resource)
+    _validate_resource_id(resource_id)
     url = f"{_base_url()}/apisix/admin/{resource}/{resource_id}"
     async with httpx.AsyncClient(timeout=APISIX_TIMEOUT) as client:
         resp = await client.get(url, headers=_headers())
@@ -49,6 +71,8 @@ async def get_resource(resource: str, resource_id: str) -> dict[str, Any]:
 
 async def put_resource(resource: str, resource_id: str, body: dict[str, Any]) -> dict[str, Any]:
     """Create or update an APISIX resource via PUT."""
+    _validate_resource_type(resource)
+    _validate_resource_id(resource_id)
     url = f"{_base_url()}/apisix/admin/{resource}/{resource_id}"
     async with httpx.AsyncClient(timeout=APISIX_TIMEOUT) as client:
         resp = await client.put(url, json=body, headers=_headers())
@@ -60,6 +84,8 @@ async def put_resource(resource: str, resource_id: str, body: dict[str, Any]) ->
 
 async def delete_resource(resource: str, resource_id: str) -> None:
     """Delete an APISIX resource."""
+    _validate_resource_type(resource)
+    _validate_resource_id(resource_id)
     url = f"{_base_url()}/apisix/admin/{resource}/{resource_id}"
     async with httpx.AsyncClient(timeout=APISIX_TIMEOUT) as client:
         resp = await client.delete(url, headers=_headers())

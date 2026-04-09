@@ -9,7 +9,7 @@ import {
 /* ── Helper: render a component that displays the current permissions ── */
 
 function PermissionsDisplay() {
-  const perms = usePermissions();
+  const { permissions: perms } = usePermissions();
   return (
     <div>
       <span data-testid="count">{perms.length}</span>
@@ -31,8 +31,11 @@ function ProtectedRoute({
   permission: string;
   children: React.ReactNode;
 }) {
-  const perms = usePermissions();
-  if (perms.length > 0 && !perms.includes(permission)) {
+  const { permissions: perms, loaded } = usePermissions();
+  if (!loaded) {
+    return null;
+  }
+  if (!perms.includes(permission)) {
     return <Navigate to="/" replace />;
   }
   return <>{children}</>;
@@ -41,9 +44,14 @@ function ProtectedRoute({
 /* ── Tests: usePermissions ── */
 
 describe('usePermissions', () => {
-  it('returns an empty array when used outside a provider', () => {
-    render(<PermissionsDisplay />);
+  it('returns an empty array and loaded=false when used outside a provider', () => {
+    function LoadedDisplay() {
+      const { permissions: perms, loaded } = usePermissions();
+      return <div><span data-testid="count">{perms.length}</span><span data-testid="loaded">{String(loaded)}</span></div>;
+    }
+    render(<LoadedDisplay />);
     expect(screen.getByTestId('count')).toHaveTextContent('0');
+    expect(screen.getByTestId('loaded')).toHaveTextContent('false');
   });
 });
 
@@ -53,7 +61,7 @@ describe('PermissionProvider', () => {
   it('provides permissions to children', () => {
     const perms = ['query.execute', 'query.databases.read'];
     render(
-      <PermissionProvider permissions={perms}>
+      <PermissionProvider permissions={perms} loaded={true}>
         <PermissionsDisplay />
       </PermissionProvider>,
     );
@@ -72,7 +80,7 @@ describe('ProtectedRoute', () => {
   it('renders children when the required permission is present', () => {
     render(
       <MemoryRouter initialEntries={['/protected']}>
-        <PermissionProvider permissions={['query.execute', 'admin.roles.read']}>
+        <PermissionProvider permissions={['query.execute', 'admin.roles.read']} loaded={true}>
           <Routes>
             <Route path="/" element={<div>Home</div>} />
             <Route
@@ -95,7 +103,7 @@ describe('ProtectedRoute', () => {
   it('redirects to / when the required permission is missing', () => {
     render(
       <MemoryRouter initialEntries={['/protected']}>
-        <PermissionProvider permissions={['query.databases.read']}>
+        <PermissionProvider permissions={['query.databases.read']} loaded={true}>
           <Routes>
             <Route path="/" element={<div>Home</div>} />
             <Route
@@ -115,10 +123,10 @@ describe('ProtectedRoute', () => {
     expect(screen.queryByText('Secret Content')).not.toBeInTheDocument();
   });
 
-  it('renders children when permissions array is empty (loading state)', () => {
+  it('renders nothing when permissions are not yet loaded', () => {
     render(
       <MemoryRouter initialEntries={['/protected']}>
-        <PermissionProvider permissions={[]}>
+        <PermissionProvider permissions={[]} loaded={false}>
           <Routes>
             <Route path="/" element={<div>Home</div>} />
             <Route
@@ -134,8 +142,8 @@ describe('ProtectedRoute', () => {
       </MemoryRouter>,
     );
 
-    // When perms.length === 0, ProtectedRoute should NOT redirect (loading state)
-    expect(screen.getByText('Secret Content')).toBeInTheDocument();
+    // When not loaded, ProtectedRoute should render nothing (not redirect, not show content)
+    expect(screen.queryByText('Secret Content')).not.toBeInTheDocument();
     expect(screen.queryByText('Home')).not.toBeInTheDocument();
   });
 });

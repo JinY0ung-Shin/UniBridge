@@ -5,8 +5,8 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     META_DB_URL: str = "sqlite+aiosqlite:///data/meta.db"
-    ENCRYPTION_KEY: str = "your-32-byte-fernet-key-here-replace!"
-    JWT_SECRET: str = "change-me-in-production"
+    ENCRYPTION_KEY: str = ""
+    JWT_SECRET: str = ""
     JWT_ALGORITHM: str = "HS256"
     DEFAULT_QUERY_TIMEOUT: int = 30
     DEFAULT_ROW_LIMIT: int = 10000
@@ -40,3 +40,45 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def validate_settings() -> None:
+    """Validate that critical secrets are set. Called at startup."""
+    _INSECURE_DEFAULTS = {
+        "change-me-in-production",
+        "your-32-byte-fernet-key-here-replace!",
+        "change-me-to-a-32-byte-key-here!",
+        "change-me-to-a-secure-secret",
+        "",
+    }
+    if settings.ENCRYPTION_KEY in _INSECURE_DEFAULTS:
+        raise RuntimeError(
+            "ENCRYPTION_KEY is not set or uses an insecure default. "
+            "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+        )
+    # Validate ENCRYPTION_KEY produces a usable Fernet key
+    try:
+        from cryptography.fernet import Fernet
+        import base64, hashlib
+        key = settings.ENCRYPTION_KEY
+        if len(key) != 44:
+            digest = hashlib.sha256(key.encode()).digest()
+            key = base64.urlsafe_b64encode(digest).decode()
+        Fernet(key.encode())
+    except Exception:
+        raise RuntimeError(
+            "ENCRYPTION_KEY is invalid. "
+            "Generate one with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+        )
+    # JWT_SECRET is only required when Keycloak is not configured (dev HS256 mode)
+    if not settings.KEYCLOAK_ISSUER_URL and settings.JWT_SECRET in _INSECURE_DEFAULTS:
+        raise RuntimeError(
+            "JWT_SECRET is not set or uses an insecure default. "
+            "Set a strong secret or configure KEYCLOAK_ISSUER_URL for RS256 mode."
+        )
+    # APISIX_ADMIN_KEY is required for gateway management
+    if not settings.APISIX_ADMIN_KEY:
+        raise RuntimeError(
+            "APISIX_ADMIN_KEY is not set. "
+            "Set it to your APISIX admin API key in .env."
+        )

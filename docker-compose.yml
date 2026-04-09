@@ -23,7 +23,7 @@ services:
     ports:
       - "${APISIX_PORT:-9080}:9080"
       - "${APISIX_SSL_PORT:-9443}:9443"
-      - "${APISIX_ADMIN_PORT:-9180}:9180"
+      - "127.0.0.1:${APISIX_ADMIN_PORT:-9180}:9180"
     volumes:
       - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
     depends_on:
@@ -95,7 +95,7 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - ENABLE_DEV_TOKEN_ENDPOINT=${ENABLE_DEV_TOKEN_ENDPOINT:-false}
       - APISIX_ADMIN_URL=${APISIX_ADMIN_URL:-http://apisix:9180}
-      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:-edd1c9f034335f136f87ad84b625c8f1}
+      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY}
       - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
       - KEYCLOAK_ISSUER_URL=${KEYCLOAK_ISSUER_URL:-http://localhost:8080/realms/apihub}
       - KEYCLOAK_JWKS_URL=${KEYCLOAK_JWKS_URL:-https://keycloak:8443/realms/apihub/protocol/openid-connect/certs}
@@ -117,9 +117,9 @@ services:
       - apihub-net
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.11.1
     ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus

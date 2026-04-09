@@ -1,6 +1,14 @@
 #!/bin/sh
 # Start Keycloak in background, wait for it, create roles, then keep running
 
+# Substitute environment variables in realm-export.json before import
+IMPORT_DIR="/opt/keycloak/data/import"
+if command -v envsubst >/dev/null 2>&1 && [ -f "$IMPORT_DIR/realm-export.json" ]; then
+  envsubst < "$IMPORT_DIR/realm-export.json" > "$IMPORT_DIR/realm-export-resolved.json"
+  mv "$IMPORT_DIR/realm-export-resolved.json" "$IMPORT_DIR/realm-export.json"
+  echo "[init] Environment variables substituted in realm-export.json"
+fi
+
 /opt/keycloak/bin/kc.sh start-dev --import-realm &
 KC_PID=$!
 

@@ -192,7 +192,8 @@ async def health_databases(
             ok = await connection_manager.test_connection(alias)
             db_statuses[alias] = {"status": "ok" if ok else "error"}
         except Exception as exc:
-            db_statuses[alias] = {"status": "error", "detail": str(exc)}
+            logger.warning("Health check failed for '%s': %s", alias, exc)
+            db_statuses[alias] = {"status": "error", "detail": "Connection failed"}
 
     overall = "ok" if all(d["status"] == "ok" for d in db_statuses.values()) else "degraded"
     if not db_statuses:

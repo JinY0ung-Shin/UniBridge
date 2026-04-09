@@ -15,8 +15,11 @@ import Roles from './pages/Roles';
 import Users from './pages/Users';
 
 function ProtectedRoute({ permission, children }: { permission: string; children: React.ReactNode }) {
-  const perms = usePermissions();
-  if (perms.length > 0 && !perms.includes(permission)) {
+  const { permissions: perms, loaded } = usePermissions();
+  if (!loaded) {
+    return null;
+  }
+  if (!perms.includes(permission)) {
     return <Navigate to="/" replace />;
   }
   return <>{children}</>;

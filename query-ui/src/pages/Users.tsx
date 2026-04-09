@@ -35,7 +35,7 @@ type ModalMode = 'create' | 'role' | 'password';
 
 function Users() {
   const queryClient = useQueryClient();
-  const permissions = usePermissions();
+  const { permissions } = usePermissions();
   const { username: currentUsername } = useAuth();
   const canWrite = permissions.includes('admin.roles.write');
 

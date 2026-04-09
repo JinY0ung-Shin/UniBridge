@@ -125,7 +125,7 @@ async def create_role(
 
     await db.commit()
     await db.refresh(role)
-    invalidate_permission_cache()
+    await invalidate_permission_cache()
     return await _role_to_response(db, role)
 
 
@@ -165,7 +165,7 @@ async def update_role(
 
     await db.commit()
     await db.refresh(role)
-    invalidate_permission_cache()
+    await invalidate_permission_cache()
     return await _role_to_response(db, role)
 
 
@@ -190,4 +190,4 @@ async def delete_role(
     await db.execute(delete(RolePermission).where(RolePermission.role_id == role.id))
     await db.delete(role)
     await db.commit()
-    invalidate_permission_cache()
+    await invalidate_permission_cache()

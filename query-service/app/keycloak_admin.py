@@ -33,6 +33,10 @@ class KeycloakAdminClient:
         self._client = httpx.AsyncClient(timeout=10.0, verify=ssl_verify)
         self._token_lock = asyncio.Lock()
 
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        await self._client.aclose()
+
     # ── Token management ─────────────────────────────────────────────────
 
     async def get_token(self) -> str:

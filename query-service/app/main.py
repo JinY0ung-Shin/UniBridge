@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.config import settings
+from app.config import settings, validate_settings
 from app.database import get_db, init_db
 from app.models import DBConnection
 from app.routers import admin, gateway, query, roles, users
@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown logic."""
     # ── Startup ──────────────────────────────────────────────────────────
+    validate_settings()
     logger.info("Initializing meta database...")
     await init_db()
 
@@ -42,6 +43,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # ── Shutdown ─────────────────────────────────────────────────────────
     logger.info("Disposing all database engines...")
     await connection_manager.dispose_all()
+
+    # Close Keycloak admin client if initialized
+    from app.routers.users import _kc_admin
+    if _kc_admin is not None:
+        await _kc_admin.close()
+
     logger.info("Shutdown complete.")
 
 
@@ -59,7 +66,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response: Response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["X-XSS-Protection"] = "0"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         return response
 
@@ -76,8 +83,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # Include routers

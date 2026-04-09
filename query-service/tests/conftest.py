@@ -63,7 +63,7 @@ async def seeded_db(engine):
             for perm in perms:
                 db.add(RolePermission(role_id=role.id, permission=perm))
         await db.commit()
-    invalidate_permission_cache()
+    await invalidate_permission_cache()
     return engine
 
 
@@ -82,10 +82,10 @@ async def app(seeded_db):
             yield session
 
     _app.dependency_overrides[get_db] = override_get_db
-    invalidate_permission_cache()
+    await invalidate_permission_cache()
     yield _app
     _app.dependency_overrides.clear()
-    invalidate_permission_cache()
+    await invalidate_permission_cache()
 
 
 @pytest.fixture

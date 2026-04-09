@@ -23,17 +23,82 @@ _SQL_TYPE_RE = re.compile(
 
 def check_multi_statement(sql: str) -> bool:
     """
-    Detect semicolons outside of single-quoted string literals.
+    Detect semicolons outside of string literals and comments.
 
-    Uses a simple state machine to track whether we are inside a string.
-    Returns True if a semicolon is found outside of quotes.
+    Handles single quotes, double quotes, dollar-quoted strings (PostgreSQL),
+    single-line comments (--), and block comments (/* */).
+    Returns True if a semicolon is found outside of these contexts.
     """
-    in_single_quote = False
-    for char in sql:
-        if char == "'" :
-            in_single_quote = not in_single_quote
-        elif char == ";" and not in_single_quote:
+    i = 0
+    length = len(sql)
+    while i < length:
+        c = sql[i]
+
+        # Single-line comment
+        if c == '-' and i + 1 < length and sql[i + 1] == '-':
+            i = sql.find('\n', i)
+            if i == -1:
+                break
+            i += 1
+            continue
+
+        # Block comment
+        if c == '/' and i + 1 < length and sql[i + 1] == '*':
+            end = sql.find('*/', i + 2)
+            if end == -1:
+                break
+            i = end + 2
+            continue
+
+        # Single-quoted string
+        if c == "'":
+            i += 1
+            while i < length:
+                if sql[i] == "'" :
+                    if i + 1 < length and sql[i + 1] == "'":
+                        i += 2  # escaped quote ''
+                    else:
+                        i += 1
+                        break
+                else:
+                    i += 1
+            continue
+
+        # Double-quoted identifier
+        if c == '"':
+            i += 1
+            while i < length:
+                if sql[i] == '"':
+                    if i + 1 < length and sql[i + 1] == '"':
+                        i += 2  # escaped quote ""
+                    else:
+                        i += 1
+                        break
+                else:
+                    i += 1
+            continue
+
+        # Dollar-quoted string (PostgreSQL)
+        if c == '$':
+            # Find the tag: $tag$ or $$
+            tag_end = sql.find('$', i + 1)
+            if tag_end != -1:
+                tag = sql[i:tag_end + 1]
+                # Validate tag content (only letters, digits, underscore)
+                tag_body = tag[1:-1]
+                if all(ch.isalnum() or ch == '_' for ch in tag_body):
+                    close = sql.find(tag, tag_end + 1)
+                    if close == -1:
+                        break
+                    i = close + len(tag)
+                    continue
+            i += 1
+            continue
+
+        if c == ';':
             return True
+
+        i += 1
     return False
 
 
@@ -42,6 +107,76 @@ _CTE_DML_RE = re.compile(
     r"\b(INSERT|UPDATE|DELETE)\b",
     re.IGNORECASE,
 )
+
+
+def _strip_strings_and_comments(sql: str) -> str:
+    """Remove string literals and comments from SQL for safe keyword scanning."""
+    result: list[str] = []
+    i = 0
+    length = len(sql)
+    while i < length:
+        c = sql[i]
+        # Single-line comment
+        if c == '-' and i + 1 < length and sql[i + 1] == '-':
+            i = sql.find('\n', i)
+            if i == -1:
+                break
+            i += 1
+            continue
+        # Block comment
+        if c == '/' and i + 1 < length and sql[i + 1] == '*':
+            end = sql.find('*/', i + 2)
+            if end == -1:
+                break
+            i = end + 2
+            continue
+        # Single-quoted string
+        if c == "'":
+            i += 1
+            while i < length:
+                if sql[i] == "'":
+                    if i + 1 < length and sql[i + 1] == "'":
+                        i += 2
+                    else:
+                        i += 1
+                        break
+                else:
+                    i += 1
+            result.append("''")
+            continue
+        # Double-quoted identifier
+        if c == '"':
+            i += 1
+            while i < length:
+                if sql[i] == '"':
+                    if i + 1 < length and sql[i + 1] == '"':
+                        i += 2
+                    else:
+                        i += 1
+                        break
+                else:
+                    i += 1
+            result.append('""')
+            continue
+        # Dollar-quoted string
+        if c == '$':
+            tag_end = sql.find('$', i + 1)
+            if tag_end != -1:
+                tag = sql[i:tag_end + 1]
+                tag_body = tag[1:-1]
+                if all(ch.isalnum() or ch == '_' for ch in tag_body):
+                    close = sql.find(tag, tag_end + 1)
+                    if close == -1:
+                        break
+                    i = close + len(tag)
+                    result.append("''")
+                    continue
+            result.append(c)
+            i += 1
+            continue
+        result.append(c)
+        i += 1
+    return "".join(result)
 
 
 def detect_statement_type(sql: str) -> str:
@@ -58,8 +193,9 @@ def detect_statement_type(sql: str) -> str:
         return "unknown"
     keyword = match.group(1).upper()
     if keyword == "WITH":
-        # Scan for DML keywords in the full SQL text
-        dml_match = _CTE_DML_RE.search(sql)
+        # Strip strings and comments before scanning for DML keywords
+        cleaned = _strip_strings_and_comments(sql)
+        dml_match = _CTE_DML_RE.search(cleaned)
         if dml_match:
             return dml_match.group(1).lower()
         return "select"

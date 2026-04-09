@@ -76,11 +76,12 @@ async def _refresh_cache(db: AsyncSession) -> None:
     _perm_cache_ts = time.time()
 
 
-def invalidate_permission_cache() -> None:
+async def invalidate_permission_cache() -> None:
     """Call after role/permission changes to force cache refresh."""
     global _perm_cache, _perm_cache_ts
-    _perm_cache = {}
-    _perm_cache_ts = 0.0
+    async with _cache_lock:
+        _perm_cache = {}
+        _perm_cache_ts = 0.0
 
 
 # ── User ────────────────────────────────────────────────────────────────────
@@ -176,7 +177,7 @@ async def _verify_keycloak_token(token: str) -> CurrentUser:
         )
     except JWTError as exc:
         logger.error("JWT verification failed: %s", exc)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}") from exc
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token") from exc
 
     username = payload.get("preferred_username") or payload.get("sub")
     logger.debug("JWT username=%s, roles claim=%s", username, payload.get("roles"))
@@ -232,9 +233,10 @@ async def get_current_user(
             )
         return CurrentUser(username=username, role=role)
     except JWTError as exc:
+        logger.error("Dev JWT verification failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid token: {exc}",
+            detail="Invalid or expired token",
         ) from exc
 
 

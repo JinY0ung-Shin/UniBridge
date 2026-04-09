@@ -26,11 +26,14 @@ interface LayoutProps {
 function Layout({ children }: LayoutProps) {
   const { username, logout } = useAuth();
   const [userPermissions, setUserPermissions] = useState<string[]>([]);
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     getCurrentUser()
-      .then((user) => setUserPermissions(user.permissions))
-      .catch(() => setUserPermissions([]));
+      .then((user) => { if (!cancelled) { setUserPermissions(user.permissions); setPermissionsLoaded(true); } })
+      .catch(() => { if (!cancelled) { setUserPermissions([]); setPermissionsLoaded(true); } });
+    return () => { cancelled = true; };
   }, []);
 
   function hasPermission(perm: string | null): boolean {
@@ -157,7 +160,7 @@ function Layout({ children }: LayoutProps) {
         </div>
       </aside>
       <main className="main-content">
-        <PermissionProvider permissions={userPermissions}>
+        <PermissionProvider permissions={userPermissions} loaded={permissionsLoaded}>
           {children}
         </PermissionProvider>
       </main>

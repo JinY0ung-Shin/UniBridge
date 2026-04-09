@@ -106,7 +106,7 @@ function GatewayUpstreams() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const upstreamId = editingId || Date.now().toString();
+    const upstreamId = editingId || crypto.randomUUID();
     const body = {
       name: name.trim() || undefined,
       type,

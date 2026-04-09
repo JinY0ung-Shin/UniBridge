@@ -106,18 +106,7 @@ describe('App', () => {
     expect(document.body).toBeInTheDocument();
   });
 
-  it('shows login form when no token in localStorage', async () => {
-    localStorage.clear();
-    renderWithProviders(<App />);
-
-    // The login form heading should appear
-    expect(screen.getByText('API Hub Login')).toBeInTheDocument();
-    expect(screen.getByLabelText('Username')).toBeInTheDocument();
-    expect(screen.getByLabelText('Role')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /login/i })).toBeInTheDocument();
-  });
-
-  it('shows sidebar navigation when token exists', async () => {
+  it('shows sidebar navigation when authenticated', async () => {
     renderWithProviders(<App />);
 
     // Wait for getCurrentUser to resolve so the sidebar nav items render

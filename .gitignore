@@ -3,3 +3,7 @@ __pycache__/
 .env
 venv/
 node_modules/
+certs/
+.omc/
+.superpowers/
+**/.coverage

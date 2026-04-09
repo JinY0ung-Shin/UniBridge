@@ -203,7 +203,7 @@ class TestGetCurrentUser:
 
 class TestGetRolePermissions:
     async def test_returns_admin_permissions(self, seeded_db):
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             perms = await get_role_permissions(db, "admin")
@@ -211,7 +211,7 @@ class TestGetRolePermissions:
             assert perms == set(ALL_PERMISSIONS)
 
     async def test_returns_developer_permissions(self, seeded_db):
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             perms = await get_role_permissions(db, "developer")
@@ -221,14 +221,14 @@ class TestGetRolePermissions:
             assert "admin.roles.write" not in perms
 
     async def test_returns_viewer_permissions(self, seeded_db):
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             perms = await get_role_permissions(db, "viewer")
             assert perms == {"gateway.monitoring.read", "query.audit.read"}
 
     async def test_returns_empty_set_for_unknown_role(self, seeded_db):
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             perms = await get_role_permissions(db, "nonexistent_role")
@@ -236,7 +236,7 @@ class TestGetRolePermissions:
 
     async def test_caches_results(self, seeded_db):
         """After first call, cache should be populated and second call uses cache."""
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             perms1 = await get_role_permissions(db, "admin")
@@ -261,7 +261,7 @@ class TestInvalidatePermissionCache:
     async def test_invalidate_clears_cache(self, seeded_db):
         import app.auth as auth_mod
 
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             # Warm the cache
@@ -269,20 +269,20 @@ class TestInvalidatePermissionCache:
             assert len(auth_mod._perm_cache) > 0
 
             # Invalidate
-            invalidate_permission_cache()
+            await invalidate_permission_cache()
             assert auth_mod._perm_cache == {}
             assert auth_mod._perm_cache_ts == 0.0
 
     async def test_invalidate_forces_refresh_on_next_call(self, seeded_db):
         import app.auth as auth_mod
 
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             await get_role_permissions(db, "admin")
             first_ts = auth_mod._perm_cache_ts
 
-            invalidate_permission_cache()
+            await invalidate_permission_cache()
             assert auth_mod._perm_cache_ts == 0.0
 
             await get_role_permissions(db, "admin")
@@ -301,7 +301,7 @@ class TestCacheTTLBehavior:
         """When the TTL has elapsed, a new DB fetch should occur."""
         import app.auth as auth_mod
 
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             await get_role_permissions(db, "admin")
@@ -318,7 +318,7 @@ class TestCacheTTLBehavior:
         """Within the TTL window, the cache should not be refreshed."""
         import app.auth as auth_mod
 
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             await get_role_permissions(db, "admin")
@@ -335,7 +335,7 @@ class TestCacheTTLBehavior:
         """
         import app.auth as auth_mod
 
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             # Warm cache
@@ -371,7 +371,7 @@ class TestCacheTTLBehavior:
 
 class TestRequirePermission:
     async def test_returns_user_when_permission_exists(self, seeded_db):
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             token = create_token("testadmin", "admin")
@@ -387,7 +387,7 @@ class TestRequirePermission:
     async def test_raises_403_when_permission_missing(self, seeded_db):
         from fastapi import HTTPException
 
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             token = create_token("testviewer", "viewer")
@@ -401,7 +401,7 @@ class TestRequirePermission:
 
     async def test_passes_if_any_permission_matches(self, seeded_db):
         """When multiple permissions are required, passing ANY one suffices."""
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             token = create_token("testviewer", "viewer")
@@ -416,7 +416,7 @@ class TestRequirePermission:
     async def test_raises_403_when_none_of_multiple_perms_match(self, seeded_db):
         from fastapi import HTTPException
 
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             token = create_token("testviewer", "viewer")
@@ -431,7 +431,7 @@ class TestRequirePermission:
             assert "Required permission" in exc_info.value.detail
 
     async def test_developer_has_execute_but_not_write(self, seeded_db):
-        invalidate_permission_cache()
+        await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             token = create_token("testdev", "developer")

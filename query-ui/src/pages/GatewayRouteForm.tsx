@@ -77,7 +77,7 @@ function GatewayRouteForm() {
     e.preventDefault();
     if (!uri.trim() || !upstreamId) return;
 
-    const routeId = id || Date.now().toString();
+    const routeId = id || crypto.randomUUID();
     const body: Record<string, unknown> = {
       name: name.trim() || undefined,
       uri: uri.trim(),
@@ -88,11 +88,20 @@ function GatewayRouteForm() {
       strip_prefix: stripPrefix,
     };
 
-    if (keyHeader.trim() && keyValue.trim()) {
-      body.service_key = {
-        header_name: keyHeader.trim(),
-        header_value: keyValue.trim(),
-      };
+    if (keyHeader.trim()) {
+      if (keyValue.trim()) {
+        body.service_key = {
+          header_name: keyHeader.trim(),
+          header_value: keyValue.trim(),
+        };
+      } else if (!isEdit) {
+        // Only require value for new routes; editing without value preserves existing
+        body.service_key = {
+          header_name: keyHeader.trim(),
+          header_value: '',
+        };
+      }
+      // When editing and keyValue is empty, omit service_key to preserve existing value
     }
 
     setError('');

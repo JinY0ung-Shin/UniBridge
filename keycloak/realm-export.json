@@ -24,7 +24,7 @@
       "name": "API Hub Service Account",
       "enabled": true,
       "publicClient": false,
-      "secret": "apihub-service-secret",
+      "secret": "${KEYCLOAK_SERVICE_CLIENT_SECRET}",
       "serviceAccountsEnabled": true,
       "directAccessGrantsEnabled": false,
       "standardFlowEnabled": false
@@ -36,8 +36,8 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["*"],
-      "webOrigins": ["*"],
+      "redirectUris": ["https://localhost:3000/*"],
+      "webOrigins": ["https://localhost:3000"],
       "protocolMappers": [
         {
           "name": "apihub-role-mapper",
