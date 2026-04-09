@@ -60,3 +60,51 @@
   accent-color: var(--accent-blue);
   cursor: pointer;
 }
+
+.table-selector {
+  min-width: 200px;
+}
+
+.table-checkboxes {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+.table-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.table-selector-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.table-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.table-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.table-tag {
+  background: var(--color-bg-secondary, #f0f0f0);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-family: monospace;
+}

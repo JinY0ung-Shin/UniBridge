@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import {
   getPermissions,
   getAdminDatabases,
+  getDbTables,
   updatePermission,
   deletePermission,
   type Permission,
@@ -23,6 +24,10 @@ function Permissions() {
 
   const [newRole, setNewRole] = useState('');
   const [newDbAlias, setNewDbAlias] = useState('');
+  const [editingTablesFor, setEditingTablesFor] = useState<string | null>(null);
+  const [availableTables, setAvailableTables] = useState<string[]>([]);
+  const [selectedTables, setSelectedTables] = useState<string[]>([]);
+  const [tablesLoading, setTablesLoading] = useState(false);
 
   const permsQuery = useQuery({
     queryKey: ['permissions'],
@@ -75,6 +80,39 @@ function Permissions() {
     if (window.confirm(t('permissions.removeConfirm', { role: perm.role, db: perm.db_alias }))) {
       deleteMut.mutate(perm.id);
     }
+  }
+
+  async function handleEditTables(perm: Permission) {
+    const key = `${perm.role}:${perm.db_alias}`;
+    setEditingTablesFor(key);
+    setSelectedTables(perm.allowed_tables ?? []);
+    setTablesLoading(true);
+    try {
+      const tables = await getDbTables(perm.db_alias);
+      setAvailableTables(tables);
+    } catch {
+      setAvailableTables([]);
+    } finally {
+      setTablesLoading(false);
+    }
+  }
+
+  function handleToggleTable(table: string) {
+    setSelectedTables((prev) =>
+      prev.includes(table) ? prev.filter((t) => t !== table) : [...prev, table]
+    );
+  }
+
+  function handleSaveTables(perm: Permission) {
+    updateMut.mutate({
+      ...perm,
+      allowed_tables: selectedTables.length > 0 ? selectedTables : null,
+    });
+    setEditingTablesFor(null);
+  }
+
+  function handleCancelTables() {
+    setEditingTablesFor(null);
   }
 
   return (
@@ -130,6 +168,7 @@ function Permissions() {
                 {OPERATIONS.map((op) => (
                   <th key={op.key} className="th-center">{op.label}</th>
                 ))}
+                <th>{t('permissions.allowedTables')}</th>
                 <th>{t('common.actions')}</th>
               </tr>
             </thead>
@@ -149,6 +188,59 @@ function Permissions() {
                       />
                     </td>
                   ))}
+                  <td>
+                    {editingTablesFor === `${perm.role}:${perm.db_alias}` ? (
+                      <div className="table-selector">
+                        {tablesLoading ? (
+                          <span>{t('common.loading')}</span>
+                        ) : (
+                          <>
+                            <div className="table-checkboxes">
+                              {availableTables.map((table) => (
+                                <label key={table} className="table-checkbox-label">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedTables.includes(table)}
+                                    onChange={() => handleToggleTable(table)}
+                                  />
+                                  <span>{table}</span>
+                                </label>
+                              ))}
+                              {availableTables.length === 0 && (
+                                <span className="hint">{t('permissions.noTablesFound')}</span>
+                              )}
+                            </div>
+                            <div className="table-selector-actions">
+                              <button className="btn btn-sm btn-primary" onClick={() => handleSaveTables(perm)}>
+                                {t('common.save')}
+                              </button>
+                              <button className="btn btn-sm" onClick={handleCancelTables}>
+                                {t('common.cancel')}
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="table-display">
+                        {perm.allowed_tables && perm.allowed_tables.length > 0 ? (
+                          <span className="table-tags">
+                            {perm.allowed_tables.map((t) => (
+                              <span key={t} className="table-tag">{t}</span>
+                            ))}
+                          </span>
+                        ) : (
+                          <span className="hint">{t('permissions.allTables')}</span>
+                        )}
+                        <button
+                          className="btn btn-sm btn-link"
+                          onClick={() => handleEditTables(perm)}
+                        >
+                          {t('common.edit')}
+                        </button>
+                      </div>
+                    )}
+                  </td>
                   <td>
                     <button
                       className="btn btn-sm btn-danger"
