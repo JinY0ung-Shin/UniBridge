@@ -1,11 +1,13 @@
 import { Fragment, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { getAuditLogs, getAdminDatabases, type AuditLogParams } from '../api/client';
 import './AuditLogs.css';
 
 const PAGE_SIZE = 20;
 
 function AuditLogs() {
+  const { t } = useTranslation();
   const [page, setPage] = useState(0);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
@@ -77,8 +79,8 @@ function AuditLogs() {
   return (
     <div className="audit-logs">
       <div className="page-header">
-        <h1>Audit Logs</h1>
-        <p className="page-subtitle">Query execution history and audit trail</p>
+        <h1>{t('auditLogs.title')}</h1>
+        <p className="page-subtitle">{t('auditLogs.subtitle')}</p>
       </div>
 
       {/* Filter bar */}
@@ -88,7 +90,7 @@ function AuditLogs() {
           onChange={(e) => setFilterForm((f) => ({ ...f, database: e.target.value }))}
           className="filter-select"
         >
-          <option value="">All databases</option>
+          <option value="">{t('auditLogs.allDatabases')}</option>
           {databases.map((db) => (
             <option key={db.alias} value={db.alias}>
               {db.alias}
@@ -97,7 +99,7 @@ function AuditLogs() {
         </select>
         <input
           type="text"
-          placeholder="User"
+          placeholder={t('auditLogs.user')}
           value={filterForm.user}
           onChange={(e) => setFilterForm((f) => ({ ...f, user: e.target.value }))}
           className="filter-input"
@@ -115,14 +117,14 @@ function AuditLogs() {
           className="filter-input"
         />
         <button className="btn btn-primary" onClick={applyFilters}>
-          Search
+          {t('common.search')}
         </button>
       </div>
 
-      {logsQuery.isLoading && <div className="loading-message">Loading audit logs...</div>}
+      {logsQuery.isLoading && <div className="loading-message">{t('auditLogs.loadingLogs')}</div>}
 
       {logsQuery.isError && (
-        <div className="error-banner">Failed to load audit logs.</div>
+        <div className="error-banner">{t('auditLogs.loadFailed')}</div>
       )}
 
       {logs.length > 0 && (
@@ -131,13 +133,13 @@ function AuditLogs() {
             <table className="data-table audit-table">
               <thead>
                 <tr>
-                  <th>Timestamp</th>
-                  <th>User</th>
-                  <th>Database</th>
-                  <th>SQL</th>
-                  <th>Rows</th>
-                  <th>Elapsed</th>
-                  <th>Status</th>
+                  <th>{t('auditLogs.timestamp')}</th>
+                  <th>{t('auditLogs.user')}</th>
+                  <th>{t('connections.database')}</th>
+                  <th>{t('auditLogs.sql')}</th>
+                  <th>{t('auditLogs.rows')}</th>
+                  <th>{t('auditLogs.elapsed')}</th>
+                  <th>{t('common.status')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -166,12 +168,12 @@ function AuditLogs() {
                         <td colSpan={7}>
                           <div className="audit-detail">
                             <div className="detail-section">
-                              <h4>Full SQL</h4>
+                              <h4>{t('auditLogs.fullSql')}</h4>
                               <pre className="detail-sql">{log.sql}</pre>
                             </div>
                             {log.params && (
                               <div className="detail-section">
-                                <h4>Parameters</h4>
+                                <h4>{t('auditLogs.parameters')}</h4>
                                 <pre className="detail-sql">
                                   {(() => {
                                     try {
@@ -185,13 +187,13 @@ function AuditLogs() {
                             )}
                             {log.error_message && (
                               <div className="detail-section">
-                                <h4>Error</h4>
+                                <h4>{t('common.error')}</h4>
                                 <pre className="detail-error">{log.error_message}</pre>
                               </div>
                             )}
                             <div className="detail-meta">
-                              <span>Rows: {log.row_count}</span>
-                              <span>Elapsed: {log.elapsed_ms}ms</span>
+                              <span>{t('auditLogs.rows')}: {log.row_count}</span>
+                              <span>{t('auditLogs.elapsed')}: {log.elapsed_ms}ms</span>
                             </div>
                           </div>
                         </td>
@@ -210,17 +212,17 @@ function AuditLogs() {
               disabled={page === 0}
               onClick={() => goToPage(page - 1)}
             >
-              Previous
+              {t('common.previous')}
             </button>
             <span className="page-info">
-              Page {page + 1}
+              {t('common.page', { page: page + 1 })}
             </span>
             <button
               className="btn btn-sm btn-secondary"
               disabled={!hasMore}
               onClick={() => goToPage(page + 1)}
             >
-              Next
+              {t('common.next')}
             </button>
           </div>
         </>
@@ -228,8 +230,8 @@ function AuditLogs() {
 
       {!logsQuery.isLoading && logs.length === 0 && !logsQuery.isError && (
         <div className="empty-state">
-          <h3>No audit logs found</h3>
-          <p>Adjust your filters or wait for queries to be executed.</p>
+          <h3>{t('auditLogs.noLogs')}</h3>
+          <p>{t('auditLogs.noLogsDesc')}</p>
         </div>
       )}
     </div>

@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { getDatabases, executeQuery, type QueryResult } from '../api/client';
 import './QueryPlayground.css';
 
 function QueryPlayground() {
+  const { t } = useTranslation();
   const [selectedDb, setSelectedDb] = useState('');
   const [sql, setSql] = useState('');
   const [result, setResult] = useState<QueryResult | null>(null);
@@ -24,11 +26,11 @@ function QueryPlayground() {
       setResult(null);
       if (err && typeof err === 'object' && 'response' in err) {
         const axiosErr = err as { response?: { data?: { detail?: string } } };
-        setError(axiosErr.response?.data?.detail ?? 'Query execution failed');
+        setError(axiosErr.response?.data?.detail ?? t('queryPlayground.executionFailed'));
       } else if (err instanceof Error) {
         setError(err.message);
       } else {
-        setError('Query execution failed');
+        setError(t('queryPlayground.executionFailed'));
       }
     },
   });
@@ -53,8 +55,8 @@ function QueryPlayground() {
   return (
     <div className="query-playground">
       <div className="page-header">
-        <h1>Query Playground</h1>
-        <p className="page-subtitle">Execute SQL queries against connected databases</p>
+        <h1>{t('queryPlayground.title')}</h1>
+        <p className="page-subtitle">{t('queryPlayground.subtitle')}</p>
       </div>
 
       <div className="playground-controls">
@@ -63,7 +65,7 @@ function QueryPlayground() {
           onChange={(e) => setSelectedDb(e.target.value)}
           className="db-selector"
         >
-          <option value="">Select a database...</option>
+          <option value="">{t('queryPlayground.selectDatabase')}</option>
           {databases.map((db) => (
             <option key={db.alias} value={db.alias}>
               {db.alias}
@@ -75,9 +77,9 @@ function QueryPlayground() {
           onClick={handleExecute}
           disabled={!selectedDb || !sql.trim() || execMutation.isPending}
         >
-          {execMutation.isPending ? 'Executing...' : 'Execute'}
+          {execMutation.isPending ? t('queryPlayground.executing') : t('queryPlayground.execute')}
         </button>
-        <span className="shortcut-hint">Ctrl+Enter to run</span>
+        <span className="shortcut-hint">{t('queryPlayground.shortcutHint')}</span>
       </div>
 
       <div className="editor-container">
@@ -103,7 +105,7 @@ function QueryPlayground() {
       {/* Error */}
       {error && (
         <div className="query-error">
-          <strong>Error:</strong> {error}
+          <strong>{t('common.error')}:</strong> {error}
         </div>
       )}
 
@@ -111,13 +113,13 @@ function QueryPlayground() {
       {result && (
         <div className="query-results">
           <div className="results-meta">
-            <span>{result.row_count} row{result.row_count !== 1 ? 's' : ''} returned</span>
+            <span>{t('queryPlayground.rowsReturned', { count: result.row_count })}</span>
             <span>{result.elapsed_ms}ms</span>
           </div>
 
           {result.truncated && (
             <div className="truncated-warning">
-              Results were truncated. Only the first {result.row_count} rows are shown.
+              {t('queryPlayground.truncatedWarning', { count: result.row_count })}
             </div>
           )}
 
@@ -151,7 +153,7 @@ function QueryPlayground() {
               </table>
             </div>
           ) : (
-            <div className="no-rows">Query executed successfully. No rows returned.</div>
+            <div className="no-rows">{t('queryPlayground.noRows')}</div>
           )}
         </div>
       )}

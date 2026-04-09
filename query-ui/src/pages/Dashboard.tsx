@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { getHealth, getAdminDatabases, type DatabaseHealth } from '../api/client';
 import './Dashboard.css';
 
@@ -8,6 +9,7 @@ interface DashboardDbEntry {
 }
 
 function Dashboard() {
+  const { t } = useTranslation();
   const healthQuery = useQuery({
     queryKey: ['health'],
     queryFn: getHealth,
@@ -37,38 +39,38 @@ function Dashboard() {
   return (
     <div className="dashboard">
       <div className="page-header">
-        <h1>Dashboard</h1>
-        <p className="page-subtitle">Overview of database connections and health</p>
+        <h1>{t('dashboard.title')}</h1>
+        <p className="page-subtitle">{t('dashboard.subtitle')}</p>
       </div>
 
       {/* Summary cards */}
       <div className="summary-cards">
         <div className="summary-card">
           <div className="summary-card__value">{totalDbs}</div>
-          <div className="summary-card__label">Total Databases</div>
+          <div className="summary-card__label">{t('dashboard.totalDatabases')}</div>
         </div>
         <div className="summary-card">
           <div className="summary-card__value" style={{ color: 'var(--accent-green)' }}>{connectedCount}</div>
-          <div className="summary-card__label">Connected</div>
+          <div className="summary-card__label">{t('dashboard.connected')}</div>
         </div>
         <div className="summary-card">
           <div className="summary-card__value" style={{ color: 'var(--accent-red)' }}>{errorCount}</div>
-          <div className="summary-card__label">Errors</div>
+          <div className="summary-card__label">{t('dashboard.errors')}</div>
         </div>
       </div>
 
       {/* Status */}
-      {isLoading && <div className="loading-message">Loading database health...</div>}
+      {isLoading && <div className="loading-message">{t('dashboard.loadingHealth')}</div>}
       {isError && (
         <div className="error-banner">
-          Failed to load health data. Is the Query Service running?
+          {t('dashboard.loadFailed')}
         </div>
       )}
 
       {/* DB health grid */}
       {healthEntries.length > 0 && (
         <>
-          <h2 className="section-title">Database Status</h2>
+          <h2 className="section-title">{t('dashboard.databaseStatus')}</h2>
           <div className="db-grid">
             {healthEntries.map((db) => (
               <div key={db.alias} className={`db-card ${db.status === 'error' ? 'db-card--error' : ''}`}>
@@ -78,9 +80,9 @@ function Dashboard() {
                 </div>
                 <div className="db-card__body">
                   {db.status === 'connected' ? (
-                    <div className="db-card__connected">Connected</div>
+                    <div className="db-card__connected">{t('dashboard.connectionSuccess')}</div>
                   ) : (
-                    <div className="db-card__error">Connection failed</div>
+                    <div className="db-card__error">{t('dashboard.connectionFailed')}</div>
                   )}
                 </div>
               </div>
@@ -92,8 +94,8 @@ function Dashboard() {
       {/* Empty state */}
       {!isLoading && healthEntries.length === 0 && !isError && (
         <div className="empty-state">
-          <h3>No databases configured</h3>
-          <p>Go to the Connections page to add your first database.</p>
+          <h3>{t('dashboard.noDatabases')}</h3>
+          <p>{t('dashboard.noDatabasesDesc')}</p>
         </div>
       )}
     </div>

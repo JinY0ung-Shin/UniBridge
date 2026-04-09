@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import {
   getAdminDatabases,
   createDatabase,
@@ -24,6 +25,7 @@ const emptyForm: DatabaseConfig = {
 };
 
 function Connections() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
 
   const [showModal, setShowModal] = useState(false);
@@ -68,7 +70,7 @@ function Connections() {
     onError: (_err, alias) => {
       setTestResults((prev) => ({
         ...prev,
-        [alias]: { status: 'error', message: 'Connection test failed' },
+        [alias]: { status: 'error', message: t('connections.testFailed') },
       }));
     },
   });
@@ -105,7 +107,7 @@ function Connections() {
   }
 
   function handleDelete(alias: string) {
-    if (window.confirm(`Delete database "${alias}"? This action cannot be undone.`)) {
+    if (window.confirm(t('connections.deleteConfirm', { alias }))) {
       deleteMutation.mutate(alias);
     }
   }
@@ -129,18 +131,18 @@ function Connections() {
     <div className="connections">
       <div className="page-header">
         <div>
-          <h1>Connections</h1>
-          <p className="page-subtitle">Manage database connections</p>
+          <h1>{t('connections.title')}</h1>
+          <p className="page-subtitle">{t('connections.subtitle')}</p>
         </div>
         <button className="btn btn-primary" onClick={openCreate}>
-          + Add Connection
+          {t('connections.addConnection')}
         </button>
       </div>
 
-      {dbsQuery.isLoading && <div className="loading-message">Loading connections...</div>}
+      {dbsQuery.isLoading && <div className="loading-message">{t('connections.loadingConnections')}</div>}
 
       {dbsQuery.isError && (
-        <div className="error-banner">Failed to load database connections.</div>
+        <div className="error-banner">{t('connections.loadFailed')}</div>
       )}
 
       {databases.length > 0 && (
@@ -148,13 +150,13 @@ function Connections() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Alias</th>
-                <th>Type</th>
-                <th>Host:Port</th>
-                <th>Database</th>
-                <th>Pool Size</th>
-                <th>Status</th>
-                <th>Actions</th>
+                <th>{t('connections.alias')}</th>
+                <th>{t('common.type')}</th>
+                <th>{t('connections.hostPort')}</th>
+                <th>{t('connections.database')}</th>
+                <th>{t('connections.poolSize')}</th>
+                <th>{t('common.status')}</th>
+                <th>{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -172,7 +174,7 @@ function Connections() {
                     <td>
                       {testResult ? (
                         <span className={`badge ${testResult.status === 'error' ? 'badge-error' : 'badge-ok'}`}>
-                          {testResult.status === 'error' ? 'Error' : 'OK'}
+                          {testResult.status === 'error' ? t('common.error') : t('common.ok')}
                         </span>
                       ) : (
                         <span className="badge badge-unknown">--</span>
@@ -185,20 +187,20 @@ function Connections() {
                           onClick={() => handleTest(db.alias)}
                           disabled={testMutation.isPending}
                         >
-                          Test
+                          {t('common.test')}
                         </button>
                         <button
                           className="btn btn-sm btn-secondary"
                           onClick={() => openEdit(db)}
                         >
-                          Edit
+                          {t('common.edit')}
                         </button>
                         <button
                           className="btn btn-sm btn-danger"
                           onClick={() => handleDelete(db.alias)}
                           disabled={deleteMutation.isPending}
                         >
-                          Delete
+                          {t('common.delete')}
                         </button>
                       </div>
                     </td>
@@ -212,8 +214,8 @@ function Connections() {
 
       {!dbsQuery.isLoading && databases.length === 0 && !dbsQuery.isError && (
         <div className="empty-state">
-          <h3>No connections yet</h3>
-          <p>Click "Add Connection" to register your first database.</p>
+          <h3>{t('connections.noConnections')}</h3>
+          <p>{t('connections.noConnectionsDesc')}</p>
         </div>
       )}
 
@@ -222,13 +224,13 @@ function Connections() {
         <div className="modal-overlay" onClick={closeModal}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>{editingAlias ? `Edit "${editingAlias}"` : 'Add Connection'}</h2>
+              <h2>{editingAlias ? t('connections.editAlias', { alias: editingAlias }) : t('connections.addTitle')}</h2>
               <button className="modal-close" onClick={closeModal}>&times;</button>
             </div>
             <form onSubmit={handleSubmit}>
               <div className="form-grid">
                 <div className="form-group">
-                  <label>Alias</label>
+                  <label>{t('connections.alias')}</label>
                   <input
                     type="text"
                     value={form.alias}
@@ -239,7 +241,7 @@ function Connections() {
                   />
                 </div>
                 <div className="form-group">
-                  <label>Type</label>
+                  <label>{t('common.type')}</label>
                   <select
                     value={form.db_type}
                     onChange={(e) => updateField('db_type', e.target.value as 'postgres' | 'mssql')}
@@ -249,7 +251,7 @@ function Connections() {
                   </select>
                 </div>
                 <div className="form-group">
-                  <label>Host</label>
+                  <label>{t('connections.host')}</label>
                   <input
                     type="text"
                     value={form.host}
@@ -259,7 +261,7 @@ function Connections() {
                   />
                 </div>
                 <div className="form-group">
-                  <label>Port</label>
+                  <label>{t('connections.port')}</label>
                   <input
                     type="number"
                     value={form.port}
@@ -268,7 +270,7 @@ function Connections() {
                   />
                 </div>
                 <div className="form-group">
-                  <label>Database</label>
+                  <label>{t('connections.database')}</label>
                   <input
                     type="text"
                     value={form.database}
@@ -278,7 +280,7 @@ function Connections() {
                   />
                 </div>
                 <div className="form-group">
-                  <label>Username</label>
+                  <label>{t('connections.username')}</label>
                   <input
                     type="text"
                     value={form.username}
@@ -288,7 +290,7 @@ function Connections() {
                   />
                 </div>
                 <div className="form-group form-group--full">
-                  <label>Password {editingAlias && <span className="hint">(leave blank to keep current)</span>}</label>
+                  <label>{t('connections.password')} {editingAlias && <span className="hint">{t('connections.passwordHint')}</span>}</label>
                   <input
                     type="password"
                     value={form.password ?? ''}
@@ -297,7 +299,7 @@ function Connections() {
                   />
                 </div>
                 <div className="form-group">
-                  <label>Pool Size</label>
+                  <label>{t('connections.poolSize')}</label>
                   <input
                     type="number"
                     value={form.pool_size}
@@ -307,7 +309,7 @@ function Connections() {
                   />
                 </div>
                 <div className="form-group">
-                  <label>Max Overflow</label>
+                  <label>{t('connections.maxOverflow')}</label>
                   <input
                     type="number"
                     value={form.max_overflow}
@@ -322,16 +324,16 @@ function Connections() {
                 <div className="form-error">
                   {(createMutation.error as Error)?.message ||
                     (updateMutation.error as Error)?.message ||
-                    'An error occurred'}
+                    t('common.errorOccurred')}
                 </div>
               )}
 
               <div className="modal-actions">
                 <button type="button" className="btn btn-secondary" onClick={closeModal}>
-                  Cancel
+                  {t('common.cancel')}
                 </button>
                 <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                  {isSaving ? 'Saving...' : editingAlias ? 'Update' : 'Create'}
+                  {isSaving ? t('common.saving') : editingAlias ? t('common.update') : t('common.create')}
                 </button>
               </div>
             </form>

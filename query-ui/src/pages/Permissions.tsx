@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import {
   getPermissions,
   getAdminDatabases,
@@ -17,6 +18,7 @@ const OPERATIONS = [
 ];
 
 function Permissions() {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
 
   const [newRole, setNewRole] = useState('');
@@ -70,7 +72,7 @@ function Permissions() {
 
   function handleDelete(perm: Permission) {
     if (!perm.id) return;
-    if (window.confirm(`Remove permissions for role "${perm.role}" on "${perm.db_alias}"?`)) {
+    if (window.confirm(t('permissions.removeConfirm', { role: perm.role, db: perm.db_alias }))) {
       deleteMut.mutate(perm.id);
     }
   }
@@ -78,15 +80,15 @@ function Permissions() {
   return (
     <div className="permissions">
       <div className="page-header">
-        <h1>Permissions</h1>
-        <p className="page-subtitle">Configure role-based database access</p>
+        <h1>{t('permissions.title')}</h1>
+        <p className="page-subtitle">{t('permissions.subtitle')}</p>
       </div>
 
       {/* Add new permission row */}
       <div className="add-perm-row">
         <input
           type="text"
-          placeholder="Role name"
+          placeholder={t('permissions.roleName')}
           value={newRole}
           onChange={(e) => setNewRole(e.target.value)}
           className="perm-input"
@@ -96,7 +98,7 @@ function Permissions() {
           onChange={(e) => setNewDbAlias(e.target.value)}
           className="perm-select"
         >
-          <option value="">Select database...</option>
+          <option value="">{t('permissions.selectDatabase')}</option>
           {dbAliases.map((alias) => (
             <option key={alias} value={alias}>
               {alias}
@@ -108,14 +110,14 @@ function Permissions() {
           onClick={handleAdd}
           disabled={!newRole.trim() || !newDbAlias || updateMut.isPending}
         >
-          Add Permission
+          {t('permissions.addPermission')}
         </button>
       </div>
 
-      {permsQuery.isLoading && <div className="loading-message">Loading permissions...</div>}
+      {permsQuery.isLoading && <div className="loading-message">{t('permissions.loadingPermissions')}</div>}
 
       {permsQuery.isError && (
-        <div className="error-banner">Failed to load permissions.</div>
+        <div className="error-banner">{t('permissions.loadFailed')}</div>
       )}
 
       {permissions.length > 0 && (
@@ -123,12 +125,12 @@ function Permissions() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Role</th>
-                <th>Database</th>
+                <th>{t('permissions.role')}</th>
+                <th>{t('connections.database')}</th>
                 {OPERATIONS.map((op) => (
                   <th key={op.key} className="th-center">{op.label}</th>
                 ))}
-                <th>Actions</th>
+                <th>{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -153,7 +155,7 @@ function Permissions() {
                       onClick={() => handleDelete(perm)}
                       disabled={deleteMut.isPending}
                     >
-                      Remove
+                      {t('common.remove')}
                     </button>
                   </td>
                 </tr>
@@ -165,8 +167,8 @@ function Permissions() {
 
       {!permsQuery.isLoading && permissions.length === 0 && !permsQuery.isError && (
         <div className="empty-state">
-          <h3>No permissions configured</h3>
-          <p>Add a role-database permission using the form above.</p>
+          <h3>{t('permissions.noPermissions')}</h3>
+          <p>{t('permissions.noPermissionsDesc')}</p>
         </div>
       )}
     </div>

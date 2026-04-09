@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { getGatewayRoutes, deleteGatewayRoute, type GatewayRoute } from '../api/client';
 import './GatewayRoutes.css';
 
@@ -8,6 +9,7 @@ const METHOD_COLORS: Record<string, string> = {
 };
 
 function GatewayRoutes() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
@@ -24,9 +26,9 @@ function GatewayRoutes() {
     onError: (err: unknown) => {
       if (err && typeof err === 'object' && 'response' in err) {
         const axiosErr = err as { response?: { data?: { detail?: string } } };
-        alert(axiosErr.response?.data?.detail ?? 'Failed to delete route');
+        alert(axiosErr.response?.data?.detail ?? t('gatewayRoutes.deleteFailed'));
       } else {
-        alert('Failed to delete route');
+        alert(t('gatewayRoutes.deleteFailed'));
       }
     },
   });
@@ -35,7 +37,7 @@ function GatewayRoutes() {
 
   function handleDelete(route: GatewayRoute) {
     const name = route.name || route.uri;
-    if (window.confirm(`Delete route "${name}"? This cannot be undone.`)) {
+    if (window.confirm(t('gatewayRoutes.deleteConfirm', { name }))) {
       deleteMutation.mutate(route.id);
     }
   }
@@ -44,18 +46,18 @@ function GatewayRoutes() {
     <div className="gateway-routes">
       <div className="page-header">
         <div>
-          <h1>Gateway Routes</h1>
-          <p className="page-subtitle">Manage API gateway routing rules</p>
+          <h1>{t('gatewayRoutes.title')}</h1>
+          <p className="page-subtitle">{t('gatewayRoutes.subtitle')}</p>
         </div>
         <button className="btn btn-primary" onClick={() => navigate('/gateway/routes/new')}>
-          + Add Route
+          {t('gatewayRoutes.addRoute')}
         </button>
       </div>
 
-      {routesQuery.isLoading && <div className="loading-message">Loading routes...</div>}
+      {routesQuery.isLoading && <div className="loading-message">{t('gatewayRoutes.loadingRoutes')}</div>}
 
       {routesQuery.isError && (
-        <div className="error-banner">Failed to load gateway routes.</div>
+        <div className="error-banner">{t('gatewayRoutes.loadFailed')}</div>
       )}
 
       {routes.length > 0 && (
@@ -63,13 +65,13 @@ function GatewayRoutes() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Name</th>
-                <th>URI</th>
-                <th>Methods</th>
-                <th>Upstream</th>
-                <th>Service Key</th>
-                <th>Status</th>
-                <th>Actions</th>
+                <th>{t('common.name')}</th>
+                <th>{t('gatewayRoutes.uri')}</th>
+                <th>{t('gatewayRoutes.methods')}</th>
+                <th>{t('gatewayRoutes.upstream')}</th>
+                <th>{t('gatewayRoutes.serviceKey')}</th>
+                <th>{t('common.status')}</th>
+                <th>{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -92,7 +94,7 @@ function GatewayRoutes() {
                   </td>
                   <td>
                     <span className={`badge ${route.status === 1 ? 'badge-ok' : 'badge-unknown'}`}>
-                      {route.status === 1 ? 'Active' : 'Disabled'}
+                      {route.status === 1 ? t('common.active') : t('common.disabled')}
                     </span>
                   </td>
                   <td>
@@ -101,14 +103,14 @@ function GatewayRoutes() {
                         className="btn btn-sm btn-secondary"
                         onClick={() => navigate(`/gateway/routes/${route.id}/edit`)}
                       >
-                        Edit
+                        {t('common.edit')}
                       </button>
                       <button
                         className="btn btn-sm btn-danger"
                         onClick={() => handleDelete(route)}
                         disabled={deleteMutation.isPending}
                       >
-                        Delete
+                        {t('common.delete')}
                       </button>
                     </div>
                   </td>
@@ -121,8 +123,8 @@ function GatewayRoutes() {
 
       {!routesQuery.isLoading && routes.length === 0 && !routesQuery.isError && (
         <div className="empty-state">
-          <h3>No gateway routes</h3>
-          <p>Click "Add Route" to create your first API route.</p>
+          <h3>{t('gatewayRoutes.noRoutes')}</h3>
+          <p>{t('gatewayRoutes.noRoutesDesc')}</p>
         </div>
       )}
     </div>
