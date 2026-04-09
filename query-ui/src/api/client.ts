@@ -441,6 +441,11 @@ export async function resetUserPassword(userId: string, body: ResetPasswordBody)
   await client.put(`/admin/users/${userId}/reset-password`, body);
 }
 
+export async function toggleUserEnabled(userId: string, enabled: boolean): Promise<KeycloakUser> {
+  const { data } = await client.put(`/admin/users/${userId}/enabled`, { enabled });
+  return data;
+}
+
 export async function deleteKeycloakUser(userId: string): Promise<void> {
   await client.delete(`/admin/users/${userId}`);
 }

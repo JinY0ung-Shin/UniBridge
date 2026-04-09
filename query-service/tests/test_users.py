@@ -218,6 +218,69 @@ class TestResetPassword:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# PUT /admin/users/{user_id}/enabled
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestToggleEnabled:
+    async def test_disable_user_success(self, client, admin_token, kc_mock):
+        # After toggling, get_user returns disabled user, then _enrich_user gets roles
+        kc_mock.get_user.side_effect = [
+            # First call: check target username (in toggle_enabled)
+            {"id": USER_1_ID, "username": "alice", "email": "alice@example.com", "enabled": True},
+            # Second call: refresh after update (in toggle_enabled)
+            {"id": USER_1_ID, "username": "alice", "email": "alice@example.com", "enabled": False},
+        ]
+        resp = await client.put(
+            f"/admin/users/{USER_1_ID}/enabled",
+            json={"enabled": False},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is False
+        kc_mock.update_user_enabled.assert_awaited_once_with(USER_1_ID, False)
+
+    async def test_enable_user_success(self, client, admin_token, kc_mock):
+        kc_mock.get_user.side_effect = [
+            {"id": USER_1_ID, "username": "alice", "email": "alice@example.com", "enabled": False},
+            {"id": USER_1_ID, "username": "alice", "email": "alice@example.com", "enabled": True},
+        ]
+        resp = await client.put(
+            f"/admin/users/{USER_1_ID}/enabled",
+            json={"enabled": True},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is True
+        kc_mock.update_user_enabled.assert_awaited_once_with(USER_1_ID, True)
+
+    async def test_cannot_toggle_self(self, client, admin_token, kc_mock):
+        kc_mock.get_user.return_value = {
+            "id": SELF_USER_ID,
+            "username": "testadmin",
+            "email": "admin@example.com",
+            "enabled": True,
+        }
+        resp = await client.put(
+            f"/admin/users/{SELF_USER_ID}/enabled",
+            json={"enabled": False},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+        assert "Cannot change your own enabled status" in resp.json()["detail"]
+
+    async def test_toggle_enabled_invalid_uuid_422(self, client, admin_token, kc_mock):
+        resp = await client.put(
+            "/admin/users/not-a-uuid/enabled",
+            json={"enabled": False},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 422
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # DELETE /admin/users/{user_id}
 # ═══════════════════════════════════════════════════════════════════════════════
 

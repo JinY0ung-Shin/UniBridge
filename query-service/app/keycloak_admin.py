@@ -168,6 +168,21 @@ class KeycloakAdminClient:
         user_id = location.rsplit("/", 1)[-1]
         return user_id
 
+    async def update_user_enabled(self, user_id: str, enabled: bool) -> None:
+        """Enable or disable a user."""
+        resp = await self._request("PUT", f"/users/{user_id}", json={"enabled": enabled})
+        if resp.status_code == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found",
+            )
+        if resp.status_code != 204:
+            logger.error("Failed to update user enabled status: %s %s", resp.status_code, resp.text)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Failed to update Keycloak user",
+            )
+
     async def delete_user(self, user_id: str) -> None:
         """Delete a user by ID."""
         resp = await self._request("DELETE", f"/users/{user_id}")

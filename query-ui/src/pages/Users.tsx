@@ -5,6 +5,7 @@ import {
   createKeycloakUser,
   changeUserRole,
   resetUserPassword,
+  toggleUserEnabled,
   deleteKeycloakUser,
   getAuthRoles,
   type KeycloakUser,
@@ -100,6 +101,17 @@ function Users() {
     onError: (err: unknown) => setError(extractErrorMessage(err, 'Failed to reset password')),
   });
 
+  const toggleEnabledMutation = useMutation({
+    mutationFn: ({ userId, enabled }: { userId: string; enabled: boolean }) =>
+      toggleUserEnabled(userId, enabled),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+    },
+    onError: (err: unknown) => {
+      alert(extractErrorMessage(err, 'Failed to update user status'));
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: deleteKeycloakUser,
     onSuccess: () => {
@@ -174,6 +186,13 @@ function Users() {
     });
   }
 
+  function handleToggleEnabled(user: KeycloakUser) {
+    const action = user.enabled ? 'Disable' : 'Enable';
+    if (window.confirm(`${action} user "${user.username}"?`)) {
+      toggleEnabledMutation.mutate({ userId: user.id, enabled: !user.enabled });
+    }
+  }
+
   function handleDelete(user: KeycloakUser) {
     if (window.confirm(`Delete user "${user.username}"?`)) {
       deleteMutation.mutate(user.id);
@@ -238,6 +257,13 @@ function Users() {
                       <div className="action-buttons">
                         <button className="btn btn-sm btn-secondary" onClick={() => openRoleChange(user)}>Role</button>
                         <button className="btn btn-sm btn-secondary" onClick={() => openPasswordReset(user)}>Reset PW</button>
+                        <button
+                          className={`btn btn-sm ${user.enabled ? 'btn-warning' : 'btn-success'}`}
+                          onClick={() => handleToggleEnabled(user)}
+                          disabled={toggleEnabledMutation.isPending}
+                        >
+                          {user.enabled ? 'Disable' : 'Enable'}
+                        </button>
                         <button
                           className="btn btn-sm btn-danger"
                           onClick={() => handleDelete(user)}

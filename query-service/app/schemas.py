@@ -190,3 +190,7 @@ class ChangeRoleRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     password: str = Field(..., min_length=8)
     temporary: bool = True
+
+
+class ToggleEnabledRequest(BaseModel):
+    enabled: bool

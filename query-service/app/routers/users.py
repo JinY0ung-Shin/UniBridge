@@ -15,6 +15,7 @@ from app.schemas import (
     KeycloakUser,
     KeycloakUserList,
     ResetPasswordRequest,
+    ToggleEnabledRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,28 @@ async def reset_password(
     """Reset a user's password."""
     kc = _get_kc_admin()
     await kc.reset_password(user_id, body.password, body.temporary)
+
+
+@router.put("/admin/users/{user_id}/enabled", response_model=KeycloakUser)
+async def toggle_enabled(
+    user_id: str = Path(..., pattern=_UUID_PATTERN),
+    body: ToggleEnabledRequest = ...,
+    user: CurrentUser = Depends(require_permission("admin.roles.write")),
+) -> KeycloakUser:
+    """Enable or disable a user. Prevents self-deactivation."""
+    kc = _get_kc_admin()
+
+    target = await kc.get_user(user_id)
+    if target["username"] == user.username:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot change your own enabled status",
+        )
+
+    await kc.update_user_enabled(user_id, body.enabled)
+    # Refresh and return enriched user
+    updated = await kc.get_user(user_id)
+    return await _enrich_user(kc, updated)
 
 
 @router.delete(
