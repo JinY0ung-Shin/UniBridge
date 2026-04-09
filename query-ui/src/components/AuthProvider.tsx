@@ -24,6 +24,7 @@ export function useAuth() {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [authenticated, setAuthenticated] = useState(false);
   const [initialized, setInitialized] = useState(false);
+  const [error, setError] = useState('');
   const initCalled = useRef(false);
 
   useEffect(() => {
@@ -36,7 +37,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setAuthenticated(auth);
         setInitialized(true);
       })
-      .catch(() => {
+      .catch((err) => {
+        console.error('Keycloak init failed:', err);
+        setError(`Authentication service unavailable. Check that Keycloak is reachable at ${keycloak.authServerUrl}`);
         setInitialized(true);
       });
 
@@ -51,6 +54,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     keycloak.logout({ redirectUri: window.location.origin });
   };
 
+  if (!initialized) return null;
+
+  if (error || !authenticated) {
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        height: '100vh', background: '#0a0a0a', color: '#e5e5e5',
+        fontFamily: 'system-ui, sans-serif', padding: '2rem',
+      }}>
+        <div style={{ textAlign: 'center', maxWidth: 500 }}>
+          <h2 style={{ marginBottom: '1rem' }}>Authentication Error</h2>
+          <p style={{ color: '#999', lineHeight: 1.6 }}>
+            {error || 'Authentication failed. Please try again.'}
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            style={{
+              marginTop: '1.5rem', padding: '8px 24px',
+              background: '#333', color: '#fff', border: '1px solid #555',
+              borderRadius: 6, cursor: 'pointer', fontSize: 14,
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <AuthContext.Provider
       value={{
@@ -61,7 +93,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         logout,
       }}
     >
-      {initialized ? children : null}
+      {children}
     </AuthContext.Provider>
   );
 }
