@@ -161,6 +161,11 @@ async def _verify_keycloak_token(token: str) -> CurrentUser:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token signing key not found")
 
     try:
+        # Debug: log claims for troubleshooting
+        unverified = jwt.get_unverified_claims(token)
+        logger.info("JWT iss=%s aud=%s", unverified.get("iss"), unverified.get("aud"))
+        logger.info("Expected iss=%s aud=%s", settings.KEYCLOAK_ISSUER_URL, settings.KEYCLOAK_JWT_AUDIENCE)
+
         payload = jwt.decode(
             token,
             rsa_key,
@@ -169,6 +174,7 @@ async def _verify_keycloak_token(token: str) -> CurrentUser:
             issuer=settings.KEYCLOAK_ISSUER_URL,
         )
     except JWTError as exc:
+        logger.error("JWT verification failed: %s", exc)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}") from exc
 
     username = payload.get("preferred_username") or payload.get("sub")
