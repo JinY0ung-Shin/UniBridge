@@ -1,4 +1,5 @@
 import axios from 'axios';
+import keycloak from '../keycloak';
 
 const API_BASE = '/api';
 
@@ -6,27 +7,28 @@ const client = axios.create({
   baseURL: API_BASE,
 });
 
-// Attach auth token if stored
-client.interceptors.request.use((config) => {
-  const token = localStorage.getItem('auth_token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+// Attach Keycloak token, refreshing if needed
+client.interceptors.request.use(async (config) => {
+  if (keycloak.authenticated) {
+    try {
+      await keycloak.updateToken(5);
+    } catch {
+      // refresh failed, proceed with current token
+    }
+    if (keycloak.token) {
+      config.headers.Authorization = `Bearer ${keycloak.token}`;
+      return config;
+    }
   }
   return config;
 });
 
-// Handle 401 responses: clear stale token and reload to trigger login
+// Handle 401 responses: trigger Keycloak logout
 client.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      const token = localStorage.getItem('auth_token');
-      if (token) {
-        localStorage.removeItem('auth_token');
-        window.location.reload();
-      } else {
-        console.warn('Received 401 but no token stored. User needs to authenticate.');
-      }
+    if (error.response?.status === 401 && keycloak.authenticated) {
+      keycloak.logout({ redirectUri: window.location.origin });
     }
     return Promise.reject(error);
   },

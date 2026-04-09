@@ -3,6 +3,8 @@ WORKDIR /app
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG NO_PROXY
+ARG VITE_KEYCLOAK_URL=http://localhost:8080
+ENV VITE_KEYCLOAK_URL=$VITE_KEYCLOAK_URL
 COPY package*.json ./
 RUN npm config set strict-ssl false && \
     if [ -n "$HTTP_PROXY" ]; then npm config set proxy $HTTP_PROXY; fi && \

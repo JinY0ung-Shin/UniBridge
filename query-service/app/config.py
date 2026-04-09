@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     APISIX_ADMIN_KEY: str = ""
     PROMETHEUS_URL: str = "http://prometheus:9090"
 
+    # Keycloak OIDC (leave empty to use dev HS256 mode)
+    KEYCLOAK_ISSUER_URL: str = ""
+    KEYCLOAK_JWKS_URL: str = ""
+    KEYCLOAK_JWT_AUDIENCE: str = ""
+
     model_config = {"env_file": ".env"}
 
 

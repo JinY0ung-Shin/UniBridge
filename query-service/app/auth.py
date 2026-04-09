@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
+import httpx
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
@@ -14,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
+
+logger = logging.getLogger(__name__)
 
 security = HTTPBearer()
 
@@ -88,7 +92,7 @@ class CurrentUser:
 
 
 def create_token(username: str, role: str, expires_delta: timedelta | None = None) -> str:
-    """Create a JWT token for the given user and role."""
+    """Create a JWT token for the given user and role (dev/testing only)."""
     expire = datetime.now(timezone.utc) + (expires_delta or timedelta(hours=8))
     payload = {
         "sub": username,
@@ -98,11 +102,107 @@ def create_token(username: str, role: str, expires_delta: timedelta | None = Non
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
+# ── Keycloak JWKS cache ───────────────────────────────────────────────────
+
+_jwks_cache: dict | None = None
+_jwks_cache_ts: float = 0.0
+_JWKS_CACHE_TTL = 300.0  # 5 minutes
+
+KNOWN_ROLES = {"admin", "developer", "viewer"}
+
+
+async def _get_jwks() -> dict:
+    global _jwks_cache, _jwks_cache_ts
+    now = time.time()
+    if _jwks_cache and (now - _jwks_cache_ts < _JWKS_CACHE_TTL):
+        return _jwks_cache
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(settings.KEYCLOAK_JWKS_URL)
+        resp.raise_for_status()
+        _jwks_cache = resp.json()
+        _jwks_cache_ts = now
+        return _jwks_cache
+
+
+async def _verify_keycloak_token(token: str) -> CurrentUser:
+    """Verify a Keycloak-issued JWT using RS256 + JWKS."""
+    try:
+        jwks = await _get_jwks()
+    except Exception as exc:
+        logger.error("Failed to fetch JWKS from Keycloak: %s", exc)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Auth service unavailable")
+
+    # Find signing key by kid
+    header = jwt.get_unverified_header(token)
+    kid = header.get("kid")
+    rsa_key = None
+    for key in jwks.get("keys", []):
+        if key.get("kid") == kid:
+            rsa_key = key
+            break
+
+    if rsa_key is None:
+        # Key rotated? Force refresh once
+        global _jwks_cache_ts
+        _jwks_cache_ts = 0.0
+        jwks = await _get_jwks()
+        for key in jwks.get("keys", []):
+            if key.get("kid") == kid:
+                rsa_key = key
+                break
+
+    if rsa_key is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token signing key not found")
+
+    try:
+        payload = jwt.decode(
+            token,
+            rsa_key,
+            algorithms=["RS256"],
+            audience=settings.KEYCLOAK_JWT_AUDIENCE,
+            issuer=settings.KEYCLOAK_ISSUER_URL,
+        )
+    except JWTError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}") from exc
+
+    username = payload.get("preferred_username") or payload.get("sub")
+
+    # Extract role: check custom "roles" claim, then standard realm_access
+    role = None
+    role_claim = payload.get("roles")
+    if isinstance(role_claim, list):
+        matched = [r for r in role_claim if r in KNOWN_ROLES]
+        role = matched[0] if matched else None
+    elif isinstance(role_claim, str) and role_claim in KNOWN_ROLES:
+        role = role_claim
+
+    if not role:
+        realm_roles = payload.get("realm_access", {}).get("roles", [])
+        matched = [r for r in realm_roles if r in KNOWN_ROLES]
+        role = matched[0] if matched else None
+
+    if not username or not role:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing username or valid role")
+
+    return CurrentUser(username=username, role=role)
+
+
+# ── Unified user dependency ────────────────────────────────────────────────
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> CurrentUser:
-    """FastAPI dependency: verify JWT and return the current user."""
+    """FastAPI dependency: verify JWT and return the current user.
+
+    Uses Keycloak RS256 verification when KEYCLOAK_ISSUER_URL is configured,
+    falls back to HS256 shared-secret for dev/testing.
+    """
     token = credentials.credentials
+
+    if settings.KEYCLOAK_ISSUER_URL:
+        return await _verify_keycloak_token(token)
+
+    # Dev fallback: HS256 self-signed tokens
     try:
         payload = jwt.decode(
             token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM]

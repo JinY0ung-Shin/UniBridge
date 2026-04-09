@@ -1,6 +1,7 @@
 import { useState, useEffect, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
-import { getToken, getAuthRoles, getCurrentUser } from '../api/client';
+import { getCurrentUser } from '../api/client';
+import { useAuth } from './AuthProvider';
 import { PermissionProvider } from './PermissionContext';
 import './Layout.css';
 
@@ -22,90 +23,18 @@ interface LayoutProps {
 }
 
 function Layout({ children }: LayoutProps) {
-  const [hasToken, setHasToken] = useState(() => !!localStorage.getItem('auth_token'));
-  const [loginUsername, setLoginUsername] = useState('');
-  const [loginRole, setLoginRole] = useState('');
-  const [loginError, setLoginError] = useState('');
-  const [loginLoading, setLoginLoading] = useState(false);
-  const [availableRoles, setAvailableRoles] = useState<string[]>([]);
+  const { username, logout } = useAuth();
   const [userPermissions, setUserPermissions] = useState<string[]>([]);
 
-  // Load available roles for login form
   useEffect(() => {
-    if (!hasToken) {
-      getAuthRoles().then((roles) => {
-        setAvailableRoles(roles);
-        if (roles.length > 0 && !loginRole) setLoginRole(roles[0]);
-      }).catch(() => setAvailableRoles(['admin']));
-    }
-  }, [hasToken]);
-
-  // Load current user permissions after login
-  useEffect(() => {
-    if (hasToken) {
-      getCurrentUser().then((user) => {
-        setUserPermissions(user.permissions);
-      }).catch(() => setUserPermissions([]));
-    }
-  }, [hasToken]);
+    getCurrentUser()
+      .then((user) => setUserPermissions(user.permissions))
+      .catch(() => setUserPermissions([]));
+  }, []);
 
   function hasPermission(perm: string | null): boolean {
     if (perm === null) return true;
     return userPermissions.includes(perm);
-  }
-
-  async function handleLogin(e: React.FormEvent) {
-    e.preventDefault();
-    if (!loginUsername.trim()) return;
-    setLoginLoading(true);
-    setLoginError('');
-    try {
-      const { access_token } = await getToken(loginUsername.trim(), loginRole);
-      localStorage.setItem('auth_token', access_token);
-      setHasToken(true);
-    } catch {
-      setLoginError('Failed to obtain token. Please try again.');
-    } finally {
-      setLoginLoading(false);
-    }
-  }
-
-  if (!hasToken) {
-    return (
-      <div className="login-overlay">
-        <form className="login-form" onSubmit={handleLogin}>
-          <h2>API Hub Login</h2>
-          <div className="login-field">
-            <label htmlFor="login-username">Username</label>
-            <input
-              id="login-username"
-              type="text"
-              value={loginUsername}
-              onChange={(e) => setLoginUsername(e.target.value)}
-              placeholder="Enter username"
-              autoFocus
-              required
-            />
-          </div>
-          <div className="login-field">
-            <label htmlFor="login-role">Role</label>
-            <select
-              id="login-role"
-              value={loginRole}
-              onChange={(e) => setLoginRole(e.target.value)}
-            >
-              {availableRoles.map((r) => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-            </select>
-          </div>
-          {loginError && <div className="login-error">{loginError}</div>}
-          <button type="submit" className="login-btn" disabled={loginLoading}>
-            {loginLoading ? 'Logging in...' : 'Login'}
-          </button>
-        </form>
-      </div>
-    );
   }
 
   return (
@@ -211,14 +140,20 @@ function Layout({ children }: LayoutProps) {
           })}
         </nav>
         <div className="sidebar-footer">
+          {username && (
+            <div className="sidebar-user-section">
+              <span className="sidebar-username">{username}</span>
+              <button className="sidebar-logout-btn" onClick={logout}>Logout</button>
+            </div>
+          )}
           <span className="sidebar-version">Query Service v1.0</span>
         </div>
       </aside>
       <main className="main-content">
-          <PermissionProvider permissions={userPermissions}>
-            {children}
-          </PermissionProvider>
-        </main>
+        <PermissionProvider permissions={userPermissions}>
+          {children}
+        </PermissionProvider>
+      </main>
     </div>
   );
 }
