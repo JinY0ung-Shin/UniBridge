@@ -55,6 +55,8 @@ services:
       - KC_BOOTSTRAP_ADMIN_USERNAME=${KC_ADMIN_USER:-admin}
       - KC_BOOTSTRAP_ADMIN_PASSWORD=${KC_ADMIN_PASSWORD:-admin}
       - KC_HTTPS_PORT=8443
+      - KC_HTTPS_CERTIFICATE_FILE=/opt/keycloak/conf/tls.crt
+      - KC_HTTPS_CERTIFICATE_KEY_FILE=/opt/keycloak/conf/tls.key
       - KC_DB=postgres
       - KC_DB_URL=jdbc:postgresql://keycloak-db:5432/keycloak
       - KC_DB_USERNAME=${KC_DB_USER:-keycloak}
@@ -63,6 +65,8 @@ services:
       - "${KEYCLOAK_PORT:-8443}:8443"
     volumes:
       - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      - ${TLS_CERT_PATH:-./certs/tls.crt}:/opt/keycloak/conf/tls.crt:ro
+      - ${TLS_KEY_PATH:-./certs/tls.key}:/opt/keycloak/conf/tls.key:ro
     depends_on:
       keycloak-db:
         condition: service_healthy
