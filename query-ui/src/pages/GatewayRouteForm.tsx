@@ -75,7 +75,7 @@ function GatewayRouteForm() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!uri.trim()) return;
+    if (!uri.trim() || !upstreamId) return;
 
     const routeId = id || Date.now().toString();
     const body: Record<string, unknown> = {
@@ -226,7 +226,7 @@ function GatewayRouteForm() {
           <button type="button" className="btn btn-secondary" onClick={() => navigate('/gateway/routes')}>
             Cancel
           </button>
-          <button type="submit" className="btn btn-primary" disabled={saveMutation.isPending}>
+          <button type="submit" className="btn btn-primary" disabled={saveMutation.isPending || !upstreamId}>
             {saveMutation.isPending ? 'Saving...' : isEdit ? 'Update Route' : 'Create Route'}
           </button>
         </div>
