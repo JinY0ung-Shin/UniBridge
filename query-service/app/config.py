@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     DEFAULT_QUERY_TIMEOUT: int = 30
     DEFAULT_ROW_LIMIT: int = 10000
+    RATE_LIMIT_PER_MINUTE: int = 60
+    MAX_CONCURRENT_QUERIES: int = 5
     ENABLE_DEV_TOKEN_ENDPOINT: bool = False
     APISIX_ADMIN_URL: str = "http://apisix:9180"
     APISIX_ADMIN_KEY: str = ""

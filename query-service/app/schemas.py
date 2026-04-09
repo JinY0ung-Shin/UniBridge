@@ -72,6 +72,7 @@ class PermissionCreate(BaseModel):
     allow_insert: bool = False
     allow_update: bool = False
     allow_delete: bool = False
+    allowed_tables: list[str] | None = None
 
 
 class PermissionResponse(BaseModel):
@@ -82,6 +83,7 @@ class PermissionResponse(BaseModel):
     allow_insert: bool
     allow_update: bool
     allow_delete: bool
+    allowed_tables: list[str] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -117,6 +119,20 @@ class AuditLogQuery(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     databases: dict[str, Any] = {}
+
+
+# ── System Config ───────────────────────────────────────────────────────────
+
+class SystemConfigResponse(BaseModel):
+    rate_limit_per_minute: int
+    max_concurrent_queries: int
+    blocked_sql_keywords: list[str]
+
+
+class SystemConfigUpdate(BaseModel):
+    rate_limit_per_minute: int | None = Field(None, ge=1, le=1000)
+    max_concurrent_queries: int | None = Field(None, ge=1, le=100)
+    blocked_sql_keywords: list[str] | None = None
 
 
 # ── Roles (RBAC) ────────────────────────────────────────────────────────────

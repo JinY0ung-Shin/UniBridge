@@ -44,6 +44,7 @@ class Permission(Base):
     allow_insert = Column(Boolean, default=False)
     allow_update = Column(Boolean, default=False)
     allow_delete = Column(Boolean, default=False)
+    allowed_tables = Column(Text, nullable=True)  # JSON array: ["users", "orders"], null = all
 
     __table_args__ = (UniqueConstraint("role", "db_alias", name="uq_role_db_alias"),)
 
@@ -80,3 +81,11 @@ class AuditLog(Base):
     elapsed_ms = Column(Integer, nullable=True)
     status = Column(String, nullable=False)  # "success" or "error"
     error_message = Column(Text, nullable=True)
+
+
+class SystemConfig(Base):
+    __tablename__ = "system_config"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
