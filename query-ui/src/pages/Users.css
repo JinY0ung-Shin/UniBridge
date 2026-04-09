@@ -1,0 +1,71 @@
+.users-page {
+  max-width: 1000px;
+}
+
+.users-page .page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 28px;
+}
+
+.users-page .search-bar {
+  margin-bottom: 16px;
+}
+
+.users-page .search-bar input {
+  width: 100%;
+  max-width: 400px;
+}
+
+/* ── Role Badges ── */
+
+.role-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.role-badge--admin {
+  background: rgba(99, 102, 241, 0.12);
+  color: #818cf8;
+}
+
+.role-badge--developer {
+  background: rgba(6, 182, 212, 0.12);
+  color: #22d3ee;
+}
+
+.role-badge--viewer {
+  background: rgba(156, 163, 175, 0.12);
+  color: #9ca3af;
+}
+
+.role-badge--default {
+  background: rgba(156, 163, 175, 0.12);
+  color: #9ca3af;
+}
+
+/* ── Status ── */
+
+.status-active {
+  color: #22c55e;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.status-disabled {
+  color: #ef4444;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+/* ── Row States ── */
+
+.row-disabled {
+  opacity: 0.6;
+}

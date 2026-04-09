@@ -16,6 +16,7 @@ const navItems = [
   { to: '/gateway/consumers', label: 'Gateway Consumers', section: 'gateway', permission: 'gateway.consumers.read' },
   { to: '/gateway/monitoring', label: 'Gateway Monitoring', section: 'gateway', permission: 'gateway.monitoring.read' },
   { to: '/roles', label: 'Roles', section: 'admin', permission: 'admin.roles.read' },
+  { to: '/users', label: 'Users', section: 'admin', permission: 'admin.roles.read' },
 ];
 
 interface LayoutProps {
@@ -130,6 +131,12 @@ function Layout({ children }: LayoutProps) {
                         <path d="M3 9h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                         <rect x="2" y="12" width="5" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
                         <rect x="11" y="12" width="5" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+                      </svg>
+                    )}
+                    {item.label === 'Users' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <circle cx="9" cy="5" r="3" stroke="currentColor" strokeWidth="1.5" />
+                        <path d="M3 16c0-2.8 2.7-5 6-5s6 2.2 6 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                       </svg>
                     )}
                   </span>

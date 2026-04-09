@@ -12,6 +12,7 @@ import GatewayUpstreams from './pages/GatewayUpstreams';
 import GatewayConsumers from './pages/GatewayConsumers';
 import GatewayMonitoring from './pages/GatewayMonitoring';
 import Roles from './pages/Roles';
+import Users from './pages/Users';
 
 function ProtectedRoute({ permission, children }: { permission: string; children: React.ReactNode }) {
   const perms = usePermissions();
@@ -37,6 +38,7 @@ function App() {
         <Route path="/gateway/consumers" element={<ProtectedRoute permission="gateway.consumers.read"><GatewayConsumers /></ProtectedRoute>} />
         <Route path="/gateway/monitoring" element={<ProtectedRoute permission="gateway.monitoring.read"><GatewayMonitoring /></ProtectedRoute>} />
         <Route path="/roles" element={<ProtectedRoute permission="admin.roles.read"><Roles /></ProtectedRoute>} />
+        <Route path="/users" element={<ProtectedRoute permission="admin.roles.read"><Users /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

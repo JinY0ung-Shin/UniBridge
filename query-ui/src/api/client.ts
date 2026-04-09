@@ -394,4 +394,55 @@ export async function getAllPermissions(): Promise<string[]> {
   return data;
 }
 
+/* ── Admin: Users (Keycloak) ── */
+
+export interface KeycloakUser {
+  id: string;
+  username: string;
+  email: string | null;
+  enabled: boolean;
+  role: string | null;
+  createdTimestamp: number | null;
+}
+
+export interface KeycloakUserList {
+  users: KeycloakUser[];
+  total: number;
+}
+
+export interface CreateUserBody {
+  username: string;
+  email?: string;
+  password: string;
+  role: string;
+}
+
+export interface ResetPasswordBody {
+  password: string;
+  temporary: boolean;
+}
+
+export async function getUsers(params?: { search?: string; first?: number; max?: number }): Promise<KeycloakUserList> {
+  const { data } = await client.get('/admin/users', { params });
+  return data;
+}
+
+export async function createKeycloakUser(body: CreateUserBody): Promise<KeycloakUser> {
+  const { data } = await client.post('/admin/users', body);
+  return data;
+}
+
+export async function changeUserRole(userId: string, role: string): Promise<KeycloakUser> {
+  const { data } = await client.put(`/admin/users/${userId}/role`, { role });
+  return data;
+}
+
+export async function resetUserPassword(userId: string, body: ResetPasswordBody): Promise<void> {
+  await client.put(`/admin/users/${userId}/reset-password`, body);
+}
+
+export async function deleteKeycloakUser(userId: string): Promise<void> {
+  await client.delete(`/admin/users/${userId}`);
+}
+
 export default client;
