@@ -34,8 +34,8 @@ from tests.conftest import auth_header
 
 
 class TestAllPermissions:
-    def test_all_permissions_has_15_entries(self):
-        assert len(ALL_PERMISSIONS) == 15
+    def test_all_permissions_has_17_entries(self):
+        assert len(ALL_PERMISSIONS) == 17
 
     def test_all_permissions_are_unique(self):
         assert len(ALL_PERMISSIONS) == len(set(ALL_PERMISSIONS))
@@ -829,7 +829,7 @@ class TestAdminPermissionsEndpoint:
         data = resp.json()
         assert isinstance(data, list)
         assert set(data) == set(ALL_PERMISSIONS)
-        assert len(data) == 15
+        assert len(data) == 17
 
     async def test_list_permissions_as_developer_forbidden(self, client, developer_token):
         """developer role does not have admin.roles.read."""
