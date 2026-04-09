@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -14,6 +15,9 @@ from app.schemas import DBConnectionResponse, HealthResponse, QueryRequest, Quer
 from app.services.audit import log_query
 from app.services.connection_manager import connection_manager
 from app.services.query_executor import check_permission, detect_statement_type, execute_query
+from app.services.settings_manager import settings_manager
+from app.services.sql_validator import validate_sql
+from app.services.table_access import check_table_access, extract_tables
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +44,7 @@ async def execute(
 
     # 2. Check per-database permissions (users with query.databases.write bypass)
     statement_type = detect_statement_type(req.sql)
+    perm = None
     user_perms = await get_role_permissions(db, user.role)
     if "query.databases.write" not in user_perms:
         result = await db.execute(
@@ -65,6 +70,27 @@ async def execute(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Role '{user.role}' is not allowed to execute {statement_type.upper()} on '{req.database}'",
             )
+
+    # 2b. SQL keyword blacklist check
+    blocked_error = validate_sql(req.sql, extra_blocked=settings_manager.blocked_sql_keywords)
+    if blocked_error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=blocked_error,
+        )
+
+    # 2c. Table-level access check (only for non-admin users)
+    if "query.databases.write" not in user_perms and perm is not None:
+        allowed_tables_raw = perm.allowed_tables
+        allowed_tables = json.loads(allowed_tables_raw) if allowed_tables_raw else None
+        if allowed_tables is not None:
+            referenced = extract_tables(req.sql)
+            table_error = check_table_access(referenced, allowed_tables)
+            if table_error:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=table_error,
+                )
 
     # 3. Execute the query
     try:
