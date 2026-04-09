@@ -35,21 +35,44 @@ def _extract_service_key(route: dict[str, Any]) -> dict[str, str] | None:
     return None
 
 
+def _extract_strip_prefix(route: dict[str, Any]) -> bool:
+    plugins = route.get("plugins", {})
+    pr = plugins.get("proxy-rewrite", {})
+    return "regex_uri" in pr
+
+
 def _inject_plugins(body: dict[str, Any], existing_plugins: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Inject service_key and require_auth into APISIX plugins config, preserving others."""
+    """Inject service_key, strip_prefix, and require_auth into APISIX plugins config, preserving others."""
     service_key = body.pop("service_key", None)
     require_auth = body.pop("require_auth", None)
+    strip_prefix = body.pop("strip_prefix", None)
     plugins = dict(existing_plugins or {})
 
-    # Service key → proxy-rewrite
+    # Build proxy-rewrite from existing config
+    pr_config = dict(plugins.get("proxy-rewrite", {}))
+
+    # Service key → proxy-rewrite headers
     if service_key and service_key.get("header_name") and service_key.get("header_value"):
-        plugins["proxy-rewrite"] = {
-            "headers": {
-                "set": {
-                    service_key["header_name"]: service_key["header_value"]
-                }
+        pr_config["headers"] = {
+            "set": {
+                service_key["header_name"]: service_key["header_value"]
             }
         }
+
+    # Strip prefix → proxy-rewrite regex_uri
+    if strip_prefix is True:
+        uri = body.get("uri", "")
+        prefix = uri.rstrip("*").rstrip("/")
+        if prefix:
+            pr_config["regex_uri"] = [f"^{prefix}(.*)", "$1"]
+    elif strip_prefix is False:
+        pr_config.pop("regex_uri", None)
+    # strip_prefix is None → preserve existing state
+
+    if pr_config:
+        plugins["proxy-rewrite"] = pr_config
+    else:
+        plugins.pop("proxy-rewrite", None)
 
     # Authentication toggle → key-auth
     if require_auth is True:
@@ -91,6 +114,7 @@ async def list_routes(_admin: CurrentUser = Depends(require_permission("gateway.
     for item in result.get("items", []):
         item["service_key"] = _extract_service_key(item)
         item["require_auth"] = "key-auth" in item.get("plugins", {})
+        item["strip_prefix"] = _extract_strip_prefix(item)
     return result
 
 
@@ -104,6 +128,7 @@ async def get_route(route_id: str, _admin: CurrentUser = Depends(require_permiss
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
     route["service_key"] = _extract_service_key(route)
     route["require_auth"] = "key-auth" in route.get("plugins", {})
+    route["strip_prefix"] = _extract_strip_prefix(route)
     return route
 
 
@@ -132,6 +157,7 @@ async def save_route(route_id: str, body: dict[str, Any], _admin: CurrentUser = 
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
     result["service_key"] = _extract_service_key(result)
     result["require_auth"] = "key-auth" in result.get("plugins", {})
+    result["strip_prefix"] = _extract_strip_prefix(result)
     return result
 
 

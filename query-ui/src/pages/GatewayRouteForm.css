@@ -92,6 +92,13 @@
   cursor: pointer;
 }
 
+.field-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
 .form-actions {
   display: flex;
   gap: 8px;

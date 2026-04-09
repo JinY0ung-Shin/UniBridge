@@ -22,6 +22,7 @@ function GatewayRouteForm() {
   const [upstreamId, setUpstreamId] = useState('');
   const [statusVal, setStatusVal] = useState(1);
   const [requireAuth, setRequireAuth] = useState(false);
+  const [stripPrefix, setStripPrefix] = useState(false);
   const [keyHeader, setKeyHeader] = useState('');
   const [keyValue, setKeyValue] = useState('');
   const [error, setError] = useState('');
@@ -46,6 +47,7 @@ function GatewayRouteForm() {
       setUpstreamId(r.upstream_id || '');
       setStatusVal(r.status ?? 1);
       setRequireAuth(!!r.require_auth);
+      setStripPrefix(!!r.strip_prefix);
       if (r.service_key) {
         setKeyHeader(r.service_key.header_name || '');
       }
@@ -83,6 +85,7 @@ function GatewayRouteForm() {
       upstream_id: upstreamId || undefined,
       status: statusVal,
       require_auth: requireAuth,
+      strip_prefix: stripPrefix,
     };
 
     if (keyHeader.trim() && keyValue.trim()) {
@@ -120,6 +123,7 @@ function GatewayRouteForm() {
             <div className="field">
               <label>Name</label>
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="My API Route" />
+              <span className="field-hint">식별을 위한 이름 (선택사항)</span>
             </div>
             <div className="field">
               <label>Status</label>
@@ -127,12 +131,14 @@ function GatewayRouteForm() {
                 <option value={1}>Active</option>
                 <option value={0}>Disabled</option>
               </select>
+              <span className="field-hint">비활성화하면 이 Route로의 요청이 차단됩니다</span>
             </div>
           </div>
           <div className="form-row form-row--full">
             <div className="field">
               <label>URI</label>
               <input value={uri} onChange={(e) => setUri(e.target.value)} placeholder="/api/service/*" required />
+              <span className="field-hint">매칭할 경로 패턴. /* 는 하위 모든 경로를 포함합니다 (예: /api/v1/*)</span>
             </div>
           </div>
           <div className="field">
@@ -145,6 +151,7 @@ function GatewayRouteForm() {
                 </label>
               ))}
             </div>
+            <span className="field-hint">이 Route에서 허용할 HTTP 메서드</span>
           </div>
         </div>
 
@@ -159,8 +166,16 @@ function GatewayRouteForm() {
                   <option key={u.id} value={u.id}>{u.name || u.id}</option>
                 ))}
               </select>
+              <span className="field-hint">요청을 전달할 백엔드 서버 그룹</span>
             </div>
           </div>
+          <label className="method-check" style={{ marginTop: 12 }}>
+            <input type="checkbox" checked={stripPrefix} onChange={(e) => setStripPrefix(e.target.checked)} />
+            Strip URI Prefix
+          </label>
+          <span className="field-hint">
+            활성화하면 URI prefix를 제거하고 Upstream에 전달합니다 (예: /api/service/users → /users)
+          </span>
         </div>
 
         <div className="form-section">
@@ -169,14 +184,19 @@ function GatewayRouteForm() {
             <input type="checkbox" checked={requireAuth} onChange={(e) => setRequireAuth(e.target.checked)} />
             Require Authentication (key-auth)
           </label>
+          <span className="field-hint">활성화하면 API 키가 포함된 요청만 허용합니다 (Consumer 등록 필요)</span>
         </div>
 
         <div className="form-section">
           <div className="form-section-title">Service Key (Optional)</div>
+          <span className="field-hint" style={{ marginBottom: 12, display: 'block' }}>
+            Upstream으로 요청을 전달할 때 자동으로 추가할 인증 헤더 (예: 외부 API의 Bearer 토큰)
+          </span>
           <div className="form-row">
             <div className="field">
               <label>Header Name</label>
               <input value={keyHeader} onChange={(e) => setKeyHeader(e.target.value)} placeholder="Authorization" />
+              <span className="field-hint">헤더 이름 (예: Authorization, X-API-Key)</span>
             </div>
             <div className="field">
               <label>Header Value</label>
@@ -186,6 +206,7 @@ function GatewayRouteForm() {
                 onChange={(e) => setKeyValue(e.target.value)}
                 placeholder={isEdit ? 'Leave empty to keep current' : 'Bearer sk-xxx...'}
               />
+              <span className="field-hint">{isEdit ? '변경하지 않으려면 비워두세요' : '헤더 값 (예: Bearer sk-xxx...)'}</span>
             </div>
           </div>
         </div>

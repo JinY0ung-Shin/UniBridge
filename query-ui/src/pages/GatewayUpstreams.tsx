@@ -203,6 +203,7 @@ function GatewayUpstreams() {
                 <div className="form-group">
                   <label>Name</label>
                   <input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-backend" />
+                  <span className="field-hint">식별을 위한 이름 (선택사항, 예: user-api, payment-server)</span>
                 </div>
                 <div className="form-group">
                   <label>Type</label>
@@ -212,29 +213,36 @@ function GatewayUpstreams() {
                     <option value="ewma">EWMA</option>
                     <option value="least_conn">Least Connections</option>
                   </select>
+                  <span className="field-hint">트래픽을 노드에 분배하는 로드밸런싱 알고리즘</span>
                 </div>
                 <div className="form-group form-group--full">
                   <label>Nodes</label>
+                  <span className="field-hint">요청을 처리할 백엔드 서버 목록. Weight가 높을수록 더 많은 트래픽을 받습니다</span>
                   <div className="nodes-list">
+                    <div className="node-row node-row--header">
+                      <span className="node-label node-host">Host / IP</span>
+                      <span className="node-label node-port">Port</span>
+                      <span className="node-label node-weight">Weight</span>
+                    </div>
                     {nodes.map((node, idx) => (
                       <div key={idx} className="node-row">
                         <input
                           className="node-host"
-                          placeholder="host"
+                          placeholder="e.g. 192.168.1.10 or api.example.com"
                           value={node.host}
                           onChange={(e) => updateNode(idx, 'host', e.target.value)}
                           required
                         />
                         <input
                           className="node-port"
-                          placeholder="port"
+                          placeholder="8080"
                           type="number"
                           value={node.port}
                           onChange={(e) => updateNode(idx, 'port', e.target.value)}
                         />
                         <input
                           className="node-weight"
-                          placeholder="weight"
+                          placeholder="1"
                           type="number"
                           value={node.weight}
                           onChange={(e) => updateNode(idx, 'weight', e.target.value)}
