@@ -128,6 +128,30 @@
   border-color: var(--text-tertiary);
 }
 
+.sidebar-user-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sidebar-settings-btn {
+  color: var(--text-tertiary);
+  background: none;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 3px 5px;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar-settings-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--text-tertiary);
+}
+
 .sidebar-version {
   font-size: 11px;
   color: var(--text-tertiary);

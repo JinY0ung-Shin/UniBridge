@@ -1,0 +1,59 @@
+.settings-modal {
+  width: 400px;
+}
+
+.settings-body {
+  padding: 20px;
+}
+
+.settings-section {
+  margin-bottom: 20px;
+}
+
+.settings-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.settings-desc {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin: 0 0 12px;
+}
+
+.language-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.language-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.language-option:hover {
+  border-color: var(--text-tertiary);
+}
+
+.language-option input[type="radio"] {
+  accent-color: var(--text-primary);
+}
+
+.language-option input[type="radio"]:checked + .language-option-text {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.language-option-text {
+  font-size: 13px;
+  color: var(--text-secondary);
+}

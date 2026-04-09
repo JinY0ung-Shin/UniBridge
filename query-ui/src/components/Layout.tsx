@@ -1,22 +1,24 @@
 import { useState, useEffect, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { getCurrentUser } from '../api/client';
 import { useAuth } from './AuthProvider';
 import { PermissionProvider } from './PermissionContext';
+import SettingsModal from './SettingsModal';
 import './Layout.css';
 
 const navItems = [
-  { to: '/', label: 'Dashboard', section: 'data', permission: null },
-  { to: '/connections', label: 'Connections', section: 'data', permission: 'query.databases.read' },
-  { to: '/permissions', label: 'Permissions', section: 'data', permission: 'query.permissions.read' },
-  { to: '/audit-logs', label: 'Audit Logs', section: 'data', permission: 'query.audit.read' },
-  { to: '/query', label: 'Query Playground', section: 'data', permission: 'query.execute' },
-  { to: '/gateway/routes', label: 'Gateway Routes', section: 'gateway', permission: 'gateway.routes.read' },
-  { to: '/gateway/upstreams', label: 'Gateway Upstreams', section: 'gateway', permission: 'gateway.upstreams.read' },
-  { to: '/gateway/consumers', label: 'Gateway Consumers', section: 'gateway', permission: 'gateway.consumers.read' },
-  { to: '/gateway/monitoring', label: 'Gateway Monitoring', section: 'gateway', permission: 'gateway.monitoring.read' },
-  { to: '/roles', label: 'Roles', section: 'admin', permission: 'admin.roles.read' },
-  { to: '/users', label: 'Users', section: 'admin', permission: 'admin.roles.read' },
+  { to: '/', labelKey: 'nav.dashboard', icon: 'Dashboard', section: 'data', permission: null },
+  { to: '/connections', labelKey: 'nav.connections', icon: 'Connections', section: 'data', permission: 'query.databases.read' },
+  { to: '/permissions', labelKey: 'nav.permissions', icon: 'Permissions', section: 'data', permission: 'query.permissions.read' },
+  { to: '/audit-logs', labelKey: 'nav.auditLogs', icon: 'Audit Logs', section: 'data', permission: 'query.audit.read' },
+  { to: '/query', labelKey: 'nav.queryPlayground', icon: 'Query Playground', section: 'data', permission: 'query.execute' },
+  { to: '/gateway/routes', labelKey: 'nav.gatewayRoutes', icon: 'Gateway Routes', section: 'gateway', permission: 'gateway.routes.read' },
+  { to: '/gateway/upstreams', labelKey: 'nav.gatewayUpstreams', icon: 'Gateway Upstreams', section: 'gateway', permission: 'gateway.upstreams.read' },
+  { to: '/gateway/consumers', labelKey: 'nav.gatewayConsumers', icon: 'Gateway Consumers', section: 'gateway', permission: 'gateway.consumers.read' },
+  { to: '/gateway/monitoring', labelKey: 'nav.gatewayMonitoring', icon: 'Gateway Monitoring', section: 'gateway', permission: 'gateway.monitoring.read' },
+  { to: '/roles', labelKey: 'nav.roles', icon: 'Roles', section: 'admin', permission: 'admin.roles.read' },
+  { to: '/users', labelKey: 'nav.users', icon: 'Users', section: 'admin', permission: 'admin.roles.read' },
 ];
 
 interface LayoutProps {
@@ -24,9 +26,11 @@ interface LayoutProps {
 }
 
 function Layout({ children }: LayoutProps) {
+  const { t } = useTranslation();
   const { username, logout } = useAuth();
   const [userPermissions, setUserPermissions] = useState<string[]>([]);
   const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,7 +73,7 @@ function Layout({ children }: LayoutProps) {
                   }
                 >
                   <span className="nav-icon">
-                    {item.label === 'Dashboard' && (
+                    {item.icon === 'Dashboard' && (
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <rect x="1" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
                         <rect x="10" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
@@ -77,38 +81,38 @@ function Layout({ children }: LayoutProps) {
                         <rect x="10" y="10" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
                       </svg>
                     )}
-                    {item.label === 'Connections' && (
+                    {item.icon === 'Connections' && (
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <circle cx="5" cy="5" r="3" stroke="currentColor" strokeWidth="1.5" />
                         <circle cx="13" cy="13" r="3" stroke="currentColor" strokeWidth="1.5" />
                         <path d="M7.5 7.5l3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                       </svg>
                     )}
-                    {item.label === 'Permissions' && (
+                    {item.icon === 'Permissions' && (
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <rect x="3" y="8" width="12" height="8" rx="2" stroke="currentColor" strokeWidth="1.5" />
                         <path d="M6 8V5a3 3 0 016 0v3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                       </svg>
                     )}
-                    {item.label === 'Audit Logs' && (
+                    {item.icon === 'Audit Logs' && (
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <path d="M5 1h8l4 4v12H1V1h4z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" fill="none" />
                         <path d="M5 7h8M5 10h8M5 13h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                       </svg>
                     )}
-                    {item.label === 'Query Playground' && (
+                    {item.icon === 'Query Playground' && (
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <path d="M2 4l5 4-5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                         <path d="M9 14h7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                       </svg>
                     )}
-                    {item.label === 'Gateway Routes' && (
+                    {item.icon === 'Gateway Routes' && (
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <path d="M1 9h16M9 1v16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                         <circle cx="9" cy="9" r="3" stroke="currentColor" strokeWidth="1.5" />
                       </svg>
                     )}
-                    {item.label === 'Gateway Upstreams' && (
+                    {item.icon === 'Gateway Upstreams' && (
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <rect x="1" y="3" width="16" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
                         <rect x="1" y="11" width="16" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
@@ -116,19 +120,19 @@ function Layout({ children }: LayoutProps) {
                         <circle cx="4" cy="13" r="1" fill="currentColor" />
                       </svg>
                     )}
-                    {item.label === 'Gateway Consumers' && (
+                    {item.icon === 'Gateway Consumers' && (
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <circle cx="9" cy="6" r="3.5" stroke="currentColor" strokeWidth="1.5" />
                         <path d="M2 16c0-3.3 3.1-6 7-6s7 2.7 7 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                       </svg>
                     )}
-                    {item.label === 'Gateway Monitoring' && (
+                    {item.icon === 'Gateway Monitoring' && (
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <path d="M1 14l4-6 3 3 4-7 5 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                         <path d="M1 17h16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                       </svg>
                     )}
-                    {item.label === 'Roles' && (
+                    {item.icon === 'Roles' && (
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <path d="M9 2l2 2-2 2-2-2 2-2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
                         <path d="M3 9h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -136,14 +140,14 @@ function Layout({ children }: LayoutProps) {
                         <rect x="11" y="12" width="5" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
                       </svg>
                     )}
-                    {item.label === 'Users' && (
+                    {item.icon === 'Users' && (
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <circle cx="9" cy="5" r="3" stroke="currentColor" strokeWidth="1.5" />
                         <path d="M3 16c0-2.8 2.7-5 6-5s6 2.2 6 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                       </svg>
                     )}
                   </span>
-                  {item.label}
+                  {t(item.labelKey)}
                 </NavLink>
               </span>
             );
@@ -153,7 +157,15 @@ function Layout({ children }: LayoutProps) {
           {username && (
             <div className="sidebar-user-section">
               <span className="sidebar-username">{username}</span>
-              <button className="sidebar-logout-btn" onClick={logout}>Logout</button>
+              <div className="sidebar-user-actions">
+                <button className="sidebar-settings-btn" onClick={() => setShowSettings(true)} title={t('settings.title')}>
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <path d="M6.5 1h3l.4 2.1a5.5 5.5 0 011.3.7L13.3 3l1.5 2.6-1.7 1.4a5.6 5.6 0 010 1.4l1.7 1.6-1.5 2.6-2.1-.8a5.5 5.5 0 01-1.3.7L9.5 15h-3l-.4-2.1a5.5 5.5 0 01-1.3-.7L2.7 13 1.2 10.4l1.7-1.4a5.6 5.6 0 010-1.4L1.2 5.6 2.7 3l2.1.8a5.5 5.5 0 011.3-.7L6.5 1z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+                    <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.2" />
+                  </svg>
+                </button>
+                <button className="sidebar-logout-btn" onClick={logout}>{t('common.logout')}</button>
+              </div>
             </div>
           )}
           <span className="sidebar-version">Query Service v1.0</span>
@@ -164,6 +176,7 @@ function Layout({ children }: LayoutProps) {
           {children}
         </PermissionProvider>
       </main>
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   );
 }
