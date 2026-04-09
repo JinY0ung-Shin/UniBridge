@@ -79,6 +79,22 @@ services:
     networks:
       - apihub-net
 
+  keycloak-init:
+    image: quay.io/keycloak/keycloak:26.0
+    entrypoint: /opt/init/init-roles.sh
+    environment:
+      - KC_ADMIN_USER=${KC_ADMIN_USER:-admin}
+      - KC_ADMIN_PASSWORD=${KC_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./keycloak/init-roles.sh:/opt/init/init-roles.sh:ro
+      - ${TLS_CERT_PATH:-./certs/tls.crt}:/opt/keycloak/conf/tls.crt:ro
+      - ${TLS_KEY_PATH:-./certs/tls.key}:/opt/keycloak/conf/tls.key:ro
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    networks:
+      - apihub-net
+
   query-service:
     build:
       context: ./query-service
