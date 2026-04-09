@@ -133,7 +133,10 @@ services:
         NO_PROXY: ${NO_PROXY:-}
         VITE_KEYCLOAK_URL: ${KEYCLOAK_EXTERNAL_URL:-http://localhost:8080}
     ports:
-      - "${QUERY_UI_PORT:-3000}:80"
+      - "${QUERY_UI_PORT:-3000}:443"
+    volumes:
+      - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/nginx/ssl/tls.crt:ro
+      - ${TLS_KEY_PATH:-./certs/tls.key}:/etc/nginx/ssl/tls.key:ro
     depends_on:
       query-service:
         condition: service_healthy
