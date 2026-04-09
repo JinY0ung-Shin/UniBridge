@@ -117,6 +117,32 @@ class TestCreateUser:
         )
         kc_mock.assign_realm_role.assert_awaited_once_with(NEW_USER_ID, "viewer")
 
+    async def test_create_user_rollback_on_role_assign_failure(
+        self, client, admin_token, kc_mock
+    ):
+        """If role assignment fails after user creation, the user should be deleted (rollback)."""
+        from fastapi import HTTPException
+
+        kc_mock.assign_realm_role.side_effect = HTTPException(
+            status_code=502, detail="Failed to assign realm role"
+        )
+
+        body = {
+            "username": "rollbackuser",
+            "email": "rollback@example.com",
+            "password": "securepass123",
+            "role": "viewer",
+        }
+        resp = await client.post(
+            "/admin/users", json=body, headers=auth_header(admin_token)
+        )
+        assert resp.status_code == 502
+
+        # User creation was called
+        kc_mock.create_user.assert_awaited_once()
+        # Rollback: delete_user should have been called with the new user ID
+        kc_mock.delete_user.assert_awaited_once_with(NEW_USER_ID)
+
     async def test_create_user_short_password_422(self, client, admin_token, kc_mock):
         body = {
             "username": "newuser",

@@ -15,6 +15,16 @@ class Settings(BaseSettings):
     APISIX_ADMIN_KEY: str = ""
     PROMETHEUS_URL: str = "http://prometheus:9090"
 
+    # CORS — comma-separated allowed origins (e.g. "http://localhost:3001,https://app.example.com")
+    CORS_ALLOWED_ORIGINS: str = ""
+
+    # SSL verification for outgoing requests (Keycloak, etc.)
+    SSL_VERIFY: bool = True
+    SSL_CA_CERT_PATH: str = ""  # optional CA bundle path
+
+    # MSSQL TrustServerCertificate (set to "no" in production)
+    MSSQL_TRUST_SERVER_CERT: str = "no"
+
     # Keycloak OIDC (leave empty to use dev HS256 mode)
     KEYCLOAK_ISSUER_URL: str = ""
     KEYCLOAK_JWKS_URL: str = ""

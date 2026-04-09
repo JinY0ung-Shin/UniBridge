@@ -141,6 +141,13 @@ async def update_role(
     if role is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
 
+    # Prevent users from modifying their own role's permissions (privilege escalation)
+    if role.name == _user.role:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot modify permissions of your own role",
+        )
+
     if body.description is not None:
         role.description = body.description
 
@@ -174,6 +181,11 @@ async def delete_role(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
     if role.is_system:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot delete system role")
+    if role.name == _user.role:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot delete your own role",
+        )
 
     await db.execute(delete(RolePermission).where(RolePermission.role_id == role.id))
     await db.delete(role)

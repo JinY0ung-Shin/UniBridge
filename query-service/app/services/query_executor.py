@@ -88,8 +88,8 @@ def check_permission(
         # DDL requires all permissions
         return allow_select and allow_insert and allow_update and allow_delete
     elif statement_type == "execute":
-        # Stored procedures - require at least select
-        return allow_select
+        # Stored procedures can perform arbitrary operations — require all permissions
+        return allow_select and allow_insert and allow_update and allow_delete
     else:
         return False
 

@@ -61,9 +61,10 @@ def _build_url(conn: DBConnection, password: str) -> str:
     if conn.db_type == "postgres":
         return f"postgresql+asyncpg://{user}:{pwd}@{conn.host}:{conn.port}/{conn.database}"
     elif conn.db_type == "mssql":
+        trust_cert = settings.MSSQL_TRUST_SERVER_CERT
         return (
             f"mssql+aioodbc://{user}:{pwd}@{conn.host}:{conn.port}/{conn.database}"
-            f"?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+            f"?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate={trust_cert}"
         )
     else:
         raise ValueError(f"Unsupported db_type: {conn.db_type}")

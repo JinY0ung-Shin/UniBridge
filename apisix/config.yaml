@@ -6,13 +6,14 @@ deployment:
   admin:
     admin_key:
       - name: admin
-        key: edd1c9f034335f136f87ad84b625c8f1
+        key: 40a3a08930ef6bb269cc587f53a0e982
         role: admin
     admin_listen:
       ip: 0.0.0.0
       port: 9180
     allow_admin:
-      - 0.0.0.0/0
+      - 127.0.0.1/32
+      - 172.16.0.0/12   # Docker internal networks
   etcd:
     host:
       - "http://etcd:2379"

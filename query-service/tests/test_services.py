@@ -215,11 +215,13 @@ class TestCheckPermission:
     def test_ddl_truncate_any_false(self):
         assert check_permission("truncate", True, False, True, True) is False
 
-    def test_execute_requires_select(self):
-        assert check_permission("execute", True, False, False, False) is True
+    def test_execute_requires_all_permissions(self):
+        assert check_permission("execute", True, True, True, True) is True
 
-    def test_execute_denied_without_select(self):
+    def test_execute_denied_without_all(self):
+        assert check_permission("execute", True, False, False, False) is False
         assert check_permission("execute", False, True, True, True) is False
+        assert check_permission("execute", True, True, True, False) is False
 
     def test_explain_allowed_via_select(self):
         assert check_permission("explain", True, False, False, False) is True
@@ -360,7 +362,7 @@ class TestBuildUrl:
         url = _build_url(conn, "pass")
         assert url.startswith("mssql+aioodbc://user:pass@localhost:1433/testdb")
         assert "driver=ODBC+Driver+18+for+SQL+Server" in url
-        assert "TrustServerCertificate=yes" in url
+        assert "TrustServerCertificate=no" in url
 
     def test_unsupported_db_type_raises(self):
         conn = self._make_conn("mysql")

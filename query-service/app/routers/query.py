@@ -181,7 +181,9 @@ async def health() -> HealthResponse:
 
 
 @router.get("/health/databases", response_model=HealthResponse)
-async def health_databases() -> HealthResponse:
+async def health_databases(
+    _user: CurrentUser = Depends(require_permission("query.databases.read")),
+) -> HealthResponse:
     """Per-database health check."""
     aliases = connection_manager.list_aliases()
     db_statuses: dict = {}

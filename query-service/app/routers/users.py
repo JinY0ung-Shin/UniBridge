@@ -102,8 +102,16 @@ async def create_user(
         password=body.password,
         enabled=True,
     )
-    # Assign the requested role
-    await kc.assign_realm_role(user_id, body.role)
+    # Assign the requested role — rollback user creation on failure
+    try:
+        await kc.assign_realm_role(user_id, body.role)
+    except Exception:
+        logger.error("Failed to assign role '%s' to new user '%s', rolling back user creation", body.role, body.username)
+        try:
+            await kc.delete_user(user_id)
+        except Exception:
+            logger.error("Failed to rollback user creation for '%s' (id=%s)", body.username, user_id)
+        raise
 
     return KeycloakUser(
         id=user_id,

@@ -23,18 +23,23 @@ class TestHealthEndpoints:
         data = resp.json()
         assert data["status"] == "ok"
 
-    async def test_health_databases_no_connections(self, client):
+    async def test_health_databases_no_connections(self, client, admin_token):
         """With no registered databases the overall status is still ok."""
         with patch(
             "app.routers.query.connection_manager.list_aliases", return_value=[]
         ):
-            resp = await client.get("/health/databases")
+            resp = await client.get("/health/databases", headers=auth_header(admin_token))
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
         assert data["databases"] == {}
 
-    async def test_health_databases_with_healthy_db(self, client):
+    async def test_health_databases_requires_auth(self, client):
+        """health/databases now requires authentication."""
+        resp = await client.get("/health/databases")
+        assert resp.status_code == 403
+
+    async def test_health_databases_with_healthy_db(self, client, admin_token):
         with patch(
             "app.routers.query.connection_manager.list_aliases",
             return_value=["testdb"],
@@ -43,13 +48,13 @@ class TestHealthEndpoints:
             new_callable=AsyncMock,
             return_value=True,
         ):
-            resp = await client.get("/health/databases")
+            resp = await client.get("/health/databases", headers=auth_header(admin_token))
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
         assert data["databases"]["testdb"]["status"] == "ok"
 
-    async def test_health_databases_with_unhealthy_db(self, client):
+    async def test_health_databases_with_unhealthy_db(self, client, admin_token):
         with patch(
             "app.routers.query.connection_manager.list_aliases",
             return_value=["baddb"],
@@ -58,7 +63,7 @@ class TestHealthEndpoints:
             new_callable=AsyncMock,
             return_value=False,
         ):
-            resp = await client.get("/health/databases")
+            resp = await client.get("/health/databases", headers=auth_header(admin_token))
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "degraded"
@@ -656,6 +661,19 @@ class TestRoleUpdate:
         )
         assert resp.status_code == 404
 
+    async def test_admin_cannot_update_own_role(self, client, admin_token):
+        """Admin user cannot modify the permissions of their own role (privilege escalation prevention)."""
+        resp = await client.get("/admin/roles", headers=auth_header(admin_token))
+        admin_role = next(r for r in resp.json() if r["name"] == "admin")
+
+        resp = await client.put(
+            f"/admin/roles/{admin_role['id']}",
+            json={"permissions": ALL_PERMISSIONS},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 403
+        assert "Cannot modify permissions of your own role" in resp.json()["detail"]
+
 
 class TestRoleDelete:
     """Tests for DELETE /admin/roles/{role_id}."""
@@ -699,6 +717,32 @@ class TestRoleDelete:
             "/admin/roles/99999", headers=auth_header(admin_token)
         )
         assert resp.status_code == 404
+
+    async def test_admin_cannot_delete_own_role(self, client, admin_token):
+        """Admin user cannot delete their own role."""
+        resp = await client.get("/admin/roles", headers=auth_header(admin_token))
+        admin_role = next(r for r in resp.json() if r["name"] == "admin")
+
+        resp = await client.delete(
+            f"/admin/roles/{admin_role['id']}", headers=auth_header(admin_token)
+        )
+        # System role check fires first (400), but if it weren't system, 403 would fire
+        assert resp.status_code in (400, 403)
+
+
+# ============================================================================
+# SECURITY HEADERS
+# ============================================================================
+
+
+class TestSecurityHeaders:
+    """Verify security headers are present on all responses."""
+
+    async def test_security_headers_present(self, client):
+        resp = await client.get("/health")
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+        assert resp.headers.get("X-Frame-Options") == "DENY"
+        assert resp.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
 
 
 # ============================================================================
