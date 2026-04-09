@@ -2,7 +2,7 @@
 set -e
 
 KCADM="/opt/keycloak/bin/kcadm.sh"
-SERVER="https://localhost:8443"
+SERVER="https://keycloak:8443"
 REALM="apihub"
 
 echo "Waiting for Keycloak to be ready..."
