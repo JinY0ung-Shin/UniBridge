@@ -70,6 +70,7 @@ export interface Permission {
   allow_insert: boolean;
   allow_update: boolean;
   allow_delete: boolean;
+  allowed_tables?: string[] | null;
 }
 
 export interface AuditLog {
@@ -92,6 +93,18 @@ export interface AuditLogParams {
   to_date?: string;
   limit?: number;
   offset?: number;
+}
+
+export interface QuerySettings {
+  rate_limit_per_minute: number;
+  max_concurrent_queries: number;
+  blocked_sql_keywords: string[];
+}
+
+export interface QuerySettingsUpdate {
+  rate_limit_per_minute?: number;
+  max_concurrent_queries?: number;
+  blocked_sql_keywords?: string[];
 }
 
 export interface QueryRequest {
@@ -169,10 +182,27 @@ export async function deletePermission(id: number): Promise<void> {
   await client.delete(`/admin/query/permissions/${id}`);
 }
 
+export async function getDbTables(alias: string): Promise<string[]> {
+  const { data } = await client.get(`/admin/query/databases/${alias}/tables`);
+  return data;
+}
+
 /* ── Admin: Audit Logs ── */
 
 export async function getAuditLogs(params: AuditLogParams): Promise<AuditLog[]> {
   const { data } = await client.get('/admin/query/audit-logs', { params });
+  return data;
+}
+
+/* ── Admin: Query Settings ── */
+
+export async function getQuerySettings(): Promise<QuerySettings> {
+  const { data } = await client.get('/admin/query/settings');
+  return data;
+}
+
+export async function updateQuerySettings(body: QuerySettingsUpdate): Promise<QuerySettings> {
+  const { data } = await client.put('/admin/query/settings', body);
   return data;
 }
 
