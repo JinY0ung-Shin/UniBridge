@@ -11,6 +11,7 @@ import GatewayRouteForm from './pages/GatewayRouteForm';
 import GatewayUpstreams from './pages/GatewayUpstreams';
 import GatewayConsumers from './pages/GatewayConsumers';
 import GatewayMonitoring from './pages/GatewayMonitoring';
+import QuerySettings from './pages/QuerySettings';
 import Roles from './pages/Roles';
 import Users from './pages/Users';
 
@@ -34,6 +35,7 @@ function App() {
         <Route path="/permissions" element={<ProtectedRoute permission="query.permissions.read"><Permissions /></ProtectedRoute>} />
         <Route path="/audit-logs" element={<ProtectedRoute permission="query.audit.read"><AuditLogs /></ProtectedRoute>} />
         <Route path="/query" element={<ProtectedRoute permission="query.execute"><QueryPlayground /></ProtectedRoute>} />
+        <Route path="/query-settings" element={<ProtectedRoute permission="query.settings.read"><QuerySettings /></ProtectedRoute>} />
         <Route path="/gateway/routes" element={<ProtectedRoute permission="gateway.routes.read"><GatewayRoutes /></ProtectedRoute>} />
         <Route path="/gateway/routes/new" element={<ProtectedRoute permission="gateway.routes.write"><GatewayRouteForm /></ProtectedRoute>} />
         <Route path="/gateway/routes/:id/edit" element={<ProtectedRoute permission="gateway.routes.write"><GatewayRouteForm /></ProtectedRoute>} />
