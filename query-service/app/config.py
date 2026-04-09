@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     KEYCLOAK_JWKS_URL: str = ""
     KEYCLOAK_JWT_AUDIENCE: str = ""
 
+    # Keycloak Service Account (for user management)
+    KEYCLOAK_URL: str = ""
+    KEYCLOAK_REALM: str = "apihub"
+    KEYCLOAK_SERVICE_CLIENT_ID: str = "apihub-service"
+    KEYCLOAK_SERVICE_CLIENT_SECRET: str = ""
+
     model_config = {"env_file": ".env"}
 
 

@@ -158,3 +158,35 @@ class TokenRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+# ── Users (Keycloak) ────────────────────────────────────────────────────────
+
+class KeycloakUser(BaseModel):
+    id: str
+    username: str
+    email: str | None = None
+    enabled: bool = True
+    role: str | None = None
+    createdTimestamp: int | None = None
+
+
+class KeycloakUserList(BaseModel):
+    users: list[KeycloakUser]
+    total: int
+
+
+class CreateUserRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=100)
+    email: str | None = None
+    password: str = Field(..., min_length=8)
+    role: str = Field(..., min_length=1)
+
+
+class ChangeRoleRequest(BaseModel):
+    role: str = Field(..., min_length=1)
+
+
+class ResetPasswordRequest(BaseModel):
+    password: str = Field(..., min_length=8)
+    temporary: bool = True
