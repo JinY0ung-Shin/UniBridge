@@ -1,6 +1,7 @@
 {
   "realm": "apihub",
   "enabled": true,
+  "sslRequired": "none",
   "registrationAllowed": false,
   "loginWithEmailAllowed": false,
   "duplicateEmailsAllowed": true,
