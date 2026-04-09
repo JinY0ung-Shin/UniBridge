@@ -122,7 +122,7 @@ async def _get_jwks() -> dict:
         # Double-check after acquiring lock
         if _jwks_cache and (time.time() - _jwks_cache_ts < _JWKS_CACHE_TTL):
             return _jwks_cache
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
             resp = await client.get(settings.KEYCLOAK_JWKS_URL)
             resp.raise_for_status()
             _jwks_cache = resp.json()

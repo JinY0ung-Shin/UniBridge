@@ -32,7 +32,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     initCalled.current = true;
 
     keycloak
-      .init({ onLoad: 'login-required', checkLoginIframe: false })
+      .init({ onLoad: 'login-required', checkLoginIframe: false, pkceMethod: 'S256' })
       .then((auth) => {
         setAuthenticated(auth);
         setInitialized(true);

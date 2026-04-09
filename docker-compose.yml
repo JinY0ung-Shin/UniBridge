@@ -54,22 +54,20 @@ services:
     environment:
       - KC_BOOTSTRAP_ADMIN_USERNAME=${KC_ADMIN_USER:-admin}
       - KC_BOOTSTRAP_ADMIN_PASSWORD=${KC_ADMIN_PASSWORD:-admin}
-      - KC_HTTP_PORT=8080
-      - KC_HOSTNAME_STRICT=false
-      - KC_HTTP_ENABLED=true
+      - KC_HTTPS_PORT=8443
       - KC_DB=postgres
       - KC_DB_URL=jdbc:postgresql://keycloak-db:5432/keycloak
       - KC_DB_USERNAME=${KC_DB_USER:-keycloak}
       - KC_DB_PASSWORD=${KC_DB_PASSWORD:-keycloak}
     ports:
-      - "${KEYCLOAK_PORT:-8080}:8080"
+      - "${KEYCLOAK_PORT:-8443}:8443"
     volumes:
       - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
     depends_on:
       keycloak-db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080"]
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8443"]
       interval: 10s
       timeout: 5s
       retries: 15
@@ -95,7 +93,7 @@ services:
       - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:-edd1c9f034335f136f87ad84b625c8f1}
       - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
       - KEYCLOAK_ISSUER_URL=${KEYCLOAK_ISSUER_URL:-http://localhost:8080/realms/apihub}
-      - KEYCLOAK_JWKS_URL=${KEYCLOAK_JWKS_URL:-http://keycloak:8080/realms/apihub/protocol/openid-connect/certs}
+      - KEYCLOAK_JWKS_URL=${KEYCLOAK_JWKS_URL:-https://keycloak:8443/realms/apihub/protocol/openid-connect/certs}
       # KEYCLOAK_ISSUER_URL must match the URL the browser uses to access Keycloak
       # (since Keycloak embeds the browser-facing URL as the JWT issuer claim)
       - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
