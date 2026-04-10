@@ -60,9 +60,9 @@
   letter-spacing: 0.03em;
 }
 
-.node-host { flex: 2; }
-.node-port { width: 80px; }
-.node-weight { width: 80px; }
+.node-host { flex: 1; min-width: 0; }
+.node-port { flex: 0 0 80px; }
+.node-weight { flex: 0 0 80px; }
 
 .node-remove {
   background: none;
