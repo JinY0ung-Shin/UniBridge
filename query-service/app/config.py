@@ -1,8 +1,14 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
+
+    # Base networking — all service URLs are derived from these
+    HOST_IP: str = "localhost"
+    KEYCLOAK_PORT: int = 8443
+    QUERY_UI_PORT: int = 3000
 
     META_DB_URL: str = "sqlite+aiosqlite:///data/meta.db"
     ENCRYPTION_KEY: str = ""
@@ -18,6 +24,7 @@ class Settings(BaseSettings):
     PROMETHEUS_URL: str = "http://prometheus:9090"
 
     # CORS — comma-separated allowed origins (e.g. "http://localhost:3001,https://app.example.com")
+    # Auto-derived from HOST_IP:QUERY_UI_PORT if empty
     CORS_ALLOWED_ORIGINS: str = ""
 
     # SSL verification for outgoing requests (Keycloak, etc.)
@@ -27,7 +34,7 @@ class Settings(BaseSettings):
     # MSSQL TrustServerCertificate (set to "no" in production)
     MSSQL_TRUST_SERVER_CERT: str = "no"
 
-    # Keycloak OIDC (leave empty to use dev HS256 mode)
+    # Keycloak OIDC (leave empty to auto-derive from HOST_IP + KEYCLOAK_PORT + KEYCLOAK_REALM)
     KEYCLOAK_ISSUER_URL: str = ""
     KEYCLOAK_JWKS_URL: str = ""
     KEYCLOAK_JWT_AUDIENCE: str = ""
@@ -39,6 +46,32 @@ class Settings(BaseSettings):
     KEYCLOAK_SERVICE_CLIENT_SECRET: str = ""
 
     model_config = {"env_file": ".env"}
+
+    @model_validator(mode="after")
+    def _derive_urls(self) -> "Settings":
+        """Fill in URL fields that weren't explicitly set.
+
+        Keycloak URLs are only derived when KEYCLOAK_JWT_AUDIENCE is set,
+        so that dev HS256 mode (all Keycloak fields empty) still works.
+        """
+        if self.KEYCLOAK_JWT_AUDIENCE:
+            if not self.KEYCLOAK_URL:
+                self.KEYCLOAK_URL = "https://keycloak:8443"
+            if not self.KEYCLOAK_ISSUER_URL:
+                self.KEYCLOAK_ISSUER_URL = (
+                    f"https://{self.HOST_IP}:{self.KEYCLOAK_PORT}"
+                    f"/realms/{self.KEYCLOAK_REALM}"
+                )
+            if not self.KEYCLOAK_JWKS_URL:
+                self.KEYCLOAK_JWKS_URL = (
+                    f"https://keycloak:8443"
+                    f"/realms/{self.KEYCLOAK_REALM}/protocol/openid-connect/certs"
+                )
+        if not self.CORS_ALLOWED_ORIGINS:
+            self.CORS_ALLOWED_ORIGINS = (
+                f"https://{self.HOST_IP}:{self.QUERY_UI_PORT}"
+            )
+        return self
 
 
 settings = Settings()

@@ -1,6 +1,13 @@
 #!/bin/sh
 # Start Keycloak in background, wait for it, create roles, then keep running
 
+# Derive redirect URI and web origin from HOST_IP + QUERY_UI_PORT if not explicitly set
+: "${HOST_IP:=localhost}"
+: "${QUERY_UI_PORT:=3000}"
+: "${KEYCLOAK_REDIRECT_URI:=https://${HOST_IP}:${QUERY_UI_PORT}/*}"
+: "${KEYCLOAK_WEB_ORIGIN:=https://${HOST_IP}:${QUERY_UI_PORT}}"
+export KEYCLOAK_REDIRECT_URI KEYCLOAK_WEB_ORIGIN
+
 # Substitute environment variables in realm-export.json before import
 IMPORT_DIR="/opt/keycloak/data/import"
 if command -v envsubst >/dev/null 2>&1 && [ -f "$IMPORT_DIR/realm-export.json" ]; then
