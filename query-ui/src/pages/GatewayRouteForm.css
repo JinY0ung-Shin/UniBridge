@@ -92,6 +92,41 @@
   cursor: pointer;
 }
 
+.uri-input-group {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+
+.uri-input-group:focus-within {
+  border-color: var(--text-tertiary);
+}
+
+.uri-prefix {
+  padding: 8px 0 8px 10px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.uri-input-group input {
+  flex: 1;
+  border: none !important;
+  background: transparent !important;
+  padding-left: 0 !important;
+  min-width: 0;
+}
+
+.uri-input-group input:focus {
+  border: none !important;
+}
+
 .field-hint {
   font-size: 11px;
   color: var(--text-tertiary);

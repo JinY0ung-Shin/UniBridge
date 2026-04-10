@@ -19,7 +19,7 @@ function GatewayRouteForm() {
   const queryClient = useQueryClient();
 
   const [name, setName] = useState('');
-  const [uri, setUri] = useState('');
+  const [uriSuffix, setUriSuffix] = useState('');
   const [methods, setMethods] = useState<string[]>(['GET', 'POST']);
   const [upstreamId, setUpstreamId] = useState('');
   const [statusVal, setStatusVal] = useState(1);
@@ -44,7 +44,7 @@ function GatewayRouteForm() {
     if (routeQuery.data) {
       const r = routeQuery.data;
       setName(r.name || '');
-      setUri(r.uri || '');
+      setUriSuffix((r.uri || '').replace(/^\/api\//, ''));
       setMethods(r.methods || ['GET', 'POST']);
       setUpstreamId(r.upstream_id || '');
       setStatusVal(r.status ?? 1);
@@ -77,12 +77,13 @@ function GatewayRouteForm() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!uri.trim() || !upstreamId) return;
+    if (!uriSuffix.trim() || !upstreamId) return;
 
+    const uri = `/api/${uriSuffix.replace(/^\/+/, '')}`;
     const routeId = id || crypto.randomUUID();
     const body: Record<string, unknown> = {
       name: name.trim() || undefined,
-      uri: uri.trim(),
+      uri,
       methods,
       upstream_id: upstreamId || undefined,
       status: statusVal,
@@ -146,7 +147,10 @@ function GatewayRouteForm() {
           <div className="form-row form-row--full">
             <div className="field">
               <label>URI</label>
-              <input value={uri} onChange={(e) => setUri(e.target.value)} placeholder="/api/myservice/*" required pattern="/api/.*" />
+              <div className="uri-input-group">
+                <span className="uri-prefix">/api/</span>
+                <input value={uriSuffix} onChange={(e) => setUriSuffix(e.target.value)} placeholder="myservice/*" required />
+              </div>
               <span className="field-hint">{t('gatewayRouteForm.uriHint')}</span>
             </div>
           </div>
@@ -166,12 +170,12 @@ function GatewayRouteForm() {
         <div className="form-section">
           <div className="form-section-title">{t('gatewayRouteForm.upstream')}</div>
           <div className="routing-flow-hint">
-            {uri.trim() ? (
+            {uriSuffix.trim() ? (
               <>
-                <code>{uri.replace(/\/?\*$/, '')}/users</code>
+                <code>/api/{uriSuffix.replace(/\/?\*$/, '')}/users</code>
                 <span className="routing-flow-arrow">→</span>
                 <span>{upstreamId ? (upstreams.find(u => u.id === upstreamId)?.name || upstreamId) : '(Upstream)'}</span>
-                <code>{stripPrefix ? '/users' : `${uri.replace(/\/?\*$/, '')}/users`}</code>
+                <code>{stripPrefix ? '/users' : `/api/${uriSuffix.replace(/\/?\*$/, '')}/users`}</code>
               </>
             ) : (
               <>
