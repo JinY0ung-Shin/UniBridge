@@ -146,7 +146,7 @@ function GatewayRouteForm() {
           <div className="form-row form-row--full">
             <div className="field">
               <label>URI</label>
-              <input value={uri} onChange={(e) => setUri(e.target.value)} placeholder="/api/service/*" required />
+              <input value={uri} onChange={(e) => setUri(e.target.value)} placeholder="/api/myservice/*" required pattern="/api/.*" />
               <span className="field-hint">{t('gatewayRouteForm.uriHint')}</span>
             </div>
           </div>

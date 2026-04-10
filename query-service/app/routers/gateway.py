@@ -140,6 +140,10 @@ async def save_route(route_id: str, body: dict[str, Any], _admin: CurrentUser = 
     # Reject inline upstream
     if "upstream" in body or "nodes" in body:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Inline upstream not allowed. Use upstream_id.")
+    # Enforce /api/ prefix — nginx only proxies /api/* to APISIX
+    uri = body.get("uri", "")
+    if not uri.startswith("/api/"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="URI must start with /api/ (e.g. /api/myservice/*)")
     if not body.get("upstream_id"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="upstream_id is required.")
 

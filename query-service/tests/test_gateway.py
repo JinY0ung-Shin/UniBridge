@@ -370,7 +370,7 @@ class TestSaveRoute:
             resp = await client.put(
                 "/admin/gateway/routes/r1",
                 json={
-                    "uri": "/test",
+                    "uri": "/api/test/*",
                     "upstream_id": "u1",
                     "service_key": {"header_name": "X-Key", "header_value": "newsecretkey1234"},
                     "require_auth": True,
@@ -431,7 +431,7 @@ class TestSaveRoute:
         ) as mock_put:
             resp = await client.put(
                 "/admin/gateway/routes/r1",
-                json={"uri": "/test", "upstream_id": "u1"},
+                json={"uri": "/api/test/*", "upstream_id": "u1"},
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 200
@@ -452,7 +452,7 @@ class TestSaveRoute:
         ):
             resp = await client.put(
                 "/admin/gateway/routes/r1",
-                json={"uri": "/test", "upstream_id": "u1"},
+                json={"uri": "/api/test/*", "upstream_id": "u1"},
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 502
