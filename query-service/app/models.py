@@ -49,6 +49,18 @@ class Permission(Base):
     __table_args__ = (UniqueConstraint("role", "db_alias", name="uq_role_db_alias"),)
 
 
+class ApiKeyAccess(Base):
+    __tablename__ = "api_key_access"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    consumer_name = Column(String(100), unique=True, nullable=False, index=True)
+    description = Column(String(255), default="")
+    allowed_databases = Column(Text, nullable=True)  # JSON array: ["mydb", "analytics"], null = none
+    allowed_routes = Column(Text, nullable=True)  # JSON array: ["route-id-1", "route-id-2"], null = none
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class Role(Base):
     __tablename__ = "roles"
 
