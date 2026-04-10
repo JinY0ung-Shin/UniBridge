@@ -9,8 +9,8 @@ import QueryPlayground from './pages/QueryPlayground';
 import GatewayRoutes from './pages/GatewayRoutes';
 import GatewayRouteForm from './pages/GatewayRouteForm';
 import GatewayUpstreams from './pages/GatewayUpstreams';
-import GatewayConsumers from './pages/GatewayConsumers';
 import GatewayMonitoring from './pages/GatewayMonitoring';
+import ApiKeys from './pages/ApiKeys';
 import QuerySettings from './pages/QuerySettings';
 import Roles from './pages/Roles';
 import Users from './pages/Users';
@@ -40,8 +40,8 @@ function App() {
         <Route path="/gateway/routes/new" element={<ProtectedRoute permission="gateway.routes.write"><GatewayRouteForm /></ProtectedRoute>} />
         <Route path="/gateway/routes/:id/edit" element={<ProtectedRoute permission="gateway.routes.write"><GatewayRouteForm /></ProtectedRoute>} />
         <Route path="/gateway/upstreams" element={<ProtectedRoute permission="gateway.upstreams.read"><GatewayUpstreams /></ProtectedRoute>} />
-        <Route path="/gateway/consumers" element={<ProtectedRoute permission="gateway.consumers.read"><GatewayConsumers /></ProtectedRoute>} />
         <Route path="/gateway/monitoring" element={<ProtectedRoute permission="gateway.monitoring.read"><GatewayMonitoring /></ProtectedRoute>} />
+        <Route path="/api-keys" element={<ProtectedRoute permission="apikeys.read"><ApiKeys /></ProtectedRoute>} />
         <Route path="/roles" element={<ProtectedRoute permission="admin.roles.read"><Roles /></ProtectedRoute>} />
         <Route path="/users" element={<ProtectedRoute permission="admin.roles.read"><Users /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
