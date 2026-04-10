@@ -117,6 +117,25 @@ function Connections() {
     }
   }
 
+  const [curlModal, setCurlModal] = useState<{ alias: string; curl: string } | null>(null);
+  const [curlCopied, setCurlCopied] = useState(false);
+
+  function handleCurl(alias: string) {
+    const base = `${window.location.origin}/_api/query/execute`;
+    const body = JSON.stringify({ database: alias, sql: 'SELECT 1', limit: 10 }, null, 2);
+    const curl = `curl -k -X POST \\\n  -H 'Content-Type: application/json' \\\n  -H 'Authorization: Bearer <TOKEN>' \\\n  '${base}' \\\n  -d '${body}'`;
+    setCurlModal({ alias, curl });
+    setCurlCopied(false);
+  }
+
+  function handleCurlCopy() {
+    if (curlModal) {
+      navigator.clipboard.writeText(curlModal.curl);
+      setCurlCopied(true);
+      setTimeout(() => setCurlCopied(false), 2000);
+    }
+  }
+
   function handleTest(alias: string) {
     setTestResults((prev) => {
       const next = { ...prev };
@@ -193,6 +212,12 @@ function Connections() {
                           disabled={testMutation.isPending}
                         >
                           {t('common.test')}
+                        </button>
+                        <button
+                          className="btn btn-sm btn-outline"
+                          onClick={() => handleCurl(db.alias)}
+                        >
+                          cURL
                         </button>
                         <button
                           className="btn btn-sm btn-secondary"
@@ -342,6 +367,23 @@ function Connections() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {curlModal && (
+        <div className="modal-overlay" onClick={() => setCurlModal(null)}>
+          <div className="modal modal--sm" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>cURL — {curlModal.alias}</h2>
+              <button className="modal-close" onClick={() => setCurlModal(null)}>&times;</button>
+            </div>
+            <div className="curl-block">
+              <pre className="curl-code">{curlModal.curl}</pre>
+              <button className="btn btn-sm btn-secondary curl-copy-btn" onClick={handleCurlCopy}>
+                {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
+              </button>
+            </div>
           </div>
         </div>
       )}
