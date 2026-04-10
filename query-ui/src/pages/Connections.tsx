@@ -9,6 +9,7 @@ import {
   testDatabase,
   type DatabaseConfig,
 } from '../api/client';
+import { useToast } from '../components/ToastContext';
 import './Connections.css';
 
 const emptyForm: DatabaseConfig = {
@@ -31,7 +32,8 @@ function Connections() {
   const [showModal, setShowModal] = useState(false);
   const [editingAlias, setEditingAlias] = useState<string | null>(null);
   const [form, setForm] = useState<DatabaseConfig>({ ...emptyForm });
-  const [testResults, setTestResults] = useState<Record<string, { status: string; message: string }>>({});
+  const { addToast } = useToast();
+  const [testResults, setTestResults] = useState<Record<string, { status: string }>>({});
 
   const dbsQuery = useQuery({
     queryKey: ['admin-databases'],
@@ -65,13 +67,16 @@ function Connections() {
   const testMutation = useMutation({
     mutationFn: (alias: string) => testDatabase(alias),
     onSuccess: (data, alias) => {
-      setTestResults((prev) => ({ ...prev, [alias]: data }));
+      setTestResults((prev) => ({ ...prev, [alias]: { status: data.status } }));
+      addToast({
+        type: data.status === 'ok' ? 'success' : 'error',
+        title: `${alias} — ${data.status === 'ok' ? t('common.ok') : t('common.error')}`,
+        message: data.message,
+      });
     },
     onError: (_err, alias) => {
-      setTestResults((prev) => ({
-        ...prev,
-        [alias]: { status: 'error', message: t('connections.testFailed') },
-      }));
+      setTestResults((prev) => ({ ...prev, [alias]: { status: 'error' } }));
+      addToast({ type: 'error', title: `${alias} — ${t('connections.testFailed')}` });
     },
   });
 
@@ -173,16 +178,9 @@ function Connections() {
                     <td>{db.pool_size}</td>
                     <td>
                       {testResult ? (
-                        <div className="test-result-block">
-                          <span className={`badge ${testResult.status === 'error' ? 'badge-error' : 'badge-ok'}`}>
-                            {testResult.status === 'error' ? t('common.error') : t('common.ok')}
-                          </span>
-                          {testResult.message && (
-                            <span className={`test-detail-msg ${testResult.status === 'error' ? 'test-detail-msg--error' : ''}`}>
-                              {testResult.message}
-                            </span>
-                          )}
-                        </div>
+                        <span className={`badge ${testResult.status === 'error' ? 'badge-error' : 'badge-ok'}`}>
+                          {testResult.status === 'error' ? t('common.error') : t('common.ok')}
+                        </span>
                       ) : (
                         <span className="badge badge-unknown">--</span>
                       )}

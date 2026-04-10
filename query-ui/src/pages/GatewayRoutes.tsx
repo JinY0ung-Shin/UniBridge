@@ -8,8 +8,8 @@ import {
   testGatewayRoute,
   getGatewayRouteCurl,
   type GatewayRoute,
-  type RouteTestResult,
 } from '../api/client';
+import { useToast } from '../components/ToastContext';
 import './GatewayRoutes.css';
 
 const METHOD_COLORS: Record<string, string> = {
@@ -21,7 +21,8 @@ function GatewayRoutes() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [testResults, setTestResults] = useState<Record<string, RouteTestResult>>({});
+  const { addToast } = useToast();
+  const [testStatus, setTestStatus] = useState<Record<string, 'ok' | 'fail'>>({});
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
   const [curlModal, setCurlModal] = useState<{ routeName: string; curl: string } | null>(null);
   const [curlCopied, setCurlCopied] = useState(false);
@@ -55,21 +56,28 @@ function GatewayRoutes() {
     }
   }
 
-  async function handleTest(routeId: string) {
+  async function handleTest(routeId: string, routeName: string) {
     setTestingIds((prev) => new Set(prev).add(routeId));
-    setTestResults((prev) => {
-      const next = { ...prev };
-      delete next[routeId];
-      return next;
-    });
     try {
       const result = await testGatewayRoute(routeId);
-      setTestResults((prev) => ({ ...prev, [routeId]: result }));
+      setTestStatus((prev) => ({ ...prev, [routeId]: result.reachable ? 'ok' : 'fail' }));
+      if (result.reachable) {
+        const bodyStr = typeof result.body === 'string' ? result.body : JSON.stringify(result.body, null, 2);
+        addToast({
+          type: 'success',
+          title: `${routeName} — ${result.status_code} (${result.response_time_ms}ms)`,
+          message: `${result.node}\n${bodyStr || ''}`.trim(),
+        });
+      } else {
+        addToast({
+          type: 'error',
+          title: `${routeName} — ${t('gatewayRoutes.testUnreachable')}`,
+          message: `${result.node}\n${result.error || ''}`.trim(),
+        });
+      }
     } catch {
-      setTestResults((prev) => ({
-        ...prev,
-        [routeId]: { reachable: false, status_code: null, response_time_ms: 0, body: null, node: '', error: 'Request failed' },
-      }));
+      setTestStatus((prev) => ({ ...prev, [routeId]: 'fail' }));
+      addToast({ type: 'error', title: `${routeName} — ${t('gatewayRoutes.testUnreachable')}` });
     } finally {
       setTestingIds((prev) => {
         const next = new Set(prev);
@@ -97,30 +105,16 @@ function GatewayRoutes() {
     }
   }
 
-  function renderTestResult(routeId: string) {
+  function renderTestBadge(routeId: string) {
     if (testingIds.has(routeId)) {
       return <span className="test-result test-result--pending">{t('gatewayRoutes.testing')}</span>;
     }
-    const result = testResults[routeId];
-    if (!result) return null;
-    if (result.reachable) {
-      const bodyStr = typeof result.body === 'string' ? result.body : JSON.stringify(result.body, null, 2);
-      return (
-        <div className="test-result-block">
-          <span className="test-result test-result--ok">
-            {t('gatewayRoutes.testReachable', { status: result.status_code, time: result.response_time_ms })}
-          </span>
-          {result.node && <span className="test-detail">{result.node}</span>}
-          {bodyStr && <pre className="test-body">{bodyStr}</pre>}
-        </div>
-      );
-    }
+    const status = testStatus[routeId];
+    if (!status) return null;
     return (
-      <div className="test-result-block">
-        <span className="test-result test-result--fail">{t('gatewayRoutes.testUnreachable')}</span>
-        {result.node && <span className="test-detail">{result.node}</span>}
-        {result.error && <span className="test-error">{result.error}</span>}
-      </div>
+      <span className={`test-result test-result--${status === 'ok' ? 'ok' : 'fail'}`}>
+        {status === 'ok' ? t('common.ok') : t('common.error')}
+      </span>
     );
   }
 
@@ -179,14 +173,14 @@ function GatewayRoutes() {
                       <span className={`badge ${route.status === 1 ? 'badge-ok' : 'badge-unknown'}`}>
                         {route.status === 1 ? t('common.active') : t('common.disabled')}
                       </span>
-                      {renderTestResult(route.id)}
+                      {renderTestBadge(route.id)}
                     </div>
                   </td>
                   <td>
                     <div className="action-buttons">
                       <button
                         className="btn btn-sm btn-outline"
-                        onClick={() => handleTest(route.id)}
+                        onClick={() => handleTest(route.id, route.name || route.uri)}
                         disabled={testingIds.has(route.id)}
                       >
                         {t('gatewayRoutes.test')}
