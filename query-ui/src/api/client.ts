@@ -1,7 +1,7 @@
 import axios from 'axios';
 import keycloak from '../keycloak';
 
-const API_BASE = '/api';
+const API_BASE = '/_api';
 
 const client = axios.create({
   baseURL: API_BASE,
