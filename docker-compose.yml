@@ -61,6 +61,7 @@ services:
       - KC_DB_URL=jdbc:postgresql://keycloak-db:5432/keycloak
       - KC_DB_USERNAME=${KC_DB_USER:-keycloak}
       - KC_DB_PASSWORD=${KC_DB_PASSWORD:-keycloak}
+      - KEYCLOAK_SERVICE_CLIENT_ID=${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}
       - KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:-}
       - HOST_IP=${HOST_IP:-localhost}
       - QUERY_UI_PORT=${QUERY_UI_PORT:-3000}
@@ -69,7 +70,7 @@ services:
     ports:
       - "${KEYCLOAK_PORT:-8443}:8443"
     volumes:
-      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      - ./keycloak/realm-export.json:/opt/init/realm-export.json.tpl:ro
       - ./keycloak/docker-entrypoint.sh:/opt/init/docker-entrypoint.sh:ro
       - ${TLS_CERT_PATH:-./certs/tls.crt}:/opt/keycloak/conf/tls.crt:ro
       - ${TLS_KEY_PATH:-./certs/tls.key}:/opt/keycloak/conf/tls.key:ro

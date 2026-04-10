@@ -8,12 +8,16 @@
 : "${KEYCLOAK_WEB_ORIGIN:=https://${HOST_IP}:${QUERY_UI_PORT}}"
 export KEYCLOAK_REDIRECT_URI KEYCLOAK_WEB_ORIGIN
 
-# Substitute environment variables in realm-export.json before import
+# Substitute environment variables in realm template and write to import dir
+TEMPLATE="/opt/init/realm-export.json.tpl"
 IMPORT_DIR="/opt/keycloak/data/import"
-if command -v envsubst >/dev/null 2>&1 && [ -f "$IMPORT_DIR/realm-export.json" ]; then
-  envsubst < "$IMPORT_DIR/realm-export.json" > "$IMPORT_DIR/realm-export-resolved.json"
-  mv "$IMPORT_DIR/realm-export-resolved.json" "$IMPORT_DIR/realm-export.json"
+mkdir -p "$IMPORT_DIR"
+if command -v envsubst >/dev/null 2>&1 && [ -f "$TEMPLATE" ]; then
+  envsubst < "$TEMPLATE" > "$IMPORT_DIR/realm-export.json"
   echo "[init] Environment variables substituted in realm-export.json"
+else
+  echo "[init] WARNING: envsubst not found or template missing; copying template as-is"
+  cp "$TEMPLATE" "$IMPORT_DIR/realm-export.json" 2>/dev/null || true
 fi
 
 /opt/keycloak/bin/kc.sh start-dev --import-realm &
@@ -31,8 +35,14 @@ for i in $(seq 1 60); do
     echo "[init] Authenticated via service account."
 
     # Update apihub-ui client redirect URIs and web origins
-    CLIENT_UUID=$(/opt/keycloak/bin/kcadm.sh get clients -r apihub -q clientId=apihub-ui --fields id 2>/dev/null \
-      | grep '"id"' | head -1 | sed 's/.*"id" *: *"//;s/".*//')
+    # kcadm.sh returns JSON array: [ { "id" : "uuid" } ]
+    if command -v jq >/dev/null 2>&1; then
+      CLIENT_UUID=$(/opt/keycloak/bin/kcadm.sh get clients -r apihub -q clientId=apihub-ui --fields id 2>/dev/null \
+        | jq -r '.[0].id // empty')
+    else
+      CLIENT_UUID=$(/opt/keycloak/bin/kcadm.sh get clients -r apihub -q clientId=apihub-ui --fields id 2>/dev/null \
+        | grep '"id"' | head -1 | sed 's/.*"id" *: *"//;s/".*//')
+    fi
     if [ -n "$CLIENT_UUID" ]; then
       /opt/keycloak/bin/kcadm.sh update "clients/$CLIENT_UUID" -r apihub \
         -s "redirectUris=[\"${KEYCLOAK_REDIRECT_URI}\"]" \
@@ -47,6 +57,12 @@ for i in $(seq 1 60); do
   fi
   sleep 3
 done
+
+if [ "$i" -eq 60 ]; then
+  echo "[init] WARNING: Timed out waiting for service account authentication (180s)."
+  echo "[init] Check that KEYCLOAK_SERVICE_CLIENT_SECRET is set correctly in .env"
+  echo "[init] Client redirect URIs were NOT updated."
+fi
 
 # Keep Keycloak running in foreground
 wait $KC_PID
