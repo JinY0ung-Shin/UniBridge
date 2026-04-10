@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { getQuerySettings, updateQuerySettings, type QuerySettings } from '../api/client';
+import { getQuerySettings, updateQuerySettings } from '../api/client';
 import './QuerySettings.css';
 
 function QuerySettingsPage() {
