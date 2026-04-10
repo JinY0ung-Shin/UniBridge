@@ -148,7 +148,15 @@
     "noRoutes": "No gateway routes",
     "noRoutesDesc": "Click \"Add Route\" to create your first API route.",
     "deleteConfirm": "Delete route \"{{name}}\"? This cannot be undone.",
-    "deleteFailed": "Failed to delete route"
+    "deleteFailed": "Failed to delete route",
+    "test": "Test",
+    "testing": "Testing...",
+    "testReachable": "{{status}} · {{time}}ms",
+    "testUnreachable": "Unreachable",
+    "curl": "cURL",
+    "curlTitle": "cURL Sample",
+    "curlCopied": "Copied",
+    "curlCopy": "Copy"
   },
   "gatewayRouteForm": {
     "editTitle": "Edit Route",

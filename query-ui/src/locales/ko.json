@@ -148,7 +148,15 @@
     "noRoutes": "게이트웨이 라우트가 없습니다",
     "noRoutesDesc": "\"라우트 추가\"를 클릭하여 첫 번째 API 라우트를 생성하세요.",
     "deleteConfirm": "라우트 \"{{name}}\"를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
-    "deleteFailed": "라우트 삭제에 실패했습니다"
+    "deleteFailed": "라우트 삭제에 실패했습니다",
+    "test": "테스트",
+    "testing": "테스트 중...",
+    "testReachable": "{{status}} · {{time}}ms",
+    "testUnreachable": "연결 불가",
+    "curl": "cURL",
+    "curlTitle": "cURL 샘플",
+    "curlCopied": "복사됨",
+    "curlCopy": "복사"
   },
   "gatewayRouteForm": {
     "editTitle": "라우트 편집",

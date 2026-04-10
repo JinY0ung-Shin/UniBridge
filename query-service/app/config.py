@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     ENABLE_DEV_TOKEN_ENDPOINT: bool = False
     APISIX_ADMIN_URL: str = "http://apisix:9180"
     APISIX_ADMIN_KEY: str = ""
+    APISIX_SSL_PORT: int = 9443
     PROMETHEUS_URL: str = "http://prometheus:9090"
 
     # CORS — comma-separated allowed origins (e.g. "http://localhost:3001,https://app.example.com")

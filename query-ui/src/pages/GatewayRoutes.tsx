@@ -1,7 +1,15 @@
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { getGatewayRoutes, deleteGatewayRoute, type GatewayRoute } from '../api/client';
+import {
+  getGatewayRoutes,
+  deleteGatewayRoute,
+  testGatewayRoute,
+  getGatewayRouteCurl,
+  type GatewayRoute,
+  type RouteTestResult,
+} from '../api/client';
 import './GatewayRoutes.css';
 
 const METHOD_COLORS: Record<string, string> = {
@@ -12,6 +20,11 @@ function GatewayRoutes() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+
+  const [testResults, setTestResults] = useState<Record<string, RouteTestResult>>({});
+  const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
+  const [curlModal, setCurlModal] = useState<{ routeName: string; curl: string } | null>(null);
+  const [curlCopied, setCurlCopied] = useState(false);
 
   const routesQuery = useQuery({
     queryKey: ['gateway-routes'],
@@ -40,6 +53,68 @@ function GatewayRoutes() {
     if (window.confirm(t('gatewayRoutes.deleteConfirm', { name }))) {
       deleteMutation.mutate(route.id);
     }
+  }
+
+  async function handleTest(routeId: string) {
+    setTestingIds((prev) => new Set(prev).add(routeId));
+    setTestResults((prev) => {
+      const next = { ...prev };
+      delete next[routeId];
+      return next;
+    });
+    try {
+      const result = await testGatewayRoute(routeId);
+      setTestResults((prev) => ({ ...prev, [routeId]: result }));
+    } catch {
+      setTestResults((prev) => ({
+        ...prev,
+        [routeId]: { reachable: false, status_code: null, response_time_ms: 0, body: null, node: '', error: 'Request failed' },
+      }));
+    } finally {
+      setTestingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(routeId);
+        return next;
+      });
+    }
+  }
+
+  async function handleCurl(route: GatewayRoute) {
+    try {
+      const { curl } = await getGatewayRouteCurl(route.id);
+      setCurlModal({ routeName: route.name || route.uri, curl });
+      setCurlCopied(false);
+    } catch {
+      alert('Failed to generate cURL command');
+    }
+  }
+
+  function handleCopy() {
+    if (curlModal) {
+      navigator.clipboard.writeText(curlModal.curl);
+      setCurlCopied(true);
+      setTimeout(() => setCurlCopied(false), 2000);
+    }
+  }
+
+  function renderTestResult(routeId: string) {
+    if (testingIds.has(routeId)) {
+      return <span className="test-result test-result--pending">{t('gatewayRoutes.testing')}</span>;
+    }
+    const result = testResults[routeId];
+    if (!result) return null;
+    if (result.reachable) {
+      return (
+        <span className="test-result test-result--ok" title={typeof result.body === 'string' ? result.body : JSON.stringify(result.body)}>
+          {t('gatewayRoutes.testReachable', { status: result.status_code, time: result.response_time_ms })}
+        </span>
+      );
+    }
+    return (
+      <span className="test-result test-result--fail" title={result.error || ''}>
+        {t('gatewayRoutes.testUnreachable')}
+      </span>
+    );
   }
 
   return (
@@ -93,12 +168,28 @@ function GatewayRoutes() {
                     {route.service_key ? `${route.service_key.header_name}: ${route.service_key.header_value}` : '—'}
                   </td>
                   <td>
-                    <span className={`badge ${route.status === 1 ? 'badge-ok' : 'badge-unknown'}`}>
-                      {route.status === 1 ? t('common.active') : t('common.disabled')}
-                    </span>
+                    <div className="status-cell">
+                      <span className={`badge ${route.status === 1 ? 'badge-ok' : 'badge-unknown'}`}>
+                        {route.status === 1 ? t('common.active') : t('common.disabled')}
+                      </span>
+                      {renderTestResult(route.id)}
+                    </div>
                   </td>
                   <td>
                     <div className="action-buttons">
+                      <button
+                        className="btn btn-sm btn-outline"
+                        onClick={() => handleTest(route.id)}
+                        disabled={testingIds.has(route.id)}
+                      >
+                        {t('gatewayRoutes.test')}
+                      </button>
+                      <button
+                        className="btn btn-sm btn-outline"
+                        onClick={() => handleCurl(route)}
+                      >
+                        {t('gatewayRoutes.curl')}
+                      </button>
                       <button
                         className="btn btn-sm btn-secondary"
                         onClick={() => navigate(`/gateway/routes/${route.id}/edit`)}
@@ -125,6 +216,23 @@ function GatewayRoutes() {
         <div className="empty-state">
           <h3>{t('gatewayRoutes.noRoutes')}</h3>
           <p>{t('gatewayRoutes.noRoutesDesc')}</p>
+        </div>
+      )}
+
+      {curlModal && (
+        <div className="modal-overlay" onClick={() => setCurlModal(null)}>
+          <div className="modal modal--sm" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>{t('gatewayRoutes.curlTitle')}</h2>
+              <button className="modal-close" onClick={() => setCurlModal(null)}>&times;</button>
+            </div>
+            <div className="curl-block">
+              <pre className="curl-code">{curlModal.curl}</pre>
+              <button className="btn btn-sm btn-secondary curl-copy-btn" onClick={handleCopy}>
+                {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

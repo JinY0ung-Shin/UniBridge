@@ -266,6 +266,25 @@ export async function deleteGatewayRoute(id: string): Promise<void> {
   await client.delete(`/admin/gateway/routes/${id}`);
 }
 
+export interface RouteTestResult {
+  reachable: boolean;
+  status_code: number | null;
+  response_time_ms: number;
+  body: unknown;
+  node: string;
+  error?: string;
+}
+
+export async function testGatewayRoute(id: string): Promise<RouteTestResult> {
+  const { data } = await client.post(`/admin/gateway/routes/${id}/test`);
+  return data;
+}
+
+export async function getGatewayRouteCurl(id: string): Promise<{ curl: string }> {
+  const { data } = await client.get(`/admin/gateway/routes/${id}/curl`);
+  return data;
+}
+
 /* ── Gateway: Upstreams ── */
 
 export async function getGatewayUpstreams(): Promise<GatewayListResponse<GatewayUpstream>> {

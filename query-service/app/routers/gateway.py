@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+import httpx
 from httpx import HTTPStatusError
 
 from app.auth import CurrentUser, require_permission
+from app.config import settings
 from app.services import apisix_client
 from app.services import prometheus_client
 
@@ -171,6 +174,93 @@ async def delete_route(route_id: str, _admin: CurrentUser = Depends(require_perm
         _handle_apisix_error(exc, "Route")
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+
+
+@router.post("/routes/{route_id}/test")
+async def test_route(route_id: str, _admin: CurrentUser = Depends(require_permission("gateway.routes.read"))) -> dict[str, Any]:
+    """Test upstream connectivity by sending GET /health to the first node."""
+    try:
+        route = await apisix_client.get_resource("routes", route_id)
+    except HTTPStatusError as exc:
+        _handle_apisix_error(exc, "Route")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+
+    upstream_id = route.get("upstream_id")
+    if not upstream_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Route has no upstream_id")
+
+    try:
+        upstream = await apisix_client.get_resource("upstreams", upstream_id)
+    except HTTPStatusError as exc:
+        _handle_apisix_error(exc, "Upstream")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to get upstream: {exc}")
+
+    nodes = upstream.get("nodes", {})
+    if not nodes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upstream has no nodes")
+
+    first_addr = next(iter(nodes))
+    url = f"http://{first_addr}/health"
+    start = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
+            resp = await client.get(url)
+        elapsed_ms = round((time.monotonic() - start) * 1000)
+        body: Any = None
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text[:500] if resp.text else None
+        return {
+            "reachable": True,
+            "status_code": resp.status_code,
+            "response_time_ms": elapsed_ms,
+            "body": body,
+            "node": first_addr,
+        }
+    except Exception as exc:
+        elapsed_ms = round((time.monotonic() - start) * 1000)
+        return {
+            "reachable": False,
+            "status_code": None,
+            "response_time_ms": elapsed_ms,
+            "body": None,
+            "node": first_addr,
+            "error": str(exc),
+        }
+
+
+@router.get("/routes/{route_id}/curl")
+async def route_curl(route_id: str, _admin: CurrentUser = Depends(require_permission("gateway.routes.read"))) -> dict[str, str]:
+    """Generate a sample curl command for a route."""
+    try:
+        route = await apisix_client.get_resource("routes", route_id)
+    except HTTPStatusError as exc:
+        _handle_apisix_error(exc, "Route")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+
+    uri = route.get("uri", "/")
+    path = uri.rstrip("*").rstrip("/") or "/"
+
+    methods = route.get("methods", ["GET"])
+    method = methods[0] if methods else "GET"
+
+    base_url = f"https://{settings.HOST_IP}:{settings.APISIX_SSL_PORT}{path}"
+
+    parts = ["curl", "-k"]
+    if method != "GET":
+        parts.extend(["-X", method])
+
+    plugins = route.get("plugins", {})
+    if "key-auth" in plugins:
+        parts.extend(["-H", "'apikey: <YOUR_API_KEY>'"])
+
+    parts.append(f"'{base_url}'")
+
+    return {"curl": " ".join(parts)}
 
 
 @router.get("/upstreams")
