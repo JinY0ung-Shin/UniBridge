@@ -165,7 +165,7 @@
     "newSubtitle": "Create a new API gateway route",
     "loadingRoute": "Loading route...",
     "basicInfo": "Basic Info",
-    "uriHint": "Append /* to include all sub-paths",
+    "uriHint": "Must start with /api/. Append /* to include all sub-paths",
     "upstream": "Upstream",
     "selectUpstream": "Select upstream...",
     "stripPrefix": "Strip URI Prefix",

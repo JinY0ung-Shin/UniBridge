@@ -165,7 +165,7 @@
     "newSubtitle": "새로운 API 게이트웨이 라우트 생성",
     "loadingRoute": "라우트를 불러오는 중...",
     "basicInfo": "기본 정보",
-    "uriHint": "/* 를 붙이면 하위 모든 경로를 포함합니다",
+    "uriHint": "/api/로 시작해야 합니다. /* 를 붙이면 하위 모든 경로를 포함합니다",
     "upstream": "업스트림",
     "selectUpstream": "업스트림 선택...",
     "stripPrefix": "URI 접두사 제거",
