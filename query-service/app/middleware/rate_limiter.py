@@ -31,10 +31,11 @@ class RateLimiter:
         self._lock = threading.Lock()
 
     def update_limits(self, rate_limit: int | None = None, max_concurrent: int | None = None) -> None:
-        if rate_limit is not None:
-            self._rate_limit = rate_limit
-        if max_concurrent is not None:
-            self._max_concurrent = max_concurrent
+        with self._lock:
+            if rate_limit is not None:
+                self._rate_limit = rate_limit
+            if max_concurrent is not None:
+                self._max_concurrent = max_concurrent
 
     def check_rate_limit(self, username: str) -> tuple[bool, str]:
         """Check if the user is within rate limits. Returns (allowed, message)."""
@@ -92,11 +93,7 @@ def _extract_username(request: Request) -> str | None:
         )
         return payload.get("sub")
     except JWTError:
-        try:
-            payload = jwt.get_unverified_claims(token)
-            return payload.get("sub") or payload.get("preferred_username")
-        except Exception:
-            return None
+        return None
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):

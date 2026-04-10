@@ -12,11 +12,15 @@ from app.services.query_executor import _strip_strings_and_comments
 # Default blocked keywords
 _SINGLE_KEYWORDS = [
     "GRANT", "REVOKE", "SHUTDOWN", "KILL", "BACKUP", "RESTORE",
+    "TRUNCATE", "DBCC",
 ]
 
 _MULTI_KEYWORDS = [
     "CREATE USER", "DROP USER", "ALTER USER",
     "CREATE LOGIN", "DROP LOGIN", "ALTER LOGIN",
+    "DROP TABLE", "DROP DATABASE",
+    "BULK INSERT", "OPENROWSET",
+    "xp_cmdshell", "sp_configure", "sp_addrolemember", "sp_droprolemember",
 ]
 
 _SINGLE_RE = re.compile(

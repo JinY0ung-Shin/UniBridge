@@ -132,7 +132,21 @@ class SystemConfigResponse(BaseModel):
 class SystemConfigUpdate(BaseModel):
     rate_limit_per_minute: int | None = Field(None, ge=1, le=1000)
     max_concurrent_queries: int | None = Field(None, ge=1, le=100)
-    blocked_sql_keywords: list[str] | None = None
+    blocked_sql_keywords: list[str] | None = Field(None, description="Each keyword must be non-empty")
+
+    @staticmethod
+    def _validate_keywords(v: list[str] | None) -> list[str] | None:
+        if v is not None:
+            v = [kw.strip() for kw in v if kw.strip()]
+        return v if v else None
+
+    def model_post_init(self, __context: object) -> None:
+        if self.blocked_sql_keywords is not None:
+            object.__setattr__(
+                self,
+                "blocked_sql_keywords",
+                self._validate_keywords(self.blocked_sql_keywords),
+            )
 
 
 # ── Roles (RBAC) ────────────────────────────────────────────────────────────
