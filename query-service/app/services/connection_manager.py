@@ -132,16 +132,16 @@ class ConnectionManager:
         """Return the database type for a given alias."""
         return self._db_types.get(alias, "unknown")
 
-    async def test_connection(self, alias: str) -> bool:
-        """Test connectivity by running SELECT 1."""
+    async def test_connection(self, alias: str) -> tuple[bool, str]:
+        """Test connectivity by running SELECT 1. Returns (ok, message)."""
         try:
             engine = self.get_engine(alias)
             async with engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
-            return True
-        except Exception:
+            return True, "Connection successful"
+        except Exception as exc:
             logger.exception("Connection test failed for '%s'", alias)
-            return False
+            return False, str(exc)
 
     def get_status(self, alias: str) -> dict[str, Any]:
         """Return pool status info for the given alias."""

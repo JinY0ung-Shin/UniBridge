@@ -8,3 +8,20 @@
   align-items: flex-start;
   margin-bottom: 28px;
 }
+
+.connections .test-result-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 260px;
+}
+
+.connections .test-detail-msg {
+  font-size: 11px;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+.connections .test-detail-msg--error {
+  color: var(--accent-red);
+}

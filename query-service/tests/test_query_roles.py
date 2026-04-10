@@ -46,7 +46,7 @@ class TestHealthEndpoints:
         ), patch(
             "app.routers.query.connection_manager.test_connection",
             new_callable=AsyncMock,
-            return_value=True,
+            return_value=(True, "Connection successful"),
         ):
             resp = await client.get("/health/databases", headers=auth_header(admin_token))
         assert resp.status_code == 200
@@ -61,7 +61,7 @@ class TestHealthEndpoints:
         ), patch(
             "app.routers.query.connection_manager.test_connection",
             new_callable=AsyncMock,
-            return_value=False,
+            return_value=(False, "Connection refused"),
         ):
             resp = await client.get("/health/databases", headers=auth_header(admin_token))
         assert resp.status_code == 200

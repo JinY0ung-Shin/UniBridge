@@ -215,7 +215,7 @@ async def health_databases(
     db_statuses: dict = {}
     for alias in aliases:
         try:
-            ok = await connection_manager.test_connection(alias)
+            ok, _msg = await connection_manager.test_connection(alias)
             db_statuses[alias] = {"status": "ok" if ok else "error"}
         except Exception as exc:
             logger.warning("Health check failed for '%s': %s", alias, exc)

@@ -248,11 +248,8 @@ async def test_connection(
             detail=f"Database alias '{alias}' is not registered",
         )
 
-    ok = await connection_manager.test_connection(alias)
-    if ok:
-        return {"alias": alias, "status": "ok", "message": "Connection successful"}
-    else:
-        return {"alias": alias, "status": "error", "message": "Connection failed"}
+    ok, message = await connection_manager.test_connection(alias)
+    return {"alias": alias, "status": "ok" if ok else "error", "message": message}
 
 
 @router.get("/admin/query/databases/{alias}/tables")

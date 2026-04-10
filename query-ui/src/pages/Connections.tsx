@@ -173,9 +173,16 @@ function Connections() {
                     <td>{db.pool_size}</td>
                     <td>
                       {testResult ? (
-                        <span className={`badge ${testResult.status === 'error' ? 'badge-error' : 'badge-ok'}`}>
-                          {testResult.status === 'error' ? t('common.error') : t('common.ok')}
-                        </span>
+                        <div className="test-result-block">
+                          <span className={`badge ${testResult.status === 'error' ? 'badge-error' : 'badge-ok'}`}>
+                            {testResult.status === 'error' ? t('common.error') : t('common.ok')}
+                          </span>
+                          {testResult.message && (
+                            <span className={`test-detail-msg ${testResult.status === 'error' ? 'test-detail-msg--error' : ''}`}>
+                              {testResult.message}
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <span className="badge badge-unknown">--</span>
                       )}

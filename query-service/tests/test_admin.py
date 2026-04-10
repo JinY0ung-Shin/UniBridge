@@ -53,7 +53,7 @@ def _cm_patch():
     mock_cm.remove_connection = AsyncMock()
     mock_cm.get_status = MagicMock(return_value={"status": "registered"})
     mock_cm.get_engine = MagicMock(return_value=MagicMock())
-    mock_cm.test_connection = AsyncMock(return_value=True)
+    mock_cm.test_connection = AsyncMock(return_value=(True, "Connection successful"))
     return patch("app.routers.admin.connection_manager", mock_cm)
 
 
@@ -336,14 +336,14 @@ class TestTestConnection:
     @pytest.mark.asyncio
     async def test_connection_fails(self, client, admin_token):
         with _cm_patch() as ctx:
-            ctx.test_connection = AsyncMock(return_value=False)
+            ctx.test_connection = AsyncMock(return_value=(False, "Connection refused"))
             resp = await client.post(
                 "/admin/query/databases/baddb/test",
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 200
         assert resp.json()["status"] == "error"
-        assert resp.json()["message"] == "Connection failed"
+        assert "refused" in resp.json()["message"].lower()
 
 
 # ===========================================================================
