@@ -7,6 +7,7 @@ import {
   updateDatabase,
   deleteDatabase,
   testDatabase,
+  getDbTables,
   type DatabaseConfig,
 } from '../api/client';
 import { useToast } from '../components/ToastContext';
@@ -120,9 +121,14 @@ function Connections() {
   const [curlModal, setCurlModal] = useState<{ alias: string; curl: string } | null>(null);
   const [curlCopied, setCurlCopied] = useState(false);
 
-  function handleCurl(alias: string) {
+  async function handleCurl(alias: string) {
+    let tableName = '<TABLE>';
+    try {
+      const tables = await getDbTables(alias);
+      if (tables.length > 0) tableName = tables[0];
+    } catch { /* use placeholder */ }
     const base = `${window.location.origin}/_api/query/execute`;
-    const body = JSON.stringify({ database: alias, sql: 'SELECT 1', limit: 10 }, null, 2);
+    const body = JSON.stringify({ database: alias, sql: `SELECT * FROM ${tableName} LIMIT 10` }, null, 2);
     const curl = `curl -k -X POST \\\n  -H 'Content-Type: application/json' \\\n  -H 'Authorization: Bearer <TOKEN>' \\\n  '${base}' \\\n  -d '${body}'`;
     setCurlModal({ alias, curl });
     setCurlCopied(false);
