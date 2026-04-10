@@ -248,9 +248,9 @@ async def route_curl(route_id: str, _admin: CurrentUser = Depends(require_permis
     methods = route.get("methods", ["GET"])
     method = methods[0] if methods else "GET"
 
-    base_url = f"https://{settings.HOST_IP}:{settings.APISIX_SSL_PORT}{path}"
+    base_url = f"http://{settings.HOST_IP}:{settings.APISIX_PORT}{path}"
 
-    parts = ["curl", "-k"]
+    parts = ["curl"]
     if method != "GET":
         parts.extend(["-X", method])
 
