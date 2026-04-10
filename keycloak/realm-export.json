@@ -36,8 +36,8 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["https://localhost:3000/*"],
-      "webOrigins": ["https://localhost:3000"],
+      "redirectUris": ["${KEYCLOAK_REDIRECT_URI:-https://localhost:3000/*}"],
+      "webOrigins": ["${KEYCLOAK_WEB_ORIGIN:-https://localhost:3000}"],
       "protocolMappers": [
         {
           "name": "apihub-role-mapper",

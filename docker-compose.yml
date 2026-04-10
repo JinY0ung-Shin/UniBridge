@@ -62,6 +62,8 @@ services:
       - KC_DB_USERNAME=${KC_DB_USER:-keycloak}
       - KC_DB_PASSWORD=${KC_DB_PASSWORD:-keycloak}
       - KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:-}
+      - KEYCLOAK_REDIRECT_URI=${KEYCLOAK_REDIRECT_URI:-https://localhost:3000/*}
+      - KEYCLOAK_WEB_ORIGIN=${KEYCLOAK_WEB_ORIGIN:-https://localhost:3000}
     ports:
       - "${KEYCLOAK_PORT:-8443}:8443"
     volumes:
