@@ -103,6 +103,7 @@ services:
       # (since Keycloak embeds the browser-facing URL as the JWT issuer claim)
       - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
       - SSL_VERIFY=${SSL_VERIFY:-true}
+      - SSL_CA_CERT_PATH=${SSL_CA_CERT_PATH:-}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
       - MSSQL_TRUST_SERVER_CERT=${MSSQL_TRUST_SERVER_CERT:-no}
       - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-60}
