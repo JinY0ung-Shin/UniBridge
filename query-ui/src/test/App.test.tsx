@@ -29,7 +29,7 @@ vi.mock('../api/client', () => ({
       'admin.roles.read',
       'gateway.routes.read',
       'gateway.upstreams.read',
-      'gateway.consumers.read',
+      'apikeys.read',
       'gateway.monitoring.read',
     ],
   }),
@@ -51,10 +51,10 @@ vi.mock('../api/client', () => ({
   getGatewayUpstream: vi.fn(),
   saveGatewayUpstream: vi.fn(),
   deleteGatewayUpstream: vi.fn(),
-  getGatewayConsumers: vi.fn().mockResolvedValue({ items: [], total: 0 }),
-  getGatewayConsumer: vi.fn(),
-  saveGatewayConsumer: vi.fn(),
-  deleteGatewayConsumer: vi.fn(),
+  getApiKeys: vi.fn().mockResolvedValue([]),
+  createApiKey: vi.fn(),
+  updateApiKey: vi.fn(),
+  deleteApiKey: vi.fn(),
   getMetricsSummary: vi.fn().mockResolvedValue({ total_requests: 0, error_rate: 0, avg_latency_ms: 0 }),
   getMetricsRequests: vi.fn().mockResolvedValue([]),
   getMetricsStatusCodes: vi.fn().mockResolvedValue([]),
@@ -148,7 +148,7 @@ describe('App', () => {
     expect(screen.getByText('Query Playground')).toBeInTheDocument();
     expect(screen.getByText('Gateway Routes')).toBeInTheDocument();
     expect(screen.getByText('Gateway Upstreams')).toBeInTheDocument();
-    expect(screen.getByText('Gateway Consumers')).toBeInTheDocument();
+    expect(screen.getByText('API Keys')).toBeInTheDocument();
     expect(screen.getByText('Gateway Monitoring')).toBeInTheDocument();
     expect(screen.getByText('Roles')).toBeInTheDocument();
   });
