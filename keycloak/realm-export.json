@@ -61,7 +61,7 @@
       "enabled": true,
       "serviceAccountClientId": "apihub-service",
       "clientRoles": {
-        "realm-management": ["view-users", "manage-users", "view-realm"]
+        "realm-management": ["view-users", "manage-users", "view-realm", "manage-clients"]
       }
     },
     {
