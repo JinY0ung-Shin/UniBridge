@@ -36,9 +36,9 @@ ALL_PERMISSIONS = [
     "gateway.routes.write",
     "gateway.upstreams.read",
     "gateway.upstreams.write",
-    "gateway.consumers.read",
-    "gateway.consumers.write",
     "gateway.monitoring.read",
+    "apikeys.read",
+    "apikeys.write",
     "admin.roles.read",
     "admin.roles.write",
 ]
