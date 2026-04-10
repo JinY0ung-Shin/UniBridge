@@ -104,16 +104,23 @@ function GatewayRoutes() {
     const result = testResults[routeId];
     if (!result) return null;
     if (result.reachable) {
+      const bodyStr = typeof result.body === 'string' ? result.body : JSON.stringify(result.body, null, 2);
       return (
-        <span className="test-result test-result--ok" title={typeof result.body === 'string' ? result.body : JSON.stringify(result.body)}>
-          {t('gatewayRoutes.testReachable', { status: result.status_code, time: result.response_time_ms })}
-        </span>
+        <div className="test-result-block">
+          <span className="test-result test-result--ok">
+            {t('gatewayRoutes.testReachable', { status: result.status_code, time: result.response_time_ms })}
+          </span>
+          {result.node && <span className="test-detail">{result.node}</span>}
+          {bodyStr && <pre className="test-body">{bodyStr}</pre>}
+        </div>
       );
     }
     return (
-      <span className="test-result test-result--fail" title={result.error || ''}>
-        {t('gatewayRoutes.testUnreachable')}
-      </span>
+      <div className="test-result-block">
+        <span className="test-result test-result--fail">{t('gatewayRoutes.testUnreachable')}</span>
+        {result.node && <span className="test-detail">{result.node}</span>}
+        {result.error && <span className="test-error">{result.error}</span>}
+      </div>
     );
   }
 

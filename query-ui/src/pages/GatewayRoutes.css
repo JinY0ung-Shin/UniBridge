@@ -88,7 +88,40 @@
 .test-result--fail {
   color: var(--accent-red);
   background: color-mix(in srgb, var(--accent-red) 10%, transparent);
-  cursor: help;
+}
+
+.test-result-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 280px;
+}
+
+.test-detail {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+}
+
+.test-error {
+  font-size: 11px;
+  color: var(--accent-red);
+  word-break: break-word;
+}
+
+.test-body {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  margin: 2px 0 0;
+  max-height: 60px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .btn-outline {
