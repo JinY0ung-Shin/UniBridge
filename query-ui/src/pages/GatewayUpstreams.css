@@ -75,7 +75,7 @@
 }
 
 .node-remove:hover {
-  color: #ff3070;
+  opacity: 0.7;
 }
 
 .add-node-btn {

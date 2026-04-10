@@ -46,7 +46,12 @@
     "language": "Language",
     "languageDesc": "Select the UI display language",
     "korean": "한국어",
-    "english": "English"
+    "english": "English",
+    "theme": "Theme",
+    "themeDesc": "Choose the UI color theme",
+    "themeDark": "Dark",
+    "themeLight": "Light",
+    "themeSystem": "System"
   },
   "dashboard": {
     "title": "Dashboard",

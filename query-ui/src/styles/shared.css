@@ -3,44 +3,101 @@
    ══════════════════════════════════════ */
 
 :root {
-  /* Background */
+  /* Shared tokens */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --font-sans: 'Outfit', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* ── Dark theme (default) ── */
   --bg-root: #000000;
   --bg-primary: #0a0a0a;
   --bg-secondary: #111111;
   --bg-tertiary: #1a1a1a;
   --bg-hover: #1a1a1a;
 
-  /* Border */
   --border-default: #222222;
   --border-subtle: #1a1a1a;
   --border-hover: #333333;
 
-  /* Text */
   --text-primary: #ededed;
   --text-secondary: #a1a1a1;
   --text-tertiary: #666666;
   --text-inverse: #000000;
 
-  /* Accent */
   --accent-blue: #0070f3;
   --accent-blue-hover: #0060d3;
   --accent-green: #50e3c2;
   --accent-red: #f31260;
   --accent-yellow: #f5a623;
 
-  /* Radius */
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
-
-  /* Font */
-  --font-sans: 'Outfit', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
-
-  /* Shadow */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
   --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.6);
+
+  /* Chart-specific tokens */
+  --chart-grid: #1a1a1a;
+  --chart-axis: #666666;
+  --chart-tooltip-bg: #111111;
+  --chart-tooltip-border: #222222;
+
+  /* Semantic status colors */
+  --status-success: #22c55e;
+  --status-danger: #ef4444;
+  --role-admin: #818cf8;
+  --role-admin-bg: rgba(99, 102, 241, 0.12);
+  --role-developer: #22d3ee;
+  --role-developer-bg: rgba(6, 182, 212, 0.12);
+  --role-viewer: #9ca3af;
+  --role-viewer-bg: rgba(156, 163, 175, 0.12);
+
+  color-scheme: dark;
+}
+
+/* ── Light theme ── */
+
+[data-theme="light"] {
+  --bg-root: #f8f8f8;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f2f2f2;
+  --bg-tertiary: #e8e8e8;
+  --bg-hover: #f0f0f0;
+
+  --border-default: #e0e0e0;
+  --border-subtle: #eaeaea;
+  --border-hover: #c8c8c8;
+
+  --text-primary: #171717;
+  --text-secondary: #525252;
+  --text-tertiary: #a3a3a3;
+  --text-inverse: #ffffff;
+
+  --accent-blue: #0070f3;
+  --accent-blue-hover: #005bd4;
+  --accent-green: #17b692;
+  --accent-red: #e5124c;
+  --accent-yellow: #d48c1a;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.12);
+
+  --chart-grid: #e8e8e8;
+  --chart-axis: #a3a3a3;
+  --chart-tooltip-bg: #ffffff;
+  --chart-tooltip-border: #e0e0e0;
+
+  --status-success: #16a34a;
+  --status-danger: #dc2626;
+  --role-admin: #6366f1;
+  --role-admin-bg: rgba(99, 102, 241, 0.08);
+  --role-developer: #0891b2;
+  --role-developer-bg: rgba(6, 182, 212, 0.08);
+  --role-viewer: #6b7280;
+  --role-viewer-bg: rgba(107, 114, 128, 0.08);
+
+  color-scheme: light;
 }
 
 /* ── Page Header ── */
@@ -87,7 +144,7 @@
 }
 
 .btn-primary:hover {
-  background: #ffffff;
+  opacity: 0.85;
 }
 
 .btn-primary:disabled {
@@ -109,31 +166,31 @@
 .btn-danger {
   background: transparent;
   color: var(--accent-red);
-  border: 1px solid rgba(243, 18, 96, 0.3);
+  border: 1px solid color-mix(in srgb, var(--accent-red) 30%, transparent);
 }
 
 .btn-danger:hover {
-  background: rgba(243, 18, 96, 0.08);
+  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
 }
 
 .btn-warning {
   background: transparent;
-  color: #f59e0b;
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: var(--accent-yellow);
+  border: 1px solid color-mix(in srgb, var(--accent-yellow) 30%, transparent);
 }
 
 .btn-warning:hover {
-  background: rgba(245, 158, 11, 0.08);
+  background: color-mix(in srgb, var(--accent-yellow) 8%, transparent);
 }
 
 .btn-success {
   background: transparent;
-  color: #22c55e;
-  border: 1px solid rgba(34, 197, 94, 0.3);
+  color: var(--status-success);
+  border: 1px solid color-mix(in srgb, var(--status-success) 30%, transparent);
 }
 
 .btn-success:hover {
-  background: rgba(34, 197, 94, 0.08);
+  background: color-mix(in srgb, var(--status-success) 8%, transparent);
 }
 
 .btn-sm {
@@ -210,12 +267,12 @@
 }
 
 .badge-ok {
-  background: rgba(80, 227, 194, 0.1);
+  background: color-mix(in srgb, var(--accent-green) 10%, transparent);
   color: var(--accent-green);
 }
 
 .badge-error {
-  background: rgba(243, 18, 96, 0.1);
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
   color: var(--accent-red);
 }
 
@@ -232,7 +289,7 @@
   letter-spacing: 0.5px;
   padding: 2px 8px;
   border-radius: var(--radius-sm);
-  background: rgba(0, 112, 243, 0.1);
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
   color: var(--accent-blue);
 }
 
@@ -247,12 +304,12 @@
 
 .status-dot--green {
   background: var(--accent-green);
-  box-shadow: 0 0 6px rgba(80, 227, 194, 0.4);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent-green) 40%, transparent);
 }
 
 .status-dot--red {
   background: var(--accent-red);
-  box-shadow: 0 0 6px rgba(243, 18, 96, 0.4);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent-red) 40%, transparent);
 }
 
 /* ── Modal ── */
@@ -378,7 +435,7 @@
 }
 
 .form-error {
-  background: rgba(243, 18, 96, 0.1);
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
   color: var(--accent-red);
   padding: 8px 12px;
   border-radius: var(--radius-md);
@@ -396,13 +453,13 @@
 }
 
 .error-banner {
-  background: rgba(243, 18, 96, 0.08);
+  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
   color: var(--accent-red);
   padding: 12px 16px;
   border-radius: var(--radius-md);
   font-size: 13px;
   margin-bottom: 24px;
-  border: 1px solid rgba(243, 18, 96, 0.2);
+  border: 1px solid color-mix(in srgb, var(--accent-red) 20%, transparent);
 }
 
 .empty-state {

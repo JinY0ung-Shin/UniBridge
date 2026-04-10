@@ -60,19 +60,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return (
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        height: '100vh', background: '#0a0a0a', color: '#e5e5e5',
-        fontFamily: 'system-ui, sans-serif', padding: '2rem',
+        height: '100vh', background: 'var(--bg-root)', color: 'var(--text-primary)',
+        fontFamily: 'var(--font-sans)', padding: '2rem',
       }}>
         <div style={{ textAlign: 'center', maxWidth: 500 }}>
           <h2 style={{ marginBottom: '1rem' }}>Authentication Error</h2>
-          <p style={{ color: '#999', lineHeight: 1.6 }}>
+          <p style={{ color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
             {error || 'Authentication failed. Please try again.'}
           </p>
           <button
             onClick={() => window.location.reload()}
             style={{
               marginTop: '1.5rem', padding: '8px 24px',
-              background: '#333', color: '#fff', border: '1px solid #555',
+              background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border-hover)',
               borderRadius: 6, cursor: 'pointer', fontSize: 14,
             }}
           >

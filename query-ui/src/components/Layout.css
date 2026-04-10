@@ -232,13 +232,13 @@
 }
 
 .login-error {
-  background: rgba(243, 18, 96, 0.08);
+  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
   color: var(--accent-red);
   padding: 8px 12px;
   border-radius: var(--radius-md);
   font-size: 13px;
   margin-bottom: 16px;
-  border: 1px solid rgba(243, 18, 96, 0.2);
+  border: 1px solid color-mix(in srgb, var(--accent-red) 20%, transparent);
 }
 
 .login-btn {
@@ -256,7 +256,7 @@
 }
 
 .login-btn:hover {
-  background: #ffffff;
+  opacity: 0.85;
 }
 
 .login-btn:disabled {

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -12,6 +12,7 @@ import {
   getMetricsLatency,
   getMetricsTopRoutes,
 } from '../api/client';
+import { useTheme } from '../components/ThemeContext';
 import './GatewayMonitoring.css';
 
 const TIME_RANGES = ['15m', '1h', '6h', '24h'];
@@ -21,34 +22,39 @@ function formatTime(ts: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  '200': '#50e3c2',
-  '201': '#50e3c2',
-  '204': '#50e3c2',
-  '301': '#0070f3',
-  '302': '#0070f3',
-  '304': '#0070f3',
-  '400': '#f5a623',
-  '401': '#f5a623',
-  '403': '#f5a623',
-  '404': '#f5a623',
-  '500': '#f31260',
-  '502': '#f31260',
-  '503': '#f31260',
-};
+function getCssVar(name: string): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
 
 function getStatusColor(code: string): string {
-  if (STATUS_COLORS[code]) return STATUS_COLORS[code];
-  if (code.startsWith('2')) return '#50e3c2';
-  if (code.startsWith('3')) return '#0070f3';
-  if (code.startsWith('4')) return '#f5a623';
-  if (code.startsWith('5')) return '#f31260';
-  return '#666666';
+  const green = getCssVar('--accent-green');
+  const blue = getCssVar('--accent-blue');
+  const yellow = getCssVar('--accent-yellow');
+  const red = getCssVar('--accent-red');
+  const muted = getCssVar('--text-tertiary');
+  if (code.startsWith('2')) return green;
+  if (code.startsWith('3')) return blue;
+  if (code.startsWith('4')) return yellow;
+  if (code.startsWith('5')) return red;
+  return muted;
 }
 
 function GatewayMonitoring() {
   const { t } = useTranslation();
   const [range, setRange] = useState('1h');
+  const { resolved } = useTheme();
+
+  const chartColors = useMemo(() => ({
+    grid: getCssVar('--chart-grid'),
+    axis: getCssVar('--chart-axis'),
+    tooltipBg: getCssVar('--chart-tooltip-bg'),
+    tooltipBorder: getCssVar('--chart-tooltip-border'),
+    blue: getCssVar('--accent-blue'),
+    green: getCssVar('--accent-green'),
+    yellow: getCssVar('--accent-yellow'),
+    red: getCssVar('--accent-red'),
+    textSecondary: getCssVar('--text-secondary'),
+  }), [resolved]);
 
   const summaryQuery = useQuery({
     queryKey: ['metrics-summary', range],
@@ -147,15 +153,15 @@ function GatewayMonitoring() {
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={requestsData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1a" />
-                <XAxis dataKey="time" stroke="#666" tick={{ fontSize: 11 }} />
-                <YAxis stroke="#666" tick={{ fontSize: 11 }} />
+                <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
+                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
-                  contentStyle={{ background: '#111', border: '1px solid #222', borderRadius: 6 }}
-                  labelStyle={{ color: '#666' }}
-                  itemStyle={{ color: '#a1a1a1' }}
+                  contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
+                  labelStyle={{ color: chartColors.axis }}
+                  itemStyle={{ color: chartColors.textSecondary }}
                 />
-                <Line type="monotone" dataKey="rps" stroke="#0070f3" strokeWidth={2} dot={false} name="req/s" />
+                <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name="req/s" />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -171,13 +177,13 @@ function GatewayMonitoring() {
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={statusQuery.data}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1a" />
-                <XAxis dataKey="code" stroke="#666" tick={{ fontSize: 11 }} />
-                <YAxis stroke="#666" tick={{ fontSize: 11 }} />
+                <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
+                <XAxis dataKey="code" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
-                  contentStyle={{ background: '#111', border: '1px solid #222', borderRadius: 6 }}
-                  labelStyle={{ color: '#666' }}
-                  itemStyle={{ color: '#a1a1a1' }}
+                  contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
+                  labelStyle={{ color: chartColors.axis }}
+                  itemStyle={{ color: chartColors.textSecondary }}
                 />
                 <Bar dataKey="count" name="Requests">
                   {(statusQuery.data ?? []).map((entry, index) => (
@@ -199,18 +205,18 @@ function GatewayMonitoring() {
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={latencyChartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1a" />
-                <XAxis dataKey="time" stroke="#666" tick={{ fontSize: 11 }} />
-                <YAxis stroke="#666" tick={{ fontSize: 11 }} />
+                <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
+                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
-                  contentStyle={{ background: '#111', border: '1px solid #222', borderRadius: 6 }}
-                  labelStyle={{ color: '#666' }}
-                  itemStyle={{ color: '#a1a1a1' }}
+                  contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
+                  labelStyle={{ color: chartColors.axis }}
+                  itemStyle={{ color: chartColors.textSecondary }}
                 />
-                <Legend wrapperStyle={{ color: '#666', fontSize: 11 }} />
-                <Line type="monotone" dataKey="p50" stroke="#50e3c2" strokeWidth={2} dot={false} name="P50" />
-                <Line type="monotone" dataKey="p95" stroke="#f5a623" strokeWidth={2} dot={false} name="P95" />
-                <Line type="monotone" dataKey="p99" stroke="#f31260" strokeWidth={2} dot={false} name="P99" />
+                <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
+                <Line type="monotone" dataKey="p50" stroke={chartColors.green} strokeWidth={2} dot={false} name="P50" />
+                <Line type="monotone" dataKey="p95" stroke={chartColors.yellow} strokeWidth={2} dot={false} name="P95" />
+                <Line type="monotone" dataKey="p99" stroke={chartColors.red} strokeWidth={2} dot={false} name="P99" />
               </LineChart>
             </ResponsiveContainer>
           </div>

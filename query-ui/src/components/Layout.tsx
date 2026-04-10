@@ -53,7 +53,7 @@ function Layout({ children }: LayoutProps) {
           <div className="sidebar-logo">
             <div className="sidebar-logo-icon">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M3 5h10M3 8h10M3 11h7" stroke="#000" strokeWidth="1.5" strokeLinecap="round" />
+                <path d="M3 5h10M3 8h10M3 11h7" stroke="var(--text-inverse)" strokeWidth="1.5" strokeLinecap="round" />
               </svg>
             </div>
             <span className="sidebar-title">API Hub</span>

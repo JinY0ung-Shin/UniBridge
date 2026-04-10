@@ -70,7 +70,7 @@
   font-weight: 600;
   padding: 1px 6px;
   border-radius: var(--radius-sm);
-  background: rgba(0, 112, 243, 0.1);
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
   color: var(--accent-blue);
   text-transform: uppercase;
   letter-spacing: 0.3px;

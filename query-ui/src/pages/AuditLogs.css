@@ -116,7 +116,7 @@
 }
 
 .detail-error {
-  background: rgba(243, 18, 96, 0.06);
+  background: color-mix(in srgb, var(--accent-red) 6%, transparent);
   color: var(--accent-red);
   padding: 12px 14px;
   border-radius: var(--radius-md);

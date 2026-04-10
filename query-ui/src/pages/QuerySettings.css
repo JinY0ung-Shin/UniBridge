@@ -9,8 +9,8 @@
 }
 
 .settings-card {
-  background: var(--color-bg-primary, #fff);
-  border: 1px solid var(--color-border, #e0e0e0);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
   border-radius: 8px;
   padding: 20px;
 }
@@ -35,26 +35,33 @@
 .form-group input {
   width: 100%;
   padding: 8px 10px;
-  border: 1px solid var(--color-border, #d0d0d0);
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   font-size: 14px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: var(--accent-blue);
 }
 
 .form-hint {
   display: block;
   font-size: 12px;
-  color: var(--color-text-secondary, #888);
+  color: var(--text-secondary);
   margin-top: 4px;
 }
 
 .save-success {
-  color: var(--color-success, #22c55e);
+  color: var(--accent-green);
   font-size: 13px;
   margin-left: 12px;
 }
 
 .save-error {
-  color: var(--color-error, #ef4444);
+  color: var(--accent-red);
   font-size: 13px;
   margin-left: 12px;
 }

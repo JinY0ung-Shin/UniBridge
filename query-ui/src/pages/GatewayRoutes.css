@@ -26,27 +26,27 @@
 }
 
 .method-badge--get {
-  background: rgba(0, 112, 243, 0.1);
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
   color: var(--accent-blue);
 }
 
 .method-badge--post {
-  background: rgba(80, 227, 194, 0.1);
+  background: color-mix(in srgb, var(--accent-green) 10%, transparent);
   color: var(--accent-green);
 }
 
 .method-badge--put {
-  background: rgba(245, 166, 35, 0.1);
+  background: color-mix(in srgb, var(--accent-yellow) 10%, transparent);
   color: var(--accent-yellow);
 }
 
 .method-badge--delete {
-  background: rgba(243, 18, 96, 0.1);
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
   color: var(--accent-red);
 }
 
 .method-badge--patch {
-  background: rgba(161, 161, 161, 0.1);
+  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
   color: var(--text-secondary);
 }
 
