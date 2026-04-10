@@ -49,6 +49,35 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         break
 
+    logger.info("Provisioning APISIX query route...")
+    try:
+        from app.services import apisix_client
+
+        # Ensure upstream for query-service exists
+        await apisix_client.put_resource("upstreams", "query-service", {
+            "name": "query-service",
+            "type": "roundrobin",
+            "nodes": {"query-service:8000": 1},
+        })
+
+        # Ensure /api/query/* route exists with key-auth
+        await apisix_client.put_resource("routes", "query-api", {
+            "name": "query-api",
+            "uri": "/api/query/*",
+            "methods": ["POST", "GET"],
+            "upstream_id": "query-service",
+            "plugins": {
+                "key-auth": {},
+                "proxy-rewrite": {
+                    "regex_uri": ["^/api/query(.*)", "/query$1"],
+                },
+            },
+            "status": 1,
+        })
+        logger.info("APISIX query route provisioned successfully")
+    except Exception as exc:
+        logger.warning("Failed to provision APISIX query route (will retry on first request): %s", exc)
+
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────
