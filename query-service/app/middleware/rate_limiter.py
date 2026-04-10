@@ -78,26 +78,26 @@ rate_limiter = RateLimiter()
 
 
 def _extract_username(request: Request) -> str | None:
-    """Extract username from JWT in Authorization header or APISIX consumer header."""
+    """Extract username from JWT in Authorization header or APISIX consumer header.
+
+    This is for rate-limiting identification only — actual auth verification
+    happens later in the endpoint dependency. We use unverified claims to
+    support both HS256 (dev) and RS256 (Keycloak production) tokens.
+    """
     # APISIX-forwarded API key user (header set by APISIX after key-auth)
     consumer = request.headers.get("x-consumer-username")
     if consumer:
         return f"apikey:{consumer}"
 
-    # JWT Bearer token
+    # JWT Bearer token — read claims without signature verification
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer "):
         return None
 
     token = auth[7:]
     try:
-        payload = jwt.decode(
-            token,
-            app_settings.JWT_SECRET,
-            algorithms=[app_settings.JWT_ALGORITHM],
-            options={"verify_exp": False},
-        )
-        return payload.get("sub")
+        claims = jwt.get_unverified_claims(token)
+        return claims.get("preferred_username") or claims.get("sub")
     except JWTError:
         return None
 

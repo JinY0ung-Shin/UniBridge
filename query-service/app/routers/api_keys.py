@@ -55,6 +55,7 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
     """Update consumer-restriction plugin on routes to include/exclude this consumer.
 
     Raises HTTPException on failure so the caller can abort before committing DB changes.
+    On partial failure, attempts best-effort rollback of already-applied changes.
     """
     try:
         result = await apisix_client.list_resources("routes")
@@ -64,17 +65,20 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
             detail=f"Failed to list APISIX routes for consumer-restriction sync: {exc}",
         )
 
+    # Collect changes needed: [(route_id, old_body, new_body)]
+    changes: list[tuple[str, dict, dict]] = []
     for route in result.get("items", []):
         route_id = route.get("id")
         if not route_id:
             continue
         plugins = route.get("plugins", {})
-        has_key_auth = "key-auth" in plugins
-
-        if not has_key_auth:
+        if "key-auth" not in plugins:
             continue
 
-        cr = plugins.get("consumer-restriction", {})
+        old_body = {k: v for k, v in route.items() if k not in ("id", "create_time", "update_time")}
+
+        new_plugins = dict(plugins)
+        cr = new_plugins.get("consumer-restriction", {})
         whitelist = set(cr.get("whitelist", []))
 
         if route_id in allowed_routes:
@@ -83,18 +87,31 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
             whitelist.discard(consumer_name)
 
         if whitelist:
-            plugins["consumer-restriction"] = {"whitelist": sorted(whitelist)}
+            new_plugins["consumer-restriction"] = {"whitelist": sorted(whitelist)}
         else:
-            plugins.pop("consumer-restriction", None)
+            new_plugins.pop("consumer-restriction", None)
 
+        new_body = dict(old_body)
+        new_body["plugins"] = new_plugins
+        changes.append((route_id, old_body, new_body))
+
+    # Apply changes, tracking which succeeded for rollback
+    applied: list[tuple[str, dict]] = []  # [(route_id, old_body)]
+    for route_id, old_body, new_body in changes:
         try:
-            body = {k: v for k, v in route.items() if k not in ("id", "create_time", "update_time")}
-            body["plugins"] = plugins
-            await apisix_client.put_resource("routes", route_id, body)
+            await apisix_client.put_resource("routes", route_id, new_body)
+            applied.append((route_id, old_body))
         except Exception as exc:
+            # Best-effort rollback of already-applied changes
+            for rb_route_id, rb_old_body in applied:
+                try:
+                    await apisix_client.put_resource("routes", rb_route_id, rb_old_body)
+                except Exception:
+                    logger.error("Rollback failed for route %s during consumer-restriction sync", rb_route_id)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to update consumer-restriction on route {route_id}: {exc}",
+                detail=f"Failed to update consumer-restriction on route {route_id}: {exc}. "
+                       f"Rolled back {len(applied)} previously applied change(s).",
             )
 
 
@@ -142,8 +159,16 @@ async def create_api_key(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to create APISIX consumer: {exc}")
 
     # Sync consumer-restriction BEFORE committing DB — abort on failure
+    # If sync fails, clean up the APISIX consumer we just created
     if body.allowed_routes:
-        await _sync_consumer_restriction(body.allowed_routes, body.name)
+        try:
+            await _sync_consumer_restriction(body.allowed_routes, body.name)
+        except HTTPException:
+            try:
+                await apisix_client.delete_resource("consumers", body.name)
+            except Exception:
+                logger.error("Failed to clean up APISIX consumer '%s' after sync failure", body.name)
+            raise
 
     access = ApiKeyAccess(
         consumer_name=body.name,
