@@ -124,3 +124,53 @@ async def test_delete_api_key(client, admin_token):
 
         resp = await client.get("/admin/api-keys", headers=auth_header(admin_token))
         assert all(k["name"] != "del-app" for k in resp.json())
+
+
+@pytest.mark.asyncio
+async def test_query_execute_via_apikey_header(client, admin_token):
+    """Simulate APISIX-forwarded request with X-Consumer-Username."""
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={
+            "username": "query-app",
+            "plugins": {"key-auth": {"key": "qk-123"}},
+        })
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        await client.post(
+            "/admin/api-keys",
+            json={"name": "query-app", "api_key": "qk-123", "allowed_databases": ["testdb"]},
+            headers=auth_header(admin_token),
+        )
+
+    # APISIX-forwarded request (no Bearer token, just header)
+    resp = await client.post(
+        "/query/execute",
+        json={"database": "testdb", "sql": "SELECT 1"},
+        headers={"X-Consumer-Username": "query-app"},
+    )
+    # 404 because "testdb" engine doesn't exist in connection_manager, but auth passes
+    assert resp.status_code == 404
+    assert "not registered" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_query_execute_apikey_db_not_allowed(client, admin_token):
+    """API key user cannot query databases not in their allowed list."""
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={
+            "username": "restricted-app",
+            "plugins": {"key-auth": {"key": "rk-123"}},
+        })
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        await client.post(
+            "/admin/api-keys",
+            json={"name": "restricted-app", "api_key": "rk-123", "allowed_databases": ["allowed-db"]},
+            headers=auth_header(admin_token),
+        )
+
+    resp = await client.post(
+        "/query/execute",
+        json={"database": "forbidden-db", "sql": "SELECT 1"},
+        headers={"X-Consumer-Username": "restricted-app"},
+    )
+    assert resp.status_code == 403
+    assert "not allowed" in resp.json()["detail"].lower()

@@ -295,12 +295,12 @@ class TestQueryExecute:
         assert resp.status_code == 403
 
     async def test_execute_without_auth_returns_401(self, client):
-        """No token at all yields 401 (or 403 from HTTPBearer)."""
+        """No token at all yields 401."""
         resp = await client.post(
             "/query/execute",
             json={"database": "anydb", "sql": "SELECT 1"},
         )
-        assert resp.status_code == 403  # HTTPBearer returns 403 when no creds
+        assert resp.status_code == 401  # get_current_user_or_apikey returns 401 when no creds
 
 
 # ============================================================================

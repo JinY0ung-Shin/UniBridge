@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import CurrentUser, get_role_permissions, require_permission
+from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_role_permissions, require_permission
 from app.database import get_db
 from app.models import Permission
 from app.schemas import DBConnectionResponse, HealthResponse, QueryRequest, QueryResponse
@@ -27,11 +27,30 @@ router = APIRouter(tags=["Query"])
 @router.post("/query/execute", response_model=QueryResponse)
 async def execute(
     req: QueryRequest,
-    user: CurrentUser = Depends(require_permission("query.execute")),
+    user: CurrentUser | ApiKeyUser = Depends(get_current_user_or_apikey),
     db: AsyncSession = Depends(get_db),
 ) -> QueryResponse:
     """Execute an SQL query against a registered database."""
-    # 1. Verify the database alias exists in the connection manager
+
+    # API Key user: check allowed databases
+    if isinstance(user, ApiKeyUser):
+        if req.database not in user.allowed_databases:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"API key '{user.consumer_name}' is not allowed to access database '{req.database}'",
+            )
+        username = f"apikey:{user.consumer_name}"
+    else:
+        # JWT user: check role-based permission
+        user_perms = await get_role_permissions(db, user.role)
+        if "query.execute" not in user_perms:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Required permission: query.execute",
+            )
+        username = user.username
+
+    # 1. Verify the database alias exists
     try:
         engine = connection_manager.get_engine(req.database)
     except KeyError:
@@ -42,34 +61,44 @@ async def execute(
 
     db_type = connection_manager.get_db_type(req.database)
 
-    # 2. Check per-database permissions (users with query.databases.write bypass)
-    statement_type = detect_statement_type(req.sql)
+    # 2. Check per-database permissions
     perm = None
-    user_perms = await get_role_permissions(db, user.role)
-    if "query.databases.write" not in user_perms:
-        result = await db.execute(
-            select(Permission).where(
-                Permission.role == user.role,
-                Permission.db_alias == req.database,
-            )
-        )
-        perm = result.scalar_one_or_none()
-        if perm is None:
+    if isinstance(user, ApiKeyUser):
+        # API key users: only SELECT allowed
+        statement_type = detect_statement_type(req.sql)
+        if statement_type != "select":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"No permissions configured for role '{user.role}' on database '{req.database}'",
+                detail="API key users can only execute SELECT queries",
             )
-        if not check_permission(
-            statement_type,
-            perm.allow_select,
-            perm.allow_insert,
-            perm.allow_update,
-            perm.allow_delete,
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role '{user.role}' is not allowed to execute {statement_type.upper()} on '{req.database}'",
+    else:
+        # JWT user: role-based per-DB permissions
+        statement_type = detect_statement_type(req.sql)
+        user_perms = await get_role_permissions(db, user.role)
+        if "query.databases.write" not in user_perms:
+            result = await db.execute(
+                select(Permission).where(
+                    Permission.role == user.role,
+                    Permission.db_alias == req.database,
+                )
             )
+            perm = result.scalar_one_or_none()
+            if perm is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"No permissions configured for role '{user.role}' on database '{req.database}'",
+                )
+            if not check_permission(
+                statement_type,
+                perm.allow_select,
+                perm.allow_insert,
+                perm.allow_update,
+                perm.allow_delete,
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Role '{user.role}' is not allowed to execute {statement_type.upper()} on '{req.database}'",
+                )
 
     # 2b. SQL keyword blacklist check
     blocked_error = validate_sql(req.sql, extra_blocked=settings_manager.blocked_sql_keywords)
@@ -79,40 +108,32 @@ async def execute(
             detail=blocked_error,
         )
 
-    # 2c. Table-level access check (only for non-admin users)
-    if "query.databases.write" not in user_perms and perm is not None:
-        allowed_tables_raw = perm.allowed_tables
-        allowed_tables = json.loads(allowed_tables_raw) if allowed_tables_raw else None
-        if allowed_tables is not None:
-            referenced = extract_tables(req.sql)
-            table_error = check_table_access(referenced, allowed_tables)
-            if table_error:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=table_error,
-                )
+    # 2c. Table-level access check (JWT non-admin users only)
+    if isinstance(user, CurrentUser):
+        user_perms_for_tables = await get_role_permissions(db, user.role)
+        if "query.databases.write" not in user_perms_for_tables and perm is not None:
+            allowed_tables_raw = perm.allowed_tables
+            allowed_tables = json.loads(allowed_tables_raw) if allowed_tables_raw else None
+            if allowed_tables is not None:
+                referenced = extract_tables(req.sql)
+                table_error = check_table_access(referenced, allowed_tables)
+                if table_error:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=table_error,
+                    )
 
     # 3. Execute the query
     try:
         response = await execute_query(
-            engine=engine,
-            sql=req.sql,
-            params=req.params,
-            limit=req.limit,
-            timeout=req.timeout,
-            db_type=db_type,
+            engine=engine, sql=req.sql, params=req.params,
+            limit=req.limit, timeout=req.timeout, db_type=db_type,
         )
     except asyncio.TimeoutError:
         try:
-            await log_query(
-                db,
-                user=user.username,
-                database_alias=req.database,
-                sql=req.sql,
-                params=req.params,
-                status="error",
-                error_message="Query timed out",
-            )
+            await log_query(db, user=username, database_alias=req.database,
+                            sql=req.sql, params=req.params, status="error",
+                            error_message="Query timed out")
         except Exception:
             logger.exception("Failed to write audit log for timed-out query")
         raise HTTPException(
@@ -121,15 +142,9 @@ async def execute(
         )
     except Exception as exc:
         try:
-            await log_query(
-                db,
-                user=user.username,
-                database_alias=req.database,
-                sql=req.sql,
-                params=req.params,
-                status="error",
-                error_message=str(exc),
-            )
+            await log_query(db, user=username, database_alias=req.database,
+                            sql=req.sql, params=req.params, status="error",
+                            error_message=str(exc))
         except Exception:
             logger.exception("Failed to write audit log for failed query")
         logger.exception("Query execution failed")
@@ -139,16 +154,9 @@ async def execute(
         )
 
     # 4. Audit log (success)
-    await log_query(
-        db,
-        user=user.username,
-        database_alias=req.database,
-        sql=req.sql,
-        params=req.params,
-        row_count=response.row_count,
-        elapsed_ms=response.elapsed_ms,
-        status="success",
-    )
+    await log_query(db, user=username, database_alias=req.database,
+                    sql=req.sql, params=req.params, row_count=response.row_count,
+                    elapsed_ms=response.elapsed_ms, status="success")
 
     return response
 
