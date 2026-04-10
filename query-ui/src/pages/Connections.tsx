@@ -127,9 +127,9 @@ function Connections() {
       const tables = await getDbTables(alias);
       if (tables.length > 0) tableName = tables[0];
     } catch { /* use placeholder */ }
-    const base = `${window.location.origin}/_api/query/execute`;
+    const base = `${window.location.origin}/api/query/execute`;
     const body = JSON.stringify({ database: alias, sql: `SELECT * FROM ${tableName} LIMIT 10` }, null, 2);
-    const curl = `curl -k -X POST \\\n  -H 'Content-Type: application/json' \\\n  -H 'Authorization: Bearer <TOKEN>' \\\n  '${base}' \\\n  -d '${body}'`;
+    const curl = `curl -k -X POST \\\n  -H 'Content-Type: application/json' \\\n  -H 'apikey: <YOUR_API_KEY>' \\\n  '${base}' \\\n  -d '${body}'`;
     setCurlModal({ alias, curl });
     setCurlCopied(false);
   }
