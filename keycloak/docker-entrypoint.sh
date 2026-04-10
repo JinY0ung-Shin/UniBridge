@@ -24,16 +24,7 @@ echo "[init] Waiting for Keycloak to start..."
 AUTH_METHOD=""
 
 for i in $(seq 1 60); do
-  # Try admin credentials first (works on first boot, or when password matches .env)
-  if /opt/keycloak/bin/kcadm.sh config credentials \
-      --server http://localhost:8080 --realm master \
-      --user "${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}" \
-      --password "${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}" 2>/dev/null; then
-    AUTH_METHOD="admin"
-    break
-  fi
-
-  # Fallback: service account (works even if admin password was changed via UI)
+  # Try service account first (not affected by admin password changes)
   if [ -n "${KEYCLOAK_SERVICE_CLIENT_SECRET}" ]; then
     if /opt/keycloak/bin/kcadm.sh config credentials \
         --server http://localhost:8080 --realm apihub \
@@ -42,6 +33,15 @@ for i in $(seq 1 60); do
       AUTH_METHOD="service-account"
       break
     fi
+  fi
+
+  # Fallback: admin credentials (first boot before realm exists, or legacy setups)
+  if /opt/keycloak/bin/kcadm.sh config credentials \
+      --server http://localhost:8080 --realm master \
+      --user "${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}" \
+      --password "${KC_BOOTSTRAP_ADMIN_PASSWORD:-admin}" 2>/dev/null; then
+    AUTH_METHOD="admin"
+    break
   fi
 
   sleep 3
