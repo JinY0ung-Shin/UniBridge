@@ -78,7 +78,13 @@ rate_limiter = RateLimiter()
 
 
 def _extract_username(request: Request) -> str | None:
-    """Extract username from JWT in Authorization header."""
+    """Extract username from JWT in Authorization header or APISIX consumer header."""
+    # APISIX-forwarded API key user (header set by APISIX after key-auth)
+    consumer = request.headers.get("x-consumer-username")
+    if consumer:
+        return f"apikey:{consumer}"
+
+    # JWT Bearer token
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer "):
         return None

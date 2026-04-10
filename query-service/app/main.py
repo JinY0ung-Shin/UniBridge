@@ -50,33 +50,49 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         break
 
     logger.info("Provisioning APISIX query route...")
-    try:
-        from app.services import apisix_client
+    import asyncio as _asyncio
+    from app.services import apisix_client
 
-        # Ensure upstream for query-service exists
-        await apisix_client.put_resource("upstreams", "query-service", {
-            "name": "query-service",
-            "type": "roundrobin",
-            "nodes": {"query-service:8000": 1},
-        })
+    _max_retries = 5
+    for _attempt in range(1, _max_retries + 1):
+        try:
+            # Ensure upstream for query-service exists
+            await apisix_client.put_resource("upstreams", "query-service", {
+                "name": "query-service",
+                "type": "roundrobin",
+                "nodes": {"query-service:8000": 1},
+            })
 
-        # Ensure /api/query/* route exists with key-auth
-        await apisix_client.put_resource("routes", "query-api", {
-            "name": "query-api",
-            "uri": "/api/query/*",
-            "methods": ["POST", "GET"],
-            "upstream_id": "query-service",
-            "plugins": {
-                "key-auth": {},
-                "proxy-rewrite": {
-                    "regex_uri": ["^/api/query(.*)", "/query$1"],
+            # Ensure /api/query/* route exists with key-auth
+            await apisix_client.put_resource("routes", "query-api", {
+                "name": "query-api",
+                "uri": "/api/query/*",
+                "methods": ["POST", "GET"],
+                "upstream_id": "query-service",
+                "plugins": {
+                    "key-auth": {},
+                    "proxy-rewrite": {
+                        "regex_uri": ["^/api/query(.*)", "/query$1"],
+                    },
                 },
-            },
-            "status": 1,
-        })
-        logger.info("APISIX query route provisioned successfully")
-    except Exception as exc:
-        logger.warning("Failed to provision APISIX query route (will retry on first request): %s", exc)
+                "status": 1,
+            })
+            logger.info("APISIX query route provisioned successfully")
+            break
+        except Exception as exc:
+            if _attempt < _max_retries:
+                _delay = 2 ** _attempt  # 2s, 4s, 8s, 16s
+                logger.warning(
+                    "APISIX provisioning attempt %d/%d failed: %s — retrying in %ds",
+                    _attempt, _max_retries, exc, _delay,
+                )
+                await _asyncio.sleep(_delay)
+            else:
+                logger.error(
+                    "APISIX provisioning failed after %d attempts: %s — "
+                    "/api/query/* route may not be available until APISIX is reachable and service is restarted",
+                    _max_retries, exc,
+                )
 
     yield
 

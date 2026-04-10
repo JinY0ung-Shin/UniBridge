@@ -52,12 +52,17 @@ def _to_response(
 
 
 async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: str) -> None:
-    """Update consumer-restriction plugin on routes to include/exclude this consumer."""
+    """Update consumer-restriction plugin on routes to include/exclude this consumer.
+
+    Raises HTTPException on failure so the caller can abort before committing DB changes.
+    """
     try:
         result = await apisix_client.list_resources("routes")
-    except Exception:
-        logger.warning("Failed to list routes for consumer-restriction sync")
-        return
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to list APISIX routes for consumer-restriction sync: {exc}",
+        )
 
     for route in result.get("items", []):
         route_id = route.get("id")
@@ -86,8 +91,11 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
             body = {k: v for k, v in route.items() if k not in ("id", "create_time", "update_time")}
             body["plugins"] = plugins
             await apisix_client.put_resource("routes", route_id, body)
-        except Exception:
-            logger.warning("Failed to update consumer-restriction on route %s", route_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to update consumer-restriction on route {route_id}: {exc}",
+            )
 
 
 @router.get("", response_model=list[ApiKeyResponse])
@@ -133,6 +141,10 @@ async def create_api_key(
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to create APISIX consumer: {exc}")
 
+    # Sync consumer-restriction BEFORE committing DB — abort on failure
+    if body.allowed_routes:
+        await _sync_consumer_restriction(body.allowed_routes, body.name)
+
     access = ApiKeyAccess(
         consumer_name=body.name,
         description=body.description,
@@ -142,9 +154,6 @@ async def create_api_key(
     db.add(access)
     await db.commit()
     await db.refresh(access)
-
-    if body.allowed_routes:
-        await _sync_consumer_restriction(body.allowed_routes, body.name)
 
     api_key = _extract_api_key(consumer, mask=False)
     return _to_response(access, api_key=api_key, key_created=True)
@@ -182,13 +191,16 @@ async def update_api_key(
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to update APISIX consumer: {exc}")
 
+    # Sync consumer-restriction BEFORE committing DB — abort on failure
+    if body.allowed_routes is not None:
+        await _sync_consumer_restriction(body.allowed_routes, name)
+
     if body.description is not None:
         access.description = body.description
     if body.allowed_databases is not None:
         access.allowed_databases = json.dumps(body.allowed_databases) if body.allowed_databases else None
     if body.allowed_routes is not None:
         access.allowed_routes = json.dumps(body.allowed_routes) if body.allowed_routes else None
-        await _sync_consumer_restriction(body.allowed_routes, name)
 
     await db.commit()
     await db.refresh(access)
