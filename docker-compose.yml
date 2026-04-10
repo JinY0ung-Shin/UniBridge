@@ -61,6 +61,7 @@ services:
       - KC_DB_URL=jdbc:postgresql://keycloak-db:5432/keycloak
       - KC_DB_USERNAME=${KC_DB_USER:-keycloak}
       - KC_DB_PASSWORD=${KC_DB_PASSWORD:-keycloak}
+      - KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:-}
     ports:
       - "${KEYCLOAK_PORT:-8443}:8443"
     volumes:
@@ -97,7 +98,7 @@ services:
       - APISIX_ADMIN_URL=${APISIX_ADMIN_URL:-http://apisix:9180}
       - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY}
       - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
-      - KEYCLOAK_ISSUER_URL=${KEYCLOAK_ISSUER_URL:-http://localhost:8080/realms/apihub}
+      - KEYCLOAK_ISSUER_URL=${KEYCLOAK_ISSUER_URL:-https://localhost:8443/realms/apihub}
       - KEYCLOAK_JWKS_URL=${KEYCLOAK_JWKS_URL:-https://keycloak:8443/realms/apihub/protocol/openid-connect/certs}
       # KEYCLOAK_ISSUER_URL must match the URL the browser uses to access Keycloak
       # (since Keycloak embeds the browser-facing URL as the JWT issuer claim)
@@ -146,7 +147,9 @@ services:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}
-        VITE_KEYCLOAK_URL: ${KEYCLOAK_EXTERNAL_URL:-http://localhost:8080}
+        VITE_KEYCLOAK_URL: ${KEYCLOAK_EXTERNAL_URL:-https://localhost:8443}
+        VITE_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-apihub}
+        VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
     ports:
       - "${QUERY_UI_PORT:-3000}:443"
     volumes:
