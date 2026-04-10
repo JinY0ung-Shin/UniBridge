@@ -33,6 +33,19 @@ for i in $(seq 1 60); do
         || echo "[init] Role '$ROLE' already exists"
     done
     echo "[init] Role initialization complete."
+
+    # Update apihub-ui client redirect URIs and web origins (realm import only runs once, so we force-update here)
+    CLIENT_UUID=$(/opt/keycloak/bin/kcadm.sh get clients -r apihub -q clientId=apihub-ui --fields id 2>/dev/null | grep '"id"' | head -1 | sed 's/.*"id" *: *"//;s/".*//')
+    if [ -n "$CLIENT_UUID" ]; then
+      /opt/keycloak/bin/kcadm.sh update "clients/$CLIENT_UUID" -r apihub \
+        -s "redirectUris=[\"${KEYCLOAK_REDIRECT_URI}\"]" \
+        -s "webOrigins=[\"${KEYCLOAK_WEB_ORIGIN}\"]" 2>/dev/null \
+        && echo "[init] Updated apihub-ui client: redirectUris=${KEYCLOAK_REDIRECT_URI}, webOrigins=${KEYCLOAK_WEB_ORIGIN}" \
+        || echo "[init] WARNING: Failed to update apihub-ui client redirect URIs"
+    else
+      echo "[init] WARNING: apihub-ui client not found, skipping redirect URI update"
+    fi
+
     break
   fi
   sleep 3
