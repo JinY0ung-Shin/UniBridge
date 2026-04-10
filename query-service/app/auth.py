@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 import httpx
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from sqlalchemy import select
@@ -92,6 +92,13 @@ async def invalidate_permission_cache() -> None:
 class CurrentUser:
     username: str
     role: str
+
+
+@dataclass
+class ApiKeyUser:
+    consumer_name: str
+    allowed_databases: list[str]
+    allowed_routes: list[str]
 
 
 def create_token(username: str, role: str, expires_delta: timedelta | None = None) -> str:
@@ -240,6 +247,45 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
         ) from exc
+
+
+async def get_current_user_or_apikey(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
+    db: AsyncSession = Depends(get_db),
+) -> CurrentUser | ApiKeyUser:
+    """Unified auth: APISIX header (API key) OR Bearer JWT.
+
+    Priority:
+    1. X-Consumer-Username header (set by APISIX after key-auth) → ApiKeyUser
+    2. Bearer token → CurrentUser (existing JWT flow)
+    """
+    consumer_name = request.headers.get("x-consumer-username")
+    if consumer_name:
+        from app.models import ApiKeyAccess
+        result = await db.execute(
+            select(ApiKeyAccess).where(ApiKeyAccess.consumer_name == consumer_name)
+        )
+        access = result.scalar_one_or_none()
+        if access is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Unknown API key consumer: {consumer_name}",
+            )
+        import json
+        return ApiKeyUser(
+            consumer_name=access.consumer_name,
+            allowed_databases=json.loads(access.allowed_databases) if access.allowed_databases else [],
+            allowed_routes=json.loads(access.allowed_routes) if access.allowed_routes else [],
+        )
+
+    # Fall back to JWT
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication",
+        )
+    return await get_current_user(credentials)
 
 
 # ── Permission dependencies ─────────────────────────────────────────────────
