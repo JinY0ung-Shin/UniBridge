@@ -344,7 +344,7 @@ def _strip_consumer_secrets(consumer: dict[str, Any]) -> None:
 
 
 @router.get("/consumers")
-async def list_consumers(_admin: CurrentUser = Depends(require_permission("gateway.consumers.read"))) -> dict[str, Any]:
+async def list_consumers(_admin: CurrentUser = Depends(require_permission("apikeys.read"))) -> dict[str, Any]:
     try:
         result = await apisix_client.list_resources("consumers")
     except HTTPStatusError as exc:
@@ -358,7 +358,7 @@ async def list_consumers(_admin: CurrentUser = Depends(require_permission("gatew
 
 
 @router.get("/consumers/{username}")
-async def get_consumer(username: str, _admin: CurrentUser = Depends(require_permission("gateway.consumers.read"))) -> dict[str, Any]:
+async def get_consumer(username: str, _admin: CurrentUser = Depends(require_permission("apikeys.read"))) -> dict[str, Any]:
     try:
         consumer = await apisix_client.get_resource("consumers", username)
     except HTTPStatusError as exc:
@@ -371,7 +371,7 @@ async def get_consumer(username: str, _admin: CurrentUser = Depends(require_perm
 
 
 @router.put("/consumers/{username}")
-async def save_consumer(username: str, body: dict[str, Any], _admin: CurrentUser = Depends(require_permission("gateway.consumers.write"))) -> dict[str, Any]:
+async def save_consumer(username: str, body: dict[str, Any], _admin: CurrentUser = Depends(require_permission("apikeys.write"))) -> dict[str, Any]:
     # Check if this is a new consumer and fetch existing plugins
     is_new = True
     existing_plugins: dict[str, Any] | None = None
@@ -404,7 +404,7 @@ async def save_consumer(username: str, body: dict[str, Any], _admin: CurrentUser
 
 
 @router.delete("/consumers/{username}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
-async def delete_consumer(username: str, _admin: CurrentUser = Depends(require_permission("gateway.consumers.write"))) -> None:
+async def delete_consumer(username: str, _admin: CurrentUser = Depends(require_permission("apikeys.write"))) -> None:
     try:
         await apisix_client.delete_resource("consumers", username)
     except HTTPStatusError as exc:

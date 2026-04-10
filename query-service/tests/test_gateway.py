@@ -928,7 +928,7 @@ class TestPermissions:
             resp = await client.get(
                 "/admin/gateway/consumers", headers=auth_header(developer_token)
             )
-        assert resp.status_code == 200
+        assert resp.status_code == 200  # developer has apikeys.read
 
     async def test_developer_cannot_write_consumers(self, client, developer_token):
         resp = await client.put(

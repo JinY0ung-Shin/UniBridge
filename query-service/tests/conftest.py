@@ -52,7 +52,8 @@ async def seeded_db(engine):
                 "query.databases.read", "query.permissions.read", "query.audit.read",
                 "query.execute",
                 "gateway.routes.read", "gateway.upstreams.read",
-                "gateway.consumers.read", "gateway.monitoring.read",
+                "gateway.monitoring.read",
+                "apikeys.read",
             ],
             "viewer": ["gateway.monitoring.read", "query.audit.read"],
         }

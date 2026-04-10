@@ -509,7 +509,8 @@ class TestSeedRoles:
                 "query.databases.read", "query.permissions.read", "query.audit.read",
                 "query.execute",
                 "gateway.routes.read", "gateway.upstreams.read",
-                "gateway.consumers.read", "gateway.monitoring.read",
+                "gateway.monitoring.read",
+                "apikeys.read",
             }
             assert perms == expected
 
