@@ -2,6 +2,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -127,7 +128,7 @@ class AlertRule(Base):
     name = Column(String(100), nullable=False)
     type = Column(String(30), nullable=False)  # "db_health", "upstream_health", "error_rate"
     target = Column(String(100), nullable=False)  # DB alias, upstream ID, or "*"
-    threshold = Column(Integer, nullable=True)  # error rate % (error_rate type only)
+    threshold = Column(Float, nullable=True)  # error rate % (error_rate type only)
     enabled = Column(Boolean, default=True, nullable=False, server_default="true")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
