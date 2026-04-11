@@ -94,11 +94,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     _max_retries, exc,
                 )
 
+    from app.services.alert_state import AlertStateManager
+    from app.services.alert_checker import start_checker
+    from app.routers.alerts import set_alert_state
+
+    alert_state = AlertStateManager()
+    set_alert_state(alert_state)
+    app.state.alert_task = await start_checker(alert_state)
+    logger.info("Alert checker started")
+
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────
     logger.info("Disposing all database engines...")
     await connection_manager.dispose_all()
+
+    if hasattr(app.state, "alert_task"):
+        app.state.alert_task.cancel()
+        logger.info("Alert checker stopped")
 
     # Close Keycloak admin client if initialized
     from app.routers.users import _kc_admin
