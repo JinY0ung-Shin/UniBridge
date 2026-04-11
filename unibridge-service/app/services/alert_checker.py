@@ -170,14 +170,15 @@ async def run_single_check(state: AlertStateManager) -> None:
         for rule in rules:
             threshold = rule.threshold or 10.0
             is_healthy = rate < threshold
-            transition = state.update("error_rate", target_name, is_healthy=is_healthy)
+            # Use rule ID in state key so multiple rules with different thresholds don't collide
+            state_target = f"{target_name}:rule_{rule.id}"
+            transition = state.update("error_rate", state_target, is_healthy=is_healthy)
             if transition:
                 msg = f"5xx error rate is {rate:.1f}% (threshold: {threshold}%)."
                 await _dispatch_alert(
                     rule_type="error_rate", alert_type=transition,
                     target=target_name, message=msg,
                 )
-            break
 
 
 async def start_checker(state: AlertStateManager) -> asyncio.Task:
