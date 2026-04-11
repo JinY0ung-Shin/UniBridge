@@ -95,7 +95,11 @@ async def update_channel(
         ch.headers = json.dumps(body.headers)
     if body.enabled is not None:
         ch.enabled = body.enabled
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=f"Channel name '{body.name}' already exists")
     await db.refresh(ch)
     return AlertChannelResponse(
         id=ch.id, name=ch.name, webhook_url=ch.webhook_url,

@@ -4,10 +4,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any
-
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
 from app.models import AlertChannel, AlertHistory, AlertRule, AlertRuleChannel
@@ -183,7 +180,10 @@ async def run_single_check(state: AlertStateManager) -> None:
             is_healthy = rate < threshold
             # Use rule ID in state key so multiple rules with different thresholds don't collide
             state_target = f"{target_name}:rule_{rule.id}"
-            transition = state.update("error_rate", state_target, is_healthy=is_healthy)
+            transition = state.update(
+                "error_rate", state_target, is_healthy=is_healthy,
+                display_target=target_name,
+            )
             if transition:
                 msg = f"5xx error rate is {rate:.1f}% (threshold: {threshold}%)."
                 await _dispatch_alert(
