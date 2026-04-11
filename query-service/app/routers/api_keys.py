@@ -200,10 +200,12 @@ async def update_api_key(
 
     key_created = False
     api_key_display: str | None = None
+    old_consumer_plugins: dict | None = None
     if body.api_key:
         try:
             existing_consumer = await apisix_client.get_resource("consumers", name)
             existing_plugins = existing_consumer.get("plugins", {})
+            old_consumer_plugins = dict(existing_plugins)  # snapshot for rollback
         except Exception:
             existing_plugins = {}
         existing_plugins["key-auth"] = {"key": body.api_key}
@@ -217,8 +219,19 @@ async def update_api_key(
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to update APISIX consumer: {exc}")
 
     # Sync consumer-restriction BEFORE committing DB — abort on failure
+    # If sync fails and we already updated the consumer key, rollback the key change
     if body.allowed_routes is not None:
-        await _sync_consumer_restriction(body.allowed_routes, name)
+        try:
+            await _sync_consumer_restriction(body.allowed_routes, name)
+        except HTTPException:
+            if key_created and old_consumer_plugins is not None:
+                try:
+                    await apisix_client.put_resource("consumers", name, {
+                        "username": name, "plugins": old_consumer_plugins,
+                    })
+                except Exception:
+                    logger.error("Failed to rollback APISIX consumer '%s' key after sync failure", name)
+            raise
 
     if body.description is not None:
         access.description = body.description

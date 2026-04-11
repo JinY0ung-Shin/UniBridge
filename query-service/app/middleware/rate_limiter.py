@@ -56,6 +56,18 @@ class RateLimiter:
             self._requests[username] = timestamps
             return True, ""
 
+    def undo_rate_count(self, username: str) -> None:
+        """Remove the most recent rate limit entry for a user.
+
+        Called when auth fails after rate limit was already consumed,
+        to prevent DoS via forged tokens exhausting another user's bucket.
+        """
+        with self._lock:
+            timestamps = self._requests.get(username, [])
+            if timestamps:
+                timestamps.pop()
+                self._requests[username] = timestamps
+
     def try_acquire(self, username: str) -> bool:
         """Try to acquire a concurrent query slot."""
         with self._lock:
@@ -132,6 +144,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         try:
             response = await call_next(request)
+            # If auth failed, undo rate limit count — prevents DoS via forged tokens
+            # exhausting another user's rate limit bucket
+            if response.status_code in (401, 403):
+                rate_limiter.undo_rate_count(username)
             return response
         finally:
             rate_limiter.release(username)
