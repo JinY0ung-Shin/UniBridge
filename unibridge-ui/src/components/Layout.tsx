@@ -20,6 +20,8 @@ const navItems = [
   { to: '/api-keys', labelKey: 'nav.apiKeys', icon: 'API Keys', section: 'access', permission: 'apikeys.read' },
   { to: '/roles', labelKey: 'nav.roles', icon: 'Roles', section: 'admin', permission: 'admin.roles.read' },
   { to: '/users', labelKey: 'nav.users', icon: 'Users', section: 'admin', permission: 'admin.roles.read' },
+  { to: '/alerts/settings', labelKey: 'nav.alertSettings', icon: 'Alert Settings', section: 'alerts', permission: 'alerts.write' },
+  { to: '/alerts/history', labelKey: 'nav.alertHistory', icon: 'Alert History', section: 'alerts', permission: 'alerts.read' },
 ];
 
 interface LayoutProps {
@@ -151,6 +153,19 @@ function Layout({ children }: LayoutProps) {
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <circle cx="9" cy="5" r="3" stroke="currentColor" strokeWidth="1.5" />
                         <path d="M3 16c0-2.8 2.7-5 6-5s6 2.2 6 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                    )}
+                    {item.icon === 'Alert Settings' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <path d="M9 2L10.5 6H7.5L9 2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                        <path d="M5 8h8v5a2 2 0 01-2 2H7a2 2 0 01-2-2V8z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                        <path d="M9 15v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                    )}
+                    {item.icon === 'Alert History' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <circle cx="9" cy="9" r="7" stroke="currentColor" strokeWidth="1.5" />
+                        <path d="M9 5v4l3 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
                     )}
                   </span>
