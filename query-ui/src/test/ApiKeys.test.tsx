@@ -25,7 +25,7 @@ describe('ApiKeys', () => {
   beforeEach(() => {
     mockedGetApiKeys.mockResolvedValue([]);
     mockedGetAdminDatabases.mockResolvedValue([]);
-    mockedGetGatewayRoutes.mockResolvedValue({ items: [] });
+    mockedGetGatewayRoutes.mockResolvedValue({ items: [], total: 0 });
   });
 
   it('renders loading state', () => {
