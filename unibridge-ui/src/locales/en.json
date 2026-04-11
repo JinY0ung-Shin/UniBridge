@@ -370,6 +370,7 @@
     "success": "Success",
     "failed": "Failed",
     "noHistory": "No alert history.",
+    "loadFailed": "Failed to load alert history.",
     "templateHelp": "Available variables: {{alert_type}}, {{target_name}}, {{status}}, {{message}}, {{timestamp}}, {{recipients}}"
   }
 }

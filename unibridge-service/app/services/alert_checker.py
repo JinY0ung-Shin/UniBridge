@@ -74,14 +74,25 @@ async def _dispatch_alert(
     alert_type: str,
     target: str,
     message: str,
+    rule_id: int | None = None,
 ) -> None:
-    """Find matching rules and send alerts through mapped channels."""
+    """Find matching rules and send alerts through mapped channels.
+
+    If rule_id is given, only dispatch for that specific rule.
+    Otherwise, dispatch for all matching enabled rules.
+    """
     async with async_session() as db:
-        q = select(AlertRule).where(
-            AlertRule.enabled.is_(True),
-            AlertRule.type == rule_type,
-            AlertRule.target.in_([target, "*"]),
-        )
+        if rule_id is not None:
+            q = select(AlertRule).where(
+                AlertRule.id == rule_id,
+                AlertRule.enabled.is_(True),
+            )
+        else:
+            q = select(AlertRule).where(
+                AlertRule.enabled.is_(True),
+                AlertRule.type == rule_type,
+                AlertRule.target.in_([target, "*"]),
+            )
         result = await db.execute(q)
         rules = result.scalars().all()
 
@@ -178,6 +189,7 @@ async def run_single_check(state: AlertStateManager) -> None:
                 await _dispatch_alert(
                     rule_type="error_rate", alert_type=transition,
                     target=target_name, message=msg,
+                    rule_id=rule.id,
                 )
 
 

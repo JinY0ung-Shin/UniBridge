@@ -370,6 +370,7 @@
     "success": "성공",
     "failed": "실패",
     "noHistory": "알림 이력이 없습니다.",
+    "loadFailed": "알림 이력을 불러오지 못했습니다.",
     "templateHelp": "사용 가능한 변수: {{alert_type}}, {{target_name}}, {{status}}, {{message}}, {{timestamp}}, {{recipients}}"
   }
 }

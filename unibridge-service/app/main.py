@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -106,12 +107,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────
-    logger.info("Disposing all database engines...")
-    await connection_manager.dispose_all()
-
     if hasattr(app.state, "alert_task"):
         app.state.alert_task.cancel()
+        try:
+            await app.state.alert_task
+        except asyncio.CancelledError:
+            pass
         logger.info("Alert checker stopped")
+
+    logger.info("Disposing all database engines...")
+    await connection_manager.dispose_all()
 
     # Close Keycloak admin client if initialized
     from app.routers.users import _kc_admin

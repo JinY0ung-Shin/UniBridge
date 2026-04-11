@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete as sa_delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
@@ -59,7 +60,11 @@ async def create_channel(
         enabled=body.enabled,
     )
     db.add(ch)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=f"Channel name '{body.name}' already exists")
     await db.refresh(ch)
     return AlertChannelResponse(
         id=ch.id, name=ch.name, webhook_url=ch.webhook_url,
@@ -248,8 +253,8 @@ async def delete_rule(
 async def list_history(
     alert_type: str | None = Query(None),
     target: str | None = Query(None),
-    from_date: str | None = Query(None),
-    to_date: str | None = Query(None),
+    from_date: datetime | None = Query(None),
+    to_date: datetime | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     _user: CurrentUser = Depends(require_permission("alerts.read")),

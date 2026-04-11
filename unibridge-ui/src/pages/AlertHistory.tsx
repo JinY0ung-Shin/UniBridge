@@ -88,7 +88,7 @@ function AlertHistory() {
       )}
 
       {historyQuery.isError && (
-        <div className="error-banner">{t('common.loadFailed')}</div>
+        <div className="error-banner">{t('alerts.loadFailed')}</div>
       )}
 
       {entries.length > 0 && (
