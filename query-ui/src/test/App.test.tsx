@@ -153,6 +153,50 @@ describe('App', () => {
     expect(screen.getByText('Roles')).toBeInTheDocument();
   });
 
+  it('hides menu items when user lacks permissions', async () => {
+    // Override getCurrentUser to return a viewer with limited permissions
+    const { getCurrentUser } = await import('../api/client');
+    vi.mocked(getCurrentUser).mockResolvedValueOnce({
+      username: 'viewer',
+      role: 'viewer',
+      permissions: ['query.databases.read', 'query.execute'],
+    });
+
+    renderWithProviders(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Connections')).toBeInTheDocument();
+    });
+
+    // These should NOT appear for a user without the required permissions
+    expect(screen.queryByText('Permissions')).not.toBeInTheDocument();
+    expect(screen.queryByText('Audit Logs')).not.toBeInTheDocument();
+    expect(screen.queryByText('Roles')).not.toBeInTheDocument();
+    expect(screen.queryByText('API Keys')).not.toBeInTheDocument();
+  });
+
+  it('redirects to / when navigating to unauthorized route', async () => {
+    // User lacks gateway.routes.read permission
+    const { getCurrentUser } = await import('../api/client');
+    vi.mocked(getCurrentUser).mockResolvedValueOnce({
+      username: 'viewer',
+      role: 'viewer',
+      permissions: ['query.databases.read'],
+    });
+
+    window.history.pushState({}, '', '/gateway/routes');
+
+    renderWithProviders(<App />);
+
+    // Should redirect to dashboard (/) and show dashboard content
+    await waitFor(() => {
+      expect(screen.getByText('Total Databases')).toBeInTheDocument();
+    });
+
+    // Should NOT show the gateway routes page
+    expect(screen.queryByText('Gateway Routes')).not.toBeInTheDocument();
+  });
+
   it('Dashboard renders loading state then summary cards', async () => {
     renderWithProviders(<App />);
 

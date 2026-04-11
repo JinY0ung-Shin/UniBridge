@@ -15,7 +15,7 @@ import QuerySettings from './pages/QuerySettings';
 import Roles from './pages/Roles';
 import Users from './pages/Users';
 
-function ProtectedRoute({ permission, children }: { permission: string; children: React.ReactNode }) {
+export function ProtectedRoute({ permission, children }: { permission: string; children: React.ReactNode }) {
   const { permissions: perms, loaded } = usePermissions();
   if (!loaded) {
     return null;

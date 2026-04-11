@@ -1,10 +1,11 @@
 import { render, screen } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
-import { MemoryRouter, Navigate, Routes, Route } from 'react-router-dom';
+import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import {
   PermissionProvider,
   usePermissions,
 } from '../components/PermissionContext';
+import { ProtectedRoute } from '../App';
 
 /* ── Helper: render a component that displays the current permissions ── */
 
@@ -20,25 +21,6 @@ function PermissionsDisplay() {
       ))}
     </div>
   );
-}
-
-/* ── Recreate ProtectedRoute (not exported from App.tsx) ── */
-
-function ProtectedRoute({
-  permission,
-  children,
-}: {
-  permission: string;
-  children: React.ReactNode;
-}) {
-  const { permissions: perms, loaded } = usePermissions();
-  if (!loaded) {
-    return null;
-  }
-  if (!perms.includes(permission)) {
-    return <Navigate to="/" replace />;
-  }
-  return <>{children}</>;
 }
 
 /* ── Tests: usePermissions ── */
