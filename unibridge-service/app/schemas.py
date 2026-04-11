@@ -253,3 +253,99 @@ class ResetPasswordRequest(BaseModel):
 
 class ToggleEnabledRequest(BaseModel):
     enabled: bool
+
+
+# ── Alerts ──────────────────────────────────────────────────────────────────
+
+class AlertChannelCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    webhook_url: str = Field(..., min_length=1)
+    payload_template: str = Field(..., min_length=1)
+    headers: dict[str, str] | None = None
+    enabled: bool = True
+
+
+class AlertChannelUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=100)
+    webhook_url: str | None = Field(None, min_length=1)
+    payload_template: str | None = None
+    headers: dict[str, str] | None = None
+    enabled: bool | None = None
+
+
+class AlertChannelResponse(BaseModel):
+    id: int
+    name: str
+    webhook_url: str
+    payload_template: str
+    headers: dict[str, str] | None = None
+    enabled: bool
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class RuleChannelMapping(BaseModel):
+    channel_id: int
+    recipients: list[str]
+
+
+class AlertRuleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    type: str = Field(..., pattern=r"^(db_health|upstream_health|error_rate)$")
+    target: str = Field(..., min_length=1, max_length=100)
+    threshold: float | None = Field(None, ge=0, le=100)
+    enabled: bool = True
+    channels: list[RuleChannelMapping] = Field(default_factory=list)
+
+
+class AlertRuleUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=100)
+    type: str | None = Field(None, pattern=r"^(db_health|upstream_health|error_rate)$")
+    target: str | None = Field(None, min_length=1, max_length=100)
+    threshold: float | None = None
+    enabled: bool | None = None
+    channels: list[RuleChannelMapping] | None = None
+
+
+class RuleChannelDetail(BaseModel):
+    channel_id: int
+    channel_name: str
+    recipients: list[str]
+
+
+class AlertRuleResponse(BaseModel):
+    id: int
+    name: str
+    type: str
+    target: str
+    threshold: float | None = None
+    enabled: bool
+    channels: list[RuleChannelDetail] = []
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class AlertHistoryResponse(BaseModel):
+    id: int
+    rule_id: int | None = None
+    channel_id: int | None = None
+    alert_type: str
+    target: str
+    message: str
+    recipients: list[str] | None = None
+    sent_at: datetime | None = None
+    success: bool | None = None
+    error_detail: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class AlertStatusResponse(BaseModel):
+    target: str
+    type: str
+    status: str  # "ok" | "alert"
+    since: str | None = None
