@@ -1,7 +1,7 @@
 vi.mock('recharts', () => ({
-  ResponsiveContainer: ({ children }: any) => <div data-testid="responsive-container">{children}</div>,
-  LineChart: ({ children }: any) => <div data-testid="line-chart">{children}</div>,
-  BarChart: ({ children }: any) => <div data-testid="bar-chart">{children}</div>,
+  ResponsiveContainer: ({ children }: { children: React.ReactNode }) => <div data-testid="responsive-container">{children}</div>,
+  LineChart: ({ children }: { children: React.ReactNode }) => <div data-testid="line-chart">{children}</div>,
+  BarChart: ({ children }: { children: React.ReactNode }) => <div data-testid="bar-chart">{children}</div>,
   Line: () => null,
   Bar: () => null,
   XAxis: () => null,
@@ -41,10 +41,10 @@ const mockedGetMetricsTopRoutes = vi.mocked(getMetricsTopRoutes);
 
 describe('GatewayMonitoring', () => {
   beforeEach(() => {
-    mockedGetMetricsSummary.mockResolvedValue(null as any);
+    mockedGetMetricsSummary.mockResolvedValue({ total_requests: 0, error_rate: 0, avg_latency_ms: 0 });
     mockedGetMetricsRequests.mockResolvedValue([]);
     mockedGetMetricsStatusCodes.mockResolvedValue([]);
-    mockedGetMetricsLatency.mockResolvedValue(null as any);
+    mockedGetMetricsLatency.mockResolvedValue({ p50: [], p95: [], p99: [] });
     mockedGetMetricsTopRoutes.mockResolvedValue([]);
   });
 
