@@ -78,3 +78,53 @@ class TestAlertPermissions:
 
     def test_alerts_write_in_all_permissions(self):
         assert "alerts.write" in ALL_PERMISSIONS
+
+
+from app.services.alert_state import AlertStateManager
+
+
+class TestAlertState:
+    def test_initial_state_is_ok(self):
+        mgr = AlertStateManager()
+        assert mgr.get_status("db_health", "mydb") == "ok"
+
+    def test_transition_ok_to_alert(self):
+        mgr = AlertStateManager()
+        transition = mgr.update("db_health", "mydb", is_healthy=False)
+        assert transition == "triggered"
+        assert mgr.get_status("db_health", "mydb") == "alert"
+
+    def test_no_transition_when_still_alert(self):
+        mgr = AlertStateManager()
+        mgr.update("db_health", "mydb", is_healthy=False)
+        transition = mgr.update("db_health", "mydb", is_healthy=False)
+        assert transition is None
+
+    def test_transition_alert_to_ok(self):
+        mgr = AlertStateManager()
+        mgr.update("db_health", "mydb", is_healthy=False)
+        transition = mgr.update("db_health", "mydb", is_healthy=True)
+        assert transition == "resolved"
+        assert mgr.get_status("db_health", "mydb") == "ok"
+
+    def test_no_transition_when_still_ok(self):
+        mgr = AlertStateManager()
+        transition = mgr.update("db_health", "mydb", is_healthy=True)
+        assert transition is None
+
+    def test_get_all_alerts(self):
+        mgr = AlertStateManager()
+        mgr.update("db_health", "db1", is_healthy=False)
+        mgr.update("upstream_health", "svc1", is_healthy=False)
+        mgr.update("db_health", "db2", is_healthy=True)
+        alerts = mgr.get_all_alerts()
+        assert len(alerts) == 2
+        targets = {a["target"] for a in alerts}
+        assert targets == {"db1", "svc1"}
+
+    def test_reset_clears_all(self):
+        mgr = AlertStateManager()
+        mgr.update("db_health", "mydb", is_healthy=False)
+        mgr.reset()
+        assert mgr.get_status("db_health", "mydb") == "ok"
+        assert mgr.get_all_alerts() == []
