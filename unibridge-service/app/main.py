@@ -56,11 +56,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _max_retries = 5
     for _attempt in range(1, _max_retries + 1):
         try:
-            # Ensure upstream for query-service exists
-            await apisix_client.put_resource("upstreams", "query-service", {
-                "name": "query-service",
+            # Ensure upstream for unibridge-service exists
+            await apisix_client.put_resource("upstreams", "unibridge-service", {
+                "name": "unibridge-service",
                 "type": "roundrobin",
-                "nodes": {"query-service:8000": 1},
+                "nodes": {"unibridge-service:8000": 1},
             })
 
             # Ensure /api/query/* route exists with key-auth
@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 "name": "query-api",
                 "uri": "/api/query/*",
                 "methods": ["POST", "GET"],
-                "upstream_id": "query-service",
+                "upstream_id": "unibridge-service",
                 "plugins": {
                     "key-auth": {},
                     "proxy-rewrite": {
@@ -109,8 +109,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(
-    title="API Hub - Query Service",
-    description="Arbitrary SQL execution against registered databases with role-based access control and audit logging.",
+    title="UniBridge Service",
+    description="Unified API hub for database queries, gateway management, and access control.",
     version="1.0.0",
     lifespan=lifespan,
 )

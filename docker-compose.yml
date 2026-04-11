@@ -64,7 +64,7 @@ services:
       - KEYCLOAK_SERVICE_CLIENT_ID=${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}
       - KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:-}
       - HOST_IP=${HOST_IP:-localhost}
-      - QUERY_UI_PORT=${QUERY_UI_PORT:-3000}
+      - UNIBRIDGE_UI_PORT=${UNIBRIDGE_UI_PORT:-3000}
       - KEYCLOAK_REDIRECT_URI=${KEYCLOAK_REDIRECT_URI:-}
       - KEYCLOAK_WEB_ORIGIN=${KEYCLOAK_WEB_ORIGIN:-}
     ports:
@@ -86,19 +86,19 @@ services:
     networks:
       - apihub-net
 
-  query-service:
+  unibridge-service:
     build:
-      context: ./query-service
+      context: ./unibridge-service
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}
     ports:
-      - "127.0.0.1:${QUERY_SERVICE_PORT:-8000}:8000"
+      - "127.0.0.1:${UNIBRIDGE_SERVICE_PORT:-8000}:8000"
     environment:
       - HOST_IP=${HOST_IP:-localhost}
       - KEYCLOAK_PORT=${KEYCLOAK_PORT:-8443}
-      - QUERY_UI_PORT=${QUERY_UI_PORT:-3000}
+      - UNIBRIDGE_UI_PORT=${UNIBRIDGE_UI_PORT:-3000}
       - META_DB_URL=${META_DB_URL}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - JWT_SECRET=${JWT_SECRET}
@@ -123,7 +123,7 @@ services:
       keycloak:
         condition: service_healthy
     volumes:
-      - query-data:/app/data
+      - unibridge-data:/app/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -146,9 +146,9 @@ services:
     networks:
       - apihub-net
 
-  query-ui:
+  unibridge-ui:
     build:
-      context: ./query-ui
+      context: ./unibridge-ui
       args:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
@@ -159,12 +159,12 @@ services:
         HOST_IP: ${HOST_IP:-localhost}
         KEYCLOAK_PORT: ${KEYCLOAK_PORT:-8443}
     ports:
-      - "${QUERY_UI_PORT:-3000}:443"
+      - "${UNIBRIDGE_UI_PORT:-3000}:443"
     volumes:
       - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/nginx/ssl/tls.crt:ro
       - ${TLS_KEY_PATH:-./certs/tls.key}:/etc/nginx/ssl/tls.key:ro
     depends_on:
-      query-service:
+      unibridge-service:
         condition: service_healthy
     networks:
       - apihub-net
@@ -174,7 +174,7 @@ networks:
     driver: bridge
 
 volumes:
-  query-data:
+  unibridge-data:
   etcd-data:
   prometheus-data:
   keycloak-db-data:

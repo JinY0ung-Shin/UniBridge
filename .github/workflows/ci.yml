@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: query-ui
+        working-directory: unibridge-ui
 
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: query-service
+        working-directory: unibridge-service
 
     steps:
       - uses: actions/checkout@v4

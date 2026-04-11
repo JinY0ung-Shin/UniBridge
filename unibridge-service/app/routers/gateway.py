@@ -252,7 +252,7 @@ async def route_curl(route_id: str, _admin: CurrentUser = Depends(require_permis
     methods = route.get("methods", ["GET"])
     method = methods[0] if methods else "GET"
 
-    base_url = f"https://{settings.HOST_IP}:{settings.QUERY_UI_PORT}{path}"
+    base_url = f"https://{settings.HOST_IP}:{settings.UNIBRIDGE_UI_PORT}{path}"
 
     parts = ["curl", "-k"]
     if method != "GET":

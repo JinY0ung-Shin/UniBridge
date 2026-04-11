@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     # Base networking — all service URLs are derived from these
     HOST_IP: str = "localhost"
     KEYCLOAK_PORT: int = 8443
-    QUERY_UI_PORT: int = 3000
+    UNIBRIDGE_UI_PORT: int = 3000
 
     META_DB_URL: str = "sqlite+aiosqlite:///data/meta.db"
     ENCRYPTION_KEY: str = ""
@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     PROMETHEUS_URL: str = "http://prometheus:9090"
 
     # CORS — comma-separated allowed origins (e.g. "http://localhost:3001,https://app.example.com")
-    # Auto-derived from HOST_IP:QUERY_UI_PORT if empty
+    # Auto-derived from HOST_IP:UNIBRIDGE_UI_PORT if empty
     CORS_ALLOWED_ORIGINS: str = ""
 
     # SSL verification for outgoing requests (Keycloak, etc.)
@@ -69,7 +69,7 @@ class Settings(BaseSettings):
                 )
         if not self.CORS_ALLOWED_ORIGINS:
             self.CORS_ALLOWED_ORIGINS = (
-                f"https://{self.HOST_IP}:{self.QUERY_UI_PORT}"
+                f"https://{self.HOST_IP}:{self.UNIBRIDGE_UI_PORT}"
             )
         return self
 

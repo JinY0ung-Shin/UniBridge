@@ -1,11 +1,11 @@
 #!/bin/sh
 # Start Keycloak in background, wait for it, update client settings, then keep running
 
-# Derive redirect URI and web origin from HOST_IP + QUERY_UI_PORT if not explicitly set
+# Derive redirect URI and web origin from HOST_IP + UNIBRIDGE_UI_PORT if not explicitly set
 : "${HOST_IP:=localhost}"
-: "${QUERY_UI_PORT:=3000}"
-: "${KEYCLOAK_REDIRECT_URI:=https://${HOST_IP}:${QUERY_UI_PORT}/*}"
-: "${KEYCLOAK_WEB_ORIGIN:=https://${HOST_IP}:${QUERY_UI_PORT}}"
+: "${UNIBRIDGE_UI_PORT:=3000}"
+: "${KEYCLOAK_REDIRECT_URI:=https://${HOST_IP}:${UNIBRIDGE_UI_PORT}/*}"
+: "${KEYCLOAK_WEB_ORIGIN:=https://${HOST_IP}:${UNIBRIDGE_UI_PORT}}"
 export KEYCLOAK_REDIRECT_URI KEYCLOAK_WEB_ORIGIN
 
 # Substitute environment variables in realm template and write to import dir

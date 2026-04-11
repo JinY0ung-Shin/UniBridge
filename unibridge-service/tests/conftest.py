@@ -1,4 +1,4 @@
-"""Shared test fixtures for query-service."""
+"""Shared test fixtures for unibridge-service."""
 from __future__ import annotations
 
 import os
