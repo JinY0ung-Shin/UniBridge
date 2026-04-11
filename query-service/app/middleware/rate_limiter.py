@@ -144,6 +144,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             )
 
         if not rate_limiter.try_acquire(username):
+            # Request never reaches auth — undo the rate count we just added
+            rate_limiter.undo_rate_count(username, stamp)
             return JSONResponse(
                 status_code=429,
                 content={"detail": f"Too many concurrent queries (max {rate_limiter._max_concurrent})"},
