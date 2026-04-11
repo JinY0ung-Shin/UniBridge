@@ -15,20 +15,20 @@ def limiter():
 class TestRateLimiter:
     def test_allows_under_limit(self, limiter):
         for _ in range(5):
-            allowed, msg = limiter.check_rate_limit("user1")
+            allowed, msg, _ = limiter.check_rate_limit("user1")
             assert allowed is True
 
     def test_blocks_over_limit(self, limiter):
         for _ in range(5):
             limiter.check_rate_limit("user1")
-        allowed, msg = limiter.check_rate_limit("user1")
+        allowed, msg, _ = limiter.check_rate_limit("user1")
         assert allowed is False
         assert "rate limit" in msg.lower()
 
     def test_separate_users(self, limiter):
         for _ in range(5):
             limiter.check_rate_limit("user1")
-        allowed, _ = limiter.check_rate_limit("user2")
+        allowed, _, _ = limiter.check_rate_limit("user2")
         assert allowed is True
 
     def test_concurrent_acquire_release(self, limiter):
@@ -46,12 +46,12 @@ class TestRateLimiter:
     def test_expired_entries_cleaned(self, limiter):
         old_time = time.time() - 120
         limiter._requests["user1"] = [old_time] * 5
-        allowed, _ = limiter.check_rate_limit("user1")
+        allowed, _, _ = limiter.check_rate_limit("user1")
         assert allowed is True
 
     def test_update_limits(self, limiter):
         limiter.update_limits(rate_limit=2, max_concurrent=1)
         limiter.check_rate_limit("user1")
         limiter.check_rate_limit("user1")
-        allowed, _ = limiter.check_rate_limit("user1")
+        allowed, _, _ = limiter.check_rate_limit("user1")
         assert allowed is False

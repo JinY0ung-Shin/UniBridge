@@ -37,8 +37,13 @@ class RateLimiter:
             if max_concurrent is not None:
                 self._max_concurrent = max_concurrent
 
-    def check_rate_limit(self, username: str) -> tuple[bool, str]:
-        """Check if the user is within rate limits. Returns (allowed, message)."""
+    def check_rate_limit(self, username: str) -> tuple[bool, str, float]:
+        """Check if the user is within rate limits.
+
+        Returns (allowed, message, stamp) where stamp is the timestamp
+        added to the bucket. Callers must pass this stamp to undo_rate_count()
+        to remove exactly their own entry.
+        """
         now = time.time()
         window_start = now - 60.0
 
@@ -50,23 +55,25 @@ class RateLimiter:
                 oldest = min(timestamps)
                 retry_after = math.ceil(oldest + 60.0 - now)
                 self._requests[username] = timestamps
-                return False, f"Rate limit exceeded ({self._rate_limit}/min). Retry after {retry_after}s"
+                return False, f"Rate limit exceeded ({self._rate_limit}/min). Retry after {retry_after}s", 0.0
 
             timestamps.append(now)
             self._requests[username] = timestamps
-            return True, ""
+            return True, "", now
 
-    def undo_rate_count(self, username: str) -> None:
-        """Remove the most recent rate limit entry for a user.
+    def undo_rate_count(self, username: str, stamp: float) -> None:
+        """Remove a specific rate limit entry identified by its timestamp.
 
-        Called when auth fails after rate limit was already consumed,
-        to prevent DoS via forged tokens exhausting another user's bucket.
+        Only removes the exact entry this request added, safe under
+        concurrent access from multiple requests with the same username.
         """
         with self._lock:
             timestamps = self._requests.get(username, [])
-            if timestamps:
-                timestamps.pop()
-                self._requests[username] = timestamps
+            try:
+                timestamps.remove(stamp)
+            except ValueError:
+                pass  # already expired or removed
+            self._requests[username] = timestamps
 
     def try_acquire(self, username: str) -> bool:
         """Try to acquire a concurrent query slot."""
@@ -128,7 +135,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if username is None:
             return await call_next(request)
 
-        allowed, msg = rate_limiter.check_rate_limit(username)
+        allowed, msg, stamp = rate_limiter.check_rate_limit(username)
         if not allowed:
             return JSONResponse(
                 status_code=429,
@@ -144,10 +151,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         try:
             response = await call_next(request)
-            # If auth failed, undo rate limit count — prevents DoS via forged tokens
-            # exhausting another user's rate limit bucket
-            if response.status_code in (401, 403):
-                rate_limiter.undo_rate_count(username)
+            # Only undo on 401 (identity not recognized / forged token).
+            # 403 = authenticated but not authorized (permission denied, wrong DB, etc.)
+            # — those SHOULD consume rate limit to prevent abuse.
+            if response.status_code == 401:
+                rate_limiter.undo_rate_count(username, stamp)
             return response
         finally:
             rate_limiter.release(username)
