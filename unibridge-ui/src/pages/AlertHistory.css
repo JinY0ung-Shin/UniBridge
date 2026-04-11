@@ -1,0 +1,25 @@
+.alert-history {
+  max-width: 1000px;
+}
+
+.alert-history .page-header {
+  margin-bottom: 28px;
+}
+
+/* ── Message cell ── */
+
+.cell-message {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* ── Neutral badge ── */
+
+.badge-neutral {
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
+}

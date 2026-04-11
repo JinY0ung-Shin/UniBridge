@@ -41,6 +41,8 @@ ALL_PERMISSIONS = [
     "apikeys.write",
     "admin.roles.read",
     "admin.roles.write",
+    "alerts.read",
+    "alerts.write",
 ]
 
 # ── Permission cache ────────────────────────────────────────────────────────

@@ -1,0 +1,189 @@
+.alert-settings {
+  max-width: 1000px;
+}
+
+.alert-settings .page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+}
+
+/* ── Tabs ──────────────────────────────────────────────────────────────────── */
+
+.alert-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border-default);
+  margin-bottom: 24px;
+}
+
+.alert-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.alert-tab:hover {
+  color: var(--text-primary);
+}
+
+.alert-tab--active {
+  color: var(--accent-blue);
+  border-bottom-color: var(--accent-blue);
+}
+
+/* ── Tab content ───────────────────────────────────────────────────────────── */
+
+.alert-tab-content {
+  /* sits below tabs */
+}
+
+/* ── Table cells ───────────────────────────────────────────────────────────── */
+
+.cell-webhook-url {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-target {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+/* ── Rule type badges ──────────────────────────────────────────────────────── */
+
+.rule-type-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.rule-type-badge--db_health {
+  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+  color: var(--accent-blue);
+}
+
+.rule-type-badge--upstream_health {
+  background: color-mix(in srgb, var(--accent-green) 12%, transparent);
+  color: var(--accent-green);
+}
+
+.rule-type-badge--error_rate {
+  background: color-mix(in srgb, var(--accent-red) 12%, transparent);
+  color: var(--accent-red);
+}
+
+/* ── Channel summary ───────────────────────────────────────────────────────── */
+
+.channel-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.channel-chip {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+}
+
+/* ── Modal form overrides ──────────────────────────────────────────────────── */
+
+.form-textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 8px 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  box-sizing: border-box;
+}
+
+.form-textarea:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.form-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin: 4px 0 0;
+  line-height: 1.4;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* ── Header pairs ──────────────────────────────────────────────────────────── */
+
+.header-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.header-key {
+  flex: 1;
+}
+
+.header-value {
+  flex: 2;
+}
+
+/* ── Channel mapping rows ──────────────────────────────────────────────────── */
+
+.channel-mapping-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.channel-mapping-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.recipients-input {
+  flex: 2;
+  min-width: 0;
+}
+
+/* ── Misc helpers ──────────────────────────────────────────────────────────── */
+
+.text-muted {
+  color: var(--text-tertiary);
+}

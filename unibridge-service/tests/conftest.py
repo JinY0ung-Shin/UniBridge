@@ -54,8 +54,9 @@ async def seeded_db(engine):
                 "gateway.routes.read", "gateway.upstreams.read",
                 "gateway.monitoring.read",
                 "apikeys.read",
+                "alerts.read",
             ],
-            "viewer": ["gateway.monitoring.read", "query.audit.read"],
+            "viewer": ["gateway.monitoring.read", "query.audit.read", "alerts.read"],
         }
         for role_name, perms in SEED_ROLES.items():
             role = Role(name=role_name, description=f"Test {role_name}", is_system=True)

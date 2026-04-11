@@ -448,10 +448,11 @@ class TestAuthMe:
         data = resp.json()
         assert data["username"] == "testviewer"
         assert data["role"] == "viewer"
-        assert len(data["permissions"]) == 2
+        assert len(data["permissions"]) == 3
         assert set(data["permissions"]) == {
             "gateway.monitoring.read",
             "query.audit.read",
+            "alerts.read",
         }
 
     async def test_me_without_token_returns_401(self, client):
@@ -474,7 +475,7 @@ class TestAdminPermissions:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 17
+        assert len(data) == 19
         assert data == ALL_PERMISSIONS
 
     async def test_viewer_cannot_list_permissions(self, client, viewer_token):
@@ -516,7 +517,7 @@ class TestRoleList:
         assert "query.databases.write" not in dev_role["permissions"]
 
         viewer_role = roles_by_name["viewer"]
-        assert len(viewer_role["permissions"]) == 2
+        assert len(viewer_role["permissions"]) == 3
 
 
 class TestRoleGetById:
