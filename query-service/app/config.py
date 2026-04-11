@@ -94,7 +94,8 @@ def validate_settings() -> None:
     # Validate ENCRYPTION_KEY produces a usable Fernet key
     try:
         from cryptography.fernet import Fernet
-        import base64, hashlib
+        import base64
+        import hashlib
         key = settings.ENCRYPTION_KEY
         if len(key) != 44:
             digest = hashlib.sha256(key.encode()).digest()

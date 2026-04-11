@@ -15,8 +15,6 @@ from jose import jwt, JWTError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from app.config import settings as app_settings
-
 logger = logging.getLogger(__name__)
 
 
