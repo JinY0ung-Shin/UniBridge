@@ -101,3 +101,63 @@ class SystemConfig(Base):
     key = Column(String(100), primary_key=True)
     value = Column(Text, nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AlertChannel(Base):
+    __tablename__ = "alert_channels"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), unique=True, nullable=False)
+    webhook_url = Column(String, nullable=False)
+    payload_template = Column(Text, nullable=False)
+    headers = Column(Text, nullable=True)  # JSON object
+    enabled = Column(Boolean, default=True, nullable=False, server_default="true")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("enabled", True)
+        super().__init__(**kwargs)
+
+
+class AlertRule(Base):
+    __tablename__ = "alert_rules"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False)
+    type = Column(String(30), nullable=False)  # "db_health", "upstream_health", "error_rate"
+    target = Column(String(100), nullable=False)  # DB alias, upstream ID, or "*"
+    threshold = Column(Integer, nullable=True)  # error rate % (error_rate type only)
+    enabled = Column(Boolean, default=True, nullable=False, server_default="true")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("enabled", True)
+        super().__init__(**kwargs)
+
+
+class AlertRuleChannel(Base):
+    __tablename__ = "alert_rule_channels"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_id = Column(Integer, ForeignKey("alert_rules.id", ondelete="CASCADE"), nullable=False)
+    channel_id = Column(Integer, ForeignKey("alert_channels.id", ondelete="CASCADE"), nullable=False)
+    recipients = Column(Text, nullable=False)  # JSON array: ["user@example.com"]
+
+    __table_args__ = (UniqueConstraint("rule_id", "channel_id", name="uq_rule_channel"),)
+
+
+class AlertHistory(Base):
+    __tablename__ = "alert_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_id = Column(Integer, ForeignKey("alert_rules.id", ondelete="SET NULL"), nullable=True)
+    channel_id = Column(Integer, ForeignKey("alert_channels.id", ondelete="SET NULL"), nullable=True)
+    alert_type = Column(String(20), nullable=False)  # "triggered" / "resolved"
+    target = Column(String(100), nullable=False)
+    message = Column(Text, nullable=False)
+    recipients = Column(Text, nullable=True)  # JSON array
+    sent_at = Column(DateTime, server_default=func.now())
+    success = Column(Boolean, nullable=True)
+    error_detail = Column(Text, nullable=True)
