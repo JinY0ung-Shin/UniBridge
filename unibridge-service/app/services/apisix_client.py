@@ -53,6 +53,7 @@ async def list_resources(resource: str) -> dict[str, Any]:
 
     raw_list = data.get("list") or []
     items = [entry["value"] for entry in raw_list if "value" in entry]
+    logger.debug("APISIX list %s: %d items", resource, len(items))
     return {"items": items, "total": data.get("total", len(items))}
 
 
@@ -79,6 +80,7 @@ async def put_resource(resource: str, resource_id: str, body: dict[str, Any]) ->
         resp.raise_for_status()
         data = resp.json()
 
+    logger.info("APISIX PUT %s/%s: status=%d", resource, resource_id, resp.status_code)
     return data.get("value", data)
 
 
@@ -90,3 +92,4 @@ async def delete_resource(resource: str, resource_id: str) -> None:
     async with httpx.AsyncClient(timeout=APISIX_TIMEOUT) as client:
         resp = await client.delete(url, headers=_headers())
         resp.raise_for_status()
+    logger.info("APISIX DELETE %s/%s: status=%d", resource, resource_id, resp.status_code)

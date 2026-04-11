@@ -5,7 +5,6 @@ from the Authorization header.
 """
 from __future__ import annotations
 
-import logging
 import math
 import threading
 import time
@@ -14,8 +13,6 @@ from fastapi import Request, Response
 from jose import jwt, JWTError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
-
-logger = logging.getLogger(__name__)
 
 
 class RateLimiter:

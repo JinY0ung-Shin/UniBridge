@@ -99,6 +99,8 @@ def _handle_apisix_error(exc: HTTPStatusError, resource: str) -> NoReturn:
     except Exception:
         pass
 
+    logger.error("APISIX %s error: status=%d detail=%s", resource, exc.response.status_code, detail)
+
     if exc.response.status_code == 404:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{resource} not found")
     if exc.response.status_code in (400, 409):
@@ -164,6 +166,7 @@ async def save_route(route_id: str, body: dict[str, Any], _admin: CurrentUser = 
         _handle_apisix_error(exc, "Route")
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+    logger.info("Route saved: id=%s uri=%s upstream=%s user=%s", route_id, uri, body.get("upstream_id"), _admin.username)
     result["service_key"] = _extract_service_key(result)
     result["require_auth"] = "key-auth" in result.get("plugins", {})
     result["strip_prefix"] = _extract_strip_prefix(result)
@@ -178,6 +181,7 @@ async def delete_route(route_id: str, _admin: CurrentUser = Depends(require_perm
         _handle_apisix_error(exc, "Route")
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+    logger.info("Route deleted: id=%s user=%s", route_id, _admin.username)
 
 
 @router.post("/routes/{route_id}/test")
@@ -217,6 +221,7 @@ async def test_route(route_id: str, _admin: CurrentUser = Depends(require_permis
             body = resp.json()
         except Exception:
             body = resp.text[:500] if resp.text else None
+        logger.info("Route test OK: route=%s node=%s status=%d elapsed=%dms", route_id, first_addr, resp.status_code, elapsed_ms)
         return {
             "reachable": True,
             "status_code": resp.status_code,
@@ -226,6 +231,7 @@ async def test_route(route_id: str, _admin: CurrentUser = Depends(require_permis
         }
     except Exception as exc:
         elapsed_ms = round((time.monotonic() - start) * 1000)
+        logger.warning("Route test FAIL: route=%s node=%s elapsed=%dms error=%s", route_id, first_addr, elapsed_ms, exc)
         return {
             "reachable": False,
             "status_code": None,
@@ -292,12 +298,13 @@ async def get_upstream(upstream_id: str, _admin: CurrentUser = Depends(require_p
 @router.put("/upstreams/{upstream_id}")
 async def save_upstream(upstream_id: str, body: dict[str, Any], _admin: CurrentUser = Depends(require_permission("gateway.upstreams.write"))) -> dict[str, Any]:
     try:
-        return await apisix_client.put_resource("upstreams", upstream_id, body)
+        result = await apisix_client.put_resource("upstreams", upstream_id, body)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Upstream")
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
-    return {}  # unreachable, satisfies type checker
+    logger.info("Upstream saved: id=%s user=%s", upstream_id, _admin.username)
+    return result  # type: ignore[possibly-undefined]
 
 
 @router.delete("/upstreams/{upstream_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
@@ -308,6 +315,7 @@ async def delete_upstream(upstream_id: str, _admin: CurrentUser = Depends(requir
         _handle_apisix_error(exc, "Upstream")
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+    logger.info("Upstream deleted: id=%s user=%s", upstream_id, _admin.username)
 
 
 # ── Metrics ─────────────────────────────────────────────────────────────────

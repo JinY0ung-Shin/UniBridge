@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,8 +15,6 @@ from app.auth import (
 from app.database import get_db
 from app.models import Role, RolePermission
 from app.schemas import RoleCreate, RoleResponse, RoleUpdate, UserInfoResponse
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Roles"])
 
