@@ -12,7 +12,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import settings, validate_settings
 from app.database import get_db, init_db
 from app.models import DBConnection
-from app.routers import admin, api_keys, gateway, query, roles, users
+from app.routers import admin, alerts, api_keys, gateway, query, roles, users
 from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
 from app.services.connection_manager import connection_manager
 from app.services.settings_manager import settings_manager
@@ -147,6 +147,7 @@ app.add_middleware(
 # Include routers
 app.include_router(query.router)
 app.include_router(admin.router)
+app.include_router(alerts.router)
 app.include_router(api_keys.router)
 app.include_router(gateway.router)
 app.include_router(roles.router)
