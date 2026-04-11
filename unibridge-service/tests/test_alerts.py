@@ -67,3 +67,14 @@ class TestAlertSchemas:
     def test_alert_status_response(self):
         s = AlertStatusResponse(target="mydb", type="db_health", status="alert", since="2026-04-11T12:00:00")
         assert s.status == "alert"
+
+
+from app.auth import ALL_PERMISSIONS
+
+
+class TestAlertPermissions:
+    def test_alerts_read_in_all_permissions(self):
+        assert "alerts.read" in ALL_PERMISSIONS
+
+    def test_alerts_write_in_all_permissions(self):
+        assert "alerts.write" in ALL_PERMISSIONS

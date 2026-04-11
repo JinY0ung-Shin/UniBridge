@@ -47,12 +47,14 @@ async def _seed_roles() -> None:
                 "gateway.routes.read", "gateway.upstreams.read",
                 "gateway.monitoring.read",
                 "apikeys.read",
+                "alerts.read",
             ],
         },
         "viewer": {
             "description": "Read-only access to monitoring and audit logs",
             "permissions": [
                 "gateway.monitoring.read", "query.audit.read",
+                "alerts.read",
             ],
         },
     }
