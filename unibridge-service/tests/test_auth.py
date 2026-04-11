@@ -225,7 +225,7 @@ class TestGetRolePermissions:
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             perms = await get_role_permissions(db, "viewer")
-            assert perms == {"gateway.monitoring.read", "query.audit.read"}
+            assert perms == {"gateway.monitoring.read", "query.audit.read", "alerts.read"}
 
     async def test_returns_empty_set_for_unknown_role(self, seeded_db):
         await invalidate_permission_cache()
@@ -770,7 +770,7 @@ class TestAuthMeEndpoint:
         data = resp.json()
         assert data["username"] == "testviewer"
         assert data["role"] == "viewer"
-        assert set(data["permissions"]) == {"gateway.monitoring.read", "query.audit.read"}
+        assert set(data["permissions"]) == {"gateway.monitoring.read", "query.audit.read", "alerts.read"}
 
     async def test_get_me_without_token_returns_401(self, client):
         resp = await client.get("/auth/me")
