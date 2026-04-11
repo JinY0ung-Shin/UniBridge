@@ -35,7 +35,7 @@ from tests.conftest import auth_header
 
 class TestAllPermissions:
     def test_all_permissions_has_17_entries(self):
-        assert len(ALL_PERMISSIONS) == 17
+        assert len(ALL_PERMISSIONS) == 19
 
     def test_all_permissions_are_unique(self):
         assert len(ALL_PERMISSIONS) == len(set(ALL_PERMISSIONS))
@@ -511,6 +511,7 @@ class TestSeedRoles:
                 "gateway.routes.read", "gateway.upstreams.read",
                 "gateway.monitoring.read",
                 "apikeys.read",
+                "alerts.read",
             }
             assert perms == expected
 
@@ -528,7 +529,7 @@ class TestSeedRoles:
                 select(RolePermission.permission).where(RolePermission.role_id == viewer_role.id)
             )
             perms = {row[0] for row in perm_result.all()}
-            assert perms == {"gateway.monitoring.read", "query.audit.read"}
+            assert perms == {"gateway.monitoring.read", "query.audit.read", "alerts.read"}
 
     async def test_seed_roles_are_marked_as_system(self, engine):
         from app.database import _seed_roles
@@ -607,7 +608,7 @@ class TestSeedRoles:
                 select(RolePermission.permission).where(RolePermission.role_id == viewer.id)
             )
             perms = {row[0] for row in perm_result.all()}
-            assert perms == {"gateway.monitoring.read", "query.audit.read"}
+            assert perms == {"gateway.monitoring.read", "query.audit.read", "alerts.read"}
 
     async def test_seed_upsert_restores_description(self, engine):
         """Re-seeding should restore the description to the seed value."""
@@ -830,7 +831,7 @@ class TestAdminPermissionsEndpoint:
         data = resp.json()
         assert isinstance(data, list)
         assert set(data) == set(ALL_PERMISSIONS)
-        assert len(data) == 17
+        assert len(data) == 19
 
     async def test_list_permissions_as_developer_forbidden(self, client, developer_token):
         """developer role does not have admin.roles.read."""

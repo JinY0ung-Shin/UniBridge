@@ -474,7 +474,7 @@ class TestAdminPermissions:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 17
+        assert len(data) == 19
         assert data == ALL_PERMISSIONS
 
     async def test_viewer_cannot_list_permissions(self, client, viewer_token):
