@@ -517,4 +517,141 @@ export async function deleteKeycloakUser(userId: string): Promise<void> {
   await client.delete(`/admin/users/${userId}`);
 }
 
+// ── Alerts ──────────────────────────────────────────────────────────────────
+
+export interface AlertChannel {
+  id: number;
+  name: string;
+  webhook_url: string;
+  payload_template: string;
+  headers: Record<string, string> | null;
+  enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AlertChannelCreate {
+  name: string;
+  webhook_url: string;
+  payload_template: string;
+  headers?: Record<string, string>;
+  enabled?: boolean;
+}
+
+export interface RuleChannelMapping {
+  channel_id: number;
+  recipients: string[];
+}
+
+export interface RuleChannelDetail {
+  channel_id: number;
+  channel_name: string;
+  recipients: string[];
+}
+
+export interface AlertRule {
+  id: number;
+  name: string;
+  type: 'db_health' | 'upstream_health' | 'error_rate';
+  target: string;
+  threshold: number | null;
+  enabled: boolean;
+  channels: RuleChannelDetail[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AlertRuleCreate {
+  name: string;
+  type: 'db_health' | 'upstream_health' | 'error_rate';
+  target: string;
+  threshold?: number;
+  enabled?: boolean;
+  channels: RuleChannelMapping[];
+}
+
+export interface AlertHistoryEntry {
+  id: number;
+  rule_id: number | null;
+  channel_id: number | null;
+  alert_type: 'triggered' | 'resolved';
+  target: string;
+  message: string;
+  recipients: string[] | null;
+  sent_at: string;
+  success: boolean | null;
+  error_detail: string | null;
+}
+
+export interface AlertStatus {
+  target: string;
+  type: string;
+  status: 'ok' | 'alert';
+  since: string | null;
+}
+
+// Channels
+export async function getAlertChannels(): Promise<AlertChannel[]> {
+  const { data } = await client.get('/admin/alerts/channels');
+  return data;
+}
+
+export async function createAlertChannel(body: AlertChannelCreate): Promise<AlertChannel> {
+  const { data } = await client.post('/admin/alerts/channels', body);
+  return data;
+}
+
+export async function updateAlertChannel(id: number, body: Partial<AlertChannelCreate>): Promise<AlertChannel> {
+  const { data } = await client.put(`/admin/alerts/channels/${id}`, body);
+  return data;
+}
+
+export async function deleteAlertChannel(id: number): Promise<void> {
+  await client.delete(`/admin/alerts/channels/${id}`);
+}
+
+export async function testAlertChannel(id: number): Promise<{ success: boolean; error: string | null }> {
+  const { data } = await client.post(`/admin/alerts/channels/${id}/test`);
+  return data;
+}
+
+// Rules
+export async function getAlertRules(): Promise<AlertRule[]> {
+  const { data } = await client.get('/admin/alerts/rules');
+  return data;
+}
+
+export async function createAlertRule(body: AlertRuleCreate): Promise<AlertRule> {
+  const { data } = await client.post('/admin/alerts/rules', body);
+  return data;
+}
+
+export async function updateAlertRule(id: number, body: Partial<AlertRuleCreate>): Promise<AlertRule> {
+  const { data } = await client.put(`/admin/alerts/rules/${id}`, body);
+  return data;
+}
+
+export async function deleteAlertRule(id: number): Promise<void> {
+  await client.delete(`/admin/alerts/rules/${id}`);
+}
+
+// History & Status
+export async function getAlertHistory(params?: {
+  alert_type?: string;
+  target?: string;
+  from_date?: string;
+  to_date?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<AlertHistoryEntry[]> {
+  const { data } = await client.get('/admin/alerts/history', { params });
+  return data;
+}
+
+export async function getAlertStatus(): Promise<AlertStatus[]> {
+  const { data } = await client.get('/admin/alerts/status');
+  return data;
+}
+
 export default client;
+
