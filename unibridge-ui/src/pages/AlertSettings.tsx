@@ -769,7 +769,9 @@ function AlertSettings() {
                         }
                       >
                         <option value={0}>— {t('alerts.channels')} —</option>
-                        {channels.map((ch) => (
+                        {channels
+                          .filter((ch) => ch.id === row.channel_id || !ruleForm.channelRows.some((r, i) => i !== idx && r.channel_id === ch.id))
+                          .map((ch) => (
                           <option key={ch.id} value={ch.id}>
                             {ch.name}
                           </option>
