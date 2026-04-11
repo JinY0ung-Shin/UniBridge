@@ -306,34 +306,6 @@ export async function deleteGatewayUpstream(id: string): Promise<void> {
   await client.delete(`/admin/gateway/upstreams/${id}`);
 }
 
-/* ── Gateway: Consumers ── */
-
-export interface GatewayConsumer {
-  username: string;
-  api_key?: string | null;
-  key_created?: boolean;
-  plugins?: Record<string, unknown>;
-}
-
-export async function getGatewayConsumers(): Promise<GatewayListResponse<GatewayConsumer>> {
-  const { data } = await client.get('/admin/gateway/consumers');
-  return data;
-}
-
-export async function getGatewayConsumer(username: string): Promise<GatewayConsumer> {
-  const { data } = await client.get(`/admin/gateway/consumers/${username}`);
-  return data;
-}
-
-export async function saveGatewayConsumer(username: string, body: Record<string, unknown>): Promise<GatewayConsumer> {
-  const { data } = await client.put(`/admin/gateway/consumers/${username}`, body);
-  return data;
-}
-
-export async function deleteGatewayConsumer(username: string): Promise<void> {
-  await client.delete(`/admin/gateway/consumers/${username}`);
-}
-
 /* ── Gateway: Metrics ── */
 
 export interface MetricsSummary {
@@ -386,6 +358,52 @@ export async function getMetricsLatency(range = '1h'): Promise<LatencyData> {
 export async function getMetricsTopRoutes(range = '1h'): Promise<TopRoute[]> {
   const { data } = await client.get('/admin/gateway/metrics/top-routes', { params: { range } });
   return data;
+}
+
+/* ── API Keys ── */
+
+export interface ApiKey {
+  name: string;
+  description: string;
+  api_key: string | null;
+  key_created: boolean;
+  allowed_databases: string[];
+  allowed_routes: string[];
+  created_at: string | null;
+}
+
+export interface ApiKeyCreate {
+  name: string;
+  description?: string;
+  api_key?: string;
+  allowed_databases: string[];
+  allowed_routes: string[];
+}
+
+export interface ApiKeyUpdate {
+  description?: string;
+  api_key?: string;
+  allowed_databases?: string[];
+  allowed_routes?: string[];
+}
+
+export async function getApiKeys(): Promise<ApiKey[]> {
+  const { data } = await client.get('/admin/api-keys');
+  return data;
+}
+
+export async function createApiKey(body: ApiKeyCreate): Promise<ApiKey> {
+  const { data } = await client.post('/admin/api-keys', body);
+  return data;
+}
+
+export async function updateApiKey(name: string, body: ApiKeyUpdate): Promise<ApiKey> {
+  const { data } = await client.put(`/admin/api-keys/${name}`, body);
+  return data;
+}
+
+export async function deleteApiKey(name: string): Promise<void> {
+  await client.delete(`/admin/api-keys/${name}`);
 }
 
 /* ── Roles (RBAC) ── */

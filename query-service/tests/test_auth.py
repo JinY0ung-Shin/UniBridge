@@ -509,7 +509,8 @@ class TestSeedRoles:
                 "query.databases.read", "query.permissions.read", "query.audit.read",
                 "query.execute",
                 "gateway.routes.read", "gateway.upstreams.read",
-                "gateway.consumers.read", "gateway.monitoring.read",
+                "gateway.monitoring.read",
+                "apikeys.read",
             }
             assert perms == expected
 
@@ -860,3 +861,57 @@ class _FakeCredentials:
 
 def _make_credentials(token: str) -> _FakeCredentials:
     return _FakeCredentials(token)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# auth.py — get_current_user_or_apikey (APISIX header-based auth)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_apikey_user_from_apisix_header():
+    """When X-Consumer-Username header is present, return ApiKeyUser."""
+    from unittest.mock import AsyncMock, MagicMock
+    from app.auth import get_current_user_or_apikey, ApiKeyUser
+
+    mock_request = MagicMock()
+    mock_request.headers = {"x-consumer-username": "my-app-key"}
+
+    mock_access = MagicMock()
+    mock_access.consumer_name = "my-app-key"
+    mock_access.allowed_databases = '["mydb"]'
+    mock_access.allowed_routes = '["route-1"]'
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_access
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    user = await get_current_user_or_apikey(
+        request=mock_request, credentials=None, db=mock_db
+    )
+    assert isinstance(user, ApiKeyUser)
+    assert user.consumer_name == "my-app-key"
+    assert user.allowed_databases == ["mydb"]
+
+
+@pytest.mark.asyncio
+async def test_apikey_user_unknown_consumer_returns_401():
+    """When X-Consumer-Username header has unknown consumer, raise 401."""
+    from unittest.mock import AsyncMock, MagicMock
+    from fastapi import HTTPException
+    from app.auth import get_current_user_or_apikey
+
+    mock_request = MagicMock()
+    mock_request.headers = {"x-consumer-username": "unknown-key"}
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user_or_apikey(
+            request=mock_request, credentials=None, db=mock_db
+        )
+    assert exc_info.value.status_code == 401

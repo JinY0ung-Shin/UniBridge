@@ -1,8 +1,8 @@
-.gateway-consumers {
-  max-width: 1000px;
+.api-keys {
+  max-width: 1200px;
 }
 
-.gateway-consumers .page-header {
+.api-keys .page-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
@@ -12,6 +12,26 @@
 .cell-key {
   font-family: var(--font-mono);
   font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.cell-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tag {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.tag-more {
+  font-style: italic;
   color: var(--text-tertiary);
 }
 
@@ -68,4 +88,38 @@
 
 .generate-btn {
   margin-top: 4px;
+}
+
+.checkbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+}
+
+.checkbox-list label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.checkbox-list label:hover {
+  color: var(--text-primary);
+}
+
+.checkbox-list input[type="checkbox"] {
+  accent-color: var(--accent-blue);
+}
+
+.checkbox-list-empty {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  padding: 8px;
+  text-align: center;
 }

@@ -8,15 +8,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.routers.gateway import (
-    _extract_api_key,
     _extract_scalar,
     _extract_service_key,
     _extract_timeseries,
     _get_step,
-    _inject_consumer_key,
     _inject_plugins,
-    _mask_value,
-    _strip_consumer_secrets,
 )
 from tests.conftest import auth_header
 
@@ -24,20 +20,6 @@ from tests.conftest import auth_header
 # ---------------------------------------------------------------------------
 # Helper function unit tests (no HTTP, no mocking)
 # ---------------------------------------------------------------------------
-
-
-class TestMaskValue:
-    def test_long_value_keeps_last_four(self):
-        assert _mask_value("abcdef1234") == "***1234"
-
-    def test_short_value_fully_masked(self):
-        assert _mask_value("abc") == "***"
-
-    def test_exact_boundary_fully_masked(self):
-        assert _mask_value("abcd") == "***"
-
-    def test_five_chars_keeps_last_four(self):
-        assert _mask_value("abcde") == "***bcde"
 
 
 class TestExtractServiceKey:
@@ -126,72 +108,6 @@ class TestInjectPlugins:
         body = {"uri": "/test", "service_key": {"header_name": "", "header_value": "val"}}
         result = _inject_plugins(body)
         assert "plugins" not in result
-
-
-class TestExtractApiKey:
-    def test_masked(self):
-        consumer = {"plugins": {"key-auth": {"key": "secret-api-key-1234"}}}
-        result = _extract_api_key(consumer, mask=True)
-        assert result == "***1234"
-
-    def test_unmasked(self):
-        consumer = {"plugins": {"key-auth": {"key": "secret-api-key-1234"}}}
-        result = _extract_api_key(consumer, mask=False)
-        assert result == "secret-api-key-1234"
-
-    def test_no_key_auth_plugin(self):
-        consumer = {"plugins": {}}
-        assert _extract_api_key(consumer) is None
-
-    def test_no_plugins_at_all(self):
-        consumer = {"username": "test"}
-        assert _extract_api_key(consumer) is None
-
-    def test_key_auth_without_key(self):
-        consumer = {"plugins": {"key-auth": {}}}
-        assert _extract_api_key(consumer) is None
-
-
-class TestInjectConsumerKey:
-    def test_with_api_key(self):
-        body = {"username": "alice", "api_key": "new-key-value"}
-        result = _inject_consumer_key(body)
-        assert "api_key" not in result
-        assert result["plugins"]["key-auth"]["key"] == "new-key-value"
-
-    def test_without_api_key(self):
-        body = {"username": "alice"}
-        result = _inject_consumer_key(body)
-        assert "plugins" not in result
-
-    def test_preserves_existing_plugins(self):
-        body = {"username": "alice", "api_key": "key123"}
-        existing = {"rate-limiting": {"rate": 10}}
-        result = _inject_consumer_key(body, existing_plugins=existing)
-        assert result["plugins"]["key-auth"]["key"] == "key123"
-        assert result["plugins"]["rate-limiting"]["rate"] == 10
-
-    def test_without_api_key_preserves_existing(self):
-        body = {"username": "alice"}
-        existing = {"key-auth": {"key": "old-key"}}
-        result = _inject_consumer_key(body, existing_plugins=existing)
-        assert result["plugins"]["key-auth"]["key"] == "old-key"
-
-
-class TestStripConsumerSecrets:
-    def test_removes_key(self):
-        consumer = {"plugins": {"key-auth": {"key": "secret"}}}
-        _strip_consumer_secrets(consumer)
-        assert "key" not in consumer["plugins"]["key-auth"]
-
-    def test_no_plugins(self):
-        consumer = {"username": "test"}
-        _strip_consumer_secrets(consumer)  # should not raise
-
-    def test_no_key_auth(self):
-        consumer = {"plugins": {"rate-limiting": {}}}
-        _strip_consumer_secrets(consumer)
-        assert "rate-limiting" in consumer["plugins"]
 
 
 class TestExtractScalar:
@@ -543,166 +459,6 @@ class TestDeleteUpstream:
 
 
 # ---------------------------------------------------------------------------
-# Consumer CRUD endpoint tests
-# ---------------------------------------------------------------------------
-
-
-class TestListConsumers:
-    async def test_masks_api_keys_and_strips_secrets(self, client, admin_token):
-        mock_data = {
-            "items": [
-                {
-                    "username": "alice",
-                    "plugins": {"key-auth": {"key": "alice-secret-key-ABCD"}},
-                },
-                {
-                    "username": "bob",
-                    "plugins": {},
-                },
-            ],
-            "total": 2,
-        }
-        with patch(
-            "app.routers.gateway.apisix_client.list_resources",
-            new_callable=AsyncMock,
-            return_value=deepcopy(mock_data),
-        ):
-            resp = await client.get("/admin/gateway/consumers", headers=auth_header(admin_token))
-        assert resp.status_code == 200
-        data = resp.json()
-        alice = data["items"][0]
-        assert alice["api_key"] == "***ABCD"
-        # Secret should be stripped from plugins
-        assert "key" not in alice["plugins"].get("key-auth", {})
-        bob = data["items"][1]
-        assert bob["api_key"] is None
-
-
-class TestGetConsumer:
-    async def test_returns_masked_consumer(self, client, admin_token):
-        consumer = {
-            "username": "alice",
-            "plugins": {"key-auth": {"key": "alice-secret-key-ABCD"}},
-        }
-        with patch(
-            "app.routers.gateway.apisix_client.get_resource",
-            new_callable=AsyncMock,
-            return_value=deepcopy(consumer),
-        ):
-            resp = await client.get(
-                "/admin/gateway/consumers/alice", headers=auth_header(admin_token)
-            )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["api_key"] == "***ABCD"
-        assert "key" not in data["plugins"]["key-auth"]
-
-
-class TestSaveConsumer:
-    async def test_new_consumer_shows_unmasked_key(self, client, admin_token):
-        """New consumer (get_resource raises) returns unmasked key and key_created=true."""
-        saved = {
-            "username": "newuser",
-            "plugins": {"key-auth": {"key": "brand-new-key-5678"}},
-        }
-        with patch(
-            "app.routers.gateway.apisix_client.get_resource",
-            new_callable=AsyncMock,
-            side_effect=Exception("not found"),
-        ), patch(
-            "app.routers.gateway.apisix_client.put_resource",
-            new_callable=AsyncMock,
-            return_value=deepcopy(saved),
-        ):
-            resp = await client.put(
-                "/admin/gateway/consumers/newuser",
-                json={"api_key": "brand-new-key-5678"},
-                headers=auth_header(admin_token),
-            )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["api_key"] == "brand-new-key-5678"
-        assert data["key_created"] is True
-        # Secret still stripped from plugins
-        assert "key" not in data["plugins"]["key-auth"]
-
-    async def test_existing_consumer_without_new_key_preserves(self, client, admin_token):
-        """Existing consumer without api_key in body preserves existing key."""
-        from httpx import HTTPStatusError
-
-        existing = {
-            "username": "alice",
-            "plugins": {"key-auth": {"key": "existing-key-XYZW"}},
-        }
-        saved = {
-            "username": "alice",
-            "plugins": {"key-auth": {"key": "existing-key-XYZW"}},
-        }
-        with patch(
-            "app.routers.gateway.apisix_client.get_resource",
-            new_callable=AsyncMock,
-            return_value=deepcopy(existing),
-        ), patch(
-            "app.routers.gateway.apisix_client.put_resource",
-            new_callable=AsyncMock,
-            return_value=deepcopy(saved),
-        ):
-            resp = await client.put(
-                "/admin/gateway/consumers/alice",
-                json={"desc": "updated description"},
-                headers=auth_header(admin_token),
-            )
-        assert resp.status_code == 200
-        data = resp.json()
-        # No new key provided, not a new consumer -> masked, key_created=false
-        assert data["api_key"] == "***XYZW"
-        assert data["key_created"] is False
-
-    async def test_existing_consumer_with_new_key(self, client, admin_token):
-        """Existing consumer with new api_key returns unmasked key and key_created=true."""
-        existing = {
-            "username": "alice",
-            "plugins": {"key-auth": {"key": "old-key-ABCD"}},
-        }
-        saved = {
-            "username": "alice",
-            "plugins": {"key-auth": {"key": "brand-new-key-9999"}},
-        }
-        with patch(
-            "app.routers.gateway.apisix_client.get_resource",
-            new_callable=AsyncMock,
-            return_value=deepcopy(existing),
-        ), patch(
-            "app.routers.gateway.apisix_client.put_resource",
-            new_callable=AsyncMock,
-            return_value=deepcopy(saved),
-        ):
-            resp = await client.put(
-                "/admin/gateway/consumers/alice",
-                json={"api_key": "brand-new-key-9999"},
-                headers=auth_header(admin_token),
-            )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["api_key"] == "brand-new-key-9999"
-        assert data["key_created"] is True
-
-
-class TestDeleteConsumer:
-    async def test_returns_204(self, client, admin_token):
-        with patch(
-            "app.routers.gateway.apisix_client.delete_resource",
-            new_callable=AsyncMock,
-            return_value=None,
-        ):
-            resp = await client.delete(
-                "/admin/gateway/consumers/alice", headers=auth_header(admin_token)
-            )
-        assert resp.status_code == 204
-        assert resp.content == b""
-
-
-# ---------------------------------------------------------------------------
 # Metrics endpoint tests (mock prometheus_client)
 # ---------------------------------------------------------------------------
 
@@ -919,25 +675,6 @@ class TestPermissions:
         )
         assert resp.status_code == 403
 
-    async def test_developer_can_read_consumers(self, client, developer_token):
-        with patch(
-            "app.routers.gateway.apisix_client.list_resources",
-            new_callable=AsyncMock,
-            return_value={"items": [], "total": 0},
-        ):
-            resp = await client.get(
-                "/admin/gateway/consumers", headers=auth_header(developer_token)
-            )
-        assert resp.status_code == 200
-
-    async def test_developer_cannot_write_consumers(self, client, developer_token):
-        resp = await client.put(
-            "/admin/gateway/consumers/alice",
-            json={"api_key": "test"},
-            headers=auth_header(developer_token),
-        )
-        assert resp.status_code == 403
-
     async def test_developer_can_read_monitoring(self, client, developer_token):
         empty = [{"value": [0, "0"]}]
         with patch(
@@ -978,23 +715,11 @@ class TestPermissions:
         )
         assert resp.status_code == 403
 
-    async def test_viewer_cannot_read_consumers(self, client, viewer_token):
-        resp = await client.get(
-            "/admin/gateway/consumers", headers=auth_header(viewer_token)
-        )
-        assert resp.status_code == 403
-
     async def test_viewer_cannot_write_routes(self, client, viewer_token):
         resp = await client.put(
             "/admin/gateway/routes/r1",
             json={"uri": "/test"},
             headers=auth_header(viewer_token),
-        )
-        assert resp.status_code == 403
-
-    async def test_viewer_cannot_delete_consumers(self, client, viewer_token):
-        resp = await client.delete(
-            "/admin/gateway/consumers/alice", headers=auth_header(viewer_token)
         )
         assert resp.status_code == 403
 

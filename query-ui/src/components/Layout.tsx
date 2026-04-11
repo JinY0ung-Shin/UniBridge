@@ -16,8 +16,8 @@ const navItems = [
   { to: '/query-settings', labelKey: 'nav.querySettings', icon: 'Query Settings', section: 'data', permission: 'query.settings.read' },
   { to: '/gateway/routes', labelKey: 'nav.gatewayRoutes', icon: 'Gateway Routes', section: 'gateway', permission: 'gateway.routes.read' },
   { to: '/gateway/upstreams', labelKey: 'nav.gatewayUpstreams', icon: 'Gateway Upstreams', section: 'gateway', permission: 'gateway.upstreams.read' },
-  { to: '/gateway/consumers', labelKey: 'nav.gatewayConsumers', icon: 'Gateway Consumers', section: 'gateway', permission: 'gateway.consumers.read' },
   { to: '/gateway/monitoring', labelKey: 'nav.gatewayMonitoring', icon: 'Gateway Monitoring', section: 'gateway', permission: 'gateway.monitoring.read' },
+  { to: '/api-keys', labelKey: 'nav.apiKeys', icon: 'API Keys', section: 'access', permission: 'apikeys.read' },
   { to: '/roles', labelKey: 'nav.roles', icon: 'Roles', section: 'admin', permission: 'admin.roles.read' },
   { to: '/users', labelKey: 'nav.users', icon: 'Users', section: 'admin', permission: 'admin.roles.read' },
 ];
@@ -127,16 +127,16 @@ function Layout({ children }: LayoutProps) {
                         <circle cx="4" cy="13" r="1" fill="currentColor" />
                       </svg>
                     )}
-                    {item.icon === 'Gateway Consumers' && (
-                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                        <circle cx="9" cy="6" r="3.5" stroke="currentColor" strokeWidth="1.5" />
-                        <path d="M2 16c0-3.3 3.1-6 7-6s7 2.7 7 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                      </svg>
-                    )}
                     {item.icon === 'Gateway Monitoring' && (
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <path d="M1 14l4-6 3 3 4-7 5 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                         <path d="M1 17h16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                    )}
+                    {item.icon === 'API Keys' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <path d="M7 2a5 5 0 014.33 7.5L16 14.17V17h-3v-2h-2v-2l-1.17-1.17A5 5 0 117 2z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                        <circle cx="6" cy="7" r="1.5" fill="currentColor" />
                       </svg>
                     )}
                     {item.icon === 'Roles' && (

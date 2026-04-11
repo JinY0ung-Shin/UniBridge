@@ -190,6 +190,35 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+# ── API Keys ────────────────────────────────────────────────────────────────
+
+class ApiKeyCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100, description="Unique key name (becomes APISIX consumer username)")
+    description: str = ""
+    api_key: str | None = Field(None, description="Custom API key value; auto-generated if omitted")
+    allowed_databases: list[str] = Field(default_factory=list, description="Database aliases this key can query")
+    allowed_routes: list[str] = Field(default_factory=list, description="Gateway route IDs this key can access")
+
+
+class ApiKeyUpdate(BaseModel):
+    description: str | None = None
+    api_key: str | None = Field(None, description="New API key; omit to keep current")
+    allowed_databases: list[str] | None = None
+    allowed_routes: list[str] | None = None
+
+
+class ApiKeyResponse(BaseModel):
+    name: str
+    description: str
+    api_key: str | None = None
+    key_created: bool = False
+    allowed_databases: list[str]
+    allowed_routes: list[str]
+    created_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
 # ── Users (Keycloak) ────────────────────────────────────────────────────────
 
 class KeycloakUser(BaseModel):
