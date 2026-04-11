@@ -12,6 +12,7 @@ from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_ro
 from app.database import get_db
 from app.models import Permission
 from app.schemas import DBConnectionResponse, HealthResponse, QueryRequest, QueryResponse
+from app.middleware.rate_limiter import rate_limiter
 from app.services.audit import log_query
 from app.services.connection_manager import connection_manager
 from app.services.query_executor import check_permission, detect_statement_type, execute_query
@@ -123,7 +124,14 @@ async def execute(
                         detail=table_error,
                     )
 
-    # 3. Execute the query
+    # 3. Acquire concurrent query slot (post-auth to prevent forged-token DoS)
+    if not rate_limiter.try_acquire(username):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many concurrent queries (max {rate_limiter._max_concurrent})",
+        )
+
+    # 4. Execute the query
     try:
         response = await execute_query(
             engine=engine, sql=req.sql, params=req.params,
@@ -152,8 +160,10 @@ async def execute(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Query execution failed. Check server logs for details.",
         )
+    finally:
+        rate_limiter.release(username)
 
-    # 4. Audit log (success)
+    # 5. Audit log (success)
     await log_query(db, user=username, database_alias=req.database,
                     sql=req.sql, params=req.params, row_count=response.row_count,
                     elapsed_ms=response.elapsed_ms, status="success")

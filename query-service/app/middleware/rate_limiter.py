@@ -143,21 +143,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 headers={"Retry-After": str(60)},
             )
 
-        if not rate_limiter.try_acquire(username):
-            # Request never reaches auth — undo the rate count we just added
-            rate_limiter.undo_rate_count(username, stamp)
-            return JSONResponse(
-                status_code=429,
-                content={"detail": f"Too many concurrent queries (max {rate_limiter._max_concurrent})"},
-            )
+        # Concurrent limiting is NOT done here — it runs post-auth in
+        # the query endpoint to prevent forged tokens from occupying
+        # another user's slots. See query.py execute().
+        response = await call_next(request)
 
-        try:
-            response = await call_next(request)
-            # Only undo on 401 (identity not recognized / forged token).
-            # 403 = authenticated but not authorized (permission denied, wrong DB, etc.)
-            # — those SHOULD consume rate limit to prevent abuse.
-            if response.status_code == 401:
-                rate_limiter.undo_rate_count(username, stamp)
-            return response
-        finally:
-            rate_limiter.release(username)
+        # Only undo on 401 (identity not recognized / forged token).
+        # 403 = authenticated but not authorized (permission denied, wrong DB, etc.)
+        # — those SHOULD consume rate limit to prevent abuse.
+        if response.status_code == 401:
+            rate_limiter.undo_rate_count(username, stamp)
+
+        return response
