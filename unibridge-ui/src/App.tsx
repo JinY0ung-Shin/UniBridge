@@ -14,6 +14,7 @@ import ApiKeys from './pages/ApiKeys';
 import QuerySettings from './pages/QuerySettings';
 import Roles from './pages/Roles';
 import Users from './pages/Users';
+import AlertSettings from './pages/AlertSettings';
 
 export function ProtectedRoute({ permission, children }: { permission: string; children: React.ReactNode }) {
   const { permissions: perms, loaded } = usePermissions();
@@ -44,6 +45,7 @@ function App() {
         <Route path="/api-keys" element={<ProtectedRoute permission="apikeys.read"><ApiKeys /></ProtectedRoute>} />
         <Route path="/roles" element={<ProtectedRoute permission="admin.roles.read"><Roles /></ProtectedRoute>} />
         <Route path="/users" element={<ProtectedRoute permission="admin.roles.read"><Users /></ProtectedRoute>} />
+        <Route path="/alert-settings" element={<ProtectedRoute permission="admin.roles.read"><AlertSettings /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>
