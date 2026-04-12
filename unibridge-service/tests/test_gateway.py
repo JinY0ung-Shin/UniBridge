@@ -1,8 +1,10 @@
 """Comprehensive tests for the gateway router (app/routers/gateway.py)."""
+
 from __future__ import annotations
 
 import math
 from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -26,11 +28,7 @@ class TestExtractServiceKey:
     def test_route_with_proxy_rewrite(self):
         route = {
             "plugins": {
-                "proxy-rewrite": {
-                    "headers": {
-                        "set": {"X-Api-Key": "supersecret1234"}
-                    }
-                }
+                "proxy-rewrite": {"headers": {"set": {"X-Api-Key": "supersecret1234"}}}
             }
         }
         result = _extract_service_key(route)
@@ -63,7 +61,10 @@ class TestInjectPlugins:
         }
         result = _inject_plugins(body)
         assert "service_key" not in result
-        assert result["plugins"]["proxy-rewrite"]["headers"]["set"]["X-Api-Key"] == "my-secret"
+        assert (
+            result["plugins"]["proxy-rewrite"]["headers"]["set"]["X-Api-Key"]
+            == "my-secret"
+        )
 
     def test_with_require_auth_true(self):
         body = {"uri": "/test", "require_auth": True}
@@ -105,7 +106,10 @@ class TestInjectPlugins:
         assert "plugins" not in result
 
     def test_service_key_missing_header_name_ignored(self):
-        body = {"uri": "/test", "service_key": {"header_name": "", "header_value": "val"}}
+        body = {
+            "uri": "/test",
+            "service_key": {"header_name": "", "header_value": "val"},
+        }
         result = _inject_plugins(body)
         assert "plugins" not in result
 
@@ -214,7 +218,9 @@ class TestListRoutes:
             new_callable=AsyncMock,
             return_value=deepcopy(mock_data),
         ):
-            resp = await client.get("/admin/gateway/routes", headers=auth_header(admin_token))
+            resp = await client.get(
+                "/admin/gateway/routes", headers=auth_header(admin_token)
+            )
         assert resp.status_code == 200
         data = resp.json()
         assert data["total"] == 2
@@ -232,7 +238,9 @@ class TestListRoutes:
             new_callable=AsyncMock,
             side_effect=ConnectionError("refused"),
         ):
-            resp = await client.get("/admin/gateway/routes", headers=auth_header(admin_token))
+            resp = await client.get(
+                "/admin/gateway/routes", headers=auth_header(admin_token)
+            )
         assert resp.status_code == 502
         assert "APISIX" in resp.json()["detail"]
 
@@ -254,7 +262,9 @@ class TestGetRoute:
             new_callable=AsyncMock,
             return_value=deepcopy(route),
         ):
-            resp = await client.get("/admin/gateway/routes/r1", headers=auth_header(admin_token))
+            resp = await client.get(
+                "/admin/gateway/routes/r1", headers=auth_header(admin_token)
+            )
         assert resp.status_code == 200
         data = resp.json()
         assert data["service_key"]["header_name"] == "Authorization"
@@ -269,26 +279,30 @@ class TestSaveRoute:
             "uri": "/test",
             "plugins": {
                 "key-auth": {},
-                "proxy-rewrite": {
-                    "headers": {"set": {"X-Key": "newsecretkey1234"}}
-                },
+                "proxy-rewrite": {"headers": {"set": {"X-Key": "newsecretkey1234"}}},
             },
         }
-        with patch(
-            "app.routers.gateway.apisix_client.get_resource",
-            new_callable=AsyncMock,
-            side_effect=Exception("not found"),
-        ), patch(
-            "app.routers.gateway.apisix_client.put_resource",
-            new_callable=AsyncMock,
-            return_value=deepcopy(saved_route),
-        ) as mock_put:
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=Exception("not found"),
+            ),
+            patch(
+                "app.routers.gateway.apisix_client.put_resource",
+                new_callable=AsyncMock,
+                return_value=deepcopy(saved_route),
+            ) as mock_put,
+        ):
             resp = await client.put(
                 "/admin/gateway/routes/r1",
                 json={
                     "uri": "/api/test/*",
                     "upstream_id": "u1",
-                    "service_key": {"header_name": "X-Key", "header_value": "newsecretkey1234"},
+                    "service_key": {
+                        "header_name": "X-Key",
+                        "header_value": "newsecretkey1234",
+                    },
                     "require_auth": True,
                 },
                 headers=auth_header(admin_token),
@@ -336,15 +350,18 @@ class TestSaveRoute:
                 "key-auth": {},
             },
         }
-        with patch(
-            "app.routers.gateway.apisix_client.get_resource",
-            new_callable=AsyncMock,
-            return_value=deepcopy(existing_route),
-        ), patch(
-            "app.routers.gateway.apisix_client.put_resource",
-            new_callable=AsyncMock,
-            return_value=deepcopy(saved_route),
-        ) as mock_put:
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                return_value=deepcopy(existing_route),
+            ),
+            patch(
+                "app.routers.gateway.apisix_client.put_resource",
+                new_callable=AsyncMock,
+                return_value=deepcopy(saved_route),
+            ) as mock_put,
+        ):
             resp = await client.put(
                 "/admin/gateway/routes/r1",
                 json={"uri": "/api/test/*", "upstream_id": "u1"},
@@ -357,14 +374,17 @@ class TestSaveRoute:
         assert "key-auth" in call_body.get("plugins", {})
 
     async def test_apisix_error_returns_502(self, client, admin_token):
-        with patch(
-            "app.routers.gateway.apisix_client.get_resource",
-            new_callable=AsyncMock,
-            side_effect=Exception("timeout"),
-        ), patch(
-            "app.routers.gateway.apisix_client.put_resource",
-            new_callable=AsyncMock,
-            side_effect=ConnectionError("connection refused"),
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=Exception("timeout"),
+            ),
+            patch(
+                "app.routers.gateway.apisix_client.put_resource",
+                new_callable=AsyncMock,
+                side_effect=ConnectionError("connection refused"),
+            ),
         ):
             resp = await client.put(
                 "/admin/gateway/routes/r1",
@@ -381,7 +401,9 @@ class TestDeleteRoute:
             new_callable=AsyncMock,
             return_value=None,
         ):
-            resp = await client.delete("/admin/gateway/routes/r1", headers=auth_header(admin_token))
+            resp = await client.delete(
+                "/admin/gateway/routes/r1", headers=auth_header(admin_token)
+            )
         assert resp.status_code == 204
         assert resp.content == b""
 
@@ -391,8 +413,92 @@ class TestDeleteRoute:
             new_callable=AsyncMock,
             side_effect=ConnectionError("refused"),
         ):
-            resp = await client.delete("/admin/gateway/routes/r1", headers=auth_header(admin_token))
+            resp = await client.delete(
+                "/admin/gateway/routes/r1", headers=auth_header(admin_token)
+            )
         assert resp.status_code == 502
+
+    async def test_system_managed_llm_admin_route_cannot_be_deleted(
+        self, client, admin_token
+    ):
+        resp = await client.delete(
+            "/admin/gateway/routes/llm-admin", headers=auth_header(admin_token)
+        )
+
+        assert resp.status_code == 400
+        assert "System-managed route" in resp.json()["detail"]
+
+
+class _MockAsyncClient:
+    def __init__(self, response, capture: dict[str, str]):
+        self._response = response
+        self._capture = capture
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, url: str):
+        self._capture["url"] = url
+        return self._response
+
+
+class TestRouteTest:
+    async def test_uses_litellm_liveliness_for_llm_proxy(self, client, admin_token):
+        route = {"id": "llm-proxy", "upstream_id": "litellm"}
+        upstream = {"id": "litellm", "nodes": {"litellm:4000": 1}}
+        response = SimpleNamespace(
+            status_code=200, json=lambda: {"status": "ok"}, text="ok"
+        )
+        capture: dict[str, str] = {}
+
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=[route, upstream],
+            ),
+            patch(
+                "app.routers.gateway.httpx.AsyncClient",
+                side_effect=lambda *args, **kwargs: _MockAsyncClient(response, capture),
+            ),
+        ):
+            resp = await client.post(
+                "/admin/gateway/routes/llm-proxy/test", headers=auth_header(admin_token)
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["reachable"] is True
+        assert capture["url"] == "http://litellm:4000/health/liveliness"
+
+    async def test_uses_litellm_liveliness_for_llm_admin(self, client, admin_token):
+        route = {"id": "llm-admin", "upstream_id": "litellm"}
+        upstream = {"id": "litellm", "nodes": {"litellm:4000": 1}}
+        response = SimpleNamespace(
+            status_code=200, json=lambda: {"status": "ok"}, text="ok"
+        )
+        capture: dict[str, str] = {}
+
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=[route, upstream],
+            ),
+            patch(
+                "app.routers.gateway.httpx.AsyncClient",
+                side_effect=lambda *args, **kwargs: _MockAsyncClient(response, capture),
+            ),
+        ):
+            resp = await client.post(
+                "/admin/gateway/routes/llm-admin/test", headers=auth_header(admin_token)
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["reachable"] is True
+        assert capture["url"] == "http://litellm:4000/health/liveliness"
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +517,9 @@ class TestListUpstreams:
             new_callable=AsyncMock,
             return_value=mock_data,
         ):
-            resp = await client.get("/admin/gateway/upstreams", headers=auth_header(admin_token))
+            resp = await client.get(
+                "/admin/gateway/upstreams", headers=auth_header(admin_token)
+            )
         assert resp.status_code == 200
         assert resp.json()["total"] == 1
 
@@ -424,7 +532,9 @@ class TestGetUpstream:
             new_callable=AsyncMock,
             return_value=upstream,
         ):
-            resp = await client.get("/admin/gateway/upstreams/u1", headers=auth_header(admin_token))
+            resp = await client.get(
+                "/admin/gateway/upstreams/u1", headers=auth_header(admin_token)
+            )
         assert resp.status_code == 200
         assert resp.json()["id"] == "u1"
 
@@ -453,7 +563,9 @@ class TestDeleteUpstream:
             new_callable=AsyncMock,
             return_value=None,
         ):
-            resp = await client.delete("/admin/gateway/upstreams/u1", headers=auth_header(admin_token))
+            resp = await client.delete(
+                "/admin/gateway/upstreams/u1", headers=auth_header(admin_token)
+            )
         assert resp.status_code == 204
         assert resp.content == b""
 

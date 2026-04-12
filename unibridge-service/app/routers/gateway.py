@@ -22,7 +22,7 @@ router = APIRouter(prefix="/admin/gateway", tags=["Gateway"])
 MASK_KEEP = 4
 
 # System-managed resources — cannot be deleted or edited via API
-PROTECTED_ROUTE_IDS = {"query-api", "llm-proxy"}
+PROTECTED_ROUTE_IDS = {"query-api", "llm-proxy", "llm-admin"}
 PROTECTED_UPSTREAM_IDS = {"unibridge-service", "litellm"}
 
 
@@ -49,7 +49,17 @@ def _extract_strip_prefix(route: dict[str, Any]) -> bool:
     return "regex_uri" in pr
 
 
-def _inject_plugins(body: dict[str, Any], existing_plugins: dict[str, Any] | None = None) -> dict[str, Any]:
+def _health_path_for_route(route: dict[str, Any]) -> str:
+    route_id = route.get("id")
+    upstream_id = route.get("upstream_id")
+    if route_id in {"llm-proxy", "llm-admin"} or upstream_id == "litellm":
+        return "/health/liveliness"
+    return "/health"
+
+
+def _inject_plugins(
+    body: dict[str, Any], existing_plugins: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Inject service_key, strip_prefix, and require_auth into APISIX plugins config, preserving others."""
     service_key = body.pop("service_key", None)
     require_auth = body.pop("require_auth", None)
@@ -60,11 +70,13 @@ def _inject_plugins(body: dict[str, Any], existing_plugins: dict[str, Any] | Non
     pr_config = dict(plugins.get("proxy-rewrite", {}))
 
     # Service key → proxy-rewrite headers
-    if service_key and service_key.get("header_name") and service_key.get("header_value"):
+    if (
+        service_key
+        and service_key.get("header_name")
+        and service_key.get("header_value")
+    ):
         pr_config["headers"] = {
-            "set": {
-                service_key["header_name"]: service_key["header_value"]
-            }
+            "set": {service_key["header_name"]: service_key["header_value"]}
         }
 
     # Strip prefix → proxy-rewrite regex_uri
@@ -104,23 +116,35 @@ def _handle_apisix_error(exc: HTTPStatusError, resource: str) -> NoReturn:
     except Exception:
         pass
 
-    logger.error("APISIX %s error: status=%d detail=%s", resource, exc.response.status_code, detail)
+    logger.error(
+        "APISIX %s error: status=%d detail=%s",
+        resource,
+        exc.response.status_code,
+        detail,
+    )
 
     if exc.response.status_code == 404:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{resource} not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"{resource} not found"
+        )
     if exc.response.status_code in (400, 409):
         raise HTTPException(status_code=exc.response.status_code, detail=detail)
     raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
 
 
 @router.get("/routes")
-async def list_routes(_admin: CurrentUser = Depends(require_permission("gateway.routes.read"))) -> dict[str, Any]:
+async def list_routes(
+    _admin: CurrentUser = Depends(require_permission("gateway.routes.read")),
+) -> dict[str, Any]:
     try:
         result = await apisix_client.list_resources("routes")
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Routes")
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to APISIX: {exc}",
+        )
     for item in result.get("items", []):
         item["service_key"] = _extract_service_key(item)
         item["require_auth"] = "key-auth" in item.get("plugins", {})
@@ -130,13 +154,19 @@ async def list_routes(_admin: CurrentUser = Depends(require_permission("gateway.
 
 
 @router.get("/routes/{route_id}")
-async def get_route(route_id: str, _admin: CurrentUser = Depends(require_permission("gateway.routes.read"))) -> dict[str, Any]:
+async def get_route(
+    route_id: str,
+    _admin: CurrentUser = Depends(require_permission("gateway.routes.read")),
+) -> dict[str, Any]:
     try:
         route = await apisix_client.get_resource("routes", route_id)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Route")
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to APISIX: {exc}",
+        )
     route["service_key"] = _extract_service_key(route)
     route["require_auth"] = "key-auth" in route.get("plugins", {})
     route["strip_prefix"] = _extract_strip_prefix(route)
@@ -144,16 +174,28 @@ async def get_route(route_id: str, _admin: CurrentUser = Depends(require_permiss
 
 
 @router.put("/routes/{route_id}")
-async def save_route(route_id: str, body: dict[str, Any], _admin: CurrentUser = Depends(require_permission("gateway.routes.write"))) -> dict[str, Any]:
+async def save_route(
+    route_id: str,
+    body: dict[str, Any],
+    _admin: CurrentUser = Depends(require_permission("gateway.routes.write")),
+) -> dict[str, Any]:
     # Reject inline upstream
     if "upstream" in body or "nodes" in body:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Inline upstream not allowed. Use upstream_id.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Inline upstream not allowed. Use upstream_id.",
+        )
     # Enforce /api/ prefix — nginx only proxies /api/* to APISIX
     uri = body.get("uri", "")
     if not uri.startswith("/api/"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="URI must start with /api/ (e.g. /api/myservice/*)")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="URI must start with /api/ (e.g. /api/myservice/*)",
+        )
     if not body.get("upstream_id"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="upstream_id is required.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="upstream_id is required."
+        )
 
     existing_plugins: dict[str, Any] | None = None
     try:
@@ -171,54 +213,87 @@ async def save_route(route_id: str, body: dict[str, Any], _admin: CurrentUser = 
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Route")
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
-    logger.info("Route saved: id=%s uri=%s upstream=%s user=%s", route_id, uri, body.get("upstream_id"), _admin.username)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to APISIX: {exc}",
+        )
+    logger.info(
+        "Route saved: id=%s uri=%s upstream=%s user=%s",
+        route_id,
+        uri,
+        body.get("upstream_id"),
+        _admin.username,
+    )
     result["service_key"] = _extract_service_key(result)
     result["require_auth"] = "key-auth" in result.get("plugins", {})
     result["strip_prefix"] = _extract_strip_prefix(result)
     return result
 
 
-@router.delete("/routes/{route_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
-async def delete_route(route_id: str, _admin: CurrentUser = Depends(require_permission("gateway.routes.write"))) -> None:
+@router.delete(
+    "/routes/{route_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None
+)
+async def delete_route(
+    route_id: str,
+    _admin: CurrentUser = Depends(require_permission("gateway.routes.write")),
+) -> None:
     if route_id in PROTECTED_ROUTE_IDS:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="System-managed route cannot be deleted")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="System-managed route cannot be deleted",
+        )
     try:
         await apisix_client.delete_resource("routes", route_id)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Route")
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to APISIX: {exc}",
+        )
     logger.info("Route deleted: id=%s user=%s", route_id, _admin.username)
 
 
 @router.post("/routes/{route_id}/test")
-async def test_route(route_id: str, _admin: CurrentUser = Depends(require_permission("gateway.routes.read"))) -> dict[str, Any]:
+async def test_route(
+    route_id: str,
+    _admin: CurrentUser = Depends(require_permission("gateway.routes.read")),
+) -> dict[str, Any]:
     """Test upstream connectivity by sending GET /health to the first node."""
     try:
         route = await apisix_client.get_resource("routes", route_id)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Route")
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to APISIX: {exc}",
+        )
 
     upstream_id = route.get("upstream_id")
     if not upstream_id:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Route has no upstream_id")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Route has no upstream_id"
+        )
 
     try:
         upstream = await apisix_client.get_resource("upstreams", upstream_id)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Upstream")
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to get upstream: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to get upstream: {exc}",
+        )
 
     nodes = upstream.get("nodes", {})
     if not nodes:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upstream has no nodes")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Upstream has no nodes"
+        )
 
     first_addr = next(iter(nodes))
-    url = f"http://{first_addr}/health"
+    url = f"http://{first_addr}{_health_path_for_route(route)}"
     start = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
@@ -229,7 +304,13 @@ async def test_route(route_id: str, _admin: CurrentUser = Depends(require_permis
             body = resp.json()
         except Exception:
             body = resp.text[:500] if resp.text else None
-        logger.info("Route test OK: route=%s node=%s status=%d elapsed=%dms", route_id, first_addr, resp.status_code, elapsed_ms)
+        logger.info(
+            "Route test OK: route=%s node=%s status=%d elapsed=%dms",
+            route_id,
+            first_addr,
+            resp.status_code,
+            elapsed_ms,
+        )
         return {
             "reachable": True,
             "status_code": resp.status_code,
@@ -239,7 +320,13 @@ async def test_route(route_id: str, _admin: CurrentUser = Depends(require_permis
         }
     except Exception as exc:
         elapsed_ms = round((time.monotonic() - start) * 1000)
-        logger.warning("Route test FAIL: route=%s node=%s elapsed=%dms error=%s", route_id, first_addr, elapsed_ms, exc)
+        logger.warning(
+            "Route test FAIL: route=%s node=%s elapsed=%dms error=%s",
+            route_id,
+            first_addr,
+            elapsed_ms,
+            exc,
+        )
         return {
             "reachable": False,
             "status_code": None,
@@ -251,14 +338,20 @@ async def test_route(route_id: str, _admin: CurrentUser = Depends(require_permis
 
 
 @router.get("/routes/{route_id}/curl")
-async def route_curl(route_id: str, _admin: CurrentUser = Depends(require_permission("gateway.routes.read"))) -> dict[str, str]:
+async def route_curl(
+    route_id: str,
+    _admin: CurrentUser = Depends(require_permission("gateway.routes.read")),
+) -> dict[str, str]:
     """Generate a sample curl command for a route."""
     try:
         route = await apisix_client.get_resource("routes", route_id)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Route")
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to APISIX: {exc}",
+        )
 
     uri = route.get("uri", "/")
     path = uri.rstrip("*").rstrip("/") or "/"
@@ -282,63 +375,107 @@ async def route_curl(route_id: str, _admin: CurrentUser = Depends(require_permis
 
 
 @router.get("/upstreams")
-async def list_upstreams(_admin: CurrentUser = Depends(require_permission("gateway.upstreams.read"))) -> dict[str, Any]:
+async def list_upstreams(
+    _admin: CurrentUser = Depends(require_permission("gateway.upstreams.read")),
+) -> dict[str, Any]:
     try:
         result = await apisix_client.list_resources("upstreams")
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Upstreams")
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to APISIX: {exc}",
+        )
     for item in result.get("items", []):
         item["system"] = item.get("id") in PROTECTED_UPSTREAM_IDS
     return result
 
 
 @router.get("/upstreams/{upstream_id}")
-async def get_upstream(upstream_id: str, _admin: CurrentUser = Depends(require_permission("gateway.upstreams.read"))) -> dict[str, Any]:
+async def get_upstream(
+    upstream_id: str,
+    _admin: CurrentUser = Depends(require_permission("gateway.upstreams.read")),
+) -> dict[str, Any]:
     try:
         return await apisix_client.get_resource("upstreams", upstream_id)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Upstream")
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to APISIX: {exc}",
+        )
     return {}  # unreachable, satisfies type checker
 
 
 @router.put("/upstreams/{upstream_id}")
-async def save_upstream(upstream_id: str, body: dict[str, Any], _admin: CurrentUser = Depends(require_permission("gateway.upstreams.write"))) -> dict[str, Any]:
+async def save_upstream(
+    upstream_id: str,
+    body: dict[str, Any],
+    _admin: CurrentUser = Depends(require_permission("gateway.upstreams.write")),
+) -> dict[str, Any]:
     try:
         result = await apisix_client.put_resource("upstreams", upstream_id, body)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Upstream")
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to APISIX: {exc}",
+        )
     logger.info("Upstream saved: id=%s user=%s", upstream_id, _admin.username)
     return result  # type: ignore[possibly-undefined]
 
 
-@router.delete("/upstreams/{upstream_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
-async def delete_upstream(upstream_id: str, _admin: CurrentUser = Depends(require_permission("gateway.upstreams.write"))) -> None:
+@router.delete(
+    "/upstreams/{upstream_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+)
+async def delete_upstream(
+    upstream_id: str,
+    _admin: CurrentUser = Depends(require_permission("gateway.upstreams.write")),
+) -> None:
     if upstream_id in PROTECTED_UPSTREAM_IDS:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="System-managed upstream cannot be deleted")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="System-managed upstream cannot be deleted",
+        )
     try:
         await apisix_client.delete_resource("upstreams", upstream_id)
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Upstream")
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to APISIX: {exc}",
+        )
     logger.info("Upstream deleted: id=%s user=%s", upstream_id, _admin.username)
 
 
 # ── Metrics ─────────────────────────────────────────────────────────────────
 
-RANGE_STEPS = {"15m": "15s", "1h": "60s", "6h": "300s", "24h": "600s", "7d": "3600s", "30d": "21600s", "60d": "43200s"}
+RANGE_STEPS = {
+    "15m": "15s",
+    "1h": "60s",
+    "6h": "300s",
+    "24h": "600s",
+    "7d": "3600s",
+    "30d": "21600s",
+    "60d": "43200s",
+}
 VALID_RANGES = set(RANGE_STEPS.keys())
 
 # For request volume chart: (step, increase window) per range
 RANGE_VOLUME = {
-    "15m": ("60s", "1m"), "1h": ("300s", "5m"), "6h": ("1800s", "30m"),
-    "24h": ("3600s", "1h"), "7d": ("3600s", "1h"), "30d": ("86400s", "1d"), "60d": ("86400s", "1d"),
+    "15m": ("60s", "1m"),
+    "1h": ("300s", "5m"),
+    "6h": ("1800s", "30m"),
+    "24h": ("3600s", "1h"),
+    "7d": ("3600s", "1h"),
+    "30d": ("86400s", "1d"),
+    "60d": ("86400s", "1d"),
 }
 
 _SAFE_ROUTE_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
@@ -350,7 +487,9 @@ def _get_step(time_range: str) -> str:
 
 def _validate_route(route: str | None) -> None:
     if route and not _SAFE_ROUTE_RE.match(route):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid route ID")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid route ID"
+        )
 
 
 def _labels(route: str | None, *extra: str) -> str:
@@ -392,7 +531,9 @@ def _extract_timeseries(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 @router.get("/metrics/summary")
 async def metrics_summary(
-    time_range: str = Query("1h", alias="range", description="Time range: 15m, 1h, 6h, 24h"),
+    time_range: str = Query(
+        "1h", alias="range", description="Time range: 15m, 1h, 6h, 24h"
+    ),
     route: str | None = Query(None, description="Filter by route ID"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
@@ -414,7 +555,9 @@ async def metrics_summary(
             ),
         )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
 
     return {
         "total_requests": round(_extract_scalar(total_results)),
@@ -440,7 +583,9 @@ async def metrics_requests(
             step=_get_step(time_range),
         )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
     return _extract_timeseries(results)
 
 
@@ -459,7 +604,9 @@ async def metrics_status_codes(
             f"sum by (code) (increase(apisix_http_status{hs}[{time_range}]))"
         )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
 
     codes = []
     for r in results:
@@ -490,19 +637,24 @@ async def metrics_latency(
         p50, p95, p99 = await asyncio.gather(
             prometheus_client.range_query(
                 f"histogram_quantile(0.5, sum(rate(apisix_http_latency_bucket{hs}[5m])) by (le))",
-                duration=time_range, step=step,
+                duration=time_range,
+                step=step,
             ),
             prometheus_client.range_query(
                 f"histogram_quantile(0.95, sum(rate(apisix_http_latency_bucket{hs}[5m])) by (le))",
-                duration=time_range, step=step,
+                duration=time_range,
+                step=step,
             ),
             prometheus_client.range_query(
                 f"histogram_quantile(0.99, sum(rate(apisix_http_latency_bucket{hs}[5m])) by (le))",
-                duration=time_range, step=step,
+                duration=time_range,
+                step=step,
             ),
         )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
 
     return {
         "p50": _extract_timeseries(p50),
@@ -523,7 +675,9 @@ async def metrics_top_routes(
             f"topk(10, sum by (route) (increase(apisix_http_status[{time_range}])))"
         )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
 
     routes = []
     for r in results:
@@ -557,11 +711,14 @@ async def metrics_requests_total(
             step=step,
         )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
     return _extract_timeseries(results)
 
 
 # ── LLM Metrics ────────────────────────────────────────────────────────────
+
 
 @router.get("/metrics/llm/summary")
 async def llm_metrics_summary(
@@ -572,31 +729,41 @@ async def llm_metrics_summary(
     if time_range not in VALID_RANGES:
         time_range = "1h"
     try:
-        tokens, prompt, completion, spend, requests, latency_sum, latency_count = await asyncio.gather(
+        (
+            tokens,
+            prompt,
+            completion,
+            spend,
+            requests,
+            latency_sum,
+            latency_count,
+        ) = await asyncio.gather(
             prometheus_client.instant_query(
-                f'sum(increase(litellm_total_tokens_metric_total[{time_range}]))'
+                f"sum(increase(litellm_total_tokens_metric_total[{time_range}]))"
             ),
             prometheus_client.instant_query(
-                f'sum(increase(litellm_input_tokens_metric_total[{time_range}]))'
+                f"sum(increase(litellm_input_tokens_metric_total[{time_range}]))"
             ),
             prometheus_client.instant_query(
-                f'sum(increase(litellm_output_tokens_metric_total[{time_range}]))'
+                f"sum(increase(litellm_output_tokens_metric_total[{time_range}]))"
             ),
             prometheus_client.instant_query(
-                f'sum(increase(litellm_spend_metric_total[{time_range}]))'
+                f"sum(increase(litellm_spend_metric_total[{time_range}]))"
             ),
             prometheus_client.instant_query(
-                f'sum(increase(litellm_proxy_total_requests_metric_total[{time_range}]))'
+                f"sum(increase(litellm_proxy_total_requests_metric_total[{time_range}]))"
             ),
             prometheus_client.instant_query(
-                'sum(rate(litellm_request_total_latency_metric_sum[5m]))'
+                "sum(rate(litellm_request_total_latency_metric_sum[5m]))"
             ),
             prometheus_client.instant_query(
-                'sum(rate(litellm_request_total_latency_metric_count[5m]))'
+                "sum(rate(litellm_request_total_latency_metric_count[5m]))"
             ),
         )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
 
     latency_rate = _extract_scalar(latency_sum)
     latency_cnt = _extract_scalar(latency_count)
@@ -624,16 +791,20 @@ async def llm_metrics_tokens(
     try:
         prompt_results, completion_results = await asyncio.gather(
             prometheus_client.range_query(
-                f'sum(increase(litellm_input_tokens_metric_total[{window}]))',
-                duration=time_range, step=step,
+                f"sum(increase(litellm_input_tokens_metric_total[{window}]))",
+                duration=time_range,
+                step=step,
             ),
             prometheus_client.range_query(
-                f'sum(increase(litellm_output_tokens_metric_total[{window}]))',
-                duration=time_range, step=step,
+                f"sum(increase(litellm_output_tokens_metric_total[{window}]))",
+                duration=time_range,
+                step=step,
             ),
         )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
 
     return {
         "prompt": _extract_timeseries(prompt_results),
@@ -652,14 +823,16 @@ async def llm_metrics_by_model(
     try:
         token_results, cost_results = await asyncio.gather(
             prometheus_client.instant_query(
-                f'sum by (model) (increase(litellm_total_tokens_metric_total[{time_range}]))'
+                f"sum by (model) (increase(litellm_total_tokens_metric_total[{time_range}]))"
             ),
             prometheus_client.instant_query(
-                f'sum by (model) (increase(litellm_spend_metric_total[{time_range}]))'
+                f"sum by (model) (increase(litellm_spend_metric_total[{time_range}]))"
             ),
         )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
 
     cost_map: dict[str, float] = {}
     for r in cost_results:
@@ -677,11 +850,13 @@ async def llm_metrics_by_model(
         except (IndexError, ValueError, TypeError):
             tokens = 0
         if tokens > 0:
-            models.append({
-                "model": model,
-                "tokens": tokens,
-                "cost": cost_map.get(model, 0.0),
-            })
+            models.append(
+                {
+                    "model": model,
+                    "tokens": tokens,
+                    "cost": cost_map.get(model, 0.0),
+                }
+            )
     models.sort(key=lambda x: x["tokens"], reverse=True)
     return models
 
@@ -697,14 +872,16 @@ async def llm_metrics_top_keys(
     try:
         token_results, req_results = await asyncio.gather(
             prometheus_client.instant_query(
-                f'topk(10, sum by (hashed_api_key) (increase(litellm_total_tokens_metric_total[{time_range}])))'
+                f"topk(10, sum by (hashed_api_key) (increase(litellm_total_tokens_metric_total[{time_range}])))"
             ),
             prometheus_client.instant_query(
-                f'sum by (hashed_api_key) (increase(litellm_proxy_total_requests_metric_total[{time_range}]))'
+                f"sum by (hashed_api_key) (increase(litellm_proxy_total_requests_metric_total[{time_range}]))"
             ),
         )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
 
     req_map: dict[str, int] = {}
     for r in req_results:
@@ -722,11 +899,13 @@ async def llm_metrics_top_keys(
         except (IndexError, ValueError, TypeError):
             tokens = 0
         if tokens > 0:
-            keys.append({
-                "api_key": key,
-                "tokens": tokens,
-                "requests": req_map.get(key, 0),
-            })
+            keys.append(
+                {
+                    "api_key": key,
+                    "tokens": tokens,
+                    "requests": req_map.get(key, 0),
+                }
+            )
     return keys
 
 
@@ -742,16 +921,20 @@ async def llm_metrics_errors(
     try:
         success_results, error_results = await asyncio.gather(
             prometheus_client.range_query(
-                f'sum(increase(litellm_proxy_total_requests_metric_total[{window}])) - sum(increase(litellm_proxy_failed_requests_metric_total[{window}]))',
-                duration=time_range, step=step,
+                f"sum(increase(litellm_proxy_total_requests_metric_total[{window}])) - sum(increase(litellm_proxy_failed_requests_metric_total[{window}]))",
+                duration=time_range,
+                step=step,
             ),
             prometheus_client.range_query(
-                f'sum(increase(litellm_proxy_failed_requests_metric_total[{window}]))',
-                duration=time_range, step=step,
+                f"sum(increase(litellm_proxy_failed_requests_metric_total[{window}]))",
+                duration=time_range,
+                step=step,
             ),
         )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
 
     success_points = _extract_timeseries(success_results)
     error_points = _extract_timeseries(error_results)
@@ -759,11 +942,13 @@ async def llm_metrics_errors(
     error_map = {p["timestamp"]: p["value"] for p in error_points}
     combined = []
     for p in success_points:
-        combined.append({
-            "timestamp": p["timestamp"],
-            "success": round(p["value"]),
-            "error": round(error_map.get(p["timestamp"], 0)),
-        })
+        combined.append(
+            {
+                "timestamp": p["timestamp"],
+                "success": round(p["value"]),
+                "error": round(error_map.get(p["timestamp"], 0)),
+            }
+        )
     return combined
 
 
@@ -778,9 +963,12 @@ async def llm_metrics_requests_total(
     step, window = RANGE_VOLUME.get(time_range, ("3600s", "1h"))
     try:
         results = await prometheus_client.range_query(
-            f'sum(increase(litellm_proxy_total_requests_metric_total[{window}]))',
-            duration=time_range, step=step,
+            f"sum(increase(litellm_proxy_total_requests_metric_total[{window}]))",
+            duration=time_range,
+            step=step,
         )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
     return _extract_timeseries(results)
