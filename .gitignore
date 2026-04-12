@@ -7,4 +7,5 @@ node_modules/
 certs/
 .omc/
 .superpowers/
+docs/superpowers/
 **/.coverage
