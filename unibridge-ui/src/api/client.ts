@@ -360,6 +360,11 @@ export async function getMetricsTopRoutes(range = '1h'): Promise<TopRoute[]> {
   return data;
 }
 
+export async function getMetricsRequestsTotal(range = '1h', route?: string): Promise<TimeSeriesPoint[]> {
+  const { data } = await client.get('/admin/gateway/metrics/requests-total', { params: { range, route } });
+  return data;
+}
+
 /* ── API Keys ── */
 
 export interface ApiKey {

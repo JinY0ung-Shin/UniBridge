@@ -249,6 +249,7 @@
     "errorRate": "Error Rate (5xx)",
     "avgLatency": "Avg Latency",
     "requestTrend": "Request Trend",
+    "requestVolume": "Request Volume",
     "noRequestData": "No request data available",
     "statusCodeDist": "Status Code Distribution",
     "noStatusData": "No status code data available",

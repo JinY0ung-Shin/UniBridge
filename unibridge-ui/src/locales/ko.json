@@ -249,6 +249,7 @@
     "errorRate": "오류율 (5xx)",
     "avgLatency": "평균 지연시간",
     "requestTrend": "요청 추이",
+    "requestVolume": "요청 수",
     "noRequestData": "요청 데이터가 없습니다",
     "statusCodeDist": "상태 코드 분포",
     "noStatusData": "상태 코드 데이터가 없습니다",

@@ -324,6 +324,12 @@ async def delete_upstream(upstream_id: str, _admin: CurrentUser = Depends(requir
 RANGE_STEPS = {"15m": "15s", "1h": "60s", "6h": "300s", "24h": "600s", "7d": "3600s", "30d": "21600s", "60d": "43200s"}
 VALID_RANGES = set(RANGE_STEPS.keys())
 
+# For request volume chart: (step, increase window) per range
+RANGE_VOLUME = {
+    "15m": ("60s", "1m"), "1h": ("300s", "5m"), "6h": ("1800s", "30m"),
+    "24h": ("3600s", "1h"), "7d": ("3600s", "1h"), "30d": ("86400s", "1d"), "60d": ("86400s", "1d"),
+}
+
 _SAFE_ROUTE_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
 
 
@@ -519,3 +525,26 @@ async def metrics_top_routes(
         if requests > 0:
             routes.append({"route": route, "requests": requests})
     return routes
+
+
+@router.get("/metrics/requests-total")
+async def metrics_requests_total(
+    time_range: str = Query("1h", alias="range", description="Time range"),
+    route: str | None = Query(None, description="Filter by route ID"),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+) -> list[dict[str, Any]]:
+    """Request volume per time bucket (total count, not rate)."""
+    if time_range not in VALID_RANGES:
+        time_range = "1h"
+    _validate_route(route)
+    hs = _labels(route)
+    step, window = RANGE_VOLUME.get(time_range, ("3600s", "1h"))
+    try:
+        results = await prometheus_client.range_query(
+            f"sum(increase(apisix_http_status{hs}[{window}]))",
+            duration=time_range,
+            step=step,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+    return _extract_timeseries(results)

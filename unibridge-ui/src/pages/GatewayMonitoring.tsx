@@ -8,6 +8,7 @@ import {
 import {
   getMetricsSummary,
   getMetricsRequests,
+  getMetricsRequestsTotal,
   getMetricsStatusCodes,
   getMetricsLatency,
   getMetricsTopRoutes,
@@ -20,6 +21,17 @@ const TIME_RANGES = ['15m', '1h', '6h', '24h', '7d', '30d', '60d'];
 function formatTime(ts: number): string {
   const d = new Date(ts * 1000);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function formatTimestamp(ts: number, range: string): string {
+  const d = new Date(ts * 1000);
+  if (['30d', '60d'].includes(range)) {
+    return `${d.getMonth() + 1}/${d.getDate()}`;
+  }
+  if (range === '7d') {
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}h`;
+  }
+  return formatTime(ts);
 }
 
 function getCssVar(name: string): string {
@@ -87,6 +99,12 @@ function GatewayMonitoring() {
     refetchInterval: 30_000,
   });
 
+  const requestsTotalQuery = useQuery({
+    queryKey: ['metrics-requests-total', range],
+    queryFn: () => getMetricsRequestsTotal(range),
+    refetchInterval: 30_000,
+  });
+
   // Route drill-down queries
   const routeSummaryQuery = useQuery({
     queryKey: ['metrics-summary', range, selectedRoute],
@@ -105,6 +123,13 @@ function GatewayMonitoring() {
   const routeStatusQuery = useQuery({
     queryKey: ['metrics-status-codes', range, selectedRoute],
     queryFn: () => getMetricsStatusCodes(range, selectedRoute!),
+    refetchInterval: 30_000,
+    enabled: !!selectedRoute,
+  });
+
+  const routeVolumQuery = useQuery({
+    queryKey: ['metrics-requests-total', range, selectedRoute],
+    queryFn: () => getMetricsRequestsTotal(range, selectedRoute!),
     refetchInterval: 30_000,
     enabled: !!selectedRoute,
   });
@@ -186,6 +211,30 @@ function GatewayMonitoring() {
                 />
                 <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name="req/s" />
               </LineChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="no-data">{t('gatewayMonitoring.noRequestData')}</div>
+        )}
+      </div>
+
+      {/* Request Volume (total counts per bucket) */}
+      <div className="chart-panel">
+        <div className="chart-panel__title">{t('gatewayMonitoring.requestVolume')}</div>
+        {(requestsTotalQuery.data ?? []).length > 0 ? (
+          <div className="chart-container">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={(requestsTotalQuery.data ?? []).map((p) => ({ time: formatTimestamp(p.timestamp, range), requests: Math.round(p.value) }))}>
+                <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
+                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                <Tooltip
+                  contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
+                  labelStyle={{ color: chartColors.axis }}
+                  itemStyle={{ color: chartColors.textSecondary }}
+                />
+                <Bar dataKey="requests" fill={chartColors.green} name="Requests" />
+              </BarChart>
             </ResponsiveContainer>
           </div>
         ) : (
@@ -327,6 +376,30 @@ function GatewayMonitoring() {
                         />
                         <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name="req/s" />
                       </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div className="no-data">{t('gatewayMonitoring.noRequestData')}</div>
+                )}
+              </div>
+
+              {/* Route Request Volume */}
+              <div className="chart-panel chart-panel--nested">
+                <div className="chart-panel__title">{t('gatewayMonitoring.requestVolume')}</div>
+                {(routeVolumQuery.data ?? []).length > 0 ? (
+                  <div className="chart-container">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={(routeVolumQuery.data ?? []).map((p) => ({ time: formatTimestamp(p.timestamp, range), requests: Math.round(p.value) }))}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
+                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <Tooltip
+                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
+                          labelStyle={{ color: chartColors.axis }}
+                          itemStyle={{ color: chartColors.textSecondary }}
+                        />
+                        <Bar dataKey="requests" fill={chartColors.green} name="Requests" />
+                      </BarChart>
                     </ResponsiveContainer>
                   </div>
                 ) : (
