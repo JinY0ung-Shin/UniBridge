@@ -548,3 +548,228 @@ async def metrics_requests_total(
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
     return _extract_timeseries(results)
+
+
+# ── LLM Metrics ────────────────────────────────────────────────────────────
+
+@router.get("/metrics/llm/summary")
+async def llm_metrics_summary(
+    time_range: str = Query("1h", alias="range", description="Time range"),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+) -> dict[str, Any]:
+    """LLM token usage summary: total tokens, cost, requests, latency."""
+    if time_range not in VALID_RANGES:
+        time_range = "1h"
+    try:
+        tokens, prompt, completion, spend, requests, latency_sum, latency_count = await asyncio.gather(
+            prometheus_client.instant_query(
+                f'sum(increase(litellm_total_tokens[{time_range}]))'
+            ),
+            prometheus_client.instant_query(
+                f'sum(increase(litellm_prompt_tokens[{time_range}]))'
+            ),
+            prometheus_client.instant_query(
+                f'sum(increase(litellm_completion_tokens[{time_range}]))'
+            ),
+            prometheus_client.instant_query(
+                f'sum(increase(litellm_spend_metric[{time_range}]))'
+            ),
+            prometheus_client.instant_query(
+                f'sum(increase(litellm_requests_metric[{time_range}]))'
+            ),
+            prometheus_client.instant_query(
+                f'sum(rate(litellm_request_total_latency_metric_sum[5m]))'
+            ),
+            prometheus_client.instant_query(
+                f'sum(rate(litellm_request_total_latency_metric_count[5m]))'
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+
+    latency_rate = _extract_scalar(latency_sum)
+    latency_cnt = _extract_scalar(latency_count)
+    avg_latency = (latency_rate / latency_cnt * 1000) if latency_cnt > 0 else 0.0
+
+    return {
+        "total_tokens": round(_extract_scalar(tokens)),
+        "prompt_tokens": round(_extract_scalar(prompt)),
+        "completion_tokens": round(_extract_scalar(completion)),
+        "estimated_cost": round(_extract_scalar(spend), 4),
+        "total_requests": round(_extract_scalar(requests)),
+        "avg_latency_ms": round(avg_latency, 2),
+    }
+
+
+@router.get("/metrics/llm/tokens")
+async def llm_metrics_tokens(
+    time_range: str = Query("1h", alias="range", description="Time range"),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+) -> dict[str, list[dict[str, Any]]]:
+    """Token usage trend: prompt and completion tokens over time."""
+    if time_range not in VALID_RANGES:
+        time_range = "1h"
+    step, window = RANGE_VOLUME.get(time_range, ("3600s", "1h"))
+    try:
+        prompt_results, completion_results = await asyncio.gather(
+            prometheus_client.range_query(
+                f'sum(increase(litellm_prompt_tokens[{window}]))',
+                duration=time_range, step=step,
+            ),
+            prometheus_client.range_query(
+                f'sum(increase(litellm_completion_tokens[{window}]))',
+                duration=time_range, step=step,
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+
+    return {
+        "prompt": _extract_timeseries(prompt_results),
+        "completion": _extract_timeseries(completion_results),
+    }
+
+
+@router.get("/metrics/llm/by-model")
+async def llm_metrics_by_model(
+    time_range: str = Query("1h", alias="range", description="Time range"),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+) -> list[dict[str, Any]]:
+    """Token usage and cost breakdown by model."""
+    if time_range not in VALID_RANGES:
+        time_range = "1h"
+    try:
+        token_results, cost_results = await asyncio.gather(
+            prometheus_client.instant_query(
+                f'sum by (model) (increase(litellm_total_tokens[{time_range}]))'
+            ),
+            prometheus_client.instant_query(
+                f'sum by (model) (increase(litellm_spend_metric[{time_range}]))'
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+
+    cost_map: dict[str, float] = {}
+    for r in cost_results:
+        model = r.get("metric", {}).get("model", "unknown")
+        try:
+            cost_map[model] = round(float(r["value"][1]), 4)
+        except (IndexError, ValueError, TypeError):
+            cost_map[model] = 0.0
+
+    models = []
+    for r in token_results:
+        model = r.get("metric", {}).get("model", "unknown")
+        try:
+            tokens = round(float(r["value"][1]))
+        except (IndexError, ValueError, TypeError):
+            tokens = 0
+        if tokens > 0:
+            models.append({
+                "model": model,
+                "tokens": tokens,
+                "cost": cost_map.get(model, 0.0),
+            })
+    models.sort(key=lambda x: x["tokens"], reverse=True)
+    return models
+
+
+@router.get("/metrics/llm/top-keys")
+async def llm_metrics_top_keys(
+    time_range: str = Query("1h", alias="range", description="Time range"),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+) -> list[dict[str, Any]]:
+    """Top API keys by token usage."""
+    if time_range not in VALID_RANGES:
+        time_range = "1h"
+    try:
+        token_results, req_results = await asyncio.gather(
+            prometheus_client.instant_query(
+                f'topk(10, sum by (hashed_api_key) (increase(litellm_total_tokens[{time_range}])))'
+            ),
+            prometheus_client.instant_query(
+                f'sum by (hashed_api_key) (increase(litellm_requests_metric[{time_range}]))'
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+
+    req_map: dict[str, int] = {}
+    for r in req_results:
+        key = r.get("metric", {}).get("hashed_api_key", "unknown")
+        try:
+            req_map[key] = round(float(r["value"][1]))
+        except (IndexError, ValueError, TypeError):
+            req_map[key] = 0
+
+    keys = []
+    for r in token_results:
+        key = r.get("metric", {}).get("hashed_api_key", "unknown")
+        try:
+            tokens = round(float(r["value"][1]))
+        except (IndexError, ValueError, TypeError):
+            tokens = 0
+        if tokens > 0:
+            keys.append({
+                "api_key": key,
+                "tokens": tokens,
+                "requests": req_map.get(key, 0),
+            })
+    return keys
+
+
+@router.get("/metrics/llm/errors")
+async def llm_metrics_errors(
+    time_range: str = Query("1h", alias="range", description="Time range"),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+) -> list[dict[str, Any]]:
+    """LLM request success/error rate over time."""
+    if time_range not in VALID_RANGES:
+        time_range = "1h"
+    step, window = RANGE_VOLUME.get(time_range, ("3600s", "1h"))
+    try:
+        success_results, error_results = await asyncio.gather(
+            prometheus_client.range_query(
+                f'sum(increase(litellm_requests_metric{{status="success"}}[{window}]))',
+                duration=time_range, step=step,
+            ),
+            prometheus_client.range_query(
+                f'sum(increase(litellm_requests_metric{{status="failure"}}[{window}]))',
+                duration=time_range, step=step,
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+
+    success_points = _extract_timeseries(success_results)
+    error_points = _extract_timeseries(error_results)
+
+    error_map = {p["timestamp"]: p["value"] for p in error_points}
+    combined = []
+    for p in success_points:
+        combined.append({
+            "timestamp": p["timestamp"],
+            "success": round(p["value"]),
+            "error": round(error_map.get(p["timestamp"], 0)),
+        })
+    return combined
+
+
+@router.get("/metrics/llm/requests-total")
+async def llm_metrics_requests_total(
+    time_range: str = Query("1h", alias="range", description="Time range"),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+) -> list[dict[str, Any]]:
+    """LLM request volume per time bucket."""
+    if time_range not in VALID_RANGES:
+        time_range = "1h"
+    step, window = RANGE_VOLUME.get(time_range, ("3600s", "1h"))
+    try:
+        results = await prometheus_client.range_query(
+            f'sum(increase(litellm_requests_metric[{window}]))',
+            duration=time_range, step=step,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
+    return _extract_timeseries(results)
