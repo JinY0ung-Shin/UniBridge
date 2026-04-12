@@ -57,7 +57,7 @@ describe('LlmMonitoring', () => {
     mockedGetLlmRequestsTotal.mockResolvedValue([]);
   });
 
-  it('links LiteLLM Admin to the root-hosted UI path', async () => {
+  it('links LiteLLM Admin to the separate-origin UI path', async () => {
     renderWithProviders(<LlmMonitoring />);
 
     await waitFor(() => {
@@ -66,7 +66,7 @@ describe('LlmMonitoring', () => {
 
     expect(screen.getByRole('link', { name: /LiteLLM Admin/i })).toHaveAttribute(
       'href',
-      '/ui',
+      'http://localhost:4000/ui',
     );
   });
 });

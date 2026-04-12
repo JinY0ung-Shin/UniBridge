@@ -170,21 +170,43 @@ services:
 
   litellm:
     image: ghcr.io/berriai/litellm:main-v1.80.8-stable
-    command: --config /app/config.yaml --port 4000
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        if [ -z "$$PROXY_BASE_URL" ]; then
+          if [ "$$SSL_VERIFY" = "true" ]; then
+            export PROXY_BASE_URL="https://$$HOST_IP:$$LITELLM_PORT"
+          else
+            export PROXY_BASE_URL="http://$$HOST_IP:$$LITELLM_PORT"
+          fi
+        fi
+        if [ "$$SSL_VERIFY" = "true" ]; then
+          exec litellm --config /app/config.yaml --port 4000 \
+            --ssl_certfile_path /etc/ssl/tls.crt --ssl_keyfile_path /etc/ssl/tls.key
+        else
+          exec litellm --config /app/config.yaml --port 4000
+        fi
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
     environment:
       - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:-litellm}@litellm-db:5432/litellm
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - LITELLM_LOG=ERROR
       - STORE_MODEL_IN_DB=true
       - FORWARDED_ALLOW_IPS=*
-      - PROXY_BASE_URL=${PROXY_BASE_URL:-https://${HOST_IP:-localhost}:${UNIBRIDGE_UI_PORT:-3000}}
+      - SSL_VERIFY=${SSL_VERIFY:-true}
+      - HOST_IP=${HOST_IP:-localhost}
+      - LITELLM_PORT=${LITELLM_PORT:-4000}
+      - PROXY_BASE_URL=${PROXY_BASE_URL:-}
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
+      - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/ssl/tls.crt:ro
+      - ${TLS_KEY_PATH:-./certs/tls.key}:/etc/ssl/tls.key:ro
     depends_on:
       litellm-db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request,ssl,os;s='https' if os.getenv('SSL_VERIFY')=='true' else 'http';c=ssl._create_unverified_context() if s=='https' else None;urllib.request.urlopen(f'{s}://localhost:4000/health/liveliness',context=c)\""]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -204,6 +226,10 @@ services:
         VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
         HOST_IP: ${HOST_IP:-localhost}
         KEYCLOAK_PORT: ${KEYCLOAK_PORT:-8443}
+    environment:
+      - SSL_VERIFY=${SSL_VERIFY:-true}
+      - HOST_IP=${HOST_IP:-localhost}
+      - LITELLM_PORT=${LITELLM_PORT:-4000}
     ports:
       - "${UNIBRIDGE_UI_PORT:-3000}:443"
     volumes:
