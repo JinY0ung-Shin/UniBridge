@@ -21,6 +21,10 @@ router = APIRouter(prefix="/admin/gateway", tags=["Gateway"])
 
 MASK_KEEP = 4
 
+# System-managed resources — cannot be deleted or edited via API
+PROTECTED_ROUTE_IDS = {"query-api", "llm-proxy", "llm-admin"}
+PROTECTED_UPSTREAM_IDS = {"unibridge-service", "litellm"}
+
 
 def _mask_value(value: str) -> str:
     if len(value) <= MASK_KEEP:
@@ -121,6 +125,7 @@ async def list_routes(_admin: CurrentUser = Depends(require_permission("gateway.
         item["service_key"] = _extract_service_key(item)
         item["require_auth"] = "key-auth" in item.get("plugins", {})
         item["strip_prefix"] = _extract_strip_prefix(item)
+        item["system"] = item.get("id") in PROTECTED_ROUTE_IDS
     return result
 
 
@@ -176,6 +181,8 @@ async def save_route(route_id: str, body: dict[str, Any], _admin: CurrentUser = 
 
 @router.delete("/routes/{route_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def delete_route(route_id: str, _admin: CurrentUser = Depends(require_permission("gateway.routes.write"))) -> None:
+    if route_id in PROTECTED_ROUTE_IDS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="System-managed route cannot be deleted")
     try:
         await apisix_client.delete_resource("routes", route_id)
     except HTTPStatusError as exc:
@@ -277,12 +284,14 @@ async def route_curl(route_id: str, _admin: CurrentUser = Depends(require_permis
 @router.get("/upstreams")
 async def list_upstreams(_admin: CurrentUser = Depends(require_permission("gateway.upstreams.read"))) -> dict[str, Any]:
     try:
-        return await apisix_client.list_resources("upstreams")
+        result = await apisix_client.list_resources("upstreams")
     except HTTPStatusError as exc:
         _handle_apisix_error(exc, "Upstreams")
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to connect to APISIX: {exc}")
-    return {"items": [], "total": 0}  # unreachable, satisfies type checker
+    for item in result.get("items", []):
+        item["system"] = item.get("id") in PROTECTED_UPSTREAM_IDS
+    return result
 
 
 @router.get("/upstreams/{upstream_id}")
@@ -310,6 +319,8 @@ async def save_upstream(upstream_id: str, body: dict[str, Any], _admin: CurrentU
 
 @router.delete("/upstreams/{upstream_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def delete_upstream(upstream_id: str, _admin: CurrentUser = Depends(require_permission("gateway.upstreams.write"))) -> None:
+    if upstream_id in PROTECTED_UPSTREAM_IDS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="System-managed upstream cannot be deleted")
     try:
         await apisix_client.delete_resource("upstreams", upstream_id)
     except HTTPStatusError as exc:

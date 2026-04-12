@@ -153,7 +153,10 @@ function GatewayRoutes() {
             <tbody>
               {routes.map((route) => (
                 <tr key={route.id}>
-                  <td className="cell-alias">{route.name || '—'}</td>
+                  <td className="cell-alias">
+                    {route.name || '—'}
+                    {(route as any).system && <span className="badge badge-system">System</span>}
+                  </td>
                   <td className="cell-uri">{route.uri}</td>
                   <td>
                     <div className="method-badges">
@@ -191,19 +194,23 @@ function GatewayRoutes() {
                       >
                         {t('gatewayRoutes.curl')}
                       </button>
-                      <button
-                        className="btn btn-sm btn-secondary"
-                        onClick={() => navigate(`/gateway/routes/${route.id}/edit`)}
-                      >
-                        {t('common.edit')}
-                      </button>
-                      <button
-                        className="btn btn-sm btn-danger"
-                        onClick={() => handleDelete(route)}
-                        disabled={deleteMutation.isPending}
-                      >
-                        {t('common.delete')}
-                      </button>
+                      {!(route as any).system && (
+                        <>
+                          <button
+                            className="btn btn-sm btn-secondary"
+                            onClick={() => navigate(`/gateway/routes/${route.id}/edit`)}
+                          >
+                            {t('common.edit')}
+                          </button>
+                          <button
+                            className="btn btn-sm btn-danger"
+                            onClick={() => handleDelete(route)}
+                            disabled={deleteMutation.isPending}
+                          >
+                            {t('common.delete')}
+                          </button>
+                        </>
+                      )}
                     </div>
                   </td>
                 </tr>

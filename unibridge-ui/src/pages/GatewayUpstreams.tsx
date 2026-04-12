@@ -170,13 +170,20 @@ function GatewayUpstreams() {
             <tbody>
               {upstreams.map((u) => (
                 <tr key={u.id}>
-                  <td className="cell-alias">{u.name || u.id}</td>
+                  <td className="cell-alias">
+                    {u.name || u.id}
+                    {(u as any).system && <span className="badge badge-system">System</span>}
+                  </td>
                   <td><span className="badge badge-type">{u.type}</span></td>
                   <td className="cell-nodes">{formatNodes(u.nodes || {})}</td>
                   <td>
                     <div className="action-buttons">
-                      <button className="btn btn-sm btn-secondary" onClick={() => openEdit(u)}>{t('common.edit')}</button>
-                      <button className="btn btn-sm btn-danger" onClick={() => handleDelete(u)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
+                      {!(u as any).system && (
+                        <>
+                          <button className="btn btn-sm btn-secondary" onClick={() => openEdit(u)}>{t('common.edit')}</button>
+                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(u)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
+                        </>
+                      )}
                     </div>
                   </td>
                 </tr>
