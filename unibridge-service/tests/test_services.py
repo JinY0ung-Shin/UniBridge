@@ -131,7 +131,13 @@ class TestCheckMultiStatement:
         assert check_multi_statement("SELECT 'it''s'; DROP") is True
 
     def test_trailing_semicolon(self):
-        assert check_multi_statement("SELECT 1;") is True
+        assert check_multi_statement("SELECT 1;") is False
+
+    def test_trailing_semicolon_with_whitespace(self):
+        assert check_multi_statement("SELECT 1;  \n") is False
+
+    def test_trailing_semicolon_then_statement(self):
+        assert check_multi_statement("SELECT 1; SELECT 2") is True
 
     def test_empty_string(self):
         assert check_multi_statement("") is False

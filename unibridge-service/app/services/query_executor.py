@@ -96,7 +96,10 @@ def check_multi_statement(sql: str) -> bool:
             continue
 
         if c == ';':
-            return True
+            # Allow trailing semicolons — only block if there's a statement after
+            rest = sql[i + 1:].strip()
+            if rest:
+                return True
 
         i += 1
     return False
