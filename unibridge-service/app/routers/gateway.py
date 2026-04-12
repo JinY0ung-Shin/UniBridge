@@ -22,7 +22,7 @@ router = APIRouter(prefix="/admin/gateway", tags=["Gateway"])
 MASK_KEEP = 4
 
 # System-managed resources — cannot be deleted or edited via API
-PROTECTED_ROUTE_IDS = {"query-api", "llm-proxy", "llm-admin"}
+PROTECTED_ROUTE_IDS = {"query-api", "llm-proxy"}
 PROTECTED_UPSTREAM_IDS = {"unibridge-service", "litellm"}
 
 
