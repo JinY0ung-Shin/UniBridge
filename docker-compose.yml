@@ -177,8 +177,6 @@ services:
       - LITELLM_LOG=ERROR
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
-    ports:
-      - "${LITELLM_PORT:-4000}:4000"
     depends_on:
       litellm-db:
         condition: service_healthy
@@ -203,9 +201,10 @@ services:
         VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
         HOST_IP: ${HOST_IP:-localhost}
         KEYCLOAK_PORT: ${KEYCLOAK_PORT:-8443}
-        VITE_LITELLM_PORT: ${LITELLM_PORT:-4000}
+        VITE_LITELLM_PORT: ${LITELLM_ADMIN_PORT:-4443}
     ports:
       - "${UNIBRIDGE_UI_PORT:-3000}:443"
+      - "${LITELLM_ADMIN_PORT:-4443}:4443"
     volumes:
       - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/nginx/ssl/tls.crt:ro
       - ${TLS_KEY_PATH:-./certs/tls.key}:/etc/nginx/ssl/tls.key:ro
