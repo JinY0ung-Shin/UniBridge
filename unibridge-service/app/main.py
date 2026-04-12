@@ -58,74 +58,118 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     for _attempt in range(1, _max_retries + 1):
         try:
             # Ensure prometheus global rule exists so HTTP metrics are collected
-            await apisix_client.put_resource("global_rules", "prometheus", {
-                "plugins": {"prometheus": {}},
-            })
+            await apisix_client.put_resource(
+                "global_rules",
+                "prometheus",
+                {
+                    "plugins": {"prometheus": {}},
+                },
+            )
 
             # Ensure upstream for unibridge-service exists
-            await apisix_client.put_resource("upstreams", "unibridge-service", {
-                "name": "unibridge-service",
-                "type": "roundrobin",
-                "nodes": {"unibridge-service:8000": 1},
-            })
+            await apisix_client.put_resource(
+                "upstreams",
+                "unibridge-service",
+                {
+                    "name": "unibridge-service",
+                    "type": "roundrobin",
+                    "nodes": {"unibridge-service:8000": 1},
+                },
+            )
 
             # Ensure /api/query/* route exists with key-auth
-            await apisix_client.put_resource("routes", "query-api", {
-                "name": "query-api",
-                "uri": "/api/query/*",
-                "methods": ["POST", "GET"],
-                "upstream_id": "unibridge-service",
-                "plugins": {
-                    "key-auth": {},
-                    "proxy-rewrite": {
-                        "regex_uri": ["^/api/query(.*)", "/query$1"],
+            await apisix_client.put_resource(
+                "routes",
+                "query-api",
+                {
+                    "name": "query-api",
+                    "uri": "/api/query/*",
+                    "methods": ["POST", "GET"],
+                    "upstream_id": "unibridge-service",
+                    "plugins": {
+                        "key-auth": {},
+                        "proxy-rewrite": {
+                            "regex_uri": ["^/api/query(.*)", "/query$1"],
+                        },
                     },
+                    "status": 1,
                 },
-                "status": 1,
-            })
+            )
             logger.info("APISIX query route provisioned successfully")
 
             # ── LiteLLM upstream and routes ──
             if settings.LITELLM_MASTER_KEY:
-                await apisix_client.put_resource("upstreams", "litellm", {
-                    "name": "litellm",
-                    "type": "roundrobin",
-                    "nodes": {"litellm:4000": 1},
-                })
+                await apisix_client.put_resource(
+                    "upstreams",
+                    "litellm",
+                    {
+                        "name": "litellm",
+                        "type": "roundrobin",
+                        "nodes": {"litellm:4000": 1},
+                    },
+                )
 
                 # /api/llm/* → LiteLLM proxy (client passes own Authorization header)
-                await apisix_client.put_resource("routes", "llm-proxy", {
-                    "name": "llm-proxy",
-                    "uri": "/api/llm/*",
-                    "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
-                    "upstream_id": "litellm",
-                    "plugins": {
-                        "key-auth": {},
-                        "proxy-rewrite": {
-                            "regex_uri": ["^/api/llm(.*)", "$1"],
+                await apisix_client.put_resource(
+                    "routes",
+                    "llm-proxy",
+                    {
+                        "name": "llm-proxy",
+                        "uri": "/api/llm/*",
+                        "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
+                        "upstream_id": "litellm",
+                        "plugins": {
+                            "key-auth": {},
+                            "proxy-rewrite": {
+                                "regex_uri": ["^/api/llm(.*)", "$1"],
+                            },
                         },
+                        "status": 1,
                     },
-                    "status": 1,
-                })
+                )
+
+                # /api/llm-admin/* → LiteLLM Admin UI/API (same-origin via gateway)
+                await apisix_client.put_resource(
+                    "routes",
+                    "llm-admin",
+                    {
+                        "name": "llm-admin",
+                        "uri": "/api/llm-admin/*",
+                        "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
+                        "upstream_id": "litellm",
+                        "plugins": {
+                            "proxy-rewrite": {
+                                "regex_uri": ["^/api/llm-admin(.*)", "$1"],
+                            },
+                        },
+                        "status": 1,
+                    },
+                )
 
                 logger.info("APISIX LiteLLM routes provisioned successfully")
             else:
-                logger.info("LITELLM_MASTER_KEY not set — skipping LiteLLM route provisioning")
+                logger.info(
+                    "LITELLM_MASTER_KEY not set — skipping LiteLLM route provisioning"
+                )
 
             break
         except Exception as exc:
             if _attempt < _max_retries:
-                _delay = 2 ** _attempt  # 2s, 4s, 8s, 16s
+                _delay = 2**_attempt  # 2s, 4s, 8s, 16s
                 logger.warning(
                     "APISIX provisioning attempt %d/%d failed: %s — retrying in %ds",
-                    _attempt, _max_retries, exc, _delay,
+                    _attempt,
+                    _max_retries,
+                    exc,
+                    _delay,
                 )
                 await _asyncio.sleep(_delay)
             else:
                 logger.error(
                     "APISIX provisioning failed after %d attempts: %s — "
                     "/api/query/* route may not be available until APISIX is reachable and service is restarted",
-                    _max_retries, exc,
+                    _max_retries,
+                    exc,
                 )
 
     from app.services.alert_state import AlertStateManager
@@ -153,6 +197,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Close Keycloak admin client if initialized
     from app.routers.users import _kc_admin
+
     if _kc_admin is not None:
         await _kc_admin.close()
 
@@ -168,6 +213,7 @@ app = FastAPI(
 
 # ── Security headers middleware ──────────────────────────────────────────────
 
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
@@ -177,6 +223,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         return response
 
+
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
 
@@ -185,7 +232,9 @@ _cors_origins = [
     o.strip() for o in settings.CORS_ALLOWED_ORIGINS.split(",") if o.strip()
 ]
 if not _cors_origins:
-    logger.warning("CORS_ALLOWED_ORIGINS is empty — no cross-origin requests will be allowed")
+    logger.warning(
+        "CORS_ALLOWED_ORIGINS is empty — no cross-origin requests will be allowed"
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -208,7 +257,9 @@ app.include_router(users.router)
 # ── Dev/Testing token endpoint ───────────────────────────────────────────────
 
 if settings.ENABLE_DEV_TOKEN_ENDPOINT:
-    logger.warning("DEV TOKEN ENDPOINT IS ENABLED — disable in production (ENABLE_DEV_TOKEN_ENDPOINT=false)")
+    logger.warning(
+        "DEV TOKEN ENDPOINT IS ENABLED — disable in production (ENABLE_DEV_TOKEN_ENDPOINT=false)"
+    )
 
     from fastapi import Depends, HTTPException, status
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -217,7 +268,9 @@ if settings.ENABLE_DEV_TOKEN_ENDPOINT:
     from app.schemas import TokenRequest, TokenResponse
 
     @app.post("/auth/token", response_model=TokenResponse, tags=["Auth"])
-    async def issue_token(body: TokenRequest, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+    async def issue_token(
+        body: TokenRequest, db: AsyncSession = Depends(get_db)
+    ) -> TokenResponse:
         """
         Issue a JWT token for development/testing.
 
