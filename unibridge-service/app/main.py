@@ -108,21 +108,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     "status": 1,
                 })
 
-                # /api/litellm/* → LiteLLM Admin UI (master key injected)
+                # /api/litellm/* → LiteLLM Admin UI (no key-auth; LiteLLM handles its own master key auth)
                 await apisix_client.put_resource("routes", "llm-admin", {
                     "name": "llm-admin",
                     "uri": "/api/litellm/*",
                     "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
                     "upstream_id": "litellm",
                     "plugins": {
-                        "key-auth": {},
                         "proxy-rewrite": {
                             "regex_uri": ["^/api/litellm(.*)", "$1"],
-                            "headers": {
-                                "set": {
-                                    "Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}",
-                                },
-                            },
                         },
                     },
                     "status": 1,
