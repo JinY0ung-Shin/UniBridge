@@ -84,6 +84,53 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 "status": 1,
             })
             logger.info("APISIX query route provisioned successfully")
+
+            # ── LiteLLM upstream and routes ──
+            if settings.LITELLM_MASTER_KEY:
+                await apisix_client.put_resource("upstreams", "litellm", {
+                    "name": "litellm",
+                    "type": "roundrobin",
+                    "nodes": {"litellm:4000": 1},
+                })
+
+                # /api/llm/* → LiteLLM proxy (client passes own Authorization header)
+                await apisix_client.put_resource("routes", "llm-proxy", {
+                    "name": "llm-proxy",
+                    "uri": "/api/llm/*",
+                    "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
+                    "upstream_id": "litellm",
+                    "plugins": {
+                        "key-auth": {},
+                        "proxy-rewrite": {
+                            "regex_uri": ["^/api/llm(.*)", "$1"],
+                        },
+                    },
+                    "status": 1,
+                })
+
+                # /api/litellm/* → LiteLLM Admin UI (master key injected)
+                await apisix_client.put_resource("routes", "llm-admin", {
+                    "name": "llm-admin",
+                    "uri": "/api/litellm/*",
+                    "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
+                    "upstream_id": "litellm",
+                    "plugins": {
+                        "key-auth": {},
+                        "proxy-rewrite": {
+                            "regex_uri": ["^/api/litellm(.*)", "$1"],
+                            "headers": {
+                                "set": {
+                                    "Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}",
+                                },
+                            },
+                        },
+                    },
+                    "status": 1,
+                })
+                logger.info("APISIX LiteLLM routes provisioned successfully")
+            else:
+                logger.info("LITELLM_MASTER_KEY not set — skipping LiteLLM route provisioning")
+
             break
         except Exception as exc:
             if _attempt < _max_retries:

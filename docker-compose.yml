@@ -106,6 +106,7 @@ services:
       - APISIX_ADMIN_URL=${APISIX_ADMIN_URL:-http://apisix:9180}
       - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY}
       - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - KEYCLOAK_ISSUER_URL=${KEYCLOAK_ISSUER_URL:-}
       - KEYCLOAK_JWKS_URL=${KEYCLOAK_JWKS_URL:-}
       - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
@@ -121,6 +122,8 @@ services:
       - KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:-}
     depends_on:
       keycloak:
+        condition: service_healthy
+      litellm:
         condition: service_healthy
     volumes:
       - unibridge-data:/app/data
