@@ -180,8 +180,8 @@ async def create_api_key(
     await db.commit()
     await db.refresh(access)
 
-    api_key = _extract_api_key(consumer, mask=False)
-    return _to_response(access, api_key=api_key, key_created=True)
+    # Use the key we sent, not the PUT response (APISIX 3.x encrypts it in PUT responses)
+    return _to_response(access, api_key=body.api_key, key_created=True)
 
 
 @router.put("/{name}", response_model=ApiKeyResponse)
@@ -213,7 +213,7 @@ async def update_api_key(
             consumer = await apisix_client.put_resource("consumers", name, {
                 "username": name, "plugins": existing_plugins,
             })
-            api_key_display = _extract_api_key(consumer, mask=False)
+            api_key_display = body.api_key  # Use the key we sent, not PUT response (APISIX 3.x encrypts it)
             key_created = True
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to update APISIX consumer: {exc}")
