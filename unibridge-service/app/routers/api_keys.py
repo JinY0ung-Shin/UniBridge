@@ -152,7 +152,7 @@ async def create_api_key(
         consumer_body["plugins"] = {"key-auth": {"key": body.api_key}}
 
     try:
-        consumer = await apisix_client.put_resource("consumers", body.name, consumer_body)
+        await apisix_client.put_resource("consumers", body.name, consumer_body)
     except HTTPStatusError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"APISIX error: {exc.response.text}")
     except Exception as exc:

@@ -7,3 +7,9 @@ scrape_configs:
     metrics_path: '/apisix/prometheus/metrics'
     static_configs:
       - targets: ['apisix:9091']
+
+  - job_name: 'litellm'
+    static_configs:
+      - targets: ['litellm:4000']
+    metrics_path: '/metrics'
+    scrape_interval: 15s

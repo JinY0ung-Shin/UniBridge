@@ -365,6 +365,70 @@ export async function getMetricsRequestsTotal(range = '1h', route?: string): Pro
   return data;
 }
 
+/* ── LLM Metrics ── */
+
+export interface LlmSummary {
+  total_tokens: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  estimated_cost: number;
+  total_requests: number;
+  avg_latency_ms: number;
+}
+
+export interface LlmTokenSeries {
+  prompt: TimeSeriesPoint[];
+  completion: TimeSeriesPoint[];
+}
+
+export interface LlmModelUsage {
+  model: string;
+  tokens: number;
+  cost: number;
+}
+
+export interface LlmKeyUsage {
+  api_key: string;
+  tokens: number;
+  requests: number;
+}
+
+export interface LlmErrorPoint {
+  timestamp: number;
+  success: number;
+  error: number;
+}
+
+export async function getLlmSummary(range = '1h'): Promise<LlmSummary> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/summary', { params: { range } });
+  return data;
+}
+
+export async function getLlmTokens(range = '1h'): Promise<LlmTokenSeries> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/tokens', { params: { range } });
+  return data;
+}
+
+export async function getLlmByModel(range = '1h'): Promise<LlmModelUsage[]> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/by-model', { params: { range } });
+  return data;
+}
+
+export async function getLlmTopKeys(range = '1h'): Promise<LlmKeyUsage[]> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/top-keys', { params: { range } });
+  return data;
+}
+
+export async function getLlmErrors(range = '1h'): Promise<LlmErrorPoint[]> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/errors', { params: { range } });
+  return data;
+}
+
+export async function getLlmRequestsTotal(range = '1h'): Promise<TimeSeriesPoint[]> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/requests-total', { params: { range } });
+  return data;
+}
+
 /* ── API Keys ── */
 
 export interface ApiKey {

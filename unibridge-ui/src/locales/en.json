@@ -13,7 +13,8 @@
     "users": "Users",
     "querySettings": "Query Settings",
     "alertSettings": "Alert Settings",
-    "alertHistory": "Alert History"
+    "alertHistory": "Alert History",
+    "llmMonitoring": "LLM Monitoring"
   },
   "common": {
     "save": "Save",
@@ -70,7 +71,9 @@
     "noDatabasesDesc": "Go to the Connections page to add your first database.",
     "gatewayMonitoring": "Gateway Monitoring",
     "viewDetails": "View Details →",
-    "monitoringNoData": "No monitoring data available"
+    "monitoringNoData": "No monitoring data available",
+    "llmMonitoring": "LLM Token Usage",
+    "llmNoData": "No LLM monitoring data available"
   },
   "connections": {
     "title": "Connections",
@@ -261,6 +264,38 @@
     "route": "Route",
     "requests": "Requests",
     "noRouteData": "No route traffic data available"
+  },
+  "llmMonitoring": {
+    "title": "LLM Monitoring",
+    "subtitle": "Token usage, cost tracking, and LLM request analytics",
+    "loadingMetrics": "Loading LLM metrics...",
+    "loadFailed": "Failed to load LLM metrics. Is Prometheus running?",
+    "partialLoadFailed": "Some LLM metrics failed to load. Data may be incomplete.",
+    "totalTokens": "Total Tokens ({{range}})",
+    "promptTokens": "Prompt Tokens",
+    "completionTokens": "Completion Tokens",
+    "estimatedCost": "Estimated Cost",
+    "totalRequests": "LLM Requests ({{range}})",
+    "avgLatency": "Avg Latency",
+    "tokenTrend": "Token Usage Trend",
+    "requestVolume": "Request Volume",
+    "byModel": "Usage by Model",
+    "topKeys": "Top API Keys",
+    "errorRate": "Success / Error Rate",
+    "model": "Model",
+    "tokens": "Tokens",
+    "cost": "Cost",
+    "apiKey": "API Key",
+    "requests": "Requests",
+    "success": "Success",
+    "error": "Error",
+    "prompt": "Prompt",
+    "completion": "Completion",
+    "noData": "No data available",
+    "noTokenData": "No token usage data available",
+    "noModelData": "No model usage data available",
+    "noKeyData": "No API key usage data available",
+    "noErrorData": "No error rate data available"
   },
   "roles": {
     "title": "Roles",

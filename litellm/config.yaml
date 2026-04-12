@@ -1,0 +1,12 @@
+# litellm/config.yaml
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  success_callback: ["prometheus"]
+  service_callback: ["prometheus"]
+  drop_params: true
+  num_retries: 2
+
+model_list: []
+# Models are managed via LiteLLM Admin UI (/ui)

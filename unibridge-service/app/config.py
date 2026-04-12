@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     APISIX_ADMIN_URL: str = "http://apisix:9180"
     APISIX_ADMIN_KEY: str = ""
     PROMETHEUS_URL: str = "http://prometheus:9090"
+    LITELLM_MASTER_KEY: str = ""
 
     # CORS — comma-separated allowed origins (e.g. "http://localhost:3001,https://app.example.com")
     # Auto-derived from HOST_IP:UNIBRIDGE_UI_PORT if empty

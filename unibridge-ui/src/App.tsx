@@ -10,6 +10,7 @@ import GatewayRoutes from './pages/GatewayRoutes';
 import GatewayRouteForm from './pages/GatewayRouteForm';
 import GatewayUpstreams from './pages/GatewayUpstreams';
 import GatewayMonitoring from './pages/GatewayMonitoring';
+import LlmMonitoring from './pages/LlmMonitoring';
 import ApiKeys from './pages/ApiKeys';
 import QuerySettings from './pages/QuerySettings';
 import Roles from './pages/Roles';
@@ -43,6 +44,7 @@ function App() {
         <Route path="/gateway/routes/:id/edit" element={<ProtectedRoute permission="gateway.routes.write"><GatewayRouteForm /></ProtectedRoute>} />
         <Route path="/gateway/upstreams" element={<ProtectedRoute permission="gateway.upstreams.read"><GatewayUpstreams /></ProtectedRoute>} />
         <Route path="/gateway/monitoring" element={<ProtectedRoute permission="gateway.monitoring.read"><GatewayMonitoring /></ProtectedRoute>} />
+        <Route path="/llm/monitoring" element={<ProtectedRoute permission="gateway.monitoring.read"><LlmMonitoring /></ProtectedRoute>} />
         <Route path="/api-keys" element={<ProtectedRoute permission="apikeys.read"><ApiKeys /></ProtectedRoute>} />
         <Route path="/roles" element={<ProtectedRoute permission="admin.roles.read"><Roles /></ProtectedRoute>} />
         <Route path="/users" element={<ProtectedRoute permission="admin.roles.read"><Users /></ProtectedRoute>} />

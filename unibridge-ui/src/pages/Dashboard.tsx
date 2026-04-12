@@ -6,7 +6,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
 } from 'recharts';
-import { getHealth, getAdminDatabases, getMetricsSummary, getMetricsRequests, type DatabaseHealth } from '../api/client';
+import { getHealth, getAdminDatabases, getMetricsSummary, getMetricsRequests, getLlmSummary, getLlmTokens, type DatabaseHealth } from '../api/client';
 import { usePermissions } from '../components/PermissionContext';
 import { useTheme } from '../components/ThemeContext';
 import './Dashboard.css';
@@ -61,6 +61,20 @@ function Dashboard() {
   const gwRequestsQuery = useQuery({
     queryKey: ['dashboard-gw-requests'],
     queryFn: () => getMetricsRequests('1h'),
+    refetchInterval: 30_000,
+    enabled: canViewMonitoring,
+  });
+
+  const llmSummaryQuery = useQuery({
+    queryKey: ['dashboard-llm-summary'],
+    queryFn: () => getLlmSummary('1h'),
+    refetchInterval: 30_000,
+    enabled: canViewMonitoring,
+  });
+
+  const llmTokensQuery = useQuery({
+    queryKey: ['dashboard-llm-tokens'],
+    queryFn: () => getLlmTokens('1h'),
     refetchInterval: 30_000,
     enabled: canViewMonitoring,
   });
@@ -179,6 +193,66 @@ function Dashboard() {
                         itemStyle={{ color: chartColors.textSecondary }}
                       />
                       <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name="req/s" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
+
+      {/* LLM Token Usage */}
+      {canViewMonitoring && (
+        <>
+          <div className="section-header">
+            <h2 className="section-title">{t('dashboard.llmMonitoring')}</h2>
+            <Link to="/llm/monitoring" className="section-link">{t('dashboard.viewDetails')}</Link>
+          </div>
+          {llmSummaryQuery.isLoading && (
+            <div className="loading-message">{t('llmMonitoring.loadingMetrics')}</div>
+          )}
+          {llmSummaryQuery.isError && (
+            <div className="no-data">{t('dashboard.llmNoData')}</div>
+          )}
+          {llmSummaryQuery.data && (
+            <>
+              <div className="summary-cards">
+                <div className="summary-card">
+                  <div className="summary-card__value">
+                    {llmSummaryQuery.data.total_tokens >= 1000
+                      ? `${(llmSummaryQuery.data.total_tokens / 1000).toFixed(1)}K`
+                      : llmSummaryQuery.data.total_tokens.toLocaleString()}
+                  </div>
+                  <div className="summary-card__label">{t('llmMonitoring.totalTokens', { range: '1h' })}</div>
+                </div>
+                <div className="summary-card">
+                  <div className="summary-card__value">${llmSummaryQuery.data.estimated_cost.toFixed(2)}</div>
+                  <div className="summary-card__label">{t('llmMonitoring.estimatedCost')}</div>
+                </div>
+                <div className="summary-card">
+                  <div className="summary-card__value">{llmSummaryQuery.data.total_requests.toLocaleString()}</div>
+                  <div className="summary-card__label">{t('llmMonitoring.totalRequests', { range: '1h' })}</div>
+                </div>
+              </div>
+              {(llmTokensQuery.data?.prompt ?? []).length > 0 && (
+                <div className="dashboard-mini-chart">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={(llmTokensQuery.data?.prompt ?? []).map((p, i) => ({
+                      time: formatTime(p.timestamp),
+                      prompt: Math.round(p.value),
+                      completion: Math.round(llmTokensQuery.data?.completion?.[i]?.value ?? 0),
+                    }))}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
+                      <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                      <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                      <Tooltip
+                        contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
+                        labelStyle={{ color: chartColors.axis }}
+                        itemStyle={{ color: chartColors.textSecondary }}
+                      />
+                      <Line type="monotone" dataKey="prompt" stroke={chartColors.blue} strokeWidth={2} dot={false} name="Prompt" />
+                      <Line type="monotone" dataKey="completion" stroke={getCssVar('--accent-green')} strokeWidth={2} dot={false} name="Completion" />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>

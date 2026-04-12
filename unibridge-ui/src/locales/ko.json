@@ -13,7 +13,8 @@
     "users": "사용자",
     "querySettings": "쿼리 설정",
     "alertSettings": "알림 설정",
-    "alertHistory": "알림 이력"
+    "alertHistory": "알림 이력",
+    "llmMonitoring": "LLM 모니터링"
   },
   "common": {
     "save": "저장",
@@ -70,7 +71,9 @@
     "noDatabasesDesc": "연결 페이지에서 첫 번째 데이터베이스를 추가하세요.",
     "gatewayMonitoring": "게이트웨이 모니터링",
     "viewDetails": "상세 보기 →",
-    "monitoringNoData": "모니터링 데이터를 불러올 수 없습니다"
+    "monitoringNoData": "모니터링 데이터를 불러올 수 없습니다",
+    "llmMonitoring": "LLM 토큰 사용량",
+    "llmNoData": "LLM 모니터링 데이터를 불러올 수 없습니다"
   },
   "connections": {
     "title": "연결",
@@ -261,6 +264,38 @@
     "route": "라우트",
     "requests": "요청",
     "noRouteData": "라우트 트래픽 데이터가 없습니다"
+  },
+  "llmMonitoring": {
+    "title": "LLM 모니터링",
+    "subtitle": "토큰 사용량, 비용 추적 및 LLM 요청 분석",
+    "loadingMetrics": "LLM 메트릭을 불러오는 중...",
+    "loadFailed": "LLM 메트릭을 불러오지 못했습니다. Prometheus가 실행 중인지 확인하세요.",
+    "partialLoadFailed": "일부 LLM 메트릭을 불러오지 못했습니다. 데이터가 불완전할 수 있습니다.",
+    "totalTokens": "총 토큰 ({{range}})",
+    "promptTokens": "프롬프트 토큰",
+    "completionTokens": "완성 토큰",
+    "estimatedCost": "예상 비용",
+    "totalRequests": "LLM 요청 수 ({{range}})",
+    "avgLatency": "평균 지연시간",
+    "tokenTrend": "토큰 사용 추이",
+    "requestVolume": "요청 수",
+    "byModel": "모델별 사용량",
+    "topKeys": "API Key별 사용량",
+    "errorRate": "성공 / 실패율",
+    "model": "모델",
+    "tokens": "토큰",
+    "cost": "비용",
+    "apiKey": "API Key",
+    "requests": "요청",
+    "success": "성공",
+    "error": "실패",
+    "prompt": "프롬프트",
+    "completion": "완성",
+    "noData": "데이터가 없습니다",
+    "noTokenData": "토큰 사용 데이터가 없습니다",
+    "noModelData": "모델별 사용 데이터가 없습니다",
+    "noKeyData": "API Key 사용 데이터가 없습니다",
+    "noErrorData": "오류율 데이터가 없습니다"
   },
   "roles": {
     "title": "역할",
