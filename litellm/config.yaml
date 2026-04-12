@@ -9,4 +9,4 @@ litellm_settings:
   num_retries: 2
 
 model_list: []
-# Models are managed via LiteLLM Admin UI (/api/llm-admin/ui)
+# Models are managed via LiteLLM Admin UI (/ui)
