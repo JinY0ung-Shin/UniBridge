@@ -8,11 +8,9 @@ ARG KEYCLOAK_PORT=8443
 ARG VITE_KEYCLOAK_URL
 ARG VITE_KEYCLOAK_REALM=apihub
 ARG VITE_KEYCLOAK_CLIENT_ID=apihub-ui
-ARG VITE_LITELLM_PORT=4443
 ENV VITE_KEYCLOAK_URL=${VITE_KEYCLOAK_URL:-https://${HOST_IP}:${KEYCLOAK_PORT}}
 ENV VITE_KEYCLOAK_REALM=$VITE_KEYCLOAK_REALM
 ENV VITE_KEYCLOAK_CLIENT_ID=$VITE_KEYCLOAK_CLIENT_ID
-ENV VITE_LITELLM_PORT=$VITE_LITELLM_PORT
 COPY package*.json ./
 RUN npm config set strict-ssl false && \
     if [ -n "$HTTP_PROXY" ]; then npm config set proxy $HTTP_PROXY; fi && \
@@ -24,4 +22,4 @@ RUN npm run build
 FROM nginx:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 443 4443
+EXPOSE 443

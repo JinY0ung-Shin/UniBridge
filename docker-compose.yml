@@ -177,7 +177,7 @@ services:
       - LITELLM_LOG=ERROR
       - STORE_MODEL_IN_DB=true
       - FORWARDED_ALLOW_IPS=*
-      - PROXY_BASE_URL=${PROXY_BASE_URL:-https://${HOST_IP:-localhost}:${LITELLM_ADMIN_PORT:-4443}}
+      - PROXY_BASE_URL=${PROXY_BASE_URL:-https://${HOST_IP:-localhost}:${UNIBRIDGE_UI_PORT:-3000}/api/llm-admin}
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
     depends_on:
@@ -204,10 +204,8 @@ services:
         VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
         HOST_IP: ${HOST_IP:-localhost}
         KEYCLOAK_PORT: ${KEYCLOAK_PORT:-8443}
-        VITE_LITELLM_PORT: ${LITELLM_ADMIN_PORT:-4443}
     ports:
       - "${UNIBRIDGE_UI_PORT:-3000}:443"
-      - "${LITELLM_ADMIN_PORT:-4443}:4443"
     volumes:
       - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/nginx/ssl/tls.crt:ro
       - ${TLS_KEY_PATH:-./certs/tls.key}:/etc/nginx/ssl/tls.key:ro
