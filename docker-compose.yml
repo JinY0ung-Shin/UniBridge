@@ -177,7 +177,7 @@ services:
       - LITELLM_LOG=ERROR
       - STORE_MODEL_IN_DB=true
       - FORWARDED_ALLOW_IPS=*
-      - PROXY_BASE_URL=${PROXY_BASE_URL:-https://${HOST_IP:-localhost}:${UNIBRIDGE_UI_PORT:-3000}/api/llm-admin}
+      - PROXY_BASE_URL=${PROXY_BASE_URL:-https://${HOST_IP:-localhost}:${UNIBRIDGE_UI_PORT:-3000}}
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
     depends_on:
