@@ -57,6 +57,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _max_retries = 5
     for _attempt in range(1, _max_retries + 1):
         try:
+            # Ensure prometheus global rule exists so HTTP metrics are collected
+            await apisix_client.put_resource("global_rules", "prometheus", {
+                "plugins": {"prometheus": {}},
+            })
+
             # Ensure upstream for unibridge-service exists
             await apisix_client.put_resource("upstreams", "unibridge-service", {
                 "name": "unibridge-service",
