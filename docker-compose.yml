@@ -203,6 +203,7 @@ services:
         VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
         HOST_IP: ${HOST_IP:-localhost}
         KEYCLOAK_PORT: ${KEYCLOAK_PORT:-8443}
+        VITE_LITELLM_PORT: ${LITELLM_PORT:-4000}
     ports:
       - "${UNIBRIDGE_UI_PORT:-3000}:443"
     volumes:

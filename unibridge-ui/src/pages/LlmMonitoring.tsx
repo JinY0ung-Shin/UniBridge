@@ -17,7 +17,7 @@ import { useTheme } from '../components/ThemeContext';
 import './LlmMonitoring.css';
 
 const TIME_RANGES = ['15m', '1h', '6h', '24h', '7d', '30d', '60d'];
-const LITELLM_ADMIN_URL = import.meta.env.VITE_LITELLM_ADMIN_URL || `${window.location.protocol}//${window.location.hostname}:4000/ui`;
+const LITELLM_ADMIN_URL = import.meta.env.VITE_LITELLM_ADMIN_URL || `${window.location.protocol}//${window.location.hostname}:${import.meta.env.VITE_LITELLM_PORT || '4000'}/ui`;
 
 function formatTime(ts: number): string {
   const d = new Date(ts * 1000);
