@@ -321,7 +321,7 @@ async def delete_upstream(upstream_id: str, _admin: CurrentUser = Depends(requir
 
 # ── Metrics ─────────────────────────────────────────────────────────────────
 
-RANGE_STEPS = {"15m": "15s", "1h": "60s", "6h": "300s", "24h": "600s"}
+RANGE_STEPS = {"15m": "15s", "1h": "60s", "6h": "300s", "24h": "600s", "7d": "3600s", "30d": "21600s", "60d": "43200s"}
 VALID_RANGES = set(RANGE_STEPS.keys())
 
 _SAFE_ROUTE_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")

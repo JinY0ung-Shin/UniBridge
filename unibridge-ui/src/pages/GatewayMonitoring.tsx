@@ -15,7 +15,7 @@ import {
 import { useTheme } from '../components/ThemeContext';
 import './GatewayMonitoring.css';
 
-const TIME_RANGES = ['15m', '1h', '6h', '24h'];
+const TIME_RANGES = ['15m', '1h', '6h', '24h', '7d', '30d', '60d'];
 
 function formatTime(ts: number): string {
   const d = new Date(ts * 1000);

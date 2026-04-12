@@ -135,6 +135,9 @@ services:
 
   prometheus:
     image: prom/prometheus:v3.11.1
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=60d'
     ports:
       - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     volumes:
