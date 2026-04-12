@@ -335,23 +335,23 @@ export interface LatencyData {
   p99: TimeSeriesPoint[];
 }
 
-export async function getMetricsSummary(range = '1h'): Promise<MetricsSummary> {
-  const { data } = await client.get('/admin/gateway/metrics/summary', { params: { range } });
+export async function getMetricsSummary(range = '1h', route?: string): Promise<MetricsSummary> {
+  const { data } = await client.get('/admin/gateway/metrics/summary', { params: { range, route } });
   return data;
 }
 
-export async function getMetricsRequests(range = '1h'): Promise<TimeSeriesPoint[]> {
-  const { data } = await client.get('/admin/gateway/metrics/requests', { params: { range } });
+export async function getMetricsRequests(range = '1h', route?: string): Promise<TimeSeriesPoint[]> {
+  const { data } = await client.get('/admin/gateway/metrics/requests', { params: { range, route } });
   return data;
 }
 
-export async function getMetricsStatusCodes(range = '1h'): Promise<StatusCodeData[]> {
-  const { data } = await client.get('/admin/gateway/metrics/status-codes', { params: { range } });
+export async function getMetricsStatusCodes(range = '1h', route?: string): Promise<StatusCodeData[]> {
+  const { data } = await client.get('/admin/gateway/metrics/status-codes', { params: { range, route } });
   return data;
 }
 
-export async function getMetricsLatency(range = '1h'): Promise<LatencyData> {
-  const { data } = await client.get('/admin/gateway/metrics/latency', { params: { range } });
+export async function getMetricsLatency(range = '1h', route?: string): Promise<LatencyData> {
+  const { data } = await client.get('/admin/gateway/metrics/latency', { params: { range, route } });
   return data;
 }
 

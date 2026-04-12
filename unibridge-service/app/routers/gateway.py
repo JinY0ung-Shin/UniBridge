@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any, NoReturn
 
@@ -323,9 +324,24 @@ async def delete_upstream(upstream_id: str, _admin: CurrentUser = Depends(requir
 RANGE_STEPS = {"15m": "15s", "1h": "60s", "6h": "300s", "24h": "600s"}
 VALID_RANGES = set(RANGE_STEPS.keys())
 
+_SAFE_ROUTE_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
+
 
 def _get_step(time_range: str) -> str:
     return RANGE_STEPS.get(time_range, "60s")
+
+
+def _validate_route(route: str | None) -> None:
+    if route and not _SAFE_ROUTE_RE.match(route):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid route ID")
+
+
+def _labels(route: str | None, *extra: str) -> str:
+    """Build PromQL label selector like {code=~"5..",route="x"} or empty."""
+    parts = list(extra)
+    if route:
+        parts.append(f'route="{route}"')
+    return "{" + ",".join(parts) + "}" if parts else ""
 
 
 def _extract_scalar(results: list[dict[str, Any]]) -> float:
@@ -360,20 +376,24 @@ def _extract_timeseries(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
 @router.get("/metrics/summary")
 async def metrics_summary(
     time_range: str = Query("1h", alias="range", description="Time range: 15m, 1h, 6h, 24h"),
+    route: str | None = Query(None, description="Filter by route ID"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
     if time_range not in VALID_RANGES:
         time_range = "1h"
+    _validate_route(route)
+    hs = _labels(route)
+    hs5 = _labels(route, 'code=~"5.."')
     try:
         total_results, error_rate_results, latency_results = await asyncio.gather(
             prometheus_client.instant_query(
-                f"sum(increase(apisix_http_status[{time_range}]))"
+                f"sum(increase(apisix_http_status{hs}[{time_range}]))"
             ),
             prometheus_client.instant_query(
-                'sum(rate(apisix_http_status{code=~"5.."}[5m])) / sum(rate(apisix_http_status[5m])) * 100'
+                f"sum(rate(apisix_http_status{hs5}[5m])) / sum(rate(apisix_http_status{hs}[5m])) * 100"
             ),
             prometheus_client.instant_query(
-                "sum(rate(apisix_http_latency_sum[5m])) / sum(rate(apisix_http_latency_count[5m]))"
+                f"sum(rate(apisix_http_latency_sum{hs}[5m])) / sum(rate(apisix_http_latency_count{hs}[5m]))"
             ),
         )
     except Exception as exc:
@@ -389,13 +409,16 @@ async def metrics_summary(
 @router.get("/metrics/requests")
 async def metrics_requests(
     time_range: str = Query("1h", alias="range", description="Time range"),
+    route: str | None = Query(None, description="Filter by route ID"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     if time_range not in VALID_RANGES:
         time_range = "1h"
+    _validate_route(route)
+    hs = _labels(route)
     try:
         results = await prometheus_client.range_query(
-            "sum(rate(apisix_http_status[5m]))",
+            f"sum(rate(apisix_http_status{hs}[5m]))",
             duration=time_range,
             step=_get_step(time_range),
         )
@@ -407,13 +430,16 @@ async def metrics_requests(
 @router.get("/metrics/status-codes")
 async def metrics_status_codes(
     time_range: str = Query("1h", alias="range", description="Time range"),
+    route: str | None = Query(None, description="Filter by route ID"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     if time_range not in VALID_RANGES:
         time_range = "1h"
+    _validate_route(route)
+    hs = _labels(route)
     try:
         results = await prometheus_client.instant_query(
-            f"sum by (code) (increase(apisix_http_status[{time_range}]))"
+            f"sum by (code) (increase(apisix_http_status{hs}[{time_range}]))"
         )
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}")
@@ -435,23 +461,26 @@ async def metrics_status_codes(
 @router.get("/metrics/latency")
 async def metrics_latency(
     time_range: str = Query("1h", alias="range", description="Time range"),
+    route: str | None = Query(None, description="Filter by route ID"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, list[dict[str, Any]]]:
     if time_range not in VALID_RANGES:
         time_range = "1h"
+    _validate_route(route)
+    hs = _labels(route)
     step = _get_step(time_range)
     try:
         p50, p95, p99 = await asyncio.gather(
             prometheus_client.range_query(
-                "histogram_quantile(0.5, sum(rate(apisix_http_latency_bucket[5m])) by (le))",
+                f"histogram_quantile(0.5, sum(rate(apisix_http_latency_bucket{hs}[5m])) by (le))",
                 duration=time_range, step=step,
             ),
             prometheus_client.range_query(
-                "histogram_quantile(0.95, sum(rate(apisix_http_latency_bucket[5m])) by (le))",
+                f"histogram_quantile(0.95, sum(rate(apisix_http_latency_bucket{hs}[5m])) by (le))",
                 duration=time_range, step=step,
             ),
             prometheus_client.range_query(
-                "histogram_quantile(0.99, sum(rate(apisix_http_latency_bucket[5m])) by (le))",
+                f"histogram_quantile(0.99, sum(rate(apisix_http_latency_bucket{hs}[5m])) by (le))",
                 duration=time_range, step=step,
             ),
         )

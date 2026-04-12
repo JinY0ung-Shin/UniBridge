@@ -120,3 +120,35 @@
   padding: 8px 10px;
   border-radius: var(--radius-sm);
 }
+
+/* ── Section Header ── */
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.section-link {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent-blue);
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+
+.section-link:hover {
+  opacity: 0.8;
+}
+
+/* ── Mini Chart ── */
+
+.dashboard-mini-chart {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 16px 20px;
+  height: 200px;
+  margin-bottom: 32px;
+}

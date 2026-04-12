@@ -67,7 +67,9 @@
     "connectionSuccess": "연결됨",
     "connectionFailed": "연결 실패",
     "noDatabases": "데이터베이스가 없습니다",
-    "noDatabasesDesc": "연결 페이지에서 첫 번째 데이터베이스를 추가하세요."
+    "noDatabasesDesc": "연결 페이지에서 첫 번째 데이터베이스를 추가하세요.",
+    "gatewayMonitoring": "게이트웨이 모니터링",
+    "viewDetails": "상세 보기 →"
   },
   "connections": {
     "title": "연결",

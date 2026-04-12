@@ -622,6 +622,84 @@ class TestMetricsTopRoutes:
 
 
 # ---------------------------------------------------------------------------
+# Route filter tests
+# ---------------------------------------------------------------------------
+
+
+class TestRouteFilter:
+    """Verify the optional route query parameter filters PromQL correctly."""
+
+    async def test_summary_with_route_filter(self, client, admin_token):
+        total = [{"value": [0, "50"]}]
+        error = [{"value": [0, "5.0"]}]
+        latency = [{"value": [0, "30.0"]}]
+
+        mock = AsyncMock(side_effect=[total, error, latency])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/summary?range=1h&route=query-api",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        # Verify route filter appears in all 3 PromQL queries
+        for call in mock.call_args_list:
+            assert 'route="query-api"' in call.args[0]
+
+    async def test_requests_with_route_filter(self, client, admin_token):
+        ts_data = [{"values": [[1000, "5"]]}]
+        mock = AsyncMock(return_value=ts_data)
+        with patch("app.routers.gateway.prometheus_client.range_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/requests?range=1h&route=query-api",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert 'route="query-api"' in mock.call_args.args[0]
+
+    async def test_status_codes_with_route_filter(self, client, admin_token):
+        results = [{"metric": {"code": "200"}, "value": [0, "100"]}]
+        mock = AsyncMock(return_value=results)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/status-codes?range=1h&route=query-api",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert 'route="query-api"' in mock.call_args.args[0]
+
+    async def test_latency_with_route_filter(self, client, admin_token):
+        p_data = [{"values": [[1000, "10"]]}]
+        mock = AsyncMock(side_effect=[p_data, p_data, p_data])
+        with patch("app.routers.gateway.prometheus_client.range_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/latency?range=1h&route=query-api",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            assert 'route="query-api"' in call.args[0]
+
+    async def test_no_route_filter_omits_label(self, client, admin_token):
+        empty = [{"value": [0, "0"]}]
+        mock = AsyncMock(side_effect=[empty, empty, empty])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/summary?range=1h",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            assert "route=" not in call.args[0]
+
+    async def test_invalid_route_returns_400(self, client, admin_token):
+        resp = await client.get(
+            '/admin/gateway/metrics/summary?range=1h&route="; drop table',
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # Permission / RBAC tests
 # ---------------------------------------------------------------------------
 

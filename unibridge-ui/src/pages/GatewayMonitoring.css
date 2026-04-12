@@ -129,6 +129,74 @@
   font-size: 11px !important;
 }
 
+/* ── Clickable route rows ── */
+
+.route-row {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.route-row:hover {
+  background: var(--bg-hover);
+}
+
+.route-row--selected {
+  background: var(--bg-tertiary);
+}
+
+.route-row--selected td {
+  color: var(--accent-blue);
+  font-weight: 600;
+}
+
+/* ── Route Detail Panel ── */
+
+.route-detail-panel {
+  background: var(--bg-secondary);
+  border: 1px solid var(--accent-blue);
+  border-radius: var(--radius-lg);
+  padding: 20px 24px;
+  margin-bottom: 16px;
+}
+
+.route-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.route-detail-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--accent-blue);
+  font-family: var(--font-mono);
+}
+
+.route-detail-close {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 22px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.route-detail-close:hover {
+  color: var(--text-primary);
+}
+
+.chart-panel--nested {
+  background: var(--bg-primary);
+  margin-bottom: 12px;
+}
+
+.chart-panel--nested:last-child {
+  margin-bottom: 0;
+}
+
 /* ── No data ── */
 
 .no-data {

@@ -42,6 +42,7 @@ function getStatusColor(code: string): string {
 function GatewayMonitoring() {
   const { t } = useTranslation();
   const [range, setRange] = useState('1h');
+  const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
   const { resolved } = useTheme();
 
   const chartColors = useMemo(() => ({
@@ -84,6 +85,28 @@ function GatewayMonitoring() {
     queryKey: ['metrics-top-routes', range],
     queryFn: () => getMetricsTopRoutes(range),
     refetchInterval: 30_000,
+  });
+
+  // Route drill-down queries
+  const routeSummaryQuery = useQuery({
+    queryKey: ['metrics-summary', range, selectedRoute],
+    queryFn: () => getMetricsSummary(range, selectedRoute!),
+    refetchInterval: 30_000,
+    enabled: !!selectedRoute,
+  });
+
+  const routeRequestsQuery = useQuery({
+    queryKey: ['metrics-requests', range, selectedRoute],
+    queryFn: () => getMetricsRequests(range, selectedRoute!),
+    refetchInterval: 30_000,
+    enabled: !!selectedRoute,
+  });
+
+  const routeStatusQuery = useQuery({
+    queryKey: ['metrics-status-codes', range, selectedRoute],
+    queryFn: () => getMetricsStatusCodes(range, selectedRoute!),
+    refetchInterval: 30_000,
+    enabled: !!selectedRoute,
   });
 
   const summary = summaryQuery.data;
@@ -239,7 +262,11 @@ function GatewayMonitoring() {
               </thead>
               <tbody>
                 {(topRoutesQuery.data ?? []).map((r) => (
-                  <tr key={r.route}>
+                  <tr
+                    key={r.route}
+                    className={`route-row ${selectedRoute === r.route ? 'route-row--selected' : ''}`}
+                    onClick={() => setSelectedRoute(selectedRoute === r.route ? null : r.route)}
+                  >
                     <td className="cell-alias">{r.route}</td>
                     <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
                       {r.requests.toLocaleString()}
@@ -253,6 +280,91 @@ function GatewayMonitoring() {
           <div className="no-data">{t('gatewayMonitoring.noRouteData')}</div>
         )}
       </div>
+
+      {/* Route Detail Panel */}
+      {selectedRoute && (
+        <div className="route-detail-panel">
+          <div className="route-detail-header">
+            <span className="route-detail-title">{selectedRoute}</span>
+            <button className="route-detail-close" onClick={() => setSelectedRoute(null)}>&times;</button>
+          </div>
+
+          {routeSummaryQuery.isLoading ? (
+            <div className="loading-message">{t('gatewayMonitoring.loadingMetrics')}</div>
+          ) : routeSummaryQuery.data ? (
+            <>
+              <div className="metric-cards">
+                <div className="metric-card">
+                  <div className="metric-card__value">{routeSummaryQuery.data.total_requests.toLocaleString()}</div>
+                  <div className="metric-card__label">{t('gatewayMonitoring.totalRequests', { range })}</div>
+                </div>
+                <div className="metric-card">
+                  <div className="metric-card__value" style={{ color: routeSummaryQuery.data.error_rate > 5 ? 'var(--accent-red)' : 'var(--accent-green)' }}>
+                    {routeSummaryQuery.data.error_rate}%
+                  </div>
+                  <div className="metric-card__label">{t('gatewayMonitoring.errorRate')}</div>
+                </div>
+                <div className="metric-card">
+                  <div className="metric-card__value">{routeSummaryQuery.data.avg_latency_ms}ms</div>
+                  <div className="metric-card__label">{t('gatewayMonitoring.avgLatency')}</div>
+                </div>
+              </div>
+
+              {/* Route Request Trend */}
+              <div className="chart-panel chart-panel--nested">
+                <div className="chart-panel__title">{t('gatewayMonitoring.requestTrend')}</div>
+                {(routeRequestsQuery.data ?? []).length > 0 ? (
+                  <div className="chart-container">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={(routeRequestsQuery.data ?? []).map((p) => ({ time: formatTime(p.timestamp), rps: p.value }))}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
+                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <Tooltip
+                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
+                          labelStyle={{ color: chartColors.axis }}
+                          itemStyle={{ color: chartColors.textSecondary }}
+                        />
+                        <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name="req/s" />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div className="no-data">{t('gatewayMonitoring.noRequestData')}</div>
+                )}
+              </div>
+
+              {/* Route Status Code Distribution */}
+              <div className="chart-panel chart-panel--nested">
+                <div className="chart-panel__title">{t('gatewayMonitoring.statusCodeDist')}</div>
+                {(routeStatusQuery.data ?? []).length > 0 ? (
+                  <div className="chart-container">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={routeStatusQuery.data}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
+                        <XAxis dataKey="code" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <Tooltip
+                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
+                          labelStyle={{ color: chartColors.axis }}
+                          itemStyle={{ color: chartColors.textSecondary }}
+                        />
+                        <Bar dataKey="count" name="Requests">
+                          {(routeStatusQuery.data ?? []).map((entry, index) => (
+                            <Cell key={index} fill={getStatusColor(entry.code)} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <div className="no-data">{t('gatewayMonitoring.noStatusData')}</div>
+                )}
+              </div>
+            </>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
