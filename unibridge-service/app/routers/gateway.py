@@ -563,19 +563,19 @@ async def llm_metrics_summary(
     try:
         tokens, prompt, completion, spend, requests, latency_sum, latency_count = await asyncio.gather(
             prometheus_client.instant_query(
-                f'sum(increase(litellm_total_tokens[{time_range}]))'
+                f'sum(increase(litellm_total_tokens_metric[{time_range}]))'
             ),
             prometheus_client.instant_query(
-                f'sum(increase(litellm_prompt_tokens[{time_range}]))'
+                f'sum(increase(litellm_input_tokens_metric[{time_range}]))'
             ),
             prometheus_client.instant_query(
-                f'sum(increase(litellm_completion_tokens[{time_range}]))'
+                f'sum(increase(litellm_output_tokens_metric[{time_range}]))'
             ),
             prometheus_client.instant_query(
                 f'sum(increase(litellm_spend_metric[{time_range}]))'
             ),
             prometheus_client.instant_query(
-                f'sum(increase(litellm_requests_metric[{time_range}]))'
+                f'sum(increase(litellm_requests_metric[{time_range}])) + sum(increase(litellm_proxy_failed_requests_metric[{time_range}]))'
             ),
             prometheus_client.instant_query(
                 f'sum(rate(litellm_request_total_latency_metric_sum[5m]))'
@@ -613,11 +613,11 @@ async def llm_metrics_tokens(
     try:
         prompt_results, completion_results = await asyncio.gather(
             prometheus_client.range_query(
-                f'sum(increase(litellm_prompt_tokens[{window}]))',
+                f'sum(increase(litellm_input_tokens_metric[{window}]))',
                 duration=time_range, step=step,
             ),
             prometheus_client.range_query(
-                f'sum(increase(litellm_completion_tokens[{window}]))',
+                f'sum(increase(litellm_output_tokens_metric[{window}]))',
                 duration=time_range, step=step,
             ),
         )
@@ -641,7 +641,7 @@ async def llm_metrics_by_model(
     try:
         token_results, cost_results = await asyncio.gather(
             prometheus_client.instant_query(
-                f'sum by (model) (increase(litellm_total_tokens[{time_range}]))'
+                f'sum by (model) (increase(litellm_total_tokens_metric[{time_range}]))'
             ),
             prometheus_client.instant_query(
                 f'sum by (model) (increase(litellm_spend_metric[{time_range}]))'
@@ -686,7 +686,7 @@ async def llm_metrics_top_keys(
     try:
         token_results, req_results = await asyncio.gather(
             prometheus_client.instant_query(
-                f'topk(10, sum by (hashed_api_key) (increase(litellm_total_tokens[{time_range}])))'
+                f'topk(10, sum by (hashed_api_key) (increase(litellm_total_tokens_metric[{time_range}])))'
             ),
             prometheus_client.instant_query(
                 f'sum by (hashed_api_key) (increase(litellm_requests_metric[{time_range}]))'
@@ -731,11 +731,11 @@ async def llm_metrics_errors(
     try:
         success_results, error_results = await asyncio.gather(
             prometheus_client.range_query(
-                f'sum(increase(litellm_requests_metric{{status="success"}}[{window}]))',
+                f'sum(increase(litellm_requests_metric[{window}]))',
                 duration=time_range, step=step,
             ),
             prometheus_client.range_query(
-                f'sum(increase(litellm_requests_metric{{status="failure"}}[{window}]))',
+                f'sum(increase(litellm_proxy_failed_requests_metric[{window}]))',
                 duration=time_range, step=step,
             ),
         )
@@ -767,7 +767,7 @@ async def llm_metrics_requests_total(
     step, window = RANGE_VOLUME.get(time_range, ("3600s", "1h"))
     try:
         results = await prometheus_client.range_query(
-            f'sum(increase(litellm_requests_metric[{window}]))',
+            f'sum(increase(litellm_requests_metric[{window}])) + sum(increase(litellm_proxy_failed_requests_metric[{window}]))',
             duration=time_range, step=step,
         )
     except Exception as exc:

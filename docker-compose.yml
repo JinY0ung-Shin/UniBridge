@@ -124,7 +124,7 @@ services:
       keycloak:
         condition: service_healthy
       litellm:
-        condition: service_healthy
+        condition: service_started
     volumes:
       - unibridge-data:/app/data
     healthcheck:
@@ -177,6 +177,8 @@ services:
       - LITELLM_LOG=ERROR
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
     depends_on:
       litellm-db:
         condition: service_healthy
