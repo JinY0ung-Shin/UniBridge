@@ -295,7 +295,8 @@
     "noTokenData": "토큰 사용 데이터가 없습니다",
     "noModelData": "모델별 사용 데이터가 없습니다",
     "noKeyData": "API Key 사용 데이터가 없습니다",
-    "noErrorData": "오류율 데이터가 없습니다"
+    "noErrorData": "오류율 데이터가 없습니다",
+    "adminDashboard": "LiteLLM 관리"
   },
   "roles": {
     "title": "역할",

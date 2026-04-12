@@ -17,6 +17,7 @@ import { useTheme } from '../components/ThemeContext';
 import './LlmMonitoring.css';
 
 const TIME_RANGES = ['15m', '1h', '6h', '24h', '7d', '30d', '60d'];
+const LITELLM_ADMIN_URL = import.meta.env.VITE_LITELLM_ADMIN_URL || `http://${window.location.hostname}:4000/ui`;
 
 function formatTime(ts: number): string {
   const d = new Date(ts * 1000);
@@ -129,16 +130,30 @@ function LlmMonitoring() {
           <h1>{t('llmMonitoring.title')}</h1>
           <p className="page-subtitle">{t('llmMonitoring.subtitle')}</p>
         </div>
-        <div className="time-range-toggle">
-          {TIME_RANGES.map((r) => (
-            <button
-              key={r}
-              className={`time-range-btn ${r === range ? 'time-range-btn--active' : ''}`}
-              onClick={() => setRange(r)}
-            >
-              {r}
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+          <a
+            href={LITELLM_ADMIN_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="admin-link-btn"
+          >
+            {t('llmMonitoring.adminDashboard')}
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ marginLeft: 4 }}>
+              <path d="M3.5 1.5H10.5V8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M10.5 1.5L1.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </a>
+          <div className="time-range-toggle">
+            {TIME_RANGES.map((r) => (
+              <button
+                key={r}
+                className={`time-range-btn ${r === range ? 'time-range-btn--active' : ''}`}
+                onClick={() => setRange(r)}
+              >
+                {r}
             </button>
           ))}
+          </div>
         </div>
       </div>
 

@@ -295,7 +295,8 @@
     "noTokenData": "No token usage data available",
     "noModelData": "No model usage data available",
     "noKeyData": "No API key usage data available",
-    "noErrorData": "No error rate data available"
+    "noErrorData": "No error rate data available",
+    "adminDashboard": "LiteLLM Admin"
   },
   "roles": {
     "title": "Roles",
