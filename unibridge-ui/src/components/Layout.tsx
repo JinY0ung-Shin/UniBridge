@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { getCurrentUser } from '../api/client';
 import { useAuth } from './AuthProvider';
@@ -52,14 +52,14 @@ function Layout({ children }: LayoutProps) {
     <div className="layout">
       <aside className="sidebar">
         <div className="sidebar-header">
-          <div className="sidebar-logo">
+          <Link to="/" className="sidebar-logo">
             <div className="sidebar-logo-icon">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                 <path d="M3 5h10M3 8h10M3 11h7" stroke="var(--text-inverse)" strokeWidth="1.5" strokeLinecap="round" />
               </svg>
             </div>
-            <span className="sidebar-title">API Hub</span>
-          </div>
+            <span className="sidebar-title">UniBridge</span>
+          </Link>
         </div>
         <nav className="sidebar-nav">
           {navItems.filter((item) => hasPermission(item.permission)).map((item, index, filtered) => {

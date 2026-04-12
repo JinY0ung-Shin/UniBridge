@@ -120,14 +120,14 @@ describe('App', () => {
     });
 
     // Sidebar title
-    expect(screen.getByText('API Hub')).toBeInTheDocument();
+    expect(screen.getByText('UniBridge')).toBeInTheDocument();
   });
 
-  it('renders the sidebar title "API Hub"', async () => {
+  it('renders the sidebar title "UniBridge"', async () => {
     renderWithProviders(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText('API Hub')).toBeInTheDocument();
+      expect(screen.getByText('UniBridge')).toBeInTheDocument();
     });
   });
 
