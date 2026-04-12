@@ -700,6 +700,109 @@ class TestRouteFilter:
 
 
 # ---------------------------------------------------------------------------
+# Request volume endpoint tests
+# ---------------------------------------------------------------------------
+
+
+class TestMetricsRequestsTotal:
+    async def test_returns_timeseries(self, client, admin_token):
+        ts_data = [{"values": [[1000, "150"], [1060, "200"]]}]
+        mock = AsyncMock(return_value=ts_data)
+        with patch("app.routers.gateway.prometheus_client.range_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/requests-total?range=1h",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        assert data[0]["value"] == 150.0
+        # Verify increase() is used instead of rate()
+        assert "increase(" in mock.call_args.args[0]
+
+    async def test_with_route_filter(self, client, admin_token):
+        ts_data = [{"values": [[1000, "50"]]}]
+        mock = AsyncMock(return_value=ts_data)
+        with patch("app.routers.gateway.prometheus_client.range_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/requests-total?range=1h&route=query-api",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert 'route="query-api"' in mock.call_args.args[0]
+
+    async def test_long_range_uses_correct_step(self, client, admin_token):
+        ts_data = [{"values": [[1000, "500"]]}]
+        mock = AsyncMock(return_value=ts_data)
+        with patch("app.routers.gateway.prometheus_client.range_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/requests-total?range=30d",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        # 30d should use step=86400s (1d) and window=1d
+        _, kwargs = mock.call_args
+        assert kwargs["step"] == "86400s"
+        assert "[1d]" in mock.call_args.args[0]
+
+    async def test_prometheus_error_returns_502(self, client, admin_token):
+        with patch(
+            "app.routers.gateway.prometheus_client.range_query",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("down"),
+        ):
+            resp = await client.get(
+                "/admin/gateway/metrics/requests-total?range=1h",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# Long-range time range tests
+# ---------------------------------------------------------------------------
+
+
+class TestLongRanges:
+    """Verify 7d, 30d, 60d ranges are accepted and use correct steps."""
+
+    async def test_summary_accepts_7d(self, client, admin_token):
+        empty = [{"value": [0, "0"]}]
+        mock = AsyncMock(side_effect=[empty, empty, empty])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/summary?range=7d",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        # 7d should appear in the increase window
+        assert "[7d]" in mock.call_args_list[0].args[0]
+
+    async def test_requests_accepts_60d(self, client, admin_token):
+        ts_data = [{"values": [[1000, "1"]]}]
+        mock = AsyncMock(return_value=ts_data)
+        with patch("app.routers.gateway.prometheus_client.range_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/requests?range=60d",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        _, kwargs = mock.call_args
+        assert kwargs["step"] == "43200s"
+
+    async def test_top_routes_accepts_30d(self, client, admin_token):
+        results = [{"metric": {"route": "r1"}, "value": [0, "100"]}]
+        mock = AsyncMock(return_value=results)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/top-routes?range=30d",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert "[30d]" in mock.call_args.args[0]
+
+
+# ---------------------------------------------------------------------------
 # Permission / RBAC tests
 # ---------------------------------------------------------------------------
 

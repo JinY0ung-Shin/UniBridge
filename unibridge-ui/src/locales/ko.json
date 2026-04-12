@@ -69,7 +69,8 @@
     "noDatabases": "데이터베이스가 없습니다",
     "noDatabasesDesc": "연결 페이지에서 첫 번째 데이터베이스를 추가하세요.",
     "gatewayMonitoring": "게이트웨이 모니터링",
-    "viewDetails": "상세 보기 →"
+    "viewDetails": "상세 보기 →",
+    "monitoringNoData": "모니터링 데이터를 불러올 수 없습니다"
   },
   "connections": {
     "title": "연결",
@@ -245,6 +246,7 @@
     "subtitle": "실시간 API 트래픽 및 성능 메트릭",
     "loadingMetrics": "메트릭을 불러오는 중...",
     "loadFailed": "메트릭을 불러오지 못했습니다. Prometheus가 실행 중인지 확인하세요.",
+    "partialLoadFailed": "일부 메트릭을 불러오지 못했습니다. 데이터가 불완전할 수 있습니다.",
     "totalRequests": "총 요청 수 ({{range}})",
     "errorRate": "오류율 (5xx)",
     "avgLatency": "평균 지연시간",

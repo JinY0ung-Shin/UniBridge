@@ -149,7 +149,8 @@ describe('App', () => {
     expect(screen.getByText('Gateway Routes')).toBeInTheDocument();
     expect(screen.getByText('Gateway Upstreams')).toBeInTheDocument();
     expect(screen.getByText('API Keys')).toBeInTheDocument();
-    expect(screen.getByText('Gateway Monitoring')).toBeInTheDocument();
+    // "Gateway Monitoring" appears both as a nav link and as the Dashboard section title
+    expect(screen.getAllByText('Gateway Monitoring').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Roles')).toBeInTheDocument();
   });
 

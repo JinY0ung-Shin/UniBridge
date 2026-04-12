@@ -150,6 +150,10 @@ function GatewayMonitoring() {
 
   const isLoading = summaryQuery.isLoading;
   const isError = summaryQuery.isError;
+  const hasPartialError = !isError && (
+    requestsQuery.isError || requestsTotalQuery.isError ||
+    statusQuery.isError || latencyQuery.isError || topRoutesQuery.isError
+  );
 
   return (
     <div className="gateway-monitoring">
@@ -173,6 +177,7 @@ function GatewayMonitoring() {
 
       {isLoading && <div className="loading-message">{t('gatewayMonitoring.loadingMetrics')}</div>}
       {isError && <div className="error-banner">{t('gatewayMonitoring.loadFailed')}</div>}
+      {hasPartialError && <div className="error-banner">{t('gatewayMonitoring.partialLoadFailed')}</div>}
 
       {/* Summary Cards */}
       {summary && (

@@ -69,7 +69,8 @@
     "noDatabases": "No databases configured",
     "noDatabasesDesc": "Go to the Connections page to add your first database.",
     "gatewayMonitoring": "Gateway Monitoring",
-    "viewDetails": "View Details →"
+    "viewDetails": "View Details →",
+    "monitoringNoData": "No monitoring data available"
   },
   "connections": {
     "title": "Connections",
@@ -245,6 +246,7 @@
     "subtitle": "Real-time API traffic and performance metrics",
     "loadingMetrics": "Loading metrics...",
     "loadFailed": "Failed to load metrics. Is Prometheus running?",
+    "partialLoadFailed": "Some metrics failed to load. Data may be incomplete.",
     "totalRequests": "Total Requests ({{range}})",
     "errorRate": "Error Rate (5xx)",
     "avgLatency": "Avg Latency",
