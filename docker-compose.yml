@@ -175,6 +175,7 @@ services:
       - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:-litellm}@litellm-db:5432/litellm
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - LITELLM_LOG=ERROR
+      - STORE_MODEL_IN_DB=true
       - FORWARDED_ALLOW_IPS=*
       - PROXY_BASE_URL=${PROXY_BASE_URL:-https://${HOST_IP:-localhost}:${LITELLM_ADMIN_PORT:-4443}}
     volumes:
