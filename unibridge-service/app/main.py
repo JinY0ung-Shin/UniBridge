@@ -7,6 +7,7 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from httpx import HTTPStatusError
 from sqlalchemy import select
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -23,6 +24,41 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _is_missing_route_error(exc: Exception) -> bool:
+    if isinstance(exc, HTTPStatusError):
+        return exc.response.status_code == 404
+
+    message = str(exc).lower()
+    return "404" in message or "not found" in message
+
+
+async def _preserve_consumer_restriction(
+    route_id: str, body: dict[str, object]
+) -> dict[str, object]:
+    if route_id not in {"query-api", "llm-proxy"}:
+        return body
+
+    from app.services import apisix_client
+
+    try:
+        existing_route = await apisix_client.get_resource("routes", route_id)
+    except Exception as exc:
+        if _is_missing_route_error(exc):
+            return body
+        raise
+
+    existing_plugins = existing_route.get("plugins", {})
+    consumer_restriction = existing_plugins.get("consumer-restriction")
+    if not consumer_restriction:
+        return body
+
+    new_body = dict(body)
+    new_plugins = dict(new_body.get("plugins", {}))
+    new_plugins["consumer-restriction"] = consumer_restriction
+    new_body["plugins"] = new_plugins
+    return new_body
 
 
 @asynccontextmanager
@@ -81,19 +117,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await apisix_client.put_resource(
                 "routes",
                 "query-api",
-                {
-                    "name": "query-api",
-                    "uri": "/api/query/*",
-                    "methods": ["POST", "GET"],
-                    "upstream_id": "unibridge-service",
-                    "plugins": {
-                        "key-auth": {},
-                        "proxy-rewrite": {
-                            "regex_uri": ["^/api/query(.*)", "/query$1"],
+                await _preserve_consumer_restriction(
+                    "query-api",
+                    {
+                        "name": "query-api",
+                        "uri": "/api/query/*",
+                        "methods": ["POST", "GET"],
+                        "upstream_id": "unibridge-service",
+                        "plugins": {
+                            "key-auth": {},
+                            "proxy-rewrite": {
+                                "regex_uri": ["^/api/query(.*)", "/query$1"],
+                            },
                         },
+                        "status": 1,
                     },
-                    "status": 1,
-                },
+                ),
             )
             logger.info("APISIX query route provisioned successfully")
 
@@ -114,19 +153,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await apisix_client.put_resource(
                     "routes",
                     "llm-proxy",
-                    {
-                        "name": "llm-proxy",
-                        "uri": "/api/llm/*",
-                        "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
-                        "upstream_id": "litellm",
-                        "plugins": {
-                            "key-auth": {},
-                            "proxy-rewrite": {
-                                "regex_uri": ["^/api/llm(.*)", "$1"],
+                    await _preserve_consumer_restriction(
+                        "llm-proxy",
+                        {
+                            "name": "llm-proxy",
+                            "uri": "/api/llm/*",
+                            "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
+                            "upstream_id": "litellm",
+                            "plugins": {
+                                "key-auth": {},
+                                "proxy-rewrite": {
+                                    "regex_uri": ["^/api/llm(.*)", "$1"],
+                                },
                             },
+                            "status": 1,
                         },
-                        "status": 1,
-                    },
+                    ),
                 )
 
                 # /api/llm-admin/* → LiteLLM Admin UI/API (same-origin via gateway)
@@ -153,6 +195,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     "LITELLM_MASTER_KEY not set — skipping LiteLLM route provisioning"
                 )
 
+            async for db in get_db():
+                await api_keys.sync_all_consumer_route_restrictions(db)
+                logger.info("Replayed stored API key route restrictions")
+                break
+
             break
         except Exception as exc:
             if _attempt < _max_retries:
@@ -168,10 +215,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             else:
                 logger.error(
                     "APISIX provisioning failed after %d attempts: %s — "
-                    "/api/query/* route may not be available until APISIX is reachable and service is restarted",
+                    "failing startup until APISIX is reachable",
                     _max_retries,
                     exc,
                 )
+                raise
 
     from app.services.alert_state import AlertStateManager
     from app.services.alert_checker import start_checker
