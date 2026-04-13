@@ -44,7 +44,7 @@ services:
     environment:
       - POSTGRES_DB=keycloak
       - POSTGRES_USER=${KC_DB_USER:-keycloak}
-      - POSTGRES_PASSWORD=${KC_DB_PASSWORD:-keycloak}
+      - POSTGRES_PASSWORD=${KC_DB_PASSWORD:?KC_DB_PASSWORD is required}
     volumes:
       - keycloak-db-data:/var/lib/postgresql/data
     healthcheck:
@@ -60,14 +60,14 @@ services:
     entrypoint: /opt/init/docker-entrypoint.sh
     environment:
       - KC_BOOTSTRAP_ADMIN_USERNAME=${KC_ADMIN_USER:-admin}
-      - KC_BOOTSTRAP_ADMIN_PASSWORD=${KC_ADMIN_PASSWORD:-admin}
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=${KC_ADMIN_PASSWORD:?KC_ADMIN_PASSWORD is required}
       - KC_HTTPS_PORT=8443
       - KC_HTTPS_CERTIFICATE_FILE=/opt/keycloak/conf/tls.crt
       - KC_HTTPS_CERTIFICATE_KEY_FILE=/opt/keycloak/conf/tls.key
       - KC_DB=postgres
       - KC_DB_URL=jdbc:postgresql://keycloak-db:5432/keycloak
       - KC_DB_USERNAME=${KC_DB_USER:-keycloak}
-      - KC_DB_PASSWORD=${KC_DB_PASSWORD:-keycloak}
+      - KC_DB_PASSWORD=${KC_DB_PASSWORD:?KC_DB_PASSWORD is required}
       - KEYCLOAK_SERVICE_CLIENT_ID=${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}
       - KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:-}
       - HOST_IP=${HOST_IP:-localhost}
@@ -167,7 +167,7 @@ services:
     environment:
       - POSTGRES_DB=litellm
       - POSTGRES_USER=litellm
-      - POSTGRES_PASSWORD=${LITELLM_DB_PASSWORD:-litellm}
+      - POSTGRES_PASSWORD=${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}
     volumes:
       - litellm-db-data:/var/lib/postgresql/data
     healthcheck:
@@ -191,7 +191,7 @@ services:
     ports:
       - "${LITELLM_PORT:-4000}:4000"
     environment:
-      - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:-litellm}@litellm-db:5432/litellm
+      - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}@litellm-db:5432/litellm
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - LITELLM_LOG=ERROR
       - STORE_MODEL_IN_DB=true
