@@ -471,7 +471,7 @@ class TestRouteTest:
 
         assert resp.status_code == 200
         assert resp.json()["reachable"] is True
-        assert capture["url"] == "http://litellm:4000/health/liveliness"
+        assert capture["url"] == "https://litellm:4000/health/liveliness"
 
     async def test_uses_litellm_liveliness_for_llm_admin(self, client, admin_token):
         route = {"id": "llm-admin", "upstream_id": "litellm"}
@@ -498,7 +498,7 @@ class TestRouteTest:
 
         assert resp.status_code == 200
         assert resp.json()["reachable"] is True
-        assert capture["url"] == "http://litellm:4000/health/liveliness"
+        assert capture["url"] == "https://litellm:4000/health/liveliness"
 
 
 # ---------------------------------------------------------------------------

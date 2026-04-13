@@ -293,7 +293,7 @@ async def test_route(
         )
 
     first_addr = next(iter(nodes))
-    url = f"http://{first_addr}{_health_path_for_route(route)}"
+    url = f"https://{first_addr}{_health_path_for_route(route)}"
     start = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
