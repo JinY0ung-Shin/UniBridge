@@ -56,12 +56,19 @@ async def test_lifespan_provisions_llm_admin_route_when_master_key_set():
         async with lifespan(app):
             pass
 
+    upstream_calls = {
+        call.args[1]: call.args[2]
+        for call in put_resource.await_args_list
+        if call.args[0] == "upstreams"
+    }
     route_calls = {
         call.args[1]: call.args[2]
         for call in put_resource.await_args_list
         if call.args[0] == "routes"
     }
 
+    assert "litellm" in upstream_calls
+    assert upstream_calls["litellm"]["scheme"] == "https"
     assert "llm-proxy" in route_calls
     assert "llm-admin" in route_calls
     assert route_calls["llm-admin"]["uri"] == "/api/llm-admin/*"

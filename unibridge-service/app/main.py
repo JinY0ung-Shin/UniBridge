@@ -105,6 +105,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     {
                         "name": "litellm",
                         "type": "roundrobin",
+                        "scheme": "https",
                         "nodes": {"litellm:4000": 1},
                     },
                 )
