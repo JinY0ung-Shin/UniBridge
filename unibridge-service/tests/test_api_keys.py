@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from app.routers.api_keys import DENY_ALL_CONSUMER, sync_all_consumer_route_restrictions
+from app.schemas import QueryResponse
 from tests.conftest import auth_header
 
 ROUTE_FIXTURES = {
@@ -358,6 +359,58 @@ async def test_update_api_key_empty_allowed_routes_uses_deny_all_sentinel(client
 
 
 @pytest.mark.asyncio
+async def test_update_api_key_moves_consumer_between_allowed_routes(client, admin_token):
+    route_state = {
+        route["id"]: json.loads(json.dumps(route))
+        for route in ROUTE_FIXTURES["items"]
+    }
+
+    async def list_resources(resource_type):
+        assert resource_type == "routes"
+        return {"items": list(route_state.values())}
+
+    async def put_resource(resource_type, resource_id, body):
+        if resource_type == "routes":
+            route_state[resource_id] = {"id": resource_id, **body}
+            return route_state[resource_id]
+        return {"username": resource_id, **body}
+
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(side_effect=put_resource)
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
+
+        create_resp = await client.post(
+            "/admin/api-keys",
+            json={
+                "name": "moving-app",
+                "api_key": "mv-123",
+                "allowed_routes": ["query-api"],
+            },
+            headers=auth_header(admin_token),
+        )
+        assert create_resp.status_code == 201
+
+        mock_apisix.get_resource = AsyncMock(return_value={
+            "username": "moving-app",
+            "plugins": {"key-auth": {"key": "mv-123"}},
+        })
+        update_resp = await client.put(
+            "/admin/api-keys/moving-app",
+            json={"allowed_routes": ["llm-proxy"]},
+            headers=auth_header(admin_token),
+        )
+
+    assert update_resp.status_code == 200
+    assert route_state["query-api"]["plugins"]["consumer-restriction"]["whitelist"] == [
+        DENY_ALL_CONSUMER
+    ]
+    assert route_state["llm-proxy"]["plugins"]["consumer-restriction"]["whitelist"] == [
+        "moving-app"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_delete_api_key(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
@@ -408,6 +461,97 @@ async def test_query_execute_via_apikey_header(client, admin_token):
     # 404 because "testdb" engine doesn't exist in connection_manager, but auth passes
     assert resp.status_code == 404
     assert "not registered" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_query_execute_apikey_allowed_db_select_returns_200(client, admin_token):
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={
+            "username": "allowed-app",
+            "plugins": {"key-auth": {"key": "ak-123"}},
+        })
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+        create_resp = await client.post(
+            "/admin/api-keys",
+            json={
+                "name": "allowed-app",
+                "api_key": "ak-123",
+                "allowed_databases": ["allowed-db"],
+                "allowed_routes": ["query-api"],
+            },
+            headers=auth_header(admin_token),
+        )
+        assert create_resp.status_code == 201
+
+    mock_engine = MagicMock()
+    query_response = QueryResponse(
+        columns=["ok"],
+        rows=[[1]],
+        row_count=1,
+        truncated=False,
+        elapsed_ms=7,
+    )
+    with patch(
+        "app.routers.query.connection_manager.get_engine",
+        return_value=mock_engine,
+    ), patch(
+        "app.routers.query.connection_manager.get_db_type",
+        return_value="postgres",
+    ), patch(
+        "app.routers.query.execute_query",
+        new_callable=AsyncMock,
+        return_value=query_response,
+    ) as mock_execute_query, patch(
+        "app.routers.query.log_query",
+        new_callable=AsyncMock,
+    ):
+        resp = await client.post(
+            "/query/execute",
+            json={"database": "allowed-db", "sql": "SELECT 1"},
+            headers={"X-Consumer-Username": "allowed-app"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["row_count"] == 1
+    mock_execute_query.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_query_execute_apikey_allowed_db_rejects_insert(client, admin_token):
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={
+            "username": "readonly-app",
+            "plugins": {"key-auth": {"key": "ro-123"}},
+        })
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+        create_resp = await client.post(
+            "/admin/api-keys",
+            json={
+                "name": "readonly-app",
+                "api_key": "ro-123",
+                "allowed_databases": ["allowed-db"],
+                "allowed_routes": ["query-api"],
+            },
+            headers=auth_header(admin_token),
+        )
+        assert create_resp.status_code == 201
+
+    with patch(
+        "app.routers.query.connection_manager.get_engine",
+        return_value=MagicMock(),
+    ), patch(
+        "app.routers.query.connection_manager.get_db_type",
+        return_value="postgres",
+    ):
+        resp = await client.post(
+            "/query/execute",
+            json={"database": "allowed-db", "sql": "INSERT INTO audit_logs (id) VALUES (1)"},
+            headers={"X-Consumer-Username": "readonly-app"},
+        )
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "API key users can only execute SELECT queries"
 
 
 @pytest.mark.asyncio
