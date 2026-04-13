@@ -9,3 +9,4 @@ certs/
 .superpowers/
 docs/superpowers/
 **/.coverage
+.worktrees/

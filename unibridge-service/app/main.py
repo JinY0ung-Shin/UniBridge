@@ -149,7 +149,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     },
                 )
 
-                # /api/llm/* → LiteLLM proxy (client passes own Authorization header)
+                # /api/llm/* → LiteLLM proxy (APISIX injects LiteLLM key automatically)
                 await apisix_client.put_resource(
                     "routes",
                     "llm-proxy",
@@ -164,6 +164,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                 "key-auth": {},
                                 "proxy-rewrite": {
                                     "regex_uri": ["^/api/llm(.*)", "$1"],
+                                    "headers": {
+                                        "set": {
+                                            "Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}",
+                                        },
+                                    },
                                 },
                             },
                             "status": 1,

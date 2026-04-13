@@ -6,7 +6,7 @@ deployment:
   admin:
     admin_key:
       - name: admin
-        key: 40a3a08930ef6bb269cc587f53a0e982
+        key: "${{APISIX_ADMIN_KEY}}"
         role: admin
     admin_listen:
       ip: 0.0.0.0
