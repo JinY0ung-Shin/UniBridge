@@ -20,7 +20,14 @@ else
   cp "$TEMPLATE" "$IMPORT_DIR/realm-export.json" 2>/dev/null || true
 fi
 
-/opt/keycloak/bin/kc.sh start-dev --import-realm &
+# Start mode: set KEYCLOAK_DEV_MODE=true for development (relaxed security)
+if [ "${KEYCLOAK_DEV_MODE:-false}" = "true" ]; then
+  echo "[init] Starting Keycloak in DEVELOPMENT mode"
+  /opt/keycloak/bin/kc.sh start-dev --import-realm &
+else
+  echo "[init] Starting Keycloak in PRODUCTION mode"
+  /opt/keycloak/bin/kc.sh start --import-realm --hostname-strict=false --http-enabled=true &
+fi
 KC_PID=$!
 
 # Wait for Keycloak + realm to be ready, then update client settings via service account

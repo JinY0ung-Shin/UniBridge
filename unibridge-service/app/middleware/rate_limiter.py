@@ -10,7 +10,8 @@ import threading
 import time
 
 from fastapi import Request, Response
-from jose import jwt, JWTError
+import jwt
+from jwt.exceptions import PyJWTError as JWTError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -110,9 +111,9 @@ def _extract_username(request: Request) -> str | None:
 
     token = auth[7:]
     try:
-        claims = jwt.get_unverified_claims(token)
+        claims = jwt.decode(token, options={"verify_signature": False}, algorithms=["HS256", "RS256"])
         return claims.get("preferred_username") or claims.get("sub")
-    except JWTError:
+    except (JWTError, Exception):
         return None
 
 

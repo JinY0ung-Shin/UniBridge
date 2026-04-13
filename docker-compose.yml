@@ -2,7 +2,8 @@ services:
   etcd:
     image: bitnamilegacy/etcd:3.5.11
     environment:
-      - ALLOW_NONE_AUTHENTICATION=yes
+      - ALLOW_NONE_AUTHENTICATION=${ETCD_ALLOW_NONE_AUTH:-no}
+      - ETCD_ROOT_PASSWORD=${ETCD_ROOT_PASSWORD:-}
       - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
       - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
     expose:
@@ -10,7 +11,7 @@ services:
     volumes:
       - etcd-data:/bitnami/etcd
     healthcheck:
-      test: ["CMD", "etcdctl", "endpoint", "health"]
+      test: ["CMD-SHELL", "if [ -n \"$ETCD_ROOT_PASSWORD\" ]; then etcdctl endpoint health --user root --password \"$ETCD_ROOT_PASSWORD\"; else etcdctl endpoint health; fi"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -20,14 +21,18 @@ services:
 
   apisix:
     image: apache/apisix:3.15.0-debian
+    entrypoint: /opt/apisix-config/docker-entrypoint.sh
     expose:
       - "9080"
     ports:
       - "127.0.0.1:${APISIX_ADMIN_PORT:-9180}:9180"
     environment:
       - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY}
+      - ETCD_USERNAME=root
+      - ETCD_PASSWORD=${ETCD_ROOT_PASSWORD:-}
     volumes:
-      - ./apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+      - ./apisix/config.yaml:/opt/apisix-config/config.yaml:ro
+      - ./apisix/docker-entrypoint.sh:/opt/apisix-config/docker-entrypoint.sh:ro
     depends_on:
       etcd:
         condition: service_healthy
@@ -69,6 +74,7 @@ services:
       - UNIBRIDGE_UI_PORT=${UNIBRIDGE_UI_PORT:-3000}
       - KEYCLOAK_REDIRECT_URI=${KEYCLOAK_REDIRECT_URI:-}
       - KEYCLOAK_WEB_ORIGIN=${KEYCLOAK_WEB_ORIGIN:-}
+      - KEYCLOAK_DEV_MODE=${KEYCLOAK_DEV_MODE:-false}
     ports:
       - "${KEYCLOAK_PORT:-8443}:8443"
     volumes:
@@ -126,6 +132,8 @@ services:
       keycloak:
         condition: service_healthy
       litellm:
+        condition: service_started
+      apisix:
         condition: service_started
     volumes:
       - unibridge-data:/app/data

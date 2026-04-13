@@ -186,6 +186,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
                         "upstream_id": "litellm",
                         "plugins": {
+                            "key-auth": {},
                             "proxy-rewrite": {
                                 "regex_uri": ["^/api/llm-admin(.*)", "$1"],
                             },

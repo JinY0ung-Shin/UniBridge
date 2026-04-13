@@ -44,6 +44,7 @@ cp .env.example .env
 | `ENCRYPTION_KEY` | `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
 | `JWT_SECRET` | Same command as above, different value |
 | `APISIX_ADMIN_KEY` | Random string for APISIX admin API |
+| `ETCD_ROOT_PASSWORD` | etcd root password (APISIX config store authentication) |
 | `KC_ADMIN_PASSWORD` | Keycloak admin console password |
 | `KC_DB_PASSWORD` | Keycloak database password |
 | `KEYCLOAK_SERVICE_CLIENT_SECRET` | `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
@@ -54,6 +55,8 @@ cp .env.example .env
 |----------|---------|-------------|
 | `QUERY_UI_PORT` | 3000 | HTTPS port for the web UI |
 | `KEYCLOAK_PORT` | 8443 | Keycloak OIDC port |
+| `KEYCLOAK_DEV_MODE` | false | Set `true` to run Keycloak in dev mode (relaxed security) |
+| `ETCD_ALLOW_NONE_AUTH` | no | Set `yes` to disable etcd authentication (dev only) |
 | `ENABLE_DEV_TOKEN_ENDPOINT` | false | Set `true` only for local dev |
 | `SSL_VERIFY` | true | Set `false` if using self-signed certs |
 | `RATE_LIMIT_PER_MINUTE` | 60 | Per-user query rate limit |
@@ -161,6 +164,49 @@ docker compose down
 
 # Stop and remove volumes (DESTROYS DATA)
 docker compose down -v
+```
+
+## etcd Authentication Migration Guide
+
+etcd는 APISIX의 설정 저장소로, 기본적으로 인증이 활성화되어 있습니다. 기존 환경에서 업그레이드하는 경우 아래 절차를 따라주세요.
+
+### 신규 설치
+
+`.env`에 `ETCD_ROOT_PASSWORD`만 설정하면 자동으로 적용됩니다.
+
+```bash
+# .env
+ETCD_ROOT_PASSWORD=your-strong-password-here
+```
+
+### 기존 환경에서 마이그레이션
+
+기존에 인증 없이 운영하던 etcd 볼륨이 있는 경우, 두 가지 방법 중 택일합니다.
+
+**방법 1: 볼륨 초기화 (권장, 설정 데이터 재생성)**
+
+```bash
+# 1. 서비스 중지
+docker compose down
+
+# 2. etcd 볼륨 삭제 (APISIX 라우트/업스트림 설정이 초기화됩니다)
+docker volume rm unibridge_etcd-data
+
+# 3. .env에 패스워드 설정
+#    ETCD_ROOT_PASSWORD=your-strong-password-here
+
+# 4. 재시작 (APISIX 라우트는 unibridge-service 기동 시 자동 재프로비저닝)
+docker compose up -d
+```
+
+> APISIX 라우트(query-api, llm-proxy, llm-admin)와 업스트림은 `unibridge-service` 시작 시 자동으로 재생성됩니다. 수동으로 추가한 커스텀 라우트/업스트림만 다시 등록하면 됩니다.
+
+**방법 2: 인증 없이 유지 (개발/테스트 전용)**
+
+```bash
+# .env
+ETCD_ALLOW_NONE_AUTH=yes
+# ETCD_ROOT_PASSWORD는 비워두거나 생략
 ```
 
 ## Key Features

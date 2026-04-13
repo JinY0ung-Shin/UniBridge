@@ -10,7 +10,9 @@ from typing import Callable
 import httpx
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import PyJWTError as JWTError
+from jwt.algorithms import RSAAlgorithm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -175,13 +177,14 @@ async def _verify_keycloak_token(token: str) -> CurrentUser:
 
     try:
         # Debug: log claims for troubleshooting (debug level to avoid leaking in prod)
-        unverified = jwt.get_unverified_claims(token)
+        unverified = jwt.decode(token, options={"verify_signature": False}, algorithms=["RS256"])
         logger.debug("JWT iss=%s aud=%s", unverified.get("iss"), unverified.get("aud"))
         logger.debug("Expected iss=%s aud=%s", settings.KEYCLOAK_ISSUER_URL, settings.KEYCLOAK_JWT_AUDIENCE)
 
+        public_key = RSAAlgorithm.from_jwk(rsa_key)
         payload = jwt.decode(
             token,
-            rsa_key,
+            public_key,
             algorithms=["RS256"],
             audience=settings.KEYCLOAK_JWT_AUDIENCE,
             issuer=settings.KEYCLOAK_ISSUER_URL,

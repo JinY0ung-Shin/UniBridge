@@ -1,7 +1,10 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+import ipaddress
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, Field, field_validator
 
 
 # ── Query ────────────────────────────────────────────────────────────────────
@@ -257,12 +260,50 @@ class ToggleEnabledRequest(BaseModel):
 
 # ── Alerts ──────────────────────────────────────────────────────────────────
 
+_BLOCKED_HOSTNAMES = frozenset({
+    "localhost", "keycloak", "etcd", "apisix",
+    "litellm", "prometheus", "unibridge-service",
+    "keycloak-db", "litellm-db",
+    "metadata.google.internal",
+})
+
+
+def _validate_webhook_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("webhook_url must use http or https scheme")
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("webhook_url must include a hostname")
+    # Block internal Docker service names and cloud metadata
+    if hostname.lower() in _BLOCKED_HOSTNAMES:
+        raise ValueError("webhook_url cannot target internal services")
+    # Block private/loopback/link-local IPs
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            raise ValueError("webhook_url cannot target private/internal addresses")
+    except ValueError as exc:
+        if "cannot target" in str(exc):
+            raise
+        # hostname is not an IP — already checked against blocklist above
+    # Block 169.254.169.254 (cloud metadata)
+    if hostname == "169.254.169.254":
+        raise ValueError("webhook_url cannot target cloud metadata endpoint")
+    return url
+
+
 class AlertChannelCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     webhook_url: str = Field(..., min_length=1)
     payload_template: str = Field(..., min_length=1)
     headers: dict[str, str] | None = None
     enabled: bool = True
+
+    @field_validator("webhook_url")
+    @classmethod
+    def check_webhook_url(cls, v: str) -> str:
+        return _validate_webhook_url(v)
 
 
 class AlertChannelUpdate(BaseModel):
@@ -271,6 +312,13 @@ class AlertChannelUpdate(BaseModel):
     payload_template: str | None = None
     headers: dict[str, str] | None = None
     enabled: bool | None = None
+
+    @field_validator("webhook_url")
+    @classmethod
+    def check_webhook_url(cls, v: str | None) -> str | None:
+        if v is not None:
+            return _validate_webhook_url(v)
+        return v
 
 
 class AlertChannelResponse(BaseModel):

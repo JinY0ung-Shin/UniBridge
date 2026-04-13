@@ -297,7 +297,8 @@ async def test_route(
     url = f"{scheme}://{first_addr}{_health_path_for_route(route)}"
     start = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
+        ssl_verify: str | bool = settings.SSL_CA_CERT_PATH or settings.SSL_VERIFY
+        async with httpx.AsyncClient(timeout=5.0, verify=ssl_verify) as client:
             resp = await client.get(url)
         elapsed_ms = round((time.monotonic() - start) * 1000)
         body: Any = None
