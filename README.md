@@ -36,22 +36,22 @@ cp .env.example .env
 
 ### 2. Edit `.env`
 
-**Must change:**
+**Must set before first boot:**
 
-Docker Compose now uses required interpolation for some startup secrets. If any of the fail-fast secrets below are missing from `.env`, `docker compose up` fails immediately instead of starting with an incomplete configuration.
+`.env.example` intentionally leaves deployment secrets blank. After `cp .env.example .env`, fill in the values below before running `docker compose up`.
 
 | Variable | Description |
 |----------|-------------|
+| `ENCRYPTION_KEY` | Fail-fast secret used to encrypt stored database credentials. Generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
 | `KC_ADMIN_PASSWORD` | Fail-fast secret for the Keycloak admin console |
 | `KC_DB_PASSWORD` | Fail-fast secret for the Keycloak database |
+| `APISIX_ADMIN_KEY` | Fail-fast secret for the APISIX admin API |
+| `KEYCLOAK_SERVICE_CLIENT_SECRET` | Fail-fast shared secret used by Keycloak and unibridge-service |
 | `LITELLM_DB_PASSWORD` | Fail-fast secret for the LiteLLM database |
+| `LITELLM_MASTER_KEY` | Fail-fast secret for LiteLLM admin/API access |
+| `ETCD_ROOT_PASSWORD` | Set this unless `ETCD_ALLOW_NONE_AUTH=yes` for dev-only etcd without auth |
 | `HOST_IP` | Server IP or hostname that browsers access (not `localhost` in production) |
-| `ENCRYPTION_KEY` | `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
-| `JWT_SECRET` | Same command as above, different value |
-| `APISIX_ADMIN_KEY` | Operationally required secret for the APISIX admin API |
-| `ETCD_ROOT_PASSWORD` | Operationally required secret for etcd root authentication |
-| `KEYCLOAK_SERVICE_CLIENT_SECRET` | Operationally required secret shared by Keycloak and unibridge-service |
-| `LITELLM_MASTER_KEY` | Operationally required secret for LiteLLM admin/API access |
+| `JWT_SECRET` | Required when not using Keycloak-issued tokens; generate a separate strong value |
 
 **Optional:**
 
