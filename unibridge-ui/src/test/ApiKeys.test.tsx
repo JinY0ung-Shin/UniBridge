@@ -8,12 +8,12 @@ vi.mock('../api/client', () => ({
   getGatewayRoutes: vi.fn(),
 }));
 
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getApiKeys, getAdminDatabases, getGatewayRoutes, createApiKey, deleteApiKey } from '../api/client';
 import ApiKeys from '../pages/ApiKeys';
-import { renderWithProviders, makeApiKey } from './helpers';
+import { renderWithProviders, makeApiKey, makeDatabase, makeGatewayRoute } from './helpers';
 
 const mockedGetApiKeys = vi.mocked(getApiKeys);
 const mockedGetAdminDatabases = vi.mocked(getAdminDatabases);
@@ -84,6 +84,72 @@ describe('ApiKeys', () => {
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Edit API Key' })).toBeInTheDocument();
     });
+  });
+
+  it('renders structured checkbox rows in create modal', async () => {
+    mockedGetAdminDatabases.mockResolvedValue([
+      makeDatabase({ alias: 'analytics-db', db_type: 'postgres' }),
+    ]);
+    mockedGetGatewayRoutes.mockResolvedValue({
+      items: [makeGatewayRoute({ id: 'route-1', name: 'Users API', uri: '/api/users/very/long/path/*' })],
+      total: 1,
+    });
+
+    renderWithProviders(<ApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No API keys')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
+
+    const databaseOption = screen.getByRole('checkbox', { name: /analytics-db/i }).closest('label');
+    const routeOption = screen.getByRole('checkbox', { name: /users api/i }).closest('label');
+
+    expect(databaseOption).toHaveClass('checkbox-list-item');
+    expect(routeOption).toHaveClass('checkbox-list-item');
+
+    expect(within(databaseOption!).getByText('analytics-db')).toHaveClass('checkbox-list-label');
+    expect(within(databaseOption!).getByText('postgres')).toHaveClass('tag');
+    expect(within(routeOption!).getByText('Users API')).toHaveClass('checkbox-list-label');
+    expect(within(routeOption!).getByText('/api/users/very/long/path/*')).toHaveClass('tag');
+  });
+
+  it('renders structured checkbox rows in edit modal', async () => {
+    mockedGetApiKeys.mockResolvedValue([
+      makeApiKey({
+        allowed_databases: ['analytics-db'],
+        allowed_routes: ['route-1'],
+      }),
+    ]);
+    mockedGetAdminDatabases.mockResolvedValue([
+      makeDatabase({ alias: 'analytics-db', db_type: 'postgres' }),
+    ]);
+    mockedGetGatewayRoutes.mockResolvedValue({
+      items: [makeGatewayRoute({ id: 'route-1', name: 'Users API', uri: '/api/users/very/long/path/*' })],
+      total: 1,
+    });
+
+    renderWithProviders(<ApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText('my-app')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    const databaseOption = screen.getByRole('checkbox', { name: /analytics-db/i }).closest('label');
+    const routeOption = screen.getByRole('checkbox', { name: /users api/i }).closest('label');
+
+    expect(databaseOption).toHaveClass('checkbox-list-item');
+    expect(routeOption).toHaveClass('checkbox-list-item');
+    expect(screen.getByRole('checkbox', { name: /analytics-db/i })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /users api/i })).toBeChecked();
+
+    expect(within(databaseOption!).getByText('analytics-db')).toHaveClass('checkbox-list-label');
+    expect(within(databaseOption!).getByText('postgres')).toHaveClass('tag');
+    expect(within(routeOption!).getByText('Users API')).toHaveClass('checkbox-list-label');
+    expect(within(routeOption!).getByText('/api/users/very/long/path/*')).toHaveClass('tag');
   });
 
   it('calls createApiKey and shows created key', async () => {

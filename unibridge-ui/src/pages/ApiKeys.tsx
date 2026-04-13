@@ -294,13 +294,14 @@ function ApiKeys() {
                     <div className="checkbox-list">
                       {databases.length === 0 && <div className="checkbox-list-empty">{t('apiKeys.noneSelected')}</div>}
                       {databases.map((db) => (
-                        <label key={db.alias}>
+                        <label key={db.alias} className="checkbox-list-item">
                           <input
                             type="checkbox"
                             checked={form.allowedDatabases.includes(db.alias)}
                             onChange={() => toggleDb(db.alias)}
                           />
-                          {db.alias} <span className="tag">{db.db_type}</span>
+                          <span className="checkbox-list-label">{db.alias}</span>
+                          <span className="tag">{db.db_type}</span>
                         </label>
                       ))}
                     </div>
@@ -310,13 +311,14 @@ function ApiKeys() {
                     <div className="checkbox-list">
                       {routes.length === 0 && <div className="checkbox-list-empty">{t('apiKeys.noneSelected')}</div>}
                       {routes.map((r) => (
-                        <label key={r.id}>
+                        <label key={r.id} className="checkbox-list-item">
                           <input
                             type="checkbox"
                             checked={form.allowedRoutes.includes(r.id)}
                             onChange={() => toggleRoute(r.id)}
                           />
-                          {r.name || r.id} <span className="tag">{r.uri}</span>
+                          <span className="checkbox-list-label">{r.name || r.id}</span>
+                          <span className="tag">{r.uri}</span>
                         </label>
                       ))}
                     </div>

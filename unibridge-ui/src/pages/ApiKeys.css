@@ -101,19 +101,32 @@
   padding: 8px;
 }
 
-.checkbox-list label {
+.checkbox-list-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 13px;
   cursor: pointer;
+  color: var(--text-secondary);
 }
 
-.checkbox-list label:hover {
+.checkbox-list-item:hover {
   color: var(--text-primary);
 }
 
-.checkbox-list input[type="checkbox"] {
+.checkbox-list-item .checkbox-list-label {
+  line-height: 1.25;
+}
+
+.checkbox-list-item .tag {
+  flex: 0 0 auto;
+}
+
+.checkbox-list-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: 0 0 auto;
   accent-color: var(--accent-blue);
 }
 
