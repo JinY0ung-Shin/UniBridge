@@ -446,6 +446,33 @@ class _MockAsyncClient:
 
 
 class TestRouteTest:
+    async def test_uses_http_health_for_query_api(self, client, admin_token):
+        route = {"id": "query-api", "upstream_id": "query-service"}
+        upstream = {"id": "query-service", "nodes": {"unibridge-service:8000": 1}}
+        response = SimpleNamespace(
+            status_code=200, json=lambda: {"status": "ok"}, text="ok"
+        )
+        capture: dict[str, str] = {}
+
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=[route, upstream],
+            ),
+            patch(
+                "app.routers.gateway.httpx.AsyncClient",
+                side_effect=lambda *args, **kwargs: _MockAsyncClient(response, capture),
+            ),
+        ):
+            resp = await client.post(
+                "/admin/gateway/routes/query-api/test", headers=auth_header(admin_token)
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["reachable"] is True
+        assert capture["url"] == "http://unibridge-service:8000/health"
+
     async def test_uses_litellm_liveliness_for_llm_proxy(self, client, admin_token):
         route = {"id": "llm-proxy", "upstream_id": "litellm"}
         upstream = {"id": "litellm", "nodes": {"litellm:4000": 1}}
