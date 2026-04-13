@@ -5,9 +5,9 @@ Internal API/DB gateway platform. Register multiple databases (PostgreSQL, MSSQL
 ## Architecture
 
 ```
-Browser ──HTTPS──> query-ui (nginx)
+Browser ──HTTPS──> unibridge-ui (nginx)
                        │
-                       ├── /_api/* ──> query-service (FastAPI)
+                       ├── /_api/* ──> unibridge-service (FastAPI)
                        └── /api/*  ──> apisix (API Gateway)
                                           │
                                           ├── Registered databases
@@ -17,7 +17,7 @@ Keycloak ── OIDC auth
 Prometheus ── APISIX metrics
 ```
 
-**Services (7):** etcd, APISIX, Keycloak + Postgres, query-service, Prometheus, query-ui
+**Services (7):** etcd, APISIX, Keycloak + Postgres, unibridge-service, Prometheus, unibridge-ui
 
 ## Prerequisites
 
@@ -36,24 +36,28 @@ cp .env.example .env
 
 ### 2. Edit `.env`
 
-**Must change:**
+**Must set before first boot:**
+
+`.env.example` intentionally leaves deployment secrets blank. After `cp .env.example .env`, fill in the values below before running `docker compose up`.
 
 | Variable | Description |
 |----------|-------------|
+| `ENCRYPTION_KEY` | Fail-fast secret used to encrypt stored database credentials. Generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `KC_ADMIN_PASSWORD` | Fail-fast secret for the Keycloak admin console |
+| `KC_DB_PASSWORD` | Fail-fast secret for the Keycloak database |
+| `APISIX_ADMIN_KEY` | Fail-fast secret for the APISIX admin API |
+| `KEYCLOAK_SERVICE_CLIENT_SECRET` | Fail-fast shared secret used by Keycloak and unibridge-service |
+| `LITELLM_DB_PASSWORD` | Fail-fast secret for the LiteLLM database |
+| `LITELLM_MASTER_KEY` | Fail-fast secret for LiteLLM admin/API access |
+| `ETCD_ROOT_PASSWORD` | Set this unless `ETCD_ALLOW_NONE_AUTH=yes` for dev-only etcd without auth |
 | `HOST_IP` | Server IP or hostname that browsers access (not `localhost` in production) |
-| `ENCRYPTION_KEY` | `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
-| `JWT_SECRET` | Same command as above, different value |
-| `APISIX_ADMIN_KEY` | Random string for APISIX admin API |
-| `ETCD_ROOT_PASSWORD` | etcd root password (APISIX config store authentication) |
-| `KC_ADMIN_PASSWORD` | Keycloak admin console password |
-| `KC_DB_PASSWORD` | Keycloak database password |
-| `KEYCLOAK_SERVICE_CLIENT_SECRET` | `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `JWT_SECRET` | Required when not using Keycloak-issued tokens; generate a separate strong value |
 
 **Optional:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `QUERY_UI_PORT` | 3000 | HTTPS port for the web UI |
+| `UNIBRIDGE_UI_PORT` | 3000 | HTTPS port for the web UI |
 | `KEYCLOAK_PORT` | 8443 | Keycloak OIDC port |
 | `KEYCLOAK_DEV_MODE` | false | Set `true` to run Keycloak in dev mode (relaxed security) |
 | `ETCD_ALLOW_NONE_AUTH` | no | Set `yes` to disable etcd authentication (dev only) |
@@ -92,20 +96,20 @@ First boot takes ~2 minutes (Keycloak initialization).
 
 | Service | URL |
 |---------|-----|
-| Web UI | `https://<HOST_IP>:<QUERY_UI_PORT>` |
+| Web UI | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>` |
 | Keycloak Admin | `https://<HOST_IP>:<KEYCLOAK_PORT>/admin` |
-| API Gateway | `https://<HOST_IP>:<QUERY_UI_PORT>/api/*` |
+| API Gateway | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/*` |
 | Prometheus | `http://<HOST_IP>:9090` (localhost only) |
 
-Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`), then create a user in the `apihub` realm.
+Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`). No human users are seeded into the `apihub` realm by default. After first boot, sign in to the admin console and create the users you want in the `apihub` realm, then assign the roles and/or groups required for your deployment.
 
 ## Service Ports (default)
 
 | Port | Service | Binding |
 |------|---------|---------|
-| 3000 | query-ui (HTTPS) | public |
+| 3000 | unibridge-ui (HTTPS) | public |
 | 8443 | Keycloak (HTTPS) | public |
-| 8000 | query-service | localhost only |
+| 8000 | unibridge-service | localhost only |
 | 9180 | APISIX admin | localhost only |
 | 9090 | Prometheus | localhost only |
 
@@ -114,12 +118,13 @@ Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`), t
 ### Backend
 
 ```bash
-cd query-service
+cd unibridge-service
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 pip install pytest pytest-asyncio pytest-cov
 
-# Minimal .env for dev
+# Minimal .env for temporary backend-only dev
+# Do not reuse these example values for Docker/production deployments.
 export META_DB_URL="sqlite+aiosqlite:///data/meta.db"
 export ENCRYPTION_KEY="dev-key-change-in-prod-32chars!"
 export JWT_SECRET="dev-jwt-secret"
@@ -131,7 +136,7 @@ uvicorn app.main:app --reload --port 8000
 ### Frontend
 
 ```bash
-cd query-ui
+cd unibridge-ui
 npm install
 npm run dev   # http://localhost:5173, proxies /_api to :8000
 ```
@@ -140,10 +145,10 @@ npm run dev   # http://localhost:5173, proxies /_api to :8000
 
 ```bash
 # Backend
-cd query-service && pytest tests/ -v
+cd unibridge-service && pytest tests/ -v
 
 # Frontend
-cd query-ui && npx vitest run
+cd unibridge-ui && npx vitest run
 ```
 
 ## Common Operations
@@ -156,7 +161,7 @@ docker compose restart
 docker compose up -d --build
 
 # View logs
-docker compose logs -f query-service
+docker compose logs -f unibridge-service
 docker compose logs -f keycloak
 
 # Stop

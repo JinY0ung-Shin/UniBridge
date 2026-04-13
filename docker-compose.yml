@@ -27,7 +27,7 @@ services:
     ports:
       - "127.0.0.1:${APISIX_ADMIN_PORT:-9180}:9180"
     environment:
-      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY}
+      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:?APISIX_ADMIN_KEY is required}
       - ETCD_USERNAME=root
       - ETCD_PASSWORD=${ETCD_ROOT_PASSWORD:-}
     volumes:
@@ -44,7 +44,7 @@ services:
     environment:
       - POSTGRES_DB=keycloak
       - POSTGRES_USER=${KC_DB_USER:-keycloak}
-      - POSTGRES_PASSWORD=${KC_DB_PASSWORD:-keycloak}
+      - POSTGRES_PASSWORD=${KC_DB_PASSWORD:?KC_DB_PASSWORD is required}
     volumes:
       - keycloak-db-data:/var/lib/postgresql/data
     healthcheck:
@@ -60,16 +60,16 @@ services:
     entrypoint: /opt/init/docker-entrypoint.sh
     environment:
       - KC_BOOTSTRAP_ADMIN_USERNAME=${KC_ADMIN_USER:-admin}
-      - KC_BOOTSTRAP_ADMIN_PASSWORD=${KC_ADMIN_PASSWORD:-admin}
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=${KC_ADMIN_PASSWORD:?KC_ADMIN_PASSWORD is required}
       - KC_HTTPS_PORT=8443
       - KC_HTTPS_CERTIFICATE_FILE=/opt/keycloak/conf/tls.crt
       - KC_HTTPS_CERTIFICATE_KEY_FILE=/opt/keycloak/conf/tls.key
       - KC_DB=postgres
       - KC_DB_URL=jdbc:postgresql://keycloak-db:5432/keycloak
       - KC_DB_USERNAME=${KC_DB_USER:-keycloak}
-      - KC_DB_PASSWORD=${KC_DB_PASSWORD:-keycloak}
+      - KC_DB_PASSWORD=${KC_DB_PASSWORD:?KC_DB_PASSWORD is required}
       - KEYCLOAK_SERVICE_CLIENT_ID=${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}
-      - KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:-}
+      - KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:?KEYCLOAK_SERVICE_CLIENT_SECRET is required}
       - HOST_IP=${HOST_IP:-localhost}
       - UNIBRIDGE_UI_PORT=${UNIBRIDGE_UI_PORT:-3000}
       - KEYCLOAK_REDIRECT_URI=${KEYCLOAK_REDIRECT_URI:-}
@@ -108,13 +108,13 @@ services:
       - KEYCLOAK_PORT=${KEYCLOAK_PORT:-8443}
       - UNIBRIDGE_UI_PORT=${UNIBRIDGE_UI_PORT:-3000}
       - META_DB_URL=${META_DB_URL}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
       - JWT_SECRET=${JWT_SECRET}
       - ENABLE_DEV_TOKEN_ENDPOINT=${ENABLE_DEV_TOKEN_ENDPOINT:-false}
       - APISIX_ADMIN_URL=${APISIX_ADMIN_URL:-http://apisix:9180}
-      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY}
+      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:?APISIX_ADMIN_KEY is required}
       - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
       - KEYCLOAK_ISSUER_URL=${KEYCLOAK_ISSUER_URL:-}
       - KEYCLOAK_JWKS_URL=${KEYCLOAK_JWKS_URL:-}
       - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
@@ -127,7 +127,7 @@ services:
       - KEYCLOAK_URL=${KEYCLOAK_URL:-}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-apihub}
       - KEYCLOAK_SERVICE_CLIENT_ID=${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}
-      - KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:-}
+      - KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:?KEYCLOAK_SERVICE_CLIENT_SECRET is required}
     depends_on:
       keycloak:
         condition: service_healthy
@@ -167,7 +167,7 @@ services:
     environment:
       - POSTGRES_DB=litellm
       - POSTGRES_USER=litellm
-      - POSTGRES_PASSWORD=${LITELLM_DB_PASSWORD:-litellm}
+      - POSTGRES_PASSWORD=${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}
     volumes:
       - litellm-db-data:/var/lib/postgresql/data
     healthcheck:
@@ -191,8 +191,8 @@ services:
     ports:
       - "${LITELLM_PORT:-4000}:4000"
     environment:
-      - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:-litellm}@litellm-db:5432/litellm
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}@litellm-db:5432/litellm
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
       - LITELLM_LOG=ERROR
       - STORE_MODEL_IN_DB=true
       - FORWARDED_ALLOW_IPS=*
