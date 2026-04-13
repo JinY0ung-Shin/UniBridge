@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/api-keys", tags=["API Keys"])
 
 MASK_KEEP = 4
+DENY_ALL_CONSUMER = "__deny_all__"
 
 
 def _mask_key(value: str) -> str:
@@ -65,6 +66,8 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
             detail=f"Failed to list APISIX routes for consumer-restriction sync: {exc}",
         )
 
+    allowed_route_ids = set(allowed_routes)
+
     # Collect changes needed: [(route_id, old_body, new_body)]
     changes: list[tuple[str, dict, dict]] = []
     for route in result.get("items", []):
@@ -75,21 +78,24 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
         if "key-auth" not in plugins:
             continue
 
-        old_body = {k: v for k, v in route.items() if k not in ("id", "create_time", "update_time")}
+        old_body = {
+            k: v for k, v in route.items() if k not in ("id", "create_time", "update_time")
+        }
 
         new_plugins = dict(plugins)
         cr = new_plugins.get("consumer-restriction", {})
         whitelist = set(cr.get("whitelist", []))
+        whitelist.discard(DENY_ALL_CONSUMER)
 
-        if route_id in allowed_routes:
+        if route_id in allowed_route_ids:
             whitelist.add(consumer_name)
         else:
             whitelist.discard(consumer_name)
 
-        if whitelist:
-            new_plugins["consumer-restriction"] = {"whitelist": sorted(whitelist)}
-        else:
-            new_plugins.pop("consumer-restriction", None)
+        if not whitelist:
+            whitelist.add(DENY_ALL_CONSUMER)
+
+        new_plugins["consumer-restriction"] = {"whitelist": sorted(whitelist)}
 
         new_body = dict(old_body)
         new_body["plugins"] = new_plugins
@@ -107,12 +113,41 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
                 try:
                     await apisix_client.put_resource("routes", rb_route_id, rb_old_body)
                 except Exception:
-                    logger.error("Rollback failed for route %s during consumer-restriction sync", rb_route_id)
+                    logger.error(
+                        "Rollback failed for route %s during consumer-restriction sync",
+                        rb_route_id,
+                    )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Failed to update consumer-restriction on route {route_id}: {exc}. "
-                       f"Rolled back {len(applied)} previously applied change(s).",
+                f"Rolled back {len(applied)} previously applied change(s).",
             )
+
+
+async def sync_all_consumer_route_restrictions(db: AsyncSession) -> None:
+    result = await db.execute(
+        select(ApiKeyAccess).order_by(ApiKeyAccess.consumer_name.asc())
+    )
+    for access in result.scalars().all():
+        try:
+            allowed_routes = json.loads(access.allowed_routes) if access.allowed_routes else []
+        except json.JSONDecodeError:
+            logger.warning(
+                "Skipping malformed allowed_routes for consumer '%s' during startup replay",
+                access.consumer_name,
+            )
+            continue
+
+        if not isinstance(allowed_routes, list) or any(
+            not isinstance(route_id, str) for route_id in allowed_routes
+        ):
+            logger.warning(
+                "Skipping malformed allowed_routes for consumer '%s' during startup replay",
+                access.consumer_name,
+            )
+            continue
+
+        await _sync_consumer_restriction(allowed_routes, access.consumer_name)
 
 
 @router.get("", response_model=list[ApiKeyResponse])
@@ -141,6 +176,12 @@ async def create_api_key(
     _admin: CurrentUser = Depends(require_permission("apikeys.write")),
     db: AsyncSession = Depends(get_db),
 ) -> ApiKeyResponse:
+    if body.name == DENY_ALL_CONSUMER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"API key name '{DENY_ALL_CONSUMER}' is reserved",
+        )
+
     existing = await db.execute(
         select(ApiKeyAccess).where(ApiKeyAccess.consumer_name == body.name)
     )
@@ -160,15 +201,14 @@ async def create_api_key(
 
     # Sync consumer-restriction BEFORE committing DB — abort on failure
     # If sync fails, clean up the APISIX consumer we just created
-    if body.allowed_routes:
+    try:
+        await _sync_consumer_restriction(body.allowed_routes, body.name)
+    except HTTPException:
         try:
-            await _sync_consumer_restriction(body.allowed_routes, body.name)
-        except HTTPException:
-            try:
-                await apisix_client.delete_resource("consumers", body.name)
-            except Exception:
-                logger.error("Failed to clean up APISIX consumer '%s' after sync failure", body.name)
-            raise
+            await apisix_client.delete_resource("consumers", body.name)
+        except Exception:
+            logger.error("Failed to clean up APISIX consumer '%s' after sync failure", body.name)
+        raise
 
     access = ApiKeyAccess(
         consumer_name=body.name,
