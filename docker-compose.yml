@@ -174,18 +174,10 @@ services:
     command:
       - |
         if [ -z "$$PROXY_BASE_URL" ]; then
-          if [ "$$SSL_VERIFY" = "true" ]; then
-            export PROXY_BASE_URL="https://$$HOST_IP:$$LITELLM_PORT"
-          else
-            export PROXY_BASE_URL="http://$$HOST_IP:$$LITELLM_PORT"
-          fi
+          export PROXY_BASE_URL="https://$$HOST_IP:$$LITELLM_PORT"
         fi
-        if [ "$$SSL_VERIFY" = "true" ]; then
-          exec litellm --config /app/config.yaml --port 4000 \
-            --ssl_certfile_path /etc/ssl/tls.crt --ssl_keyfile_path /etc/ssl/tls.key
-        else
-          exec litellm --config /app/config.yaml --port 4000
-        fi
+        exec litellm --config /app/config.yaml --port 4000 \
+          --ssl_certfile_path /etc/ssl/tls.crt --ssl_keyfile_path /etc/ssl/tls.key
     ports:
       - "${LITELLM_PORT:-4000}:4000"
     environment:
@@ -206,7 +198,7 @@ services:
       litellm-db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,ssl,os;s='https' if os.getenv('SSL_VERIFY')=='true' else 'http';c=ssl._create_unverified_context() if s=='https' else None;urllib.request.urlopen(f'{s}://localhost:4000/health/liveliness',context=c)\""]
+      test: ["CMD-SHELL", "python -c \"import ssl,urllib.request;urllib.request.urlopen('https://localhost:4000/health/liveliness', context=ssl._create_unverified_context())\""]
       interval: 10s
       timeout: 5s
       retries: 5

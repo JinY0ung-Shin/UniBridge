@@ -20,7 +20,7 @@ vi.mock('../api/client', () => ({
 }));
 
 import { screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   getLlmByModel,
@@ -30,7 +30,6 @@ import {
   getLlmTokens,
   getLlmTopKeys,
 } from '../api/client';
-import LlmMonitoring from '../pages/LlmMonitoring';
 import { renderWithProviders } from './helpers';
 
 const mockedGetLlmSummary = vi.mocked(getLlmSummary);
@@ -55,9 +54,20 @@ describe('LlmMonitoring', () => {
     mockedGetLlmTopKeys.mockResolvedValue([]);
     mockedGetLlmErrors.mockResolvedValue([]);
     mockedGetLlmRequestsTotal.mockResolvedValue([]);
+    window.__RUNTIME_CONFIG__ = {
+      ...window.__RUNTIME_CONFIG__,
+      LITELLM_ADMIN_URL: 'https://localhost:4000/ui',
+    };
+  });
+
+  afterEach(() => {
+    delete window.__RUNTIME_CONFIG__;
+    vi.resetModules();
   });
 
   it('links LiteLLM Admin to the separate-origin UI path', async () => {
+    const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
+
     renderWithProviders(<LlmMonitoring />);
 
     await waitFor(() => {
@@ -66,7 +76,7 @@ describe('LlmMonitoring', () => {
 
     expect(screen.getByRole('link', { name: /LiteLLM Admin/i })).toHaveAttribute(
       'href',
-      'http://localhost:4000/ui',
+      'https://localhost:4000/ui',
     );
   });
 });
