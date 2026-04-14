@@ -97,7 +97,8 @@
     "noConnections": "No connections yet",
     "noConnectionsDesc": "Click \"Add Connection\" to register your first database.",
     "deleteConfirm": "Delete database \"{{alias}}\"? This action cannot be undone.",
-    "testFailed": "Connection test failed"
+    "testFailed": "Connection test failed",
+    "protocol": "Protocol"
   },
   "permissions": {
     "title": "Permissions",

@@ -97,7 +97,8 @@
     "noConnections": "연결이 없습니다",
     "noConnectionsDesc": "\"연결 추가\"를 클릭하여 첫 번째 데이터베이스를 등록하세요.",
     "deleteConfirm": "데이터베이스 \"{{alias}}\"를 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
-    "testFailed": "연결 테스트 실패"
+    "testFailed": "연결 테스트 실패",
+    "protocol": "프로토콜"
   },
   "permissions": {
     "title": "권한",

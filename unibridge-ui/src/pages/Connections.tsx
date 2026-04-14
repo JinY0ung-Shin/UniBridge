@@ -13,6 +13,12 @@ import {
 import { useToast } from '../components/ToastContext';
 import './Connections.css';
 
+const DEFAULT_PORTS: Record<string, number> = {
+  postgres: 5432,
+  mssql: 1433,
+  clickhouse: 8123,
+};
+
 const emptyForm: DatabaseConfig = {
   alias: '',
   db_type: 'postgres',
@@ -280,10 +286,20 @@ function Connections() {
                   <label>{t('common.type')}</label>
                   <select
                     value={form.db_type}
-                    onChange={(e) => updateField('db_type', e.target.value as 'postgres' | 'mssql')}
+                    onChange={(e) => {
+                      const newType = e.target.value as DatabaseConfig['db_type'];
+                      setForm((prev) => ({
+                        ...prev,
+                        db_type: newType,
+                        port: DEFAULT_PORTS[newType] ?? prev.port,
+                        protocol: newType === 'clickhouse' ? 'http' : null,
+                        secure: newType === 'clickhouse' ? false : null,
+                      }));
+                    }}
                   >
                     <option value="postgres">PostgreSQL</option>
                     <option value="mssql">MS SQL</option>
+                    <option value="clickhouse">ClickHouse</option>
                   </select>
                 </div>
                 <div className="form-group">
@@ -334,26 +350,51 @@ function Connections() {
                     placeholder="********"
                   />
                 </div>
-                <div className="form-group">
-                  <label>{t('connections.poolSize')}</label>
-                  <input
-                    type="number"
-                    value={form.pool_size}
-                    onChange={(e) => updateField('pool_size', Number(e.target.value))}
-                    min={1}
-                    max={100}
-                  />
-                </div>
-                <div className="form-group">
-                  <label>{t('connections.maxOverflow')}</label>
-                  <input
-                    type="number"
-                    value={form.max_overflow}
-                    onChange={(e) => updateField('max_overflow', Number(e.target.value))}
-                    min={0}
-                    max={100}
-                  />
-                </div>
+                {form.db_type === 'clickhouse' && (
+                  <div className="form-group">
+                    <label>{t('connections.protocol')}</label>
+                    <select
+                      value={form.protocol ?? 'http'}
+                      onChange={(e) => {
+                        const proto = e.target.value as 'http' | 'https';
+                        const isSecure = proto === 'https';
+                        setForm((prev) => ({
+                          ...prev,
+                          protocol: proto,
+                          secure: isSecure,
+                          port: isSecure ? 8443 : 8123,
+                        }));
+                      }}
+                    >
+                      <option value="http">HTTP</option>
+                      <option value="https">HTTPS</option>
+                    </select>
+                  </div>
+                )}
+                {form.db_type !== 'clickhouse' && (
+                  <>
+                    <div className="form-group">
+                      <label>{t('connections.poolSize')}</label>
+                      <input
+                        type="number"
+                        value={form.pool_size}
+                        onChange={(e) => updateField('pool_size', Number(e.target.value))}
+                        min={1}
+                        max={100}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>{t('connections.maxOverflow')}</label>
+                      <input
+                        type="number"
+                        value={form.max_overflow}
+                        onChange={(e) => updateField('max_overflow', Number(e.target.value))}
+                        min={0}
+                        max={100}
+                      />
+                    </div>
+                  </>
+                )}
               </div>
 
               {(createMutation.isError || updateMutation.isError) && (

@@ -39,12 +39,14 @@ client.interceptors.response.use(
 
 export interface DatabaseConfig {
   alias: string;
-  db_type: 'postgres' | 'mssql';
+  db_type: 'postgres' | 'mssql' | 'clickhouse';
   host: string;
   port: number;
   database: string;
   username: string;
   password?: string;
+  protocol?: 'http' | 'https' | null;
+  secure?: boolean | null;
   pool_size: number;
   max_overflow: number;
   query_timeout: number;
