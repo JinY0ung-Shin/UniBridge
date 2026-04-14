@@ -12,6 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.config import settings
 from app.schemas import QueryResponse
 
+# Re-exported for callers that import from this module
+__all__ = [
+    "check_multi_statement",
+    "check_permission",
+    "detect_statement_type",
+    "execute_clickhouse_query",
+    "execute_query",
+]
+
 logger = logging.getLogger(__name__)
 
 # Pattern to detect the primary SQL statement type
@@ -321,6 +330,88 @@ async def execute_query(
     try:
         return await asyncio.wait_for(
             _execute(engine, sql, params, effective_limit, db_type),
+            timeout=effective_timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Query timed out after %ds", effective_timeout)
+        raise
+
+
+# ── ClickHouse execution path ────────────────────────────────────────────────
+
+
+async def _execute_clickhouse(
+    client: Any,
+    sql: str,
+    params: dict[str, Any] | None,
+    limit: int,
+) -> QueryResponse:
+    """Core execution logic for ClickHouse via clickhouse-connect."""
+    start = time.monotonic()
+
+    statement_type = detect_statement_type(sql)
+    is_select = statement_type in ("select", "explain")
+
+    if is_select:
+        ch_settings: dict[str, Any] = {}
+        if limit:
+            ch_settings["max_result_rows"] = limit + 1
+            ch_settings["result_overflow_mode"] = "break"
+        result = await asyncio.to_thread(
+            client.query, sql, parameters=params or {},
+            settings=ch_settings,
+        )
+        columns = list(result.column_names)
+        all_rows = result.result_rows
+
+        truncated = False
+        if limit and len(all_rows) > limit:
+            all_rows = all_rows[:limit]
+            truncated = True
+
+        rows = [list(row) for row in all_rows]
+        row_count = len(rows)
+    else:
+        await asyncio.to_thread(client.command, sql, parameters=params or {})
+        columns = []
+        rows = []
+        row_count = 0
+        truncated = False
+
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+
+    return QueryResponse(
+        columns=columns,
+        rows=rows,
+        row_count=row_count,
+        truncated=truncated,
+        elapsed_ms=elapsed_ms,
+    )
+
+
+async def execute_clickhouse_query(
+    client: Any,
+    sql: str,
+    params: dict[str, Any] | None = None,
+    limit: int | None = None,
+    timeout: int | None = None,
+) -> QueryResponse:
+    """Execute a ClickHouse query with timeout and row limit.
+
+    Mirrors ``execute_query`` but uses a clickhouse-connect client
+    instead of a SQLAlchemy engine.
+    """
+    effective_limit = limit or settings.DEFAULT_ROW_LIMIT
+    effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
+
+    if check_multi_statement(sql):
+        raise ValueError(
+            "Multi-statement SQL is not allowed. Remove semicolons or contact an admin."
+        )
+
+    try:
+        return await asyncio.wait_for(
+            _execute_clickhouse(client, sql, params, effective_limit),
             timeout=effective_timeout,
         )
     except asyncio.TimeoutError:

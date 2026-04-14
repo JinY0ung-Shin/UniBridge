@@ -1,7 +1,8 @@
 import os
 from collections.abc import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import inspect, text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.models import Base
@@ -22,10 +23,36 @@ engine = create_async_engine(
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+async def ensure_db_connection_columns(target_engine: AsyncEngine | None = None) -> None:
+    engine_to_use = target_engine or engine
+
+    async with engine_to_use.begin() as conn:
+        existing_tables = await conn.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+        if "db_connections" not in existing_tables:
+            return
+
+        existing_columns = await conn.run_sync(
+            lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("db_connections")}
+        )
+
+        statements: list[str] = []
+        if "protocol" not in existing_columns:
+            statements.append("ALTER TABLE db_connections ADD COLUMN protocol VARCHAR(16)")
+        if "secure" not in existing_columns:
+            secure_type = "BIT" if conn.dialect.name == "mssql" else "BOOLEAN"
+            statements.append(f"ALTER TABLE db_connections ADD COLUMN secure {secure_type}")
+
+        for statement in statements:
+            await conn.execute(text(statement))
+
+
 async def init_db() -> None:
     """Create all meta-DB tables if they don't exist, then seed default roles."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await ensure_db_connection_columns()
     await _seed_roles()
 
 

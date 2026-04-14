@@ -15,7 +15,7 @@ from app.schemas import DBConnectionResponse, HealthResponse, QueryRequest, Quer
 from app.middleware.rate_limiter import rate_limiter
 from app.services.audit import log_query
 from app.services.connection_manager import connection_manager
-from app.services.query_executor import check_permission, detect_statement_type, execute_query
+from app.services.query_executor import check_permission, detect_statement_type, execute_clickhouse_query, execute_query
 from app.services.settings_manager import settings_manager
 from app.services.sql_validator import validate_sql
 from app.services.table_access import check_table_access, extract_tables
@@ -52,15 +52,12 @@ async def execute(
         username = user.username
 
     # 1. Verify the database alias exists
-    try:
-        engine = connection_manager.get_engine(req.database)
-    except KeyError:
+    db_type = connection_manager.get_db_type(req.database)
+    if db_type == "unknown":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Database '{req.database}' is not registered or not connected",
         )
-
-    db_type = connection_manager.get_db_type(req.database)
 
     # 2. Check per-database permissions
     perm = None
@@ -133,10 +130,18 @@ async def execute(
 
     # 4. Execute the query
     try:
-        response = await execute_query(
-            engine=engine, sql=req.sql, params=req.params,
-            limit=req.limit, timeout=req.timeout, db_type=db_type,
-        )
+        if db_type == "clickhouse":
+            ch_client = connection_manager.get_clickhouse_client(req.database)
+            response = await execute_clickhouse_query(
+                client=ch_client, sql=req.sql, params=req.params,
+                limit=req.limit, timeout=req.timeout,
+            )
+        else:
+            engine = connection_manager.get_engine(req.database)
+            response = await execute_query(
+                engine=engine, sql=req.sql, params=req.params,
+                limit=req.limit, timeout=req.timeout, db_type=db_type,
+            )
     except asyncio.TimeoutError:
         try:
             await log_query(db, user=username, database_alias=req.database,
@@ -208,6 +213,8 @@ async def list_databases(
                 port=conn.port,
                 database=conn.database,
                 username=conn.username,
+                protocol=conn.protocol,
+                secure=conn.secure,
                 pool_size=conn.pool_size if conn.pool_size is not None else 5,
                 max_overflow=conn.max_overflow if conn.max_overflow is not None else 3,
                 query_timeout=conn.query_timeout if conn.query_timeout is not None else 30,

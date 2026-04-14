@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 from urllib.parse import quote_plus
@@ -71,21 +72,27 @@ def _build_url(conn: DBConnection, password: str) -> str:
 
 
 class ConnectionManager:
-    """Singleton that manages SQLAlchemy async engine pools per database alias."""
+    """Singleton that manages database connection pools per alias.
+
+    SQLAlchemy async engines are used for postgres/mssql.
+    clickhouse-connect clients are used for ClickHouse.
+    """
 
     _instance: ConnectionManager | None = None
     _engines: dict[str, AsyncEngine]
+    _ch_clients: dict[str, Any]
     _db_types: dict[str, str]
 
     def __new__(cls) -> ConnectionManager:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._engines = {}
+            cls._instance._ch_clients = {}
             cls._instance._db_types = {}
         return cls._instance
 
     async def initialize(self, connections: list[DBConnection]) -> None:
-        """Create engines for all saved connections on startup."""
+        """Create engines/clients for all saved connections on startup."""
         validate_encryption_key()
         for conn in connections:
             try:
@@ -94,57 +101,102 @@ class ConnectionManager:
                 logger.exception("Failed to initialize connection '%s'", conn.alias)
 
     async def add_connection(self, conn: DBConnection) -> None:
-        """Create an async engine and register it under the given alias."""
-        if conn.alias in self._engines:
+        """Create an engine/client and register it under the given alias."""
+        if conn.alias in self._engines or conn.alias in self._ch_clients:
             await self.remove_connection(conn.alias)
 
         password = decrypt_password(conn.password_encrypted)
-        url = _build_url(conn, password)
 
-        engine_kwargs: dict[str, Any] = {"echo": False}
-        # SQLite (used for meta-DB) doesn't support pool_size, but target DBs always
-        # use asyncpg or aioodbc which do.
-        if conn.db_type in ("postgres", "mssql"):
-            engine_kwargs["pool_size"] = conn.pool_size if conn.pool_size is not None else 5
-            engine_kwargs["max_overflow"] = conn.max_overflow if conn.max_overflow is not None else 3
+        if conn.db_type == "clickhouse":
+            import clickhouse_connect
 
-        engine = create_async_engine(url, **engine_kwargs)
-        self._engines[conn.alias] = engine
+            query_timeout = conn.query_timeout if conn.query_timeout is not None else 30
+            client = await asyncio.to_thread(
+                clickhouse_connect.get_client,
+                host=conn.host,
+                port=conn.port,
+                username=conn.username,
+                password=password,
+                database=conn.database,
+                interface=conn.protocol or "http",
+                secure=conn.secure if conn.secure is not None else False,
+                send_receive_timeout=query_timeout,
+            )
+            self._ch_clients[conn.alias] = client
+        else:
+            url = _build_url(conn, password)
+            engine_kwargs: dict[str, Any] = {"echo": False}
+            if conn.db_type in ("postgres", "mssql"):
+                engine_kwargs["pool_size"] = conn.pool_size if conn.pool_size is not None else 5
+                engine_kwargs["max_overflow"] = conn.max_overflow if conn.max_overflow is not None else 3
+            engine = create_async_engine(url, **engine_kwargs)
+            self._engines[conn.alias] = engine
+
         self._db_types[conn.alias] = conn.db_type
-        logger.info("Engine created for alias '%s' (%s)", conn.alias, conn.db_type)
+        logger.info("Connection created for alias '%s' (%s)", conn.alias, conn.db_type)
 
     async def remove_connection(self, alias: str) -> None:
-        """Dispose of the engine for the given alias and remove it."""
+        """Dispose of the connection for the given alias and remove it."""
         engine = self._engines.pop(alias, None)
+        client = self._ch_clients.pop(alias, None)
         self._db_types.pop(alias, None)
         if engine is not None:
             await engine.dispose()
             logger.info("Engine disposed for alias '%s'", alias)
+        if client is not None:
+            await asyncio.to_thread(client.close)
+            logger.info("ClickHouse client closed for alias '%s'", alias)
 
     def get_engine(self, alias: str) -> AsyncEngine:
-        """Return the engine for a given alias, or raise KeyError."""
+        """Return the SQLAlchemy engine for a given alias, or raise KeyError."""
         try:
             return self._engines[alias]
         except KeyError:
             raise KeyError(f"No engine registered for alias '{alias}'")
 
+    def get_clickhouse_client(self, alias: str) -> Any:
+        """Return the ClickHouse client for a given alias, or raise KeyError."""
+        try:
+            return self._ch_clients[alias]
+        except KeyError:
+            raise KeyError(f"No ClickHouse client registered for alias '{alias}'")
+
     def get_db_type(self, alias: str) -> str:
         """Return the database type for a given alias."""
         return self._db_types.get(alias, "unknown")
 
+    def has_connection(self, alias: str) -> bool:
+        """Return True if the alias has a registered connection."""
+        return alias in self._engines or alias in self._ch_clients
+
     async def test_connection(self, alias: str) -> tuple[bool, str]:
-        """Test connectivity by running SELECT 1. Returns (ok, message)."""
+        """Test connectivity. Returns (ok, message)."""
+        db_type = self._db_types.get(alias)
         try:
-            engine = self.get_engine(alias)
-            async with engine.connect() as conn:
-                await conn.execute(text("SELECT 1"))
-            return True, "Connection successful"
+            if db_type == "clickhouse":
+                client = self.get_clickhouse_client(alias)
+                ok = await asyncio.to_thread(client.ping)
+                if ok:
+                    return True, "Connection successful"
+                return False, "Ping failed"
+            else:
+                engine = self.get_engine(alias)
+                async with engine.connect() as conn:
+                    await conn.execute(text("SELECT 1"))
+                return True, "Connection successful"
         except Exception as exc:
             logger.exception("Connection test failed for '%s'", alias)
             return False, str(exc)
 
     def get_status(self, alias: str) -> dict[str, Any]:
-        """Return pool status info for the given alias."""
+        """Return status info for the given alias."""
+        if alias in self._ch_clients:
+            return {
+                "alias": alias,
+                "status": "registered",
+                "driver": "clickhouse-connect",
+            }
+
         engine = self._engines.get(alias)
         if engine is None:
             return {"alias": alias, "status": "not_registered"}
@@ -161,11 +213,11 @@ class ConnectionManager:
 
     def list_aliases(self) -> list[str]:
         """Return all registered aliases."""
-        return list(self._engines.keys())
+        return list(self._engines.keys()) + list(self._ch_clients.keys())
 
     async def dispose_all(self) -> None:
-        """Dispose of all engines. Called on application shutdown."""
-        for alias in list(self._engines.keys()):
+        """Dispose of all connections. Called on application shutdown."""
+        for alias in list(self._engines.keys()) + list(self._ch_clients.keys()):
             await self.remove_connection(alias)
 
 

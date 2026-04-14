@@ -380,6 +380,293 @@ class TestBuildUrl:
         with pytest.raises(ValueError, match="Unsupported db_type: oracle"):
             _build_url(conn, "pass")
 
+    def test_clickhouse_not_built_via_build_url(self):
+        """ClickHouse uses clickhouse-connect, not SQLAlchemy URLs."""
+        conn = self._make_conn("clickhouse")
+        with pytest.raises(ValueError, match="Unsupported db_type: clickhouse"):
+            _build_url(conn, "pass")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# connection_manager: ClickHouse client lifecycle
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from unittest.mock import MagicMock, patch as _patch
+
+from app.services.connection_manager import ConnectionManager
+
+
+def _make_ch_conn(**overrides) -> DBConnection:
+    """Create a ClickHouse DBConnection for testing."""
+    defaults = {
+        "alias": "ch_test",
+        "db_type": "clickhouse",
+        "host": "ch.example.com",
+        "port": 8123,
+        "database": "analytics",
+        "username": "default",
+        "password_encrypted": encrypt_password("secret"),
+        "protocol": "http",
+        "secure": False,
+    }
+    defaults.update(overrides)
+    return DBConnection(**defaults)
+
+
+class TestConnectionManagerClickHouse:
+    """Tests for ConnectionManager ClickHouse client support."""
+
+    def _fresh_manager(self) -> ConnectionManager:
+        """Create a fresh ConnectionManager (bypass singleton)."""
+        mgr = object.__new__(ConnectionManager)
+        mgr._engines = {}
+        mgr._ch_clients = {}
+        mgr._db_types = {}
+        return mgr
+
+    @pytest.mark.asyncio
+    async def test_add_clickhouse_connection(self):
+        mgr = self._fresh_manager()
+        mock_client = MagicMock()
+        conn = _make_ch_conn()
+
+        with _patch("clickhouse_connect.get_client", return_value=mock_client):
+            await mgr.add_connection(conn)
+
+        assert "ch_test" in mgr._ch_clients
+        assert mgr._ch_clients["ch_test"] is mock_client
+        assert mgr.get_db_type("ch_test") == "clickhouse"
+        assert "ch_test" not in mgr._engines
+
+    @pytest.mark.asyncio
+    async def test_get_clickhouse_client(self):
+        mgr = self._fresh_manager()
+        mock_client = MagicMock()
+        conn = _make_ch_conn()
+
+        with _patch("clickhouse_connect.get_client", return_value=mock_client):
+            await mgr.add_connection(conn)
+
+        assert mgr.get_clickhouse_client("ch_test") is mock_client
+
+    @pytest.mark.asyncio
+    async def test_get_clickhouse_client_missing_raises(self):
+        mgr = self._fresh_manager()
+        with pytest.raises(KeyError, match="No ClickHouse client"):
+            mgr.get_clickhouse_client("nonexistent")
+
+    @pytest.mark.asyncio
+    async def test_has_connection_clickhouse(self):
+        mgr = self._fresh_manager()
+        mock_client = MagicMock()
+        conn = _make_ch_conn()
+
+        assert mgr.has_connection("ch_test") is False
+        with _patch("clickhouse_connect.get_client", return_value=mock_client):
+            await mgr.add_connection(conn)
+        assert mgr.has_connection("ch_test") is True
+
+    @pytest.mark.asyncio
+    async def test_remove_clickhouse_connection(self):
+        mgr = self._fresh_manager()
+        mock_client = MagicMock()
+        conn = _make_ch_conn()
+
+        with _patch("clickhouse_connect.get_client", return_value=mock_client):
+            await mgr.add_connection(conn)
+
+        await mgr.remove_connection("ch_test")
+
+        assert "ch_test" not in mgr._ch_clients
+        assert mgr.get_db_type("ch_test") == "unknown"
+        mock_client.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_test_connection_clickhouse_success(self):
+        mgr = self._fresh_manager()
+        mock_client = MagicMock()
+        mock_client.ping.return_value = True
+        conn = _make_ch_conn()
+
+        with _patch("clickhouse_connect.get_client", return_value=mock_client):
+            await mgr.add_connection(conn)
+
+        ok, msg = await mgr.test_connection("ch_test")
+        assert ok is True
+        assert msg == "Connection successful"
+
+    @pytest.mark.asyncio
+    async def test_test_connection_clickhouse_failure(self):
+        mgr = self._fresh_manager()
+        mock_client = MagicMock()
+        mock_client.ping.return_value = False
+        conn = _make_ch_conn()
+
+        with _patch("clickhouse_connect.get_client", return_value=mock_client):
+            await mgr.add_connection(conn)
+
+        ok, msg = await mgr.test_connection("ch_test")
+        assert ok is False
+        assert msg == "Ping failed"
+
+    @pytest.mark.asyncio
+    async def test_get_status_clickhouse(self):
+        mgr = self._fresh_manager()
+        mock_client = MagicMock()
+        conn = _make_ch_conn()
+
+        with _patch("clickhouse_connect.get_client", return_value=mock_client):
+            await mgr.add_connection(conn)
+
+        status = mgr.get_status("ch_test")
+        assert status["status"] == "registered"
+        assert status["driver"] == "clickhouse-connect"
+
+    @pytest.mark.asyncio
+    async def test_list_aliases_includes_clickhouse(self):
+        mgr = self._fresh_manager()
+        mock_client = MagicMock()
+        conn = _make_ch_conn()
+
+        with _patch("clickhouse_connect.get_client", return_value=mock_client):
+            await mgr.add_connection(conn)
+
+        assert "ch_test" in mgr.list_aliases()
+
+    @pytest.mark.asyncio
+    async def test_dispose_all_includes_clickhouse(self):
+        mgr = self._fresh_manager()
+        mock_client = MagicMock()
+        conn = _make_ch_conn()
+
+        with _patch("clickhouse_connect.get_client", return_value=mock_client):
+            await mgr.add_connection(conn)
+
+        await mgr.dispose_all()
+        assert len(mgr._ch_clients) == 0
+        assert len(mgr._db_types) == 0
+        mock_client.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_add_replaces_existing_clickhouse(self):
+        mgr = self._fresh_manager()
+        mock_client1 = MagicMock()
+        mock_client2 = MagicMock()
+        conn = _make_ch_conn()
+
+        with _patch("clickhouse_connect.get_client", return_value=mock_client1):
+            await mgr.add_connection(conn)
+        with _patch("clickhouse_connect.get_client", return_value=mock_client2):
+            await mgr.add_connection(conn)
+
+        assert mgr._ch_clients["ch_test"] is mock_client2
+        mock_client1.close.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# query_executor: ClickHouse execution
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from app.services.query_executor import execute_clickhouse_query
+
+
+class TestExecuteClickHouseQuery:
+    """Tests for the ClickHouse query execution path."""
+
+    def _make_query_result(self, column_names, result_rows):
+        """Create a mock ClickHouse QueryResult."""
+        result = MagicMock()
+        result.column_names = column_names
+        result.result_rows = result_rows
+        return result
+
+    @pytest.mark.asyncio
+    async def test_select_query_returns_columns_and_rows(self):
+        mock_client = MagicMock()
+        mock_client.query.return_value = self._make_query_result(
+            ["id", "name"], [(1, "Alice"), (2, "Bob")],
+        )
+        resp = await execute_clickhouse_query(mock_client, "SELECT id, name FROM users")
+        assert resp.columns == ["id", "name"]
+        assert resp.rows == [[1, "Alice"], [2, "Bob"]]
+        assert resp.row_count == 2
+        assert resp.truncated is False
+
+    @pytest.mark.asyncio
+    async def test_select_query_truncation(self):
+        mock_client = MagicMock()
+        rows = [(i,) for i in range(12)]
+        mock_client.query.return_value = self._make_query_result(["id"], rows)
+        resp = await execute_clickhouse_query(mock_client, "SELECT id FROM t", limit=10)
+        assert resp.row_count == 10
+        assert resp.truncated is True
+
+    @pytest.mark.asyncio
+    async def test_dml_command(self):
+        mock_client = MagicMock()
+        mock_client.command.return_value = ""
+        resp = await execute_clickhouse_query(mock_client, "INSERT INTO t VALUES (1, 'a')")
+        assert resp.columns == []
+        assert resp.rows == []
+        assert resp.row_count == 0
+        mock_client.command.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_ddl_command(self):
+        mock_client = MagicMock()
+        mock_client.command.return_value = ""
+        resp = await execute_clickhouse_query(
+            mock_client, "CREATE TABLE t (id UInt64) ENGINE = MergeTree() ORDER BY id"
+        )
+        assert resp.columns == []
+        assert resp.row_count == 0
+
+    @pytest.mark.asyncio
+    async def test_multi_statement_rejected(self):
+        mock_client = MagicMock()
+        with pytest.raises(ValueError, match="Multi-statement SQL"):
+            await execute_clickhouse_query(mock_client, "SELECT 1; SELECT 2")
+
+    @pytest.mark.asyncio
+    async def test_elapsed_ms_populated(self):
+        mock_client = MagicMock()
+        mock_client.query.return_value = self._make_query_result(["x"], [(1,)])
+        resp = await execute_clickhouse_query(mock_client, "SELECT 1")
+        assert resp.elapsed_ms >= 0
+
+    @pytest.mark.asyncio
+    async def test_explain_treated_as_select(self):
+        mock_client = MagicMock()
+        mock_client.query.return_value = self._make_query_result(
+            ["explain"], [("ReadFromStorage",)],
+        )
+        resp = await execute_clickhouse_query(mock_client, "EXPLAIN SELECT 1")
+        assert resp.columns == ["explain"]
+        assert resp.rows == [["ReadFromStorage"]]
+        mock_client.query.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_params_forwarded(self):
+        mock_client = MagicMock()
+        mock_client.query.return_value = self._make_query_result(["x"], [(1,)])
+        params = {"id": 42}
+        await execute_clickhouse_query(mock_client, "SELECT * FROM t WHERE id = {id:UInt64}", params=params)
+        call_args = mock_client.query.call_args
+        assert call_args[1]["parameters"] == params or call_args[0][1] == params
+
+    @pytest.mark.asyncio
+    async def test_timeout_raises(self):
+        import asyncio as _asyncio
+        import time
+
+        def slow_query(*args, **kwargs):
+            time.sleep(10)
+
+        mock_client = MagicMock()
+        mock_client.query = slow_query
+        with pytest.raises(_asyncio.TimeoutError):
+            await execute_clickhouse_query(mock_client, "SELECT 1", timeout=1)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # apisix_client
