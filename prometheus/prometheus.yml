@@ -9,6 +9,9 @@ scrape_configs:
       - targets: ['apisix:9091']
 
   - job_name: 'litellm'
+    scheme: https
+    tls_config:
+      insecure_skip_verify: true
     static_configs:
       - targets: ['litellm:4000']
     metrics_path: '/metrics'
