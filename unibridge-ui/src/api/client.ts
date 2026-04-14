@@ -233,6 +233,7 @@ export interface GatewayRoute {
   strip_prefix?: boolean;
   service_key?: GatewayServiceKey | null;
   plugins?: Record<string, unknown>;
+  system?: boolean;
 }
 
 export interface GatewayUpstream {
@@ -240,6 +241,7 @@ export interface GatewayUpstream {
   name?: string;
   type: string;
   nodes: Record<string, number>;
+  system?: boolean;
 }
 
 export interface GatewayListResponse<T> {

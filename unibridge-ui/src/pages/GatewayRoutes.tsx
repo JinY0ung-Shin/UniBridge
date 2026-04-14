@@ -155,7 +155,7 @@ function GatewayRoutes() {
                 <tr key={route.id}>
                   <td className="cell-alias">
                     {route.name || '—'}
-                    {(route as any).system && <span className="badge badge-system">System</span>}
+                    {route.system && <span className="badge badge-system">System</span>}
                   </td>
                   <td className="cell-uri">{route.uri}</td>
                   <td>
@@ -194,7 +194,7 @@ function GatewayRoutes() {
                       >
                         {t('gatewayRoutes.curl')}
                       </button>
-                      {!(route as any).system && (
+                      {!route.system && (
                         <>
                           <button
                             className="btn btn-sm btn-secondary"
