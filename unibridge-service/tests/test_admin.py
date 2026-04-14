@@ -21,6 +21,18 @@ DB_PAYLOAD = {
     "password": "secret",
 }
 
+CLICKHOUSE_PAYLOAD = {
+    "alias": "analytics",
+    "db_type": "clickhouse",
+    "host": "clickhouse.example.com",
+    "port": 8123,
+    "database": "analytics",
+    "username": "default",
+    "password": "secret",
+    "protocol": "http",
+    "secure": False,
+}
+
 
 def _make_db_payload(**overrides) -> dict:
     """Return a fresh DB connection payload with optional overrides."""
@@ -45,14 +57,18 @@ def _cm_patch():
       - add_connection  (async, no-op)
       - remove_connection (async, no-op)
       - get_status  -> {"status": "registered"}
+      - get_db_type -> "postgres"
       - get_engine  -> MagicMock
+      - has_connection -> True
       - test_connection (async) -> True
     """
     mock_cm = MagicMock()
     mock_cm.add_connection = AsyncMock()
     mock_cm.remove_connection = AsyncMock()
     mock_cm.get_status = MagicMock(return_value={"status": "registered"})
+    mock_cm.get_db_type = MagicMock(return_value="postgres")
     mock_cm.get_engine = MagicMock(return_value=MagicMock())
+    mock_cm.has_connection = MagicMock(return_value=True)
     mock_cm.test_connection = AsyncMock(return_value=(True, "Connection successful"))
     return patch("app.routers.admin.connection_manager", mock_cm)
 
@@ -125,6 +141,64 @@ class TestCreateConnection:
         assert data["query_timeout"] == 60
 
     @pytest.mark.asyncio
+    async def test_create_clickhouse_connection_success(self, client, admin_token):
+        with _cm_patch():
+            resp = await client.post(
+                "/admin/query/databases",
+                json=CLICKHOUSE_PAYLOAD,
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["db_type"] == "clickhouse"
+        assert data["protocol"] == "http"
+        assert data["secure"] is False
+
+    @pytest.mark.asyncio
+    async def test_create_postgres_with_clickhouse_fields_returns_400(self, client, admin_token):
+        with _cm_patch():
+            resp = await client.post(
+                "/admin/query/databases",
+                json={**DB_PAYLOAD, "protocol": "https", "secure": True},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 400
+        assert "only valid for clickhouse" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_create_clickhouse_with_mismatched_protocol_and_secure_returns_400(
+        self, client, admin_token
+    ):
+        with _cm_patch():
+            resp = await client.post(
+                "/admin/query/databases",
+                json={**CLICKHOUSE_PAYLOAD, "protocol": "https", "secure": False},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 400
+        assert "same transport" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_create_clickhouse_missing_protocol_or_secure_returns_400(
+        self, client, admin_token
+    ):
+        with _cm_patch():
+            resp_missing_protocol = await client.post(
+                "/admin/query/databases",
+                json={key: value for key, value in CLICKHOUSE_PAYLOAD.items() if key != "protocol"},
+                headers=auth_header(admin_token),
+            )
+            resp_missing_secure = await client.post(
+                "/admin/query/databases",
+                json={key: value for key, value in CLICKHOUSE_PAYLOAD.items() if key != "secure"},
+                headers=auth_header(admin_token),
+            )
+        assert resp_missing_protocol.status_code == 400
+        assert resp_missing_secure.status_code == 400
+        assert "require both protocol and secure" in resp_missing_protocol.json()["detail"].lower()
+        assert "require both protocol and secure" in resp_missing_secure.json()["detail"].lower()
+
+    @pytest.mark.asyncio
     async def test_create_connection_engine_failure_still_creates(
         self, client, admin_token
     ):
@@ -175,6 +249,26 @@ class TestListConnections:
         aliases = {c["alias"] for c in resp.json()}
         assert aliases == {"db1", "db2"}
 
+    @pytest.mark.asyncio
+    async def test_list_clickhouse_protocol_and_secure_round_trip(self, client, admin_token):
+        with _cm_patch():
+            create_resp = await client.post(
+                "/admin/query/databases",
+                json={**CLICKHOUSE_PAYLOAD, "alias": "analytics_http"},
+                headers=auth_header(admin_token),
+            )
+            assert create_resp.status_code == 201
+
+            resp = await client.get(
+                "/admin/query/databases",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        analytics = next(c for c in resp.json() if c["alias"] == "analytics_http")
+        assert analytics["db_type"] == "clickhouse"
+        assert analytics["protocol"] == "http"
+        assert analytics["secure"] is False
+
 
 class TestGetConnection:
     """GET /admin/query/databases/{alias}"""
@@ -205,6 +299,26 @@ class TestGetConnection:
             )
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_get_clickhouse_protocol_and_secure_round_trip(self, client, admin_token):
+        with _cm_patch():
+            create_resp = await client.post(
+                "/admin/query/databases",
+                json={**CLICKHOUSE_PAYLOAD, "alias": "analytics_https", "protocol": "https", "secure": True, "port": 8443},
+                headers=auth_header(admin_token),
+            )
+            assert create_resp.status_code == 201
+
+            resp = await client.get(
+                "/admin/query/databases/analytics_https",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["db_type"] == "clickhouse"
+        assert data["protocol"] == "https"
+        assert data["secure"] is True
 
 
 class TestUpdateConnection:
@@ -260,6 +374,27 @@ class TestUpdateConnection:
         data = resp.json()
         assert "password" not in data
         assert "password_encrypted" not in data
+
+    @pytest.mark.asyncio
+    async def test_update_clickhouse_protocol_and_secure(self, client, admin_token):
+        with _cm_patch():
+            create_resp = await client.post(
+                "/admin/query/databases",
+                json=CLICKHOUSE_PAYLOAD,
+                headers=auth_header(admin_token),
+            )
+            assert create_resp.status_code == 201
+
+            resp = await client.put(
+                "/admin/query/databases/analytics",
+                json={"protocol": "https", "secure": True, "port": 8443},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["protocol"] == "https"
+        assert data["secure"] is True
+        assert data["port"] == 8443
 
 
 class TestDeleteConnection:
@@ -325,7 +460,7 @@ class TestTestConnection:
     @pytest.mark.asyncio
     async def test_connection_not_registered(self, client, admin_token):
         with _cm_patch() as ctx:
-            ctx.get_engine = MagicMock(side_effect=KeyError("nope"))
+            ctx.has_connection = MagicMock(return_value=False)
             resp = await client.post(
                 "/admin/query/databases/nope/test",
                 headers=auth_header(admin_token),
@@ -344,6 +479,42 @@ class TestTestConnection:
         assert resp.status_code == 200
         assert resp.json()["status"] == "error"
         assert "refused" in resp.json()["message"].lower()
+
+
+# ===========================================================================
+# List Tables (ClickHouse)
+# ===========================================================================
+
+
+class TestListTables:
+    """GET /admin/query/databases/{alias}/tables"""
+
+    @pytest.mark.asyncio
+    async def test_list_tables_clickhouse(self, client, admin_token):
+        mock_result = MagicMock()
+        mock_result.result_rows = [("events",), ("users",)]
+        mock_ch_client = MagicMock()
+        mock_ch_client.query.return_value = mock_result
+
+        with _cm_patch() as ctx:
+            ctx.get_db_type = MagicMock(return_value="clickhouse")
+            ctx.get_clickhouse_client = MagicMock(return_value=mock_ch_client)
+            resp = await client.get(
+                "/admin/query/databases/ch1/tables",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert resp.json() == ["events", "users"]
+
+    @pytest.mark.asyncio
+    async def test_list_tables_not_registered(self, client, admin_token):
+        with _cm_patch() as ctx:
+            ctx.get_db_type = MagicMock(return_value="unknown")
+            resp = await client.get(
+                "/admin/query/databases/nope/tables",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 404
 
 
 # ===========================================================================

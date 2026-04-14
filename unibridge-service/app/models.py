@@ -22,12 +22,14 @@ class DBConnection(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     alias = Column(String, unique=True, nullable=False, index=True)
-    db_type = Column(String, nullable=False)  # "postgres" or "mssql"
+    db_type = Column(String, nullable=False)  # "postgres", "mssql", or "clickhouse"
     host = Column(String, nullable=False)
     port = Column(Integer, nullable=False)
     database = Column(String, nullable=False)
     username = Column(String, nullable=False)
     password_encrypted = Column(String, nullable=False)
+    protocol = Column(String(16), nullable=True)
+    secure = Column(Boolean, nullable=True)
     pool_size = Column(Integer, default=5)
     max_overflow = Column(Integer, default=3)
     query_timeout = Column(Integer, default=30)

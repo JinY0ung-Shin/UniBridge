@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -28,6 +29,50 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Admin"])
 
 
+def _validate_connection_options(
+    db_type: str,
+    protocol: str | None,
+    secure: bool | None,
+) -> tuple[str | None, bool | None]:
+    if db_type == "clickhouse":
+        if protocol is None or secure is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="ClickHouse connections require both protocol and secure fields",
+            )
+        expected_protocol = "https" if secure else "http"
+        if protocol != expected_protocol:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="ClickHouse protocol and secure fields must describe the same transport",
+            )
+        return protocol, secure
+
+    if protocol is not None or secure is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="protocol and secure are only valid for clickhouse connections",
+        )
+    return None, None
+
+
+def _to_connection_response(conn: DBConnection, status_value: str) -> DBConnectionResponse:
+    return DBConnectionResponse(
+        alias=conn.alias,
+        db_type=conn.db_type,
+        host=conn.host,
+        port=conn.port,
+        database=conn.database,
+        username=conn.username,
+        protocol=conn.protocol,
+        secure=conn.secure,
+        pool_size=conn.pool_size if conn.pool_size is not None else 5,
+        max_overflow=conn.max_overflow if conn.max_overflow is not None else 3,
+        query_timeout=conn.query_timeout if conn.query_timeout is not None else 30,
+        status=status_value,
+    )
+
+
 # ── DB Connection CRUD ───────────────────────────────────────────────────────
 
 
@@ -52,6 +97,12 @@ async def create_connection(
             detail=f"Database alias '{body.alias}' already exists",
         )
 
+    protocol, secure = _validate_connection_options(
+        body.db_type,
+        body.protocol,
+        body.secure,
+    )
+
     conn = DBConnection(
         alias=body.alias,
         db_type=body.db_type,
@@ -60,6 +111,8 @@ async def create_connection(
         database=body.database,
         username=body.username,
         password_encrypted=encrypt_password(body.password),
+        protocol=protocol,
+        secure=secure,
         pool_size=body.pool_size if body.pool_size is not None else 5,
         max_overflow=body.max_overflow if body.max_overflow is not None else 3,
         query_timeout=body.query_timeout if body.query_timeout is not None else 30,
@@ -76,18 +129,7 @@ async def create_connection(
         logger.warning("Engine creation failed for '%s': %s", body.alias, exc)
         conn_status = "error"
 
-    return DBConnectionResponse(
-        alias=conn.alias,
-        db_type=conn.db_type,
-        host=conn.host,
-        port=conn.port,
-        database=conn.database,
-        username=conn.username,
-        pool_size=conn.pool_size,
-        max_overflow=conn.max_overflow,
-        query_timeout=conn.query_timeout,
-        status=conn_status,
-    )
+    return _to_connection_response(conn, conn_status)
 
 
 @router.get("/admin/query/databases", response_model=list[DBConnectionResponse])
@@ -103,18 +145,7 @@ async def list_connections(
     for conn in connections:
         pool_status = connection_manager.get_status(conn.alias)
         responses.append(
-            DBConnectionResponse(
-                alias=conn.alias,
-                db_type=conn.db_type,
-                host=conn.host,
-                port=conn.port,
-                database=conn.database,
-                username=conn.username,
-                pool_size=conn.pool_size if conn.pool_size is not None else 5,
-                max_overflow=conn.max_overflow if conn.max_overflow is not None else 3,
-                query_timeout=conn.query_timeout if conn.query_timeout is not None else 30,
-                status=pool_status.get("status", "unknown"),
-            )
+            _to_connection_response(conn, pool_status.get("status", "unknown"))
         )
     return responses
 
@@ -137,18 +168,7 @@ async def get_connection(
         )
 
     pool_status = connection_manager.get_status(alias)
-    return DBConnectionResponse(
-        alias=conn.alias,
-        db_type=conn.db_type,
-        host=conn.host,
-        port=conn.port,
-        database=conn.database,
-        username=conn.username,
-        pool_size=conn.pool_size if conn.pool_size is not None else 5,
-        max_overflow=conn.max_overflow if conn.max_overflow is not None else 3,
-        query_timeout=conn.query_timeout if conn.query_timeout is not None else 30,
-        status=pool_status.get("status", "unknown"),
-    )
+    return _to_connection_response(conn, pool_status.get("status", "unknown"))
 
 
 @router.put("/admin/query/databases/{alias}", response_model=DBConnectionResponse)
@@ -176,7 +196,19 @@ async def update_connection(
         if password is not None:
             conn.password_encrypted = encrypt_password(password)
 
+    merged_protocol = update_data.get("protocol", conn.protocol)
+    merged_secure = update_data.get("secure", conn.secure)
+    protocol, secure = _validate_connection_options(
+        conn.db_type,
+        merged_protocol,
+        merged_secure,
+    )
+    conn.protocol = protocol
+    conn.secure = secure
+
     for key, value in update_data.items():
+        if key in ("protocol", "secure"):
+            continue
         if value is not None:
             setattr(conn, key, value)
 
@@ -191,18 +223,7 @@ async def update_connection(
         logger.warning("Engine recreation failed for '%s': %s", alias, exc)
         conn_status = "error"
 
-    return DBConnectionResponse(
-        alias=conn.alias,
-        db_type=conn.db_type,
-        host=conn.host,
-        port=conn.port,
-        database=conn.database,
-        username=conn.username,
-        pool_size=conn.pool_size if conn.pool_size is not None else 5,
-        max_overflow=conn.max_overflow if conn.max_overflow is not None else 3,
-        query_timeout=conn.query_timeout if conn.query_timeout is not None else 30,
-        status=conn_status,
-    )
+    return _to_connection_response(conn, conn_status)
 
 
 @router.delete(
@@ -240,9 +261,7 @@ async def test_connection(
     _admin: CurrentUser = Depends(require_permission("query.databases.read")),
 ) -> dict:
     """Test connectivity to a registered database."""
-    try:
-        connection_manager.get_engine(alias)
-    except KeyError:
+    if not connection_manager.has_connection(alias):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Database alias '{alias}' is not registered",
@@ -258,23 +277,29 @@ async def list_tables(
     _admin: CurrentUser = Depends(require_permission("query.databases.read")),
 ) -> list[str]:
     """List all table names in a registered database."""
-    try:
-        engine = connection_manager.get_engine(alias)
-    except KeyError:
+    db_type = connection_manager.get_db_type(alias)
+    if db_type == "unknown":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Database alias '{alias}' is not registered",
         )
 
-    db_type = connection_manager.get_db_type(alias)
-
-    if db_type == "mssql":
-        sql = "SELECT TABLE_SCHEMA + '.' + TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME"
-    else:
-        sql = "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename"
-
-    from sqlalchemy import text
     try:
+        if db_type == "clickhouse":
+            client = connection_manager.get_clickhouse_client(alias)
+            result = await asyncio.to_thread(
+                client.query,
+                "SELECT name FROM system.tables WHERE database = currentDatabase() ORDER BY name",
+            )
+            return [row[0] for row in result.result_rows]
+
+        engine = connection_manager.get_engine(alias)
+        if db_type == "mssql":
+            sql = "SELECT TABLE_SCHEMA + '.' + TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME"
+        else:
+            sql = "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename"
+
+        from sqlalchemy import text
         async with engine.connect() as conn:
             result = await conn.execute(text(sql))
             return [row[0] for row in result.fetchall()]
@@ -313,18 +338,28 @@ async def upsert_permission(
     # Validate allowed_tables against actual DB tables
     if body.allowed_tables is not None and len(body.allowed_tables) > 0:
         try:
-            engine = connection_manager.get_engine(body.db_alias)
             db_type = connection_manager.get_db_type(body.db_alias)
+            if db_type == "unknown":
+                raise KeyError(body.db_alias)
 
-            if db_type == "mssql":
-                table_sql = "SELECT TABLE_SCHEMA + '.' + TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'"
+            if db_type == "clickhouse":
+                client = connection_manager.get_clickhouse_client(body.db_alias)
+                ch_result = await asyncio.to_thread(
+                    client.query,
+                    "SELECT name FROM system.tables WHERE database = currentDatabase()",
+                )
+                actual_tables = {row[0].lower() for row in ch_result.result_rows}
             else:
-                table_sql = "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public'"
+                engine = connection_manager.get_engine(body.db_alias)
+                if db_type == "mssql":
+                    table_sql = "SELECT TABLE_SCHEMA + '.' + TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'"
+                else:
+                    table_sql = "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public'"
 
-            from sqlalchemy import text
-            async with engine.connect() as conn:
-                result_tables = await conn.execute(text(table_sql))
-                actual_tables = {row[0].lower() for row in result_tables.fetchall()}
+                from sqlalchemy import text
+                async with engine.connect() as conn:
+                    result_tables = await conn.execute(text(table_sql))
+                    actual_tables = {row[0].lower() for row in result_tables.fetchall()}
 
             requested = {t.lower() for t in body.allowed_tables}
             invalid = requested - actual_tables
