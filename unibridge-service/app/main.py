@@ -38,7 +38,7 @@ def _is_missing_route_error(exc: Exception) -> bool:
 async def _preserve_consumer_restriction(
     route_id: str, body: dict[str, object]
 ) -> dict[str, object]:
-    if route_id not in {"query-api", "llm-proxy"}:
+    if route_id not in {"query-api", "llm-proxy", "s3-api"}:
         return body
 
     from app.services import apisix_client
@@ -145,6 +145,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 ),
             )
             logger.info("APISIX query route provisioned successfully")
+
+            # Ensure /api/s3/* route exists with key-auth
+            await apisix_client.put_resource(
+                "routes",
+                "s3-api",
+                await _preserve_consumer_restriction(
+                    "s3-api",
+                    {
+                        "name": "s3-api",
+                        "uri": "/api/s3/*",
+                        "methods": ["GET"],
+                        "upstream_id": "unibridge-service",
+                        "plugins": {
+                            "key-auth": {},
+                            "proxy-rewrite": {
+                                "regex_uri": ["^/api/s3(.*)", "/s3$1"],
+                            },
+                        },
+                        "status": 1,
+                    },
+                ),
+            )
+            logger.info("APISIX S3 route provisioned successfully")
 
             # ── LiteLLM upstream and routes ──
             if settings.LITELLM_MASTER_KEY:

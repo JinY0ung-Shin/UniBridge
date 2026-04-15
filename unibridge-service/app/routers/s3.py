@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import CurrentUser, require_permission
+from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_role_permissions, require_permission
 from app.database import get_db
 from app.models import S3Connection
 from app.schemas import S3ConnectionCreate, S3ConnectionResponse, S3ConnectionUpdate
@@ -183,7 +183,23 @@ async def test_s3_connection(
     return {"status": "ok" if ok else "error", "message": message}
 
 
-# ── Browse: Read-only S3 operations ─────────────────────────────────────────
+# ── Browse: Read-only S3 operations (API Key + JWT) ─────────────────────────
+
+
+async def _require_s3_browse(
+    user: CurrentUser | ApiKeyUser = Depends(get_current_user_or_apikey),
+    db: AsyncSession = Depends(get_db),
+) -> CurrentUser | ApiKeyUser:
+    """Allow access via API key (APISIX consumer-restriction enforces route access)
+    or JWT with s3.browse permission."""
+    if isinstance(user, CurrentUser):
+        perms = await get_role_permissions(db, user.role)
+        if "s3.browse" not in perms:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Required permission: s3.browse",
+            )
+    return user
 
 
 def _handle_s3_error(alias: str, exc: Exception) -> NoReturn:
@@ -200,10 +216,10 @@ def _handle_s3_error(alias: str, exc: Exception) -> NoReturn:
     raise HTTPException(status_code=502, detail="S3 operation failed")
 
 
-@router.get("/admin/s3/{alias}/buckets")
+@router.get("/s3/{alias}/buckets")
 async def list_buckets(
     alias: str,
-    _user: CurrentUser = Depends(require_permission("s3.browse")),
+    _user: CurrentUser | ApiKeyUser = Depends(_require_s3_browse),
 ) -> list[dict[str, Any]]:
     if not s3_manager.has_connection(alias):
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
@@ -216,7 +232,7 @@ async def list_buckets(
         raise HTTPException(status_code=502, detail="Failed to list buckets")
 
 
-@router.get("/admin/s3/{alias}/objects")
+@router.get("/s3/{alias}/objects")
 async def list_objects(
     alias: str,
     bucket: str = Query(..., min_length=1),
@@ -224,7 +240,7 @@ async def list_objects(
     delimiter: str = Query("/"),
     max_keys: int = Query(200, ge=1, le=1000),
     continuation_token: str | None = Query(None),
-    _user: CurrentUser = Depends(require_permission("s3.browse")),
+    _user: CurrentUser | ApiKeyUser = Depends(_require_s3_browse),
 ) -> dict[str, Any]:
     if not s3_manager.has_connection(alias):
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
@@ -239,12 +255,12 @@ async def list_objects(
         raise HTTPException(status_code=502, detail="Failed to list objects")
 
 
-@router.get("/admin/s3/{alias}/objects/metadata")
+@router.get("/s3/{alias}/objects/metadata")
 async def get_object_metadata(
     alias: str,
     bucket: str = Query(..., min_length=1),
     key: str = Query(..., min_length=1),
-    _user: CurrentUser = Depends(require_permission("s3.browse")),
+    _user: CurrentUser | ApiKeyUser = Depends(_require_s3_browse),
 ) -> dict[str, Any]:
     if not s3_manager.has_connection(alias):
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
@@ -257,13 +273,13 @@ async def get_object_metadata(
         raise HTTPException(status_code=502, detail="Failed to get object metadata")
 
 
-@router.get("/admin/s3/{alias}/objects/presigned-url")
+@router.get("/s3/{alias}/objects/presigned-url")
 async def get_presigned_download_url(
     alias: str,
     bucket: str = Query(..., min_length=1),
     key: str = Query(..., min_length=1),
     expires_in: int = Query(3600, ge=60, le=43200),
-    _user: CurrentUser = Depends(require_permission("s3.browse")),
+    _user: CurrentUser | ApiKeyUser = Depends(_require_s3_browse),
 ) -> dict[str, Any]:
     if not s3_manager.has_connection(alias):
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")

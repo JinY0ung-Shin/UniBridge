@@ -16,7 +16,7 @@ import './Connections.css';
 const emptyForm: S3ConnectionConfig = {
   alias: '',
   endpoint_url: '',
-  region: 'us-east-1',
+  region: '',
   access_key_id: '',
   secret_access_key: '',
   default_bucket: '',
@@ -82,6 +82,9 @@ function S3Connections() {
     },
   });
 
+  const [curlModal, setCurlModal] = useState<{ alias: string; curl: string } | null>(null);
+  const [curlCopied, setCurlCopied] = useState(false);
+
   const connections = connQuery.data ?? [];
 
   function openCreate() {
@@ -134,6 +137,40 @@ function S3Connections() {
       return next;
     });
     testMutation.mutate(alias);
+  }
+
+  function handleCurl(alias: string, defaultBucket: string | null | undefined) {
+    const base = `${window.location.origin}/api/s3`;
+    const bucket = defaultBucket || '<BUCKET>';
+    const curl = [
+      `# ${t('s3.browserSubtitle')}`,
+      ``,
+      `# 1. ${t('s3.loadingBuckets')}`,
+      `curl -k -H 'apikey: <YOUR_API_KEY>' \\`,
+      `  '${base}/${alias}/buckets'`,
+      ``,
+      `# 2. ${t('s3.loadingObjects')}`,
+      `curl -k -H 'apikey: <YOUR_API_KEY>' \\`,
+      `  '${base}/${alias}/objects?bucket=${bucket}&prefix=&delimiter=/'`,
+      ``,
+      `# 3. ${t('s3.metadata')}`,
+      `curl -k -H 'apikey: <YOUR_API_KEY>' \\`,
+      `  '${base}/${alias}/objects/metadata?bucket=${bucket}&key=<FILE_KEY>'`,
+      ``,
+      `# 4. ${t('s3.download')} (presigned URL)`,
+      `curl -k -H 'apikey: <YOUR_API_KEY>' \\`,
+      `  '${base}/${alias}/objects/presigned-url?bucket=${bucket}&key=<FILE_KEY>'`,
+    ].join('\n');
+    setCurlModal({ alias, curl });
+    setCurlCopied(false);
+  }
+
+  function handleCurlCopy() {
+    if (curlModal) {
+      navigator.clipboard.writeText(curlModal.curl);
+      setCurlCopied(true);
+      setTimeout(() => setCurlCopied(false), 2000);
+    }
   }
 
   function updateField<K extends keyof S3ConnectionConfig>(key: K, value: S3ConnectionConfig[K]) {
@@ -198,6 +235,12 @@ function S3Connections() {
                           disabled={testMutation.isPending}
                         >
                           {t('common.test')}
+                        </button>
+                        <button
+                          className="btn btn-sm btn-outline"
+                          onClick={() => handleCurl(conn.alias, conn.default_bucket)}
+                        >
+                          cURL
                         </button>
                         <button
                           className="btn btn-sm btn-primary"
@@ -310,7 +353,8 @@ function S3Connections() {
                   />
                 </div>
                 <div className="form-group">
-                  <label className="method-check" style={{ marginTop: 24 }}>
+                  <label>&nbsp;</label>
+                  <label className="method-check">
                     <input
                       type="checkbox"
                       checked={form.use_ssl}
@@ -338,6 +382,23 @@ function S3Connections() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {curlModal && (
+        <div className="modal-overlay" onClick={() => setCurlModal(null)}>
+          <div className="modal modal--sm" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>cURL — {curlModal.alias}</h2>
+              <button className="modal-close" onClick={() => setCurlModal(null)}>&times;</button>
+            </div>
+            <div className="curl-block">
+              <pre className="curl-code">{curlModal.curl}</pre>
+              <button className="btn btn-sm btn-secondary curl-copy-btn" onClick={handleCurlCopy}>
+                {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
+              </button>
+            </div>
           </div>
         </div>
       )}

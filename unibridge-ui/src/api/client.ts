@@ -803,7 +803,7 @@ export async function testS3Connection(alias: string): Promise<{ status: string;
 /* ── S3: Browse ── */
 
 export async function getS3Buckets(alias: string): Promise<S3Bucket[]> {
-  const { data } = await client.get(`/admin/s3/${alias}/buckets`);
+  const { data } = await client.get(`/s3/${alias}/buckets`);
   return data;
 }
 
@@ -811,7 +811,7 @@ export async function getS3Objects(
   alias: string,
   params: { bucket: string; prefix?: string; delimiter?: string; max_keys?: number; continuation_token?: string },
 ): Promise<S3ListObjectsResponse> {
-  const { data } = await client.get(`/admin/s3/${alias}/objects`, { params });
+  const { data } = await client.get(`/s3/${alias}/objects`, { params });
   return data;
 }
 
@@ -819,15 +819,15 @@ export async function getS3ObjectMetadata(
   alias: string,
   params: { bucket: string; key: string },
 ): Promise<S3ObjectMetadata> {
-  const { data } = await client.get(`/admin/s3/${alias}/objects/metadata`, { params });
+  const { data } = await client.get(`/s3/${alias}/objects/metadata`, { params });
   return data;
 }
 
 export async function getS3PresignedUrl(
   alias: string,
   params: { bucket: string; key: string; expires_in?: number },
-): Promise<{ url: string; expires_in: string }> {
-  const { data } = await client.get(`/admin/s3/${alias}/objects/presigned-url`, { params });
+): Promise<{ url: string; expires_in: number }> {
+  const { data } = await client.get(`/s3/${alias}/objects/presigned-url`, { params });
   return data;
 }
 
