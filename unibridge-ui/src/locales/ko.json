@@ -400,6 +400,8 @@
     "lastModified": "최종 수정",
     "download": "다운로드",
     "downloading": "다운로드 중...",
+    "proxyDownloadHint": "UniBridge를 통한 직접 다운로드, 최대 500MB",
+    "presignedUrlHint": "S3 직접 접근용 서명 URL 발급 (내부 S3는 브라우저에서 접근 불가)",
     "metadata": "메타데이터",
     "loadMore": "더 불러오기",
     "backToConnections": "← 연결 목록",

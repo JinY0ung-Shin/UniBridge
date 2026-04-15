@@ -400,6 +400,8 @@
     "lastModified": "Last Modified",
     "download": "Download",
     "downloading": "Downloading...",
+    "proxyDownloadHint": "Direct download via UniBridge, up to 500MB",
+    "presignedUrlHint": "Get signed URL for direct S3 access (not reachable from browser for internal S3)",
     "metadata": "Metadata",
     "loadMore": "Load More",
     "backToConnections": "← Connections",

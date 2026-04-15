@@ -113,13 +113,16 @@ function S3Browser() {
         key,
       });
       const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
+      try {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } finally {
+        setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+      }
     } catch {
       addToast({ type: 'error', title: t('s3.downloadFailed') });
     } finally {

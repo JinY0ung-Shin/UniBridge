@@ -836,9 +836,11 @@ export async function downloadS3Object(
     },
   });
   const disposition = response.headers['content-disposition'] || '';
-  const match = disposition.match(/filename\*?=(?:UTF-8'')?([^;\s]+)/i);
-  const filename = match
-    ? decodeURIComponent(match[1].replace(/"/g, ''))
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;\s]+)/i);
+  const plainMatch = disposition.match(/filename="([^"]+)"/i);
+  const raw = utf8Match?.[1] ?? plainMatch?.[1];
+  const filename = raw
+    ? decodeURIComponent(raw)
     : params.key.split('/').pop() || 'download';
   return { blob: response.data as Blob, filename };
 }

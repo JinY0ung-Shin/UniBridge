@@ -157,7 +157,12 @@ function S3Connections() {
       `curl -k -H 'apikey: <YOUR_API_KEY>' \\`,
       `  '${base}/${alias}/objects/metadata?bucket=${bucket}&key=<FILE_KEY>'`,
       ``,
-      `# 4. ${t('s3.download')} (presigned URL)`,
+      `# 4. ${t('s3.download')} (${t('s3.proxyDownloadHint')})`,
+      `curl -k -H 'apikey: <YOUR_API_KEY>' \\`,
+      `  '${base}/${alias}/objects/download?bucket=${bucket}&key=<FILE_KEY>' \\`,
+      `  -o <OUTPUT_FILE>`,
+      ``,
+      `# 5. ${t('s3.presignedUrlHint')}`,
       `curl -k -H 'apikey: <YOUR_API_KEY>' \\`,
       `  '${base}/${alias}/objects/presigned-url?bucket=${bucket}&key=<FILE_KEY>'`,
     ].join('\n');
