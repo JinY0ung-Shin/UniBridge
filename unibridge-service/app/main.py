@@ -14,9 +14,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import settings, validate_settings
 from app.database import get_db, init_db
 from app.models import DBConnection
-from app.routers import admin, alerts, api_keys, gateway, query, roles, users
+from app.routers import admin, alerts, api_keys, gateway, query, roles, s3, users
 from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
 from app.services.connection_manager import connection_manager
+from app.services.s3_manager import s3_manager
 from app.services.settings_manager import settings_manager
 
 logging.basicConfig(
@@ -75,6 +76,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         connections = result.scalars().all()
         await connection_manager.initialize(list(connections))
         logger.info("Loaded %d database connection(s)", len(connections))
+        break
+
+    logger.info("Loading saved S3 connections...")
+    async for db in get_db():
+        from app.models import S3Connection as S3Conn
+        result = await db.execute(select(S3Conn))
+        s3_connections = result.scalars().all()
+        await s3_manager.initialize(list(s3_connections))
+        logger.info("Loaded %d S3 connection(s)", len(s3_connections))
         break
 
     logger.info("Loading system settings...")
@@ -250,6 +260,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Disposing all database engines...")
     await connection_manager.dispose_all()
 
+    logger.info("Disposing all S3 clients...")
+    await s3_manager.dispose_all()
+
     # Close Keycloak admin client if initialized
     from app.routers.users import _kc_admin
 
@@ -305,6 +318,7 @@ app.include_router(admin.router)
 app.include_router(alerts.router)
 app.include_router(api_keys.router)
 app.include_router(gateway.router)
+app.include_router(s3.router)
 app.include_router(roles.router)
 app.include_router(users.router)
 

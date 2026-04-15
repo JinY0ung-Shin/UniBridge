@@ -726,5 +726,110 @@ export async function getAlertStatus(): Promise<AlertStatus[]> {
   return data;
 }
 
+/* ── S3 Types ── */
+
+export interface S3ConnectionConfig {
+  alias: string;
+  endpoint_url?: string | null;
+  region: string;
+  access_key_id?: string;
+  access_key_id_masked?: string;
+  secret_access_key?: string;
+  default_bucket?: string | null;
+  use_ssl: boolean;
+  status?: string;
+}
+
+export interface S3Bucket {
+  name: string;
+  creation_date: string | null;
+}
+
+export interface S3Folder {
+  prefix: string;
+}
+
+export interface S3Object {
+  key: string;
+  size: number;
+  last_modified: string | null;
+  storage_class?: string;
+}
+
+export interface S3ListObjectsResponse {
+  folders: S3Folder[];
+  objects: S3Object[];
+  is_truncated: boolean;
+  next_continuation_token?: string | null;
+  key_count: number;
+}
+
+export interface S3ObjectMetadata {
+  key: string;
+  size: number;
+  content_type: string;
+  last_modified: string | null;
+  etag: string;
+  storage_class?: string;
+  metadata: Record<string, string>;
+}
+
+/* ── S3: Connections ── */
+
+export async function getS3Connections(): Promise<S3ConnectionConfig[]> {
+  const { data } = await client.get('/admin/s3/connections');
+  return data;
+}
+
+export async function createS3Connection(body: S3ConnectionConfig): Promise<S3ConnectionConfig> {
+  const { data } = await client.post('/admin/s3/connections', body);
+  return data;
+}
+
+export async function updateS3Connection(alias: string, body: Partial<S3ConnectionConfig>): Promise<S3ConnectionConfig> {
+  const { data } = await client.put(`/admin/s3/connections/${alias}`, body);
+  return data;
+}
+
+export async function deleteS3Connection(alias: string): Promise<void> {
+  await client.delete(`/admin/s3/connections/${alias}`);
+}
+
+export async function testS3Connection(alias: string): Promise<{ status: string; message: string }> {
+  const { data } = await client.post(`/admin/s3/connections/${alias}/test`);
+  return data;
+}
+
+/* ── S3: Browse ── */
+
+export async function getS3Buckets(alias: string): Promise<S3Bucket[]> {
+  const { data } = await client.get(`/admin/s3/${alias}/buckets`);
+  return data;
+}
+
+export async function getS3Objects(
+  alias: string,
+  params: { bucket: string; prefix?: string; delimiter?: string; max_keys?: number; continuation_token?: string },
+): Promise<S3ListObjectsResponse> {
+  const { data } = await client.get(`/admin/s3/${alias}/objects`, { params });
+  return data;
+}
+
+export async function getS3ObjectMetadata(
+  alias: string,
+  params: { bucket: string; key: string },
+): Promise<S3ObjectMetadata> {
+  const { data } = await client.get(`/admin/s3/${alias}/objects/metadata`, { params });
+  return data;
+}
+
+export async function getS3PresignedUrl(
+  alias: string,
+  params: { bucket: string; key: string; expires_in?: number },
+): Promise<{ url: string; expires_in: string }> {
+  const { data } = await client.get(`/admin/s3/${alias}/objects/presigned-url`, { params });
+  return data;
+}
+
 export default client;
 

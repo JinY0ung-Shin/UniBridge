@@ -75,6 +75,7 @@ async def _seed_roles() -> None:
                 "gateway.monitoring.read",
                 "apikeys.read",
                 "alerts.read",
+                "s3.connections.read", "s3.browse",
             ],
         },
         "viewer": {

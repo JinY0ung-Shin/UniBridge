@@ -14,6 +14,7 @@ const navItems = [
   { to: '/audit-logs', labelKey: 'nav.auditLogs', icon: 'Audit Logs', section: 'data', permission: 'query.audit.read' },
   { to: '/query', labelKey: 'nav.queryPlayground', icon: 'Query Playground', section: 'data', permission: 'query.execute' },
   { to: '/query-settings', labelKey: 'nav.querySettings', icon: 'Query Settings', section: 'data', permission: 'query.settings.read' },
+  { to: '/s3', labelKey: 'nav.s3Connections', icon: 'S3', section: 's3', permission: 's3.connections.read' },
   { to: '/gateway/routes', labelKey: 'nav.gatewayRoutes', icon: 'Gateway Routes', section: 'gateway', permission: 'gateway.routes.read' },
   { to: '/gateway/upstreams', labelKey: 'nav.gatewayUpstreams', icon: 'Gateway Upstreams', section: 'gateway', permission: 'gateway.upstreams.read' },
   { to: '/gateway/monitoring', labelKey: 'nav.gatewayMonitoring', icon: 'Gateway Monitoring', section: 'gateway', permission: 'gateway.monitoring.read' },
@@ -114,6 +115,13 @@ function Layout({ children }: LayoutProps) {
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <path d="M6.5 1h5l.4 2.1a6 6 0 011.3.7L15.3 3l2 2.6-1.7 1.4a6 6 0 010 1.4l1.7 1.6-2 2.6-2.1-.8a6 6 0 01-1.3.7L11.5 15h-5l-.4-2.1a6 6 0 01-1.3-.7L2.7 13 .7 10.4l1.7-1.4a6 6 0 010-1.4L.7 5.6l2-2.6 2.1.8a6 6 0 011.3-.7L6.5 1z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
                         <circle cx="9" cy="8" r="2.5" stroke="currentColor" strokeWidth="1.2" />
+                      </svg>
+                    )}
+                    {item.icon === 'S3' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <path d="M3 4h12v10H3z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                        <path d="M7 8h4M7 11h2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                        <path d="M3 4l3-2h6l3 2" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
                       </svg>
                     )}
                     {item.icon === 'Gateway Routes' && (

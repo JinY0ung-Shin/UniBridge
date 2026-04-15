@@ -45,6 +45,9 @@ ALL_PERMISSIONS = [
     "admin.roles.write",
     "alerts.read",
     "alerts.write",
+    "s3.connections.read",
+    "s3.connections.write",
+    "s3.browse",
 ]
 
 # ── Permission cache ────────────────────────────────────────────────────────

@@ -37,6 +37,21 @@ class DBConnection(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class S3Connection(Base):
+    __tablename__ = "s3_connections"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    alias = Column(String, unique=True, nullable=False, index=True)
+    endpoint_url = Column(String, nullable=True)
+    region = Column(String, nullable=False, default="us-east-1")
+    access_key_id = Column(String, nullable=False)
+    secret_access_key_encrypted = Column(String, nullable=False)
+    default_bucket = Column(String, nullable=True)
+    use_ssl = Column(Boolean, default=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class Permission(Base):
     __tablename__ = "permissions"
 

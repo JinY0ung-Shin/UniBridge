@@ -403,3 +403,50 @@ class AlertStatusResponse(BaseModel):
     type: str
     status: str  # "ok" | "alert"
     since: str | None = None
+
+
+# ── S3 Connections ──────────────────────────────────────────────────────────
+
+class S3ConnectionCreate(BaseModel):
+    alias: str = Field(..., min_length=1, max_length=100)
+    endpoint_url: str | None = Field(None, description="Custom endpoint for S3-compatible storage (MinIO, R2, etc.)")
+    region: str = Field("us-east-1", min_length=1, max_length=100)
+    access_key_id: str = Field(..., min_length=1)
+    secret_access_key: str = Field(..., min_length=1)
+    default_bucket: str | None = Field(None, max_length=255)
+    use_ssl: bool = True
+
+    @field_validator("endpoint_url")
+    @classmethod
+    def check_endpoint_url(cls, v: str | None) -> str | None:
+        if v is not None and v.strip():
+            return _validate_webhook_url(v)
+        return None
+
+
+class S3ConnectionUpdate(BaseModel):
+    endpoint_url: str | None = None
+    region: str | None = Field(None, min_length=1, max_length=100)
+    access_key_id: str | None = Field(None, min_length=1)
+    secret_access_key: str | None = Field(None, min_length=1)
+    default_bucket: str | None = Field(None, max_length=255)
+    use_ssl: bool | None = None
+
+    @field_validator("endpoint_url")
+    @classmethod
+    def check_endpoint_url(cls, v: str | None) -> str | None:
+        if v is not None and v.strip():
+            return _validate_webhook_url(v)
+        return v
+
+
+class S3ConnectionResponse(BaseModel):
+    alias: str
+    endpoint_url: str | None = None
+    region: str
+    access_key_id_masked: str = ""
+    default_bucket: str | None = None
+    use_ssl: bool
+    status: str = "unknown"
+
+    model_config = {"from_attributes": True}
