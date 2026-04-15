@@ -41,10 +41,11 @@ class S3ConnectionManager:
         if conn.alias in self._clients:
             await self.remove_connection(conn.alias)
 
+        access_key = decrypt_password(conn.access_key_id_encrypted)
         secret_key = decrypt_password(conn.secret_access_key_encrypted)
 
         kwargs: dict[str, Any] = {
-            "aws_access_key_id": conn.access_key_id,
+            "aws_access_key_id": access_key,
             "aws_secret_access_key": secret_key,
             "region_name": conn.region,
             "config": Config(

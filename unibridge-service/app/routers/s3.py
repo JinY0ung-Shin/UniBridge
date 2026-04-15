@@ -12,7 +12,7 @@ from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_ro
 from app.database import get_db
 from app.models import S3Connection
 from app.schemas import S3ConnectionCreate, S3ConnectionResponse, S3ConnectionUpdate
-from app.services.connection_manager import encrypt_password
+from app.services.connection_manager import decrypt_password, encrypt_password
 from app.services.s3_manager import s3_manager
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,11 @@ def _mask_access_key(key: str) -> str:
 
 def _to_response(conn: S3Connection) -> S3ConnectionResponse:
     resp = S3ConnectionResponse.model_validate(conn)
-    resp.access_key_id_masked = _mask_access_key(conn.access_key_id)
+    try:
+        plain_key = decrypt_password(conn.access_key_id_encrypted)
+        resp.access_key_id_masked = _mask_access_key(plain_key)
+    except Exception:
+        resp.access_key_id_masked = "***"
     return resp
 
 
@@ -56,7 +60,7 @@ async def create_s3_connection(
         alias=body.alias,
         endpoint_url=body.endpoint_url or None,
         region=body.region,
-        access_key_id=body.access_key_id,
+        access_key_id_encrypted=encrypt_password(body.access_key_id),
         secret_access_key_encrypted=encrypt_password(body.secret_access_key),
         default_bucket=body.default_bucket or None,
         use_ssl=body.use_ssl,
@@ -127,7 +131,7 @@ async def update_s3_connection(
     if "region" in provided and body.region is not None:
         conn.region = body.region
     if "access_key_id" in provided and body.access_key_id is not None:
-        conn.access_key_id = body.access_key_id
+        conn.access_key_id_encrypted = encrypt_password(body.access_key_id)
     if "secret_access_key" in provided and body.secret_access_key is not None:
         conn.secret_access_key_encrypted = encrypt_password(body.secret_access_key)
     if "default_bucket" in provided:
@@ -211,7 +215,7 @@ def _handle_s3_error(alias: str, exc: Exception) -> NoReturn:
             raise HTTPException(status_code=404, detail="Resource not found")
         if code in ("AccessDenied", "403"):
             raise HTTPException(status_code=403, detail="S3 access denied")
-        raise HTTPException(status_code=502, detail=f"S3 error ({code})")
+        raise HTTPException(status_code=502, detail="S3 operation failed")
     logger.error("Unexpected S3 error for '%s': %s", alias, exc)
     raise HTTPException(status_code=502, detail="S3 operation failed")
 

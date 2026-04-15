@@ -44,7 +44,7 @@ class S3Connection(Base):
     alias = Column(String, unique=True, nullable=False, index=True)
     endpoint_url = Column(String, nullable=True)
     region = Column(String, nullable=False, default="us-east-1")
-    access_key_id = Column(String, nullable=False)
+    access_key_id_encrypted = Column(String, nullable=False)
     secret_access_key_encrypted = Column(String, nullable=False)
     default_bucket = Column(String, nullable=True)
     use_ssl = Column(Boolean, default=True)

@@ -269,7 +269,7 @@ async def get_current_user_or_apikey(
     2. Bearer token → CurrentUser (existing JWT flow)
     """
     consumer_name = request.headers.get("x-consumer-username")
-    if consumer_name:
+    if consumer_name and credentials is None:
         from app.models import ApiKeyAccess
         result = await db.execute(
             select(ApiKeyAccess).where(ApiKeyAccess.consumer_name == consumer_name)

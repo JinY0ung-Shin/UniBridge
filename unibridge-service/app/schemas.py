@@ -437,7 +437,7 @@ class S3ConnectionUpdate(BaseModel):
     def check_endpoint_url(cls, v: str | None) -> str | None:
         if v is not None and v.strip():
             return _validate_webhook_url(v)
-        return v
+        return None
 
 
 class S3ConnectionResponse(BaseModel):
