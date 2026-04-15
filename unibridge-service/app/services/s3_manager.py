@@ -100,12 +100,13 @@ class S3ConnectionManager:
             else:
                 await asyncio.to_thread(client.list_buckets)
             return True, "Connection successful"
-        except (BotoCoreError, ClientError) as exc:
-            logger.warning("S3 connection test failed for '%s': %s", alias, exc)
-            return False, str(exc)
-        except Exception as exc:
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            logger.warning("S3 connection test failed for '%s': %s %s", alias, code, exc)
+            return False, f"Connection failed ({code})" if code else "Connection failed"
+        except (BotoCoreError, Exception) as exc:
             logger.exception("S3 connection test failed for '%s'", alias)
-            return False, str(exc)
+            return False, "Connection failed"
 
     async def list_buckets(self, alias: str) -> list[dict[str, Any]]:
         client = self.get_client(alias)
