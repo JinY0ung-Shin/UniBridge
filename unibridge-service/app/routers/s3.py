@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, NoReturn
+from urllib.parse import quote
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -295,3 +298,75 @@ async def get_presigned_download_url(
     except Exception:
         logger.exception("Failed to generate presigned URL for '%s'", alias)
         raise HTTPException(status_code=502, detail="Failed to generate presigned URL")
+
+
+MAX_PROXY_DOWNLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
+
+
+@router.get("/s3/{alias}/objects/download")
+async def download_object(
+    alias: str,
+    bucket: str = Query(..., min_length=1),
+    key: str = Query(..., min_length=1),
+    _user: CurrentUser | ApiKeyUser = Depends(_require_s3_browse),
+) -> StreamingResponse:
+    """Proxy-download an S3 object through UniBridge (works for internal S3 endpoints)."""
+    if not s3_manager.has_connection(alias):
+        raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
+
+    # Check size before streaming
+    try:
+        meta = await s3_manager.get_object_metadata(alias, bucket, key)
+    except (BotoCoreError, ClientError) as exc:
+        _handle_s3_error(alias, exc)
+    except Exception:
+        logger.exception("Failed to check object size for '%s'", alias)
+        raise HTTPException(status_code=502, detail="Failed to download object")
+
+    file_size = meta.get("size")
+    if file_size is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to determine object size",
+        )
+    if file_size > MAX_PROXY_DOWNLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File too large for proxy download (max {MAX_PROXY_DOWNLOAD_BYTES // (1024 * 1024)}MB). Use presigned-url instead.",
+        )
+
+    # Fetch the object
+    try:
+        resp = await s3_manager.get_object(alias, bucket, key)
+    except (BotoCoreError, ClientError) as exc:
+        _handle_s3_error(alias, exc)
+    except Exception:
+        logger.exception("Failed to download object for '%s'", alias)
+        raise HTTPException(status_code=502, detail="Failed to download object")
+
+    body = resp["Body"]
+    content_type = resp.get("ContentType", "application/octet-stream")
+    content_length = resp.get("ContentLength")
+    filename = key.rsplit("/", 1)[-1] or "download"
+
+    async def _stream_body():
+        try:
+            while True:
+                chunk = await asyncio.to_thread(body.read, 1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            await asyncio.to_thread(body.close)
+
+    headers: dict[str, str] = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+    }
+    if content_length is not None:
+        headers["Content-Length"] = str(content_length)
+
+    return StreamingResponse(
+        _stream_body(),
+        media_type=content_type,
+        headers=headers,
+    )

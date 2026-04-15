@@ -177,6 +177,13 @@ class S3ConnectionManager:
             "metadata": resp.get("Metadata", {}),
         }
 
+    async def get_object(
+        self, alias: str, bucket: str, key: str
+    ) -> dict[str, Any]:
+        client = self.get_client(alias)
+        resp = await asyncio.to_thread(client.get_object, Bucket=bucket, Key=key)
+        return resp
+
     async def generate_presigned_url(
         self, alias: str, bucket: str, key: str, expires_in: int = 3600
     ) -> str:

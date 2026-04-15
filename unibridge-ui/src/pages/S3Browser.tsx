@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import {
   getS3Buckets,
   getS3Objects,
-  getS3PresignedUrl,
+  downloadS3Object,
   getS3ObjectMetadata,
   type S3Bucket,
   type S3Object,
@@ -102,13 +102,32 @@ function S3Browser() {
     setPrefix(parts.length > 0 ? parts.join('/') + '/' : '');
   }
 
+  const [downloadingKeys, setDownloadingKeys] = useState<Set<string>>(new Set());
+
   async function handleDownload(key: string) {
     if (!alias || !selectedBucket) return;
+    setDownloadingKeys((prev) => new Set(prev).add(key));
     try {
-      const { url } = await getS3PresignedUrl(alias, { bucket: selectedBucket, key });
-      window.open(url, '_blank');
+      const { blob, filename } = await downloadS3Object(alias, {
+        bucket: selectedBucket,
+        key,
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
     } catch {
       addToast({ type: 'error', title: t('s3.downloadFailed') });
+    } finally {
+      setDownloadingKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
     }
   }
 
@@ -259,8 +278,9 @@ function S3Browser() {
                           <button
                             className="btn btn-sm btn-primary"
                             onClick={(e) => { e.stopPropagation(); handleDownload(obj.key); }}
+                            disabled={downloadingKeys.has(obj.key)}
                           >
-                            {t('s3.download')}
+                            {downloadingKeys.has(obj.key) ? t('s3.downloading') : t('s3.download')}
                           </button>
                           <button
                             className="btn btn-sm btn-outline"

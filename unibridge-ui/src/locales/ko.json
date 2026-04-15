@@ -399,6 +399,7 @@
     "size": "크기",
     "lastModified": "최종 수정",
     "download": "다운로드",
+    "downloading": "다운로드 중...",
     "metadata": "메타데이터",
     "loadMore": "더 불러오기",
     "backToConnections": "← 연결 목록",

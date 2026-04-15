@@ -823,6 +823,26 @@ export async function getS3ObjectMetadata(
   return data;
 }
 
+export async function downloadS3Object(
+  alias: string,
+  params: { bucket: string; key: string },
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await client.get(`/s3/${alias}/objects/download`, {
+    params,
+    responseType: 'blob',
+    onDownloadProgress: (e) => {
+      if (onProgress && e.total) onProgress(e.loaded, e.total);
+    },
+  });
+  const disposition = response.headers['content-disposition'] || '';
+  const match = disposition.match(/filename\*?=(?:UTF-8'')?([^;\s]+)/i);
+  const filename = match
+    ? decodeURIComponent(match[1].replace(/"/g, ''))
+    : params.key.split('/').pop() || 'download';
+  return { blob: response.data as Blob, filename };
+}
+
 export async function getS3PresignedUrl(
   alias: string,
   params: { bucket: string; key: string; expires_in?: number },

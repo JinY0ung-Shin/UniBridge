@@ -399,6 +399,7 @@
     "size": "Size",
     "lastModified": "Last Modified",
     "download": "Download",
+    "downloading": "Downloading...",
     "metadata": "Metadata",
     "loadMore": "Load More",
     "backToConnections": "← Connections",
