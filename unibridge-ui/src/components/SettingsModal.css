@@ -109,3 +109,39 @@
   color: var(--accent-blue);
   font-weight: 600;
 }
+
+/* ── Change Password Link ── */
+
+.settings-change-password-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+
+.settings-change-password-link:hover {
+  border-color: var(--border-hover);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.settings-external-icon {
+  margin-left: auto;
+  opacity: 0.4;
+}
+
+.settings-change-password-link:hover .settings-external-icon {
+  opacity: 0.7;
+}
+
+.settings-change-password-desc {
+  margin-top: 8px;
+  margin-bottom: 0;
+}

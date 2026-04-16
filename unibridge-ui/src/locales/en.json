@@ -55,7 +55,11 @@
     "themeDesc": "Choose the UI color theme",
     "themeDark": "Dark",
     "themeLight": "Light",
-    "themeSystem": "System"
+    "themeSystem": "System",
+    "security": "Security",
+    "securityDesc": "Account security settings",
+    "changePassword": "Change Password",
+    "changePasswordDesc": "Change your password via the Keycloak account management page"
   },
   "dashboard": {
     "title": "Dashboard",

@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { useTheme } from './ThemeContext';
+import keycloak from '../keycloak';
 import './SettingsModal.css';
 
 interface SettingsModalProps {
@@ -72,6 +73,30 @@ function SettingsModal({ onClose }: SettingsModalProps) {
                 <span className="language-option-text">{t('settings.english')}</span>
               </label>
             </div>
+          </div>
+
+          {/* Security */}
+          <div className="settings-section">
+            <div className="settings-label">{t('settings.security')}</div>
+            <p className="settings-desc">{t('settings.securityDesc')}</p>
+            <a
+              className="settings-change-password-link"
+              href={`${keycloak.createAccountUrl({ redirectUri: window.location.href })}#/security/signingin`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <rect x="3" y="7" width="10" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                <path d="M5 7V5a3 3 0 016 0v2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+              </svg>
+              <span>{t('settings.changePassword')}</span>
+              <svg className="settings-external-icon" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d="M5 1H2.5A1.5 1.5 0 001 2.5v7A1.5 1.5 0 002.5 11h7A1.5 1.5 0 0011 9.5V7M7 1h4v4M11 1L5.5 6.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </a>
+            <p className="settings-desc settings-change-password-desc">
+              {t('settings.changePasswordDesc')}
+            </p>
           </div>
         </div>
       </div>

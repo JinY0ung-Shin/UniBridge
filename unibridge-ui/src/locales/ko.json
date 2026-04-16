@@ -55,7 +55,11 @@
     "themeDesc": "UI 색상 테마를 선택합니다",
     "themeDark": "다크",
     "themeLight": "라이트",
-    "themeSystem": "시스템"
+    "themeSystem": "시스템",
+    "security": "보안",
+    "securityDesc": "계정 보안 관련 설정",
+    "changePassword": "비밀번호 변경",
+    "changePasswordDesc": "Keycloak 계정 관리 페이지에서 비밀번호를 변경합니다"
   },
   "dashboard": {
     "title": "대시보드",
