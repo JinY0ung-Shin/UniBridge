@@ -347,7 +347,7 @@ class RuleChannelMapping(BaseModel):
 
 class AlertRuleCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    type: str = Field(..., pattern=r"^(db_health|upstream_health|error_rate)$")
+    type: str = Field(..., pattern=r"^(db_health|upstream_health|error_rate|route_error_rate)$")
     target: str = Field(..., min_length=1, max_length=100)
     threshold: float | None = Field(None, ge=0, le=100)
     enabled: bool = True
@@ -356,7 +356,7 @@ class AlertRuleCreate(BaseModel):
 
 class AlertRuleUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
-    type: str | None = Field(None, pattern=r"^(db_health|upstream_health|error_rate)$")
+    type: str | None = Field(None, pattern=r"^(db_health|upstream_health|error_rate|route_error_rate)$")
     target: str | None = Field(None, min_length=1, max_length=100)
     threshold: float | None = None
     enabled: bool | None = None

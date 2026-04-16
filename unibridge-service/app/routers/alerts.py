@@ -142,6 +142,9 @@ async def test_channel(
         message="This is a test alert from UniBridge.",
         timestamp=now,
         recipients="test@example.com",
+        rate="5.0",
+        threshold="10.0",
+        rule_name="test-rule",
     )
     headers = json.loads(ch.headers) if ch.headers else None
     ok, err = await send_webhook(url=ch.webhook_url, payload=payload, headers=headers)

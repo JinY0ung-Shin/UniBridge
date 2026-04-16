@@ -440,6 +440,7 @@
     "typeDbHealth": "DB Health",
     "typeUpstreamHealth": "Upstream",
     "typeErrorRate": "Error Rate",
+    "typeRouteErrorRate": "Route Error Rate",
     "targetAll": "All (*)",
     "noChannels": "No channels configured.",
     "noRules": "No rules configured.",

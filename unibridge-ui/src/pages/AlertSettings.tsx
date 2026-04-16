@@ -34,7 +34,7 @@ const emptyChannelForm = (): AlertChannelCreate & { headerPairs: HeaderPair[] } 
 
 // ── Rule types ─────────────────────────────────────────────────────────────────
 
-type RuleType = 'db_health' | 'upstream_health' | 'error_rate';
+type RuleType = 'db_health' | 'upstream_health' | 'error_rate' | 'route_error_rate';
 
 interface RuleChannelRow {
   channel_id: number;
@@ -74,6 +74,7 @@ function ruleTypeLabel(t: (k: string) => string, type: RuleType): string {
     db_health: t('alerts.typeDbHealth'),
     upstream_health: t('alerts.typeUpstreamHealth'),
     error_rate: t('alerts.typeErrorRate'),
+    route_error_rate: t('alerts.typeRouteErrorRate'),
   };
   return map[type] ?? type;
 }
@@ -332,7 +333,9 @@ function AlertSettings() {
       target: ruleForm.target,
       enabled: ruleForm.enabled,
       channels: channelMappings,
-      ...(ruleForm.type === 'error_rate' ? { threshold: ruleForm.threshold } : {}),
+      ...(ruleForm.type === 'error_rate' || ruleForm.type === 'route_error_rate'
+        ? { threshold: ruleForm.threshold }
+        : {}),
     };
 
     if (editingRuleId !== null) {
@@ -722,6 +725,7 @@ function AlertSettings() {
                     <option value="db_health">{t('alerts.typeDbHealth')}</option>
                     <option value="upstream_health">{t('alerts.typeUpstreamHealth')}</option>
                     <option value="error_rate">{t('alerts.typeErrorRate')}</option>
+                    <option value="route_error_rate">{t('alerts.typeRouteErrorRate')}</option>
                   </select>
                 </div>
                 <div className="form-group">
@@ -733,7 +737,7 @@ function AlertSettings() {
                     placeholder={t('alerts.targetAll')}
                   />
                 </div>
-                {ruleForm.type === 'error_rate' && (
+                {(ruleForm.type === 'error_rate' || ruleForm.type === 'route_error_rate') && (
                   <div className="form-group">
                     <label>{t('alerts.threshold')}</label>
                     <input

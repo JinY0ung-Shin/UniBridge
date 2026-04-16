@@ -440,6 +440,7 @@
     "typeDbHealth": "DB 연결",
     "typeUpstreamHealth": "업스트림",
     "typeErrorRate": "에러율",
+    "typeRouteErrorRate": "라우트 에러율",
     "targetAll": "전체 (*)",
     "noChannels": "등록된 채널이 없습니다.",
     "noRules": "등록된 규칙이 없습니다.",

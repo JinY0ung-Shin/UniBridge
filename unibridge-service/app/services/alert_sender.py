@@ -18,8 +18,17 @@ def render_template(
     message: str,
     timestamp: str,
     recipients: str,
+    rate: str = "",
+    threshold: str = "",
+    rule_name: str = "",
 ) -> str:
-    """Replace {{placeholders}} in the template string."""
+    """Replace {{placeholders}} in the template string.
+
+    Supported placeholders:
+      {{alert_type}}, {{target_name}}, {{status}}, {{message}},
+      {{timestamp}}, {{recipients}}, {{rate}}, {{threshold}}, {{rule_name}}
+    Unknown placeholders are left untouched.
+    """
     replacements = {
         "{{alert_type}}": alert_type,
         "{{target_name}}": target_name,
@@ -27,6 +36,9 @@ def render_template(
         "{{message}}": message,
         "{{timestamp}}": timestamp,
         "{{recipients}}": recipients,
+        "{{rate}}": rate,
+        "{{threshold}}": threshold,
+        "{{rule_name}}": rule_name,
     }
     result = template
     for placeholder, value in replacements.items():

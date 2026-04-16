@@ -625,7 +625,7 @@ export interface RuleChannelDetail {
 export interface AlertRule {
   id: number;
   name: string;
-  type: 'db_health' | 'upstream_health' | 'error_rate';
+  type: 'db_health' | 'upstream_health' | 'error_rate' | 'route_error_rate';
   target: string;
   threshold: number | null;
   enabled: boolean;
@@ -636,7 +636,7 @@ export interface AlertRule {
 
 export interface AlertRuleCreate {
   name: string;
-  type: 'db_health' | 'upstream_health' | 'error_rate';
+  type: 'db_health' | 'upstream_health' | 'error_rate' | 'route_error_rate';
   target: string;
   threshold?: number;
   enabled?: boolean;

@@ -64,6 +64,25 @@ class TestAlertSchemas:
         )
         assert rule.threshold == 10.0
 
+    def test_rule_create_route_error_rate(self):
+        rule = AlertRuleCreate(
+            name="route-err-check",
+            type="route_error_rate",
+            target="*",
+            threshold=5.0,
+            channels=[{"channel_id": 1, "recipients": ["ops@co.com"]}],
+        )
+        assert rule.type == "route_error_rate"
+        assert rule.threshold == 5.0
+
+    def test_rule_create_rejects_unknown_type(self):
+        import pytest
+        with pytest.raises(Exception):
+            AlertRuleCreate(
+                name="bogus", type="does_not_exist", target="*",
+                channels=[],
+            )
+
     def test_alert_status_response(self):
         s = AlertStatusResponse(target="mydb", type="db_health", status="alert", since="2026-04-11T12:00:00")
         assert s.status == "alert"
