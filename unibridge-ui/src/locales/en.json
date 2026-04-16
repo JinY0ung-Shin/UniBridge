@@ -465,6 +465,16 @@
     "failed": "Failed",
     "noHistory": "No alert history.",
     "loadFailed": "Failed to load alert history.",
-    "templateHelp": "Available variables: {{alert_type}}, {{target_name}}, {{status}}, {{message}}, {{timestamp}}, {{recipients}}"
+    "templateHelp": "The following variables can be used in the payload template.",
+    "templateVarsToggle": "Show variables ({{count}})",
+    "varDesc_alert_type": "Alert type (db_health, upstream_health, error_rate, route_error_rate)",
+    "varDesc_target_name": "Target name (DB, upstream, route, etc.)",
+    "varDesc_status": "Status (triggered or resolved)",
+    "varDesc_message": "Alert message body",
+    "varDesc_timestamp": "Alert timestamp",
+    "varDesc_recipients": "Recipient list",
+    "varDesc_rate": "Current error rate (used in error-rate-based alerts)",
+    "varDesc_threshold": "Threshold value configured in the rule",
+    "varDesc_rule_name": "Alert rule name"
   }
 }

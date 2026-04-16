@@ -465,6 +465,16 @@
     "failed": "실패",
     "noHistory": "알림 이력이 없습니다.",
     "loadFailed": "알림 이력을 불러오지 못했습니다.",
-    "templateHelp": "사용 가능한 변수: {{alert_type}}, {{target_name}}, {{status}}, {{message}}, {{timestamp}}, {{recipients}}"
+    "templateHelp": "페이로드 템플릿에서 아래 변수를 사용할 수 있습니다.",
+    "templateVarsToggle": "변수 목록 보기 ({{count}}개)",
+    "varDesc_alert_type": "알림 유형 (db_health, upstream_health, error_rate, route_error_rate)",
+    "varDesc_target_name": "알림 대상 이름 (DB명, 업스트림명, 라우트명 등)",
+    "varDesc_status": "상태 (triggered 또는 resolved)",
+    "varDesc_message": "알림 메시지 본문",
+    "varDesc_timestamp": "알림 발생 시각",
+    "varDesc_recipients": "수신자 목록",
+    "varDesc_rate": "현재 에러율 (에러율 기반 알림에서 사용)",
+    "varDesc_threshold": "임계값 (규칙에 설정된 기준값)",
+    "varDesc_rule_name": "알림 규칙 이름"
   }
 }

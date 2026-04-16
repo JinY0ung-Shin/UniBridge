@@ -622,7 +622,35 @@ function AlertSettings() {
                     onChange={(e) => updateChannelField('payload_template', e.target.value)}
                     required
                   />
-                  <p className="form-hint">{t('alerts.templateHelp')}</p>
+                  {(() => {
+                    const templateVars: [string, string][] = [
+                      ['alert_type', t('alerts.varDesc_alert_type')],
+                      ['target_name', t('alerts.varDesc_target_name')],
+                      ['status', t('alerts.varDesc_status')],
+                      ['message', t('alerts.varDesc_message')],
+                      ['timestamp', t('alerts.varDesc_timestamp')],
+                      ['recipients', t('alerts.varDesc_recipients')],
+                      ['rate', t('alerts.varDesc_rate')],
+                      ['threshold', t('alerts.varDesc_threshold')],
+                      ['rule_name', t('alerts.varDesc_rule_name')],
+                    ];
+                    return (
+                  <details className="template-vars">
+                    <summary className="form-hint template-vars-toggle">
+                      {t('alerts.templateVarsToggle', { count: templateVars.length })}
+                    </summary>
+                    <p className="form-hint">{t('alerts.templateHelp')}</p>
+                    <dl className="template-vars-list">
+                      {templateVars.map(([name, desc]) => (
+                        <div key={name} className="template-var-row">
+                          <dt><code>{`{{${name}}}`}</code></dt>
+                          <dd>{desc}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </details>
+                    );
+                  })()}
                 </div>
 
                 {/* Headers */}
