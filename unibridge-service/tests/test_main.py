@@ -98,6 +98,18 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 "status": 1,
             },
             {
+                "id": "s3-api",
+                "name": "s3-api",
+                "uri": "/api/s3/*",
+                "methods": ["GET"],
+                "upstream_id": "unibridge-service",
+                "plugins": {
+                    "key-auth": {},
+                    "consumer-restriction": {"whitelist": ["s3-consumer"]},
+                },
+                "status": 1,
+            },
+            {
                 "id": "llm-proxy",
                 "name": "llm-proxy",
                 "uri": "/api/llm/*",
@@ -142,6 +154,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     assert route_calls["query-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["query-consumer"]
     }
+    assert route_calls["s3-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["s3-consumer"]
+    }
     assert route_calls["llm-proxy"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["llm-consumer"]
     }
@@ -152,7 +167,7 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
     app = FastAPI()
     put_resource = AsyncMock()
     get_resource = AsyncMock(
-        side_effect=[RuntimeError("route not found"), RuntimeError("404 route missing")]
+        side_effect=[RuntimeError("route not found"), RuntimeError("404 s3 route missing"), RuntimeError("404 route missing")]
     )
 
     with (
@@ -186,6 +201,7 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
         if call.args[0] == "routes"
     }
     assert "consumer-restriction" not in route_calls["query-api"]["plugins"]
+    assert "consumer-restriction" not in route_calls["s3-api"]["plugins"]
     assert "consumer-restriction" not in route_calls["llm-proxy"]["plugins"]
 
 
@@ -280,6 +296,12 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
                 scalars=lambda: SimpleNamespace(all=lambda: []),
             )
 
+    class _S3Db:
+        async def execute(self, _query):
+            return SimpleNamespace(
+                scalars=lambda: SimpleNamespace(all=lambda: []),
+            )
+
     class _SettingsDb:
         pass
 
@@ -296,7 +318,7 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     replay_route_restrictions = AsyncMock(
         side_effect=lambda db: events.append(("replay", db.__class__.__name__))
     )
-    db_iter = iter([_ConnectionsDb(), _SettingsDb(), _ReplayDb()])
+    db_iter = iter([_ConnectionsDb(), _S3Db(), _SettingsDb(), _ReplayDb()])
 
     with (
         patch("app.main.validate_settings"),
@@ -328,5 +350,6 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     assert isinstance(db_arg, _ReplayDb)
     assert events[-1] == ("replay", "_ReplayDb")
     assert events.index(("routes", "query-api")) < events.index(("replay", "_ReplayDb"))
+    assert events.index(("routes", "s3-api")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "llm-proxy")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "llm-admin")) < events.index(("replay", "_ReplayDb"))

@@ -34,8 +34,8 @@ from tests.conftest import auth_header
 
 
 class TestAllPermissions:
-    def test_all_permissions_has_17_entries(self):
-        assert len(ALL_PERMISSIONS) == 19
+    def test_all_permissions_has_expected_entries(self):
+        assert len(ALL_PERMISSIONS) == 22
 
     def test_all_permissions_are_unique(self):
         assert len(ALL_PERMISSIONS) == len(set(ALL_PERMISSIONS))
@@ -512,6 +512,7 @@ class TestSeedRoles:
                 "gateway.monitoring.read",
                 "apikeys.read",
                 "alerts.read",
+                "s3.connections.read", "s3.browse",
             }
             assert perms == expected
 
@@ -831,7 +832,7 @@ class TestAdminPermissionsEndpoint:
         data = resp.json()
         assert isinstance(data, list)
         assert set(data) == set(ALL_PERMISSIONS)
-        assert len(data) == 19
+        assert len(data) == len(ALL_PERMISSIONS)
 
     async def test_list_permissions_as_developer_forbidden(self, client, developer_token):
         """developer role does not have admin.roles.read."""
