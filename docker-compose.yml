@@ -11,11 +11,11 @@ services:
     volumes:
       - etcd-data:/bitnami/etcd
     healthcheck:
-      test: ["CMD-SHELL", "if [ -n \"$ETCD_ROOT_PASSWORD\" ]; then etcdctl endpoint health --user root --password \"$ETCD_ROOT_PASSWORD\"; else etcdctl endpoint health; fi"]
-      interval: 10s
+      test: ["CMD-SHELL", "if [ -n \"$ETCD_ROOT_PASSWORD\" ]; then etcdctl --user root:\"$ETCD_ROOT_PASSWORD\" auth status 2>/dev/null | grep -q 'Authentication Status: true' && etcdctl endpoint health --user root --password \"$ETCD_ROOT_PASSWORD\"; else etcdctl endpoint health; fi"]
+      interval: 5s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 30
+      start_period: 15s
     networks:
       - apihub-net
 
