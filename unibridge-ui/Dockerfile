@@ -3,6 +3,7 @@ WORKDIR /app
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG NO_PROXY
+ARG NPM_REGISTRY=""
 ARG HOST_IP=localhost
 ARG KEYCLOAK_PORT=8443
 ARG VITE_KEYCLOAK_URL
@@ -13,6 +14,7 @@ ENV VITE_KEYCLOAK_REALM=$VITE_KEYCLOAK_REALM
 ENV VITE_KEYCLOAK_CLIENT_ID=$VITE_KEYCLOAK_CLIENT_ID
 COPY package*.json ./
 RUN npm config set strict-ssl false && \
+    if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi && \
     if [ -n "$HTTP_PROXY" ]; then npm config set proxy $HTTP_PROXY; fi && \
     if [ -n "$HTTPS_PROXY" ]; then npm config set https-proxy $HTTPS_PROXY; fi && \
     npm install
