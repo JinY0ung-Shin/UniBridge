@@ -179,7 +179,7 @@ services:
       - apihub-net
 
   litellm:
-    image: ghcr.io/berriai/litellm:main-v1.80.8-stable
+    image: ghcr.io/berriai/litellm:main-v1.81.9-stable
     entrypoint: ["sh", "-c"]
     command:
       - |
