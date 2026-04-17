@@ -103,6 +103,7 @@ services:
         NO_PROXY: ${NO_PROXY:-}
         APT_DEBIAN_MIRROR: ${APT_DEBIAN_MIRROR:-}
         MS_PACKAGES_URL: ${MS_PACKAGES_URL:-https://packages.microsoft.com}
+        MS_SKIP_GPG: ${MS_SKIP_GPG:-}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
         PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
     ports:
