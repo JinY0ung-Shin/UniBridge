@@ -1,6 +1,6 @@
 # API Hub (UniBridge)
 
-Internal API/DB gateway platform. Register multiple databases (PostgreSQL, MSSQL), execute SQL through a single endpoint, manage API routes via APISIX, and control access with RBAC + API keys.
+Internal API/DB gateway platform. Register multiple databases (PostgreSQL, MSSQL, ClickHouse), execute SQL through a single endpoint, manage API routes via APISIX, and control access with RBAC + API keys.
 
 ## Architecture
 
@@ -10,14 +10,18 @@ Browser ──HTTPS──> unibridge-ui (nginx)
                        ├── /_api/* ──> unibridge-service (FastAPI)
                        └── /api/*  ──> apisix (API Gateway)
                                           │
-                                          ├── Registered databases
-                                          └── Upstream services
+                                          ├── /api/query/*     → Registered databases (Postgres, MSSQL, ClickHouse)
+                                          ├── /api/llm/*       → LiteLLM (LLM proxy)
+                                          ├── /api/llm-admin/* → LiteLLM Admin UI/API
+                                          ├── /api/s3/*        → S3 connections
+                                          └── Custom upstream services
 
-Keycloak ── OIDC auth
+Keycloak   ── OIDC auth
 Prometheus ── APISIX metrics
+LiteLLM    ── Unified LLM proxy (+ Postgres)
 ```
 
-**Services (7):** etcd, APISIX, Keycloak + Postgres, unibridge-service, Prometheus, unibridge-ui
+**Services (9):** etcd, APISIX, Keycloak + Postgres, unibridge-service, Prometheus, LiteLLM + Postgres, unibridge-ui
 
 ## Prerequisites
 
@@ -99,6 +103,7 @@ First boot takes ~2 minutes (Keycloak initialization).
 | Web UI | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>` |
 | Keycloak Admin | `https://<HOST_IP>:<KEYCLOAK_PORT>/admin` |
 | API Gateway | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/*` |
+| LiteLLM | `https://<HOST_IP>:<LITELLM_PORT>` |
 | Prometheus | `http://<HOST_IP>:9090` (localhost only) |
 
 Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`). No human users are seeded into the `apihub` realm by default. After first boot, sign in to the admin console and create the users you want in the `apihub` realm, then assign the roles and/or groups required for your deployment.
@@ -109,6 +114,7 @@ Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`). N
 |------|---------|---------|
 | 3000 | unibridge-ui (HTTPS) | public |
 | 8443 | Keycloak (HTTPS) | public |
+| 4000 | LiteLLM (HTTPS) | public |
 | 8000 | unibridge-service | localhost only |
 | 9180 | APISIX admin | localhost only |
 | 9090 | Prometheus | localhost only |
@@ -216,9 +222,12 @@ ETCD_ALLOW_NONE_AUTH=yes
 
 ## Key Features
 
-- **Multi-DB support** — PostgreSQL, MSSQL via a single query endpoint
+- **Multi-DB support** — PostgreSQL, MSSQL, ClickHouse via a single query endpoint
+- **LLM Proxy** — Unified LiteLLM gateway with centralized auth, usage metrics, and per-model analytics
+- **S3 Connections** — Register S3-compatible storage and browse objects through the gateway
+- **Alerts** — Rule-based alerting with webhook delivery and history
 - **APISIX Gateway** — Route management, upstream config, API key auth
-- **RBAC** — 17 granular permissions, dynamic role management
+- **RBAC** — 22 granular permissions, dynamic role management
 - **API Keys** — External access with per-database/route restrictions
 - **Monitoring** — Prometheus metrics, request trends, latency percentiles
 - **User Management** — Keycloak integration, role assignment
