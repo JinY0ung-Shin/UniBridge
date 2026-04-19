@@ -28,14 +28,7 @@ plugin_attr:
       port: 9091
 
 plugins:
-  - jwt-auth
   - key-auth
   - consumer-restriction
   - proxy-rewrite
   - prometheus
-  - http-logger
-  - error-log-logger
-  - ip-restriction
-  - limit-req
-  - limit-count
-  - cors
