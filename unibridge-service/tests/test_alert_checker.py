@@ -1,6 +1,8 @@
 """Tests for alert_checker module."""
 from __future__ import annotations
 
+import time
+
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -198,7 +200,12 @@ class TestRouteLabelCache:
         re-fetch — otherwise N routes × M rules = N*M APISIX calls/cycle."""
         from app.services import alert_checker
         alert_checker._ROUTE_LABEL_CACHE = {}
-        alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
+        # Force the cache to look expired. Setting TS to 0 only works when the
+        # process's monotonic clock is already > TTL, which is not guaranteed
+        # on freshly-booted CI runners.
+        alert_checker._ROUTE_LABEL_CACHE_TS = (
+            time.monotonic() - alert_checker._ROUTE_LABEL_TTL - 10.0
+        )
         call_count = {"n": 0}
 
         async def failing(*a, **kw):
