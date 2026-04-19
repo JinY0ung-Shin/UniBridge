@@ -177,6 +177,28 @@ docker compose down
 docker compose down -v
 ```
 
+## Backups
+
+Stateful components (etcd, Keycloak DB, LiteLLM DB, unibridge-service meta DB) are backed up by scripts in [`backup/`](./backup/README.md). Snapshots land in `./snapshots/` (gitignored) with 14-day retention, and manifest SHA256s are verified before any destructive restore.
+
+### Deploy-time setup
+
+1. **Pull the latest tree** on the deploy host:
+   ```bash
+   git pull
+   ```
+2. **Install host-side prerequisites** (needed by `restore.sh` for manifest verification):
+   ```bash
+   apt-get install -y jq        # or python3 — either one works
+   ```
+3. **Schedule the nightly backup** via cron (`crontab -e`):
+   ```
+   0 3 * * * cd /opt/unibridge && ./backup/backup.sh >> /var/log/unibridge-backup.log 2>&1
+   ```
+4. **Run a restore drill before relying on it.** Follow the "Full-disaster recovery order" in [`backup/README.md`](./backup/README.md) against a disposable environment, end-to-end at least once. A backup you haven't tested restoring is a wish, not a backup.
+
+Retention, path overrides, and the full restore runbook live in [`backup/README.md`](./backup/README.md).
+
 ## etcd Authentication Migration Guide
 
 etcd는 APISIX의 설정 저장소로, 기본적으로 인증이 활성화되어 있습니다. 기존 환경에서 업그레이드하는 경우 아래 절차를 따라주세요.
