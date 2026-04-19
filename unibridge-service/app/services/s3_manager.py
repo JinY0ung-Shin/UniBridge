@@ -104,7 +104,7 @@ class S3ConnectionManager:
             code = exc.response.get("Error", {}).get("Code", "")
             logger.warning("S3 connection test failed for '%s': %s %s", alias, code, exc)
             return False, f"Connection failed ({code})" if code else "Connection failed"
-        except (BotoCoreError, Exception) as exc:
+        except (BotoCoreError, Exception):
             logger.exception("S3 connection test failed for '%s'", alias)
             return False, "Connection failed"
 
