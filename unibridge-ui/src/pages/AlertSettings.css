@@ -190,14 +190,30 @@
   color: var(--text-tertiary);
 }
 
-.checkbox-label {
+.form-group > .checkbox-label {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 14px;
+  font-weight: 400;
   color: var(--text-primary);
+  text-transform: none;
+  letter-spacing: normal;
   cursor: pointer;
   user-select: none;
+}
+
+.form-group > .checkbox-label > input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  flex: 0 0 auto;
+  accent-color: var(--accent-blue);
+  cursor: pointer;
 }
 
 /* ── Header pairs ──────────────────────────────────────────────────────────── */
