@@ -11,7 +11,7 @@ describe('nginx /api proxy config', () => {
   it('disables proxy buffering so upstream streaming is flushed progressively', () => {
     const apiLocation = getLocationBlock('/api/');
 
-    expect(apiLocation).toContain('proxy_pass http://apisix:9080;');
+    expect(apiLocation).toContain('proxy_pass http://$apisix_upstream:9080$request_uri;');
     expect(apiLocation).toContain('proxy_buffering off;');
   });
 });
