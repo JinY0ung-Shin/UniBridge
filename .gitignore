@@ -13,3 +13,5 @@ docs/superpowers/
 # Runtime backup output (created by backup/backup.sh). The scripts themselves
 # live in backup/ and MUST be committed.
 snapshots/
+# Local sqlite/meta store created when running unibridge-service outside docker.
+unibridge-service/data/
