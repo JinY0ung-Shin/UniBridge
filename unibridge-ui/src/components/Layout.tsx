@@ -22,6 +22,7 @@ const navItems = [
   { to: '/api-keys', labelKey: 'nav.apiKeys', icon: 'API Keys', section: 'access', permission: 'apikeys.read' },
   { to: '/roles', labelKey: 'nav.roles', icon: 'Roles', section: 'admin', permission: 'admin.roles.read' },
   { to: '/users', labelKey: 'nav.users', icon: 'Users', section: 'admin', permission: 'admin.roles.read' },
+  { to: '/alerts/status', labelKey: 'nav.alertStatus', icon: 'Alert Status', section: 'alerts', permission: 'alerts.read' },
   { to: '/alerts/settings', labelKey: 'nav.alertSettings', icon: 'Alert Settings', section: 'alerts', permission: 'alerts.write' },
   { to: '/alerts/history', labelKey: 'nav.alertHistory', icon: 'Alert History', section: 'alerts', permission: 'alerts.read' },
 ];
@@ -168,6 +169,13 @@ function Layout({ children }: LayoutProps) {
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <circle cx="9" cy="5" r="3" stroke="currentColor" strokeWidth="1.5" />
                         <path d="M3 16c0-2.8 2.7-5 6-5s6 2.2 6 5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                    )}
+                    {item.icon === 'Alert Status' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <path d="M9 1.5a7.5 7.5 0 107.5 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                        <circle cx="9" cy="9" r="2" fill="currentColor" />
+                        <circle cx="14.5" cy="3.5" r="2" fill="currentColor" />
                       </svg>
                     )}
                     {item.icon === 'Alert Settings' && (

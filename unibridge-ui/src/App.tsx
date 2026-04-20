@@ -17,6 +17,7 @@ import Roles from './pages/Roles';
 import Users from './pages/Users';
 import AlertSettings from './pages/AlertSettings';
 import AlertHistory from './pages/AlertHistory';
+import AlertStatus from './pages/AlertStatus';
 import S3Connections from './pages/S3Connections';
 import S3Browser from './pages/S3Browser';
 
@@ -52,6 +53,7 @@ function App() {
         <Route path="/api-keys" element={<ProtectedRoute permission="apikeys.read"><ApiKeys /></ProtectedRoute>} />
         <Route path="/roles" element={<ProtectedRoute permission="admin.roles.read"><Roles /></ProtectedRoute>} />
         <Route path="/users" element={<ProtectedRoute permission="admin.roles.read"><Users /></ProtectedRoute>} />
+        <Route path="/alerts/status" element={<ProtectedRoute permission="alerts.read"><AlertStatus /></ProtectedRoute>} />
         <Route path="/alerts/settings" element={<ProtectedRoute permission="alerts.write"><AlertSettings /></ProtectedRoute>} />
         <Route path="/alerts/history" element={<ProtectedRoute permission="alerts.read"><AlertHistory /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />

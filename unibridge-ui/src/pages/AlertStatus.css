@@ -1,0 +1,152 @@
+.alert-status {
+  max-width: 1000px;
+}
+
+.alert-status .page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 24px;
+}
+
+/* Rule type badges (mirror AlertSettings.css) */
+.alert-status .rule-type-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.alert-status .rule-type-badge--db_health {
+  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+  color: var(--accent-blue);
+}
+
+.alert-status .rule-type-badge--upstream_health {
+  background: color-mix(in srgb, var(--accent-green) 12%, transparent);
+  color: var(--accent-green);
+}
+
+.alert-status .rule-type-badge--error_rate {
+  background: color-mix(in srgb, var(--accent-red) 12%, transparent);
+  color: var(--accent-red);
+}
+
+.alert-status .rule-type-badge--route_error_rate {
+  background: color-mix(in srgb, var(--accent-orange, #f59e0b) 12%, transparent);
+  color: var(--accent-orange, #f59e0b);
+}
+
+/* Summary cards */
+.status-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.status-summary-card {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  background: var(--bg-secondary);
+}
+
+.status-summary-card--alert {
+  border-color: color-mix(in srgb, var(--accent-red) 40%, transparent);
+  background: color-mix(in srgb, var(--accent-red) 6%, var(--bg-secondary));
+}
+
+.status-summary-card--ok {
+  border-color: color-mix(in srgb, var(--accent-green) 40%, transparent);
+  background: color-mix(in srgb, var(--accent-green) 6%, var(--bg-secondary));
+}
+
+.status-summary-count {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.1;
+}
+
+.status-summary-card--alert .status-summary-count {
+  color: var(--accent-red);
+}
+
+.status-summary-card--ok .status-summary-count {
+  color: var(--accent-green);
+}
+
+.status-summary-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+/* Sections */
+.status-section {
+  margin-bottom: 28px;
+}
+
+.status-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 10px;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.status-dot--alert {
+  background: var(--accent-red);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-red) 20%, transparent);
+}
+
+.status-dot--ok {
+  background: var(--accent-green);
+}
+
+.empty-state--small {
+  padding: 16px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  text-align: center;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.empty-state--small p {
+  margin: 0;
+}
+
+.cell-target {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.cell-timestamp {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.cell-duration {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}

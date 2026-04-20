@@ -12,6 +12,9 @@ import {
   updateAlertRule,
   deleteAlertRule,
   testAlertRule,
+  getAdminDatabases,
+  getGatewayUpstreams,
+  getGatewayRoutes,
   type AlertChannel,
   type AlertChannelCreate,
   type AlertRule,
@@ -112,6 +115,24 @@ function AlertSettings() {
   const rulesQuery = useQuery({
     queryKey: ['alert-rules'],
     queryFn: getAlertRules,
+  });
+
+  const databasesQuery = useQuery({
+    queryKey: ['admin-databases'],
+    queryFn: getAdminDatabases,
+    enabled: showRuleModal,
+  });
+
+  const upstreamsQuery = useQuery({
+    queryKey: ['gateway-upstreams'],
+    queryFn: getGatewayUpstreams,
+    enabled: showRuleModal,
+  });
+
+  const gatewayRoutesQuery = useQuery({
+    queryKey: ['gateway-routes'],
+    queryFn: getGatewayRoutes,
+    enabled: showRuleModal,
   });
 
   const channels = channelsQuery.data ?? [];
@@ -400,6 +421,14 @@ function AlertSettings() {
     value: ReturnType<typeof emptyRuleForm>[K],
   ) {
     setRuleForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function handleRuleTypeChange(nextType: RuleType) {
+    setRuleForm((prev) => ({
+      ...prev,
+      type: nextType,
+      target: nextType === 'error_rate' ? '*' : '',
+    }));
   }
 
   function addChannelRow() {
@@ -801,7 +830,7 @@ function AlertSettings() {
                   <label>{t('alerts.ruleType')}</label>
                   <select
                     value={ruleForm.type}
-                    onChange={(e) => updateRuleField('type', e.target.value as RuleType)}
+                    onChange={(e) => handleRuleTypeChange(e.target.value as RuleType)}
                   >
                     <option value="db_health">{t('alerts.typeDbHealth')}</option>
                     <option value="upstream_health">{t('alerts.typeUpstreamHealth')}</option>
@@ -811,12 +840,84 @@ function AlertSettings() {
                 </div>
                 <div className="form-group">
                   <label>{t('alerts.ruleTarget')}</label>
-                  <input
-                    type="text"
-                    value={ruleForm.target}
-                    onChange={(e) => updateRuleField('target', e.target.value)}
-                    placeholder={t('alerts.targetAll')}
-                  />
+                  {ruleForm.type === 'error_rate' ? (
+                    <input
+                      type="text"
+                      value="*"
+                      disabled
+                      title={t('alerts.targetGlobalHint')}
+                    />
+                  ) : ruleForm.type === 'db_health' ? (
+                    (() => {
+                      const items = databasesQuery.data ?? [];
+                      const missing =
+                        ruleForm.target && !items.some((db) => db.alias === ruleForm.target);
+                      return (
+                        <select
+                          value={ruleForm.target}
+                          onChange={(e) => updateRuleField('target', e.target.value)}
+                          required
+                        >
+                          <option value="">— {t('alerts.selectTargetDb')} —</option>
+                          {missing && (
+                            <option value={ruleForm.target}>{ruleForm.target} (missing)</option>
+                          )}
+                          {items.map((db) => (
+                            <option key={db.alias} value={db.alias}>
+                              {db.alias}
+                            </option>
+                          ))}
+                        </select>
+                      );
+                    })()
+                  ) : ruleForm.type === 'upstream_health' ? (
+                    (() => {
+                      const items = upstreamsQuery.data?.items ?? [];
+                      const missing =
+                        ruleForm.target &&
+                        !items.some((up) => (up.name ?? up.id) === ruleForm.target);
+                      return (
+                        <select
+                          value={ruleForm.target}
+                          onChange={(e) => updateRuleField('target', e.target.value)}
+                          required
+                        >
+                          <option value="">— {t('alerts.selectTargetUpstream')} —</option>
+                          {missing && (
+                            <option value={ruleForm.target}>{ruleForm.target} (missing)</option>
+                          )}
+                          {items.map((up) => (
+                            <option key={up.id} value={up.name ?? up.id}>
+                              {up.name ?? up.id}
+                            </option>
+                          ))}
+                        </select>
+                      );
+                    })()
+                  ) : (
+                    (() => {
+                      const items = gatewayRoutesQuery.data?.items ?? [];
+                      const missing =
+                        ruleForm.target && !items.some((rt) => rt.id === ruleForm.target);
+                      return (
+                        <select
+                          value={ruleForm.target}
+                          onChange={(e) => updateRuleField('target', e.target.value)}
+                          required
+                        >
+                          <option value="">— {t('alerts.selectTargetRoute')} —</option>
+                          {missing && (
+                            <option value={ruleForm.target}>{ruleForm.target} (missing)</option>
+                          )}
+                          {items.map((rt) => (
+                            <option key={rt.id} value={rt.id}>
+                              {rt.name ? `${rt.name} (${rt.id})` : rt.id}
+                            </option>
+                          ))}
+                        </select>
+                      );
+                    })()
+                  )}
                 </div>
                 {(ruleForm.type === 'error_rate' || ruleForm.type === 'route_error_rate') && (
                   <div className="form-group">
