@@ -16,7 +16,8 @@ from app.models import AlertChannel, AlertHistory, AlertRule, AlertRuleChannel
 from app.schemas import (
     AlertChannelCreate, AlertChannelResponse, AlertChannelUpdate,
     AlertHistoryResponse,
-    AlertRuleCreate, AlertRuleResponse, AlertRuleUpdate, AlertStatusResponse,
+    AlertRuleCreate, AlertRuleResponse, AlertRuleTestChannelResult,
+    AlertRuleTestResponse, AlertRuleUpdate, AlertStatusResponse,
     RuleChannelDetail,
 )
 from app.services.alert_sender import render_template, send_webhook
@@ -267,6 +268,80 @@ async def delete_rule(
         raise HTTPException(status_code=404, detail="Rule not found")
     await db.delete(rule)
     await db.commit()
+
+
+@router.post("/rules/{rule_id}/test", response_model=AlertRuleTestResponse)
+async def test_rule(
+    rule_id: int,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> AlertRuleTestResponse:
+    rule_result = await db.execute(select(AlertRule).where(AlertRule.id == rule_id))
+    rule = rule_result.scalar_one_or_none()
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Rule not found")
+
+    mapping_result = await db.execute(
+        select(AlertRuleChannel).where(AlertRuleChannel.rule_id == rule.id)
+    )
+    mappings = mapping_result.scalars().all()
+
+    now = datetime.now(timezone.utc).isoformat()
+    threshold_str = str(rule.threshold) if rule.threshold is not None else ""
+    results: list[AlertRuleTestChannelResult] = []
+
+    for mapping in mappings:
+        recipients_list: list[str] = json.loads(mapping.recipients)
+        ch_result = await db.execute(
+            select(AlertChannel).where(AlertChannel.id == mapping.channel_id)
+        )
+        ch = ch_result.scalar_one_or_none()
+
+        if ch is None:
+            results.append(AlertRuleTestChannelResult(
+                channel_id=mapping.channel_id,
+                channel_name="deleted",
+                recipients=recipients_list,
+                skipped=True,
+                success=None,
+                error="channel deleted",
+            ))
+            continue
+        if not ch.enabled:
+            results.append(AlertRuleTestChannelResult(
+                channel_id=ch.id,
+                channel_name=ch.name,
+                recipients=recipients_list,
+                skipped=True,
+                success=None,
+                error="channel disabled",
+            ))
+            continue
+
+        payload = render_template(
+            ch.payload_template,
+            alert_type="test",
+            target_name=rule.target,
+            status="테스트",
+            message=f"[TEST] {rule.name} 규칙의 테스트 알림입니다.",
+            timestamp=now,
+            recipients=", ".join(recipients_list),
+            rate=threshold_str,
+            threshold=threshold_str,
+            rule_name=rule.name,
+        )
+        headers = json.loads(ch.headers) if ch.headers else None
+        ok, err = await send_webhook(url=ch.webhook_url, payload=payload, headers=headers)
+        results.append(AlertRuleTestChannelResult(
+            channel_id=ch.id,
+            channel_name=ch.name,
+            recipients=recipients_list,
+            skipped=False,
+            success=ok,
+            error=err,
+        ))
+
+    return AlertRuleTestResponse(results=results)
 
 
 # ── History ─────────────────────────────────────────────────────────────────

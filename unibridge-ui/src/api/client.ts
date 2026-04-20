@@ -708,6 +708,24 @@ export async function deleteAlertRule(id: number): Promise<void> {
   await client.delete(`/admin/alerts/rules/${id}`);
 }
 
+export interface AlertRuleTestChannelResult {
+  channel_id: number;
+  channel_name: string;
+  recipients: string[];
+  skipped: boolean;
+  success: boolean | null;
+  error: string | null;
+}
+
+export interface AlertRuleTestResponse {
+  results: AlertRuleTestChannelResult[];
+}
+
+export async function testAlertRule(id: number): Promise<AlertRuleTestResponse> {
+  const { data } = await client.post(`/admin/alerts/rules/${id}/test`);
+  return data;
+}
+
 // History & Status
 export async function getAlertHistory(params?: {
   alert_type?: string;

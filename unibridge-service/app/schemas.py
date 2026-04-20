@@ -405,6 +405,19 @@ class AlertStatusResponse(BaseModel):
     since: str | None = None
 
 
+class AlertRuleTestChannelResult(BaseModel):
+    channel_id: int
+    channel_name: str
+    recipients: list[str]
+    skipped: bool = False
+    success: bool | None = None
+    error: str | None = None
+
+
+class AlertRuleTestResponse(BaseModel):
+    results: list[AlertRuleTestChannelResult]
+
+
 # ── S3 Connections ──────────────────────────────────────────────────────────
 
 class S3ConnectionCreate(BaseModel):

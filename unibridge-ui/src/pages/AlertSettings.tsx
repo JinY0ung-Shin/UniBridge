@@ -11,6 +11,7 @@ import {
   createAlertRule,
   updateAlertRule,
   deleteAlertRule,
+  testAlertRule,
   type AlertChannel,
   type AlertChannelCreate,
   type AlertRule,
@@ -93,6 +94,7 @@ function AlertSettings() {
   const [editingChannelId, setEditingChannelId] = useState<number | null>(null);
   const [channelForm, setChannelForm] = useState(emptyChannelForm());
   const [testingChannelIds, setTestingChannelIds] = useState<Set<number>>(new Set());
+  const [testingRuleIds, setTestingRuleIds] = useState<Set<number>>(new Set());
 
   // ── Rules state ───────────────────────────────────────────────────────────
 
@@ -252,6 +254,48 @@ function AlertSettings() {
       setTestingChannelIds((prev) => {
         const next = new Set(prev);
         next.delete(ch.id);
+        return next;
+      });
+    }
+  }
+
+  async function handleTestRule(rule: AlertRule) {
+    if (rule.channels.length === 0) {
+      addToast({ type: 'error', title: `${rule.name} — ${t('alerts.testRuleNoChannels')}` });
+      return;
+    }
+    setTestingRuleIds((prev) => new Set(prev).add(rule.id));
+    try {
+      const { results } = await testAlertRule(rule.id);
+      const sent = results.filter((r) => !r.skipped);
+      const skipped = results.filter((r) => r.skipped);
+      const succeeded = sent.filter((r) => r.success === true);
+      const failed = sent.filter((r) => r.success === false);
+
+      if (failed.length === 0 && skipped.length === 0) {
+        addToast({
+          type: 'success',
+          title: `${rule.name} — ${t('alerts.testRuleAllOk', { count: succeeded.length })}`,
+        });
+      } else if (failed.length === 0 && skipped.length > 0) {
+        addToast({
+          type: 'info',
+          title: `${rule.name} — ${t('alerts.testRulePartialSkipped', { sent: succeeded.length, skipped: skipped.length })}`,
+          message: skipped.map((r) => `${r.channel_name}: ${r.error ?? ''}`).join(' • '),
+        });
+      } else {
+        addToast({
+          type: 'error',
+          title: `${rule.name} — ${t('alerts.testRuleSomeFailed', { ok: succeeded.length, total: sent.length })}`,
+          message: failed.map((r) => `${r.channel_name}: ${r.error ?? ''}`).join(' • '),
+        });
+      }
+    } catch {
+      addToast({ type: 'error', title: `${rule.name} — ${t('alerts.testFailed')}` });
+    } finally {
+      setTestingRuleIds((prev) => {
+        const next = new Set(prev);
+        next.delete(rule.id);
         return next;
       });
     }
@@ -555,6 +599,15 @@ function AlertSettings() {
                       </td>
                       <td>
                         <div className="action-buttons">
+                          <button
+                            className="btn btn-sm btn-outline"
+                            onClick={() => handleTestRule(rule)}
+                            disabled={testingRuleIds.has(rule.id)}
+                          >
+                            {testingRuleIds.has(rule.id)
+                              ? t('common.loading')
+                              : t('alerts.testRule')}
+                          </button>
                           <button
                             className="btn btn-sm btn-secondary"
                             onClick={() => openEditRule(rule)}
