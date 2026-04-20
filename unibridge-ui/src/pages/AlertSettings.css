@@ -203,19 +203,6 @@
   user-select: none;
 }
 
-.form-group > .checkbox-label > input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  margin: 0;
-  border: none;
-  border-radius: 0;
-  background: none;
-  flex: 0 0 auto;
-  accent-color: var(--accent-blue);
-  cursor: pointer;
-}
-
 /* ── Header pairs ──────────────────────────────────────────────────────────── */
 
 .header-row {

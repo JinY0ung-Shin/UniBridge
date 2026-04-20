@@ -445,6 +445,20 @@
   color: var(--text-tertiary);
 }
 
+.form-group input[type="checkbox"],
+.form-group input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  flex: 0 0 auto;
+  accent-color: var(--accent-blue);
+  cursor: pointer;
+}
+
 .form-group select {
   appearance: none;
   cursor: pointer;
