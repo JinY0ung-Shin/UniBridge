@@ -446,6 +446,7 @@
     "channels": "Channels",
     "recipients": "Recipients",
     "addRecipient": "Add Recipient",
+    "recipientsDuplicateHint": "For channels that accept only one recipient per call (e.g. mail APIs), register the same channel multiple times with one recipient per row.",
     "typeDbHealth": "DB Health",
     "typeUpstreamHealth": "Upstream",
     "typeErrorRate": "Error Rate",

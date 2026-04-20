@@ -192,10 +192,6 @@ async def create_rule(
     _user: CurrentUser = Depends(require_permission("alerts.write")),
     db: AsyncSession = Depends(get_db),
 ) -> AlertRuleResponse:
-    # Validate no duplicate channel mappings
-    ch_ids = [ch_map.channel_id for ch_map in body.channels]
-    if len(ch_ids) != len(set(ch_ids)):
-        raise HTTPException(status_code=400, detail="Duplicate channel mappings are not allowed")
     rule = AlertRule(
         name=body.name, type=body.type, target=body.target,
         threshold=body.threshold, enabled=body.enabled,
@@ -207,11 +203,7 @@ async def create_rule(
             rule_id=rule.id, channel_id=ch_map.channel_id,
             recipients=json.dumps(ch_map.recipients),
         ))
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(status_code=409, detail="Duplicate channel mapping conflict")
+    await db.commit()
     await db.refresh(rule)
     return await _build_rule_response(db, rule)
 
@@ -238,20 +230,13 @@ async def update_rule(
     if body.enabled is not None:
         rule.enabled = body.enabled
     if body.channels is not None:
-        ch_ids = [ch_map.channel_id for ch_map in body.channels]
-        if len(ch_ids) != len(set(ch_ids)):
-            raise HTTPException(status_code=400, detail="Duplicate channel mappings are not allowed")
         await db.execute(sa_delete(AlertRuleChannel).where(AlertRuleChannel.rule_id == rule.id))
         for ch_map in body.channels:
             db.add(AlertRuleChannel(
                 rule_id=rule.id, channel_id=ch_map.channel_id,
                 recipients=json.dumps(ch_map.recipients),
             ))
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(status_code=409, detail="Duplicate channel mapping conflict")
+    await db.commit()
     await db.refresh(rule)
     return await _build_rule_response(db, rule)
 

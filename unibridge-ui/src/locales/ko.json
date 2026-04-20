@@ -446,6 +446,7 @@
     "channels": "채널",
     "recipients": "수신자",
     "addRecipient": "수신자 추가",
+    "recipientsDuplicateHint": "메일 API처럼 수신자를 한 명씩만 받는 채널은, 같은 채널을 여러 행으로 나눠 수신자를 하나씩 등록하세요.",
     "typeDbHealth": "DB 연결",
     "typeUpstreamHealth": "업스트림",
     "typeErrorRate": "에러율",

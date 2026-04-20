@@ -64,6 +64,57 @@ class TestAlertRulesAPI:
         assert resp.json()["enabled"] is False
 
     @pytest.mark.asyncio
+    async def test_create_rule_accepts_duplicate_channel_mappings(self, client, admin_token):
+        ch = await client.post("/admin/alerts/channels", json={
+            "name": "dup-ch",
+            "webhook_url": "http://example.com/hook",
+            "payload_template": "{}",
+        }, headers=auth_header(admin_token))
+        ch_id = ch.json()["id"]
+
+        resp = await client.post("/admin/alerts/rules", json={
+            "name": "dup-map-rule",
+            "type": "db_health",
+            "target": "db1",
+            "channels": [
+                {"channel_id": ch_id, "recipients": ["alice@x.com"]},
+                {"channel_id": ch_id, "recipients": ["bob@x.com"]},
+            ],
+        }, headers=auth_header(admin_token))
+        assert resp.status_code == 201
+        data = resp.json()
+        assert len(data["channels"]) == 2
+        recip_sets = [set(c["recipients"]) for c in data["channels"]]
+        assert {"alice@x.com"} in recip_sets
+        assert {"bob@x.com"} in recip_sets
+
+    @pytest.mark.asyncio
+    async def test_update_rule_accepts_duplicate_channel_mappings(self, client, admin_token):
+        ch = await client.post("/admin/alerts/channels", json={
+            "name": "dup-upd-ch",
+            "webhook_url": "http://example.com/hook",
+            "payload_template": "{}",
+        }, headers=auth_header(admin_token))
+        ch_id = ch.json()["id"]
+        create = await client.post("/admin/alerts/rules", json={
+            "name": "dup-upd-rule",
+            "type": "db_health",
+            "target": "db2",
+            "channels": [{"channel_id": ch_id, "recipients": ["a@x.com"]}],
+        }, headers=auth_header(admin_token))
+        rule_id = create.json()["id"]
+
+        resp = await client.put(f"/admin/alerts/rules/{rule_id}", json={
+            "channels": [
+                {"channel_id": ch_id, "recipients": ["a@x.com"]},
+                {"channel_id": ch_id, "recipients": ["b@x.com"]},
+                {"channel_id": ch_id, "recipients": ["c@x.com"]},
+            ],
+        }, headers=auth_header(admin_token))
+        assert resp.status_code == 200
+        assert len(resp.json()["channels"]) == 3
+
+    @pytest.mark.asyncio
     async def test_delete_rule(self, client, admin_token):
         create = await client.post("/admin/alerts/rules", json={
             "name": "del-rule",
@@ -196,6 +247,28 @@ class TestAlertRuleTestAPI:
         async with session_factory() as s:
             rows = (await s.execute(select(AlertHistory))).scalars().all()
         assert len(rows) == 0
+
+    @pytest.mark.asyncio
+    async def test_rule_test_sends_once_per_duplicate_mapping(self, client, admin_token, httpx_mock: HTTPXMock):
+        ch = await self._create_channel(client, admin_token, "rt-dup-ch",
+                                        "http://hook.example.com/dup")
+        rule_id = await self._create_rule(client, admin_token, name="dup-rule", channels=[
+            {"channel_id": ch, "recipients": ["alice@x.com"]},
+            {"channel_id": ch, "recipients": ["bob@x.com"]},
+        ])
+        httpx_mock.add_response(url="http://hook.example.com/dup", status_code=200)
+        httpx_mock.add_response(url="http://hook.example.com/dup", status_code=200)
+
+        resp = await client.post(f"/admin/alerts/rules/{rule_id}/test",
+                                 headers=auth_header(admin_token))
+        assert resp.status_code == 200
+        assert len(resp.json()["results"]) == 2
+
+        reqs = httpx_mock.get_requests()
+        assert len(reqs) == 2
+        bodies = [r.content for r in reqs]
+        assert any(b"alice@x.com" in body for body in bodies)
+        assert any(b"bob@x.com" in body for body in bodies)
 
     @pytest.mark.asyncio
     async def test_rule_test_reports_webhook_failure(self, client, admin_token, httpx_mock: HTTPXMock):

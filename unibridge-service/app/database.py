@@ -48,11 +48,69 @@ async def ensure_db_connection_columns(target_engine: AsyncEngine | None = None)
             await conn.execute(text(statement))
 
 
+async def ensure_alert_rule_channels_no_unique(target_engine: AsyncEngine | None = None) -> None:
+    """Drop the legacy uq_rule_channel UNIQUE constraint on alert_rule_channels.
+
+    Idempotent: no-op if the table does not exist or the constraint is already gone.
+    """
+    engine_to_use = target_engine or engine
+
+    async with engine_to_use.begin() as conn:
+        existing_tables = await conn.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+        if "alert_rule_channels" not in existing_tables:
+            return
+
+        dialect = conn.dialect.name
+
+        if dialect == "sqlite":
+            result = await conn.execute(text(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='alert_rule_channels'"
+            ))
+            row = result.fetchone()
+            if not row or "uq_rule_channel" not in (row[0] or ""):
+                return
+            await conn.execute(text(
+                "ALTER TABLE alert_rule_channels RENAME TO _alert_rule_channels_old"
+            ))
+            await conn.execute(text("""
+                CREATE TABLE alert_rule_channels (
+                    id INTEGER NOT NULL,
+                    rule_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    recipients TEXT NOT NULL,
+                    PRIMARY KEY (id),
+                    FOREIGN KEY(rule_id) REFERENCES alert_rules (id) ON DELETE CASCADE,
+                    FOREIGN KEY(channel_id) REFERENCES alert_channels (id) ON DELETE CASCADE
+                )
+            """))
+            await conn.execute(text(
+                "INSERT INTO alert_rule_channels (id, rule_id, channel_id, recipients) "
+                "SELECT id, rule_id, channel_id, recipients FROM _alert_rule_channels_old"
+            ))
+            await conn.execute(text("DROP TABLE _alert_rule_channels_old"))
+        elif dialect == "postgresql":
+            await conn.execute(text(
+                "ALTER TABLE alert_rule_channels DROP CONSTRAINT IF EXISTS uq_rule_channel"
+            ))
+        elif dialect == "mssql":
+            result = await conn.execute(text(
+                "SELECT name FROM sys.key_constraints "
+                "WHERE name = 'uq_rule_channel' AND parent_object_id = OBJECT_ID('alert_rule_channels')"
+            ))
+            if result.fetchone() is not None:
+                await conn.execute(text(
+                    "ALTER TABLE alert_rule_channels DROP CONSTRAINT uq_rule_channel"
+                ))
+
+
 async def init_db() -> None:
     """Create all meta-DB tables if they don't exist, then seed default roles."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await ensure_db_connection_columns()
+    await ensure_alert_rule_channels_no_unique()
     await _seed_roles()
 
 

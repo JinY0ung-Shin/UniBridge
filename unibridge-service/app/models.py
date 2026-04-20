@@ -163,8 +163,6 @@ class AlertRuleChannel(Base):
     channel_id = Column(Integer, ForeignKey("alert_channels.id", ondelete="CASCADE"), nullable=False)
     recipients = Column(Text, nullable=False)  # JSON array: ["user@example.com"]
 
-    __table_args__ = (UniqueConstraint("rule_id", "channel_id", name="uq_rule_channel"),)
-
 
 class AlertHistory(Base):
     __tablename__ = "alert_history"

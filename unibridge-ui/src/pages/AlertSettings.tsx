@@ -845,6 +845,7 @@ function AlertSettings() {
                 {/* Channel mappings */}
                 <div className="form-group form-group--full">
                   <label>{t('alerts.channels')}</label>
+                  <p className="form-hint">{t('alerts.recipientsDuplicateHint')}</p>
                   {ruleForm.channelRows.map((row, idx) => (
                     <div key={idx} className="channel-mapping-row">
                       <select
@@ -854,9 +855,7 @@ function AlertSettings() {
                         }
                       >
                         <option value={0}>— {t('alerts.channels')} —</option>
-                        {channels
-                          .filter((ch) => ch.id === row.channel_id || !ruleForm.channelRows.some((r, i) => i !== idx && r.channel_id === ch.id))
-                          .map((ch) => (
+                        {channels.map((ch) => (
                           <option key={ch.id} value={ch.id}>
                             {ch.name}
                           </option>
