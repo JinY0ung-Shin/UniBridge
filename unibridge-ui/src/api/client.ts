@@ -369,6 +369,25 @@ export async function getMetricsRequestsTotal(range = '1h', route?: string): Pro
   return data;
 }
 
+export type RouteComparisonRow = {
+  route: string;
+  requests: number;
+  share: number;
+  error_rate: number;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+};
+
+export type RouteComparisonResponse = {
+  total_requests: number;
+  routes: RouteComparisonRow[];
+};
+
+export async function getMetricsRoutesComparison(range = '1h'): Promise<RouteComparisonResponse> {
+  const { data } = await client.get('/admin/gateway/metrics/routes-comparison', { params: { range } });
+  return data;
+}
+
 /* ── LLM Metrics ── */
 
 export interface LlmSummary {
