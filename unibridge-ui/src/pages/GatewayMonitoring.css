@@ -214,3 +214,19 @@
   font-size: 12px;
   white-space: nowrap;
 }
+
+.comparison-table th.sortable-header {
+  cursor: pointer;
+  user-select: none;
+}
+.comparison-table th.sortable-header:hover {
+  background: var(--bg-hover, rgba(128, 128, 128, 0.08));
+}
+.comparison-table th.sortable-header--right {
+  text-align: right;
+}
+.comparison-table .sort-indicator {
+  margin-left: 4px;
+  font-size: 10px;
+  color: var(--text-secondary);
+}

@@ -12,6 +12,7 @@ import {
   getMetricsStatusCodes,
   getMetricsLatency,
   getMetricsRoutesComparison,
+  type RouteComparisonRow,
 } from '../api/client';
 import { useTheme } from '../components/ThemeContext';
 import './GatewayMonitoring.css';
@@ -51,11 +52,24 @@ function getStatusColor(code: string): string {
   return muted;
 }
 
+type SortColumn = 'route' | 'requests' | 'share' | 'error_rate' | 'latency_p50_ms' | 'latency_p95_ms';
+type SortDir = 'asc' | 'desc';
+
 function GatewayMonitoring() {
   const { t } = useTranslation();
   const [range, setRange] = useState('1h');
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
+  const [sort, setSort] = useState<{ column: SortColumn; dir: SortDir }>({ column: 'requests', dir: 'desc' });
   const { resolved } = useTheme();
+
+  const toggleSort = (column: SortColumn) => {
+    setSort((prev) =>
+      prev.column === column
+        ? { column, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+        : { column, dir: 'desc' }
+    );
+  };
+
 
   const chartColors = useMemo(() => ({
     grid: getCssVar('--chart-grid'),
@@ -98,6 +112,22 @@ function GatewayMonitoring() {
     queryFn: () => getMetricsRoutesComparison(range),
     refetchInterval: 30_000,
   });
+
+  const sortedRoutes = useMemo<RouteComparisonRow[]>(() => {
+    const rows = routesComparisonQuery.data?.routes ?? [];
+    const multiplier = sort.dir === 'asc' ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const av = a[sort.column];
+      const bv = b[sort.column];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === 'string' && typeof bv === 'string') {
+        return av.localeCompare(bv) * multiplier;
+      }
+      return ((av as number) - (bv as number)) * multiplier;
+    });
+  }, [routesComparisonQuery.data, sort]);
 
   const requestsTotalQuery = useQuery({
     queryKey: ['metrics-requests-total', range],
@@ -310,16 +340,34 @@ function GatewayMonitoring() {
             <table className="data-table comparison-table">
               <thead>
                 <tr>
-                  <th>{t('gatewayMonitoring.route')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.requests')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.share')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.errorRate')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.latencyP50')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.latencyP95')}</th>
+                  <th className="sortable-header" onClick={() => toggleSort('route')}>
+                    {t('gatewayMonitoring.route')}
+                    {sort.column === 'route' && <span className="sort-indicator">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
+                  </th>
+                  <th className="sortable-header sortable-header--right" onClick={() => toggleSort('requests')}>
+                    {t('gatewayMonitoring.requests')}
+                    {sort.column === 'requests' && <span className="sort-indicator">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
+                  </th>
+                  <th className="sortable-header sortable-header--right" onClick={() => toggleSort('share')}>
+                    {t('gatewayMonitoring.share')}
+                    {sort.column === 'share' && <span className="sort-indicator">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
+                  </th>
+                  <th className="sortable-header sortable-header--right" onClick={() => toggleSort('error_rate')}>
+                    {t('gatewayMonitoring.errorRate')}
+                    {sort.column === 'error_rate' && <span className="sort-indicator">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
+                  </th>
+                  <th className="sortable-header sortable-header--right" onClick={() => toggleSort('latency_p50_ms')}>
+                    {t('gatewayMonitoring.latencyP50')}
+                    {sort.column === 'latency_p50_ms' && <span className="sort-indicator">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
+                  </th>
+                  <th className="sortable-header sortable-header--right" onClick={() => toggleSort('latency_p95_ms')}>
+                    {t('gatewayMonitoring.latencyP95')}
+                    {sort.column === 'latency_p95_ms' && <span className="sort-indicator">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {(routesComparisonQuery.data?.routes ?? []).map((r) => (
+                {sortedRoutes.map((r) => (
                   <tr
                     key={r.route}
                     className={`route-row ${selectedRoute === r.route ? 'route-row--selected' : ''}`}
