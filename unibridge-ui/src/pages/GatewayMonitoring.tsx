@@ -39,6 +39,16 @@ function getCssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+function BarCell({ value, max, suffix = '' }: { value: number; max: number; suffix?: string }) {
+  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+  return (
+    <span className="bar-cell">
+      <span className="bar-cell__fill" style={{ width: `${pct}%` }} />
+      <span className="bar-cell__text">{value.toLocaleString(undefined, { maximumFractionDigits: 2 })}{suffix}</span>
+    </span>
+  );
+}
+
 function getStatusColor(code: string): string {
   const green = getCssVar('--accent-green');
   const blue = getCssVar('--accent-blue');
@@ -128,6 +138,11 @@ function GatewayMonitoring() {
       return ((av as number) - (bv as number)) * multiplier;
     });
   }, [routesComparisonQuery.data, sort]);
+
+  const maxRequests = useMemo(() => {
+    const rows = routesComparisonQuery.data?.routes ?? [];
+    return rows.reduce((m, r) => (r.requests > m ? r.requests : m), 0);
+  }, [routesComparisonQuery.data]);
 
   const requestsTotalQuery = useQuery({
     queryKey: ['metrics-requests-total', range],
@@ -374,8 +389,8 @@ function GatewayMonitoring() {
                     onClick={() => setSelectedRoute(selectedRoute === r.route ? null : r.route)}
                   >
                     <td className="cell-alias">{r.route}</td>
-                    <td className="cell-metric">{r.requests.toLocaleString()}</td>
-                    <td className="cell-metric">{r.share.toFixed(2)}%</td>
+                    <td className="cell-metric"><BarCell value={r.requests} max={maxRequests} /></td>
+                    <td className="cell-metric"><BarCell value={r.share} max={100} suffix="%" /></td>
                     <td className="cell-metric">{r.error_rate.toFixed(2)}%</td>
                     <td className="cell-metric">{r.latency_p50_ms == null ? '—' : r.latency_p50_ms.toFixed(1)}</td>
                     <td className="cell-metric">{r.latency_p95_ms == null ? '—' : r.latency_p95_ms.toFixed(1)}</td>
