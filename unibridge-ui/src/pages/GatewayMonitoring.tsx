@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import type { KeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -78,6 +79,46 @@ function getStatusColor(code: string): string {
 
 type SortColumn = 'route' | 'requests' | 'share' | 'error_rate' | 'latency_p50_ms' | 'latency_p95_ms';
 type SortDir = 'asc' | 'desc';
+
+function SortableHeader({
+  column,
+  label,
+  align = 'left',
+  activeColumn,
+  dir,
+  onToggle,
+}: {
+  column: SortColumn;
+  label: string;
+  align?: 'left' | 'right';
+  activeColumn: SortColumn;
+  dir: SortDir;
+  onToggle: (c: SortColumn) => void;
+}) {
+  const active = activeColumn === column;
+  const ariaSort: 'none' | 'ascending' | 'descending' =
+    active ? (dir === 'asc' ? 'ascending' : 'descending') : 'none';
+  const classes = `sortable-header${align === 'right' ? ' sortable-header--right' : ''}`;
+  const handleKey = (e: KeyboardEvent<HTMLTableCellElement>) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onToggle(column);
+    }
+  };
+  return (
+    <th
+      className={classes}
+      onClick={() => onToggle(column)}
+      onKeyDown={handleKey}
+      tabIndex={0}
+      role="button"
+      aria-sort={ariaSort}
+    >
+      {label}
+      {active && <span className="sort-indicator">{dir === 'asc' ? '▲' : '▼'}</span>}
+    </th>
+  );
+}
 
 function GatewayMonitoring() {
   const { t } = useTranslation();
@@ -377,30 +418,12 @@ function GatewayMonitoring() {
             <table className="data-table comparison-table">
               <thead>
                 <tr>
-                  <th className="sortable-header" onClick={() => toggleSort('route')}>
-                    {t('gatewayMonitoring.route')}
-                    {sort.column === 'route' && <span className="sort-indicator">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th className="sortable-header sortable-header--right" onClick={() => toggleSort('requests')}>
-                    {t('gatewayMonitoring.requests')}
-                    {sort.column === 'requests' && <span className="sort-indicator">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th className="sortable-header sortable-header--right" onClick={() => toggleSort('share')}>
-                    {t('gatewayMonitoring.share')}
-                    {sort.column === 'share' && <span className="sort-indicator">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th className="sortable-header sortable-header--right" onClick={() => toggleSort('error_rate')}>
-                    {t('gatewayMonitoring.errorRate')}
-                    {sort.column === 'error_rate' && <span className="sort-indicator">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th className="sortable-header sortable-header--right" onClick={() => toggleSort('latency_p50_ms')}>
-                    {t('gatewayMonitoring.latencyP50')}
-                    {sort.column === 'latency_p50_ms' && <span className="sort-indicator">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
-                  <th className="sortable-header sortable-header--right" onClick={() => toggleSort('latency_p95_ms')}>
-                    {t('gatewayMonitoring.latencyP95')}
-                    {sort.column === 'latency_p95_ms' && <span className="sort-indicator">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
-                  </th>
+                  <SortableHeader column="route"            label={t('gatewayMonitoring.route')}        activeColumn={sort.column} dir={sort.dir} onToggle={toggleSort} />
+                  <SortableHeader column="requests"         label={t('gatewayMonitoring.requests')}     align="right" activeColumn={sort.column} dir={sort.dir} onToggle={toggleSort} />
+                  <SortableHeader column="share"            label={t('gatewayMonitoring.share')}        align="right" activeColumn={sort.column} dir={sort.dir} onToggle={toggleSort} />
+                  <SortableHeader column="error_rate"       label={t('gatewayMonitoring.errorRate')}    align="right" activeColumn={sort.column} dir={sort.dir} onToggle={toggleSort} />
+                  <SortableHeader column="latency_p50_ms"   label={t('gatewayMonitoring.latencyP50')}   align="right" activeColumn={sort.column} dir={sort.dir} onToggle={toggleSort} />
+                  <SortableHeader column="latency_p95_ms"   label={t('gatewayMonitoring.latencyP95')}   align="right" activeColumn={sort.column} dir={sort.dir} onToggle={toggleSort} />
                 </tr>
               </thead>
               <tbody>

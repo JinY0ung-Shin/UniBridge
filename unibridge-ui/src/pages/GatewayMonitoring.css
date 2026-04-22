@@ -261,3 +261,8 @@
 .heatmap-cell--red {
   background: rgba(239, 68, 68, 0.18);
 }
+
+.comparison-table th.sortable-header:focus-visible {
+  outline: 2px solid var(--accent-blue, #3b82f6);
+  outline-offset: -2px;
+}
