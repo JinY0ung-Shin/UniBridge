@@ -760,6 +760,64 @@ class TestMetricsTopRoutes:
         assert data[0]["route"] == "active"
 
 
+class TestMetricsRoutesComparison:
+    async def test_returns_joined_route_metrics(self, client, admin_token):
+        requests_result = [
+            {"metric": {"route": "route-a"}, "value": [0, "1000"]},
+            {"metric": {"route": "route-b"}, "value": [0, "500"]},
+        ]
+        errors_result = [
+            {"metric": {"route": "route-a"}, "value": [0, "10"]},
+        ]
+        p50_result = [
+            {"metric": {"route": "route-a"}, "value": [0, "42.5"]},
+            {"metric": {"route": "route-b"}, "value": [0, "30.0"]},
+        ]
+        p95_result = [
+            {"metric": {"route": "route-a"}, "value": [0, "180.0"]},
+            {"metric": {"route": "route-b"}, "value": [0, "60.0"]},
+        ]
+
+        mock = AsyncMock(side_effect=[requests_result, errors_result, p50_result, p95_result])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=1h",
+                headers=auth_header(admin_token),
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_requests"] == 1500
+        assert len(data["routes"]) == 2
+        by_route = {r["route"]: r for r in data["routes"]}
+
+        a = by_route["route-a"]
+        assert a["requests"] == 1000
+        assert a["share"] == pytest.approx(66.67, rel=0.01)
+        assert a["error_rate"] == pytest.approx(1.0, rel=0.01)
+        assert a["latency_p50_ms"] == pytest.approx(42.5)
+        assert a["latency_p95_ms"] == pytest.approx(180.0)
+
+        b = by_route["route-b"]
+        assert b["requests"] == 500
+        assert b["error_rate"] == 0.0
+        assert b["latency_p50_ms"] == pytest.approx(30.0)
+
+    async def test_routes_sorted_by_requests_desc(self, client, admin_token):
+        requests_result = [
+            {"metric": {"route": "small"}, "value": [0, "100"]},
+            {"metric": {"route": "big"}, "value": [0, "900"]},
+        ]
+        mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=1h",
+                headers=auth_header(admin_token),
+            )
+        data = resp.json()
+        assert [r["route"] for r in data["routes"]] == ["big", "small"]
+
+
 # ---------------------------------------------------------------------------
 # Route filter tests
 # ---------------------------------------------------------------------------

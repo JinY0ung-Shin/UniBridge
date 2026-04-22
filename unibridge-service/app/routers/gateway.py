@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import time
 from typing import Any, NoReturn
@@ -692,6 +693,76 @@ async def metrics_top_routes(
         if requests > 0:
             routes.append({"route": route, "requests": requests})
     return routes
+
+
+@router.get("/metrics/routes-comparison")
+async def metrics_routes_comparison(
+    time_range: str = Query("1h", alias="range", description="Time range"),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+) -> dict[str, Any]:
+    """Per-route comparison: requests, share, error_rate, p50/p95 latency in one payload."""
+    if time_range not in VALID_RANGES:
+        time_range = "1h"
+    try:
+        requests_res, errors_res, p50_res, p95_res = await asyncio.gather(
+            prometheus_client.instant_query(
+                f"topk(10, sum by (route) (increase(apisix_http_status[{time_range}])))"
+            ),
+            prometheus_client.instant_query(
+                f'sum by (route) (increase(apisix_http_status{{code=~"5.."}}[{time_range}]))'
+            ),
+            prometheus_client.instant_query(
+                "histogram_quantile(0.5, sum by (route, le) (rate(apisix_http_latency_bucket[5m])))"
+            ),
+            prometheus_client.instant_query(
+                "histogram_quantile(0.95, sum by (route, le) (rate(apisix_http_latency_bucket[5m])))"
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
+
+    def _map_route_value(res: list[dict[str, Any]]) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for r in res or []:
+            route = r.get("metric", {}).get("route")
+            if not route:
+                continue
+            value = r.get("value", [0, "0"])
+            try:
+                out[route] = float(value[1])
+            except (IndexError, ValueError, TypeError):
+                continue
+        return out
+
+    requests_map = _map_route_value(requests_res)
+    errors_map = _map_route_value(errors_res)
+    p50_map = _map_route_value(p50_res)
+    p95_map = _map_route_value(p95_res)
+
+    total = sum(requests_map.values())
+    routes: list[dict[str, Any]] = []
+    for route, req in requests_map.items():
+        req_rounded = round(req)
+        if req_rounded <= 0:
+            continue
+        share = (req / total * 100) if total > 0 else 0.0
+        err = errors_map.get(route, 0.0)
+        error_rate = (err / req * 100) if req > 0 else 0.0
+        p50 = p50_map.get(route)
+        p95 = p95_map.get(route)
+        routes.append({
+            "route": route,
+            "requests": req_rounded,
+            "share": round(share, 2),
+            "error_rate": round(error_rate, 2),
+            "latency_p50_ms": round(p50, 2) if p50 is not None and not math.isnan(p50) else None,
+            "latency_p95_ms": round(p95, 2) if p95 is not None and not math.isnan(p95) else None,
+        })
+
+    routes.sort(key=lambda r: r["requests"], reverse=True)
+    return {"total_requests": round(total), "routes": routes}
 
 
 @router.get("/metrics/requests-total")
