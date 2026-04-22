@@ -817,6 +817,75 @@ class TestMetricsRoutesComparison:
         data = resp.json()
         assert [r["route"] for r in data["routes"]] == ["big", "small"]
 
+    async def test_missing_latency_returns_null(self, client, admin_token):
+        requests_result = [
+            {"metric": {"route": "only-a"}, "value": [0, "200"]},
+        ]
+        mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=1h",
+                headers=auth_header(admin_token),
+            )
+        data = resp.json()
+        only = data["routes"][0]
+        assert only["latency_p50_ms"] is None
+        assert only["latency_p95_ms"] is None
+
+    async def test_nan_latency_returns_null(self, client, admin_token):
+        requests_result = [
+            {"metric": {"route": "x"}, "value": [0, "100"]},
+        ]
+        p50_result = [
+            {"metric": {"route": "x"}, "value": [0, "NaN"]},
+        ]
+        mock = AsyncMock(side_effect=[requests_result, [], p50_result, []])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=1h",
+                headers=auth_header(admin_token),
+            )
+        data = resp.json()
+        assert data["routes"][0]["latency_p50_ms"] is None
+
+    async def test_zero_requests_returns_empty(self, client, admin_token):
+        requests_result = [
+            {"metric": {"route": "route-a"}, "value": [0, "0"]},
+        ]
+        mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=1h",
+                headers=auth_header(admin_token),
+            )
+        data = resp.json()
+        assert data["total_requests"] == 0
+        assert data["routes"] == []
+
+    async def test_invalid_range_falls_back_to_1h(self, client, admin_token):
+        mock = AsyncMock(side_effect=[[], [], [], []])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=bogus",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        first_call_query = mock.call_args_list[0].args[0]
+        assert "[1h]" in first_call_query
+
+    async def test_prometheus_error_returns_502(self, client, admin_token):
+        mock = AsyncMock(side_effect=RuntimeError("boom"))
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=1h",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 502
+
+    async def test_forbidden_without_permission(self, client):
+        resp = await client.get("/admin/gateway/metrics/routes-comparison?range=1h")
+        assert resp.status_code in (401, 403)
+
 
 # ---------------------------------------------------------------------------
 # Route filter tests
