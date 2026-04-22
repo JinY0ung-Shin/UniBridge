@@ -49,6 +49,20 @@ function BarCell({ value, max, suffix = '' }: { value: number; max: number; suff
   );
 }
 
+function errorRateClass(v: number): string {
+  if (v >= 5) return 'heatmap-cell heatmap-cell--red';
+  if (v >= 1) return 'heatmap-cell heatmap-cell--yellow';
+  return 'heatmap-cell';
+}
+
+function latencyClass(v: number | null, max: number): string {
+  if (v == null || max <= 0) return 'heatmap-cell';
+  const ratio = v / max;
+  if (ratio >= 0.8) return 'heatmap-cell heatmap-cell--red';
+  if (ratio >= 0.5) return 'heatmap-cell heatmap-cell--yellow';
+  return 'heatmap-cell';
+}
+
 function getStatusColor(code: string): string {
   const green = getCssVar('--accent-green');
   const blue = getCssVar('--accent-blue');
@@ -142,6 +156,14 @@ function GatewayMonitoring() {
   const maxRequests = useMemo(() => {
     const rows = routesComparisonQuery.data?.routes ?? [];
     return rows.reduce((m, r) => (r.requests > m ? r.requests : m), 0);
+  }, [routesComparisonQuery.data]);
+
+  const { maxP50, maxP95 } = useMemo(() => {
+    const rows = routesComparisonQuery.data?.routes ?? [];
+    return {
+      maxP50: rows.reduce((m, r) => (r.latency_p50_ms != null && r.latency_p50_ms > m ? r.latency_p50_ms : m), 0),
+      maxP95: rows.reduce((m, r) => (r.latency_p95_ms != null && r.latency_p95_ms > m ? r.latency_p95_ms : m), 0),
+    };
   }, [routesComparisonQuery.data]);
 
   const requestsTotalQuery = useQuery({
@@ -391,9 +413,9 @@ function GatewayMonitoring() {
                     <td className="cell-alias">{r.route}</td>
                     <td className="cell-metric"><BarCell value={r.requests} max={maxRequests} /></td>
                     <td className="cell-metric"><BarCell value={r.share} max={100} suffix="%" /></td>
-                    <td className="cell-metric">{r.error_rate.toFixed(2)}%</td>
-                    <td className="cell-metric">{r.latency_p50_ms == null ? '—' : r.latency_p50_ms.toFixed(1)}</td>
-                    <td className="cell-metric">{r.latency_p95_ms == null ? '—' : r.latency_p95_ms.toFixed(1)}</td>
+                    <td className={`cell-metric ${errorRateClass(r.error_rate)}`}>{r.error_rate.toFixed(2)}%</td>
+                    <td className={`cell-metric ${latencyClass(r.latency_p50_ms, maxP50)}`}>{r.latency_p50_ms == null ? '—' : r.latency_p50_ms.toFixed(1)}</td>
+                    <td className={`cell-metric ${latencyClass(r.latency_p95_ms, maxP95)}`}>{r.latency_p95_ms == null ? '—' : r.latency_p95_ms.toFixed(1)}</td>
                   </tr>
                 ))}
               </tbody>

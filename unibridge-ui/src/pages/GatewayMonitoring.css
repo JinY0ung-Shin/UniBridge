@@ -254,3 +254,10 @@
   font-family: var(--font-mono);
   font-size: 12px;
 }
+
+.heatmap-cell--yellow {
+  background: rgba(234, 179, 8, 0.15);
+}
+.heatmap-cell--red {
+  background: rgba(239, 68, 68, 0.18);
+}
