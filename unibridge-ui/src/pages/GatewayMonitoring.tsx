@@ -11,7 +11,7 @@ import {
   getMetricsRequestsTotal,
   getMetricsStatusCodes,
   getMetricsLatency,
-  getMetricsTopRoutes,
+  getMetricsRoutesComparison,
 } from '../api/client';
 import { useTheme } from '../components/ThemeContext';
 import './GatewayMonitoring.css';
@@ -93,9 +93,9 @@ function GatewayMonitoring() {
     refetchInterval: 30_000,
   });
 
-  const topRoutesQuery = useQuery({
-    queryKey: ['metrics-top-routes', range],
-    queryFn: () => getMetricsTopRoutes(range),
+  const routesComparisonQuery = useQuery({
+    queryKey: ['metrics-routes-comparison', range],
+    queryFn: () => getMetricsRoutesComparison(range),
     refetchInterval: 30_000,
   });
 
@@ -152,7 +152,7 @@ function GatewayMonitoring() {
   const isError = summaryQuery.isError;
   const hasPartialError = !isError && (
     requestsQuery.isError || requestsTotalQuery.isError ||
-    statusQuery.isError || latencyQuery.isError || topRoutesQuery.isError
+    statusQuery.isError || latencyQuery.isError || routesComparisonQuery.isError
   );
 
   return (
@@ -302,29 +302,35 @@ function GatewayMonitoring() {
         )}
       </div>
 
-      {/* Top Routes */}
+      {/* Route Comparison */}
       <div className="chart-panel">
-        <div className="chart-panel__title">{t('gatewayMonitoring.topRoutes')}</div>
-        {(topRoutesQuery.data ?? []).length > 0 ? (
+        <div className="chart-panel__title">{t('gatewayMonitoring.routeComparison')}</div>
+        {(routesComparisonQuery.data?.routes ?? []).length > 0 ? (
           <div className="table-container" style={{ border: 'none' }}>
-            <table className="data-table">
+            <table className="data-table comparison-table">
               <thead>
                 <tr>
                   <th>{t('gatewayMonitoring.route')}</th>
                   <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.requests')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.share')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.errorRate')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.latencyP50')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.latencyP95')}</th>
                 </tr>
               </thead>
               <tbody>
-                {(topRoutesQuery.data ?? []).map((r) => (
+                {(routesComparisonQuery.data?.routes ?? []).map((r) => (
                   <tr
                     key={r.route}
                     className={`route-row ${selectedRoute === r.route ? 'route-row--selected' : ''}`}
                     onClick={() => setSelectedRoute(selectedRoute === r.route ? null : r.route)}
                   >
                     <td className="cell-alias">{r.route}</td>
-                    <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
-                      {r.requests.toLocaleString()}
-                    </td>
+                    <td className="cell-metric">{r.requests.toLocaleString()}</td>
+                    <td className="cell-metric">{r.share.toFixed(2)}%</td>
+                    <td className="cell-metric">{r.error_rate.toFixed(2)}%</td>
+                    <td className="cell-metric">{r.latency_p50_ms == null ? '—' : r.latency_p50_ms.toFixed(1)}</td>
+                    <td className="cell-metric">{r.latency_p95_ms == null ? '—' : r.latency_p95_ms.toFixed(1)}</td>
                   </tr>
                 ))}
               </tbody>
