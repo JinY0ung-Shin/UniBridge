@@ -269,6 +269,10 @@
     "latency": "지연시간 (ms)",
     "noLatencyData": "지연시간 데이터가 없습니다",
     "topRoutes": "트래픽 상위 라우트",
+    "routeComparison": "라우트 비교",
+    "share": "점유율",
+    "latencyP50": "p50 (ms)",
+    "latencyP95": "p95 (ms)",
     "route": "라우트",
     "requests": "요청",
     "noRouteData": "라우트 트래픽 데이터가 없습니다"

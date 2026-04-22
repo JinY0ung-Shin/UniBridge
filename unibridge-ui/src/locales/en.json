@@ -269,6 +269,10 @@
     "latency": "Latency (ms)",
     "noLatencyData": "No latency data available",
     "topRoutes": "Top Routes by Traffic",
+    "routeComparison": "Route Comparison",
+    "share": "Share",
+    "latencyP50": "p50 (ms)",
+    "latencyP95": "p95 (ms)",
     "route": "Route",
     "requests": "Requests",
     "noRouteData": "No route traffic data available"
