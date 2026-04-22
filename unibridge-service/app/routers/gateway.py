@@ -729,7 +729,9 @@ async def metrics_routes_comparison(
             route = r.get("metric", {}).get("route")
             if not route:
                 continue
-            value = r.get("value", [0, "0"])
+            value = r.get("value")
+            if not value:
+                continue
             try:
                 out[route] = float(value[1])
             except (IndexError, ValueError, TypeError):

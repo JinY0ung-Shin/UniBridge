@@ -848,6 +848,23 @@ class TestMetricsRoutesComparison:
         data = resp.json()
         assert data["routes"][0]["latency_p50_ms"] is None
 
+    async def test_latency_entry_without_value_treated_as_null(self, client, admin_token):
+        requests_result = [
+            {"metric": {"route": "x"}, "value": [0, "100"]},
+        ]
+        # p50 result is missing the `value` key entirely
+        p50_result = [
+            {"metric": {"route": "x"}},
+        ]
+        mock = AsyncMock(side_effect=[requests_result, [], p50_result, []])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=1h",
+                headers=auth_header(admin_token),
+            )
+        data = resp.json()
+        assert data["routes"][0]["latency_p50_ms"] is None
+
     async def test_zero_requests_returns_empty(self, client, admin_token):
         requests_result = [
             {"metric": {"route": "route-a"}, "value": [0, "0"]},
