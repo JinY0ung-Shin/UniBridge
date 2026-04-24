@@ -109,6 +109,7 @@ services:
     ports:
       - "127.0.0.1:${UNIBRIDGE_SERVICE_PORT:-8000}:8000"
     environment:
+      - TZ=UTC
       - HOST_IP=${HOST_IP:-localhost}
       - KEYCLOAK_PORT=${KEYCLOAK_PORT:-8443}
       - UNIBRIDGE_UI_PORT=${UNIBRIDGE_UI_PORT:-3000}
