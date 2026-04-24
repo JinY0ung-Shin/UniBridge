@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { getAlertHistory, type AlertHistoryEntry } from '../api/client';
+import { formatKST } from '../utils/time';
 import './AlertHistory.css';
 
 const PAGE_SIZE = 50;
@@ -42,14 +43,6 @@ function AlertHistory() {
 
   function goToPage(newPage: number) {
     setPage(newPage);
-  }
-
-  function formatTimestamp(ts: string) {
-    try {
-      return new Date(ts).toLocaleString();
-    } catch {
-      return ts;
-    }
   }
 
   return (
@@ -107,7 +100,7 @@ function AlertHistory() {
               <tbody>
                 {entries.map((entry) => (
                   <tr key={entry.id}>
-                    <td className="cell-timestamp">{formatTimestamp(entry.sent_at)}</td>
+                    <td className="cell-timestamp">{formatKST(entry.sent_at)}</td>
                     <td>
                       <span
                         className={`badge ${

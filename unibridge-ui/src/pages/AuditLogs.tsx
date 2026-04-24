@@ -2,6 +2,7 @@ import { Fragment, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { getAuditLogs, getAdminDatabases, type AuditLogParams } from '../api/client';
+import { formatKST } from '../utils/time';
 import './AuditLogs.css';
 
 const PAGE_SIZE = 20;
@@ -66,14 +67,6 @@ function AuditLogs() {
 
   function truncateSql(sql: string, maxLen = 80) {
     return sql.length > maxLen ? sql.slice(0, maxLen) + '...' : sql;
-  }
-
-  function formatTimestamp(ts: string) {
-    try {
-      return new Date(ts).toLocaleString();
-    } catch {
-      return ts;
-    }
   }
 
   return (
@@ -149,7 +142,7 @@ function AuditLogs() {
                       className={`audit-row ${expandedRow === log.id ? 'audit-row--expanded' : ''}`}
                       onClick={() => toggleRow(log.id)}
                     >
-                      <td className="cell-timestamp">{formatTimestamp(log.timestamp)}</td>
+                      <td className="cell-timestamp">{formatKST(log.timestamp)}</td>
                       <td>{log.user}</td>
                       <td>{log.database_alias}</td>
                       <td className="cell-sql mono">{truncateSql(log.sql)}</td>

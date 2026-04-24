@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { getAlertStatus, type AlertStatus as AlertStatusEntry } from '../api/client';
+import { formatKST } from '../utils/time';
 import './AlertStatus.css';
 
 type RuleType = 'db_health' | 'upstream_health' | 'error_rate' | 'route_error_rate';
@@ -13,15 +14,6 @@ function typeLabel(t: (k: string) => string, type: string): string {
     route_error_rate: t('alerts.typeRouteErrorRate'),
   };
   return map[type] ?? type;
-}
-
-function formatTimestamp(ts: string | null): string {
-  if (!ts) return '—';
-  try {
-    return new Date(ts).toLocaleString();
-  } catch {
-    return ts;
-  }
 }
 
 function formatDuration(ts: string | null): string {
@@ -121,7 +113,7 @@ function AlertStatus() {
                           </span>
                         </td>
                         <td className="cell-target">{e.target || '*'}</td>
-                        <td className="cell-timestamp">{formatTimestamp(e.since)}</td>
+                        <td className="cell-timestamp">{formatKST(e.since)}</td>
                         <td className="cell-duration">{formatDuration(e.since)}</td>
                       </tr>
                     ))}

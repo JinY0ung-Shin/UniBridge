@@ -13,6 +13,7 @@ import {
   type S3ObjectMetadata,
 } from '../api/client';
 import { useToast } from '../components/ToastContext';
+import { formatKST } from '../utils/time';
 import './S3Browser.css';
 
 function formatBytes(bytes: number): string {
@@ -21,11 +22,6 @@ function formatBytes(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
-}
-
-function formatDate(iso: string | null): string {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleString();
 }
 
 function S3Browser() {
@@ -275,7 +271,7 @@ function S3Browser() {
                         </span>
                       </td>
                       <td className="mono">{formatBytes(obj.size)}</td>
-                      <td>{formatDate(obj.last_modified)}</td>
+                      <td>{formatKST(obj.last_modified)}</td>
                       <td>
                         <div className="action-buttons">
                           <button
@@ -334,7 +330,7 @@ function S3Browser() {
                   <tr><td>Key</td><td className="mono">{metadataModal.key}</td></tr>
                   <tr><td>Size</td><td>{formatBytes(metadataModal.size)}</td></tr>
                   <tr><td>Content-Type</td><td>{metadataModal.content_type}</td></tr>
-                  <tr><td>Last Modified</td><td>{formatDate(metadataModal.last_modified)}</td></tr>
+                  <tr><td>Last Modified</td><td>{formatKST(metadataModal.last_modified)}</td></tr>
                   <tr><td>ETag</td><td className="mono">{metadataModal.etag}</td></tr>
                   {metadataModal.storage_class && (
                     <tr><td>Storage Class</td><td>{metadataModal.storage_class}</td></tr>
