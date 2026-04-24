@@ -1,16 +1,18 @@
+from datetime import datetime, timezone
+
 from sqlalchemy import (
     Boolean,
     Column,
-    DateTime,
     Float,
     ForeignKey,
     Integer,
     String,
     Text,
     UniqueConstraint,
-    func,
 )
 from sqlalchemy.orm import DeclarativeBase
+
+from app.db_types import UtcDateTime
 
 
 class Base(DeclarativeBase):
@@ -33,8 +35,8 @@ class DBConnection(Base):
     pool_size = Column(Integer, default=5)
     max_overflow = Column(Integer, default=3)
     query_timeout = Column(Integer, default=30)
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at = Column(UtcDateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(UtcDateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class S3Connection(Base):
@@ -48,8 +50,8 @@ class S3Connection(Base):
     secret_access_key_encrypted = Column(String, nullable=False)
     default_bucket = Column(String, nullable=True)
     use_ssl = Column(Boolean, default=True)
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at = Column(UtcDateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(UtcDateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class Permission(Base):
@@ -75,8 +77,8 @@ class ApiKeyAccess(Base):
     description = Column(String(255), default="")
     allowed_databases = Column(Text, nullable=True)  # JSON array: ["mydb", "analytics"], null = none
     allowed_routes = Column(Text, nullable=True)  # JSON array: ["route-id-1", "route-id-2"], null = none
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at = Column(UtcDateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(UtcDateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class Role(Base):
@@ -102,7 +104,7 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, server_default=func.now())
+    timestamp = Column(UtcDateTime, default=lambda: datetime.now(timezone.utc))
     user = Column(String, nullable=False)
     database_alias = Column(String, nullable=False)
     sql = Column(Text, nullable=False)
@@ -118,7 +120,7 @@ class SystemConfig(Base):
 
     key = Column(String(100), primary_key=True)
     value = Column(Text, nullable=False)
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    updated_at = Column(UtcDateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class AlertChannel(Base):
@@ -130,8 +132,8 @@ class AlertChannel(Base):
     payload_template = Column(Text, nullable=False)
     headers = Column(Text, nullable=True)  # JSON object
     enabled = Column(Boolean, default=True, nullable=False, server_default="true")
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at = Column(UtcDateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(UtcDateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     def __init__(self, **kwargs):
         kwargs.setdefault("enabled", True)
@@ -147,8 +149,8 @@ class AlertRule(Base):
     target = Column(String(100), nullable=False)  # DB alias, upstream ID, or "*"
     threshold = Column(Float, nullable=True)  # error rate % (error_rate type only)
     enabled = Column(Boolean, default=True, nullable=False, server_default="true")
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at = Column(UtcDateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(UtcDateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     def __init__(self, **kwargs):
         kwargs.setdefault("enabled", True)
@@ -174,6 +176,6 @@ class AlertHistory(Base):
     target = Column(String(100), nullable=False)
     message = Column(Text, nullable=False)
     recipients = Column(Text, nullable=True)  # JSON array
-    sent_at = Column(DateTime, server_default=func.now())
+    sent_at = Column(UtcDateTime, default=lambda: datetime.now(timezone.utc))
     success = Column(Boolean, nullable=True)
     error_detail = Column(Text, nullable=True)
