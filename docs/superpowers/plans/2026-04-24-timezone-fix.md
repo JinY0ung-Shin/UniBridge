@@ -692,7 +692,7 @@ Expected: 0 에러.
 - [ ] **Step 4: 커밋 로그 확인**
 
 ```bash
-git log --oneline $(git merge-base HEAD main)..HEAD
+git log --oneline c34536b..HEAD
 ```
 
 Expected: Task 1~6의 커밋들이 순서대로 보여야 함.
