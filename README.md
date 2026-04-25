@@ -207,6 +207,29 @@ Stateful components (etcd, Keycloak DB, LiteLLM DB, unibridge-service meta DB) a
 
 Retention, path overrides, and the full restore runbook live in [`backup/README.md`](./backup/README.md).
 
+## etcd Credential Rotation
+
+Rotate the APISIX etcd root password online without deleting the etcd volume:
+
+```bash
+docker compose exec etcd etcdctl \
+  --user root:"$ETCD_ROOT_PASSWORD" \
+  auth user passwd root
+```
+
+The important operation is `etcdctl auth user passwd root`; run it against the
+existing authenticated etcd member, without deleting the etcd volume.
+
+After entering the new password, update `ETCD_ROOT_PASSWORD` in `.env`, then restart
+APISIX so it reconnects with the new credential:
+
+```bash
+docker compose up -d --force-recreate apisix
+docker compose exec etcd etcdctl \
+  --user root:"$ETCD_ROOT_PASSWORD" \
+  endpoint health
+```
+
 ## Timezone Migration (one-time, after upgrading to the UTC-aware timestamp fix)
 
 The timezone-consistency fix changes the on-disk format of every `DateTime` column in the meta DB. Pre-fix rows were stored at second precision without an offset; post-fix rows use microsecond precision. SQLite compares TEXT columns lexicographically, so the older shorter strings get excluded from boundary `>=` filters until they are normalized.
@@ -222,6 +245,28 @@ docker compose exec unibridge-service python -m scripts.backfill_utc_timestamps
 The third command introspects every `UtcDateTime` column, skips tables that don't yet exist in the DB, and rewrites legacy values to the canonical microsecond form. It is idempotent — re-running it finds 0 rows to update.
 
 > **SQLite-only.** The lexicographic-compare bug fixed by this script is specific to SQLite. PostgreSQL / MSSQL deployments store datetimes as native timestamp types and do not need this step; the script will hard-stop with `RuntimeError` if run against a non-SQLite backend.
+
+## Metadata Encryption Key Rotation
+
+`ENCRYPTION_KEY` protects saved DB passwords and S3 credentials in the metadata
+database. To rotate it without losing those secrets, run a dry run with the old
+and new values, then run the write pass before restarting the service with the
+new `ENCRYPTION_KEY`:
+
+```bash
+docker compose exec unibridge-service \
+  env OLD_ENCRYPTION_KEY="$OLD_ENCRYPTION_KEY" \
+      NEW_ENCRYPTION_KEY="$NEW_ENCRYPTION_KEY" \
+  python -m scripts.rotate_encryption_key --dry-run
+
+docker compose exec unibridge-service \
+  env OLD_ENCRYPTION_KEY="$OLD_ENCRYPTION_KEY" \
+      NEW_ENCRYPTION_KEY="$NEW_ENCRYPTION_KEY" \
+  python -m scripts.rotate_encryption_key
+```
+
+After the write pass completes, update `.env` to set
+`ENCRYPTION_KEY=$NEW_ENCRYPTION_KEY` and recreate `unibridge-service`.
 
 ## etcd Authentication Migration Guide
 

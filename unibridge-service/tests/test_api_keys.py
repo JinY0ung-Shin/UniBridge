@@ -10,6 +10,9 @@ from app.routers.api_keys import DENY_ALL_CONSUMER, sync_all_consumer_route_rest
 from app.schemas import QueryResponse
 from tests.conftest import auth_header
 
+VALID_API_KEY = "Abcdefghijklmnopqrstuvwxyz123456"
+VALID_API_KEY_2 = "Bcdefghijklmnopqrstuvwxyz1234567"
+
 ROUTE_FIXTURES = {
     "items": [
         {
@@ -156,7 +159,7 @@ async def test_create_api_key(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
             "username": "test-app",
-            "plugins": {"key-auth": {"key": "key-abc123"}},
+            "plugins": {"key-auth": {"key": VALID_API_KEY}},
         })
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
@@ -166,7 +169,7 @@ async def test_create_api_key(client, admin_token):
             json={
                 "name": "test-app",
                 "description": "Test application",
-                "api_key": "key-abc123",
+                "api_key": VALID_API_KEY,
                 "allowed_databases": ["mydb"],
                 "allowed_routes": [],
             },
@@ -176,7 +179,7 @@ async def test_create_api_key(client, admin_token):
         data = resp.json()
         assert data["name"] == "test-app"
         assert data["description"] == "Test application"
-        assert data["api_key"] == "key-abc123"
+        assert data["api_key"] == VALID_API_KEY
         assert data["key_created"] is True
         assert data["allowed_databases"] == ["mydb"]
 
@@ -202,7 +205,7 @@ async def test_create_api_key_partial_routes_excludes_consumer_from_other_routes
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
             "username": "partial-app",
-            "plugins": {"key-auth": {"key": "pk-123"}},
+            "plugins": {"key-auth": {"key": VALID_API_KEY}},
         })
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
@@ -211,7 +214,7 @@ async def test_create_api_key_partial_routes_excludes_consumer_from_other_routes
             "/admin/api-keys",
             json={
                 "name": "partial-app",
-                "api_key": "pk-123",
+                "api_key": VALID_API_KEY,
                 "allowed_routes": ["query-api"],
             },
             headers=auth_header(admin_token),
@@ -236,22 +239,35 @@ async def test_create_api_key_duplicate(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
             "username": "dup-app",
-            "plugins": {"key-auth": {"key": "key-1"}},
+            "plugins": {"key-auth": {"key": VALID_API_KEY}},
         })
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
 
         await client.post(
             "/admin/api-keys",
-            json={"name": "dup-app", "api_key": "key-1"},
+            json={"name": "dup-app", "api_key": VALID_API_KEY},
             headers=auth_header(admin_token),
         )
         resp = await client.post(
             "/admin/api-keys",
-            json={"name": "dup-app", "api_key": "key-2"},
+            json={"name": "dup-app", "api_key": VALID_API_KEY_2},
             headers=auth_header(admin_token),
         )
         assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_rejects_short_custom_key(client, admin_token):
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        resp = await client.post(
+            "/admin/api-keys",
+            json={"name": "weak-app", "api_key": "short-key-16"},
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 422
+    mock_apisix.put_resource.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -259,7 +275,7 @@ async def test_create_api_key_rejects_reserved_deny_all_name(client, admin_token
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         resp = await client.post(
             "/admin/api-keys",
-            json={"name": DENY_ALL_CONSUMER, "api_key": "key-reserved"},
+            json={"name": DENY_ALL_CONSUMER, "api_key": VALID_API_KEY},
             headers=auth_header(admin_token),
         )
 
@@ -273,20 +289,20 @@ async def test_update_api_key_access(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
             "username": "update-app",
-            "plugins": {"key-auth": {"key": "key-u1"}},
+            "plugins": {"key-auth": {"key": VALID_API_KEY}},
         })
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
 
         await client.post(
             "/admin/api-keys",
-            json={"name": "update-app", "api_key": "key-u1"},
+            json={"name": "update-app", "api_key": VALID_API_KEY},
             headers=auth_header(admin_token),
         )
 
         mock_apisix.get_resource = AsyncMock(return_value={
             "username": "update-app",
-            "plugins": {"key-auth": {"key": "key-u1"}},
+            "plugins": {"key-auth": {"key": VALID_API_KEY}},
         })
         resp = await client.put(
             "/admin/api-keys/update-app",
@@ -304,7 +320,7 @@ async def test_update_api_key_empty_allowed_routes_uses_deny_all_sentinel(client
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
             "username": "deny-update-app",
-            "plugins": {"key-auth": {"key": "key-du1"}},
+            "plugins": {"key-auth": {"key": VALID_API_KEY}},
         })
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value={
@@ -330,13 +346,13 @@ async def test_update_api_key_empty_allowed_routes_uses_deny_all_sentinel(client
 
         await client.post(
             "/admin/api-keys",
-            json={"name": "deny-update-app", "api_key": "key-du1", "allowed_routes": ["query-api", "llm-proxy"]},
+            json={"name": "deny-update-app", "api_key": VALID_API_KEY, "allowed_routes": ["query-api", "llm-proxy"]},
             headers=auth_header(admin_token),
         )
 
         mock_apisix.get_resource = AsyncMock(return_value={
             "username": "deny-update-app",
-            "plugins": {"key-auth": {"key": "key-du1"}},
+            "plugins": {"key-auth": {"key": VALID_API_KEY}},
         })
         resp = await client.put(
             "/admin/api-keys/deny-update-app",
@@ -384,7 +400,7 @@ async def test_update_api_key_moves_consumer_between_allowed_routes(client, admi
             "/admin/api-keys",
             json={
                 "name": "moving-app",
-                "api_key": "mv-123",
+                "api_key": VALID_API_KEY,
                 "allowed_routes": ["query-api"],
             },
             headers=auth_header(admin_token),
@@ -393,7 +409,7 @@ async def test_update_api_key_moves_consumer_between_allowed_routes(client, admi
 
         mock_apisix.get_resource = AsyncMock(return_value={
             "username": "moving-app",
-            "plugins": {"key-auth": {"key": "mv-123"}},
+            "plugins": {"key-auth": {"key": VALID_API_KEY}},
         })
         update_resp = await client.put(
             "/admin/api-keys/moving-app",
@@ -415,7 +431,7 @@ async def test_delete_api_key(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
             "username": "del-app",
-            "plugins": {"key-auth": {"key": "key-d1"}},
+            "plugins": {"key-auth": {"key": VALID_API_KEY}},
         })
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.delete_resource = AsyncMock()
@@ -423,7 +439,7 @@ async def test_delete_api_key(client, admin_token):
 
         await client.post(
             "/admin/api-keys",
-            json={"name": "del-app", "api_key": "key-d1"},
+            json={"name": "del-app", "api_key": VALID_API_KEY},
             headers=auth_header(admin_token),
         )
         resp = await client.delete(
@@ -442,13 +458,13 @@ async def test_query_execute_via_apikey_header(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
             "username": "query-app",
-            "plugins": {"key-auth": {"key": "qk-123"}},
+            "plugins": {"key-auth": {"key": VALID_API_KEY}},
         })
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
         await client.post(
             "/admin/api-keys",
-            json={"name": "query-app", "api_key": "qk-123", "allowed_databases": ["testdb"]},
+            json={"name": "query-app", "api_key": VALID_API_KEY, "allowed_databases": ["testdb"]},
             headers=auth_header(admin_token),
         )
 
@@ -468,7 +484,7 @@ async def test_query_execute_apikey_allowed_db_select_returns_200(client, admin_
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
             "username": "allowed-app",
-            "plugins": {"key-auth": {"key": "ak-123"}},
+            "plugins": {"key-auth": {"key": VALID_API_KEY}},
         })
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
@@ -476,7 +492,7 @@ async def test_query_execute_apikey_allowed_db_select_returns_200(client, admin_
             "/admin/api-keys",
             json={
                 "name": "allowed-app",
-                "api_key": "ak-123",
+                "api_key": VALID_API_KEY,
                 "allowed_databases": ["allowed-db"],
                 "allowed_routes": ["query-api"],
             },
@@ -522,7 +538,7 @@ async def test_query_execute_apikey_allowed_db_rejects_insert(client, admin_toke
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
             "username": "readonly-app",
-            "plugins": {"key-auth": {"key": "ro-123"}},
+            "plugins": {"key-auth": {"key": VALID_API_KEY}},
         })
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
@@ -530,7 +546,7 @@ async def test_query_execute_apikey_allowed_db_rejects_insert(client, admin_toke
             "/admin/api-keys",
             json={
                 "name": "readonly-app",
-                "api_key": "ro-123",
+                "api_key": VALID_API_KEY,
                 "allowed_databases": ["allowed-db"],
                 "allowed_routes": ["query-api"],
             },
@@ -560,13 +576,13 @@ async def test_query_execute_apikey_db_not_allowed(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
             "username": "restricted-app",
-            "plugins": {"key-auth": {"key": "rk-123"}},
+            "plugins": {"key-auth": {"key": VALID_API_KEY}},
         })
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
         await client.post(
             "/admin/api-keys",
-            json={"name": "restricted-app", "api_key": "rk-123", "allowed_databases": ["allowed-db"]},
+            json={"name": "restricted-app", "api_key": VALID_API_KEY, "allowed_databases": ["allowed-db"]},
             headers=auth_header(admin_token),
         )
 

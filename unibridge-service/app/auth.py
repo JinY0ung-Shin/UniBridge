@@ -55,17 +55,23 @@ ALL_PERMISSIONS = [
 _perm_cache: dict[str, set[str]] = {}
 _perm_cache_ts: float = 0.0
 _CACHE_TTL = 60.0  # seconds
+_CACHE_ERROR_BACKOFF = 1.0  # seconds
 _cache_lock = asyncio.Lock()
 
 
 async def get_role_permissions(db: AsyncSession, role_name: str) -> set[str]:
     """Get permissions for a role, using in-memory cache with 60s TTL."""
+    global _perm_cache_ts
     now = time.time()
     if now - _perm_cache_ts > _CACHE_TTL:
         async with _cache_lock:
             # Double-check after acquiring lock to avoid thundering herd
             if time.time() - _perm_cache_ts > _CACHE_TTL:
-                await _refresh_cache(db)
+                try:
+                    await _refresh_cache(db)
+                except Exception:
+                    _perm_cache_ts = time.time() - _CACHE_TTL + _CACHE_ERROR_BACKOFF
+                    raise
 
     return _perm_cache.get(role_name, set())
 
@@ -99,6 +105,7 @@ async def invalidate_permission_cache() -> None:
 class CurrentUser:
     username: str
     role: str
+    display_username: str | None = None
 
 
 @dataclass
@@ -126,18 +133,59 @@ _jwks_cache_ts: float = 0.0
 _JWKS_CACHE_TTL = 300.0  # 5 minutes
 _jwks_lock = asyncio.Lock()
 
-# Priority order: first match wins (highest privilege first)
-ROLE_PRIORITY = ["admin", "developer", "viewer"]
+# Priority order: first match wins (highest privilege first).
+ROLE_PRIORITY = [
+    role.strip()
+    for role in settings.ROLE_PRIORITY.split(",")
+    if role.strip()
+]
+_KEYCLOAK_BUILTIN_ROLES = {"offline_access", "uma_authorization"}
 
 
-async def _get_jwks() -> dict:
+def is_application_role_name(role_name: str) -> bool:
+    """Return whether a Keycloak realm role should be treated as an app role."""
+    if not role_name:
+        return False
+    return (
+        role_name not in _KEYCLOAK_BUILTIN_ROLES
+        and not role_name.startswith("default-roles-")
+    )
+
+
+def resolve_application_role(role_names: list[str]) -> str | None:
+    """Resolve the app role from Keycloak role names.
+
+    Known roles keep their configured privilege priority. Unknown custom roles
+    are accepted as app roles so adding a Keycloak/DB role does not require a
+    backend code change.
+    """
+    role_set = set(role_names)
+    priority_match = next((r for r in ROLE_PRIORITY if r in role_set), None)
+    if priority_match:
+        return priority_match
+    return next((r for r in role_names if is_application_role_name(r)), None)
+
+
+def _jwks_has_kid(jwks: dict | None, kid: str | None) -> bool:
+    if not jwks or not kid:
+        return False
+    return any(key.get("kid") == kid for key in jwks.get("keys", []))
+
+
+async def _get_jwks(
+    *,
+    force_refresh: bool = False,
+    required_kid: str | None = None,
+) -> dict:
     global _jwks_cache, _jwks_cache_ts
     now = time.time()
-    if _jwks_cache and (now - _jwks_cache_ts < _JWKS_CACHE_TTL):
+    if not force_refresh and _jwks_cache and (now - _jwks_cache_ts < _JWKS_CACHE_TTL):
         return _jwks_cache
     async with _jwks_lock:
+        if force_refresh and _jwks_has_kid(_jwks_cache, required_kid):
+            return _jwks_cache
         # Double-check after acquiring lock
-        if _jwks_cache and (time.time() - _jwks_cache_ts < _JWKS_CACHE_TTL):
+        if not force_refresh and _jwks_cache and (time.time() - _jwks_cache_ts < _JWKS_CACHE_TTL):
             return _jwks_cache
         ssl_verify: str | bool = settings.SSL_CA_CERT_PATH or settings.SSL_VERIFY
         async with httpx.AsyncClient(timeout=10.0, verify=ssl_verify) as client:
@@ -174,9 +222,7 @@ async def _verify_keycloak_token(token: str) -> CurrentUser:
 
     if rsa_key is None:
         # Key rotated? Force refresh once
-        global _jwks_cache_ts
-        _jwks_cache_ts = 0.0
-        jwks = await _get_jwks()
+        jwks = await _get_jwks(force_refresh=True, required_kid=kid)
         for key in jwks.get("keys", []):
             if key.get("kid") == kid:
                 rsa_key = key
@@ -203,29 +249,28 @@ async def _verify_keycloak_token(token: str) -> CurrentUser:
         logger.error("JWT verification failed: %s", exc)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token") from exc
 
-    username = payload.get("preferred_username") or payload.get("sub")
-    logger.debug("JWT username=%s, roles claim=%s", username, payload.get("roles"))
+    subject = payload.get("sub")
+    display_username = payload.get("preferred_username") or subject
+    logger.debug("JWT sub=%s preferred_username=%s roles claim=%s", subject, display_username, payload.get("roles"))
 
     # Extract role: check custom "roles" claim, then standard realm_access
-    # Uses priority ordering so admin > developer > viewer
     role = None
     role_claim = payload.get("roles")
     if isinstance(role_claim, list):
-        role_set = set(role_claim)
-        role = next((r for r in ROLE_PRIORITY if r in role_set), None)
-    elif isinstance(role_claim, str) and role_claim in ROLE_PRIORITY:
-        role = role_claim
+        role = resolve_application_role([str(r) for r in role_claim])
+    elif isinstance(role_claim, str):
+        role = resolve_application_role([role_claim])
 
     if not role:
-        realm_roles = set(payload.get("realm_access", {}).get("roles", []))
-        role = next((r for r in ROLE_PRIORITY if r in realm_roles), None)
+        realm_roles = payload.get("realm_access", {}).get("roles", [])
+        role = resolve_application_role([str(r) for r in realm_roles])
 
-    logger.debug("Resolved role=%s for user=%s", role, username)
+    logger.debug("Resolved role=%s for sub=%s", role, subject)
 
-    if not username or not role:
+    if not subject or not role:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing username or valid role")
 
-    return CurrentUser(username=username, role=role)
+    return CurrentUser(username=subject, role=role, display_username=display_username)
 
 
 # ── Unified user dependency ────────────────────────────────────────────────
@@ -255,7 +300,7 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token: missing subject or role",
             )
-        return CurrentUser(username=username, role=role)
+        return CurrentUser(username=username, role=role, display_username=username)
     except JWTError as exc:
         logger.error("Dev JWT verification failed: %s", exc)
         raise HTTPException(

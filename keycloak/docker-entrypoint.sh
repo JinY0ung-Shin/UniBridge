@@ -4,9 +4,10 @@
 # Derive redirect URI and web origin from HOST_IP + UNIBRIDGE_UI_PORT if not explicitly set
 : "${HOST_IP:=localhost}"
 : "${UNIBRIDGE_UI_PORT:=3000}"
+: "${KEYCLOAK_HOSTNAME:=${HOST_IP}}"
 : "${KEYCLOAK_REDIRECT_URI:=https://${HOST_IP}:${UNIBRIDGE_UI_PORT}/*}"
 : "${KEYCLOAK_WEB_ORIGIN:=https://${HOST_IP}:${UNIBRIDGE_UI_PORT}}"
-export KEYCLOAK_REDIRECT_URI KEYCLOAK_WEB_ORIGIN
+export KEYCLOAK_HOSTNAME KEYCLOAK_REDIRECT_URI KEYCLOAK_WEB_ORIGIN
 
 # Substitute environment variables in realm template and write to import dir
 TEMPLATE="/opt/init/realm-export.json.tpl"
@@ -26,7 +27,7 @@ if [ "${KEYCLOAK_DEV_MODE:-false}" = "true" ]; then
   /opt/keycloak/bin/kc.sh start-dev --import-realm &
 else
   echo "[init] Starting Keycloak in PRODUCTION mode"
-  /opt/keycloak/bin/kc.sh start --import-realm --hostname-strict=false --http-enabled=true &
+  /opt/keycloak/bin/kc.sh start --import-realm --hostname=${KEYCLOAK_HOSTNAME} --hostname-strict=true --http-enabled=true &
 fi
 KC_PID=$!
 

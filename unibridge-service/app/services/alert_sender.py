@@ -1,12 +1,40 @@
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import logging
+import socket
+from urllib.parse import urlparse
 
 import httpx
+
+from app.schemas import _is_internal_ip, _normalize_hostname, _validate_webhook_url
 
 logger = logging.getLogger(__name__)
 
 SEND_TIMEOUT = 10.0
+
+
+async def _validate_resolved_webhook_destination(url: str) -> None:
+    """Validate the final DNS answers immediately before sending."""
+    _validate_webhook_url(url)
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("webhook_url must include a hostname")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    normalized_hostname = _normalize_hostname(hostname)
+    infos = await asyncio.to_thread(
+        socket.getaddrinfo,
+        normalized_hostname,
+        port,
+        type=socket.SOCK_STREAM,
+    )
+    for info in infos:
+        sockaddr = info[4]
+        resolved_ip = ipaddress.ip_address(sockaddr[0])
+        if _is_internal_ip(resolved_ip):
+            raise ValueError("webhook_url resolved to private/internal address")
 
 
 def render_template(
@@ -57,6 +85,7 @@ async def send_webhook(
     if headers:
         send_headers.update(headers)
     try:
+        await _validate_resolved_webhook_destination(url)
         async with httpx.AsyncClient(timeout=SEND_TIMEOUT) as client:
             resp = await client.post(url, content=payload, headers=send_headers)
             resp.raise_for_status()

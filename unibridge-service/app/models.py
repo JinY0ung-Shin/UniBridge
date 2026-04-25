@@ -48,6 +48,7 @@ class S3Connection(Base):
     secret_access_key_encrypted = Column(String, nullable=False)
     default_bucket = Column(String, nullable=True)
     use_ssl = Column(Boolean, default=True)
+    allow_private_endpoints = Column(Boolean, default=False, nullable=False)
     created_at = Column(UtcDateTime, default=utcnow)
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)
 

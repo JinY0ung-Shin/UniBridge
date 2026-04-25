@@ -10,6 +10,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
 ENV_EXAMPLE_FILE = REPO_ROOT / ".env.example"
 REALM_EXPORT_FILE = REPO_ROOT / "keycloak" / "realm-export.json"
+APISIX_CONFIG_FILE = REPO_ROOT / "apisix" / "config.yaml"
+KEYCLOAK_ENTRYPOINT_FILE = REPO_ROOT / "keycloak" / "docker-entrypoint.sh"
+SERVICE_DOCKERFILE = REPO_ROOT / "unibridge-service" / "Dockerfile"
+UI_DOCKERFILE = REPO_ROOT / "unibridge-ui" / "Dockerfile"
+CI_WORKFLOW_FILE = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+RESTORE_SQLITE_FILE = REPO_ROOT / "backup" / "lib" / "sqlite.sh"
+RESTORE_ETCD_FILE = REPO_ROOT / "backup" / "lib" / "etcd.sh"
 PROMETHEUS_CONFIG_FILE = REPO_ROOT / "prometheus" / "prometheus.yml"
 PROMETHEUS_RULES_DIR = REPO_ROOT / "prometheus" / "rules"
 NGINX_CONFIG_FILE = REPO_ROOT / "unibridge-ui" / "nginx.conf"
@@ -133,6 +140,81 @@ def test_docker_compose_declares_ui_and_prometheus_healthchecks() -> None:
     assert "/healthz" in str(ui_healthcheck)
     assert "/-/ready" in str(prometheus_healthcheck)
     assert "/-/healthy" in str(blackbox_healthcheck)
+
+
+def test_apisix_enables_edge_protection_plugins() -> None:
+    config = _load_yaml(APISIX_CONFIG_FILE)
+    plugins = set(config["plugins"])
+
+    assert {"key-auth", "consumer-restriction", "proxy-rewrite", "prometheus"} <= plugins
+    assert {"limit-req", "limit-conn", "cors"} <= plugins
+
+
+def test_keycloak_realm_enforces_login_bruteforce_and_password_policy() -> None:
+    realm_export = json.loads(REALM_EXPORT_FILE.read_text(encoding="utf-8"))
+
+    assert realm_export["bruteForceProtected"] is True
+    assert realm_export["failureFactor"] <= 6
+    assert "length(12)" in realm_export["passwordPolicy"]
+    assert "digits" in realm_export["passwordPolicy"]
+    assert "specialChars" in realm_export["passwordPolicy"]
+
+
+def test_keycloak_entrypoint_uses_strict_hostname_in_production() -> None:
+    entrypoint = KEYCLOAK_ENTRYPOINT_FILE.read_text(encoding="utf-8")
+
+    assert "--hostname-strict=false" not in entrypoint
+    assert "--hostname-strict=true" in entrypoint
+    assert "--hostname=${KEYCLOAK_HOSTNAME}" in entrypoint
+
+
+def test_service_dockerfile_runs_as_non_root_user() -> None:
+    dockerfile = SERVICE_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "USER 1000:1000" in dockerfile
+    assert "chown -R 1000:1000 /app" in dockerfile
+
+
+def test_ui_dockerfile_does_not_disable_strict_ssl_unconditionally() -> None:
+    dockerfile = UI_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "npm config set strict-ssl false &&" not in dockerfile
+    assert "NPM_STRICT_SSL" in dockerfile
+    assert 'strict-ssl "$NPM_STRICT_SSL"' in dockerfile
+
+
+def test_ci_pins_actions_and_runs_coverage_and_image_builds() -> None:
+    workflow = CI_WORKFLOW_FILE.read_text(encoding="utf-8")
+    uses_lines = [
+        line.strip().lstrip("- ")
+        for line in workflow.splitlines()
+        if line.strip().lstrip("- ").startswith("uses:")
+    ]
+
+    assert uses_lines
+    assert all("@" in line and len(line.rsplit("@", 1)[1]) == 40 for line in uses_lines)
+    assert "--cov=app" in workflow
+    assert "--cov-fail-under=70" in workflow
+    assert "docker/build-push-action" in workflow
+
+
+def test_unibridge_meta_restore_restarts_apisix_to_clear_consumer_cache() -> None:
+    restore_sqlite = RESTORE_SQLITE_FILE.read_text(encoding="utf-8")
+
+    assert "compose restart apisix" in restore_sqlite
+
+
+def test_etcd_restore_restarts_service_to_replay_consumer_restrictions() -> None:
+    restore_etcd = RESTORE_ETCD_FILE.read_text(encoding="utf-8")
+
+    assert "compose restart unibridge-service" in restore_etcd
+
+
+def test_readme_documents_online_etcd_password_rotation() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "etcdctl auth user passwd root" in readme
+    assert "without deleting the etcd volume" in readme
 
 
 def test_readme_states_compose_v2_required_for_resource_limits() -> None:

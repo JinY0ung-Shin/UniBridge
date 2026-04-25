@@ -113,6 +113,7 @@ services:
       - KEYCLOAK_SERVICE_CLIENT_ID=${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}
       - KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:?KEYCLOAK_SERVICE_CLIENT_SECRET is required}
       - HOST_IP=${HOST_IP:-localhost}
+      - KEYCLOAK_HOSTNAME=${KEYCLOAK_HOSTNAME:-}
       - UNIBRIDGE_UI_PORT=${UNIBRIDGE_UI_PORT:-3000}
       - KEYCLOAK_REDIRECT_URI=${KEYCLOAK_REDIRECT_URI:-}
       - KEYCLOAK_WEB_ORIGIN=${KEYCLOAK_WEB_ORIGIN:-}
@@ -349,6 +350,7 @@ services:
         VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
         HOST_IP: ${HOST_IP:-localhost}
         KEYCLOAK_PORT: ${KEYCLOAK_PORT:-8443}
+        NPM_STRICT_SSL: ${NPM_STRICT_SSL:-true}
     restart: unless-stopped
     init: true
     logging: *default-logging

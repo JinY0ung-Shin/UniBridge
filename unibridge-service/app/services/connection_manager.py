@@ -16,9 +16,22 @@ from app.models import DBConnection
 logger = logging.getLogger(__name__)
 
 
+def _validate_encryption_key_strength(key: str) -> None:
+    if len(key.encode()) < 32:
+        raise ValueError("ENCRYPTION_KEY must be at least 32 bytes")
+    lowered = key.strip().lower()
+    if lowered in {"changeme", "change-me", "password", "secret", "change-me-in-production"}:
+        raise ValueError("ENCRYPTION_KEY uses an insecure default")
+    if lowered.startswith("change-me"):
+        raise ValueError("ENCRYPTION_KEY uses an insecure default")
+    if len(set(key)) < 8:
+        raise ValueError("ENCRYPTION_KEY has too little character diversity")
+
+
 def _get_fernet() -> Fernet:
     """Return a Fernet instance using the configured encryption key."""
     key = settings.ENCRYPTION_KEY
+    _validate_encryption_key_strength(key)
     # Pad or hash the key to make a valid Fernet key if needed
     if len(key) != 44:
         import base64
@@ -90,6 +103,7 @@ class ConnectionManager:
             cls._instance._engines = {}
             cls._instance._ch_clients = {}
             cls._instance._db_types = {}
+            cls._instance._lock = asyncio.Lock()
         return cls._instance
 
     async def initialize(self, connections: list[DBConnection]) -> None:
@@ -103,8 +117,13 @@ class ConnectionManager:
 
     async def add_connection(self, conn: DBConnection) -> None:
         """Create an engine/client and register it under the given alias."""
+        async with self._lock:
+            await self._add_connection_unlocked(conn)
+
+    async def _add_connection_unlocked(self, conn: DBConnection) -> None:
+        """Create an engine/client while the manager lock is held."""
         if conn.alias in self._engines or conn.alias in self._ch_clients:
-            await self.remove_connection(conn.alias)
+            await self._remove_connection_unlocked(conn.alias)
 
         password = decrypt_password(conn.password_encrypted)
 
@@ -139,6 +158,11 @@ class ConnectionManager:
 
     async def remove_connection(self, alias: str) -> None:
         """Dispose of the connection for the given alias and remove it."""
+        async with self._lock:
+            await self._remove_connection_unlocked(alias)
+
+    async def _remove_connection_unlocked(self, alias: str) -> None:
+        """Dispose of a registered connection while the manager lock is held."""
         engine = self._engines.pop(alias, None)
         client = self._ch_clients.pop(alias, None)
         self._db_types.pop(alias, None)

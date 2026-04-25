@@ -1,6 +1,7 @@
 """Comprehensive unit tests for the services layer."""
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -391,6 +392,13 @@ class TestValidateEncryptionKey:
         # The test env already has a valid key configured
         validate_encryption_key()
 
+    def test_weak_key_raises(self, monkeypatch):
+        weak_settings = type("Settings", (), {"ENCRYPTION_KEY": "changeme"})()
+        monkeypatch.setattr("app.services.connection_manager.settings", weak_settings)
+
+        with pytest.raises(RuntimeError, match="ENCRYPTION_KEY"):
+            validate_encryption_key()
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # connection_manager: _build_url
@@ -489,6 +497,7 @@ class TestConnectionManagerClickHouse:
         mgr._engines = {}
         mgr._ch_clients = {}
         mgr._db_types = {}
+        mgr._lock = asyncio.Lock()
         return mgr
 
     @pytest.mark.asyncio
@@ -662,6 +671,27 @@ class TestConnectionManagerClickHouse:
         assert mgr._ch_clients["ch_test"] is mock_client2
         mock_client1.close.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_concurrent_add_same_clickhouse_alias_closes_replaced_client(self):
+        import asyncio as _asyncio
+        import time
+
+        mgr = self._fresh_manager()
+        clients = [MagicMock(name="client1"), MagicMock(name="client2")]
+        remaining = iter(clients)
+        conn = _make_ch_conn()
+
+        def slow_get_client(*_args, **_kwargs):
+            time.sleep(0.02)
+            return next(remaining)
+
+        with _patch("clickhouse_connect.get_client", side_effect=slow_get_client):
+            await _asyncio.gather(mgr.add_connection(conn), mgr.add_connection(conn))
+
+        closed = [client for client in clients if client.close.called]
+        assert len(closed) == 1
+        assert mgr._ch_clients["ch_test"] in clients
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # query_executor: ClickHouse execution
@@ -766,6 +796,59 @@ class TestExecuteClickHouseQuery:
         mock_client.query = slow_query
         with pytest.raises(_asyncio.TimeoutError):
             await execute_clickhouse_query(mock_client, "SELECT 1", timeout=1)
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_clickhouse_query(self):
+        import asyncio as _asyncio
+        import time
+
+        def slow_query(*_args, **_kwargs):
+            time.sleep(0.2)
+
+        mock_client = MagicMock()
+        mock_client.query = slow_query
+        mock_client.command.return_value = ""
+
+        with pytest.raises(_asyncio.TimeoutError):
+            await execute_clickhouse_query(mock_client, "SELECT 1", timeout=0.01)
+
+        kill_commands = [
+            call.args[0]
+            for call in mock_client.command.call_args_list
+            if call.args and "KILL QUERY" in call.args[0]
+        ]
+        assert len(kill_commands) == 1
+        assert "query_id" in kill_commands[0]
+        assert "SYNC" in kill_commands[0]
+
+    @pytest.mark.asyncio
+    async def test_cancelled_clickhouse_query_is_killed(self):
+        import asyncio as _asyncio
+        import time
+
+        def slow_query(*_args, **_kwargs):
+            time.sleep(0.2)
+
+        mock_client = MagicMock()
+        mock_client.query = slow_query
+        mock_client.command.return_value = ""
+
+        task = _asyncio.create_task(
+            execute_clickhouse_query(mock_client, "SELECT 1", timeout=10)
+        )
+        await _asyncio.sleep(0.01)
+        task.cancel()
+
+        with pytest.raises(_asyncio.CancelledError):
+            await task
+
+        kill_commands = [
+            call.args[0]
+            for call in mock_client.command.call_args_list
+            if call.args and "KILL QUERY" in call.args[0]
+        ]
+        assert len(kill_commands) == 1
+        assert "SYNC" in kill_commands[0]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

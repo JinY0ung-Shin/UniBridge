@@ -32,3 +32,6 @@ plugins:
   - consumer-restriction
   - proxy-rewrite
   - prometheus
+  - limit-req
+  - limit-conn
+  - cors

@@ -4,6 +4,15 @@
   "sslRequired": "external",
   "registrationAllowed": false,
   "loginWithEmailAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "waitIncrementSeconds": 60,
+  "quickLoginCheckMilliSeconds": 1000,
+  "maxDeltaTimeSeconds": 43200,
+  "failureFactor": 6,
+  "passwordPolicy": "length(12) and digits(1) and specialChars(1)",
   "duplicateEmailsAllowed": true,
   "roles": {
     "realm": [

@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Path, status
 
-from app.auth import ROLE_PRIORITY, CurrentUser, require_permission
+from app.auth import CurrentUser, is_application_role_name, require_permission, resolve_application_role
 from app.config import settings
 from app.keycloak_admin import KeycloakAdminClient
 from app.schemas import (
@@ -27,6 +28,7 @@ _UUID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 _kc_admin: KeycloakAdminClient | None = None
+_kc_admin_lock = threading.Lock()
 
 
 def _get_kc_admin() -> KeycloakAdminClient:
@@ -36,27 +38,79 @@ def _get_kc_admin() -> KeycloakAdminClient:
     """
     global _kc_admin
     if _kc_admin is None:
-        if not settings.KEYCLOAK_URL:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Keycloak is not configured (KEYCLOAK_URL is empty)",
-            )
-        _kc_admin = KeycloakAdminClient(
-            base_url=settings.KEYCLOAK_URL,
-            realm=settings.KEYCLOAK_REALM,
-            client_id=settings.KEYCLOAK_SERVICE_CLIENT_ID,
-            client_secret=settings.KEYCLOAK_SERVICE_CLIENT_SECRET,
-        )
+        with _kc_admin_lock:
+            if _kc_admin is None:
+                if not settings.KEYCLOAK_URL:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="Keycloak is not configured (KEYCLOAK_URL is empty)",
+                    )
+                _kc_admin = KeycloakAdminClient(
+                    base_url=settings.KEYCLOAK_URL,
+                    realm=settings.KEYCLOAK_REALM,
+                    client_id=settings.KEYCLOAK_SERVICE_CLIENT_ID,
+                    client_secret=settings.KEYCLOAK_SERVICE_CLIENT_SECRET,
+                )
     return _kc_admin
 
 
 def _resolve_role(realm_roles: list[dict]) -> str | None:
-    """Pick the highest-priority application role from a list of realm role dicts.
+    """Pick the application role from a list of realm role dicts."""
+    return resolve_application_role([r["name"] for r in realm_roles])
 
-    Uses ROLE_PRIORITY from auth.py (admin > developer > viewer).
-    """
-    role_names = {r["name"] for r in realm_roles}
-    return next((r for r in ROLE_PRIORITY if r in role_names), None)
+
+def _is_same_user(target: dict, user: CurrentUser) -> bool:
+    """Compare Keycloak user data with the authenticated principal."""
+    if target.get("id") == user.username:
+        return True
+    if user.display_username and target.get("username") == user.display_username:
+        return True
+    return target.get("username") == user.username
+
+
+async def _user_has_role(kc: KeycloakAdminClient, user_id: str, role_name: str) -> bool:
+    roles = await kc.get_user_realm_roles(user_id)
+    return any(role.get("name") == role_name for role in roles)
+
+
+async def _count_users_with_role(
+    kc: KeycloakAdminClient,
+    role_name: str,
+    *,
+    enabled_only: bool = True,
+) -> int:
+    count = 0
+    first = 0
+    page_size = 100
+    while True:
+        users, total = await kc.list_users(first=first, max_results=page_size)
+        if not users:
+            break
+        users_to_check = [
+            user for user in users if not enabled_only or user.get("enabled", True)
+        ]
+        role_lists = await asyncio.gather(
+            *(kc.get_user_realm_roles(user["id"]) for user in users_to_check)
+        )
+        count += sum(
+            any(role.get("name") == role_name for role in roles)
+            for roles in role_lists
+        )
+        first += len(users)
+        if first >= total:
+            break
+    return count
+
+
+async def _ensure_not_last_admin(kc: KeycloakAdminClient, user_id: str, action: str) -> None:
+    if not await _user_has_role(kc, user_id, "admin"):
+        return
+    admin_count = await _count_users_with_role(kc, "admin")
+    if admin_count <= 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot {action} the last admin user",
+        )
 
 
 async def _enrich_user(kc: KeycloakAdminClient, user: dict) -> KeycloakUser:
@@ -132,13 +186,16 @@ async def change_role(
     """Change a user's application role (assign new first, then remove old)."""
     kc = _get_kc_admin()
 
+    if body.role != "admin":
+        await _ensure_not_last_admin(kc, user_id, "demote")
+
     # Assign new role first (so user is never without a role)
     await kc.assign_realm_role(user_id, body.role)
 
     # Then remove old app roles (excluding the newly assigned one)
     current_roles = await kc.get_user_realm_roles(user_id)
     for role_dict in current_roles:
-        if role_dict["name"] in ROLE_PRIORITY and role_dict["name"] != body.role:
+        if is_application_role_name(role_dict["name"]) and role_dict["name"] != body.role:
             await kc.remove_realm_role(user_id, role_dict["name"])
 
     # Return updated user info via direct get_user lookup
@@ -171,11 +228,13 @@ async def toggle_enabled(
     kc = _get_kc_admin()
 
     target = await kc.get_user(user_id)
-    if target["username"] == user.username:
+    if _is_same_user(target, user):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot change your own enabled status",
         )
+    if body.enabled is False:
+        await _ensure_not_last_admin(kc, user_id, "disable")
 
     await kc.update_user_enabled(user_id, body.enabled)
     # Refresh and return enriched user
@@ -197,10 +256,12 @@ async def delete_user(
 
     # Prevent self-deletion: look up the user to check username
     target = await kc.get_user(user_id)
-    if target["username"] == user.username:
+    if _is_same_user(target, user):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete your own account",
         )
+
+    await _ensure_not_last_admin(kc, user_id, "delete")
 
     await kc.delete_user(user_id)

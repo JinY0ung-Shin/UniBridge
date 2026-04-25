@@ -56,6 +56,7 @@ async def get_me(
     perms = await get_role_permissions(db, user.role)
     return UserInfoResponse(
         username=user.username,
+        display_username=user.display_username,
         role=user.role,
         permissions=sorted(perms),
     )

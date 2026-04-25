@@ -42,6 +42,8 @@ RUN set -eu; \
 
 COPY app/ ./app/
 COPY scripts/ ./scripts/
+RUN mkdir -p /app/data && chown -R 1000:1000 /app
 
 EXPOSE 8000
+USER 1000:1000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

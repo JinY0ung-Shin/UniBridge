@@ -8,6 +8,7 @@ from app.schemas import (
     AlertChannelCreate, AlertChannelUpdate, AlertChannelResponse,
     AlertRuleCreate, AlertRuleUpdate, AlertRuleResponse,
     AlertHistoryResponse, AlertStatusResponse,
+    S3ConnectionCreate,
 )
 
 
@@ -43,6 +44,45 @@ class TestAlertSchemas:
         assert ch.name == "email"
         assert ch.headers is None
         assert ch.enabled is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://0177.0.0.1/",
+            "http://0x7f.0.0.1/",
+            "http://127.1/",
+            "http://017700000001/",
+            "http://0x7f000001/",
+            "http://%6C%6F%63%61%6C%68%6F%73%74/",
+            "http://169.254.169.254/",
+            "http://[::ffff:127.0.0.1]/",
+        ],
+    )
+    def test_channel_create_rejects_ssrf_bypass_hosts(self, url):
+        with pytest.raises(Exception):
+            AlertChannelCreate(
+                name="blocked",
+                webhook_url=url,
+                payload_template="{}",
+            )
+
+    def test_s3_private_endpoint_requires_explicit_opt_in(self):
+        with pytest.raises(Exception):
+            S3ConnectionCreate(
+                alias="minio",
+                endpoint_url="http://10.0.0.5:9000",
+                access_key_id="access",
+                secret_access_key="secret",
+            )
+
+        conn = S3ConnectionCreate(
+            alias="minio",
+            endpoint_url="http://10.0.0.5:9000",
+            allow_private_endpoints=True,
+            access_key_id="access",
+            secret_access_key="secret",
+        )
+        assert conn.endpoint_url == "http://10.0.0.5:9000"
 
     def test_rule_create_db_health(self):
         rule = AlertRuleCreate(

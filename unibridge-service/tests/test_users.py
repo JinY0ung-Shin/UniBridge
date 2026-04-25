@@ -1,6 +1,8 @@
 """Tests for user management endpoints (Keycloak Admin proxy)."""
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -65,6 +67,30 @@ def kc_mock():
         yield mock
     # Clean up singleton after test
     users_mod._kc_admin = None
+
+
+def test_get_kc_admin_concurrent_initialization_creates_single_client(monkeypatch):
+    import app.routers.users as users_mod
+
+    users_mod._kc_admin = None
+    monkeypatch.setattr(users_mod.settings, "KEYCLOAK_URL", "https://keycloak.test")
+    created_clients = []
+
+    class FakeKeycloakAdminClient:
+        def __init__(self, **_kwargs):
+            time.sleep(0.01)
+            created_clients.append(self)
+
+    monkeypatch.setattr(users_mod, "KeycloakAdminClient", FakeKeycloakAdminClient)
+
+    try:
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            clients = list(executor.map(lambda _i: users_mod._get_kc_admin(), range(50)))
+    finally:
+        users_mod._kc_admin = None
+
+    assert len(created_clients) == 1
+    assert len({id(client) for client in clients}) == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -191,6 +217,27 @@ class TestChangeRole:
         )
         assert resp.status_code == 422
 
+    async def test_cannot_demote_last_admin(self, client, admin_token, kc_mock):
+        kc_mock.list_users.return_value = (
+            [{"id": USER_1_ID, "username": "alice", "enabled": True}],
+            1,
+        )
+        kc_mock.get_user_realm_roles.side_effect = [
+            [{"id": "role-id-admin", "name": "admin"}],
+            [{"id": "role-id-admin", "name": "admin"}],
+        ]
+
+        resp = await client.put(
+            f"/admin/users/{USER_1_ID}/role",
+            json={"role": "viewer"},
+            headers=auth_header(admin_token),
+        )
+
+        assert resp.status_code == 409
+        assert "last admin" in resp.json()["detail"].lower()
+        kc_mock.assign_realm_role.assert_not_awaited()
+        kc_mock.remove_realm_role.assert_not_awaited()
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PUT /admin/users/{user_id}/reset-password
@@ -271,6 +318,32 @@ class TestToggleEnabled:
         assert resp.status_code == 400
         assert "Cannot change your own enabled status" in resp.json()["detail"]
 
+    async def test_cannot_disable_last_admin(self, client, admin_token, kc_mock):
+        kc_mock.get_user.return_value = {
+            "id": USER_1_ID,
+            "username": "alice",
+            "email": "alice@example.com",
+            "enabled": True,
+        }
+        kc_mock.list_users.return_value = (
+            [{"id": USER_1_ID, "username": "alice", "enabled": True}],
+            1,
+        )
+        kc_mock.get_user_realm_roles.side_effect = [
+            [{"id": "role-id-admin", "name": "admin"}],
+            [{"id": "role-id-admin", "name": "admin"}],
+        ]
+
+        resp = await client.put(
+            f"/admin/users/{USER_1_ID}/enabled",
+            json={"enabled": False},
+            headers=auth_header(admin_token),
+        )
+
+        assert resp.status_code == 409
+        assert "last admin" in resp.json()["detail"].lower()
+        kc_mock.update_user_enabled.assert_not_awaited()
+
     async def test_toggle_enabled_invalid_uuid_422(self, client, admin_token, kc_mock):
         resp = await client.put(
             "/admin/users/not-a-uuid/enabled",
@@ -308,6 +381,31 @@ class TestDeleteUser:
         )
         assert resp.status_code == 400
         assert "Cannot delete your own account" in resp.json()["detail"]
+
+    async def test_cannot_delete_last_admin(self, client, admin_token, kc_mock):
+        kc_mock.get_user.return_value = {
+            "id": USER_1_ID,
+            "username": "alice",
+            "email": "alice@example.com",
+            "enabled": True,
+        }
+        kc_mock.list_users.return_value = (
+            [{"id": USER_1_ID, "username": "alice", "enabled": True}],
+            1,
+        )
+        kc_mock.get_user_realm_roles.side_effect = [
+            [{"id": "role-id-admin", "name": "admin"}],
+            [{"id": "role-id-admin", "name": "admin"}],
+        ]
+
+        resp = await client.delete(
+            f"/admin/users/{USER_1_ID}",
+            headers=auth_header(admin_token),
+        )
+
+        assert resp.status_code == 409
+        assert "last admin" in resp.json()["detail"].lower()
+        kc_mock.delete_user.assert_not_awaited()
 
     async def test_delete_user_invalid_uuid_422(self, client, admin_token, kc_mock):
         resp = await client.delete(

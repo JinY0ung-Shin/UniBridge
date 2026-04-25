@@ -86,5 +86,7 @@ EOF
   compose up -d --wait etcd
   log "etcd: starting apisix"
   compose up -d --wait apisix
+  log "etcd: restarting unibridge-service to replay APISIX consumers"
+  compose restart unibridge-service
   log "etcd: restore complete"
 }

@@ -47,6 +47,8 @@ def make_token(rsa_keypair):
     def _make(
         *,
         kid: str = "kid-1",
+        sub: str = "keycloak-user-id",
+        preferred_username: str | None = "alice",
         issuer: str = ISSUER,
         audience: str = AUDIENCE,
         expires_delta: timedelta = timedelta(minutes=5),
@@ -54,12 +56,13 @@ def make_token(rsa_keypair):
         algorithm: str = "RS256",
     ) -> str:
         payload: dict[str, Any] = {
-            "sub": "keycloak-user-id",
-            "preferred_username": "alice",
+            "sub": sub,
             "iss": issuer,
             "aud": audience,
             "exp": datetime.now(timezone.utc) + expires_delta,
         }
+        if preferred_username is not None:
+            payload["preferred_username"] = preferred_username
         if roles is None:
             payload["realm_access"] = {"roles": ["developer"]}
         else:
@@ -102,7 +105,8 @@ async def test_rs256_token_with_matching_kid_is_accepted(
 
     user = await _verify_keycloak_token(make_token(kid="kid-1", roles=["viewer", "developer"]))
 
-    assert user.username == "alice"
+    assert user.username == "keycloak-user-id"
+    assert user.display_username == "alice"
     assert user.role == "developer"
 
 
@@ -117,7 +121,8 @@ async def test_missing_kid_forces_jwks_refresh_and_accepts_rotated_key(
 
     user = await _verify_keycloak_token(make_token(kid="new-kid"))
 
-    assert user.username == "alice"
+    assert user.username == "keycloak-user-id"
+    assert user.display_username == "alice"
     assert user.role == "developer"
     assert len(httpx_mock.get_requests(url=JWKS_URL)) == 2
 
@@ -214,14 +219,14 @@ async def test_jwks_fetch_failure_uses_stale_cache_once_available(
     httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
 
     first_user = await _verify_keycloak_token(make_token(kid="kid-1"))
-    assert first_user.username == "alice"
+    assert first_user.username == "keycloak-user-id"
 
     await asyncio.sleep(0.02)
     httpx_mock.add_response(url=JWKS_URL, status_code=503)
 
     second_user = await _verify_keycloak_token(make_token(kid="kid-1"))
 
-    assert second_user.username == "alice"
+    assert second_user.username == "keycloak-user-id"
     assert len(httpx_mock.get_requests(url=JWKS_URL)) == 2
 
 
@@ -250,8 +255,41 @@ async def test_concurrent_verification_fetches_jwks_once(
 
     users = await asyncio.gather(*(_verify_keycloak_token(token) for _ in range(50)))
 
-    assert {user.username for user in users} == {"alice"}
+    assert {user.username for user in users} == {"keycloak-user-id"}
     assert {user.role for user in users} == {"developer"}
+    assert len(httpx_mock.get_requests(url=JWKS_URL)) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_missing_kid_forces_single_jwks_refresh(
+    httpx_mock: HTTPXMock,
+    make_jwks_key,
+    make_token,
+):
+    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("old-kid")]})
+    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("new-kid")]})
+    old_token = make_token(kid="old-kid")
+    new_token = make_token(kid="new-kid")
+
+    old_user = await _verify_keycloak_token(old_token)
+    users = await asyncio.gather(*(_verify_keycloak_token(new_token) for _ in range(50)))
+
+    assert old_user.role == "developer"
+    assert {user.role for user in users} == {"developer"}
+    assert len(httpx_mock.get_requests(url=JWKS_URL)) == 2
+
+
+@pytest.mark.asyncio
+async def test_forced_refresh_reuses_cache_if_required_kid_is_already_loaded(
+    httpx_mock: HTTPXMock,
+    make_jwks_key,
+):
+    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("new-kid")]})
+
+    first = await auth._get_jwks(force_refresh=True, required_kid="new-kid")
+    second = await auth._get_jwks(force_refresh=True, required_kid="new-kid")
+
+    assert first is second
     assert len(httpx_mock.get_requests(url=JWKS_URL)) == 1
 
 
@@ -265,5 +303,39 @@ async def test_get_current_user_uses_keycloak_when_issuer_configured(
 
     user = await get_current_user(credentials=_credentials(make_token(kid="kid-1")))
 
-    assert user.username == "alice"
+    assert user.username == "keycloak-user-id"
     assert user.role == "developer"
+
+
+@pytest.mark.asyncio
+async def test_custom_realm_role_is_accepted_without_code_change(
+    httpx_mock: HTTPXMock,
+    make_jwks_key,
+    make_token,
+):
+    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
+
+    user = await _verify_keycloak_token(make_token(kid="kid-1", roles=["analyst"]))
+
+    assert user.username == "keycloak-user-id"
+    assert user.role == "analyst"
+
+
+@pytest.mark.asyncio
+async def test_distinct_subs_with_same_preferred_username_kept_distinct(
+    httpx_mock: HTTPXMock,
+    make_jwks_key,
+    make_token,
+):
+    httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
+
+    first = await _verify_keycloak_token(
+        make_token(kid="kid-1", sub="subject-a", preferred_username="same-name")
+    )
+    second = await _verify_keycloak_token(
+        make_token(kid="kid-1", sub="subject-b", preferred_username="same-name")
+    )
+
+    assert first.username == "subject-a"
+    assert second.username == "subject-b"
+    assert first.display_username == second.display_username == "same-name"

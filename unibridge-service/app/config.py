@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     KEYCLOAK_REALM: str = "apihub"
     KEYCLOAK_SERVICE_CLIENT_ID: str = "apihub-service"
     KEYCLOAK_SERVICE_CLIENT_SECRET: str = ""
+    ROLE_PRIORITY: str = "admin,developer,viewer"
 
     model_config = {"env_file": ".env"}
 
@@ -78,6 +79,18 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
+def _validate_secret_strength(value: str, name: str) -> None:
+    if len(value.encode()) < 32:
+        raise RuntimeError(f"{name} must be at least 32 bytes")
+    lowered = value.strip().lower()
+    if lowered in {"changeme", "change-me", "password", "secret", "change-me-in-production"}:
+        raise RuntimeError(f"{name} uses an insecure default")
+    if lowered.startswith("change-me"):
+        raise RuntimeError(f"{name} uses an insecure default")
+    if len(set(value)) < 8:
+        raise RuntimeError(f"{name} has too little character diversity")
+
+
 def validate_settings() -> None:
     """Validate that critical secrets are set. Called at startup."""
     _INSECURE_DEFAULTS = {
@@ -92,6 +105,7 @@ def validate_settings() -> None:
             "ENCRYPTION_KEY is not set or uses an insecure default. "
             "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
         )
+    _validate_secret_strength(settings.ENCRYPTION_KEY, "ENCRYPTION_KEY")
     # Validate ENCRYPTION_KEY produces a usable Fernet key
     try:
         from cryptography.fernet import Fernet

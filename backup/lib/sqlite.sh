@@ -73,5 +73,6 @@ EOF
   rm -f "$tmp"
 
   compose up -d --wait unibridge-service
+  compose restart apisix
   log "sqlite: restore complete"
 }

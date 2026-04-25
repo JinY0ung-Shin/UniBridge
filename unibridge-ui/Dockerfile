@@ -4,6 +4,7 @@ ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG NO_PROXY
 ARG NPM_REGISTRY=""
+ARG NPM_STRICT_SSL=true
 ARG HOST_IP=localhost
 ARG KEYCLOAK_PORT=8443
 ARG VITE_KEYCLOAK_URL
@@ -13,7 +14,7 @@ ENV VITE_KEYCLOAK_URL=${VITE_KEYCLOAK_URL:-https://${HOST_IP}:${KEYCLOAK_PORT}}
 ENV VITE_KEYCLOAK_REALM=$VITE_KEYCLOAK_REALM
 ENV VITE_KEYCLOAK_CLIENT_ID=$VITE_KEYCLOAK_CLIENT_ID
 COPY package*.json ./
-RUN npm config set strict-ssl false && \
+RUN if [ "$NPM_STRICT_SSL" != "true" ]; then npm config set strict-ssl "$NPM_STRICT_SSL"; fi && \
     if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi && \
     if [ -n "$HTTP_PROXY" ]; then npm config set proxy $HTTP_PROXY; fi && \
     if [ -n "$HTTPS_PROXY" ]; then npm config set https-proxy $HTTPS_PROXY; fi && \

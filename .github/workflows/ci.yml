@@ -19,9 +19,9 @@ jobs:
         working-directory: unibridge-ui
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: lts/*
 
@@ -44,9 +44,9 @@ jobs:
         working-directory: unibridge-service
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.12"
           cache: pip
@@ -67,4 +67,28 @@ jobs:
           alembic -c alembic.ini check
 
       - name: Test
-        run: pytest tests/ -v --tb=short
+        run: pytest tests/ -v --tb=short --cov=app --cov-report=term-missing --cov-fail-under=70
+
+  images:
+    name: Container image build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: service
+            context: ./unibridge-service
+            file: ./unibridge-service/Dockerfile
+          - name: ui
+            context: ./unibridge-ui
+            file: ./unibridge-ui/Dockerfile
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Build image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: false
+          tags: unibridge-${{ matrix.name }}:ci

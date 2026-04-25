@@ -1,6 +1,8 @@
 """Integration tests for alert rules, history, and status API."""
 from __future__ import annotations
 
+import socket
+
 import pytest
 from pytest_httpx import HTTPXMock
 from sqlalchemy import select
@@ -8,6 +10,25 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import AlertHistory
 from tests.conftest import auth_header
+
+
+@pytest.fixture(autouse=True)
+def resolve_webhook_hosts_to_public_ip(monkeypatch):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("93.184.216.34", port or 80),
+            )
+        ]
+
+    monkeypatch.setattr(
+        "app.services.alert_sender.socket.getaddrinfo",
+        fake_getaddrinfo,
+    )
 
 
 class TestAlertRulesAPI:

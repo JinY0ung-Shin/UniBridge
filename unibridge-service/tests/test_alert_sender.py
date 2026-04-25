@@ -84,3 +84,20 @@ class TestSendWebhook:
         assert ok is True
         req = httpx_mock.get_request()
         assert req.headers["X-Token"] == "secret"
+
+    @pytest.mark.asyncio
+    async def test_send_webhook_rejects_private_resolved_ip(self, monkeypatch, httpx_mock: HTTPXMock):
+        def fake_getaddrinfo(*_args, **_kwargs):
+            return [(None, None, None, None, ("127.0.0.1", 443))]
+
+        monkeypatch.setattr("app.services.alert_sender.socket.getaddrinfo", fake_getaddrinfo)
+
+        ok, err = await send_webhook(
+            url="https://safe.example.com/hook",
+            payload='{"msg":"test"}',
+            headers=None,
+        )
+
+        assert ok is False
+        assert "private/internal" in err
+        assert not httpx_mock.get_requests()

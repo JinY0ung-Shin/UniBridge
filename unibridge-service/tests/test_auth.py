@@ -359,6 +359,32 @@ class TestCacheTTLBehavior:
             # Should have been called exactly once
             assert call_count == 1
 
+    async def test_refresh_failure_sets_short_backoff_and_uses_stale_cache(self, seeded_db):
+        """A failed refresh should not make every concurrent request retry DB I/O."""
+        import app.auth as auth_mod
+
+        await invalidate_permission_cache()
+        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        async with session_factory() as db:
+            await get_role_permissions(db, "admin")
+            auth_mod._perm_cache_ts = time.time() - _CACHE_TTL - 1
+
+            call_count = 0
+
+            async def failing_refresh(_db_session):
+                nonlocal call_count
+                call_count += 1
+                raise RuntimeError("database unavailable")
+
+            with patch.object(auth_mod, "_refresh_cache", failing_refresh):
+                with pytest.raises(RuntimeError, match="database unavailable"):
+                    await get_role_permissions(db, "admin")
+
+                perms = await get_role_permissions(db, "admin")
+
+            assert perms == set(ALL_PERMISSIONS)
+            assert call_count == 1
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # auth.py — require_permission

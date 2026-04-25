@@ -14,7 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_role_permissions, require_permission
 from app.database import get_db
 from app.models import S3Connection
-from app.schemas import S3ConnectionCreate, S3ConnectionResponse, S3ConnectionUpdate
+from app.schemas import (
+    S3ConnectionCreate,
+    S3ConnectionResponse,
+    S3ConnectionUpdate,
+    _validate_external_url,
+)
 from app.services.connection_manager import decrypt_password, encrypt_password
 from app.services.s3_manager import s3_manager
 
@@ -67,6 +72,7 @@ async def create_s3_connection(
         secret_access_key_encrypted=encrypt_password(body.secret_access_key),
         default_bucket=body.default_bucket or None,
         use_ssl=body.use_ssl,
+        allow_private_endpoints=body.allow_private_endpoints,
     )
     db.add(conn)
     await db.commit()
@@ -129,8 +135,22 @@ async def update_s3_connection(
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
 
     provided = body.model_fields_set
+    next_allow_private = conn.allow_private_endpoints
+    if "allow_private_endpoints" in provided and body.allow_private_endpoints is not None:
+        next_allow_private = body.allow_private_endpoints
+
+    next_endpoint = conn.endpoint_url
     if "endpoint_url" in provided:
-        conn.endpoint_url = body.endpoint_url or None
+        next_endpoint = body.endpoint_url or None
+    if next_endpoint:
+        next_endpoint = _validate_external_url(
+            next_endpoint,
+            field_name="endpoint_url",
+            allow_private=next_allow_private,
+        )
+
+    conn.endpoint_url = next_endpoint
+    conn.allow_private_endpoints = next_allow_private
     if "region" in provided and body.region is not None:
         conn.region = body.region
     if "access_key_id" in provided and body.access_key_id is not None:

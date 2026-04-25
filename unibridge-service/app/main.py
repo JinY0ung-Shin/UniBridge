@@ -29,6 +29,35 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _edge_protection_plugins(methods: list[str]) -> dict[str, object]:
+    """Return APISIX edge plugins shared by managed public routes."""
+    origins = getattr(settings, "CORS_ALLOWED_ORIGINS", "") or "*"
+    rate_limit = max(settings_manager.rate_limit_per_minute, 1)
+    max_concurrent = max(settings_manager.max_concurrent_queries, 1)
+    return {
+        "cors": {
+            "allow_origins": origins,
+            "allow_methods": ",".join(methods),
+            "allow_headers": "*",
+            "allow_credential": True,
+            "max_age": 3600,
+        },
+        "limit-req": {
+            "rate": max(rate_limit // 60, 1),
+            "burst": rate_limit,
+            "rejected_code": 429,
+            "key": "remote_addr",
+        },
+        "limit-conn": {
+            "conn": max_concurrent,
+            "burst": max_concurrent,
+            "default_conn_delay": 0.1,
+            "rejected_code": 429,
+            "key": "remote_addr",
+        },
+    }
+
+
 def _is_missing_route_error(exc: Exception) -> bool:
     if isinstance(exc, HTTPStatusError):
         return exc.response.status_code == 404
@@ -141,6 +170,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                             "proxy-rewrite": {
                                 "regex_uri": ["^/api/query(.*)", "/query$1"],
                             },
+                            **_edge_protection_plugins(["POST", "GET", "OPTIONS"]),
                         },
                         "status": 1,
                     },
@@ -164,6 +194,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                             "proxy-rewrite": {
                                 "regex_uri": ["^/api/s3(.*)", "/s3$1"],
                             },
+                            **_edge_protection_plugins(["GET", "OPTIONS"]),
                         },
                         "status": 1,
                     },
@@ -205,6 +236,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                         },
                                     },
                                 },
+                                **_edge_protection_plugins(["POST", "GET", "PUT", "DELETE", "OPTIONS"]),
                             },
                             "status": 1,
                         },
@@ -225,6 +257,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                             "proxy-rewrite": {
                                 "regex_uri": ["^/api/llm-admin(.*)", "$1"],
                             },
+                            **_edge_protection_plugins(["POST", "GET", "PUT", "DELETE", "OPTIONS"]),
                         },
                         "status": 1,
                     },

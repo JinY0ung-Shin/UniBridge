@@ -1,10 +1,11 @@
 from datetime import datetime
+import re
 from typing import Any
 
 import ipaddress
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ── Query ────────────────────────────────────────────────────────────────────
@@ -183,6 +184,7 @@ class RoleResponse(BaseModel):
 
 class UserInfoResponse(BaseModel):
     username: str
+    display_username: str | None = None
     role: str
     permissions: list[str]
 
@@ -201,6 +203,17 @@ class TokenResponse(BaseModel):
 
 # ── API Keys ────────────────────────────────────────────────────────────────
 
+_API_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,}$")
+
+
+def _validate_custom_api_key(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not _API_KEY_PATTERN.fullmatch(value):
+        raise ValueError("api_key must be at least 32 characters using only A-Z, a-z, 0-9, '_' or '-'")
+    return value
+
+
 class ApiKeyCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="Unique key name (becomes APISIX consumer username)")
     description: str = ""
@@ -208,12 +221,22 @@ class ApiKeyCreate(BaseModel):
     allowed_databases: list[str] = Field(default_factory=list, description="Database aliases this key can query")
     allowed_routes: list[str] = Field(default_factory=list, description="Gateway route IDs this key can access")
 
+    @field_validator("api_key")
+    @classmethod
+    def check_api_key(cls, v: str | None) -> str | None:
+        return _validate_custom_api_key(v)
+
 
 class ApiKeyUpdate(BaseModel):
     description: str | None = None
     api_key: str | None = Field(None, description="New API key; omit to keep current")
     allowed_databases: list[str] | None = None
     allowed_routes: list[str] | None = None
+
+    @field_validator("api_key")
+    @classmethod
+    def check_api_key(cls, v: str | None) -> str | None:
+        return _validate_custom_api_key(v)
 
 
 class ApiKeyResponse(BaseModel):
@@ -275,27 +298,93 @@ _BLOCKED_HOSTNAMES = frozenset({
 
 
 def _validate_webhook_url(url: str) -> str:
+    return _validate_external_url(url, field_name="webhook_url", allow_private=False)
+
+
+def _normalize_hostname(hostname: str) -> str:
+    decoded = unquote(hostname).strip().rstrip(".").lower()
+    try:
+        return decoded.encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise ValueError("URL hostname is invalid") from exc
+
+
+def _parse_int_ipv4_part(part: str, *, max_value: int) -> int:
+    if part.lower().startswith("0x"):
+        value = int(part[2:], 16)
+    elif len(part) > 1 and part.startswith("0"):
+        value = int(part[1:] or "0", 8)
+    else:
+        value = int(part, 10)
+    if value > max_value:
+        raise ValueError("IPv4 part out of range")
+    return value
+
+
+def _coerce_ip_address(hostname: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+
+    parts = hostname.split(".")
+    if not 1 <= len(parts) <= 4 or any(part == "" for part in parts):
+        return None
+    try:
+        values = [
+            _parse_int_ipv4_part(part, max_value=0xFFFFFFFF)
+            for part in parts
+        ]
+        if len(values) == 1:
+            value = values[0]
+        elif len(values) == 2:
+            if values[0] > 0xFF or values[1] > 0xFFFFFF:
+                raise ValueError("IPv4 part out of range")
+            value = (values[0] << 24) | values[1]
+        elif len(values) == 3:
+            if values[0] > 0xFF or values[1] > 0xFF or values[2] > 0xFFFF:
+                raise ValueError("IPv4 part out of range")
+            value = (values[0] << 24) | (values[1] << 16) | values[2]
+        else:
+            if any(part > 0xFF for part in values):
+                raise ValueError("IPv4 part out of range")
+            value = (
+                (values[0] << 24)
+                | (values[1] << 16)
+                | (values[2] << 8)
+                | values[3]
+            )
+        return ipaddress.ip_address(value)
+    except ValueError:
+        return None
+
+
+def _is_internal_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def _validate_external_url(url: str, *, field_name: str, allow_private: bool) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        raise ValueError("webhook_url must use http or https scheme")
+        raise ValueError(f"{field_name} must use http or https scheme")
     hostname = parsed.hostname
     if not hostname:
-        raise ValueError("webhook_url must include a hostname")
+        raise ValueError(f"{field_name} must include a hostname")
+    normalized_hostname = _normalize_hostname(hostname)
     # Block internal Docker service names and cloud metadata
-    if hostname.lower() in _BLOCKED_HOSTNAMES:
-        raise ValueError("webhook_url cannot target internal services")
+    if normalized_hostname in _BLOCKED_HOSTNAMES:
+        raise ValueError(f"{field_name} cannot target internal services")
     # Block private/loopback/link-local IPs
-    try:
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_private or ip.is_loopback or ip.is_link_local:
-            raise ValueError("webhook_url cannot target private/internal addresses")
-    except ValueError as exc:
-        if "cannot target" in str(exc):
-            raise
-        # hostname is not an IP — already checked against blocklist above
-    # Block 169.254.169.254 (cloud metadata)
-    if hostname == "169.254.169.254":
-        raise ValueError("webhook_url cannot target cloud metadata endpoint")
+    ip = _coerce_ip_address(normalized_hostname)
+    if ip and _is_internal_ip(ip) and not allow_private:
+        raise ValueError(f"{field_name} cannot target private/internal addresses")
     return url
 
 
@@ -423,39 +512,40 @@ class AlertRuleTestResponse(BaseModel):
 class S3ConnectionCreate(BaseModel):
     alias: str = Field(..., min_length=1, max_length=100)
     endpoint_url: str | None = Field(None, description="Custom endpoint for S3-compatible storage (MinIO, R2, etc.)")
+    allow_private_endpoints: bool = False
     region: str = Field("us-east-1", min_length=1, max_length=100)
     access_key_id: str = Field(..., min_length=1)
     secret_access_key: str = Field(..., min_length=1)
     default_bucket: str | None = Field(None, max_length=255)
     use_ssl: bool = True
 
-    @field_validator("endpoint_url")
-    @classmethod
-    def check_endpoint_url(cls, v: str | None) -> str | None:
-        if v is not None and v.strip():
-            return _validate_webhook_url(v)
-        return None
+    @model_validator(mode="after")
+    def check_endpoint_url(self) -> "S3ConnectionCreate":
+        if self.endpoint_url is not None and self.endpoint_url.strip():
+            self.endpoint_url = _validate_external_url(
+                self.endpoint_url,
+                field_name="endpoint_url",
+                allow_private=self.allow_private_endpoints,
+            )
+        else:
+            self.endpoint_url = None
+        return self
 
 
 class S3ConnectionUpdate(BaseModel):
     endpoint_url: str | None = None
+    allow_private_endpoints: bool | None = None
     region: str | None = Field(None, min_length=1, max_length=100)
     access_key_id: str | None = Field(None, min_length=1)
     secret_access_key: str | None = Field(None, min_length=1)
     default_bucket: str | None = Field(None, max_length=255)
     use_ssl: bool | None = None
 
-    @field_validator("endpoint_url")
-    @classmethod
-    def check_endpoint_url(cls, v: str | None) -> str | None:
-        if v is not None and v.strip():
-            return _validate_webhook_url(v)
-        return None
-
 
 class S3ConnectionResponse(BaseModel):
     alias: str
     endpoint_url: str | None = None
+    allow_private_endpoints: bool = False
     region: str
     access_key_id_masked: str = ""
     default_bucket: str | None = None

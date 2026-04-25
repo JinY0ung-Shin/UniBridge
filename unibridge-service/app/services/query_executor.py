@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from typing import Any
 
 from sqlalchemy import text
@@ -318,6 +319,7 @@ async def _execute_clickhouse(
     sql: str,
     params: dict[str, Any] | None,
     limit: int,
+    query_id: str,
 ) -> QueryResponse:
     """Core execution logic for ClickHouse via clickhouse-connect."""
     start = time.monotonic()
@@ -326,7 +328,7 @@ async def _execute_clickhouse(
     is_select = statement_type in ("select", "explain")
 
     if is_select:
-        ch_settings: dict[str, Any] = {}
+        ch_settings: dict[str, Any] = {"query_id": query_id}
         if limit:
             ch_settings["max_result_rows"] = limit + 1
             ch_settings["result_overflow_mode"] = "break"
@@ -345,7 +347,12 @@ async def _execute_clickhouse(
         rows = [list(row) for row in all_rows]
         row_count = len(rows)
     else:
-        await asyncio.to_thread(client.command, sql, parameters=params or {})
+        await asyncio.to_thread(
+            client.command,
+            sql,
+            parameters=params or {},
+            settings={"query_id": query_id},
+        )
         columns = []
         rows = []
         row_count = 0
@@ -382,11 +389,25 @@ async def execute_clickhouse_query(
             "Multi-statement SQL is not allowed. Remove semicolons or contact an admin."
         )
 
+    query_id = f"unibridge-{uuid.uuid4().hex}"
+    async def kill_query() -> None:
+        try:
+            await asyncio.to_thread(
+                client.command,
+                f"KILL QUERY WHERE query_id = '{query_id}' SYNC",
+            )
+        except Exception:
+            logger.warning("Failed to kill timed out ClickHouse query %s", query_id, exc_info=True)
+
     try:
         return await asyncio.wait_for(
-            _execute_clickhouse(client, sql, params, effective_limit),
+            _execute_clickhouse(client, sql, params, effective_limit, query_id),
             timeout=effective_timeout,
         )
     except asyncio.TimeoutError:
         logger.warning("Query timed out after %ds", effective_timeout)
+        await kill_query()
+        raise
+    except asyncio.CancelledError:
+        await kill_query()
         raise
