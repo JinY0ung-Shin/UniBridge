@@ -794,7 +794,7 @@ class TestAuthRolesEndpoint:
     async def test_list_roles_requires_auth(self, client):
         """GET /auth/roles requires authentication."""
         resp = await client.get("/auth/roles")
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     async def test_list_roles_returns_role_names(self, client, admin_token):
         resp = await client.get("/auth/roles", headers=auth_header(admin_token))
