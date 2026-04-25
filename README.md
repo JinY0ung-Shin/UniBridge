@@ -199,6 +199,16 @@ Stateful components (etcd, Keycloak DB, LiteLLM DB, unibridge-service meta DB) a
 
 Retention, path overrides, and the full restore runbook live in [`backup/README.md`](./backup/README.md).
 
+## Timezone Migration (one-time, after upgrading to the UTC-aware timestamp fix)
+
+Run once after deploying the timezone-consistency changes to normalize legacy timestamp rows (pre-fix rows were stored at second precision without an offset; post-fix rows use microsecond precision and SQLite compares TEXT columns lexicographically, so the older shorter strings are excluded from boundary `>=` filters):
+
+```bash
+docker compose exec unibridge-service python -m scripts.backfill_utc_timestamps
+```
+
+The script introspects every `UtcDateTime` column and rewrites legacy values to the canonical microsecond form. It is idempotent — re-running it finds 0 rows to update.
+
 ## etcd Authentication Migration Guide
 
 etcd는 APISIX의 설정 저장소로, 기본적으로 인증이 활성화되어 있습니다. 기존 환경에서 업그레이드하는 경우 아래 절차를 따라주세요.
