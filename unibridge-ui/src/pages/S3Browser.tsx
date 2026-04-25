@@ -12,7 +12,7 @@ import {
   type S3Folder,
   type S3ObjectMetadata,
 } from '../api/client';
-import { useToast } from '../components/ToastContext';
+import { useToast } from '../components/useToast';
 import { formatKST } from '../utils/time';
 import './S3Browser.css';
 

@@ -33,6 +33,20 @@ async def execute(
 ) -> QueryResponse:
     """Execute an SQL query against a registered database."""
 
+    username = f"apikey:{user.consumer_name}" if isinstance(user, ApiKeyUser) else user.username
+
+    # JWT users are not pre-counted by RateLimitMiddleware because it must not
+    # trust unverified Bearer claims. API key users are still pre-counted from
+    # the APISIX consumer header to preserve existing route-edge behavior.
+    if isinstance(user, CurrentUser):
+        allowed, msg, _stamp = rate_limiter.check_rate_limit(username)
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=msg,
+                headers={"Retry-After": "60"},
+            )
+
     # API Key user: check allowed databases
     if isinstance(user, ApiKeyUser):
         if req.database not in user.allowed_databases:
@@ -40,7 +54,6 @@ async def execute(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"API key '{user.consumer_name}' is not allowed to access database '{req.database}'",
             )
-        username = f"apikey:{user.consumer_name}"
     else:
         # JWT user: check role-based permission
         user_perms = await get_role_permissions(db, user.role)

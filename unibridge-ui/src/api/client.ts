@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import keycloak from '../keycloak';
 
 const API_BASE = '/_api';
@@ -7,29 +7,91 @@ const client = axios.create({
   baseURL: API_BASE,
 });
 
-// Attach Keycloak token, refreshing if needed
-client.interceptors.request.use(async (config) => {
-  if (keycloak.authenticated) {
-    try {
-      await keycloak.updateToken(5);
-    } catch {
-      keycloak.login();
-      return Promise.reject(new Error('Session expired'));
-    }
-    if (keycloak.token) {
-      config.headers.Authorization = `Bearer ${keycloak.token}`;
-      return config;
-    }
+interface AuthRequestConfig extends InternalAxiosRequestConfig {
+  _retry?: boolean;
+  _skipAuthRefresh?: boolean;
+}
+
+let apiAuthReady = false;
+let tokenRefreshPromise: Promise<boolean> | null = null;
+let loginRedirectStarted = false;
+let logoutStarted = false;
+
+export function setApiAuthReady(ready: boolean): void {
+  apiAuthReady = ready;
+  if (ready) {
+    loginRedirectStarted = false;
+    logoutStarted = false;
+  }
+}
+
+function attachAuthorizationHeader(config: AuthRequestConfig): AuthRequestConfig {
+  if (keycloak.token) {
+    config.headers.Authorization = `Bearer ${keycloak.token}`;
   }
   return config;
+}
+
+function refreshTokenOnce(minValidity: number): Promise<boolean> {
+  if (!tokenRefreshPromise) {
+    tokenRefreshPromise = keycloak.updateToken(minValidity).finally(() => {
+      tokenRefreshPromise = null;
+    });
+  }
+  return tokenRefreshPromise;
+}
+
+function loginOnce(): void {
+  if (!loginRedirectStarted) {
+    loginRedirectStarted = true;
+    void keycloak.login();
+  }
+}
+
+function logoutOnce(): void {
+  if (!logoutStarted) {
+    logoutStarted = true;
+    keycloak.logout({ redirectUri: window.location.origin });
+  }
+}
+
+// Attach Keycloak token, refreshing if needed.
+client.interceptors.request.use(async (config) => {
+  const authConfig = config as AuthRequestConfig;
+  if (!apiAuthReady) {
+    return Promise.reject(new Error('Authentication is not ready'));
+  }
+  if (!keycloak.authenticated) {
+    return Promise.reject(new Error('Authentication is required'));
+  }
+
+  try {
+    if (!authConfig._skipAuthRefresh) {
+      await refreshTokenOnce(5);
+    }
+  } catch {
+    loginOnce();
+    return Promise.reject(new Error('Session expired'));
+  }
+
+  return attachAuthorizationHeader(authConfig);
 });
 
-// Handle 401 responses: trigger Keycloak logout
+// Handle 401 responses: force one token refresh, then retry the original request.
 client.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401 && keycloak.authenticated) {
-      keycloak.logout({ redirectUri: window.location.origin });
+  async (error: AxiosError) => {
+    const original = error.config as AuthRequestConfig | undefined;
+    if (error.response?.status === 401 && keycloak.authenticated && original && !original._retry) {
+      original._retry = true;
+      try {
+        await refreshTokenOnce(-1);
+        original._skipAuthRefresh = true;
+        attachAuthorizationHeader(original);
+        return client(original);
+      } catch {
+        logoutOnce();
+      }
     }
     return Promise.reject(error);
   },
@@ -891,4 +953,3 @@ export async function getS3PresignedUrl(
 }
 
 export default client;
-

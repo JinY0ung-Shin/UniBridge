@@ -1,11 +1,4 @@
-import { createContext, useContext } from 'react';
-
-interface PermissionState {
-  permissions: string[];
-  loaded: boolean;
-}
-
-const PermissionContext = createContext<PermissionState>({ permissions: [], loaded: false });
+import { PermissionContext } from './PermissionContextValue';
 
 export function PermissionProvider({
   permissions,
@@ -21,8 +14,4 @@ export function PermissionProvider({
       {children}
     </PermissionContext.Provider>
   );
-}
-
-export function usePermissions() {
-  return useContext(PermissionContext);
 }

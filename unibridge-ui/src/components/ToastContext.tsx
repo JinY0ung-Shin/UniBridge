@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
+import { useState, useCallback, type ReactNode } from 'react';
+import { ToastContext } from './ToastContextValue';
 import './Toast.css';
 
 interface Toast {
@@ -7,12 +8,6 @@ interface Toast {
   title: string;
   message?: string;
 }
-
-interface ToastContextValue {
-  addToast: (toast: Omit<Toast, 'id'>) => void;
-}
-
-const ToastContext = createContext<ToastContextValue>({ addToast: () => {} });
 
 let nextId = 0;
 
@@ -47,8 +42,4 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       </div>
     </ToastContext.Provider>
   );
-}
-
-export function useToast() {
-  return useContext(ToastContext);
 }

@@ -10,7 +10,7 @@ import {
   getGatewayRoutes,
   type ApiKey,
 } from '../api/client';
-import { useToast } from '../components/ToastContext';
+import { useToast } from '../components/useToast';
 import './ApiKeys.css';
 
 function generateKey(): string {

@@ -1,30 +1,13 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
-
-type Theme = 'light' | 'dark' | 'system';
-type ResolvedTheme = 'light' | 'dark';
-
-interface ThemeContextType {
-  theme: Theme;
-  resolved: ResolvedTheme;
-  setTheme: (t: Theme) => void;
-}
-
-const ThemeContext = createContext<ThemeContextType>({
-  theme: 'system',
-  resolved: 'dark',
-  setTheme: () => {},
-});
-
-export function useTheme() {
-  return useContext(ThemeContext);
-}
+import { useState, useEffect, type ReactNode } from 'react';
+import { ThemeContext, type ResolvedTheme, type Theme } from './ThemeContextValue';
 
 function getSystemTheme(): ResolvedTheme {
+  if (typeof window.matchMedia !== 'function') return 'dark';
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
-function resolve(theme: Theme): ResolvedTheme {
-  return theme === 'system' ? getSystemTheme() : theme;
+function resolve(theme: Theme, systemTheme: ResolvedTheme): ResolvedTheme {
+  return theme === 'system' ? systemTheme : theme;
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
@@ -35,7 +18,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     } catch { /* sandboxed iframe or restricted storage */ }
     return 'dark';
   });
-  const [resolved, setResolved] = useState<ResolvedTheme>(() => resolve(theme));
+  const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() => getSystemTheme());
+  const resolved = resolve(theme, systemTheme);
 
   function setTheme(t: Theme) {
     setThemeState(t);
@@ -43,27 +27,18 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
-    const r = resolve(theme);
-    setResolved(r);
-    if (r === 'dark') {
+    if (resolved === 'dark') {
       document.documentElement.removeAttribute('data-theme');
     } else {
-      document.documentElement.setAttribute('data-theme', r);
+      document.documentElement.setAttribute('data-theme', resolved);
     }
-  }, [theme]);
+  }, [resolved]);
 
   useEffect(() => {
     if (theme !== 'system') return;
+    if (typeof window.matchMedia !== 'function') return;
     const mq = window.matchMedia('(prefers-color-scheme: light)');
-    const handler = () => {
-      const r = resolve('system');
-      setResolved(r);
-      if (r === 'dark') {
-        document.documentElement.removeAttribute('data-theme');
-      } else {
-        document.documentElement.setAttribute('data-theme', r);
-      }
-    };
+    const handler = () => setSystemTheme(getSystemTheme());
     mq.addEventListener('change', handler);
     return () => mq.removeEventListener('change', handler);
   }, [theme]);

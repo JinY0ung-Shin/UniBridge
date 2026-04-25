@@ -1,7 +1,8 @@
-"""Rate limiting and concurrent query limiting middleware.
+"""Rate limiting and concurrent query limiting helpers.
 
-Applied only to POST /query/execute. Identifies users by decoding the JWT
-from the Authorization header.
+JWT users are rate-limited after authentication in the query endpoint so
+unverified token claims cannot consume another user's quota. This middleware
+only handles APISIX-forwarded API key consumers.
 """
 from __future__ import annotations
 
@@ -10,8 +11,6 @@ import threading
 import time
 
 from fastapi import Request, Response
-import jwt
-from jwt.exceptions import PyJWTError as JWTError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -93,28 +92,13 @@ rate_limiter = RateLimiter()
 
 
 def _extract_username(request: Request) -> str | None:
-    """Extract username from JWT in Authorization header or APISIX consumer header.
-
-    This is for rate-limiting identification only — actual auth verification
-    happens later in the endpoint dependency. We use unverified claims to
-    support both HS256 (dev) and RS256 (Keycloak production) tokens.
-    """
+    """Extract the APISIX-authenticated API key consumer for pre-auth rate limiting."""
     # APISIX-forwarded API key user (header set by APISIX after key-auth)
     consumer = request.headers.get("x-consumer-username")
     if consumer:
         return f"apikey:{consumer}"
 
-    # JWT Bearer token — read claims without signature verification
-    auth = request.headers.get("authorization", "")
-    if not auth.startswith("Bearer "):
-        return None
-
-    token = auth[7:]
-    try:
-        claims = jwt.decode(token, options={"verify_signature": False}, algorithms=["HS256", "RS256"])
-        return claims.get("preferred_username") or claims.get("sub")
-    except (JWTError, Exception):
-        return None
+    return None
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -139,9 +123,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 headers={"Retry-After": str(60)},
             )
 
-        # Concurrent limiting is NOT done here — it runs post-auth in
-        # the query endpoint to prevent forged tokens from occupying
-        # another user's slots. See query.py execute().
+        # JWT request rate limiting and all concurrent limiting run post-auth
+        # in the query endpoint to prevent forged tokens from occupying
+        # another user's quota or slots. See query.py execute().
         response = await call_next(request)
 
         # Only undo on 401 (identity not recognized / forged token).

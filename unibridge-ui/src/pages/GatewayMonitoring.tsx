@@ -15,7 +15,7 @@ import {
   getMetricsRoutesComparison,
   type RouteComparisonRow,
 } from '../api/client';
-import { useTheme } from '../components/ThemeContext';
+import { useTheme } from '../components/useTheme';
 import './GatewayMonitoring.css';
 
 const TIME_RANGES = ['15m', '1h', '6h', '24h', '7d', '30d', '60d'];
@@ -125,7 +125,8 @@ function GatewayMonitoring() {
   const [range, setRange] = useState('1h');
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
   const [sort, setSort] = useState<{ column: SortColumn; dir: SortDir }>({ column: 'requests', dir: 'desc' });
-  const { resolved } = useTheme();
+  // Subscribe so chart CSS variables are reread after theme changes.
+  useTheme();
 
   const toggleSort = (column: SortColumn) => {
     setSort((prev) =>
@@ -136,7 +137,7 @@ function GatewayMonitoring() {
   };
 
 
-  const chartColors = useMemo(() => ({
+  const chartColors = {
     grid: getCssVar('--chart-grid'),
     axis: getCssVar('--chart-axis'),
     tooltipBg: getCssVar('--chart-tooltip-bg'),
@@ -146,7 +147,7 @@ function GatewayMonitoring() {
     yellow: getCssVar('--accent-yellow'),
     red: getCssVar('--accent-red'),
     textSecondary: getCssVar('--text-secondary'),
-  }), [resolved]);
+  };
 
   const summaryQuery = useQuery({
     queryKey: ['metrics-summary', range],

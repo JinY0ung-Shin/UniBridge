@@ -2,7 +2,7 @@ import { useState, useEffect, type ReactNode } from 'react';
 import { NavLink, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { getCurrentUser } from '../api/client';
-import { useAuth } from './AuthProvider';
+import { useAuth } from './useAuth';
 import { PermissionProvider } from './PermissionContext';
 import SettingsModal from './SettingsModal';
 import './Layout.css';

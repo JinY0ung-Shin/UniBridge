@@ -194,12 +194,19 @@ async def test_s3_connection(
 
 
 async def _require_s3_browse(
+    alias: str,
     user: CurrentUser | ApiKeyUser = Depends(get_current_user_or_apikey),
     db: AsyncSession = Depends(get_db),
 ) -> CurrentUser | ApiKeyUser:
     """Allow access via API key (APISIX consumer-restriction enforces route access)
     or JWT with s3.browse permission."""
-    if isinstance(user, CurrentUser):
+    if isinstance(user, ApiKeyUser):
+        if alias not in user.allowed_databases:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"API key '{user.consumer_name}' is not allowed to access S3 alias '{alias}'",
+            )
+    else:
         perms = await get_role_permissions(db, user.role)
         if "s3.browse" not in perms:
             raise HTTPException(

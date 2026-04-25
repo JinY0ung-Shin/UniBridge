@@ -1,25 +1,7 @@
-import { useState, useEffect, useRef, createContext, useContext, type ReactNode } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import keycloak from '../keycloak';
-
-interface AuthContextType {
-  authenticated: boolean;
-  token: string | null;
-  username: string | null;
-  initialized: boolean;
-  logout: () => void;
-}
-
-const AuthContext = createContext<AuthContextType>({
-  authenticated: false,
-  token: null,
-  username: null,
-  initialized: false,
-  logout: () => {},
-});
-
-export function useAuth() {
-  return useContext(AuthContext);
-}
+import { setApiAuthReady } from '../api/client';
+import { AuthContext } from './AuthContext';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [authenticated, setAuthenticated] = useState(false);
@@ -35,22 +17,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .init({ onLoad: 'login-required', checkLoginIframe: false, pkceMethod: 'S256' })
       .then((auth) => {
         setAuthenticated(auth);
+        setApiAuthReady(auth);
         setInitialized(true);
       })
       .catch((err) => {
         console.error('Keycloak init failed:', err);
+        setApiAuthReady(false);
         setError(`Authentication service unavailable. Check that Keycloak is reachable at ${keycloak.authServerUrl}`);
         setInitialized(true);
       });
 
     keycloak.onTokenExpired = () => {
       keycloak.updateToken(30).catch(() => {
+        setApiAuthReady(false);
         keycloak.logout();
       });
     };
   }, []);
 
   const logout = () => {
+    setApiAuthReady(false);
     keycloak.logout({ redirectUri: window.location.origin });
   };
 

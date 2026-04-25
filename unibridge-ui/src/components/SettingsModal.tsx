@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { useTheme } from './ThemeContext';
+import { useTheme } from './useTheme';
 import keycloak from '../keycloak';
 import './SettingsModal.css';
 

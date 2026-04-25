@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import pytest
 import time
+import jwt
+from starlette.requests import Request
 
-from app.middleware.rate_limiter import RateLimiter
+from app.middleware.rate_limiter import RateLimiter, _extract_username
 
 
 @pytest.fixture
@@ -101,3 +103,24 @@ class TestRateLimiter:
         # Real user should now have full capacity restored
         allowed, _, _ = limiter.check_rate_limit("victim")
         assert allowed is True
+
+
+def _request_with_authorization(value: str) -> Request:
+    return Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/query/execute",
+        "headers": [(b"authorization", value.encode())],
+    })
+
+
+def test_extract_username_does_not_trust_unverified_bearer_claims():
+    forged_token = jwt.encode(
+        {"sub": "victim-user", "role": "admin"},
+        "attacker-controlled-secret",
+        algorithm="HS256",
+    )
+
+    request = _request_with_authorization(f"Bearer {forged_token}")
+
+    assert _extract_username(request) is None

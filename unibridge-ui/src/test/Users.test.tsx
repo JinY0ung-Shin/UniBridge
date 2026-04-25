@@ -1,4 +1,4 @@
-vi.mock('../components/AuthProvider', () => ({
+vi.mock('../components/useAuth', () => ({
   useAuth: vi.fn(() => ({
     username: 'currentadmin',
     authenticated: true,

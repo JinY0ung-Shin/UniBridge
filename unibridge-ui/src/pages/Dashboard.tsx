@@ -1,4 +1,3 @@
-import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
@@ -7,8 +6,8 @@ import {
   Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { getHealth, getAdminDatabases, getMetricsSummary, getMetricsRequests, getLlmSummary, getLlmTokens, type DatabaseHealth } from '../api/client';
-import { usePermissions } from '../components/PermissionContext';
-import { useTheme } from '../components/ThemeContext';
+import { usePermissions } from '../components/usePermissions';
+import { useTheme } from '../components/useTheme';
 import './Dashboard.css';
 
 interface DashboardDbEntry {
@@ -28,17 +27,18 @@ function getCssVar(name: string): string {
 function Dashboard() {
   const { t } = useTranslation();
   const { permissions } = usePermissions();
-  const { resolved } = useTheme();
+  // Subscribe so chart CSS variables are reread after theme changes.
+  useTheme();
   const canViewMonitoring = permissions.includes('gateway.monitoring.read');
 
-  const chartColors = useMemo(() => ({
+  const chartColors = {
     grid: getCssVar('--chart-grid'),
     axis: getCssVar('--chart-axis'),
     tooltipBg: getCssVar('--chart-tooltip-bg'),
     tooltipBorder: getCssVar('--chart-tooltip-border'),
     blue: getCssVar('--accent-blue'),
     textSecondary: getCssVar('--text-secondary'),
-  }), [resolved]);
+  };
 
   const healthQuery = useQuery({
     queryKey: ['health'],

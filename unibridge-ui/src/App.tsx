@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
-import { usePermissions } from './components/PermissionContext';
+import { usePermissions } from './components/usePermissions';
 import Dashboard from './pages/Dashboard';
 import Connections from './pages/Connections';
 import Permissions from './pages/Permissions';

@@ -21,7 +21,7 @@ import {
   type AlertRuleCreate,
   type RuleChannelMapping,
 } from '../api/client';
-import { useToast } from '../components/ToastContext';
+import { useToast } from '../components/useToast';
 import './AlertSettings.css';
 
 // ── Channel types ──────────────────────────────────────────────────────────────

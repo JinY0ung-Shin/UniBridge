@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -13,7 +13,7 @@ import {
   getLlmErrors,
   getLlmRequestsTotal,
 } from '../api/client';
-import { useTheme } from '../components/ThemeContext';
+import { useTheme } from '../components/useTheme';
 import './LlmMonitoring.css';
 
 const TIME_RANGES = ['15m', '1h', '6h', '24h', '7d', '30d', '60d'];
@@ -52,9 +52,10 @@ function formatTokens(value: number): string {
 function LlmMonitoring() {
   const { t } = useTranslation();
   const [range, setRange] = useState('1h');
-  const { resolved } = useTheme();
+  // Subscribe so chart CSS variables are reread after theme changes.
+  useTheme();
 
-  const chartColors = useMemo(() => ({
+  const chartColors = {
     grid: getCssVar('--chart-grid'),
     axis: getCssVar('--chart-axis'),
     tooltipBg: getCssVar('--chart-tooltip-bg'),
@@ -64,7 +65,7 @@ function LlmMonitoring() {
     yellow: getCssVar('--accent-yellow'),
     red: getCssVar('--accent-red'),
     textSecondary: getCssVar('--text-secondary'),
-  }), [resolved]);
+  };
 
   const summaryQuery = useQuery({
     queryKey: ['llm-summary', range],

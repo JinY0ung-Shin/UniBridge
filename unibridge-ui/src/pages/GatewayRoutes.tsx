@@ -9,7 +9,7 @@ import {
   getGatewayRouteCurl,
   type GatewayRoute,
 } from '../api/client';
-import { useToast } from '../components/ToastContext';
+import { useToast } from '../components/useToast';
 import './GatewayRoutes.css';
 
 const METHOD_COLORS: Record<string, string> = {

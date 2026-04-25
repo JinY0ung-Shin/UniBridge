@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -6,55 +6,54 @@ import {
   getGatewayRoute,
   saveGatewayRoute,
   getGatewayUpstreams,
+  type GatewayRoute,
+  type GatewayUpstream,
 } from '../api/client';
 import './GatewayRouteForm.css';
 
 const ALL_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
 
-function GatewayRouteForm() {
+function routeFormKey(route: GatewayRoute | undefined, isEdit: boolean): string {
+  if (!isEdit) return 'new';
+  if (!route) return 'loading';
+  return [
+    route.id,
+    route.name ?? '',
+    route.uri,
+    route.methods?.join('\0') ?? '',
+    route.upstream_id ?? '',
+    route.status,
+    String(route.require_auth),
+    String(route.strip_prefix),
+    route.service_key?.header_name ?? '',
+  ].join(':');
+}
+
+function GatewayRouteEditor({
+  id,
+  isEdit,
+  initialRoute,
+  upstreams,
+}: {
+  id: string | undefined;
+  isEdit: boolean;
+  initialRoute: GatewayRoute | undefined;
+  upstreams: GatewayUpstream[];
+}) {
   const { t } = useTranslation();
-  const { id } = useParams<{ id: string }>();
-  const isEdit = !!id;
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [name, setName] = useState('');
-  const [uriSuffix, setUriSuffix] = useState('');
-  const [methods, setMethods] = useState<string[]>(['GET', 'POST']);
-  const [upstreamId, setUpstreamId] = useState('');
-  const [statusVal, setStatusVal] = useState(1);
-  const [requireAuth, setRequireAuth] = useState(false);
-  const [stripPrefix, setStripPrefix] = useState(true);
-  const [keyHeader, setKeyHeader] = useState('');
+  const [name, setName] = useState(initialRoute?.name || '');
+  const [uriSuffix, setUriSuffix] = useState((initialRoute?.uri || '').replace(/^\/api\//, ''));
+  const [methods, setMethods] = useState<string[]>(initialRoute?.methods || ['GET', 'POST']);
+  const [upstreamId, setUpstreamId] = useState(initialRoute?.upstream_id || '');
+  const [statusVal, setStatusVal] = useState(initialRoute?.status ?? 1);
+  const [requireAuth, setRequireAuth] = useState(!!initialRoute?.require_auth);
+  const [stripPrefix, setStripPrefix] = useState(initialRoute ? !!initialRoute.strip_prefix : true);
+  const [keyHeader, setKeyHeader] = useState(initialRoute?.service_key?.header_name || '');
   const [keyValue, setKeyValue] = useState('');
   const [error, setError] = useState('');
-
-  const routeQuery = useQuery({
-    queryKey: ['gateway-route', id],
-    queryFn: () => getGatewayRoute(id!),
-    enabled: isEdit,
-  });
-
-  const upstreamsQuery = useQuery({
-    queryKey: ['gateway-upstreams'],
-    queryFn: getGatewayUpstreams,
-  });
-
-  useEffect(() => {
-    if (routeQuery.data) {
-      const r = routeQuery.data;
-      setName(r.name || '');
-      setUriSuffix((r.uri || '').replace(/^\/api\//, ''));
-      setMethods(r.methods || ['GET', 'POST']);
-      setUpstreamId(r.upstream_id || '');
-      setStatusVal(r.status ?? 1);
-      setRequireAuth(!!r.require_auth);
-      setStripPrefix(!!r.strip_prefix);
-      if (r.service_key) {
-        setKeyHeader(r.service_key.header_name || '');
-      }
-    }
-  }, [routeQuery.data]);
 
   const saveMutation = useMutation({
     mutationFn: (data: { routeId: string; body: Record<string, unknown> }) =>
@@ -72,8 +71,6 @@ function GatewayRouteForm() {
       }
     },
   });
-
-  const upstreams = upstreamsQuery.data?.items ?? [];
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -115,10 +112,6 @@ function GatewayRouteForm() {
     setMethods((prev) =>
       prev.includes(method) ? prev.filter((m) => m !== method) : [...prev, method]
     );
-  }
-
-  if (isEdit && routeQuery.isLoading) {
-    return <div className="loading-message">{t('gatewayRouteForm.loadingRoute')}</div>;
   }
 
   return (
@@ -247,6 +240,37 @@ function GatewayRouteForm() {
         </div>
       </form>
     </div>
+  );
+}
+
+function GatewayRouteForm() {
+  const { t } = useTranslation();
+  const { id } = useParams<{ id: string }>();
+  const isEdit = !!id;
+
+  const routeQuery = useQuery({
+    queryKey: ['gateway-route', id],
+    queryFn: () => getGatewayRoute(id!),
+    enabled: isEdit,
+  });
+
+  const upstreamsQuery = useQuery({
+    queryKey: ['gateway-upstreams'],
+    queryFn: getGatewayUpstreams,
+  });
+
+  if (isEdit && routeQuery.isLoading) {
+    return <div className="loading-message">{t('gatewayRouteForm.loadingRoute')}</div>;
+  }
+
+  return (
+    <GatewayRouteEditor
+      key={routeFormKey(routeQuery.data, isEdit)}
+      id={id}
+      isEdit={isEdit}
+      initialRoute={routeQuery.data}
+      upstreams={upstreamsQuery.data?.items ?? []}
+    />
   );
 }
 

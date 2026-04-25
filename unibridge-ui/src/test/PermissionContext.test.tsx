@@ -3,8 +3,8 @@ import { describe, it, expect } from 'vitest';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import {
   PermissionProvider,
-  usePermissions,
 } from '../components/PermissionContext';
+import { usePermissions } from '../components/usePermissions';
 import { ProtectedRoute } from '../App';
 
 /* ── Helper: render a component that displays the current permissions ── */

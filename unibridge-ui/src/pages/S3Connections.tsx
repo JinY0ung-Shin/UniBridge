@@ -10,7 +10,7 @@ import {
   testS3Connection,
   type S3ConnectionConfig,
 } from '../api/client';
-import { useToast } from '../components/ToastContext';
+import { useToast } from '../components/useToast';
 import './Connections.css';
 
 const emptyForm: S3ConnectionConfig = {

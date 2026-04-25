@@ -11,8 +11,8 @@ import {
   getAuthRoles,
   type KeycloakUser,
 } from '../api/client';
-import { usePermissions } from '../components/PermissionContext';
-import { useAuth } from '../components/AuthProvider';
+import { usePermissions } from '../components/usePermissions';
+import { useAuth } from '../components/useAuth';
 import './Users.css';
 
 function roleBadgeClass(role: string | null): string {

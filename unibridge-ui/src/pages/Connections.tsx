@@ -10,7 +10,7 @@ import {
   getDbTables,
   type DatabaseConfig,
 } from '../api/client';
-import { useToast } from '../components/ToastContext';
+import { useToast } from '../components/useToast';
 import './Connections.css';
 
 const DEFAULT_PORTS: Record<string, number> = {
