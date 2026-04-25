@@ -37,7 +37,7 @@ class TestHealthEndpoints:
     async def test_health_databases_requires_auth(self, client):
         """health/databases now requires authentication."""
         resp = await client.get("/health/databases")
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     async def test_health_databases_with_healthy_db(self, client, admin_token):
         with patch(
@@ -484,9 +484,9 @@ class TestAuthMe:
         }
 
     async def test_me_without_token_returns_401(self, client):
-        """No Authorization header yields 403 from HTTPBearer (no credentials)."""
+        """No Authorization header yields 401 from HTTPBearer."""
         resp = await client.get("/auth/me")
-        assert resp.status_code == 403  # HTTPBearer returns 403 when missing
+        assert resp.status_code == 401
 
 
 # ============================================================================

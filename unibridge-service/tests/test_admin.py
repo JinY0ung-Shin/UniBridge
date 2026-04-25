@@ -575,11 +575,11 @@ class TestPermissionChecks:
         assert resp.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_no_token_returns_403(self, client):
-        """FastAPI HTTPBearer returns 403 when Authorization header is missing."""
+    async def test_no_token_returns_401(self, client):
+        """FastAPI HTTPBearer returns 401 when Authorization header is missing."""
         with _cm_patch():
             resp = await client.get("/admin/query/databases")
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     @pytest.mark.asyncio
     async def test_get_single_connection_developer_allowed(
@@ -831,9 +831,9 @@ class TestPermissionsRBAC:
         assert resp.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_no_token_permissions_returns_403(self, client):
+    async def test_no_token_permissions_returns_401(self, client):
         resp = await client.get("/admin/query/permissions")
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
 
 # ===========================================================================
@@ -872,9 +872,9 @@ class TestAuditLogs:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_no_token_audit_logs_returns_403(self, client):
+    async def test_no_token_audit_logs_returns_401(self, client):
         resp = await client.get("/admin/query/audit-logs")
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     @pytest.mark.asyncio
     async def test_filter_by_database(self, client, admin_token, _seed_audit_logs):
