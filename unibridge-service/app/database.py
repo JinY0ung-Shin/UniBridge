@@ -1,11 +1,20 @@
+import asyncio
 import os
 from collections.abc import AsyncGenerator
+from pathlib import Path
+from typing import Any
 
-from sqlalchemy import inspect, text
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.models import Base
+
+ALEMBIC_BASELINE_REVISION = "0001_initial"
+ALEMBIC_HEAD_REVISION = "0002_permission_role_fk"
+_SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
 # Ensure the data directory exists for SQLite
 if settings.META_DB_URL.startswith("sqlite"):
@@ -20,7 +29,88 @@ engine = create_async_engine(
     **({} if "sqlite" in settings.META_DB_URL else {"pool_size": 5, "max_overflow": 3}),
 )
 
+
+def set_sqlite_foreign_keys(dbapi_connection: Any, _connection_record: object) -> None:
+    """Enable SQLite FK enforcement for every new DB-API connection."""
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cursor.close()
+
+
+def _ensure_sqlite_foreign_key_listener(target_engine: AsyncEngine) -> None:
+    if not target_engine.url.drivername.startswith("sqlite"):
+        return
+    if not event.contains(target_engine.sync_engine, "connect", set_sqlite_foreign_keys):
+        event.listen(target_engine.sync_engine, "connect", set_sqlite_foreign_keys)
+
+
+_ensure_sqlite_foreign_key_listener(engine)
+
+
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+def _alembic_config(database_url: str) -> Config:
+    config = Config(str(_SERVICE_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(_SERVICE_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    return config
+
+
+def _engine_database_url(target_engine: AsyncEngine) -> str:
+    return target_engine.url.render_as_string(hide_password=False)
+
+
+def _is_in_memory_sqlite(target_engine: AsyncEngine) -> bool:
+    return (
+        target_engine.url.drivername.startswith("sqlite")
+        and target_engine.url.database in {None, "", ":memory:"}
+    )
+
+
+async def _table_names(target_engine: AsyncEngine) -> set[str]:
+    async with target_engine.connect() as conn:
+        return await conn.run_sync(lambda sync_conn: set(inspect(sync_conn).get_table_names()))
+
+
+async def _stamp_metadata_schema(target_engine: AsyncEngine, revision: str) -> None:
+    async with target_engine.begin() as conn:
+        await conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS alembic_version ("
+            "version_num VARCHAR(32) NOT NULL, "
+            "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)"
+            ")"
+        ))
+        await conn.execute(text("DELETE FROM alembic_version"))
+        await conn.execute(
+            text("INSERT INTO alembic_version (version_num) VALUES (:revision)"),
+            {"revision": revision},
+        )
+
+
+async def _run_alembic_upgrade(target_engine: AsyncEngine) -> None:
+    _ensure_sqlite_foreign_key_listener(target_engine)
+
+    if _is_in_memory_sqlite(target_engine):
+        async with target_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        await _stamp_metadata_schema(target_engine, ALEMBIC_HEAD_REVISION)
+        return
+
+    tables = await _table_names(target_engine)
+    has_existing_schema = bool(tables - {"alembic_version"})
+    has_alembic_version = "alembic_version" in tables
+    database_url = _engine_database_url(target_engine)
+    config = _alembic_config(database_url)
+
+    if has_existing_schema and not has_alembic_version:
+        await ensure_db_connection_columns(target_engine)
+        await ensure_alert_rule_channels_no_unique(target_engine)
+        await asyncio.to_thread(command.stamp, config, ALEMBIC_BASELINE_REVISION)
+
+    await asyncio.to_thread(command.upgrade, config, "head")
 
 
 async def ensure_db_connection_columns(target_engine: AsyncEngine | None = None) -> None:
@@ -106,11 +196,8 @@ async def ensure_alert_rule_channels_no_unique(target_engine: AsyncEngine | None
 
 
 async def init_db() -> None:
-    """Create all meta-DB tables if they don't exist, then seed default roles."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    await ensure_db_connection_columns()
-    await ensure_alert_rule_channels_no_unique()
+    """Apply meta-DB migrations, then seed default roles."""
+    await _run_alembic_upgrade(engine)
     await _seed_roles()
 
 

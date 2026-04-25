@@ -724,6 +724,16 @@ class TestUpsertPermission:
         )
         assert len(list_resp.json()) == 2
 
+    @pytest.mark.asyncio
+    async def test_upsert_unknown_role_returns_400(self, client, admin_token):
+        resp = await client.put(
+            "/admin/query/permissions",
+            json={**PERMISSION_PAYLOAD, "role": "missing-role"},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+        assert "Role 'missing-role' does not exist" in resp.json()["detail"]
+
 
 class TestDeletePermission:
     """DELETE /admin/query/permissions/{id}"""

@@ -1,8 +1,6 @@
 """Tests for table-level access control."""
 from __future__ import annotations
 
-import pytest
-
 from app.services.table_access import extract_tables, check_table_access
 
 
@@ -19,6 +17,14 @@ class TestExtractTables:
 
     def test_select_with_mssql_brackets(self):
         tables = extract_tables("SELECT * FROM [dbo].[users]")
+        assert tables == {"users"}
+
+    def test_select_with_quoted_identifier(self):
+        tables = extract_tables('SELECT * FROM "users"')
+        assert tables == {"users"}
+
+    def test_select_with_quoted_schema_identifier(self):
+        tables = extract_tables('SELECT * FROM "PublicSchema"."users"')
         assert tables == {"users"}
 
     def test_join(self):
@@ -60,8 +66,13 @@ class TestExtractTables:
             "WITH active AS (SELECT * FROM users WHERE active = true) "
             "SELECT * FROM active JOIN orders ON active.id = orders.user_id"
         )
-        assert "users" in tables
-        assert "orders" in tables
+        assert tables == {"users", "orders"}
+
+    def test_cte_dml_extracts_target_table_not_cte_alias(self):
+        tables = extract_tables(
+            "WITH deleted AS (DELETE FROM users RETURNING *) SELECT * FROM deleted"
+        )
+        assert tables == {"users"}
 
     def test_ignores_table_in_string(self):
         tables = extract_tables("SELECT * FROM users WHERE name = 'FROM orders'")

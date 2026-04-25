@@ -8,7 +8,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, relationship
 
 from app.db_types import UtcDateTime, utcnow
 
@@ -56,7 +56,11 @@ class Permission(Base):
     __tablename__ = "permissions"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    role = Column(String, nullable=False)
+    role = Column(
+        String(100),
+        ForeignKey("roles.name", ondelete="CASCADE", onupdate="CASCADE"),
+        nullable=False,
+    )
     db_alias = Column(String, nullable=False)
     allow_select = Column(Boolean, default=True)
     allow_insert = Column(Boolean, default=False)
@@ -65,6 +69,8 @@ class Permission(Base):
     allowed_tables = Column(Text, nullable=True)  # JSON array: ["users", "orders"], null = all
 
     __table_args__ = (UniqueConstraint("role", "db_alias", name="uq_role_db_alias"),)
+
+    role_ref = relationship("Role", back_populates="db_permissions", foreign_keys=[role])
 
 
 class ApiKeyAccess(Base):
@@ -86,6 +92,13 @@ class Role(Base):
     name = Column(String(100), unique=True, nullable=False)
     description = Column(String(255), default="")
     is_system = Column(Boolean, default=False)
+
+    db_permissions = relationship(
+        "Permission",
+        back_populates="role_ref",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class RolePermission(Base):

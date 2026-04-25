@@ -76,6 +76,10 @@ class TestDetectStatementType:
         sql = "WITH cte AS (SELECT 1) DELETE FROM t"
         assert detect_statement_type(sql) == "delete"
 
+    def test_with_cte_delete_returning_is_delete(self):
+        sql = "WITH cte AS (DELETE FROM t RETURNING *) SELECT * FROM cte"
+        assert detect_statement_type(sql) == "delete"
+
     def test_with_cte_update(self):
         sql = "WITH cte AS (SELECT 1) UPDATE t SET x = 1"
         assert detect_statement_type(sql) == "update"
@@ -83,6 +87,17 @@ class TestDetectStatementType:
     def test_explain_returns_explain(self):
         # EXPLAIN is its own statement type (not collapsed to "select")
         assert detect_statement_type("EXPLAIN SELECT * FROM t") == "explain"
+
+    def test_explain_analyze_delete_is_delete(self):
+        assert detect_statement_type("EXPLAIN ANALYZE DELETE FROM t WHERE id = 1") == "delete"
+
+    def test_merge(self):
+        assert detect_statement_type(
+            "MERGE INTO users USING staging ON users.id = staging.id WHEN MATCHED THEN DELETE"
+        ) == "merge"
+
+    def test_do_block_is_execute(self):
+        assert detect_statement_type("DO $$ BEGIN DELETE FROM users; END $$") == "execute"
 
     def test_garbage_text(self):
         assert detect_statement_type("garbage text") == "unknown"
@@ -203,6 +218,9 @@ class TestCheckMultiStatement:
 
     def test_semicolon_inside_unterminated_dollar_quote_is_allowed(self):
         assert check_multi_statement("SELECT $tag$a;b") is False
+
+    def test_semicolon_scanner_handles_block_comment_before_next_statement(self):
+        assert check_multi_statement("SELECT 1; /* ignored ; */ SELECT 2") is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

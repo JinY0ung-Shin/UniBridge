@@ -126,7 +126,7 @@ async def execute(
             allowed_tables_raw = perm.allowed_tables
             allowed_tables = json.loads(allowed_tables_raw) if allowed_tables_raw else None
             if allowed_tables is not None:
-                referenced = extract_tables(req.sql)
+                referenced = extract_tables(req.sql, db_type=db_type)
                 table_error = check_table_access(referenced, allowed_tables)
                 if table_error:
                     raise HTTPException(

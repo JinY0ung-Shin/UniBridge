@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 
-from app.services.query_executor import _strip_strings_and_comments
+from app.services.sql_analysis import table_names
 
 # Matches table references after FROM, JOIN, INTO, UPDATE keywords.
 # Handles optional schema prefix: schema.table, [schema].[table]
@@ -42,19 +42,25 @@ def _clean_name(name: str) -> str:
     return name.strip("[]").lower()
 
 
-def extract_tables(sql: str) -> set[str]:
+def extract_tables(sql: str, db_type: str = "postgres") -> set[str]:
     """Extract table names referenced in a SQL statement.
 
     Strips string literals and comments first to avoid false positives.
     Returns lowercase table names.
     """
-    cleaned = _strip_strings_and_comments(sql)
-    tables: set[str] = set()
+    parsed_tables = table_names(sql, db_type=db_type)
+    if parsed_tables:
+        return parsed_tables
 
-    for match in _TABLE_RE.finditer(cleaned):
+    return _extract_tables_with_regex(sql)
+
+
+def _extract_tables_with_regex(sql: str) -> set[str]:
+    tables: set[str] = set()
+    for match in _TABLE_RE.finditer(sql):
         tables.add(_clean_name(match.group(1)))
 
-    for match in _COMMA_TABLE_RE.finditer(cleaned):
+    for match in _COMMA_TABLE_RE.finditer(sql):
         table_list = match.group(1)
         for part in table_list.split(","):
             part = part.strip()
@@ -62,7 +68,6 @@ def extract_tables(sql: str) -> set[str]:
                 inner = _INDIVIDUAL_TABLE_RE.match(part)
                 if inner:
                     tables.add(_clean_name(inner.group(1)))
-
     return tables
 
 

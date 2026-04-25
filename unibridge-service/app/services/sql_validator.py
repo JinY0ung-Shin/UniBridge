@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 
 from app.services.query_executor import _strip_strings_and_comments
+from app.services.sql_analysis import blocked_ast_keyword
 
 # Default blocked keywords
 _SINGLE_KEYWORDS = [
@@ -61,5 +62,9 @@ def validate_sql(
         match = extra_pattern.search(cleaned)
         if match:
             return f"Blocked SQL keyword: {match.group(0).upper()}"
+
+    ast_blocked = blocked_ast_keyword(sql)
+    if ast_blocked:
+        return f"Blocked SQL keyword: {ast_blocked.upper()}"
 
     return None

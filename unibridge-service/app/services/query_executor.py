@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from typing import Any
 
@@ -11,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.config import settings
 from app.schemas import QueryResponse
+from app.services.sql_analysis import statement_type
 
 # Re-exported for callers that import from this module
 __all__ = [
@@ -22,13 +22,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-# Pattern to detect the primary SQL statement type
-_SQL_TYPE_RE = re.compile(
-    r"^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|EXPLAIN|CREATE|ALTER|DROP|TRUNCATE|EXEC|EXECUTE|CALL)\b",
-    re.IGNORECASE,
-)
-
 
 def check_multi_statement(sql: str) -> bool:
     """
@@ -114,13 +107,6 @@ def check_multi_statement(sql: str) -> bool:
     return False
 
 
-# DML keywords to scan for inside WITH CTE bodies
-_CTE_DML_RE = re.compile(
-    r"\b(INSERT|UPDATE|DELETE)\b",
-    re.IGNORECASE,
-)
-
-
 def _strip_strings_and_comments(sql: str) -> str:
     """Remove string literals and comments from SQL for safe keyword scanning."""
     result: list[str] = []
@@ -200,20 +186,7 @@ def detect_statement_type(sql: str) -> str:
     EXEC/EXECUTE/CALL is treated as 'execute'.
     Returns 'unknown' if not detected.
     """
-    match = _SQL_TYPE_RE.match(sql)
-    if not match:
-        return "unknown"
-    keyword = match.group(1).upper()
-    if keyword == "WITH":
-        # Strip strings and comments before scanning for DML keywords
-        cleaned = _strip_strings_and_comments(sql)
-        dml_match = _CTE_DML_RE.search(cleaned)
-        if dml_match:
-            return dml_match.group(1).lower()
-        return "select"
-    if keyword in ("EXEC", "EXECUTE", "CALL"):
-        return "execute"
-    return keyword.lower()
+    return statement_type(sql)
 
 
 def check_permission(

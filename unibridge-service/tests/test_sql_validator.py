@@ -1,8 +1,6 @@
 """Tests for SQL keyword blacklist validator."""
 from __future__ import annotations
 
-import pytest
-
 from app.services.sql_validator import validate_sql
 
 
@@ -66,6 +64,33 @@ class TestValidateSql:
         errors = validate_sql("RESTORE DATABASE mydb FROM DISK = '/tmp/backup'")
         assert errors is not None
         assert "RESTORE" in errors
+
+    def test_blocks_do_block(self):
+        errors = validate_sql("DO $$ BEGIN DELETE FROM users; END $$")
+        assert errors is not None
+        assert "DO" in errors
+
+    def test_blocks_call(self):
+        errors = validate_sql("CALL dangerous_proc()")
+        assert errors is not None
+        assert "CALL" in errors
+
+    def test_blocks_exec(self):
+        errors = validate_sql("EXEC sp_who")
+        assert errors is not None
+        assert "EXEC" in errors
+
+    def test_blocks_merge(self):
+        errors = validate_sql(
+            "MERGE INTO users USING staging ON users.id = staging.id WHEN MATCHED THEN DELETE"
+        )
+        assert errors is not None
+        assert "MERGE" in errors
+
+    def test_blocks_explain_analyze_dml(self):
+        errors = validate_sql("EXPLAIN ANALYZE DELETE FROM users WHERE id = 1")
+        assert errors is not None
+        assert "EXPLAIN ANALYZE" in errors
 
     def test_ignores_keyword_in_string(self):
         errors = validate_sql("SELECT * FROM users WHERE name = 'GRANT me access'")

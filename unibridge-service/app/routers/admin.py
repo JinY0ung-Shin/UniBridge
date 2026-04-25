@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
 from app.database import get_db
-from app.models import AuditLog, DBConnection, Permission
+from app.models import AuditLog, DBConnection, Permission, Role
 from app.schemas import (
     AuditLogResponse,
     DBConnectionCreate,
@@ -335,6 +335,13 @@ async def upsert_permission(
     db: AsyncSession = Depends(get_db),
 ) -> PermissionResponse:
     """Create or update a permission entry (upsert by role + db_alias)."""
+    role_result = await db.execute(select(Role).where(Role.name == body.role))
+    if role_result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Role '{body.role}' does not exist",
+        )
+
     # Validate allowed_tables against actual DB tables
     if body.allowed_tables is not None and len(body.allowed_tables) > 0:
         try:
