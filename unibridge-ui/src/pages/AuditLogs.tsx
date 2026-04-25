@@ -2,7 +2,7 @@ import { Fragment, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { getAuditLogs, getAdminDatabases, type AuditLogParams } from '../api/client';
-import { formatKST } from '../utils/time';
+import { formatKST, kstDateToUtcIso } from '../utils/time';
 import './AuditLogs.css';
 
 const PAGE_SIZE = 20;
@@ -30,8 +30,8 @@ function AuditLogs() {
   const filters: AuditLogParams = {
     database: appliedFilterForm.database || undefined,
     user: appliedFilterForm.user || undefined,
-    from_date: appliedFilterForm.from_date || undefined,
-    to_date: appliedFilterForm.to_date || undefined,
+    from_date: kstDateToUtcIso(appliedFilterForm.from_date, 'start'),
+    to_date: kstDateToUtcIso(appliedFilterForm.to_date, 'end'),
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   };
