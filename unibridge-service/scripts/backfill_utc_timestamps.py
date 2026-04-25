@@ -36,7 +36,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Iterable
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.database import engine as default_engine
@@ -92,10 +92,18 @@ async def backfill_database(engine: AsyncEngine | None = None) -> int:
         )
     total = 0
     async with eng.begin() as conn:
+        existing_tables = set(
+            await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_table_names())
+        )
         for table_name, col_name in _datetime_columns():
+            if table_name not in existing_tables:
+                # Model declares the table but the DB hasn't created it yet
+                # (e.g., older deployment, lazy migration). Skip safely.
+                logger.info("%s: table not present; skipping", table_name)
+                continue
             # Select only legacy rows: non-NULL and no '.' (no microseconds).
-            # rowid is always present on SQLite; on non-SQLite backends the
-            # script should still be adapted (see module docstring).
+            # rowid is SQLite-specific; the dialect guard above ensures we only
+            # reach this code on SQLite.
             select_sql = text(
                 f"SELECT rowid, {col_name} FROM {table_name} "
                 f"WHERE {col_name} IS NOT NULL "

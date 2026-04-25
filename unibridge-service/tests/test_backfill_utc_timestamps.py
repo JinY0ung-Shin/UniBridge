@@ -174,3 +174,16 @@ class TestBackfillUtcTimestamps:
         fake_engine.dialect.name = "postgresql"
         with pytest.raises(RuntimeError, match="only supports SQLite"):
             await backfill_database(engine=fake_engine)
+
+    async def test_skips_tables_that_do_not_exist(self):
+        """Tables declared in metadata but not yet created in the DB must be
+        skipped silently rather than raising 'no such table'."""
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        # Fresh empty SQLite DB: no tables exist at all.
+        empty_engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            updated = await backfill_database(engine=empty_engine)
+            assert updated == 0
+        finally:
+            await empty_engine.dispose()
