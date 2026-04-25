@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timezone
 from sqlalchemy import select
 
+from app import metrics
 from app.database import async_session
 from app.models import AlertChannel, AlertHistory, AlertRule, AlertRuleChannel
 from app.services.alert_sender import render_template, send_webhook
@@ -207,6 +208,7 @@ async def _dispatch_alert(
         now = datetime.now(timezone.utc).isoformat()
 
         for rule in rules:
+            dispatch_metrics: list[dict[str, str | int]] = []
             rc_result = await db.execute(
                 select(AlertRuleChannel).where(AlertRuleChannel.rule_id == rule.id)
             )
@@ -241,6 +243,13 @@ async def _dispatch_alert(
                 )
                 headers = json.loads(channel.headers) if channel.headers else None
                 ok, err = await send_webhook(url=channel.webhook_url, payload=payload, headers=headers)
+                dispatch_metrics.append(
+                    {
+                        "rule_id": rule.id,
+                        "channel_type": "webhook",
+                        "status": "success" if ok else "failure",
+                    }
+                )
 
                 history = AlertHistory(
                     rule_id=rule.id, channel_id=channel.id,
@@ -251,6 +260,8 @@ async def _dispatch_alert(
                 db.add(history)
 
             await db.commit()
+            for dispatch_metric in dispatch_metrics:
+                metrics.record_alert_dispatch(**dispatch_metric)
 
 
 async def run_single_check(state: AlertStateManager) -> None:

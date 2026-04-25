@@ -497,13 +497,46 @@ class TestConnectionManagerClickHouse:
         mock_client = MagicMock()
         conn = _make_ch_conn()
 
-        with _patch("clickhouse_connect.get_client", return_value=mock_client):
+        with _patch("clickhouse_connect.get_client", return_value=mock_client), \
+             patch("app.metrics.set_connection_pool_in_use") as set_pool_metric:
             await mgr.add_connection(conn)
 
         assert "ch_test" in mgr._ch_clients
         assert mgr._ch_clients["ch_test"] is mock_client
         assert mgr.get_db_type("ch_test") == "clickhouse"
         assert "ch_test" not in mgr._engines
+        set_pool_metric.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_add_sqlalchemy_connection_emits_initial_pool_metric(self):
+        mgr = self._fresh_manager()
+        fake_engine = MagicMock()
+        fake_engine.pool.checkedout.return_value = 0
+        conn = DBConnection(
+            alias="pg_test",
+            db_type="postgres",
+            host="db.example.com",
+            port=5432,
+            database="app",
+            username="app",
+            password_encrypted=encrypt_password("secret"),
+        )
+
+        with _patch("app.services.connection_manager.create_async_engine", return_value=fake_engine), \
+             patch("app.metrics.set_connection_pool_in_use") as set_pool_metric:
+            await mgr.add_connection(conn)
+
+        set_pool_metric.assert_called_once_with(db_alias="pg_test", in_use=0)
+
+    def test_update_pool_metrics_skips_clickhouse_clients(self):
+        mgr = self._fresh_manager()
+        mgr._ch_clients["ch_test"] = MagicMock()
+        mgr._db_types["ch_test"] = "clickhouse"
+
+        with patch("app.metrics.set_connection_pool_in_use") as set_pool_metric:
+            mgr.update_pool_metrics("ch_test")
+
+        set_pool_metric.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_clickhouse_client(self):
@@ -1299,6 +1332,22 @@ class TestLogQuery:
         assert entry.status == "success"
         assert entry.error_message is None
         assert entry.params is None
+
+    async def test_log_query_records_commit_success_without_refreshing_entry(self, db_session):
+        db_session.refresh = AsyncMock()
+
+        with patch("app.services.audit.metrics.record_audit_log_write") as record_metric:
+            entry = await log_query(
+                db_session,
+                user="alice",
+                database_alias="prod-db",
+                sql="SELECT 1",
+                status="success",
+            )
+
+        assert entry.id is not None
+        db_session.refresh.assert_not_awaited()
+        record_metric.assert_called_once_with(status="success")
 
     async def test_log_query_error_status(self, db_session):
         entry = await log_query(

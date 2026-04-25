@@ -1,6 +1,21 @@
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   etcd:
     image: bitnamilegacy/etcd:3.5.11
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 256m
+    cpus: "0.50"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.50"
     environment:
       - ALLOW_NONE_AUTHENTICATION=${ETCD_ALLOW_NONE_AUTH:-no}
       - ETCD_ROOT_PASSWORD=${ETCD_ROOT_PASSWORD:-}
@@ -21,6 +36,15 @@ services:
 
   apisix:
     image: apache/apisix:3.15.0-debian
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "1.00"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.00"
     entrypoint: /opt/apisix-config/docker-entrypoint.sh
     expose:
       - "9080"
@@ -41,6 +65,15 @@ services:
 
   keycloak-db:
     image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "0.50"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.50"
     environment:
       - POSTGRES_DB=keycloak
       - POSTGRES_USER=${KC_DB_USER:-keycloak}
@@ -57,6 +90,15 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 1g
+    cpus: "1.00"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.00"
     entrypoint: /opt/init/docker-entrypoint.sh
     environment:
       - KC_BOOTSTRAP_ADMIN_USERNAME=${KC_ADMIN_USER:-admin}
@@ -106,6 +148,16 @@ services:
         MS_SKIP_GPG: ${MS_SKIP_GPG:-}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
         PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+    restart: unless-stopped
+    init: true
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "1.00"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.00"
     ports:
       - "127.0.0.1:${UNIBRIDGE_SERVICE_PORT:-8000}:8000"
     environment:
@@ -154,6 +206,15 @@ services:
 
   prometheus:
     image: prom/prometheus:v3.11.1
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "0.50"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.50"
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.retention.time=60d'
@@ -161,15 +222,59 @@ services:
       - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
     depends_on:
       apisix:
         condition: service_started
+      blackbox-exporter:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9090/-/ready >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - apihub-net
+
+  blackbox-exporter:
+    image: quay.io/prometheus/blackbox-exporter:v0.28.0
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 128m
+    cpus: "0.25"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.25"
+    command:
+      - '--config.file=/etc/blackbox_exporter/config.yml'
+    expose:
+      - "9115"
+    volumes:
+      - ./prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9115/-/healthy >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks:
       - apihub-net
 
   litellm-db:
     image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "0.50"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.50"
     environment:
       - POSTGRES_DB=litellm
       - POSTGRES_USER=litellm
@@ -186,6 +291,15 @@ services:
 
   litellm:
     image: ghcr.io/berriai/litellm:main-v1.81.9-stable
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "1.00"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.00"
     entrypoint: ["sh", "-c"]
     command:
       - |
@@ -235,6 +349,16 @@ services:
         VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
         HOST_IP: ${HOST_IP:-localhost}
         KEYCLOAK_PORT: ${KEYCLOAK_PORT:-8443}
+    restart: unless-stopped
+    init: true
+    logging: *default-logging
+    mem_limit: 128m
+    cpus: "0.25"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.25"
     environment:
       - SSL_VERIFY=${SSL_VERIFY:-true}
       - HOST_IP=${HOST_IP:-localhost}
@@ -247,6 +371,12 @@ services:
     depends_on:
       unibridge-service:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O- https://localhost/healthz | grep -q '^ok$'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks:
       - apihub-net
 

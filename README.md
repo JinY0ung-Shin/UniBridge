@@ -17,11 +17,11 @@ Browser ──HTTPS──> unibridge-ui (nginx)
                                           └── Custom upstream services
 
 Keycloak   ── OIDC auth
-Prometheus ── APISIX metrics
+Prometheus ── APISIX/LiteLLM/FastAPI metrics + DB TCP probes
 LiteLLM    ── Unified LLM proxy (+ Postgres)
 ```
 
-**Services (9):** etcd, APISIX, Keycloak + Postgres, unibridge-service, Prometheus, LiteLLM + Postgres, unibridge-ui
+**Services (10):** etcd, APISIX, Keycloak + Postgres, unibridge-service, Prometheus, Blackbox Exporter, LiteLLM + Postgres, unibridge-ui
 
 ## Prerequisites
 
@@ -176,6 +176,14 @@ docker compose down
 # Stop and remove volumes (DESTROYS DATA)
 docker compose down -v
 ```
+
+Operational defaults in `docker-compose.yml`:
+
+- All services use `restart: unless-stopped`, so containers come back after host/container restarts unless intentionally stopped.
+- Docker `json-file` logs rotate at `50m` with `5` retained files per service.
+- Each service has an initial `deploy.resources.limits` CPU/memory cap for Docker Compose v2, plus `mem_limit`/`cpus` fallbacks for older Compose compatibility. Treat these as conservative starting values and tune from `docker stats` on the deploy host.
+- `unibridge-service` and `unibridge-ui` run with `init: true` for PID 1 signal handling and child process reaping.
+- Prometheus scrapes APISIX, LiteLLM, unibridge-service `/metrics`, and Blackbox TCP probes for the Postgres-backed services. Alert rules live under `prometheus/rules/`.
 
 ## Backups
 

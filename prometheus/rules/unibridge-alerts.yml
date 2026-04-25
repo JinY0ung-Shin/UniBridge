@@ -1,0 +1,66 @@
+groups:
+  - name: unibridge-critical
+    rules:
+      - alert: APISIXHigh5xxRate
+        expr: |
+          (
+            sum(rate(apisix_http_status{code=~"5.."}[5m]))
+            /
+            sum(rate(apisix_http_status[5m]))
+          ) > 0.01
+          and
+          sum(rate(apisix_http_status[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "APISIX 5xx rate is above 1%"
+          description: "APISIX 5xx responses have exceeded 1% of traffic for 5 minutes."
+
+      - alert: UniBridgeServiceDown
+        expr: up{job="unibridge-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "UniBridge service is down"
+          description: "Prometheus cannot scrape unibridge-service metrics."
+
+      - alert: UniBridgeMetaDbDown
+        expr: unibridge_meta_db_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "UniBridge metadata database is unavailable"
+          description: "unibridge-service cannot run a health query against the metadata database."
+
+      - alert: KeycloakDbDown
+        expr: probe_success{job="infra-db-tcp",db="keycloak-db"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Keycloak database TCP probe failed"
+          description: "blackbox-exporter cannot connect to keycloak-db:5432."
+
+      - alert: LiteLLMDbDown
+        expr: probe_success{job="infra-db-tcp",db="litellm-db"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LiteLLM database TCP probe failed"
+          description: "blackbox-exporter cannot connect to litellm-db:5432."
+
+      - alert: UniBridgeAuditWritesMissing
+        expr: |
+          sum(rate(unibridge_query_duration_seconds_count{status="success"}[5m])) > 0
+          and
+          sum(rate(unibridge_audit_log_write_total{status="success"}[5m])) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Query traffic is not producing audit writes"
+          description: "Successful query execution is happening while successful audit write rate is zero."

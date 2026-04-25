@@ -2,4 +2,5 @@ pytest>=8.2,<9
 pytest-asyncio==0.26.0
 pytest-cov==6.2.1
 pytest-httpx>=0.35
+PyYAML>=6.0,<7
 ruff>=0.8,<1

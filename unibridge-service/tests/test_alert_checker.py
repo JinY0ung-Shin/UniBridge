@@ -1,6 +1,7 @@
 """Tests for alert_checker module."""
 from __future__ import annotations
 
+from types import SimpleNamespace
 import time
 
 import pytest
@@ -8,6 +9,54 @@ from unittest.mock import AsyncMock, patch
 
 from app.services.alert_checker import run_single_check
 from app.services.alert_state import AlertStateManager
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def scalars(self):
+        return SimpleNamespace(all=lambda: self.rows)
+
+    def scalar_one_or_none(self):
+        return self.rows[0] if self.rows else None
+
+
+class _FailingCommitDb:
+    def __init__(self):
+        self._results = [
+            _FakeResult([SimpleNamespace(id=7, name="critical rule")]),
+            _FakeResult([SimpleNamespace(channel_id=3, recipients='["ops@example.com"]')]),
+            _FakeResult([
+                SimpleNamespace(
+                    id=3,
+                    enabled=True,
+                    webhook_url="http://hook.example.com/alerts",
+                    payload_template='{"text":"{{message}}"}',
+                    headers=None,
+                )
+            ]),
+        ]
+
+    async def execute(self, _query):
+        return self._results.pop(0)
+
+    def add(self, _entry):
+        return None
+
+    async def commit(self):
+        raise RuntimeError("history commit failed")
+
+
+class _FakeSessionContext:
+    def __init__(self, db):
+        self.db = db
+
+    async def __aenter__(self):
+        return self.db
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
 
 
 class TestAlertChecker:
@@ -87,6 +136,27 @@ class TestAlertChecker:
             assert state.get_status("upstream_health", "order-svc") == "alert"
             mock_dispatch.assert_called_once()
             assert mock_dispatch.call_args[1]["rule_type"] == "upstream_health"
+
+
+class TestDispatchAlertMetrics:
+    @pytest.mark.asyncio
+    async def test_dispatch_metric_not_recorded_when_history_commit_fails(self):
+        from app.services.alert_checker import _dispatch_alert
+
+        fake_db = _FailingCommitDb()
+
+        with patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)), \
+             patch("app.services.alert_checker.send_webhook", new=AsyncMock(return_value=(True, None))), \
+             patch("app.services.alert_checker.metrics.record_alert_dispatch") as record_metric:
+            with pytest.raises(RuntimeError, match="history commit failed"):
+                await _dispatch_alert(
+                    rule_type="db_health",
+                    alert_type="triggered",
+                    target="meta",
+                    message="metadata db down",
+                )
+
+        record_metric.assert_not_called()
 
 
 class TestCheckRouteErrorRate:

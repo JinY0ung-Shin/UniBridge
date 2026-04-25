@@ -80,6 +80,15 @@ async def test_lifespan_provisions_llm_admin_route_when_master_key_set():
 
 
 @pytest.mark.asyncio
+async def test_metrics_endpoint_exposes_prometheus_text(client):
+    response = await client.get("/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert b"# HELP" in response.content
+
+
+@pytest.mark.asyncio
 async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     app = FastAPI()
     put_resource = AsyncMock()

@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import metrics
 from app.models import AuditLog
 
 logger = logging.getLogger(__name__)
@@ -35,8 +36,13 @@ async def log_query(
         error_message=error_message,
     )
     db.add(entry)
-    await db.commit()
-    await db.refresh(entry)
+    try:
+        await db.commit()
+    except Exception:
+        metrics.record_audit_log_write(status="failure")
+        raise
+
+    metrics.record_audit_log_write(status="success")
     logger.info(
         "Audit: user=%s db=%s status=%s elapsed=%sms rows=%s",
         user,

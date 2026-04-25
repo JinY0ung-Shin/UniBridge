@@ -8,9 +8,11 @@ from typing import AsyncGenerator
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from httpx import HTTPStatusError
+from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import select
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app import metrics
 from app.config import settings, validate_settings
 from app.database import get_db, init_db
 from app.models import DBConnection
@@ -268,10 +270,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     set_alert_state(alert_state)
     app.state.alert_task = await start_checker(alert_state)
     logger.info("Alert checker started")
+    app.state.meta_db_metrics_task = asyncio.create_task(metrics.monitor_meta_db_health())
+    logger.info("Metadata database metrics monitor started")
 
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────
+    if hasattr(app.state, "meta_db_metrics_task"):
+        app.state.meta_db_metrics_task.cancel()
+        try:
+            await app.state.meta_db_metrics_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Metadata database metrics monitor stopped")
+
     if hasattr(app.state, "alert_task"):
         app.state.alert_task.cancel()
         try:
@@ -300,6 +312,11 @@ app = FastAPI(
     description="Unified API hub for database queries, gateway management, and access control.",
     version="1.0.0",
     lifespan=lifespan,
+)
+Instrumentator().instrument(app).expose(
+    app,
+    endpoint="/metrics",
+    include_in_schema=False,
 )
 
 # ── Security headers middleware ──────────────────────────────────────────────

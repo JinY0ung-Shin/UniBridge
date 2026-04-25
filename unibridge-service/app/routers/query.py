@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import metrics
 from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_role_permissions, require_permission
 from app.database import get_db
 from app.models import Permission
@@ -142,6 +144,7 @@ async def execute(
         )
 
     # 4. Execute the query
+    query_started_at = time.monotonic()
     try:
         if db_type == "clickhouse":
             ch_client = connection_manager.get_clickhouse_client(req.database)
@@ -156,6 +159,12 @@ async def execute(
                 limit=req.limit, timeout=req.timeout, db_type=db_type,
             )
     except asyncio.TimeoutError:
+        metrics.record_query(
+            db_alias=req.database,
+            db_type=db_type,
+            status="timeout",
+            duration_seconds=time.monotonic() - query_started_at,
+        )
         try:
             await log_query(db, user=username, database_alias=req.database,
                             sql=req.sql, params=req.params, status="error",
@@ -167,6 +176,12 @@ async def execute(
             detail="Query timed out",
         )
     except Exception as exc:
+        metrics.record_query(
+            db_alias=req.database,
+            db_type=db_type,
+            status="error",
+            duration_seconds=time.monotonic() - query_started_at,
+        )
         try:
             await log_query(db, user=username, database_alias=req.database,
                             sql=req.sql, params=req.params, status="error",
@@ -180,8 +195,16 @@ async def execute(
         )
     finally:
         rate_limiter.release(username)
+        connection_manager.update_pool_metrics(req.database)
 
     # 5. Audit log (success)
+    metrics.record_query(
+        db_alias=req.database,
+        db_type=db_type,
+        status="success",
+        duration_seconds=response.elapsed_ms / 1000,
+        row_count=response.row_count,
+    )
     await log_query(db, user=username, database_alias=req.database,
                     sql=req.sql, params=req.params, row_count=response.row_count,
                     elapsed_ms=response.elapsed_ms, status="success")

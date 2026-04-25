@@ -3,11 +3,43 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
 ENV_EXAMPLE_FILE = REPO_ROOT / ".env.example"
 REALM_EXPORT_FILE = REPO_ROOT / "keycloak" / "realm-export.json"
+PROMETHEUS_CONFIG_FILE = REPO_ROOT / "prometheus" / "prometheus.yml"
+PROMETHEUS_RULES_DIR = REPO_ROOT / "prometheus" / "rules"
+NGINX_CONFIG_FILE = REPO_ROOT / "unibridge-ui" / "nginx.conf"
+
+COMPOSE_SERVICE_LIMITS = {
+    "etcd": {"memory": "256m", "cpus": "0.50"},
+    "apisix": {"memory": "512m", "cpus": "1.00"},
+    "keycloak-db": {"memory": "512m", "cpus": "0.50"},
+    "keycloak": {"memory": "1g", "cpus": "1.00"},
+    "unibridge-service": {"memory": "512m", "cpus": "1.00"},
+    "prometheus": {"memory": "512m", "cpus": "0.50"},
+    "litellm-db": {"memory": "512m", "cpus": "0.50"},
+    "litellm": {"memory": "512m", "cpus": "1.00"},
+    "unibridge-ui": {"memory": "128m", "cpus": "0.25"},
+    "blackbox-exporter": {"memory": "128m", "cpus": "0.25"},
+}
+
+DEFAULT_LOGGING = {
+    "driver": "json-file",
+    "options": {"max-size": "50m", "max-file": "5"},
+}
+
+REQUIRED_PROMETHEUS_ALERTS = {
+    "APISIXHigh5xxRate",
+    "UniBridgeServiceDown",
+    "UniBridgeMetaDbDown",
+    "KeycloakDbDown",
+    "LiteLLMDbDown",
+    "UniBridgeAuditWritesMissing",
+}
 
 FORBIDDEN_COMPOSE_PATTERNS = [
     "KC_BOOTSTRAP_ADMIN_PASSWORD=${KC_ADMIN_PASSWORD:-admin}",
@@ -49,6 +81,98 @@ def _parse_env_assignments(path: Path) -> dict[str, str]:
         key, value = line.split("=", 1)
         assignments[key] = value
     return assignments
+
+
+def _load_yaml(path: Path) -> dict:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def test_docker_compose_applies_operational_defaults_to_all_services() -> None:
+    compose = _load_yaml(COMPOSE_FILE)
+    services = compose["services"]
+
+    missing_services = sorted(set(COMPOSE_SERVICE_LIMITS) - set(services))
+    assert missing_services == []
+
+    for service_name, expected_limits in COMPOSE_SERVICE_LIMITS.items():
+        service = services[service_name]
+        assert service.get("restart") == "unless-stopped", service_name
+        assert service.get("logging") == DEFAULT_LOGGING, service_name
+        assert service.get("mem_limit") == expected_limits["memory"], service_name
+        assert service.get("cpus") == expected_limits["cpus"], service_name
+        assert (
+            service.get("deploy", {})
+            .get("resources", {})
+            .get("limits", {})
+        ) == expected_limits, service_name
+
+    assert services["unibridge-service"].get("init") is True
+    assert services["unibridge-ui"].get("init") is True
+
+
+def test_nginx_blocks_public_api_metrics_proxy() -> None:
+    nginx_config = NGINX_CONFIG_FILE.read_text(encoding="utf-8")
+
+    exact_block = "location = /_api/metrics"
+    prefix_block = "location ^~ /_api/metrics/"
+    api_proxy = "location /_api/"
+
+    assert exact_block in nginx_config
+    assert prefix_block in nginx_config
+    assert nginx_config.index(exact_block) < nginx_config.index(api_proxy)
+    assert nginx_config.index(prefix_block) < nginx_config.index(api_proxy)
+
+
+def test_docker_compose_declares_ui_and_prometheus_healthchecks() -> None:
+    services = _load_yaml(COMPOSE_FILE)["services"]
+
+    ui_healthcheck = services["unibridge-ui"].get("healthcheck", {})
+    prometheus_healthcheck = services["prometheus"].get("healthcheck", {})
+    blackbox_healthcheck = services["blackbox-exporter"].get("healthcheck", {})
+
+    assert "/healthz" in str(ui_healthcheck)
+    assert "/-/ready" in str(prometheus_healthcheck)
+    assert "/-/healthy" in str(blackbox_healthcheck)
+
+
+def test_readme_states_compose_v2_required_for_resource_limits() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "Docker Compose v2" in readme
+    assert "Compose v2" in readme and "deploy.resources.limits" in readme
+
+
+def test_prometheus_scrapes_service_and_loads_alert_rules() -> None:
+    config = _load_yaml(PROMETHEUS_CONFIG_FILE)
+    scrape_jobs = {
+        job["job_name"]: job
+        for job in config.get("scrape_configs", [])
+    }
+
+    assert "/etc/prometheus/rules/*.yml" in config.get("rule_files", [])
+    assert scrape_jobs["unibridge-service"]["metrics_path"] == "/metrics"
+    assert scrape_jobs["unibridge-service"]["static_configs"] == [
+        {"targets": ["unibridge-service:8000"]}
+    ]
+    assert scrape_jobs["infra-db-tcp"]["metrics_path"] == "/probe"
+    assert scrape_jobs["infra-db-tcp"]["params"] == {"module": ["tcp_connect"]}
+
+
+def test_prometheus_alert_rules_cover_gateway_service_database_and_audit() -> None:
+    rule_files = sorted(PROMETHEUS_RULES_DIR.glob("*.yml"))
+    loaded_rule_files = [_load_yaml(path) for path in rule_files]
+    alerts = {
+        rule["alert"]: rule
+        for rule_file in loaded_rule_files
+        for group in rule_file.get("groups", [])
+        for rule in group.get("rules", [])
+        if "alert" in rule
+    }
+
+    assert REQUIRED_PROMETHEUS_ALERTS <= set(alerts)
+    assert "apisix_http_status" in alerts["APISIXHigh5xxRate"]["expr"]
+    assert "unibridge_query_duration_seconds_count" in alerts["UniBridgeAuditWritesMissing"]["expr"]
+    assert "unibridge_audit_log_write_total" in alerts["UniBridgeAuditWritesMissing"]["expr"]
 
 
 def test_docker_compose_does_not_contain_insecure_password_fallbacks() -> None:

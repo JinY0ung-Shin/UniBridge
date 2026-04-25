@@ -9,6 +9,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from app import metrics
 from app.config import settings
 from app.models import DBConnection
 
@@ -133,6 +134,7 @@ class ConnectionManager:
             self._engines[conn.alias] = engine
 
         self._db_types[conn.alias] = conn.db_type
+        self.update_pool_metrics(conn.alias)
         logger.info("Connection created for alias '%s' (%s)", conn.alias, conn.db_type)
 
     async def remove_connection(self, alias: str) -> None:
@@ -210,6 +212,24 @@ class ConnectionManager:
             "checked_out": getattr(pool, "checkedout", None),
             "overflow": getattr(pool, "overflow", None),
         }
+
+    def update_pool_metrics(self, alias: str | None = None) -> None:
+        """Publish current checked-out pool counts for registered DB aliases."""
+        aliases = [alias] if alias is not None else self.list_aliases()
+        for current_alias in aliases:
+            if current_alias in self._ch_clients:
+                continue
+
+            engine = self._engines.get(current_alias)
+            if engine is None:
+                continue
+
+            checked_out = getattr(engine.pool, "checkedout", None)
+            in_use = checked_out() if callable(checked_out) else checked_out
+            metrics.set_connection_pool_in_use(
+                db_alias=current_alias,
+                in_use=in_use or 0,
+            )
 
     def list_aliases(self) -> list[str]:
         """Return all registered aliases."""
