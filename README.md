@@ -209,6 +209,8 @@ docker compose exec unibridge-service python -m scripts.backfill_utc_timestamps
 
 The script introspects every `UtcDateTime` column and rewrites legacy values to the canonical microsecond form. It is idempotent — re-running it finds 0 rows to update.
 
+> **SQLite-only.** The lexicographic-compare bug fixed by this script is specific to SQLite. PostgreSQL / MSSQL deployments store datetimes as native timestamp types and do not need this step; the script will hard-stop with `RuntimeError` if run against a non-SQLite backend.
+
 ## etcd Authentication Migration Guide
 
 etcd는 APISIX의 설정 저장소로, 기본적으로 인증이 활성화되어 있습니다. 기존 환경에서 업그레이드하는 경우 아래 절차를 따라주세요.

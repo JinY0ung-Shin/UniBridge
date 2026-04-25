@@ -78,8 +78,18 @@ async def backfill_database(engine: AsyncEngine | None = None) -> int:
 
     Accepts an optional ``engine`` override for testing; defaults to the
     production meta-DB engine from ``app.database``.
+
+    Raises ``RuntimeError`` on non-SQLite backends: the lexicographic-compare
+    bug this script fixes is SQLite-specific (PostgreSQL/MSSQL use native
+    timestamp types), and the script relies on SQLite ``rowid``.
     """
     eng = engine if engine is not None else default_engine
+    if eng.dialect.name != "sqlite":
+        raise RuntimeError(
+            f"backfill_utc_timestamps only supports SQLite "
+            f"(got dialect={eng.dialect.name!r}). Other backends store "
+            f"datetimes as native timestamp types and do not need this fix."
+        )
     total = 0
     async with eng.begin() as conn:
         for table_name, col_name in _datetime_columns():

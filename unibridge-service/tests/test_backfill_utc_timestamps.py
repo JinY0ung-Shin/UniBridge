@@ -165,3 +165,12 @@ class TestBackfillUtcTimestamps:
                 await gen.aclose()
             except Exception:
                 pass
+
+    async def test_rejects_non_sqlite_dialect(self):
+        """Script must hard-stop on non-SQLite backends."""
+        from unittest.mock import MagicMock
+
+        fake_engine = MagicMock()
+        fake_engine.dialect.name = "postgresql"
+        with pytest.raises(RuntimeError, match="only supports SQLite"):
+            await backfill_database(engine=fake_engine)
