@@ -275,3 +275,17 @@
   min-height: 100vh;
   background: var(--bg-root);
 }
+
+.permission-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent-red) 24%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
+  color: var(--accent-red);
+  font-size: 13px;
+}

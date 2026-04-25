@@ -81,7 +81,7 @@ async def list_users(
     search: str | None = None,
     first: int = 0,
     max: int = 50,
-    user: CurrentUser = Depends(require_permission("admin.roles.read")),
+    user: CurrentUser = Depends(require_permission("admin.users.read")),
 ) -> KeycloakUserList:
     """List Keycloak users with role enrichment."""
     kc = _get_kc_admin()
@@ -93,7 +93,7 @@ async def list_users(
 @router.post("/admin/users", response_model=KeycloakUser, status_code=status.HTTP_201_CREATED)
 async def create_user(
     body: CreateUserRequest,
-    user: CurrentUser = Depends(require_permission("admin.roles.write")),
+    user: CurrentUser = Depends(require_permission("admin.users.write")),
 ) -> KeycloakUser:
     """Create a Keycloak user and assign a realm role."""
     kc = _get_kc_admin()
@@ -127,7 +127,7 @@ async def create_user(
 async def change_role(
     user_id: str = Path(..., pattern=_UUID_PATTERN),
     body: ChangeRoleRequest = ...,
-    user: CurrentUser = Depends(require_permission("admin.roles.write")),
+    user: CurrentUser = Depends(require_permission("admin.users.write")),
 ) -> KeycloakUser:
     """Change a user's application role (assign new first, then remove old)."""
     kc = _get_kc_admin()
@@ -154,7 +154,7 @@ async def change_role(
 async def reset_password(
     user_id: str = Path(..., pattern=_UUID_PATTERN),
     body: ResetPasswordRequest = ...,
-    user: CurrentUser = Depends(require_permission("admin.roles.write")),
+    user: CurrentUser = Depends(require_permission("admin.users.write")),
 ) -> None:
     """Reset a user's password."""
     kc = _get_kc_admin()
@@ -165,7 +165,7 @@ async def reset_password(
 async def toggle_enabled(
     user_id: str = Path(..., pattern=_UUID_PATTERN),
     body: ToggleEnabledRequest = ...,
-    user: CurrentUser = Depends(require_permission("admin.roles.write")),
+    user: CurrentUser = Depends(require_permission("admin.users.write")),
 ) -> KeycloakUser:
     """Enable or disable a user. Prevents self-deactivation."""
     kc = _get_kc_admin()
@@ -190,7 +190,7 @@ async def toggle_enabled(
 )
 async def delete_user(
     user_id: str = Path(..., pattern=_UUID_PATTERN),
-    user: CurrentUser = Depends(require_permission("admin.roles.write")),
+    user: CurrentUser = Depends(require_permission("admin.users.write")),
 ) -> None:
     """Delete a Keycloak user. Prevents self-deletion."""
     kc = _get_kc_admin()

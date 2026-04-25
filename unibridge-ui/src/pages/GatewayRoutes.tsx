@@ -10,6 +10,7 @@ import {
   type GatewayRoute,
 } from '../api/client';
 import { useToast } from '../components/useToast';
+import { useCanWrite } from '../components/useCanWrite';
 import './GatewayRoutes.css';
 
 const METHOD_COLORS: Record<string, string> = {
@@ -20,6 +21,7 @@ function GatewayRoutes() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const canWrite = useCanWrite('gateway.routes.write');
 
   const { addToast } = useToast();
   const [testStatus, setTestStatus] = useState<Record<string, 'ok' | 'fail'>>({});
@@ -125,9 +127,11 @@ function GatewayRoutes() {
           <h1>{t('gatewayRoutes.title')}</h1>
           <p className="page-subtitle">{t('gatewayRoutes.subtitle')}</p>
         </div>
-        <button className="btn btn-primary" onClick={() => navigate('/gateway/routes/new')}>
-          {t('gatewayRoutes.addRoute')}
-        </button>
+        {canWrite && (
+          <button className="btn btn-primary" onClick={() => navigate('/gateway/routes/new')}>
+            {t('gatewayRoutes.addRoute')}
+          </button>
+        )}
       </div>
 
       {routesQuery.isLoading && <div className="loading-message">{t('gatewayRoutes.loadingRoutes')}</div>}
@@ -194,7 +198,7 @@ function GatewayRoutes() {
                       >
                         {t('gatewayRoutes.curl')}
                       </button>
-                      {!route.system && (
+                      {canWrite && !route.system && (
                         <>
                           <button
                             className="btn btn-sm btn-secondary"

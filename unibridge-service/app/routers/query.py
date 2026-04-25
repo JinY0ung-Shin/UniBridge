@@ -205,9 +205,12 @@ async def execute(
         duration_seconds=response.elapsed_ms / 1000,
         row_count=response.row_count,
     )
-    await log_query(db, user=username, database_alias=req.database,
-                    sql=req.sql, params=req.params, row_count=response.row_count,
-                    elapsed_ms=response.elapsed_ms, status="success")
+    try:
+        await log_query(db, user=username, database_alias=req.database,
+                        sql=req.sql, params=req.params, row_count=response.row_count,
+                        elapsed_ms=response.elapsed_ms, status="success")
+    except Exception:
+        logger.exception("Failed to write audit log for successful query")
 
     return response
 

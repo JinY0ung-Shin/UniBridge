@@ -119,6 +119,34 @@ class TestQueryExecute:
         assert data["row_count"] == 1
         mock_exec.assert_awaited_once()
 
+    async def test_successful_query_survives_audit_write_failure(
+        self, client, admin_token
+    ):
+        mock_engine = MagicMock()
+        with patch(
+            "app.routers.query.connection_manager.get_engine",
+            return_value=mock_engine,
+        ), patch(
+            "app.routers.query.connection_manager.get_db_type",
+            return_value="postgres",
+        ), patch(
+            "app.routers.query.execute_query",
+            new_callable=AsyncMock,
+            return_value=_mock_query_response(),
+        ), patch(
+            "app.routers.query.log_query",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("audit db unavailable"),
+        ):
+            resp = await client.post(
+                "/query/execute",
+                json={"database": "mydb", "sql": "SELECT 1"},
+                headers=auth_header(admin_token),
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["row_count"] == 1
+
     async def test_developer_with_permission_entry_can_execute(
         self, client, admin_token, developer_token
     ):

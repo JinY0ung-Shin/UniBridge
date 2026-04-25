@@ -9,6 +9,7 @@ import {
   getAllPermissions,
   type RoleInfo,
 } from '../api/client';
+import { useCanWrite } from '../components/useCanWrite';
 import './Roles.css';
 
 function groupPermissions(perms: string[]): Record<string, string[]> {
@@ -25,6 +26,7 @@ function groupPermissions(perms: string[]): Record<string, string[]> {
 function Roles() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const canWrite = useCanWrite('admin.roles.write');
 
   const [showModal, setShowModal] = useState(false);
   const [editingRole, setEditingRole] = useState<RoleInfo | null>(null);
@@ -160,7 +162,9 @@ function Roles() {
           <h1>{t('roles.title')}</h1>
           <p className="page-subtitle">{t('roles.subtitle')}</p>
         </div>
-        <button className="btn btn-primary" onClick={openCreate}>{t('roles.addRole')}</button>
+        {canWrite && (
+          <button className="btn btn-primary" onClick={openCreate}>{t('roles.addRole')}</button>
+        )}
       </div>
 
       {rolesQuery.isLoading && <div className="loading-message">{t('roles.loadingRoles')}</div>}
@@ -186,12 +190,14 @@ function Roles() {
                   <td className="perm-count">{t('roles.permissionCount', { count: role.permissions.length })}</td>
                   <td>{role.is_system ? <span className="system-badge">{t('roles.system')}</span> : '—'}</td>
                   <td>
-                    <div className="action-buttons">
-                      <button className="btn btn-sm btn-secondary" onClick={() => openEdit(role)}>{t('common.edit')}</button>
-                      {!role.is_system && (
-                        <button className="btn btn-sm btn-danger" onClick={() => handleDelete(role)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
-                      )}
-                    </div>
+	                    {canWrite && (
+	                      <div className="action-buttons">
+	                        <button className="btn btn-sm btn-secondary" onClick={() => openEdit(role)}>{t('common.edit')}</button>
+	                        {!role.is_system && (
+	                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(role)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
+	                        )}
+	                      </div>
+	                    )}
                   </td>
                 </tr>
               ))}
@@ -200,7 +206,7 @@ function Roles() {
         </div>
       )}
 
-      {showModal && (
+      {canWrite && showModal && (
         <div className="modal-overlay" onClick={closeModal}>
           <div className="modal" style={{ width: 600 }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">

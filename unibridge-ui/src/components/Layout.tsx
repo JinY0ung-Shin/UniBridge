@@ -1,6 +1,7 @@
-import { useState, useEffect, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { NavLink, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useQuery } from '@tanstack/react-query';
 import { getCurrentUser } from '../api/client';
 import { useAuth } from './useAuth';
 import { PermissionProvider } from './PermissionContext';
@@ -21,7 +22,7 @@ const navItems = [
   { to: '/llm/monitoring', labelKey: 'nav.llmMonitoring', icon: 'LLM Monitoring', section: 'llm', permission: 'gateway.monitoring.read' },
   { to: '/api-keys', labelKey: 'nav.apiKeys', icon: 'API Keys', section: 'access', permission: 'apikeys.read' },
   { to: '/roles', labelKey: 'nav.roles', icon: 'Roles', section: 'admin', permission: 'admin.roles.read' },
-  { to: '/users', labelKey: 'nav.users', icon: 'Users', section: 'admin', permission: 'admin.roles.read' },
+  { to: '/users', labelKey: 'nav.users', icon: 'Users', section: 'admin', permission: 'admin.users.read' },
   { to: '/alerts/status', labelKey: 'nav.alertStatus', icon: 'Alert Status', section: 'alerts', permission: 'alerts.read' },
   { to: '/alerts/settings', labelKey: 'nav.alertSettings', icon: 'Alert Settings', section: 'alerts', permission: 'alerts.write' },
   { to: '/alerts/history', labelKey: 'nav.alertHistory', icon: 'Alert History', section: 'alerts', permission: 'alerts.read' },
@@ -34,17 +35,16 @@ interface LayoutProps {
 function Layout({ children }: LayoutProps) {
   const { t } = useTranslation();
   const { username, logout } = useAuth();
-  const [userPermissions, setUserPermissions] = useState<string[]>([]);
-  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    getCurrentUser()
-      .then((user) => { if (!cancelled) { setUserPermissions(user.permissions); setPermissionsLoaded(true); } })
-      .catch(() => { if (!cancelled) { setUserPermissions([]); setPermissionsLoaded(true); } });
-    return () => { cancelled = true; };
-  }, []);
+  const permissionsQuery = useQuery({
+    queryKey: ['current-user'],
+    queryFn: getCurrentUser,
+    retry: 1,
+    retryDelay: 250,
+  });
+  const userPermissions = permissionsQuery.data?.permissions ?? [];
+  const permissionsLoaded = permissionsQuery.isSuccess;
 
   function hasPermission(perm: string | null): boolean {
     if (perm === null) return true;
@@ -218,6 +218,14 @@ function Layout({ children }: LayoutProps) {
       </aside>
       <main className="main-content">
         <PermissionProvider permissions={userPermissions} loaded={permissionsLoaded}>
+          {permissionsQuery.isError && (
+            <div className="permission-error-banner">
+              <span>{t('permissions.loadFailed')}</span>
+              <button className="btn btn-sm btn-secondary" onClick={() => permissionsQuery.refetch()}>
+                {t('common.retry')}
+              </button>
+            </div>
+          )}
           {children}
         </PermissionProvider>
       </main>

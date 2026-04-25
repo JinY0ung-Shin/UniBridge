@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -1486,3 +1487,53 @@ class TestLogQuery:
 
         assert entry.row_count == 0
         assert entry.elapsed_ms == 0
+
+    async def test_log_query_uses_fresh_session_bound_to_request_session(self):
+        from sqlalchemy.ext.asyncio import AsyncSession
+
+        audit_db = SimpleNamespace(
+            added=[],
+            add=lambda entry: audit_db.added.append(entry),
+            commit=AsyncMock(),
+        )
+
+        class AuditSessionContext:
+            async def __aenter__(self):
+                return audit_db
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class AuditSessionFactory:
+            def __call__(self):
+                return AuditSessionContext()
+
+        bind = object()
+        request_db = SimpleNamespace(
+            bind=bind,
+            add=MagicMock(),
+            commit=AsyncMock(),
+        )
+
+        with patch(
+            "app.services.audit.async_sessionmaker",
+            create=True,
+            return_value=AuditSessionFactory(),
+        ) as make_session:
+            entry = await log_query(
+                request_db,
+                user="isolated",
+                database_alias="db",
+                sql="SELECT 1",
+                status="success",
+            )
+
+        make_session.assert_called_once_with(
+            bind,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+        request_db.add.assert_not_called()
+        request_db.commit.assert_not_awaited()
+        assert audit_db.added == [entry]
+        audit_db.commit.assert_awaited_once()

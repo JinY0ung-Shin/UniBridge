@@ -16,6 +16,8 @@ export const ADMIN_PERMISSIONS = [
   'query.audit.read',
   'admin.roles.read',
   'admin.roles.write',
+  'admin.users.read',
+  'admin.users.write',
   'gateway.routes.read',
   'gateway.routes.write',
   'gateway.upstreams.read',
@@ -23,6 +25,11 @@ export const ADMIN_PERMISSIONS = [
   'apikeys.read',
   'apikeys.write',
   'gateway.monitoring.read',
+  'alerts.read',
+  'alerts.write',
+  's3.connections.read',
+  's3.connections.write',
+  's3.browse',
 ];
 
 export const VIEWER_PERMISSIONS = [
@@ -187,6 +194,19 @@ export function makeGatewayUpstream(overrides = {}) {
     name: 'test-upstream',
     type: 'roundrobin',
     nodes: { 'localhost:3000': 1 },
+    ...overrides,
+  };
+}
+
+export function makeS3Connection(overrides = {}) {
+  return {
+    alias: 's3-main',
+    endpoint_url: 'https://s3.example.com',
+    region: 'ap-northeast-2',
+    access_key_id: 'access-key',
+    secret_access_key: '',
+    default_bucket: 'default-bucket',
+    use_ssl: true,
     ...overrides,
   };
 }

@@ -11,6 +11,7 @@ import {
   type S3ConnectionConfig,
 } from '../api/client';
 import { useToast } from '../components/useToast';
+import { useCanWrite } from '../components/useCanWrite';
 import './Connections.css';
 
 const emptyForm: S3ConnectionConfig = {
@@ -28,6 +29,7 @@ function S3Connections() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { addToast } = useToast();
+  const canWrite = useCanWrite('s3.connections.write');
 
   const [showModal, setShowModal] = useState(false);
   const [editingAlias, setEditingAlias] = useState<string | null>(null);
@@ -191,9 +193,11 @@ function S3Connections() {
           <h1>{t('s3.title')}</h1>
           <p className="page-subtitle">{t('s3.subtitle')}</p>
         </div>
-        <button className="btn btn-primary" onClick={openCreate}>
-          {t('s3.addConnection')}
-        </button>
+        {canWrite && (
+          <button className="btn btn-primary" onClick={openCreate}>
+            {t('s3.addConnection')}
+          </button>
+        )}
       </div>
 
       {connQuery.isLoading && <div className="loading-message">{t('s3.loadingConnections')}</div>}
@@ -253,19 +257,23 @@ function S3Connections() {
                         >
                           {t('s3.browse')}
                         </button>
-                        <button
-                          className="btn btn-sm btn-secondary"
-                          onClick={() => openEdit(conn)}
-                        >
-                          {t('common.edit')}
-                        </button>
-                        <button
-                          className="btn btn-sm btn-danger"
-                          onClick={() => handleDelete(conn.alias)}
-                          disabled={deleteMutation.isPending}
-                        >
-                          {t('common.delete')}
-                        </button>
+                        {canWrite && (
+                          <>
+                            <button
+                              className="btn btn-sm btn-secondary"
+                              onClick={() => openEdit(conn)}
+                            >
+                              {t('common.edit')}
+                            </button>
+                            <button
+                              className="btn btn-sm btn-danger"
+                              onClick={() => handleDelete(conn.alias)}
+                              disabled={deleteMutation.isPending}
+                            >
+                              {t('common.delete')}
+                            </button>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -283,7 +291,7 @@ function S3Connections() {
         </div>
       )}
 
-      {showModal && (
+      {canWrite && showModal && (
         <div className="modal-overlay" onClick={closeModal}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">

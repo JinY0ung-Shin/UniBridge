@@ -11,7 +11,7 @@ import {
   getAuthRoles,
   type KeycloakUser,
 } from '../api/client';
-import { usePermissions } from '../components/usePermissions';
+import { useCanWrite } from '../components/useCanWrite';
 import { useAuth } from '../components/useAuth';
 import './Users.css';
 
@@ -37,9 +37,8 @@ type ModalMode = 'create' | 'role' | 'password';
 function Users() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const { permissions } = usePermissions();
   const { username: currentUsername } = useAuth();
-  const canWrite = permissions.includes('admin.roles.write');
+  const canWrite = useCanWrite('admin.users.write');
 
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');

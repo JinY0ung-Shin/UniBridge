@@ -84,6 +84,25 @@ describe('GatewayRoutes', () => {
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
   });
 
+  it('hides write actions for users with read-only route permission', async () => {
+    const route = makeGatewayRoute();
+    mockedGetGatewayRoutes.mockResolvedValue({ items: [route], total: 1 });
+
+    renderWithProviders(<GatewayRoutes />, {
+      permissions: ['gateway.routes.read'],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('test-route')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByRole('button', { name: '+ Add Route' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Test' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'cURL' })).toBeInTheDocument();
+  });
+
   it('calls deleteGatewayRoute after confirmation', async () => {
     const route = makeGatewayRoute();
     mockedGetGatewayRoutes.mockResolvedValue({ items: [route], total: 1 });

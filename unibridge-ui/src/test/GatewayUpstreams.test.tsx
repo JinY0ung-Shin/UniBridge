@@ -42,6 +42,23 @@ describe('GatewayUpstreams', () => {
     expect(screen.getByText('localhost:3000 (w:1)')).toBeInTheDocument();
   });
 
+  it('hides write actions for users with read-only upstream permission', async () => {
+    const upstream = makeGatewayUpstream();
+    mockedGetGatewayUpstreams.mockResolvedValue({ items: [upstream], total: 1 });
+
+    renderWithProviders(<GatewayUpstreams />, {
+      permissions: ['gateway.upstreams.read'],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('test-upstream')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByRole('button', { name: '+ Add Upstream' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+  });
+
   it('renders empty state when no upstreams', async () => {
     mockedGetGatewayUpstreams.mockResolvedValue({ items: [], total: 0 });
 

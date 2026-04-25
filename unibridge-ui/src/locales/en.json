@@ -39,6 +39,7 @@
     "ok": "OK",
     "previous": "Previous",
     "next": "Next",
+    "retry": "Retry",
     "page": "Page {{page}}",
     "refresh": "Refresh",
     "actions": "Actions",

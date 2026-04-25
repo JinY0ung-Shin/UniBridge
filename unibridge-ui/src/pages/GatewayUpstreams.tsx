@@ -7,6 +7,7 @@ import {
   deleteGatewayUpstream,
   type GatewayUpstream,
 } from '../api/client';
+import { useCanWrite } from '../components/useCanWrite';
 import './GatewayUpstreams.css';
 
 interface NodeEntry {
@@ -37,6 +38,7 @@ function entriesToNodes(entries: NodeEntry[]): Record<string, number> {
 function GatewayUpstreams() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const canWrite = useCanWrite('gateway.upstreams.write');
 
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -150,7 +152,9 @@ function GatewayUpstreams() {
           <h1>{t('gatewayUpstreams.title')}</h1>
           <p className="page-subtitle">{t('gatewayUpstreams.subtitle')}</p>
         </div>
-        <button className="btn btn-primary" onClick={openCreate}>{t('gatewayUpstreams.addUpstream')}</button>
+        {canWrite && (
+          <button className="btn btn-primary" onClick={openCreate}>{t('gatewayUpstreams.addUpstream')}</button>
+        )}
       </div>
 
       {upstreamsQuery.isLoading && <div className="loading-message">{t('gatewayUpstreams.loadingUpstreams')}</div>}
@@ -177,14 +181,14 @@ function GatewayUpstreams() {
                   <td><span className="badge badge-type">{u.type}</span></td>
                   <td className="cell-nodes">{formatNodes(u.nodes || {})}</td>
                   <td>
-                    <div className="action-buttons">
-                      {!u.system && (
-                        <>
-                          <button className="btn btn-sm btn-secondary" onClick={() => openEdit(u)}>{t('common.edit')}</button>
-                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(u)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
-                        </>
-                      )}
-                    </div>
+	                    <div className="action-buttons">
+	                      {canWrite && !u.system && (
+	                        <>
+	                          <button className="btn btn-sm btn-secondary" onClick={() => openEdit(u)}>{t('common.edit')}</button>
+	                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(u)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
+	                        </>
+	                      )}
+	                    </div>
                   </td>
                 </tr>
               ))}
@@ -200,7 +204,7 @@ function GatewayUpstreams() {
         </div>
       )}
 
-      {showModal && (
+      {canWrite && showModal && (
         <div className="modal-overlay" onClick={closeModal}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">

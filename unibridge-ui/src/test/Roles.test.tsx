@@ -74,6 +74,24 @@ describe('Roles', () => {
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
   });
 
+  it('hides write actions for users with read-only role permission', async () => {
+    mockedGetRoles.mockResolvedValue([
+      makeRole({ id: 2, name: 'developer', description: 'Dev', is_system: false, permissions: ['query.execute'] }),
+    ]);
+
+    renderWithProviders(<Roles />, {
+      permissions: ['admin.roles.read'],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('developer')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByRole('button', { name: '+ Add Role' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+  });
+
   it('opens create modal on add button click', async () => {
     renderWithProviders(<Roles />);
 

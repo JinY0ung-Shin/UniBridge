@@ -11,6 +11,7 @@ import {
   type DatabaseConfig,
 } from '../api/client';
 import { useToast } from '../components/useToast';
+import { useCanWrite } from '../components/useCanWrite';
 import './Connections.css';
 
 const DEFAULT_PORTS: Record<string, number> = {
@@ -35,6 +36,7 @@ const emptyForm: DatabaseConfig = {
 function Connections() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const canWrite = useCanWrite('query.databases.write');
 
   const [showModal, setShowModal] = useState(false);
   const [editingAlias, setEditingAlias] = useState<string | null>(null);
@@ -170,9 +172,11 @@ function Connections() {
           <h1>{t('connections.title')}</h1>
           <p className="page-subtitle">{t('connections.subtitle')}</p>
         </div>
-        <button className="btn btn-primary" onClick={openCreate}>
-          {t('connections.addConnection')}
-        </button>
+        {canWrite && (
+          <button className="btn btn-primary" onClick={openCreate}>
+            {t('connections.addConnection')}
+          </button>
+        )}
       </div>
 
       {dbsQuery.isLoading && <div className="loading-message">{t('connections.loadingConnections')}</div>}
@@ -231,19 +235,23 @@ function Connections() {
                         >
                           cURL
                         </button>
-                        <button
-                          className="btn btn-sm btn-secondary"
-                          onClick={() => openEdit(db)}
-                        >
-                          {t('common.edit')}
-                        </button>
-                        <button
-                          className="btn btn-sm btn-danger"
-                          onClick={() => handleDelete(db.alias)}
-                          disabled={deleteMutation.isPending}
-                        >
-                          {t('common.delete')}
-                        </button>
+                        {canWrite && (
+                          <>
+                            <button
+                              className="btn btn-sm btn-secondary"
+                              onClick={() => openEdit(db)}
+                            >
+                              {t('common.edit')}
+                            </button>
+                            <button
+                              className="btn btn-sm btn-danger"
+                              onClick={() => handleDelete(db.alias)}
+                              disabled={deleteMutation.isPending}
+                            >
+                              {t('common.delete')}
+                            </button>
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -262,7 +270,7 @@ function Connections() {
       )}
 
       {/* Modal */}
-      {showModal && (
+      {canWrite && showModal && (
         <div className="modal-overlay" onClick={closeModal}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">

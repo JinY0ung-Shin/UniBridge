@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app import metrics
 from app.models import AuditLog
@@ -35,9 +35,12 @@ async def log_query(
         status=status,
         error_message=error_message,
     )
-    db.add(entry)
+
+    session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)
     try:
-        await db.commit()
+        async with session_factory() as audit_db:
+            audit_db.add(entry)
+            await audit_db.commit()
     except Exception:
         metrics.record_audit_log_write(status="failure")
         raise

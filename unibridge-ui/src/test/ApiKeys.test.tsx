@@ -47,6 +47,23 @@ describe('ApiKeys', () => {
     expect(screen.getByText('Test API key')).toBeInTheDocument();
   });
 
+  it('hides write actions for users with read-only API key permission', async () => {
+    const key = makeApiKey();
+    mockedGetApiKeys.mockResolvedValue([key]);
+
+    renderWithProviders(<ApiKeys />, {
+      permissions: ['apikeys.read'],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('my-app')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByRole('button', { name: '+ Add API Key' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+  });
+
   it('renders empty state when no keys', async () => {
     mockedGetApiKeys.mockResolvedValue([]);
 

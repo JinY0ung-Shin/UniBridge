@@ -61,6 +61,26 @@ describe('Permissions', () => {
     expect(screen.getByText('test-db')).toBeInTheDocument();
   });
 
+  it('disables or hides write controls for users with read-only permission access', async () => {
+    mockedGetPermissions.mockResolvedValue([samplePermission]);
+
+    renderWithProviders(<Permissions />, {
+      permissions: ['query.permissions.read', 'query.databases.read'],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('admin')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByPlaceholderText('Role name')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add Permission' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
+    for (const checkbox of screen.getAllByRole('checkbox')) {
+      expect(checkbox).toBeDisabled();
+    }
+  });
+
   it('renders empty state when no permissions', async () => {
     mockedGetPermissions.mockResolvedValue([]);
 

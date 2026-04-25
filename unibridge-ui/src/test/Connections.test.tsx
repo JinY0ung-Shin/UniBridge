@@ -45,6 +45,24 @@ describe('Connections', () => {
     expect(screen.getByText('localhost:5432')).toBeInTheDocument();
   });
 
+  it('hides write actions for users with read-only database permission', async () => {
+    const db = makeDatabase();
+    mockedGetAdminDatabases.mockResolvedValue([db]);
+
+    renderWithProviders(<Connections />, {
+      permissions: ['query.databases.read'],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('test-db')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByRole('button', { name: '+ Add Connection' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Test' })).toBeInTheDocument();
+  });
+
   it('renders empty state when no databases', async () => {
     mockedGetAdminDatabases.mockResolvedValue([]);
 

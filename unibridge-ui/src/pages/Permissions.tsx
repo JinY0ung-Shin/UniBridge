@@ -9,6 +9,7 @@ import {
   deletePermission,
   type Permission,
 } from '../api/client';
+import { useCanWrite } from '../components/useCanWrite';
 import './Permissions.css';
 
 const OPERATIONS = [
@@ -21,6 +22,7 @@ const OPERATIONS = [
 function Permissions() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const canWrite = useCanWrite('query.permissions.write');
 
   const [newRole, setNewRole] = useState('');
   const [newDbAlias, setNewDbAlias] = useState('');
@@ -122,35 +124,36 @@ function Permissions() {
         <p className="page-subtitle">{t('permissions.subtitle')}</p>
       </div>
 
-      {/* Add new permission row */}
-      <div className="add-perm-row">
-        <input
-          type="text"
-          placeholder={t('permissions.roleName')}
-          value={newRole}
-          onChange={(e) => setNewRole(e.target.value)}
-          className="perm-input"
-        />
-        <select
-          value={newDbAlias}
-          onChange={(e) => setNewDbAlias(e.target.value)}
-          className="perm-select"
-        >
-          <option value="">{t('permissions.selectDatabase')}</option>
-          {dbAliases.map((alias) => (
-            <option key={alias} value={alias}>
-              {alias}
-            </option>
-          ))}
-        </select>
-        <button
-          className="btn btn-primary"
-          onClick={handleAdd}
-          disabled={!newRole.trim() || !newDbAlias || updateMut.isPending}
-        >
-          {t('permissions.addPermission')}
-        </button>
-      </div>
+      {canWrite && (
+        <div className="add-perm-row">
+          <input
+            type="text"
+            placeholder={t('permissions.roleName')}
+            value={newRole}
+            onChange={(e) => setNewRole(e.target.value)}
+            className="perm-input"
+          />
+          <select
+            value={newDbAlias}
+            onChange={(e) => setNewDbAlias(e.target.value)}
+            className="perm-select"
+          >
+            <option value="">{t('permissions.selectDatabase')}</option>
+            {dbAliases.map((alias) => (
+              <option key={alias} value={alias}>
+                {alias}
+              </option>
+            ))}
+          </select>
+          <button
+            className="btn btn-primary"
+            onClick={handleAdd}
+            disabled={!newRole.trim() || !newDbAlias || updateMut.isPending}
+          >
+            {t('permissions.addPermission')}
+          </button>
+        </div>
+      )}
 
       {permsQuery.isLoading && <div className="loading-message">{t('permissions.loadingPermissions')}</div>}
 
@@ -184,7 +187,7 @@ function Permissions() {
                         className="perm-checkbox"
                         checked={perm[op.key]}
                         onChange={() => toggleOperation(perm, op.key)}
-                        disabled={updateMut.isPending}
+	                        disabled={!canWrite || updateMut.isPending}
                       />
                     </td>
                   ))}
@@ -232,24 +235,28 @@ function Permissions() {
                         ) : (
                           <span className="hint">{t('permissions.allTables')}</span>
                         )}
-                        <button
-                          className="btn btn-sm btn-link"
-                          onClick={() => handleEditTables(perm)}
-                        >
-                          {t('common.edit')}
-                        </button>
+	                        {canWrite && (
+	                          <button
+	                            className="btn btn-sm btn-link"
+	                            onClick={() => handleEditTables(perm)}
+	                          >
+	                            {t('common.edit')}
+	                          </button>
+	                        )}
                       </div>
                     )}
                   </td>
-                  <td>
-                    <button
-                      className="btn btn-sm btn-danger"
-                      onClick={() => handleDelete(perm)}
-                      disabled={deleteMut.isPending}
-                    >
-                      {t('common.remove')}
-                    </button>
-                  </td>
+	                  <td>
+	                    {canWrite && (
+	                      <button
+	                        className="btn btn-sm btn-danger"
+	                        onClick={() => handleDelete(perm)}
+	                        disabled={deleteMut.isPending}
+	                      >
+	                        {t('common.remove')}
+	                      </button>
+	                    )}
+	                  </td>
                 </tr>
               ))}
             </tbody>

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.auth import create_token
 from tests.conftest import auth_header
 
 # Valid UUIDs for test user IDs
@@ -85,6 +86,45 @@ class TestListUsers:
     async def test_list_users_forbidden_for_viewer(self, client, viewer_token, kc_mock):
         resp = await client.get("/admin/users", headers=auth_header(viewer_token))
         assert resp.status_code == 403
+
+    async def test_list_users_requires_user_read_not_role_read(
+        self, client, admin_token, kc_mock
+    ):
+        create_role = await client.post(
+            "/admin/roles",
+            json={
+                "name": "role-reader-only",
+                "description": "Can read roles but not users",
+                "permissions": ["admin.roles.read"],
+            },
+            headers=auth_header(admin_token),
+        )
+        assert create_role.status_code == 201
+
+        token = create_token("role-reader", "role-reader-only")
+        resp = await client.get("/admin/users", headers=auth_header(token))
+
+        assert resp.status_code == 403
+
+    async def test_list_users_allows_user_read_without_role_read(
+        self, client, admin_token, kc_mock
+    ):
+        create_role = await client.post(
+            "/admin/roles",
+            json={
+                "name": "user-reader-only",
+                "description": "Can read users but not roles",
+                "permissions": ["admin.users.read"],
+            },
+            headers=auth_header(admin_token),
+        )
+        assert create_role.status_code == 201
+
+        token = create_token("user-reader", "user-reader-only")
+        resp = await client.get("/admin/users", headers=auth_header(token))
+
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

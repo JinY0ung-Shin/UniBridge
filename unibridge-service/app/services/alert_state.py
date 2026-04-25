@@ -39,19 +39,38 @@ class AlertStateManager:
         """
         key = (alert_type, target)
         current = self._states.get(key)
-        current_status = current["status"] if current else "ok"
         new_status = "ok" if is_healthy else "alert"
+        now = datetime.now(timezone.utc).isoformat()
 
-        if current_status == new_status:
+        if current is None:
+            self._states[key] = {
+                "status": new_status,
+                "since": now,
+                "display_target": display_target or target,
+                "alert_notified": is_healthy,
+            }
+            logger.info("Alert state %s/%s initialized as %s", alert_type, target, new_status)
             return None
 
-        now = datetime.now(timezone.utc).isoformat()
+        current_status = current["status"]
+        if current_status == new_status:
+            if new_status == "alert" and not current.get("alert_notified", True):
+                current["alert_notified"] = True
+                logger.info("Alert state %s/%s: initial alert confirmed", alert_type, target)
+                return "triggered"
+            return None
+
+        alert_was_notified = current.get("alert_notified", True)
         self._states[key] = {
             "status": new_status,
             "since": now,
             "display_target": display_target or target,
+            "alert_notified": True,
         }
-        transition = "resolved" if is_healthy else "triggered"
+        if is_healthy and not alert_was_notified:
+            transition = None
+        else:
+            transition = "resolved" if is_healthy else "triggered"
         logger.info("Alert state %s/%s: %s → %s", alert_type, target, current_status, new_status)
         return transition
 

@@ -33,7 +33,7 @@ from tests.conftest import auth_header
 
 class TestAllPermissions:
     def test_all_permissions_has_expected_entries(self):
-        assert len(ALL_PERMISSIONS) == 22
+        assert len(ALL_PERMISSIONS) == 24
 
     def test_all_permissions_are_unique(self):
         assert len(ALL_PERMISSIONS) == len(set(ALL_PERMISSIONS))
@@ -50,6 +50,7 @@ class TestAllPermissions:
         prefixes = {p.rsplit(".", 1)[0] for p in ALL_PERMISSIONS}
         assert "query.databases" in prefixes
         assert "admin.roles" in prefixes
+        assert "admin.users" in prefixes
         assert "gateway.routes" in prefixes
 
 

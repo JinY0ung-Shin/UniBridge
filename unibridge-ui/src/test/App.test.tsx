@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -27,6 +28,7 @@ vi.mock('../api/client', () => ({
       'query.permissions.read',
       'query.audit.read',
       'admin.roles.read',
+      'admin.users.read',
       'gateway.routes.read',
       'gateway.upstreams.read',
       'apikeys.read',
@@ -174,6 +176,29 @@ describe('App', () => {
     expect(screen.queryByText('Audit Logs')).not.toBeInTheDocument();
     expect(screen.queryByText('Roles')).not.toBeInTheDocument();
     expect(screen.queryByText('API Keys')).not.toBeInTheDocument();
+  });
+
+  it('shows retry state when current user permissions fail to load', async () => {
+    const { getCurrentUser } = await import('../api/client');
+    vi.mocked(getCurrentUser).mockRejectedValue(new Error('auth down'));
+
+    renderWithProviders(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to load permissions.')).toBeInTheDocument();
+    });
+
+    vi.mocked(getCurrentUser).mockResolvedValueOnce({
+      username: 'test',
+      role: 'admin',
+      permissions: ['query.databases.read'],
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Connections')).toBeInTheDocument();
+    });
   });
 
   it('redirects to / when navigating to unauthorized route', async () => {

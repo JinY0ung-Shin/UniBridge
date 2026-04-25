@@ -16,6 +16,7 @@ from app.services.alert_state import AlertStateManager
 logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL = 60  # seconds
+_monotonic = time.monotonic
 
 # Route label cache: maps route_id → friendly label (name or uri).
 # Refreshed lazily with a TTL to avoid hammering APISIX on every check.
@@ -50,7 +51,7 @@ async def _refresh_route_labels() -> None:
     except Exception as exc:
         logger.warning("Failed to refresh route labels: %s", exc)
     finally:
-        _ROUTE_LABEL_CACHE_TS = time.monotonic()
+        _ROUTE_LABEL_CACHE_TS = _monotonic()
 
 
 async def _get_route_label(route_id: str) -> str:
@@ -59,7 +60,7 @@ async def _get_route_label(route_id: str) -> str:
     Assumes single-caller per cycle (via `run_single_check`). If the checker
     ever becomes reentrant, wrap the refresh in an asyncio.Lock.
     """
-    if time.monotonic() - _ROUTE_LABEL_CACHE_TS > _ROUTE_LABEL_TTL:
+    if _monotonic() - _ROUTE_LABEL_CACHE_TS > _ROUTE_LABEL_TTL:
         await _refresh_route_labels()
     return _ROUTE_LABEL_CACHE.get(route_id, route_id)
 
@@ -189,6 +190,7 @@ async def _dispatch_alert(
     display = display_target if display_target is not None else target
     rate_str = f"{rate:.1f}" if rate is not None else ""
     threshold_str = f"{threshold:.1f}" if threshold is not None else ""
+    deliveries: list[dict] = []
 
     async with async_session() as db:
         if rule_id is not None:
@@ -208,7 +210,6 @@ async def _dispatch_alert(
         now = datetime.now(timezone.utc).isoformat()
 
         for rule in rules:
-            dispatch_metrics: list[dict[str, str | int]] = []
             rc_result = await db.execute(
                 select(AlertRuleChannel).where(AlertRuleChannel.rule_id == rule.id)
             )
@@ -242,26 +243,53 @@ async def _dispatch_alert(
                     rule_name=rule.name,
                 )
                 headers = json.loads(channel.headers) if channel.headers else None
-                ok, err = await send_webhook(url=channel.webhook_url, payload=payload, headers=headers)
-                dispatch_metrics.append(
+                deliveries.append(
                     {
                         "rule_id": rule.id,
-                        "channel_type": "webhook",
-                        "status": "success" if ok else "failure",
+                        "channel_id": channel.id,
+                        "webhook_url": channel.webhook_url,
+                        "payload": payload,
+                        "headers": headers,
+                        "recipients": mapping.recipients,
                     }
                 )
 
-                history = AlertHistory(
-                    rule_id=rule.id, channel_id=channel.id,
-                    alert_type=alert_type, target=target, message=message,
-                    recipients=mapping.recipients,
-                    success=ok, error_detail=err,
-                )
-                db.add(history)
+    histories: list[AlertHistory] = []
+    dispatch_metrics: list[dict[str, str | int]] = []
+    for delivery in deliveries:
+        ok, err = await send_webhook(
+            url=delivery["webhook_url"],
+            payload=delivery["payload"],
+            headers=delivery["headers"],
+        )
+        histories.append(
+            AlertHistory(
+                rule_id=delivery["rule_id"],
+                channel_id=delivery["channel_id"],
+                alert_type=alert_type,
+                target=target,
+                message=message,
+                recipients=delivery["recipients"],
+                success=ok,
+                error_detail=err,
+            )
+        )
+        dispatch_metrics.append(
+            {
+                "rule_id": delivery["rule_id"],
+                "channel_type": "webhook",
+                "status": "success" if ok else "failure",
+            }
+        )
 
+    if histories:
+        async with async_session() as db:
+            for history in histories:
+                db.add(history)
             await db.commit()
-            for dispatch_metric in dispatch_metrics:
-                metrics.record_alert_dispatch(**dispatch_metric)
+
+    for dispatch_metric in dispatch_metrics:
+        metrics.record_alert_dispatch(**dispatch_metric)
 
 
 async def run_single_check(state: AlertStateManager) -> None:
@@ -368,10 +396,12 @@ async def start_checker(state: AlertStateManager) -> asyncio.Task:
     async def _loop():
         logger.info("Alert checker started (interval=%ds)", CHECK_INTERVAL)
         while True:
+            cycle_start = _monotonic()
             try:
                 await run_single_check(state)
             except Exception:
                 logger.exception("Alert checker cycle failed")
-            await asyncio.sleep(CHECK_INTERVAL)
+            elapsed = _monotonic() - cycle_start
+            await asyncio.sleep(max(0.0, CHECK_INTERVAL - elapsed))
 
     return asyncio.create_task(_loop())

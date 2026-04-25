@@ -48,6 +48,46 @@ class _FailingCommitDb:
         raise RuntimeError("history commit failed")
 
 
+class _CommitCountingDb:
+    def __init__(self):
+        self.commit_count = 0
+        self._results = [
+            _FakeResult([
+                SimpleNamespace(id=7, name="critical rule"),
+                SimpleNamespace(id=8, name="secondary rule"),
+            ]),
+            _FakeResult([SimpleNamespace(channel_id=3, recipients='["ops@example.com"]')]),
+            _FakeResult([
+                SimpleNamespace(
+                    id=3,
+                    enabled=True,
+                    webhook_url="http://hook.example.com/alerts-a",
+                    payload_template='{"text":"{{message}}"}',
+                    headers=None,
+                )
+            ]),
+            _FakeResult([SimpleNamespace(channel_id=4, recipients='["dev@example.com"]')]),
+            _FakeResult([
+                SimpleNamespace(
+                    id=4,
+                    enabled=True,
+                    webhook_url="http://hook.example.com/alerts-b",
+                    payload_template='{"text":"{{message}}"}',
+                    headers=None,
+                )
+            ]),
+        ]
+
+    async def execute(self, _query):
+        return self._results.pop(0)
+
+    def add(self, _entry):
+        return None
+
+    async def commit(self):
+        self.commit_count += 1
+
+
 class _FakeSessionContext:
     def __init__(self, db):
         self.db = db
@@ -63,6 +103,7 @@ class TestAlertChecker:
     @pytest.mark.asyncio
     async def test_db_health_triggered(self):
         state = AlertStateManager()
+        state.update("db_health", "mydb", is_healthy=True)
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
@@ -84,6 +125,7 @@ class TestAlertChecker:
     @pytest.mark.asyncio
     async def test_db_health_resolved(self):
         state = AlertStateManager()
+        state.update("db_health", "mydb", is_healthy=False)
         state.update("db_health", "mydb", is_healthy=False)
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
@@ -121,6 +163,7 @@ class TestAlertChecker:
     @pytest.mark.asyncio
     async def test_upstream_health_triggered(self):
         state = AlertStateManager()
+        state.update("upstream_health", "order-svc", is_healthy=True)
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
@@ -136,6 +179,67 @@ class TestAlertChecker:
             assert state.get_status("upstream_health", "order-svc") == "alert"
             mock_dispatch.assert_called_once()
             assert mock_dispatch.call_args[1]["rule_type"] == "upstream_health"
+
+    @pytest.mark.asyncio
+    async def test_initial_unhealthy_db_cycle_is_silent_then_dispatches_if_still_down(self):
+        state = AlertStateManager()
+
+        with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+             patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
+             patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
+             patch("app.services.alert_checker._dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+            mock_db.return_value = [("boot-db", False)]
+            mock_up.return_value = []
+            mock_err.return_value = []
+
+            await run_single_check(state)
+            mock_dispatch.assert_not_called()
+            assert state.get_status("db_health", "boot-db") == "alert"
+
+            await run_single_check(state)
+            mock_dispatch.assert_called_once()
+            assert mock_dispatch.call_args[1]["alert_type"] == "triggered"
+            assert mock_dispatch.call_args[1]["target"] == "boot-db"
+
+    @pytest.mark.asyncio
+    async def test_initial_unhealthy_db_recovery_does_not_send_resolved_without_trigger(self):
+        state = AlertStateManager()
+
+        with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+             patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
+             patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
+             patch("app.services.alert_checker._dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+            mock_db.side_effect = [[("boot-db", False)], [("boot-db", True)]]
+            mock_up.return_value = []
+            mock_err.return_value = []
+
+            await run_single_check(state)
+            await run_single_check(state)
+
+        mock_dispatch.assert_not_called()
+        assert state.get_status("db_health", "boot-db") == "ok"
+
+    @pytest.mark.asyncio
+    async def test_start_checker_schedules_from_cycle_start_to_avoid_drift(self):
+        from app.services import alert_checker
+
+        state = AlertStateManager()
+        sleep_delays: list[float] = []
+
+        async def stop_after_sleep(delay: float):
+            sleep_delays.append(delay)
+            raise RuntimeError("stop loop")
+
+        with patch("app.services.alert_checker.run_single_check", new_callable=AsyncMock), \
+             patch("app.services.alert_checker._monotonic", side_effect=[100.0, 115.0]), \
+             patch("app.services.alert_checker.asyncio.sleep", new=AsyncMock(side_effect=stop_after_sleep)):
+            task = await alert_checker.start_checker(state)
+            with pytest.raises(RuntimeError, match="stop loop"):
+                await task
+
+        assert sleep_delays == [45.0]
 
 
 class TestDispatchAlertMetrics:
@@ -157,6 +261,24 @@ class TestDispatchAlertMetrics:
                 )
 
         record_metric.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_commits_once_after_all_matching_rules(self):
+        from app.services.alert_checker import _dispatch_alert
+
+        fake_db = _CommitCountingDb()
+
+        with patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)), \
+             patch("app.services.alert_checker.send_webhook", new=AsyncMock(return_value=(True, None))), \
+             patch("app.services.alert_checker.metrics.record_alert_dispatch"):
+            await _dispatch_alert(
+                rule_type="db_health",
+                alert_type="triggered",
+                target="meta",
+                message="metadata db down",
+            )
+
+        assert fake_db.commit_count == 1
 
 
 class TestCheckRouteErrorRate:

@@ -107,14 +107,21 @@ class TestAlertState:
         mgr = AlertStateManager()
         assert mgr.get_status("db_health", "mydb") == "ok"
 
-    def test_transition_ok_to_alert(self):
+    def test_initial_alert_is_silent_and_visible(self):
         mgr = AlertStateManager()
         transition = mgr.update("db_health", "mydb", is_healthy=False)
-        assert transition == "triggered"
+        assert transition is None
         assert mgr.get_status("db_health", "mydb") == "alert"
 
-    def test_no_transition_when_still_alert(self):
+    def test_initial_alert_triggers_when_still_alert_on_next_update(self):
         mgr = AlertStateManager()
+        mgr.update("db_health", "mydb", is_healthy=False)
+        transition = mgr.update("db_health", "mydb", is_healthy=False)
+        assert transition == "triggered"
+
+    def test_no_transition_when_notified_alert_stays_alert(self):
+        mgr = AlertStateManager()
+        mgr.update("db_health", "mydb", is_healthy=False)
         mgr.update("db_health", "mydb", is_healthy=False)
         transition = mgr.update("db_health", "mydb", is_healthy=False)
         assert transition is None
@@ -122,8 +129,16 @@ class TestAlertState:
     def test_transition_alert_to_ok(self):
         mgr = AlertStateManager()
         mgr.update("db_health", "mydb", is_healthy=False)
+        mgr.update("db_health", "mydb", is_healthy=False)
         transition = mgr.update("db_health", "mydb", is_healthy=True)
         assert transition == "resolved"
+        assert mgr.get_status("db_health", "mydb") == "ok"
+
+    def test_initial_alert_recovery_does_not_resolve_unnotified_alert(self):
+        mgr = AlertStateManager()
+        mgr.update("db_health", "mydb", is_healthy=False)
+        transition = mgr.update("db_health", "mydb", is_healthy=True)
+        assert transition is None
         assert mgr.get_status("db_health", "mydb") == "ok"
 
     def test_no_transition_when_still_ok(self):

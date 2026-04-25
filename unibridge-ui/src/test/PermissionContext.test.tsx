@@ -5,6 +5,7 @@ import {
   PermissionProvider,
 } from '../components/PermissionContext';
 import { usePermissions } from '../components/usePermissions';
+import { useCanWrite } from '../components/useCanWrite';
 import { ProtectedRoute } from '../App';
 
 /* ── Helper: render a component that displays the current permissions ── */
@@ -34,6 +35,28 @@ describe('usePermissions', () => {
     render(<LoadedDisplay />);
     expect(screen.getByTestId('count')).toHaveTextContent('0');
     expect(screen.getByTestId('loaded')).toHaveTextContent('false');
+  });
+});
+
+describe('useCanWrite', () => {
+  it('returns true only when the write permission is present', () => {
+    function CanWriteDisplay() {
+      return (
+        <div>
+          <span data-testid="db-write">{String(useCanWrite('query.databases.write'))}</span>
+          <span data-testid="roles-write">{String(useCanWrite('admin.roles.write'))}</span>
+        </div>
+      );
+    }
+
+    render(
+      <PermissionProvider permissions={['query.databases.write']} loaded={true}>
+        <CanWriteDisplay />
+      </PermissionProvider>,
+    );
+
+    expect(screen.getByTestId('db-write')).toHaveTextContent('true');
+    expect(screen.getByTestId('roles-write')).toHaveTextContent('false');
   });
 });
 

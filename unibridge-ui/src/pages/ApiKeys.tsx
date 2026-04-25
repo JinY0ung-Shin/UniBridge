@@ -11,6 +11,7 @@ import {
   type ApiKey,
 } from '../api/client';
 import { useToast } from '../components/useToast';
+import { useCanWrite } from '../components/useCanWrite';
 import './ApiKeys.css';
 
 function generateKey(): string {
@@ -37,6 +38,7 @@ function ApiKeys() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { addToast } = useToast();
+  const canWrite = useCanWrite('apikeys.write');
 
   const [showModal, setShowModal] = useState(false);
   const [editingName, setEditingName] = useState<string | null>(null);
@@ -187,7 +189,9 @@ function ApiKeys() {
           <h1>{t('apiKeys.title')}</h1>
           <p className="page-subtitle">{t('apiKeys.subtitle')}</p>
         </div>
-        <button className="btn btn-primary" onClick={openCreate}>{t('apiKeys.addKey')}</button>
+        {canWrite && (
+          <button className="btn btn-primary" onClick={openCreate}>{t('apiKeys.addKey')}</button>
+        )}
       </div>
 
       {keysQuery.isLoading && <div className="loading-message">{t('apiKeys.loadingKeys')}</div>}
@@ -214,12 +218,14 @@ function ApiKeys() {
                   <td className="cell-key">{k.api_key || '\u2014'}</td>
                   <td><div className="cell-tags">{renderTags(k.allowed_databases)}</div></td>
                   <td><div className="cell-tags">{renderTags(k.allowed_routes)}</div></td>
-                  <td>
-                    <div className="action-buttons">
-                      <button className="btn btn-sm btn-secondary" onClick={() => openEdit(k)}>{t('common.edit')}</button>
-                      <button className="btn btn-sm btn-danger" onClick={() => handleDelete(k)} disabled={deleteMut.isPending}>{t('common.delete')}</button>
-                    </div>
-                  </td>
+	                  <td>
+	                    {canWrite && (
+	                      <div className="action-buttons">
+	                        <button className="btn btn-sm btn-secondary" onClick={() => openEdit(k)}>{t('common.edit')}</button>
+	                        <button className="btn btn-sm btn-danger" onClick={() => handleDelete(k)} disabled={deleteMut.isPending}>{t('common.delete')}</button>
+	                      </div>
+	                    )}
+	                  </td>
                 </tr>
               ))}
             </tbody>
@@ -234,7 +240,7 @@ function ApiKeys() {
         </div>
       )}
 
-      {showModal && (
+      {canWrite && showModal && (
         <div className="modal-overlay" onClick={createdKey ? undefined : closeModal}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
