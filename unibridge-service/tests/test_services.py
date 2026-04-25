@@ -107,6 +107,34 @@ class TestDetectStatementType:
         sql = "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a, b"
         assert detect_statement_type(sql) == "select"
 
+    def test_with_dml_word_inside_line_comment_stays_select(self):
+        sql = "WITH cte AS (SELECT 1 -- INSERT ignored\n) SELECT * FROM cte"
+        assert detect_statement_type(sql) == "select"
+
+    def test_with_dml_word_inside_unterminated_line_comment_stays_select(self):
+        sql = "WITH cte AS (SELECT 1 -- INSERT ignored"
+        assert detect_statement_type(sql) == "select"
+
+    def test_with_dml_word_inside_block_comment_stays_select(self):
+        sql = "WITH cte AS (SELECT 1 /* UPDATE ignored */) SELECT * FROM cte"
+        assert detect_statement_type(sql) == "select"
+
+    def test_with_dml_word_inside_unterminated_block_comment_stays_select(self):
+        sql = "WITH cte AS (SELECT 1 /* UPDATE ignored"
+        assert detect_statement_type(sql) == "select"
+
+    def test_with_dml_word_inside_string_stays_select(self):
+        sql = "WITH cte AS (SELECT 'DELETE ignored') SELECT * FROM cte"
+        assert detect_statement_type(sql) == "select"
+
+    def test_with_dml_word_inside_double_quoted_identifier_stays_select(self):
+        sql = 'WITH cte AS (SELECT "INSERT" FROM t) SELECT * FROM cte'
+        assert detect_statement_type(sql) == "select"
+
+    def test_with_dml_word_inside_dollar_quote_stays_select(self):
+        sql = "WITH cte AS (SELECT $tag$UPDATE ignored$tag$) SELECT * FROM cte"
+        assert detect_statement_type(sql) == "select"
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # query_executor: check_multi_statement
@@ -154,6 +182,27 @@ class TestCheckMultiStatement:
 
     def test_semicolon_at_start(self):
         assert check_multi_statement("; SELECT 1") is True
+
+    def test_semicolon_inside_line_comment_is_allowed(self):
+        assert check_multi_statement("-- ignored ;\nSELECT 1") is False
+
+    def test_semicolon_inside_unterminated_line_comment_is_allowed(self):
+        assert check_multi_statement("-- ignored ;") is False
+
+    def test_semicolon_inside_block_comment_is_allowed(self):
+        assert check_multi_statement("/* ignored ; */ SELECT 1") is False
+
+    def test_semicolon_inside_unterminated_block_comment_is_allowed(self):
+        assert check_multi_statement("/* ignored ;") is False
+
+    def test_semicolon_inside_double_quoted_identifier_is_allowed(self):
+        assert check_multi_statement('SELECT "a;b" FROM t') is False
+
+    def test_semicolon_inside_dollar_quoted_string_is_allowed(self):
+        assert check_multi_statement("SELECT $tag$a;b$tag$") is False
+
+    def test_semicolon_inside_unterminated_dollar_quote_is_allowed(self):
+        assert check_multi_statement("SELECT $tag$a;b") is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

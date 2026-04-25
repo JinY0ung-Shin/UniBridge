@@ -141,11 +141,18 @@ async def _get_jwks() -> dict:
             return _jwks_cache
         ssl_verify: str | bool = settings.SSL_CA_CERT_PATH or settings.SSL_VERIFY
         async with httpx.AsyncClient(timeout=10.0, verify=ssl_verify) as client:
-            resp = await client.get(settings.KEYCLOAK_JWKS_URL)
-            resp.raise_for_status()
-            _jwks_cache = resp.json()
-            _jwks_cache_ts = time.time()
-            return _jwks_cache
+            try:
+                resp = await client.get(settings.KEYCLOAK_JWKS_URL)
+                resp.raise_for_status()
+            except Exception:
+                if _jwks_cache:
+                    logger.warning("Using cached JWKS after refresh failure", exc_info=True)
+                    return _jwks_cache
+                raise
+            else:
+                _jwks_cache = resp.json()
+                _jwks_cache_ts = time.time()
+                return _jwks_cache
 
 
 async def _verify_keycloak_token(token: str) -> CurrentUser:

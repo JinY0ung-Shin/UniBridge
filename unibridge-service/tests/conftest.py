@@ -7,7 +7,7 @@ import os
 os.environ.update({
     "META_DB_URL": "sqlite+aiosqlite:///:memory:",
     "ENCRYPTION_KEY": "test-key-for-testing-only-32bytes!",
-    "JWT_SECRET": "test-jwt-secret",
+    "JWT_SECRET": "test-jwt-secret-for-testing-32bytes",
     "ENABLE_DEV_TOKEN_ENDPOINT": "true",
     "APISIX_ADMIN_URL": "http://localhost:19180",
     "APISIX_ADMIN_KEY": "test-apisix-key",
@@ -16,7 +16,6 @@ os.environ.update({
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.auth import ALL_PERMISSIONS, create_token, invalidate_permission_cache
@@ -30,6 +29,14 @@ async def engine():
     eng = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    yield eng
+    await eng.dispose()
+
+
+@pytest.fixture
+async def engine_sqlite():
+    """Plain SQLite async engine for service-level integration tests."""
+    eng = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     yield eng
     await eng.dispose()
 

@@ -14,8 +14,6 @@ from app.auth import (
     ALL_PERMISSIONS,
     CurrentUser,
     _CACHE_TTL,
-    _perm_cache,
-    _perm_cache_ts,
     create_token,
     get_current_user,
     get_role_permissions,
@@ -23,7 +21,7 @@ from app.auth import (
     require_permission,
 )
 from app.config import settings
-from app.models import Base, Role, RolePermission
+from app.models import Role, RolePermission
 
 from tests.conftest import auth_header
 
@@ -159,7 +157,7 @@ class TestGetCurrentUser:
         from fastapi import HTTPException
 
         payload = {"sub": "alice", "role": "admin", "exp": time.time() + 3600}
-        token = jwt.encode(payload, "wrong-secret", algorithm="HS256")
+        token = jwt.encode(payload, "wrong-secret-for-testing-32bytes", algorithm="HS256")
         creds = _make_credentials(token)
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(credentials=creds)
@@ -344,8 +342,6 @@ class TestCacheTTLBehavior:
             # Simulate expired outer check but fresh inner check:
             # set _perm_cache_ts to just before TTL boundary, then patch time.time
             # so the outer check sees expiry but the inner check sees fresh.
-            original_ts = auth_mod._perm_cache_ts
-
             # Force outer check to fail (stale)
             auth_mod._perm_cache_ts = time.time() - _CACHE_TTL - 1
 

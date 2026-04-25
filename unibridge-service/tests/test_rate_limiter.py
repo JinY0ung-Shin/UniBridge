@@ -117,7 +117,7 @@ def _request_with_authorization(value: str) -> Request:
 def test_extract_username_does_not_trust_unverified_bearer_claims():
     forged_token = jwt.encode(
         {"sub": "victim-user", "role": "admin"},
-        "attacker-controlled-secret",
+        "attacker-controlled-secret-for-testing",
         algorithm="HS256",
     )
 
