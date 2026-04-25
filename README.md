@@ -201,13 +201,17 @@ Retention, path overrides, and the full restore runbook live in [`backup/README.
 
 ## Timezone Migration (one-time, after upgrading to the UTC-aware timestamp fix)
 
-Run once after deploying the timezone-consistency changes to normalize legacy timestamp rows (pre-fix rows were stored at second precision without an offset; post-fix rows use microsecond precision and SQLite compares TEXT columns lexicographically, so the older shorter strings are excluded from boundary `>=` filters):
+The timezone-consistency fix changes the on-disk format of every `DateTime` column in the meta DB. Pre-fix rows were stored at second precision without an offset; post-fix rows use microsecond precision. SQLite compares TEXT columns lexicographically, so the older shorter strings get excluded from boundary `>=` filters until they are normalized.
+
+Run the following sequence on the deploy host **once** when upgrading past this change:
 
 ```bash
+git pull
+docker compose up -d --build unibridge-service unibridge-ui
 docker compose exec unibridge-service python -m scripts.backfill_utc_timestamps
 ```
 
-The script introspects every `UtcDateTime` column and rewrites legacy values to the canonical microsecond form. It is idempotent — re-running it finds 0 rows to update.
+The third command introspects every `UtcDateTime` column, skips tables that don't yet exist in the DB, and rewrites legacy values to the canonical microsecond form. It is idempotent — re-running it finds 0 rows to update.
 
 > **SQLite-only.** The lexicographic-compare bug fixed by this script is specific to SQLite. PostgreSQL / MSSQL deployments store datetimes as native timestamp types and do not need this step; the script will hard-stop with `RuntimeError` if run against a non-SQLite backend.
 
