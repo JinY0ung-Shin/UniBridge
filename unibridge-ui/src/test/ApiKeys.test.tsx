@@ -6,26 +6,30 @@ vi.mock('../api/client', () => ({
   deleteApiKey: vi.fn(),
   getAdminDatabases: vi.fn(),
   getGatewayRoutes: vi.fn(),
+  getS3Connections: vi.fn(),
 }));
 
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getApiKeys, getAdminDatabases, getGatewayRoutes, createApiKey, deleteApiKey } from '../api/client';
+import { getApiKeys, getAdminDatabases, getGatewayRoutes, getS3Connections, createApiKey, deleteApiKey } from '../api/client';
 import ApiKeys from '../pages/ApiKeys';
-import { renderWithProviders, makeApiKey, makeDatabase, makeGatewayRoute } from './helpers';
+import { renderWithProviders, makeApiKey, makeDatabase, makeGatewayRoute, makeS3Connection } from './helpers';
 
 const mockedGetApiKeys = vi.mocked(getApiKeys);
 const mockedGetAdminDatabases = vi.mocked(getAdminDatabases);
 const mockedGetGatewayRoutes = vi.mocked(getGatewayRoutes);
+const mockedGetS3Connections = vi.mocked(getS3Connections);
 const mockedCreateApiKey = vi.mocked(createApiKey);
 const mockedDeleteApiKey = vi.mocked(deleteApiKey);
 
 describe('ApiKeys', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     mockedGetApiKeys.mockResolvedValue([]);
     mockedGetAdminDatabases.mockResolvedValue([]);
     mockedGetGatewayRoutes.mockResolvedValue({ items: [], total: 0 });
+    mockedGetS3Connections.mockResolvedValue([]);
   });
 
   it('renders loading state', () => {
@@ -167,6 +171,44 @@ describe('ApiKeys', () => {
     expect(within(databaseOption!).getByText('postgres')).toHaveClass('tag');
     expect(within(routeOption!).getByText('Users API')).toHaveClass('checkbox-list-label');
     expect(within(routeOption!).getByText('/api/users/very/long/path/*')).toHaveClass('tag');
+  });
+
+  it('includes S3 connection aliases in allowed databases when creating a key', async () => {
+    mockedGetAdminDatabases.mockResolvedValue([
+      makeDatabase({ alias: 'postgres', db_type: 'postgres' }),
+    ]);
+    mockedGetS3Connections.mockResolvedValue([
+      makeS3Connection({ alias: 'lakes3' }),
+    ]);
+    mockedCreateApiKey.mockResolvedValue({
+      name: 'new-app',
+      description: '',
+      api_key: 'key-secret-12345',
+      key_created: true,
+      allowed_databases: ['postgres', 'lakes3'],
+      allowed_routes: [],
+      created_at: '2026-04-11T00:00:00Z',
+    });
+
+    renderWithProviders(<ApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No API keys')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
+    await userEvent.type(screen.getByPlaceholderText('my-app'), 'new-app');
+    await userEvent.click(screen.getByRole('checkbox', { name: /lakes3/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(mockedCreateApiKey).toHaveBeenCalledWith(
+        expect.objectContaining({
+          allowed_databases: ['lakes3'],
+        }),
+        expect.anything(),
+      );
+    });
   });
 
   it('calls createApiKey and shows created key', async () => {

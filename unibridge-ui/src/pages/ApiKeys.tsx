@@ -8,6 +8,7 @@ import {
   deleteApiKey,
   getAdminDatabases,
   getGatewayRoutes,
+  getS3Connections,
   type ApiKey,
 } from '../api/client';
 import { useToast } from '../components/useToast';
@@ -49,6 +50,7 @@ function ApiKeys() {
   const keysQuery = useQuery({ queryKey: ['api-keys'], queryFn: getApiKeys });
   const dbsQuery = useQuery({ queryKey: ['admin-databases'], queryFn: getAdminDatabases });
   const routesQuery = useQuery({ queryKey: ['gateway-routes'], queryFn: getGatewayRoutes });
+  const s3ConnectionsQuery = useQuery({ queryKey: ['s3-connections'], queryFn: getS3Connections });
 
   const createMut = useMutation({
     mutationFn: createApiKey,
@@ -85,6 +87,7 @@ function ApiKeys() {
   const keys = keysQuery.data ?? [];
   const databases = dbsQuery.data ?? [];
   const routes = routesQuery.data?.items ?? [];
+  const s3Connections = s3ConnectionsQuery.data ?? [];
 
   function openCreate() {
     setForm({ ...emptyForm, apiKey: generateKey() });
@@ -298,9 +301,9 @@ function ApiKeys() {
                   <div className="form-group form-group--full">
                     <label>{t('apiKeys.allowedDatabases')}</label>
                     <div className="checkbox-list">
-                      {databases.length === 0 && <div className="checkbox-list-empty">{t('apiKeys.noneSelected')}</div>}
+                      {databases.length === 0 && s3Connections.length === 0 && <div className="checkbox-list-empty">{t('apiKeys.noneSelected')}</div>}
                       {databases.map((db) => (
-                        <label key={db.alias} className="checkbox-list-item">
+                        <label key={`db-${db.alias}`} className="checkbox-list-item">
                           <input
                             type="checkbox"
                             checked={form.allowedDatabases.includes(db.alias)}
@@ -308,6 +311,17 @@ function ApiKeys() {
                           />
                           <span className="checkbox-list-label">{db.alias}</span>
                           <span className="tag">{db.db_type}</span>
+                        </label>
+                      ))}
+                      {s3Connections.map((conn) => (
+                        <label key={`s3-${conn.alias}`} className="checkbox-list-item">
+                          <input
+                            type="checkbox"
+                            checked={form.allowedDatabases.includes(conn.alias)}
+                            onChange={() => toggleDb(conn.alias)}
+                          />
+                          <span className="checkbox-list-label">{conn.alias}</span>
+                          <span className="tag">S3</span>
                         </label>
                       ))}
                     </div>
