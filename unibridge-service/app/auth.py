@@ -21,7 +21,7 @@ from app.database import get_db
 
 logger = logging.getLogger(__name__)
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 # ── All permissions ─────────────────────────────────────────────────────────
 
@@ -233,13 +233,19 @@ async def _verify_keycloak_token(token: str) -> CurrentUser:
 # ── Unified user dependency ────────────────────────────────────────────────
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> CurrentUser:
     """FastAPI dependency: verify JWT and return the current user.
 
     Uses Keycloak RS256 verification when KEYCLOAK_ISSUER_URL is configured,
     falls back to HS256 shared-secret for dev/testing.
     """
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     token = credentials.credentials
 
     if settings.KEYCLOAK_ISSUER_URL:
