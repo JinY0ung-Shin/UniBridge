@@ -9,6 +9,10 @@ certs/
 .superpowers/
 docs/superpowers/
 **/.coverage
+**/coverage.json
+**/coverage.xml
+**/htmlcov/
+unibridge-ui/coverage/
 .worktrees/
 # Runtime backup output (created by backup/backup.sh). The scripts themselves
 # live in backup/ and MUST be committed.
