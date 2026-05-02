@@ -18,6 +18,7 @@ __all__ = [
     "check_permission",
     "detect_statement_type",
     "execute_clickhouse_query",
+    "execute_neo4j_query",
     "execute_query",
 ]
 
@@ -390,3 +391,60 @@ async def execute_clickhouse_query(
     except asyncio.TimeoutError:
         logger.warning("Query timed out after %ds", effective_timeout)
         raise
+
+
+# ── Neo4j execution path ─────────────────────────────────────────────────────
+
+
+def _execute_neo4j_sync(
+    driver: Any,
+    database: str,
+    query: str,
+    params: dict[str, Any] | None,
+    limit: int,
+) -> QueryResponse:
+    """Core execution logic for Neo4j via the official driver."""
+    start = time.monotonic()
+    with driver.session(database=database) as session:
+        result = session.run(query, **(params or {}))
+        columns = list(result.keys())
+        rows: list[list[Any]] = []
+        truncated = False
+        for index, record in enumerate(result):
+            if index >= limit:
+                truncated = True
+                break
+            rows.append(list(record.values()))
+
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    return QueryResponse(
+        columns=columns,
+        rows=rows,
+        row_count=len(rows),
+        truncated=truncated,
+        elapsed_ms=elapsed_ms,
+    )
+
+
+async def execute_neo4j_query(
+    driver: Any,
+    database: str,
+    query: str,
+    params: dict[str, Any] | None = None,
+    limit: int | None = None,
+    timeout: int | None = None,
+) -> QueryResponse:
+    """Execute a Neo4j Cypher query with timeout and row limit."""
+    effective_limit = limit or settings.DEFAULT_ROW_LIMIT
+    effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
+    return await asyncio.wait_for(
+        asyncio.to_thread(
+            _execute_neo4j_sync,
+            driver,
+            database,
+            query,
+            params,
+            effective_limit,
+        ),
+        timeout=effective_timeout,
+    )
