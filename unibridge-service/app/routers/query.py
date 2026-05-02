@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -17,7 +18,7 @@ from app.schemas import DBConnectionResponse, HealthResponse, QueryRequest, Quer
 from app.middleware.rate_limiter import rate_limiter
 from app.services.audit import log_query
 from app.services.connection_manager import connection_manager
-from app.services.query_executor import check_permission, detect_statement_type, execute_clickhouse_query, execute_query
+from app.services.query_executor import check_permission, detect_statement_type, execute_clickhouse_query, execute_neo4j_query, execute_query
 from app.services.settings_manager import settings_manager
 from app.services.sql_validator import validate_sql
 from app.services.table_access import check_table_access, extract_tables
@@ -25,6 +26,88 @@ from app.services.table_access import check_table_access, extract_tables
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Query"])
+
+
+def _strip_neo4j_literals_and_comments(sql: str) -> str:
+    result: list[str] = []
+    i = 0
+    length = len(sql)
+    while i < length:
+        char = sql[i]
+        if char == "/" and i + 1 < length and sql[i + 1] == "/":
+            i = sql.find("\n", i)
+            if i == -1:
+                break
+            result.append(" ")
+            continue
+        if char == "/" and i + 1 < length and sql[i + 1] == "*":
+            end = sql.find("*/", i + 2)
+            if end == -1:
+                break
+            result.append(" ")
+            i = end + 2
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            i += 1
+            while i < length:
+                if sql[i] == "\\":
+                    i += 2
+                    continue
+                if sql[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            result.append("''")
+            continue
+        result.append(char)
+        i += 1
+    return "".join(result)
+
+
+def _contains_neo4j_clause(sql: str, pattern: str) -> bool:
+    return re.search(rf"(?<!\S){pattern}\b", sql) is not None
+
+
+def _detect_neo4j_statement_type(sql: str) -> str:
+    normalized = re.sub(
+        r"\s+",
+        " ",
+        _strip_neo4j_literals_and_comments(sql).strip(),
+    ).upper()
+    if _contains_neo4j_clause(
+        normalized,
+        r"DETACH\s+DELETE",
+    ) or _contains_neo4j_clause(normalized, "DELETE"):
+        return "delete"
+    if _contains_neo4j_clause(normalized, "SET") or _contains_neo4j_clause(
+        normalized,
+        "REMOVE",
+    ):
+        return "update"
+    if _contains_neo4j_clause(normalized, "CREATE") or _contains_neo4j_clause(
+        normalized,
+        "MERGE",
+    ):
+        return "insert"
+    if (
+        _contains_neo4j_clause(normalized, r"LOAD\s+CSV")
+        or _contains_neo4j_clause(normalized, "CALL")
+        or _contains_neo4j_clause(normalized, "DROP")
+    ):
+        return "execute"
+    if re.match(
+        r"^(OPTIONAL\s+MATCH\b.*\bRETURN\b|MATCH\b.*\bRETURN\b|RETURN\b|WITH\b.*\bRETURN\b|UNWIND\b.*\bRETURN\b)",
+        normalized,
+    ):
+        return "select"
+    return "unknown"
+
+
+def _detect_statement_type(sql: str, db_type: str) -> str:
+    if db_type == "neo4j":
+        return _detect_neo4j_statement_type(sql)
+    return detect_statement_type(sql)
 
 
 @router.post("/query/execute", response_model=QueryResponse)
@@ -73,12 +156,17 @@ async def execute(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Database '{req.database}' is not registered or not connected",
         )
+    statement_type = _detect_statement_type(req.sql, db_type)
+    if db_type == "neo4j" and statement_type != "select":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Neo4j queries are read-only",
+        )
 
     # 2. Check per-database permissions
     perm = None
     if isinstance(user, ApiKeyUser):
         # API key users: only SELECT allowed
-        statement_type = detect_statement_type(req.sql)
         if statement_type != "select":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -86,7 +174,6 @@ async def execute(
             )
     else:
         # JWT user: role-based per-DB permissions
-        statement_type = detect_statement_type(req.sql)
         user_perms = await get_role_permissions(db, user.role)
         if "query.databases.write" not in user_perms:
             result = await db.execute(
@@ -127,7 +214,7 @@ async def execute(
         if "query.databases.write" not in user_perms_for_tables and perm is not None:
             allowed_tables_raw = perm.allowed_tables
             allowed_tables = json.loads(allowed_tables_raw) if allowed_tables_raw else None
-            if allowed_tables is not None:
+            if allowed_tables is not None and db_type != "neo4j":
                 referenced = extract_tables(req.sql, db_type=db_type)
                 table_error = check_table_access(referenced, allowed_tables)
                 if table_error:
@@ -151,6 +238,16 @@ async def execute(
             response = await execute_clickhouse_query(
                 client=ch_client, sql=req.sql, params=req.params,
                 limit=req.limit, timeout=req.timeout,
+            )
+        elif db_type == "neo4j":
+            neo4j_driver = connection_manager.get_neo4j_driver(req.database)
+            response = await execute_neo4j_query(
+                driver=neo4j_driver,
+                database=connection_manager.get_database_name(req.database),
+                query=req.sql,
+                params=req.params,
+                limit=req.limit,
+                timeout=req.timeout,
             )
         else:
             engine = connection_manager.get_engine(req.database)

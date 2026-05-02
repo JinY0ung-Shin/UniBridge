@@ -12,5 +12,6 @@ cryptography==47.0.0
 httpx==0.28.1
 prometheus-fastapi-instrumentator>=7.0,<8
 clickhouse-connect==0.15.1
+neo4j==5.28.2
 sqlglot==30.6.0
 boto3>=1.35.0,<2

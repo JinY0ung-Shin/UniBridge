@@ -33,6 +33,17 @@ CLICKHOUSE_PAYLOAD = {
     "secure": False,
 }
 
+NEO4J_PAYLOAD = {
+    "alias": "graph",
+    "db_type": "neo4j",
+    "host": "neo4j.internal",
+    "port": 7687,
+    "database": "neo4j",
+    "username": "neo4j",
+    "password": "secret",
+    "protocol": "bolt",
+}
+
 
 def _make_db_payload(**overrides) -> dict:
     """Return a fresh DB connection payload with optional overrides."""
@@ -155,6 +166,42 @@ class TestCreateConnection:
         assert data["secure"] is False
 
     @pytest.mark.asyncio
+    async def test_create_neo4j_connection_success(self, client, admin_token):
+        with _cm_patch():
+            resp = await client.post(
+                "/admin/query/databases",
+                json=NEO4J_PAYLOAD,
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["db_type"] == "neo4j"
+        assert data["protocol"] == "bolt"
+        assert data["secure"] is None
+
+    @pytest.mark.asyncio
+    async def test_create_neo4j_missing_protocol_returns_400(self, client, admin_token):
+        with _cm_patch():
+            resp = await client.post(
+                "/admin/query/databases",
+                json={key: value for key, value in NEO4J_PAYLOAD.items() if key != "protocol"},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 400
+        assert "require protocol" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_create_neo4j_with_secure_returns_400(self, client, admin_token):
+        with _cm_patch():
+            resp = await client.post(
+                "/admin/query/databases",
+                json={**NEO4J_PAYLOAD, "secure": True},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 400
+        assert "secure" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
     async def test_create_postgres_with_clickhouse_fields_returns_400(self, client, admin_token):
         with _cm_patch():
             resp = await client.post(
@@ -177,6 +224,28 @@ class TestCreateConnection:
             )
         assert resp.status_code == 400
         assert "same transport" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_create_clickhouse_with_neo4j_protocol_returns_400(self, client, admin_token):
+        with _cm_patch():
+            resp = await client.post(
+                "/admin/query/databases",
+                json={**CLICKHOUSE_PAYLOAD, "protocol": "bolt", "secure": False},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 400
+        assert "clickhouse protocol" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_create_neo4j_with_clickhouse_protocol_returns_400(self, client, admin_token):
+        with _cm_patch():
+            resp = await client.post(
+                "/admin/query/databases",
+                json={**NEO4J_PAYLOAD, "protocol": "http"},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 400
+        assert "neo4j protocol" in resp.json()["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_create_clickhouse_missing_protocol_or_secure_returns_400(

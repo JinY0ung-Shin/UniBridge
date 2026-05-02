@@ -119,6 +119,79 @@ class TestQueryExecute:
         assert data["row_count"] == 1
         mock_exec.assert_awaited_once()
 
+    async def test_admin_executes_neo4j_query_by_alias(self, client, admin_token):
+        mock_driver = MagicMock()
+        with patch(
+            "app.routers.query.connection_manager.get_db_type",
+            return_value="neo4j",
+        ), patch(
+            "app.routers.query.connection_manager.get_neo4j_driver",
+            return_value=mock_driver,
+        ), patch(
+            "app.routers.query.connection_manager.get_database_name",
+            return_value="neo4j",
+        ), patch(
+            "app.routers.query.execute_neo4j_query",
+            new_callable=AsyncMock,
+            return_value=_mock_query_response(),
+        ) as mock_exec, patch(
+            "app.routers.query.log_query",
+            new_callable=AsyncMock,
+        ):
+            resp = await client.post(
+                "/query/execute",
+                json={"database": "graph", "sql": "MATCH (n) RETURN n"},
+                headers=auth_header(admin_token),
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["row_count"] == 1
+        mock_exec.assert_awaited_once_with(
+            driver=mock_driver,
+            database="neo4j",
+            query="MATCH (n) RETURN n",
+            params=None,
+            limit=None,
+            timeout=None,
+        )
+
+    @pytest.mark.parametrize(
+        "cypher",
+        [
+            "CREATE (:User {name: 'x'})",
+            "MERGE (:User {name: 'x'})",
+            "MATCH (n) SET n.name = 'x' RETURN n",
+            "MATCH (n) REMOVE n.name RETURN n",
+            "MATCH (n) DELETE n",
+            "DROP INDEX user_name IF EXISTS",
+            "LOAD CSV FROM 'file:///users.csv' AS row RETURN row",
+            "CALL db.labels() YIELD label RETURN label",
+        ],
+    )
+    async def test_admin_cannot_execute_mutating_neo4j_query(
+        self, client, admin_token, cypher
+    ):
+        with patch(
+            "app.routers.query.connection_manager.get_db_type",
+            return_value="neo4j",
+        ), patch(
+            "app.routers.query.connection_manager.get_neo4j_driver",
+            return_value=MagicMock(),
+        ), patch(
+            "app.routers.query.execute_neo4j_query",
+            new_callable=AsyncMock,
+            return_value=_mock_query_response(),
+        ) as mock_exec:
+            resp = await client.post(
+                "/query/execute",
+                json={"database": "graph", "sql": cypher},
+                headers=auth_header(admin_token),
+            )
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Neo4j queries are read-only"
+        mock_exec.assert_not_awaited()
+
     async def test_successful_query_survives_audit_write_failure(
         self, client, admin_token
     ):
@@ -213,6 +286,207 @@ class TestQueryExecute:
 
         assert resp.status_code == 200
         assert resp.json()["row_count"] == 1
+
+    async def test_developer_can_execute_neo4j_match_with_permission_entry(
+        self, client, admin_token, developer_token
+    ):
+        with patch(
+            "app.routers.admin.connection_manager.add_connection",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.routers.admin.connection_manager.get_status",
+            return_value={"status": "registered"},
+        ):
+            resp = await client.post(
+                "/admin/query/databases",
+                json={
+                    "alias": "graph",
+                    "db_type": "neo4j",
+                    "host": "neo4j.internal",
+                    "port": 7687,
+                    "database": "neo4j",
+                    "username": "neo4j",
+                    "password": "pass",
+                    "protocol": "bolt",
+                },
+                headers=auth_header(admin_token),
+            )
+            assert resp.status_code == 201
+
+        resp = await client.put(
+            "/admin/query/permissions",
+            json={
+                "role": "developer",
+                "db_alias": "graph",
+                "allow_select": True,
+                "allow_insert": False,
+                "allow_update": False,
+                "allow_delete": False,
+            },
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 200
+
+        mock_driver = MagicMock()
+        with patch(
+            "app.routers.query.connection_manager.get_db_type",
+            return_value="neo4j",
+        ), patch(
+            "app.routers.query.connection_manager.get_neo4j_driver",
+            return_value=mock_driver,
+        ), patch(
+            "app.routers.query.connection_manager.get_database_name",
+            return_value="neo4j",
+        ), patch(
+            "app.routers.query.execute_neo4j_query",
+            new_callable=AsyncMock,
+            return_value=_mock_query_response(),
+        ) as mock_exec, patch(
+            "app.routers.query.log_query",
+            new_callable=AsyncMock,
+        ):
+            resp = await client.post(
+                "/query/execute",
+                json={"database": "graph", "sql": "MATCH (n) RETURN n"},
+                headers=auth_header(developer_token),
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["row_count"] == 1
+        mock_exec.assert_awaited_once_with(
+            driver=mock_driver,
+            database="neo4j",
+            query="MATCH (n) RETURN n",
+            params=None,
+            limit=None,
+            timeout=None,
+        )
+
+    @pytest.mark.parametrize(
+        "cypher",
+        [
+            "MATCH (n) DELETE n",
+            "MATCH (n) SET n.name = 'x' RETURN n",
+            "CREATE (:User {name: 'x'})",
+        ],
+    )
+    async def test_developer_select_only_cannot_execute_mutating_neo4j_query(
+        self, client, admin_token, developer_token, cypher
+    ):
+        with patch(
+            "app.routers.admin.connection_manager.add_connection",
+            new_callable=AsyncMock,
+        ), patch(
+            "app.routers.admin.connection_manager.get_status",
+            return_value={"status": "registered"},
+        ):
+            resp = await client.post(
+                "/admin/query/databases",
+                json={
+                    "alias": "graph",
+                    "db_type": "neo4j",
+                    "host": "neo4j.internal",
+                    "port": 7687,
+                    "database": "neo4j",
+                    "username": "neo4j",
+                    "password": "pass",
+                    "protocol": "bolt",
+                },
+                headers=auth_header(admin_token),
+            )
+            assert resp.status_code == 201
+
+        resp = await client.put(
+            "/admin/query/permissions",
+            json={
+                "role": "developer",
+                "db_alias": "graph",
+                "allow_select": True,
+                "allow_insert": False,
+                "allow_update": False,
+                "allow_delete": False,
+            },
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 200
+
+        with patch(
+            "app.routers.query.connection_manager.get_db_type",
+            return_value="neo4j",
+        ), patch(
+            "app.routers.query.connection_manager.get_neo4j_driver",
+            return_value=MagicMock(),
+        ), patch(
+            "app.routers.query.execute_neo4j_query",
+            new_callable=AsyncMock,
+            return_value=_mock_query_response(),
+        ) as mock_exec:
+            resp = await client.post(
+                "/query/execute",
+                json={"database": "graph", "sql": cypher},
+                headers=auth_header(developer_token),
+            )
+
+        assert resp.status_code == 403
+        mock_exec.assert_not_awaited()
+
+    async def test_apikey_cannot_execute_mutating_neo4j_query(
+        self, client, admin_token
+    ):
+        with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+            mock_apisix.put_resource = AsyncMock(
+                return_value={
+                    "username": "graph-app",
+                    "plugins": {"key-auth": {"key": "graph-key"}},
+                }
+            )
+            mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+            mock_apisix.list_resources = AsyncMock(
+                return_value={
+                    "items": [
+                        {
+                            "id": "query-api",
+                            "uri": "/query/*",
+                            "plugins": {
+                                "key-auth": {},
+                                "consumer-restriction": {"whitelist": []},
+                            },
+                        }
+                    ]
+                }
+            )
+            resp = await client.post(
+                "/admin/api-keys",
+                json={
+                    "name": "graph-app",
+                    "api_key": "graph-key",
+                    "allowed_databases": ["graph"],
+                    "allowed_routes": ["query-api"],
+                },
+                headers=auth_header(admin_token),
+            )
+            assert resp.status_code == 201
+
+        with patch(
+            "app.routers.query.connection_manager.get_db_type",
+            return_value="neo4j",
+        ), patch(
+            "app.routers.query.connection_manager.get_neo4j_driver",
+            return_value=MagicMock(),
+        ), patch(
+            "app.routers.query.execute_neo4j_query",
+            new_callable=AsyncMock,
+            return_value=_mock_query_response(),
+        ) as mock_exec:
+            resp = await client.post(
+                "/query/execute",
+                json={"database": "graph", "sql": "MATCH (n) DELETE n"},
+                headers={"X-Consumer-Username": "graph-app"},
+            )
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Neo4j queries are read-only"
+        mock_exec.assert_not_awaited()
 
     async def test_developer_without_permission_entry_gets_403(
         self, client, developer_token
