@@ -82,6 +82,7 @@ class ConnectionManager:
     _instance: ConnectionManager | None = None
     _engines: dict[str, AsyncEngine]
     _ch_clients: dict[str, Any]
+    _neo4j_drivers: dict[str, Any]
     _db_types: dict[str, str]
 
     def __new__(cls) -> ConnectionManager:
@@ -89,11 +90,24 @@ class ConnectionManager:
             cls._instance = super().__new__(cls)
             cls._instance._engines = {}
             cls._instance._ch_clients = {}
+            cls._instance._neo4j_drivers = {}
             cls._instance._db_types = {}
         return cls._instance
 
+    def _ensure_registries(self) -> None:
+        """Initialize registries for test instances that bypass __new__."""
+        if not hasattr(self, "_engines"):
+            self._engines = {}
+        if not hasattr(self, "_ch_clients"):
+            self._ch_clients = {}
+        if not hasattr(self, "_neo4j_drivers"):
+            self._neo4j_drivers = {}
+        if not hasattr(self, "_db_types"):
+            self._db_types = {}
+
     async def initialize(self, connections: list[DBConnection]) -> None:
         """Create engines/clients for all saved connections on startup."""
+        self._ensure_registries()
         validate_encryption_key()
         for conn in connections:
             try:
@@ -103,7 +117,12 @@ class ConnectionManager:
 
     async def add_connection(self, conn: DBConnection) -> None:
         """Create an engine/client and register it under the given alias."""
-        if conn.alias in self._engines or conn.alias in self._ch_clients:
+        self._ensure_registries()
+        if (
+            conn.alias in self._engines
+            or conn.alias in self._ch_clients
+            or conn.alias in self._neo4j_drivers
+        ):
             await self.remove_connection(conn.alias)
 
         password = decrypt_password(conn.password_encrypted)
@@ -124,6 +143,17 @@ class ConnectionManager:
                 send_receive_timeout=query_timeout,
             )
             self._ch_clients[conn.alias] = client
+        elif conn.db_type == "neo4j":
+            from neo4j import GraphDatabase
+
+            protocol = conn.protocol or "bolt"
+            uri = f"{protocol}://{conn.host}:{conn.port}"
+            driver = await asyncio.to_thread(
+                GraphDatabase.driver,
+                uri,
+                auth=(conn.username, password),
+            )
+            self._neo4j_drivers[conn.alias] = driver
         else:
             url = _build_url(conn, password)
             engine_kwargs: dict[str, Any] = {"echo": False}
@@ -139,8 +169,10 @@ class ConnectionManager:
 
     async def remove_connection(self, alias: str) -> None:
         """Dispose of the connection for the given alias and remove it."""
+        self._ensure_registries()
         engine = self._engines.pop(alias, None)
         client = self._ch_clients.pop(alias, None)
+        neo4j_driver = self._neo4j_drivers.pop(alias, None)
         self._db_types.pop(alias, None)
         if engine is not None:
             await engine.dispose()
@@ -148,6 +180,9 @@ class ConnectionManager:
         if client is not None:
             await asyncio.to_thread(client.close)
             logger.info("ClickHouse client closed for alias '%s'", alias)
+        if neo4j_driver is not None:
+            await asyncio.to_thread(neo4j_driver.close)
+            logger.info("Neo4j driver closed for alias '%s'", alias)
 
     def get_engine(self, alias: str) -> AsyncEngine:
         """Return the SQLAlchemy engine for a given alias, or raise KeyError."""
@@ -163,13 +198,21 @@ class ConnectionManager:
         except KeyError:
             raise KeyError(f"No ClickHouse client registered for alias '{alias}'")
 
+    def get_neo4j_driver(self, alias: str) -> Any:
+        """Return the Neo4j driver for a given alias, or raise KeyError."""
+        try:
+            return self._neo4j_drivers[alias]
+        except KeyError:
+            raise KeyError(f"No Neo4j driver registered for alias '{alias}'")
+
     def get_db_type(self, alias: str) -> str:
         """Return the database type for a given alias."""
         return self._db_types.get(alias, "unknown")
 
     def has_connection(self, alias: str) -> bool:
         """Return True if the alias has a registered connection."""
-        return alias in self._engines or alias in self._ch_clients
+        self._ensure_registries()
+        return alias in self._engines or alias in self._ch_clients or alias in self._neo4j_drivers
 
     async def test_connection(self, alias: str) -> tuple[bool, str]:
         """Test connectivity. Returns (ok, message)."""
@@ -181,6 +224,10 @@ class ConnectionManager:
                 if ok:
                     return True, "Connection successful"
                 return False, "Ping failed"
+            elif db_type == "neo4j":
+                driver = self.get_neo4j_driver(alias)
+                await asyncio.to_thread(driver.verify_connectivity)
+                return True, "Connection successful"
             else:
                 engine = self.get_engine(alias)
                 async with engine.connect() as conn:
@@ -192,11 +239,18 @@ class ConnectionManager:
 
     def get_status(self, alias: str) -> dict[str, Any]:
         """Return status info for the given alias."""
+        self._ensure_registries()
         if alias in self._ch_clients:
             return {
                 "alias": alias,
                 "status": "registered",
                 "driver": "clickhouse-connect",
+            }
+        if alias in self._neo4j_drivers:
+            return {
+                "alias": alias,
+                "status": "registered",
+                "driver": "neo4j",
             }
 
         engine = self._engines.get(alias)
@@ -215,9 +269,10 @@ class ConnectionManager:
 
     def update_pool_metrics(self, alias: str | None = None) -> None:
         """Publish current checked-out pool counts for registered DB aliases."""
+        self._ensure_registries()
         aliases = [alias] if alias is not None else self.list_aliases()
         for current_alias in aliases:
-            if current_alias in self._ch_clients:
+            if current_alias in self._ch_clients or current_alias in self._neo4j_drivers:
                 continue
 
             engine = self._engines.get(current_alias)
@@ -233,11 +288,16 @@ class ConnectionManager:
 
     def list_aliases(self) -> list[str]:
         """Return all registered aliases."""
-        return list(self._engines.keys()) + list(self._ch_clients.keys())
+        self._ensure_registries()
+        return (
+            list(self._engines.keys())
+            + list(self._ch_clients.keys())
+            + list(self._neo4j_drivers.keys())
+        )
 
     async def dispose_all(self) -> None:
         """Dispose of all connections. Called on application shutdown."""
-        for alias in list(self._engines.keys()) + list(self._ch_clients.keys()):
+        for alias in self.list_aliases():
             await self.remove_connection(alias)
 
 
