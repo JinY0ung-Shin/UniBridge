@@ -8,6 +8,24 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+try:  # pragma: no cover - exercised when neo4j is installed
+    from neo4j import Query as Neo4jQuery
+    from neo4j.graph import Node as Neo4jNode
+    from neo4j.graph import Path as Neo4jPath
+    from neo4j.graph import Relationship as Neo4jRelationship
+except ImportError:  # pragma: no cover - test environment may omit neo4j
+    class Neo4jQuery:
+        def __init__(self, text: str, timeout: int | float | None = None) -> None:
+            self.text = text
+            self.timeout = timeout
+
+        def __str__(self) -> str:
+            return self.text
+
+    Neo4jNode = ()
+    Neo4jPath = ()
+    Neo4jRelationship = ()
+
 from app.config import settings
 from app.schemas import QueryResponse
 from app.services.sql_analysis import statement_type
@@ -396,17 +414,83 @@ async def execute_clickhouse_query(
 # ── Neo4j execution path ─────────────────────────────────────────────────────
 
 
+def _neo4j_entity_id(entity: Any) -> Any:
+    return getattr(entity, "element_id", None) or getattr(entity, "id", None)
+
+
+def _convert_neo4j_mapping(mapping: Any) -> dict[str, Any]:
+    return {key: _convert_neo4j_value(value) for key, value in dict(mapping).items()}
+
+
+def _convert_neo4j_value(value: Any) -> Any:
+    """Convert Neo4j values to JSON-serializable Python objects."""
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+
+    if isinstance(value, Neo4jNode):
+        return {
+            "id": _neo4j_entity_id(value),
+            "labels": sorted(value.labels),
+            "properties": _convert_neo4j_mapping(value),
+        }
+
+    if isinstance(value, Neo4jRelationship):
+        return {
+            "id": _neo4j_entity_id(value),
+            "type": value.type,
+            "start_node_id": _neo4j_entity_id(value.start_node),
+            "end_node_id": _neo4j_entity_id(value.end_node),
+            "properties": _convert_neo4j_mapping(value),
+        }
+
+    if isinstance(value, Neo4jPath):
+        return {
+            "nodes": [_convert_neo4j_value(node) for node in value.nodes],
+            "relationships": [
+                _convert_neo4j_value(relationship)
+                for relationship in value.relationships
+            ],
+        }
+
+    if isinstance(value, dict):
+        return {
+            key: _convert_neo4j_value(nested_value)
+            for key, nested_value in value.items()
+        }
+
+    if isinstance(value, list | tuple):
+        return [_convert_neo4j_value(item) for item in value]
+
+    if isinstance(value, set):
+        return sorted(
+            (_convert_neo4j_value(item) for item in value),
+            key=str,
+        )
+
+    iso_format = getattr(value, "iso_format", None)
+    if callable(iso_format):
+        return iso_format()
+
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return isoformat()
+
+    return str(value)
+
+
 def _execute_neo4j_sync(
     driver: Any,
     database: str,
     query: str,
     params: dict[str, Any] | None,
     limit: int,
+    timeout: int | float,
 ) -> QueryResponse:
     """Core execution logic for Neo4j via the official driver."""
     start = time.monotonic()
+    cypher = Neo4jQuery(query, timeout=timeout)
     with driver.session(database=database) as session:
-        result = session.run(query, **(params or {}))
+        result = session.run(cypher, parameters=params or {})
         columns = list(result.keys())
         rows: list[list[Any]] = []
         truncated = False
@@ -414,7 +498,7 @@ def _execute_neo4j_sync(
             if index >= limit:
                 truncated = True
                 break
-            rows.append(list(record.values()))
+            rows.append([_convert_neo4j_value(value) for value in record.values()])
 
     elapsed_ms = int((time.monotonic() - start) * 1000)
     return QueryResponse(
@@ -437,14 +521,19 @@ async def execute_neo4j_query(
     """Execute a Neo4j Cypher query with timeout and row limit."""
     effective_limit = limit or settings.DEFAULT_ROW_LIMIT
     effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
-    return await asyncio.wait_for(
-        asyncio.to_thread(
-            _execute_neo4j_sync,
-            driver,
-            database,
-            query,
-            params,
-            effective_limit,
-        ),
-        timeout=effective_timeout,
-    )
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(
+                _execute_neo4j_sync,
+                driver,
+                database,
+                query,
+                params,
+                effective_limit,
+                effective_timeout,
+            ),
+            timeout=effective_timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Query timed out after %ds", effective_timeout)
+        raise
