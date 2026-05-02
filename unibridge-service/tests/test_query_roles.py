@@ -128,6 +128,9 @@ class TestQueryExecute:
             "app.routers.query.connection_manager.get_neo4j_driver",
             return_value=mock_driver,
         ), patch(
+            "app.routers.query.connection_manager.get_database_name",
+            return_value="neo4j",
+        ), patch(
             "app.routers.query.execute_neo4j_query",
             new_callable=AsyncMock,
             return_value=_mock_query_response(),
@@ -145,7 +148,7 @@ class TestQueryExecute:
         assert resp.json()["row_count"] == 1
         mock_exec.assert_awaited_once_with(
             driver=mock_driver,
-            database="graph",
+            database="neo4j",
             query="MATCH (n) RETURN n",
             params=None,
             limit=None,
@@ -295,10 +298,13 @@ class TestQueryExecute:
             "app.routers.query.connection_manager.get_neo4j_driver",
             return_value=mock_driver,
         ), patch(
+            "app.routers.query.connection_manager.get_database_name",
+            return_value="neo4j",
+        ), patch(
             "app.routers.query.execute_neo4j_query",
             new_callable=AsyncMock,
             return_value=_mock_query_response(),
-        ), patch(
+        ) as mock_exec, patch(
             "app.routers.query.log_query",
             new_callable=AsyncMock,
         ):
@@ -310,6 +316,14 @@ class TestQueryExecute:
 
         assert resp.status_code == 200
         assert resp.json()["row_count"] == 1
+        mock_exec.assert_awaited_once_with(
+            driver=mock_driver,
+            database="neo4j",
+            query="MATCH (n) RETURN n",
+            params=None,
+            limit=None,
+            timeout=None,
+        )
 
     @pytest.mark.parametrize(
         "cypher",

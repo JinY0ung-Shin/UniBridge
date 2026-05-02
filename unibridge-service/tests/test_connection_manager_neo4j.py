@@ -30,6 +30,7 @@ def manager():
     mgr._ch_clients.clear()
     mgr._neo4j_drivers.clear()
     mgr._db_types.clear()
+    mgr._databases.clear()
     return mgr
 
 
@@ -60,6 +61,7 @@ async def test_add_connection_creates_neo4j_driver_and_registers_alias(manager, 
     )
     assert manager.get_neo4j_driver("graph") is driver
     assert manager.get_db_type("graph") == "neo4j"
+    assert manager.get_database_name("graph") == "neo4j"
 
 
 @pytest.mark.asyncio
@@ -72,6 +74,8 @@ async def test_remove_connection_closes_neo4j_driver_and_removes_alias(manager, 
     driver.close.assert_called_once_with()
     assert manager.has_connection("graph") is False
     assert manager.get_db_type("graph") == "unknown"
+    with pytest.raises(KeyError, match="No database registered for alias 'graph'"):
+        manager.get_database_name("graph")
 
 
 @pytest.mark.asyncio

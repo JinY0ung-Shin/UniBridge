@@ -178,7 +178,7 @@ async def execute(
             neo4j_driver = connection_manager.get_neo4j_driver(req.database)
             response = await execute_neo4j_query(
                 driver=neo4j_driver,
-                database=req.database,
+                database=connection_manager.get_database_name(req.database),
                 query=req.sql,
                 params=req.params,
                 limit=req.limit,

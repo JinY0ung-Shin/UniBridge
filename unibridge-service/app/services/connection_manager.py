@@ -84,6 +84,7 @@ class ConnectionManager:
     _ch_clients: dict[str, Any]
     _neo4j_drivers: dict[str, Any]
     _db_types: dict[str, str]
+    _databases: dict[str, str]
 
     def __new__(cls) -> ConnectionManager:
         if cls._instance is None:
@@ -92,6 +93,7 @@ class ConnectionManager:
             cls._instance._ch_clients = {}
             cls._instance._neo4j_drivers = {}
             cls._instance._db_types = {}
+            cls._instance._databases = {}
         return cls._instance
 
     def _ensure_registries(self) -> None:
@@ -104,6 +106,8 @@ class ConnectionManager:
             self._neo4j_drivers = {}
         if not hasattr(self, "_db_types"):
             self._db_types = {}
+        if not hasattr(self, "_databases"):
+            self._databases = {}
 
     async def initialize(self, connections: list[DBConnection]) -> None:
         """Create engines/clients for all saved connections on startup."""
@@ -164,6 +168,7 @@ class ConnectionManager:
             self._engines[conn.alias] = engine
 
         self._db_types[conn.alias] = conn.db_type
+        self._databases[conn.alias] = conn.database
         self.update_pool_metrics(conn.alias)
         logger.info("Connection created for alias '%s' (%s)", conn.alias, conn.db_type)
 
@@ -174,6 +179,7 @@ class ConnectionManager:
         client = self._ch_clients.pop(alias, None)
         neo4j_driver = self._neo4j_drivers.pop(alias, None)
         self._db_types.pop(alias, None)
+        self._databases.pop(alias, None)
         if engine is not None:
             await engine.dispose()
             logger.info("Engine disposed for alias '%s'", alias)
@@ -208,6 +214,13 @@ class ConnectionManager:
     def get_db_type(self, alias: str) -> str:
         """Return the database type for a given alias."""
         return self._db_types.get(alias, "unknown")
+
+    def get_database_name(self, alias: str) -> str:
+        """Return the configured database name for a given alias, or raise KeyError."""
+        try:
+            return self._databases[alias]
+        except KeyError:
+            raise KeyError(f"No database registered for alias '{alias}'")
 
     def has_connection(self, alias: str) -> bool:
         """Return True if the alias has a registered connection."""
