@@ -415,7 +415,10 @@ async def execute_clickhouse_query(
 
 
 def _neo4j_entity_id(entity: Any) -> Any:
-    return getattr(entity, "element_id", None) or getattr(entity, "id", None)
+    element_id = getattr(entity, "element_id", None)
+    if element_id is not None:
+        return element_id
+    return getattr(entity, "id", None)
 
 
 def _convert_neo4j_mapping(mapping: Any) -> dict[str, Any]:

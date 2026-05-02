@@ -3,7 +3,7 @@ import time
 import pytest
 
 from app.services import query_executor
-from app.services.query_executor import _convert_neo4j_value, execute_neo4j_query
+from app.services.query_executor import _convert_neo4j_value, _neo4j_entity_id, execute_neo4j_query
 
 
 class FakeRecord:
@@ -183,6 +183,14 @@ def test_convert_neo4j_value_uses_iso_format_and_string_fallback():
 
     assert _convert_neo4j_value(IsoFormatOnly()) == "2026-05-02T00:00:00"
     assert _convert_neo4j_value(CustomObject()) == "custom-value"
+
+
+def test_neo4j_entity_id_preserves_falsy_element_id():
+    class Entity:
+        element_id = ""
+        id = 123
+
+    assert _neo4j_entity_id(Entity()) == ""
 
 
 @pytest.mark.asyncio
