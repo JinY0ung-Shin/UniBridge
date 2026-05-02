@@ -48,10 +48,23 @@ def _validate_connection_options(
             )
         return protocol, secure
 
+    if db_type == "neo4j":
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Neo4j connections require protocol field",
+            )
+        if secure is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="secure is not valid for neo4j connections",
+            )
+        return protocol, None
+
     if protocol is not None or secure is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="protocol and secure are only valid for clickhouse connections",
+            detail="protocol and secure are only valid for clickhouse or neo4j connections",
         )
     return None, None
 

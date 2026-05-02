@@ -29,13 +29,13 @@ class QueryResponse(BaseModel):
 
 class DBConnectionCreate(BaseModel):
     alias: str = Field(..., min_length=1, max_length=100)
-    db_type: str = Field(..., pattern=r"^(postgres|mssql|clickhouse)$")
+    db_type: str = Field(..., pattern=r"^(postgres|mssql|clickhouse|neo4j)$")
     host: str = Field(..., min_length=1)
     port: int = Field(..., ge=1, le=65535)
     database: str = Field(..., min_length=1)
     username: str = Field(..., min_length=1)
     password: str = Field(..., min_length=1)
-    protocol: str | None = Field(None, pattern=r"^(http|https)$")
+    protocol: str | None = Field(None, pattern=r"^(http|https|bolt|bolt\+s|bolt\+ssc|neo4j|neo4j\+s|neo4j\+ssc)$")
     secure: bool | None = None
     pool_size: int | None = Field(5, ge=1, le=50)
     max_overflow: int | None = Field(3, ge=0, le=50)
@@ -48,7 +48,7 @@ class DBConnectionUpdate(BaseModel):
     database: str | None = None
     username: str | None = None
     password: str | None = None
-    protocol: str | None = Field(None, pattern=r"^(http|https)$")
+    protocol: str | None = Field(None, pattern=r"^(http|https|bolt|bolt\+s|bolt\+ssc|neo4j|neo4j\+s|neo4j\+ssc)$")
     secure: bool | None = None
     pool_size: int | None = Field(None, ge=1, le=50)
     max_overflow: int | None = Field(None, ge=0, le=50)
