@@ -96,7 +96,10 @@ def _detect_neo4j_statement_type(sql: str) -> str:
         or _contains_neo4j_clause(normalized, "DROP")
     ):
         return "execute"
-    if re.match(r"^(MATCH\b.*\bRETURN\b|RETURN\b|WITH\b.*\bRETURN\b)", normalized):
+    if re.match(
+        r"^(OPTIONAL\s+MATCH\b.*\bRETURN\b|MATCH\b.*\bRETURN\b|RETURN\b|WITH\b.*\bRETURN\b|UNWIND\b.*\bRETURN\b)",
+        normalized,
+    ):
         return "select"
     return "unknown"
 
@@ -153,12 +156,17 @@ async def execute(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Database '{req.database}' is not registered or not connected",
         )
+    statement_type = _detect_statement_type(req.sql, db_type)
+    if db_type == "neo4j" and statement_type != "select":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Neo4j queries are read-only",
+        )
 
     # 2. Check per-database permissions
     perm = None
     if isinstance(user, ApiKeyUser):
         # API key users: only SELECT allowed
-        statement_type = _detect_statement_type(req.sql, db_type)
         if statement_type != "select":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -166,7 +174,6 @@ async def execute(
             )
     else:
         # JWT user: role-based per-DB permissions
-        statement_type = _detect_statement_type(req.sql, db_type)
         user_perms = await get_role_permissions(db, user.role)
         if "query.databases.write" not in user_perms:
             result = await db.execute(

@@ -155,6 +155,43 @@ class TestQueryExecute:
             timeout=None,
         )
 
+    @pytest.mark.parametrize(
+        "cypher",
+        [
+            "CREATE (:User {name: 'x'})",
+            "MERGE (:User {name: 'x'})",
+            "MATCH (n) SET n.name = 'x' RETURN n",
+            "MATCH (n) REMOVE n.name RETURN n",
+            "MATCH (n) DELETE n",
+            "DROP INDEX user_name IF EXISTS",
+            "LOAD CSV FROM 'file:///users.csv' AS row RETURN row",
+            "CALL db.labels() YIELD label RETURN label",
+        ],
+    )
+    async def test_admin_cannot_execute_mutating_neo4j_query(
+        self, client, admin_token, cypher
+    ):
+        with patch(
+            "app.routers.query.connection_manager.get_db_type",
+            return_value="neo4j",
+        ), patch(
+            "app.routers.query.connection_manager.get_neo4j_driver",
+            return_value=MagicMock(),
+        ), patch(
+            "app.routers.query.execute_neo4j_query",
+            new_callable=AsyncMock,
+            return_value=_mock_query_response(),
+        ) as mock_exec:
+            resp = await client.post(
+                "/query/execute",
+                json={"database": "graph", "sql": cypher},
+                headers=auth_header(admin_token),
+            )
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Neo4j queries are read-only"
+        mock_exec.assert_not_awaited()
+
     async def test_successful_query_survives_audit_write_failure(
         self, client, admin_token
     ):
@@ -448,7 +485,7 @@ class TestQueryExecute:
             )
 
         assert resp.status_code == 403
-        assert resp.json()["detail"] == "API key users can only execute SELECT queries"
+        assert resp.json()["detail"] == "Neo4j queries are read-only"
         mock_exec.assert_not_awaited()
 
     async def test_developer_without_permission_entry_gets_403(
