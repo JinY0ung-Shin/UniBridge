@@ -226,6 +226,28 @@ class TestCreateConnection:
         assert "same transport" in resp.json()["detail"].lower()
 
     @pytest.mark.asyncio
+    async def test_create_clickhouse_with_neo4j_protocol_returns_400(self, client, admin_token):
+        with _cm_patch():
+            resp = await client.post(
+                "/admin/query/databases",
+                json={**CLICKHOUSE_PAYLOAD, "protocol": "bolt", "secure": False},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 400
+        assert "clickhouse protocol" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_create_neo4j_with_clickhouse_protocol_returns_400(self, client, admin_token):
+        with _cm_patch():
+            resp = await client.post(
+                "/admin/query/databases",
+                json={**NEO4J_PAYLOAD, "protocol": "http"},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 400
+        assert "neo4j protocol" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
     async def test_create_clickhouse_missing_protocol_or_secure_returns_400(
         self, client, admin_token
     ):

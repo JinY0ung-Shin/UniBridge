@@ -40,6 +40,11 @@ def _validate_connection_options(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="ClickHouse connections require both protocol and secure fields",
             )
+        if protocol not in {"http", "https"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="ClickHouse protocol must be http or https",
+            )
         expected_protocol = "https" if secure else "http"
         if protocol != expected_protocol:
             raise HTTPException(
@@ -54,6 +59,11 @@ def _validate_connection_options(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Neo4j connections require protocol field",
             )
+        if protocol not in {"bolt", "bolt+s", "bolt+ssc", "neo4j", "neo4j+s", "neo4j+ssc"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Neo4j protocol must be bolt, bolt+s, bolt+ssc, neo4j, neo4j+s, or neo4j+ssc",
+            )
         if secure is not None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -61,10 +71,15 @@ def _validate_connection_options(
             )
         return protocol, None
 
-    if protocol is not None or secure is not None:
+    if secure is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="protocol and secure are only valid for clickhouse or neo4j connections",
+            detail="secure is only valid for clickhouse connections",
+        )
+    if protocol is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="protocol is only valid for clickhouse or neo4j connections",
         )
     return None, None
 
