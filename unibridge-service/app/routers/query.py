@@ -17,7 +17,7 @@ from app.schemas import DBConnectionResponse, HealthResponse, QueryRequest, Quer
 from app.middleware.rate_limiter import rate_limiter
 from app.services.audit import log_query
 from app.services.connection_manager import connection_manager
-from app.services.query_executor import check_permission, detect_statement_type, execute_clickhouse_query, execute_query
+from app.services.query_executor import check_permission, detect_statement_type, execute_clickhouse_query, execute_neo4j_query, execute_query
 from app.services.settings_manager import settings_manager
 from app.services.sql_validator import validate_sql
 from app.services.table_access import check_table_access, extract_tables
@@ -79,6 +79,12 @@ async def execute(
     if isinstance(user, ApiKeyUser):
         # API key users: only SELECT allowed
         statement_type = detect_statement_type(req.sql)
+        if (
+            db_type == "neo4j"
+            and statement_type == "unknown"
+            and req.sql.lstrip().upper().startswith(("MATCH", "RETURN"))
+        ):
+            statement_type = "select"
         if statement_type != "select":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -87,6 +93,12 @@ async def execute(
     else:
         # JWT user: role-based per-DB permissions
         statement_type = detect_statement_type(req.sql)
+        if (
+            db_type == "neo4j"
+            and statement_type == "unknown"
+            and req.sql.lstrip().upper().startswith(("MATCH", "RETURN"))
+        ):
+            statement_type = "select"
         user_perms = await get_role_permissions(db, user.role)
         if "query.databases.write" not in user_perms:
             result = await db.execute(
@@ -127,7 +139,7 @@ async def execute(
         if "query.databases.write" not in user_perms_for_tables and perm is not None:
             allowed_tables_raw = perm.allowed_tables
             allowed_tables = json.loads(allowed_tables_raw) if allowed_tables_raw else None
-            if allowed_tables is not None:
+            if allowed_tables is not None and db_type != "neo4j":
                 referenced = extract_tables(req.sql, db_type=db_type)
                 table_error = check_table_access(referenced, allowed_tables)
                 if table_error:
@@ -151,6 +163,16 @@ async def execute(
             response = await execute_clickhouse_query(
                 client=ch_client, sql=req.sql, params=req.params,
                 limit=req.limit, timeout=req.timeout,
+            )
+        elif db_type == "neo4j":
+            neo4j_driver = connection_manager.get_neo4j_driver(req.database)
+            response = await execute_neo4j_query(
+                driver=neo4j_driver,
+                database=req.database,
+                query=req.sql,
+                params=req.params,
+                limit=req.limit,
+                timeout=req.timeout,
             )
         else:
             engine = connection_manager.get_engine(req.database)
