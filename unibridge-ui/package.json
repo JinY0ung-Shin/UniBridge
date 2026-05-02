@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.96.2",
-    "axios": "^1.15.0",
+    "axios": "^1.16.0",
     "i18next": "^26.0.4",
     "i18next-browser-languagedetector": "^8.2.1",
     "keycloak-js": "^26.0.0",
