@@ -28,15 +28,73 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Query"])
 
 
+def _strip_neo4j_literals_and_comments(sql: str) -> str:
+    result: list[str] = []
+    i = 0
+    length = len(sql)
+    while i < length:
+        char = sql[i]
+        if char == "/" and i + 1 < length and sql[i + 1] == "/":
+            i = sql.find("\n", i)
+            if i == -1:
+                break
+            result.append(" ")
+            continue
+        if char == "/" and i + 1 < length and sql[i + 1] == "*":
+            end = sql.find("*/", i + 2)
+            if end == -1:
+                break
+            result.append(" ")
+            i = end + 2
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            i += 1
+            while i < length:
+                if sql[i] == "\\":
+                    i += 2
+                    continue
+                if sql[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            result.append("''")
+            continue
+        result.append(char)
+        i += 1
+    return "".join(result)
+
+
+def _contains_neo4j_clause(sql: str, pattern: str) -> bool:
+    return re.search(rf"(?<!\S){pattern}\b", sql) is not None
+
+
 def _detect_neo4j_statement_type(sql: str) -> str:
-    normalized = re.sub(r"\s+", " ", sql.strip()).upper()
-    if re.search(r"\bDETACH\s+DELETE\b|\bDELETE\b", normalized):
+    normalized = re.sub(
+        r"\s+",
+        " ",
+        _strip_neo4j_literals_and_comments(sql).strip(),
+    ).upper()
+    if _contains_neo4j_clause(
+        normalized,
+        r"DETACH\s+DELETE",
+    ) or _contains_neo4j_clause(normalized, "DELETE"):
         return "delete"
-    if re.search(r"\bSET\b|\bREMOVE\b", normalized):
+    if _contains_neo4j_clause(normalized, "SET") or _contains_neo4j_clause(
+        normalized,
+        "REMOVE",
+    ):
         return "update"
-    if re.search(r"\bCREATE\b|\bMERGE\b", normalized):
+    if _contains_neo4j_clause(normalized, "CREATE") or _contains_neo4j_clause(
+        normalized,
+        "MERGE",
+    ):
         return "insert"
-    if re.search(r"\bLOAD\s+CSV\b|\bCALL\b|\bDROP\b", normalized):
+    if (
+        _contains_neo4j_clause(normalized, r"LOAD\s+CSV")
+        or _contains_neo4j_clause(normalized, "CALL")
+        or _contains_neo4j_clause(normalized, "DROP")
+    ):
         return "execute"
     if re.match(r"^(MATCH\b.*\bRETURN\b|RETURN\b|WITH\b.*\bRETURN\b)", normalized):
         return "select"
