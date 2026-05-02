@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -25,6 +26,27 @@ from app.services.table_access import check_table_access, extract_tables
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Query"])
+
+
+def _detect_neo4j_statement_type(sql: str) -> str:
+    normalized = re.sub(r"\s+", " ", sql.strip()).upper()
+    if re.search(r"\bDETACH\s+DELETE\b|\bDELETE\b", normalized):
+        return "delete"
+    if re.search(r"\bSET\b|\bREMOVE\b", normalized):
+        return "update"
+    if re.search(r"\bCREATE\b|\bMERGE\b", normalized):
+        return "insert"
+    if re.search(r"\bLOAD\s+CSV\b|\bCALL\b|\bDROP\b", normalized):
+        return "execute"
+    if re.match(r"^(MATCH\b.*\bRETURN\b|RETURN\b|WITH\b.*\bRETURN\b)", normalized):
+        return "select"
+    return "unknown"
+
+
+def _detect_statement_type(sql: str, db_type: str) -> str:
+    if db_type == "neo4j":
+        return _detect_neo4j_statement_type(sql)
+    return detect_statement_type(sql)
 
 
 @router.post("/query/execute", response_model=QueryResponse)
@@ -78,13 +100,7 @@ async def execute(
     perm = None
     if isinstance(user, ApiKeyUser):
         # API key users: only SELECT allowed
-        statement_type = detect_statement_type(req.sql)
-        if (
-            db_type == "neo4j"
-            and statement_type == "unknown"
-            and req.sql.lstrip().upper().startswith(("MATCH", "RETURN"))
-        ):
-            statement_type = "select"
+        statement_type = _detect_statement_type(req.sql, db_type)
         if statement_type != "select":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -92,13 +108,7 @@ async def execute(
             )
     else:
         # JWT user: role-based per-DB permissions
-        statement_type = detect_statement_type(req.sql)
-        if (
-            db_type == "neo4j"
-            and statement_type == "unknown"
-            and req.sql.lstrip().upper().startswith(("MATCH", "RETURN"))
-        ):
-            statement_type = "select"
+        statement_type = _detect_statement_type(req.sql, db_type)
         user_perms = await get_role_permissions(db, user.role)
         if "query.databases.write" not in user_perms:
             result = await db.execute(
