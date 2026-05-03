@@ -86,8 +86,12 @@ def _inject_plugins(
         prefix = uri.rstrip("*").rstrip("/")
         if prefix:
             pr_config["regex_uri"] = [f"^{prefix}(.*)", "$1"]
+            # APISIX regex_uri rewrites decoded ctx.var.uri by default. Preserve the
+            # raw request URI so encoded upstream IDs, e.g. DataHub URNs, stay encoded.
+            pr_config["use_real_request_uri_unsafe"] = True
     elif strip_prefix is False:
         pr_config.pop("regex_uri", None)
+        pr_config.pop("use_real_request_uri_unsafe", None)
     # strip_prefix is None → preserve existing state
 
     if pr_config:

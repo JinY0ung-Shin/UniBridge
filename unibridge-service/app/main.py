@@ -140,6 +140,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                             "key-auth": {},
                             "proxy-rewrite": {
                                 "regex_uri": ["^/api/query(.*)", "/query$1"],
+                                "use_real_request_uri_unsafe": True,
                             },
                         },
                         "status": 1,
@@ -163,6 +164,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                             "key-auth": {},
                             "proxy-rewrite": {
                                 "regex_uri": ["^/api/s3(.*)", "/s3$1"],
+                                "use_real_request_uri_unsafe": True,
                             },
                         },
                         "status": 1,
@@ -199,6 +201,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                 "key-auth": {},
                                 "proxy-rewrite": {
                                     "regex_uri": ["^/api/llm(.*)", "$1"],
+                                    "use_real_request_uri_unsafe": True,
                                     "headers": {
                                         "set": {
                                             "Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}",
@@ -224,6 +227,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                             "key-auth": {},
                             "proxy-rewrite": {
                                 "regex_uri": ["^/api/llm-admin(.*)", "$1"],
+                                "use_real_request_uri_unsafe": True,
                             },
                         },
                         "status": 1,

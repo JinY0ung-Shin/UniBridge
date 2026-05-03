@@ -77,6 +77,13 @@ async def test_lifespan_provisions_llm_admin_route_when_master_key_set():
         "^/api/llm-admin(.*)",
         "$1",
     ]
+    for route_id in ("query-api", "s3-api", "llm-proxy", "llm-admin"):
+        assert (
+            route_calls[route_id]["plugins"]["proxy-rewrite"][
+                "use_real_request_uri_unsafe"
+            ]
+            is True
+        )
 
 
 @pytest.mark.asyncio

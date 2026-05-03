@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -94,6 +93,30 @@ class TestInjectPlugins:
         result = _inject_plugins(body, existing_plugins=existing)
         assert "rate-limiting" in result["plugins"]
         assert "proxy-rewrite" in result["plugins"]
+
+    def test_strip_prefix_preserves_percent_encoded_upstream_path(self):
+        body = {"uri": "/api/datahub/*", "strip_prefix": True}
+        result = _inject_plugins(body)
+
+        proxy_rewrite = result["plugins"]["proxy-rewrite"]
+        assert proxy_rewrite["regex_uri"] == ["^/api/datahub(.*)", "$1"]
+        assert proxy_rewrite["use_real_request_uri_unsafe"] is True
+
+    def test_strip_prefix_false_removes_encoded_path_preservation_flag(self):
+        body = {"uri": "/api/datahub/*", "strip_prefix": False}
+        existing = {
+            "proxy-rewrite": {
+                "regex_uri": ["^/api/datahub(.*)", "$1"],
+                "use_real_request_uri_unsafe": True,
+                "headers": {"set": {"X-Key": "secret"}},
+            }
+        }
+        result = _inject_plugins(body, existing_plugins=existing)
+
+        proxy_rewrite = result["plugins"]["proxy-rewrite"]
+        assert "regex_uri" not in proxy_rewrite
+        assert "use_real_request_uri_unsafe" not in proxy_rewrite
+        assert proxy_rewrite["headers"] == {"set": {"X-Key": "secret"}}
 
     def test_no_plugins_removes_key(self):
         body = {"uri": "/test"}
