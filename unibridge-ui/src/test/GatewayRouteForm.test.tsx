@@ -10,16 +10,33 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useParams: vi.fn(() => ({})), useNavigate: vi.fn(() => vi.fn()) };
 });
 
-import { screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter, useParams } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getGatewayUpstreams } from '../api/client';
+import { getGatewayRoute, getGatewayUpstreams, saveGatewayRoute } from '../api/client';
 import GatewayRouteForm from '../pages/GatewayRouteForm';
-import { renderWithProviders, makeGatewayUpstream } from './helpers';
+import { renderWithProviders, makeGatewayRoute, makeGatewayUpstream } from './helpers';
 
+const mockedGetGatewayRoute = vi.mocked(getGatewayRoute);
 const mockedGetGatewayUpstreams = vi.mocked(getGatewayUpstreams);
+const mockedSaveGatewayRoute = vi.mocked(saveGatewayRoute);
+
+function renderWithQueryClient(queryClient: QueryClient) {
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <GatewayRouteForm />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
 
 describe('GatewayRouteForm', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useParams).mockReturnValue({});
     mockedGetGatewayUpstreams.mockResolvedValue({ items: [], total: 0 });
   });
 
@@ -77,5 +94,51 @@ describe('GatewayRouteForm', () => {
     });
 
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+  });
+
+  it('shows saved route values when reopening edit form from a fresh detail cache', async () => {
+    vi.mocked(useParams).mockReturnValue({ id: 'route-1' });
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, staleTime: 30_000 },
+        mutations: { retry: false },
+      },
+    });
+    const originalRoute = makeGatewayRoute({ name: 'old-route' });
+    const savedRoute = makeGatewayRoute({ name: 'new-route' });
+    queryClient.setQueryData(['gateway-route', 'route-1'], originalRoute);
+    mockedGetGatewayRoute.mockResolvedValue(savedRoute);
+    mockedGetGatewayUpstreams.mockResolvedValue({
+      items: [makeGatewayUpstream({ id: 'upstream-1' })],
+      total: 1,
+    });
+    mockedSaveGatewayRoute.mockResolvedValue(savedRoute);
+
+    const user = userEvent.setup();
+    const firstRender = renderWithQueryClient(queryClient);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Edit Route' })).toBeInTheDocument();
+    });
+    const nameInput = screen.getByPlaceholderText('My API Route');
+    expect(nameInput).toHaveValue('old-route');
+
+    await user.clear(nameInput);
+    await user.type(nameInput, 'new-route');
+    await user.click(screen.getByRole('button', { name: 'Update Route' }));
+
+    await waitFor(() => {
+      expect(mockedSaveGatewayRoute).toHaveBeenCalledWith(
+        'route-1',
+        expect.objectContaining({ name: 'new-route' }),
+      );
+    });
+
+    firstRender.unmount();
+    renderWithQueryClient(queryClient);
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText('My API Route')).toHaveValue('new-route');
+    });
   });
 });

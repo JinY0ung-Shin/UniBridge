@@ -58,7 +58,8 @@ function GatewayRouteEditor({
   const saveMutation = useMutation({
     mutationFn: (data: { routeId: string; body: Record<string, unknown> }) =>
       saveGatewayRoute(data.routeId, data.body),
-    onSuccess: () => {
+    onSuccess: (savedRoute, data) => {
+      queryClient.setQueryData(['gateway-route', data.routeId], savedRoute);
       queryClient.invalidateQueries({ queryKey: ['gateway-routes'] });
       navigate('/gateway/routes');
     },
