@@ -183,6 +183,54 @@ describe('Connections', () => {
     vi.restoreAllMocks();
   });
 
+  it('submits neo4j connection with default bolt protocol and port 7687', async () => {
+    mockedCreateDatabase.mockClear();
+    const newDb = makeDatabase({
+      alias: 'graph-db',
+      db_type: 'neo4j' as const,
+      port: 7687,
+      protocol: 'bolt' as const,
+    });
+    mockedCreateDatabase.mockResolvedValue(newDb);
+
+    renderWithProviders(<Connections />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No connections yet')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add Connection' }));
+
+    const [typeSelect] = screen.getAllByRole('combobox');
+    await userEvent.selectOptions(typeSelect, 'neo4j');
+
+    expect(screen.getByDisplayValue('7687')).toBeInTheDocument();
+
+    await userEvent.type(screen.getByPlaceholderText('e.g., main-db'), 'graph-db');
+    await userEvent.type(screen.getByPlaceholderText('localhost'), 'graph.example.com');
+    await userEvent.type(screen.getByPlaceholderText('mydb'), 'neo4j');
+    await userEvent.type(screen.getByPlaceholderText('dbuser'), 'neo4j');
+
+    const comboboxes = screen.getAllByRole('combobox');
+    expect(comboboxes).toHaveLength(2);
+    expect(comboboxes[1]).toHaveDisplayValue('bolt');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(mockedCreateDatabase).toHaveBeenCalledTimes(1);
+    });
+
+    const submitted = mockedCreateDatabase.mock.calls[0][0];
+    expect(submitted).toMatchObject({
+      alias: 'graph-db',
+      db_type: 'neo4j',
+      port: 7687,
+      protocol: 'bolt',
+      secure: null,
+    });
+  });
+
   it('shows error message when create fails', async () => {
     mockedCreateDatabase.mockRejectedValue(new Error('Duplicate alias'));
 

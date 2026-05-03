@@ -18,7 +18,10 @@ const DEFAULT_PORTS: Record<string, number> = {
   postgres: 5432,
   mssql: 1433,
   clickhouse: 8123,
+  neo4j: 7687,
 };
+
+const NEO4J_PROTOCOLS = ['bolt', 'bolt+s', 'bolt+ssc', 'neo4j', 'neo4j+s', 'neo4j+ssc'] as const;
 
 const emptyForm: DatabaseConfig = {
   alias: '',
@@ -296,18 +299,27 @@ function Connections() {
                     value={form.db_type}
                     onChange={(e) => {
                       const newType = e.target.value as DatabaseConfig['db_type'];
+                      let nextProtocol: DatabaseConfig['protocol'] = null;
+                      let nextSecure: DatabaseConfig['secure'] = null;
+                      if (newType === 'clickhouse') {
+                        nextProtocol = 'http';
+                        nextSecure = false;
+                      } else if (newType === 'neo4j') {
+                        nextProtocol = 'bolt';
+                      }
                       setForm((prev) => ({
                         ...prev,
                         db_type: newType,
                         port: DEFAULT_PORTS[newType] ?? prev.port,
-                        protocol: newType === 'clickhouse' ? 'http' : null,
-                        secure: newType === 'clickhouse' ? false : null,
+                        protocol: nextProtocol,
+                        secure: nextSecure,
                       }));
                     }}
                   >
                     <option value="postgres">PostgreSQL</option>
                     <option value="mssql">MS SQL</option>
                     <option value="clickhouse">ClickHouse</option>
+                    <option value="neo4j">Neo4j</option>
                   </select>
                 </div>
                 <div className="form-group">
@@ -379,7 +391,27 @@ function Connections() {
                     </select>
                   </div>
                 )}
-                {form.db_type !== 'clickhouse' && (
+                {form.db_type === 'neo4j' && (
+                  <div className="form-group">
+                    <label>{t('connections.protocol')}</label>
+                    <select
+                      value={form.protocol ?? 'bolt'}
+                      onChange={(e) => {
+                        const proto = e.target.value as (typeof NEO4J_PROTOCOLS)[number];
+                        setForm((prev) => ({
+                          ...prev,
+                          protocol: proto,
+                          secure: null,
+                        }));
+                      }}
+                    >
+                      {NEO4J_PROTOCOLS.map((p) => (
+                        <option key={p} value={p}>{p}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                {form.db_type !== 'clickhouse' && form.db_type !== 'neo4j' && (
                   <>
                     <div className="form-group">
                       <label>{t('connections.poolSize')}</label>

@@ -99,15 +99,17 @@ client.interceptors.response.use(
 
 /* ── Types ── */
 
+export type Neo4jProtocol = 'bolt' | 'bolt+s' | 'bolt+ssc' | 'neo4j' | 'neo4j+s' | 'neo4j+ssc';
+
 export interface DatabaseConfig {
   alias: string;
-  db_type: 'postgres' | 'mssql' | 'clickhouse';
+  db_type: 'postgres' | 'mssql' | 'clickhouse' | 'neo4j';
   host: string;
   port: number;
   database: string;
   username: string;
   password?: string;
-  protocol?: 'http' | 'https' | null;
+  protocol?: 'http' | 'https' | Neo4jProtocol | null;
   secure?: boolean | null;
   pool_size: number;
   max_overflow: number;
