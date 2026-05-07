@@ -435,6 +435,7 @@ export async function getMetricsRequestsTotal(range = '1h', route?: string): Pro
 
 export type RouteComparisonRow = {
   route: string;
+  name?: string | null;
   requests: number;
   share: number;
   error_rate: number;

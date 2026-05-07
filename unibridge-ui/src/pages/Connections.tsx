@@ -132,14 +132,19 @@ function Connections() {
   const [curlModal, setCurlModal] = useState<{ alias: string; curl: string } | null>(null);
   const [curlCopied, setCurlCopied] = useState(false);
 
-  async function handleCurl(alias: string) {
+  async function handleCurl(db: DatabaseConfig) {
+    const alias = db.alias;
+    let sampleQuery = 'MATCH (n) RETURN n LIMIT 10';
     let tableName = '<TABLE>';
-    try {
-      const tables = await getDbTables(alias);
-      if (tables.length > 0) tableName = tables[0];
-    } catch { /* use placeholder */ }
+    if (db.db_type !== 'neo4j') {
+      try {
+        const tables = await getDbTables(alias);
+        if (tables.length > 0) tableName = tables[0];
+      } catch { /* use placeholder */ }
+      sampleQuery = `SELECT * FROM ${tableName} LIMIT 10`;
+    }
     const base = `${window.location.origin}/api/query/execute`;
-    const body = JSON.stringify({ database: alias, sql: `SELECT * FROM ${tableName} LIMIT 10` }, null, 2);
+    const body = JSON.stringify({ database: alias, sql: sampleQuery }, null, 2);
     const curl = `curl -k -X POST \\\n  -H 'Content-Type: application/json' \\\n  -H 'apikey: <YOUR_API_KEY>' \\\n  '${base}' \\\n  -d '${body}'`;
     setCurlModal({ alias, curl });
     setCurlCopied(false);
@@ -234,7 +239,7 @@ function Connections() {
                         </button>
                         <button
                           className="btn btn-sm btn-outline"
-                          onClick={() => handleCurl(db.alias)}
+                          onClick={() => handleCurl(db)}
                         >
                           cURL
                         </button>

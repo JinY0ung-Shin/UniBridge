@@ -179,21 +179,30 @@ function GatewayMonitoring() {
     refetchInterval: 30_000,
   });
 
+  const routeLabel = (r: RouteComparisonRow) => r.name || r.route;
+
   const sortedRoutes = useMemo<RouteComparisonRow[]>(() => {
     const rows = routesComparisonQuery.data?.routes ?? [];
     const multiplier = sort.dir === 'asc' ? 1 : -1;
     return [...rows].sort((a, b) => {
+      if (sort.column === 'route') {
+        return routeLabel(a).localeCompare(routeLabel(b)) * multiplier;
+      }
       const av = a[sort.column];
       const bv = b[sort.column];
       if (av == null && bv == null) return 0;
       if (av == null) return 1;
       if (bv == null) return -1;
-      if (typeof av === 'string' && typeof bv === 'string') {
-        return av.localeCompare(bv) * multiplier;
-      }
       return ((av as number) - (bv as number)) * multiplier;
     });
   }, [routesComparisonQuery.data, sort]);
+
+  const selectedRouteLabel = useMemo(() => {
+    if (!selectedRoute) return null;
+    const rows = routesComparisonQuery.data?.routes ?? [];
+    const found = rows.find((r) => r.route === selectedRoute);
+    return found ? routeLabel(found) : selectedRoute;
+  }, [routesComparisonQuery.data, selectedRoute]);
 
   const maxRequests = useMemo(() => {
     const rows = routesComparisonQuery.data?.routes ?? [];
@@ -434,7 +443,7 @@ function GatewayMonitoring() {
                     className={`route-row ${selectedRoute === r.route ? 'route-row--selected' : ''}`}
                     onClick={() => setSelectedRoute(selectedRoute === r.route ? null : r.route)}
                   >
-                    <td className="cell-alias">{r.route}</td>
+                    <td className="cell-alias" title={r.name ? r.route : undefined}>{routeLabel(r)}</td>
                     <td className="cell-metric"><BarCell value={r.requests} max={maxRequests} /></td>
                     <td className="cell-metric"><BarCell value={r.share} max={100} suffix="%" /></td>
                     <td className={`cell-metric ${errorRateClass(r.error_rate)}`}>{r.error_rate.toFixed(2)}%</td>
@@ -454,7 +463,7 @@ function GatewayMonitoring() {
       {selectedRoute && (
         <div className="route-detail-panel">
           <div className="route-detail-header">
-            <span className="route-detail-title">{selectedRoute}</span>
+            <span className="route-detail-title">{selectedRouteLabel}</span>
             <button className="route-detail-close" onClick={() => setSelectedRoute(null)}>&times;</button>
           </div>
 

@@ -747,6 +747,19 @@ async def metrics_routes_comparison(
     p50_map = _map_route_value(p50_res)
     p95_map = _map_route_value(p95_res)
 
+    # Build id → name map from APISIX. Failure here is non-fatal: we still
+    # return Prometheus data, just without the friendly name.
+    name_map: dict[str, str] = {}
+    try:
+        routes_listing = await apisix_client.list_resources("routes")
+        for item in routes_listing.get("items", []):
+            rid = item.get("id")
+            rname = item.get("name")
+            if rid and rname:
+                name_map[str(rid)] = rname
+    except Exception as exc:
+        logger.warning("Failed to fetch route names from APISIX: %s", exc)
+
     total = sum(requests_map.values())
     routes: list[dict[str, Any]] = []
     for route, req in requests_map.items():
@@ -760,6 +773,7 @@ async def metrics_routes_comparison(
         p95 = p95_map.get(route)
         routes.append({
             "route": route,
+            "name": name_map.get(route),
             "requests": req_rounded,
             "share": round(share, 2),
             "error_rate": round(error_rate, 2),

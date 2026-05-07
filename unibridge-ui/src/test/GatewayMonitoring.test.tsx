@@ -155,6 +155,24 @@ describe('GatewayMonitoring', () => {
     expect(redCells.length).toBeGreaterThan(0);
   });
 
+  it('shows route name when provided and falls back to id otherwise', async () => {
+    mockedGetMetricsRoutesComparison.mockResolvedValue({
+      total_requests: 200,
+      routes: [
+        { route: 'abc-uuid-1', name: 'User Service', requests: 100, share: 50, error_rate: 0, latency_p50_ms: 10, latency_p95_ms: 20 },
+        { route: 'no-name-id', name: null, requests: 100, share: 50, error_rate: 0, latency_p50_ms: 10, latency_p95_ms: 20 },
+      ],
+    });
+
+    renderWithProviders(<GatewayMonitoring />);
+
+    await waitFor(() => {
+      expect(screen.getByText('User Service')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('abc-uuid-1')).not.toBeInTheDocument();
+    expect(screen.getByText('no-name-id')).toBeInTheDocument();
+  });
+
   it('sorts by requests descending by default and toggles on header click', async () => {
     const userEvent = (await import('@testing-library/user-event')).default;
     const user = userEvent.setup();

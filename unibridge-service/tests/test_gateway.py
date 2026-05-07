@@ -784,6 +784,15 @@ class TestMetricsTopRoutes:
 
 
 class TestMetricsRoutesComparison:
+    @pytest.fixture(autouse=True)
+    def _patch_routes_listing(self):
+        """Default empty routes listing so tests don't hit a real APISIX."""
+        with patch(
+            "app.routers.gateway.apisix_client.list_resources",
+            new=AsyncMock(return_value={"items": [], "total": 0}),
+        ):
+            yield
+
     async def test_returns_joined_route_metrics(self, client, admin_token):
         requests_result = [
             {"metric": {"route": "route-a"}, "value": [0, "1000"]},
@@ -925,6 +934,50 @@ class TestMetricsRoutesComparison:
     async def test_forbidden_without_permission(self, client):
         resp = await client.get("/admin/gateway/metrics/routes-comparison?range=1h")
         assert resp.status_code in (401, 403)
+
+    async def test_route_name_populated_from_apisix(self, client, admin_token):
+        requests_result = [
+            {"metric": {"route": "abc-uuid"}, "value": [0, "100"]},
+            {"metric": {"route": "query-api"}, "value": [0, "50"]},
+            {"metric": {"route": "no-name-id"}, "value": [0, "25"]},
+        ]
+        listing = {
+            "items": [
+                {"id": "abc-uuid", "name": "User Service"},
+                {"id": "query-api", "name": "query-api"},
+                {"id": "no-name-id"},
+            ],
+            "total": 3,
+        }
+        prom_mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        list_mock = AsyncMock(return_value=listing)
+        with patch("app.routers.gateway.prometheus_client.instant_query", prom_mock), \
+             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=1h",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        by_route = {r["route"]: r for r in resp.json()["routes"]}
+        assert by_route["abc-uuid"]["name"] == "User Service"
+        assert by_route["query-api"]["name"] == "query-api"
+        assert by_route["no-name-id"]["name"] is None
+
+    async def test_apisix_failure_does_not_break_metrics(self, client, admin_token):
+        requests_result = [{"metric": {"route": "x"}, "value": [0, "10"]}]
+        prom_mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        list_mock = AsyncMock(side_effect=RuntimeError("apisix down"))
+        with patch("app.routers.gateway.prometheus_client.instant_query", prom_mock), \
+             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=1h",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        row = resp.json()["routes"][0]
+        assert row["route"] == "x"
+        assert row["name"] is None
+        assert row["requests"] == 10
 
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@ vi.mock('../api/client', () => ({
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getAdminDatabases, createDatabase, testDatabase, deleteDatabase } from '../api/client';
+import { getAdminDatabases, createDatabase, testDatabase, deleteDatabase, getDbTables } from '../api/client';
 import Connections from '../pages/Connections';
 import { renderWithProviders, makeDatabase } from './helpers';
 
@@ -19,9 +19,11 @@ const mockedGetAdminDatabases = vi.mocked(getAdminDatabases);
 const mockedCreateDatabase = vi.mocked(createDatabase);
 const mockedTestDatabase = vi.mocked(testDatabase);
 const mockedDeleteDatabase = vi.mocked(deleteDatabase);
+const mockedGetDbTables = vi.mocked(getDbTables);
 
 describe('Connections', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     mockedGetAdminDatabases.mockResolvedValue([]);
   });
 
@@ -229,6 +231,31 @@ describe('Connections', () => {
       protocol: 'bolt',
       secure: null,
     });
+  });
+
+  it('shows cypher cURL sample for neo4j connections', async () => {
+    const db = makeDatabase({
+      alias: 'graph-db',
+      db_type: 'neo4j' as const,
+      port: 7687,
+      database: 'neo4j',
+      protocol: 'bolt' as const,
+    });
+    mockedGetAdminDatabases.mockResolvedValue([db]);
+
+    renderWithProviders(<Connections />);
+
+    await waitFor(() => {
+      expect(screen.getByText('graph-db')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'cURL' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/MATCH \(n\) RETURN n LIMIT 10/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/SELECT \* FROM/)).not.toBeInTheDocument();
+    expect(mockedGetDbTables).not.toHaveBeenCalled();
   });
 
   it('shows error message when create fails', async () => {
