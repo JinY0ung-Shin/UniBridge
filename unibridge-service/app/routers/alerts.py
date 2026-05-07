@@ -381,7 +381,7 @@ async def alert_status(
 ) -> list[AlertStatusResponse]:
     if _alert_state is None:
         return []
-    alerts = _alert_state.get_all_alerts()
+    alerts = _alert_state.get_all_statuses()
     return [
         AlertStatusResponse(target=a["target"], type=a["type"], status=a["status"], since=a["since"])
         for a in alerts

@@ -87,6 +87,37 @@ async def test_lifespan_provisions_llm_admin_route_when_master_key_set():
 
 
 @pytest.mark.asyncio
+async def test_lifespan_loads_persisted_alert_state_before_starting_checker():
+    app = FastAPI()
+    put_resource = AsyncMock()
+    load_alert_state = AsyncMock()
+    start_checker = AsyncMock(return_value=_DummyTask())
+
+    with (
+        patch("app.main.validate_settings"),
+        patch("app.main.init_db", new=AsyncMock()),
+        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.connection_manager.initialize", new=AsyncMock()),
+        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
+        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
+        patch("app.main.rate_limiter.update_limits"),
+        patch("app.main.settings", SimpleNamespace(LITELLM_MASTER_KEY=None)),
+        patch("app.services.apisix_client.get_resource", AsyncMock(side_effect=RuntimeError("not found"))),
+        patch("app.services.apisix_client.put_resource", put_resource),
+        patch("app.services.alert_state.load_alert_state_from_db", load_alert_state),
+        patch("app.services.alert_checker.start_checker", start_checker),
+        patch("app.routers.alerts.set_alert_state"),
+        patch("app.routers.users._kc_admin", None),
+    ):
+        async with lifespan(app):
+            pass
+
+    load_alert_state.assert_awaited_once()
+    start_checker.assert_awaited_once()
+    assert load_alert_state.await_args.args[1] is start_checker.await_args.args[0]
+
+
+@pytest.mark.asyncio
 async def test_metrics_endpoint_exposes_prometheus_text(client):
     response = await client.get("/metrics")
 
@@ -324,6 +355,12 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     class _ReplayDb:
         pass
 
+    class _AlertStateDb:
+        async def execute(self, _query):
+            return SimpleNamespace(
+                scalars=lambda: SimpleNamespace(all=lambda: []),
+            )
+
     async def fake_get_db_sequence():
         yield next(db_iter)
 
@@ -334,7 +371,7 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     replay_route_restrictions = AsyncMock(
         side_effect=lambda db: events.append(("replay", db.__class__.__name__))
     )
-    db_iter = iter([_ConnectionsDb(), _S3Db(), _SettingsDb(), _ReplayDb()])
+    db_iter = iter([_ConnectionsDb(), _S3Db(), _SettingsDb(), _ReplayDb(), _AlertStateDb()])
 
     with (
         patch("app.main.validate_settings"),

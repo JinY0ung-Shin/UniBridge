@@ -1,10 +1,9 @@
 from datetime import datetime
 from typing import Any
 
-import ipaddress
-from urllib.parse import urlparse
-
 from pydantic import BaseModel, Field, field_validator
+
+from app.services.webhook_security import validate_webhook_url
 
 
 # ── Query ────────────────────────────────────────────────────────────────────
@@ -266,37 +265,8 @@ class ToggleEnabledRequest(BaseModel):
 
 # ── Alerts ──────────────────────────────────────────────────────────────────
 
-_BLOCKED_HOSTNAMES = frozenset({
-    "localhost", "keycloak", "etcd", "apisix",
-    "litellm", "prometheus", "unibridge-service",
-    "keycloak-db", "litellm-db",
-    "metadata.google.internal",
-})
-
-
 def _validate_webhook_url(url: str) -> str:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError("webhook_url must use http or https scheme")
-    hostname = parsed.hostname
-    if not hostname:
-        raise ValueError("webhook_url must include a hostname")
-    # Block internal Docker service names and cloud metadata
-    if hostname.lower() in _BLOCKED_HOSTNAMES:
-        raise ValueError("webhook_url cannot target internal services")
-    # Block private/loopback/link-local IPs
-    try:
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_private or ip.is_loopback or ip.is_link_local:
-            raise ValueError("webhook_url cannot target private/internal addresses")
-    except ValueError as exc:
-        if "cannot target" in str(exc):
-            raise
-        # hostname is not an IP — already checked against blocklist above
-    # Block 169.254.169.254 (cloud metadata)
-    if hostname == "169.254.169.254":
-        raise ValueError("webhook_url cannot target cloud metadata endpoint")
-    return url
+    return validate_webhook_url(url)
 
 
 class AlertChannelCreate(BaseModel):

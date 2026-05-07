@@ -266,11 +266,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
                 raise
 
-    from app.services.alert_state import AlertStateManager
+    from app.services.alert_state import AlertStateManager, load_alert_state_from_db
     from app.services.alert_checker import start_checker
     from app.routers.alerts import set_alert_state
 
     alert_state = AlertStateManager()
+    async for db in get_db():
+        await load_alert_state_from_db(db, alert_state)
+        break
     set_alert_state(alert_state)
     app.state.alert_task = await start_checker(alert_state)
     logger.info("Alert checker started")

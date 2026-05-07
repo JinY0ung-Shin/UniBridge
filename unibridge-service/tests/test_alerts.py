@@ -1,14 +1,17 @@
 """Tests for the health-check alert system."""
 from __future__ import annotations
 
-import pytest
+import socket
 
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.auth import ALL_PERMISSIONS
 from app.models import AlertChannel, AlertRule, AlertRuleChannel, AlertHistory
 from app.schemas import (
-    AlertChannelCreate, AlertChannelUpdate, AlertChannelResponse,
-    AlertRuleCreate, AlertRuleUpdate, AlertRuleResponse,
-    AlertHistoryResponse, AlertStatusResponse,
+    AlertChannelCreate, AlertRuleCreate, AlertStatusResponse,
 )
+from app.services.alert_state import AlertStateManager
 
 
 class TestAlertModels:
@@ -76,20 +79,28 @@ class TestAlertSchemas:
         assert rule.threshold == 5.0
 
     def test_rule_create_rejects_unknown_type(self):
-        import pytest
         with pytest.raises(Exception):
             AlertRuleCreate(
                 name="bogus", type="does_not_exist", target="*",
                 channels=[],
             )
 
+    def test_channel_create_rejects_hostname_that_resolves_private(self, monkeypatch):
+        def fake_getaddrinfo(*_args, **_kwargs):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.10.5", 443))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+        with pytest.raises(Exception):
+            AlertChannelCreate(
+                name="private-dns",
+                webhook_url="https://hooks.example.com/private",
+                payload_template="{}",
+            )
+
     def test_alert_status_response(self):
         s = AlertStatusResponse(target="mydb", type="db_health", status="alert", since="2026-04-11T12:00:00")
         assert s.status == "alert"
-
-
-from app.auth import ALL_PERMISSIONS
-
 
 class TestAlertPermissions:
     def test_alerts_read_in_all_permissions(self):
@@ -97,10 +108,6 @@ class TestAlertPermissions:
 
     def test_alerts_write_in_all_permissions(self):
         assert "alerts.write" in ALL_PERMISSIONS
-
-
-from app.services.alert_state import AlertStateManager
-
 
 class TestAlertState:
     def test_initial_state_is_ok(self):
@@ -156,9 +163,43 @@ class TestAlertState:
         targets = {a["target"] for a in alerts}
         assert targets == {"db1", "svc1"}
 
+    def test_get_all_statuses_includes_known_ok_and_alert_states(self):
+        mgr = AlertStateManager()
+        mgr.update("db_health", "db1", is_healthy=False)
+        mgr.update("db_health", "db2", is_healthy=True)
+
+        statuses = mgr.get_all_statuses()
+
+        status_by_target = {entry["target"]: entry["status"] for entry in statuses}
+        assert status_by_target == {"db1": "alert", "db2": "ok"}
+
     def test_reset_clears_all(self):
         mgr = AlertStateManager()
         mgr.update("db_health", "mydb", is_healthy=False)
         mgr.reset()
         assert mgr.get_status("db_health", "mydb") == "ok"
         assert mgr.get_all_alerts() == []
+
+    @pytest.mark.asyncio
+    async def test_persist_and_restore_alert_state(self, seeded_db):
+        from app.services.alert_state import (
+            load_alert_state_from_db,
+            save_alert_state_to_db,
+        )
+
+        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        mgr = AlertStateManager()
+        mgr.update("db_health", "main-db", is_healthy=False)
+        mgr.update("db_health", "main-db", is_healthy=False)
+
+        async with session_factory() as db:
+            await save_alert_state_to_db(db, mgr, "db_health", "main-db")
+
+        restored = AlertStateManager()
+        async with session_factory() as db:
+            await load_alert_state_from_db(db, restored)
+
+        assert restored.get_status("db_health", "main-db") == "alert"
+        statuses = restored.get_all_statuses()
+        assert statuses[0]["target"] == "main-db"
+        assert statuses[0]["status"] == "alert"

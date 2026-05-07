@@ -181,6 +181,34 @@ class TestAlertChecker:
             assert mock_dispatch.call_args[1]["rule_type"] == "upstream_health"
 
     @pytest.mark.asyncio
+    async def test_upstream_health_dispatch_matches_existing_name_based_rules(self):
+        from app.services import alert_checker
+
+        state = AlertStateManager()
+        state.update("upstream_health", "upstream-1", is_healthy=True)
+        alert_checker._UPSTREAM_NAME_BY_ID = {"upstream-1": "payments-api"}
+
+        try:
+            with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+                 patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+                 patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
+                 patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
+                 patch("app.services.alert_checker._dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+                mock_db.return_value = []
+                mock_up.return_value = [("upstream-1", False)]
+                mock_err.return_value = []
+
+                await run_single_check(state)
+
+                mock_dispatch.assert_called_once()
+                kwargs = mock_dispatch.call_args.kwargs
+                assert kwargs["target"] == "upstream-1"
+                assert kwargs["match_targets"] == ["upstream-1", "payments-api", "*"]
+                assert kwargs["display_target"] == "payments-api (upstream-1)"
+        finally:
+            alert_checker._UPSTREAM_NAME_BY_ID = {}
+
+    @pytest.mark.asyncio
     async def test_initial_unhealthy_db_cycle_is_silent_then_dispatches_if_still_down(self):
         state = AlertStateManager()
 
@@ -320,14 +348,55 @@ class TestCheckRouteErrorRate:
         assert results == []
 
     @pytest.mark.asyncio
-    async def test_prometheus_failure_returns_empty(self):
+    async def test_prometheus_failure_returns_none(self):
         from app.services.alert_checker import _check_route_error_rate
         with patch(
             "app.services.prometheus_client.instant_query",
             new=AsyncMock(side_effect=RuntimeError("prom down")),
         ):
             results = await _check_route_error_rate()
-        assert results == []
+        assert results is None
+
+    @pytest.mark.asyncio
+    async def test_route_error_rate_resolves_active_alert_when_route_has_no_traffic(self):
+        state = AlertStateManager()
+        state.update(
+            "route_error_rate",
+            "route-a:rule_42",
+            is_healthy=True,
+            display_target="checkout (route-a)",
+        )
+        state.update(
+            "route_error_rate",
+            "route-a:rule_42",
+            is_healthy=False,
+            display_target="checkout (route-a)",
+        )
+
+        fake_db = SimpleNamespace(
+            execute=AsyncMock(return_value=_FakeResult([
+                SimpleNamespace(id=42, target="route-a", threshold=5.0, name="checkout errors")
+            ]))
+        )
+
+        with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+             patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
+             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[])), \
+             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)), \
+             patch("app.services.alert_checker._dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+            mock_db.return_value = []
+            mock_up.return_value = []
+            mock_err.return_value = []
+
+            await run_single_check(state)
+
+        mock_dispatch.assert_called_once()
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs["rule_type"] == "route_error_rate"
+        assert kwargs["alert_type"] == "resolved"
+        assert kwargs["target"] == "route-a"
+        assert kwargs["rate"] == 0.0
 
 
 class TestRouteLabelCache:

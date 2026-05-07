@@ -4,6 +4,8 @@ import logging
 
 import httpx
 
+from app.services.webhook_security import validate_webhook_url
+
 logger = logging.getLogger(__name__)
 
 SEND_TIMEOUT = 10.0
@@ -57,6 +59,7 @@ async def send_webhook(
     if headers:
         send_headers.update(headers)
     try:
+        validate_webhook_url(url)
         async with httpx.AsyncClient(timeout=SEND_TIMEOUT) as client:
             resp = await client.post(url, content=payload, headers=send_headers)
             resp.raise_for_status()

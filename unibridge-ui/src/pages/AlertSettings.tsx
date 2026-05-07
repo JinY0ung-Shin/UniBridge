@@ -874,8 +874,7 @@ function AlertSettings() {
                     (() => {
                       const items = upstreamsQuery.data?.items ?? [];
                       const missing =
-                        ruleForm.target &&
-                        !items.some((up) => (up.name ?? up.id) === ruleForm.target);
+                        ruleForm.target && !items.some((up) => up.id === ruleForm.target);
                       return (
                         <select
                           value={ruleForm.target}
@@ -887,7 +886,7 @@ function AlertSettings() {
                             <option value={ruleForm.target}>{ruleForm.target} (missing)</option>
                           )}
                           {items.map((up) => (
-                            <option key={up.id} value={up.name ?? up.id}>
+                            <option key={up.id} value={up.id}>
                               {up.name ?? up.id}
                             </option>
                           ))}

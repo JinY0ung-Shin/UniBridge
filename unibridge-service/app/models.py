@@ -190,3 +190,20 @@ class AlertHistory(Base):
     sent_at = Column(UtcDateTime, default=utcnow)
     success = Column(Boolean, nullable=True)
     error_detail = Column(Text, nullable=True)
+
+
+class AlertState(Base):
+    __tablename__ = "alert_state"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    alert_type = Column(String(30), nullable=False)
+    target = Column(String(200), nullable=False)
+    status = Column(String(20), nullable=False)
+    since = Column(UtcDateTime, default=utcnow, nullable=False)
+    display_target = Column(String(200), nullable=True)
+    alert_notified = Column(Boolean, default=True, nullable=False, server_default="true")
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("alert_type", "target", name="uq_alert_state_type_target"),
+    )

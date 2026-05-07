@@ -1,6 +1,8 @@
 """Tests for alert_sender module."""
 from __future__ import annotations
 
+import socket
+
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -84,3 +86,20 @@ class TestSendWebhook:
         assert ok is True
         req = httpx_mock.get_request()
         assert req.headers["X-Token"] == "secret"
+
+    @pytest.mark.asyncio
+    async def test_send_webhook_rejects_hostname_that_resolves_private(self, monkeypatch):
+        def fake_getaddrinfo(*_args, **_kwargs):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 443))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+        ok, err = await send_webhook(
+            url="https://hooks.example.com/private",
+            payload='{"msg":"test"}',
+            headers=None,
+        )
+
+        assert ok is False
+        assert err is not None
+        assert "private/internal" in err

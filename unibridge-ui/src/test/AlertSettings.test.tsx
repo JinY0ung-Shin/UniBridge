@@ -289,4 +289,45 @@ describe('AlertSettings page', () => {
     fireEvent.click(screen.getByRole('button', { name: /\+\s*Add Rule/i }));
     await waitFor(() => expect(screen.getByText(/^Add Rule$/)).toBeInTheDocument());
   });
+
+  it('submits upstream alert target using upstream id when a display name exists', async () => {
+    mocks.getChannels.mockResolvedValue([channelFixture]);
+    mocks.getUpstreams.mockResolvedValue({
+      items: [
+        {
+          id: 'upstream-1',
+          name: 'payments-api',
+          type: 'roundrobin',
+          nodes: { 'payments:8080': 1 },
+        },
+      ],
+      total: 1,
+    });
+    mocks.createRule.mockResolvedValue({
+      ...ruleFixture,
+      id: 99,
+      name: 'payments-upstream-down',
+      type: 'upstream_health',
+      target: 'upstream-1',
+    });
+
+    renderWithProviders(<AlertSettings />);
+    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
+    await waitFor(() => expect(screen.getByText(/No rules|규칙이 없/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /\+\s*Add Rule/i }));
+    await waitFor(() => expect(screen.getByText(/^Add Rule$/)).toBeInTheDocument());
+
+    await userEvent.type(screen.getByPlaceholderText(/DB Down Alert/i), 'payments-upstream-down');
+    const typeSelect = screen.getAllByRole('combobox')[0];
+    await userEvent.selectOptions(typeSelect, 'upstream_health');
+
+    const upstreamOption = await screen.findByRole('option', { name: 'payments-api' });
+    const targetSelect = screen.getAllByRole('combobox')[1];
+    await userEvent.selectOptions(targetSelect, upstreamOption);
+
+    fireEvent.submit(screen.getByPlaceholderText(/DB Down Alert/i).closest('form')!);
+
+    await waitFor(() => expect(mocks.createRule).toHaveBeenCalled());
+    expect(mocks.createRule.mock.calls[0][0].target).toBe('upstream-1');
+  });
 });

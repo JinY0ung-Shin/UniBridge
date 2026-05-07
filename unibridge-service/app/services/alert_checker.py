@@ -11,7 +11,7 @@ from app import metrics
 from app.database import async_session
 from app.models import AlertChannel, AlertHistory, AlertRule, AlertRuleChannel
 from app.services.alert_sender import render_template, send_webhook
-from app.services.alert_state import AlertStateManager
+from app.services.alert_state import AlertStateManager, save_alert_state_to_db
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ _monotonic = time.monotonic
 _ROUTE_LABEL_CACHE: dict[str, str] = {}
 _ROUTE_LABEL_CACHE_TS: float = 0.0
 _ROUTE_LABEL_TTL = 300.0  # 5 minutes
+_UPSTREAM_NAME_BY_ID: dict[str, str] = {}
 
 
 async def _refresh_route_labels() -> None:
@@ -81,17 +82,24 @@ async def _check_db_health() -> list[tuple[str, bool]]:
 
 async def _check_upstream_health() -> list[tuple[str, bool]]:
     """Check APISIX upstream health. Returns [(upstream_id, is_healthy)]."""
+    global _UPSTREAM_NAME_BY_ID
     from app.services import apisix_client
     results = []
     try:
         data = await apisix_client.list_resources("upstreams")
+        names: dict[str, str] = {}
         for item in data.get("items", []):
             uid = item.get("id", "unknown")
+            uid_str = str(uid)
+            name = item.get("name")
+            if name:
+                names[uid_str] = str(name)
             nodes = item.get("nodes", {})
             is_healthy = bool(nodes) and any(
                 w > 0 for w in (nodes.values() if isinstance(nodes, dict) else [])
             )
-            results.append((str(uid), is_healthy))
+            results.append((uid_str, is_healthy))
+        _UPSTREAM_NAME_BY_ID = names
     except Exception as exc:
         logger.warning("Upstream health check failed: %s", exc)
     return results
@@ -114,7 +122,7 @@ async def _check_error_rate() -> list[tuple[str, float]]:
     return []
 
 
-async def _check_route_error_rate() -> list[tuple[str, float]]:
+async def _check_route_error_rate() -> list[tuple[str, float]] | None:
     """Check 5xx error rate per APISIX route.
 
     Returns [(route_id, rate_pct), ...] for every route that has traffic
@@ -133,7 +141,7 @@ async def _check_route_error_rate() -> list[tuple[str, float]]:
         )
     except Exception as exc:
         logger.warning("Route error rate check failed: %s", exc)
-        return []
+        return None
 
     err_map: dict[str, float] = {}
     for item in err_results:
@@ -177,6 +185,7 @@ async def _dispatch_alert(
     display_target: str | None = None,
     rate: float | None = None,
     threshold: float | None = None,
+    match_targets: list[str] | None = None,
 ) -> None:
     """Find matching rules and send alerts through mapped channels.
 
@@ -199,10 +208,11 @@ async def _dispatch_alert(
                 AlertRule.enabled.is_(True),
             )
         else:
+            targets = match_targets if match_targets is not None else [target, "*"]
             q = select(AlertRule).where(
                 AlertRule.enabled.is_(True),
                 AlertRule.type == rule_type,
-                AlertRule.target.in_([target, "*"]),
+                AlertRule.target.in_(targets),
             )
         result = await db.execute(q)
         rules = result.scalars().all()
@@ -292,12 +302,78 @@ async def _dispatch_alert(
         metrics.record_alert_dispatch(**dispatch_metric)
 
 
+async def _persist_state_safely(
+    state: AlertStateManager,
+    alert_type: str,
+    target: str,
+) -> None:
+    try:
+        async with async_session() as db:
+            await save_alert_state_to_db(db, state, alert_type, target)
+    except Exception as exc:
+        logger.warning("Failed to persist alert state %s/%s: %s", alert_type, target, exc)
+
+
+def _route_state_target(route_id: str, rule_id: int) -> str:
+    return f"{route_id}:rule_{rule_id}"
+
+
+def _parse_route_state_target(value: str) -> tuple[str, int] | None:
+    marker = ":rule_"
+    if marker not in value:
+        return None
+    route_id, rule_id_text = value.rsplit(marker, 1)
+    if not route_id:
+        return None
+    try:
+        return route_id, int(rule_id_text)
+    except ValueError:
+        return None
+
+
+async def _evaluate_route_error_rule(
+    state: AlertStateManager,
+    *,
+    route_id: str,
+    rate: float,
+    rule: AlertRule,
+    display_target: str | None = None,
+) -> None:
+    if display_target is None:
+        label = await _get_route_label(route_id)
+        display = f"{label} ({route_id})" if label != route_id else route_id
+    else:
+        display = display_target
+
+    threshold = rule.threshold if rule.threshold is not None else 10.0
+    is_healthy = rate < threshold
+    state_target = _route_state_target(route_id, rule.id)
+    transition = state.update(
+        "route_error_rate", state_target, is_healthy=is_healthy,
+        display_target=display,
+    )
+    await _persist_state_safely(state, "route_error_rate", state_target)
+    if transition:
+        msg = (
+            f"Route '{display}' 5xx error rate is "
+            f"{rate:.1f}% (threshold: {threshold}%)."
+        )
+        await _dispatch_alert(
+            rule_type="route_error_rate", alert_type=transition,
+            target=route_id, message=msg,
+            rule_id=rule.id,
+            display_target=display,
+            rate=rate, threshold=threshold,
+        )
+
+
 async def run_single_check(state: AlertStateManager) -> None:
     """Execute one round of all health checks."""
     # 1. DB health
     db_results = await _check_db_health()
     for alias, is_healthy in db_results:
         transition = state.update("db_health", alias, is_healthy=is_healthy)
+        await _persist_state_safely(state, "db_health", alias)
         if transition:
             msg = f"Database '{alias}' connection {'restored' if transition == 'resolved' else 'failed'}."
             await _dispatch_alert(
@@ -308,12 +384,22 @@ async def run_single_check(state: AlertStateManager) -> None:
     # 2. Upstream health
     upstream_results = await _check_upstream_health()
     for uid, is_healthy in upstream_results:
-        transition = state.update("upstream_health", uid, is_healthy=is_healthy)
+        upstream_name = _UPSTREAM_NAME_BY_ID.get(uid)
+        display = f"{upstream_name} ({uid})" if upstream_name and upstream_name != uid else uid
+        transition = state.update(
+            "upstream_health", uid, is_healthy=is_healthy,
+            display_target=display,
+        )
+        await _persist_state_safely(state, "upstream_health", uid)
         if transition:
-            msg = f"Upstream '{uid}' {'recovered' if transition == 'resolved' else 'is down'}."
+            msg = f"Upstream '{display}' {'recovered' if transition == 'resolved' else 'is down'}."
+            match_targets = [uid, "*"]
+            if upstream_name and upstream_name != uid:
+                match_targets = [uid, upstream_name, "*"]
             await _dispatch_alert(
                 rule_type="upstream_health", alert_type=transition,
-                target=uid, message=msg,
+                target=uid, message=msg, display_target=display,
+                match_targets=match_targets,
             )
 
     # 3. Error rate (global)
@@ -339,6 +425,7 @@ async def run_single_check(state: AlertStateManager) -> None:
                 "error_rate", state_target, is_healthy=is_healthy,
                 display_target=target_name,
             )
+            await _persist_state_safely(state, "error_rate", state_target)
             if transition:
                 msg = f"5xx error rate is {rate:.1f}% (threshold: {threshold}%)."
                 await _dispatch_alert(
@@ -350,7 +437,11 @@ async def run_single_check(state: AlertStateManager) -> None:
 
     # 4. Route-level error rate
     route_results = await _check_route_error_rate()
-    if route_results:
+    if route_results is not None:
+        active_route_alerts = state.get_entries(alert_type="route_error_rate", status="alert")
+        if not route_results and not active_route_alerts:
+            return
+
         async with async_session() as db:
             rq = select(AlertRule).where(
                 AlertRule.enabled.is_(True),
@@ -359,36 +450,45 @@ async def run_single_check(state: AlertStateManager) -> None:
             result = await db.execute(rq)
             all_route_rules = result.scalars().all()
 
+        rules_by_id = {rule.id: rule for rule in all_route_rules}
+        processed_state_targets: set[str] = set()
+        route_rate_by_id = dict(route_results)
+
         for route_id, rate in route_results:
             matching_rules = [
                 r for r in all_route_rules
                 if r.target == route_id or r.target == "*"
             ]
-            if not matching_rules:
-                continue
-            label = await _get_route_label(route_id)
-            display = f"{label} ({route_id})" if label != route_id else route_id
-
             for rule in matching_rules:
-                threshold = rule.threshold if rule.threshold is not None else 10.0
-                is_healthy = rate < threshold
-                state_target = f"{route_id}:rule_{rule.id}"
-                transition = state.update(
-                    "route_error_rate", state_target, is_healthy=is_healthy,
-                    display_target=display,
+                state_target = _route_state_target(route_id, rule.id)
+                processed_state_targets.add(state_target)
+                await _evaluate_route_error_rule(
+                    state,
+                    route_id=route_id,
+                    rate=rate,
+                    rule=rule,
                 )
-                if transition:
-                    msg = (
-                        f"Route '{label}' ({route_id}) 5xx error rate is "
-                        f"{rate:.1f}% (threshold: {threshold}%)."
-                    )
-                    await _dispatch_alert(
-                        rule_type="route_error_rate", alert_type=transition,
-                        target=route_id, message=msg,
-                        rule_id=rule.id,
-                        display_target=display,
-                        rate=rate, threshold=threshold,
-                    )
+
+        for entry in active_route_alerts:
+            state_target = entry["target"]
+            if state_target in processed_state_targets:
+                continue
+            parsed = _parse_route_state_target(state_target)
+            if parsed is None:
+                continue
+            route_id, rule_id = parsed
+            if route_id in route_rate_by_id:
+                continue
+            rule = rules_by_id.get(rule_id)
+            if rule is None:
+                continue
+            await _evaluate_route_error_rule(
+                state,
+                route_id=route_id,
+                rate=0.0,
+                rule=rule,
+                display_target=entry.get("display_target"),
+            )
 
 
 async def start_checker(state: AlertStateManager) -> asyncio.Task:
