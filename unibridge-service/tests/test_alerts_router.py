@@ -6,9 +6,10 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
-from app.models import AlertChannel, AlertHistory
+from app.models import AlertChannel, AlertHistory, AlertState
 from app.routers import alerts as alerts_router
 from app.services.alert_state import AlertStateManager
 from tests.conftest import auth_header
@@ -331,6 +332,49 @@ async def test_update_rule_partial_no_channels(client, admin_token):
 
 
 @pytest.mark.asyncio
+async def test_update_rule_retarget_clears_old_rule_scoped_alert_state(
+    client, admin_token, seeded_db,
+):
+    cid = await _create_channel(client, admin_token, "state-upd-ch")
+    create = await client.post(
+        "/admin/alerts/rules",
+        json={
+            "name": "route-state",
+            "type": "route_error_rate",
+            "target": "route-a",
+            "threshold": 5.0,
+            "channels": [{"channel_id": cid, "recipients": []}],
+        },
+        headers=auth_header(admin_token),
+    )
+    rid = create.json()["id"]
+    state_target = f"route-a:rule_{rid}"
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        db.add(AlertState(
+            alert_type="route_error_rate",
+            target=state_target,
+            status="alert",
+            display_target="checkout (route-a)",
+            alert_notified=True,
+        ))
+        await db.commit()
+
+    resp = await client.put(
+        f"/admin/alerts/rules/{rid}",
+        json={"target": "route-b"},
+        headers=auth_header(admin_token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    async with session_factory() as db:
+        rows = (await db.execute(
+            select(AlertState).where(AlertState.target == state_target)
+        )).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
 async def test_update_rule_404(client, admin_token):
     resp = await client.put(
         "/admin/alerts/rules/9999",
@@ -355,6 +399,61 @@ async def test_delete_rule_success(client, admin_token):
         headers=auth_header(admin_token),
     )
     assert resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_delete_rule_clears_rule_scoped_alert_state(client, admin_token, seeded_db):
+    cid = await _create_channel(client, admin_token, "state-del-ch")
+    create = await client.post(
+        "/admin/alerts/rules",
+        json={
+            "name": "route-state-delete",
+            "type": "route_error_rate",
+            "target": "route-a",
+            "threshold": 5.0,
+            "channels": [{"channel_id": cid, "recipients": []}],
+        },
+        headers=auth_header(admin_token),
+    )
+    rid = create.json()["id"]
+    state_target = f"route-a:rule_{rid}"
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        db.add(AlertState(
+            alert_type="route_error_rate",
+            target=state_target,
+            status="alert",
+            display_target="checkout (route-a)",
+            alert_notified=True,
+        ))
+        await db.commit()
+
+    state = AlertStateManager()
+    state.set_entry(
+        "route_error_rate",
+        state_target,
+        status="alert",
+        since="2026-05-07T00:00:00+00:00",
+        display_target="checkout (route-a)",
+        alert_notified=True,
+    )
+    alerts_router.set_alert_state(state)
+
+    try:
+        resp = await client.delete(
+            f"/admin/alerts/rules/{rid}",
+            headers=auth_header(admin_token),
+        )
+
+        assert resp.status_code == 204
+        assert state.get_entries(alert_type="route_error_rate") == []
+        async with session_factory() as db:
+            rows = (await db.execute(
+                select(AlertState).where(AlertState.target == state_target)
+            )).scalars().all()
+        assert rows == []
+    finally:
+        alerts_router.set_alert_state(None)
 
 
 @pytest.mark.asyncio

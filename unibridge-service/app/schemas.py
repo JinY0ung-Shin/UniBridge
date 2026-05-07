@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -269,6 +270,15 @@ def _validate_webhook_url(url: str) -> str:
     return validate_webhook_url(url)
 
 
+def _validate_s3_endpoint_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("endpoint_url must use http or https scheme")
+    if not parsed.hostname:
+        raise ValueError("endpoint_url must include a hostname")
+    return url
+
+
 class AlertChannelCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     webhook_url: str = Field(..., min_length=1)
@@ -403,7 +413,7 @@ class S3ConnectionCreate(BaseModel):
     @classmethod
     def check_endpoint_url(cls, v: str | None) -> str | None:
         if v is not None and v.strip():
-            return _validate_webhook_url(v)
+            return _validate_s3_endpoint_url(v)
         return None
 
 
@@ -419,7 +429,7 @@ class S3ConnectionUpdate(BaseModel):
     @classmethod
     def check_endpoint_url(cls, v: str | None) -> str | None:
         if v is not None and v.strip():
-            return _validate_webhook_url(v)
+            return _validate_s3_endpoint_url(v)
         return None
 
 

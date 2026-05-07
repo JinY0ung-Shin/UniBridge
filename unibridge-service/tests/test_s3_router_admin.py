@@ -1,6 +1,7 @@
 """Tests for S3 connection admin CRUD and browse endpoints."""
 from __future__ import annotations
 
+import socket
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -42,6 +43,34 @@ async def test_create_s3_connection_success(client, admin_token):
     assert data["alias"] == "minio-1"
     assert data["status"] == "registered"
     assert data["access_key_id_masked"].endswith("MPLE")
+
+
+@pytest.mark.asyncio
+async def test_create_s3_connection_allows_private_dns_endpoint(client, admin_token, monkeypatch):
+    def fake_getaddrinfo(*_args, **_kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 9000))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.add_connection = AsyncMock()
+        mgr.has_connection.return_value = True
+
+        resp = await client.post(
+            "/admin/s3/connections",
+            json={
+                "alias": "private-minio",
+                "endpoint_url": "https://minio.corp.local:9000",
+                "region": "us-east-1",
+                "access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                "secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                "use_ssl": True,
+            },
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["endpoint_url"] == "https://minio.corp.local:9000"
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,7 @@ from app.schemas import (
     RuleChannelDetail,
 )
 from app.services.alert_sender import render_template, send_webhook
+from app.services.alert_state import delete_alert_states_for_rule
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +220,9 @@ async def update_rule(
     rule = result.scalar_one_or_none()
     if rule is None:
         raise HTTPException(status_code=404, detail="Rule not found")
+    old_type = rule.type
+    old_target = rule.target
+    old_enabled = rule.enabled
     if body.name is not None:
         rule.name = body.name
     if body.type is not None:
@@ -236,8 +240,17 @@ async def update_rule(
                 rule_id=rule.id, channel_id=ch_map.channel_id,
                 recipients=json.dumps(ch_map.recipients),
             ))
+    clear_rule_state = (
+        (body.type is not None and body.type != old_type)
+        or (body.target is not None and body.target != old_target)
+        or (body.enabled is False and old_enabled)
+    )
+    if clear_rule_state:
+        await delete_alert_states_for_rule(db, rule.id)
     await db.commit()
     await db.refresh(rule)
+    if clear_rule_state and _alert_state is not None:
+        _alert_state.clear_rule_states(rule.id)
     return await _build_rule_response(db, rule)
 
 
@@ -251,8 +264,11 @@ async def delete_rule(
     rule = result.scalar_one_or_none()
     if rule is None:
         raise HTTPException(status_code=404, detail="Rule not found")
+    await delete_alert_states_for_rule(db, rule.id)
     await db.delete(rule)
     await db.commit()
+    if _alert_state is not None:
+        _alert_state.clear_rule_states(rule.id)
 
 
 @router.post("/rules/{rule_id}/test", response_model=AlertRuleTestResponse)

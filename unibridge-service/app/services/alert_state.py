@@ -12,6 +12,12 @@ from app.models import AlertState
 
 logger = logging.getLogger(__name__)
 
+_RULE_SCOPED_ALERT_TYPES = {"error_rate", "route_error_rate"}
+
+
+def _rule_state_suffix(rule_id: int) -> str:
+    return f":rule_{rule_id}"
+
 
 class AlertStateManager:
     """In-memory alert state tracker.
@@ -159,6 +165,14 @@ class AlertStateManager:
             })
         return rows
 
+    def clear_rule_states(self, rule_id: int) -> None:
+        """Remove in-memory states whose key is scoped to an alert rule."""
+        suffix = _rule_state_suffix(rule_id)
+        for key in list(self._states):
+            alert_type, target = key
+            if alert_type in _RULE_SCOPED_ALERT_TYPES and target.endswith(suffix):
+                del self._states[key]
+
     def reset(self) -> None:
         self._states.clear()
 
@@ -225,3 +239,14 @@ async def load_alert_state_from_db(
             display_target=row.display_target,
             alert_notified=row.alert_notified,
         )
+
+
+async def delete_alert_states_for_rule(db: AsyncSession, rule_id: int) -> None:
+    """Delete persisted states whose key is scoped to an alert rule."""
+    suffix = _rule_state_suffix(rule_id)
+    result = await db.execute(
+        select(AlertState).where(AlertState.alert_type.in_(_RULE_SCOPED_ALERT_TYPES))
+    )
+    for row in result.scalars().all():
+        if row.target.endswith(suffix):
+            await db.delete(row)
