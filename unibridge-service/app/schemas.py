@@ -347,6 +347,57 @@ class AlertSettingsUpdate(BaseModel):
         return self
 
 
+def _dedupe_emails(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    emails: list[str] = []
+    for value in values:
+        email = value.strip()
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        emails.append(email)
+    return emails
+
+
+class OwnerGroupCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    emails: list[str]
+    enabled: bool = True
+
+    @field_validator("emails")
+    @classmethod
+    def validate_emails(cls, v: list[str]) -> list[str]:
+        emails = _dedupe_emails(v)
+        if not emails:
+            raise ValueError("emails must include at least one address")
+        return emails
+
+
+class OwnerGroupUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=100)
+    emails: list[str] | None = None
+    enabled: bool | None = None
+
+    @field_validator("emails")
+    @classmethod
+    def validate_emails(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        emails = _dedupe_emails(v)
+        if not emails:
+            raise ValueError("emails must include at least one address")
+        return emails
+
+
+class OwnerGroupResponse(BaseModel):
+    id: int
+    name: str
+    emails: list[str]
+    enabled: bool
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class RuleChannelMapping(BaseModel):
     channel_id: int
     recipients: list[str]

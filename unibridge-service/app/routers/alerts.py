@@ -12,10 +12,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
 from app.database import get_db
-from app.models import AlertChannel, AlertHistory, AlertRule, AlertRuleChannel, AlertSettings
+from app.models import (
+    AlertChannel,
+    AlertHistory,
+    AlertRule,
+    AlertRuleChannel,
+    AlertSettings,
+    OwnerGroup,
+    ResourceOwner,
+)
 from app.schemas import (
     AlertChannelCreate, AlertChannelResponse, AlertChannelUpdate,
     AlertHistoryResponse,
+    OwnerGroupCreate, OwnerGroupResponse, OwnerGroupUpdate,
     AlertRuleCreate, AlertRuleResponse, AlertRuleTestChannelResult,
     AlertRuleTestResponse, AlertRuleUpdate, AlertStatusResponse,
     AlertSettingsResponse, AlertSettingsUpdate,
@@ -95,6 +104,98 @@ async def update_alert_settings(
     await db.commit()
     await db.refresh(settings)
     return AlertSettingsResponse.model_validate(settings)
+
+
+# ── Owner Groups ────────────────────────────────────────────────────────────
+
+def _build_owner_group_response(group: OwnerGroup) -> OwnerGroupResponse:
+    return OwnerGroupResponse(
+        id=group.id,
+        name=group.name,
+        emails=json.loads(group.emails),
+        enabled=group.enabled,
+        created_at=group.created_at,
+        updated_at=group.updated_at,
+    )
+
+
+@router.get("/owner-groups", response_model=list[OwnerGroupResponse])
+async def list_owner_groups(
+    _user: CurrentUser = Depends(require_permission("alerts.read")),
+    db: AsyncSession = Depends(get_db),
+) -> list[OwnerGroupResponse]:
+    result = await db.execute(select(OwnerGroup).order_by(OwnerGroup.name))
+    groups = result.scalars().all()
+    return [_build_owner_group_response(group) for group in groups]
+
+
+@router.post("/owner-groups", response_model=OwnerGroupResponse, status_code=201)
+async def create_owner_group(
+    body: OwnerGroupCreate,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> OwnerGroupResponse:
+    group = OwnerGroup(
+        name=body.name,
+        emails=json.dumps(body.emails),
+        enabled=body.enabled,
+    )
+    db.add(group)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=f"Owner group name '{body.name}' already exists")
+    await db.refresh(group)
+    return _build_owner_group_response(group)
+
+
+@router.put("/owner-groups/{group_id}", response_model=OwnerGroupResponse)
+async def update_owner_group(
+    group_id: int,
+    body: OwnerGroupUpdate,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> OwnerGroupResponse:
+    group = await db.get(OwnerGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Owner group not found")
+    if body.name is not None:
+        group.name = body.name
+    if body.emails is not None:
+        group.emails = json.dumps(body.emails)
+    if body.enabled is not None:
+        group.enabled = body.enabled
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=f"Owner group name '{body.name}' already exists")
+    await db.refresh(group)
+    return _build_owner_group_response(group)
+
+
+@router.delete("/owner-groups/{group_id}", status_code=204, response_model=None)
+async def delete_owner_group(
+    group_id: int,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    group = await db.get(OwnerGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Owner group not found")
+    settings_result = await db.execute(
+        select(AlertSettings).where(AlertSettings.fallback_owner_group_id == group_id)
+    )
+    if settings_result.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail="Owner group is configured as the fallback owner group")
+    resource_owner_result = await db.execute(
+        select(ResourceOwner).where(ResourceOwner.owner_group_id == group_id)
+    )
+    if resource_owner_result.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail="Owner group is assigned to a resource owner")
+    await db.delete(group)
+    await db.commit()
 
 
 # ── Channels ────────────────────────────────────────────────────────────────

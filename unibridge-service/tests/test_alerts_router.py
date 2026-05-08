@@ -9,7 +9,14 @@ import pytest
 from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
-from app.models import AlertChannel, AlertHistory, AlertSettings, AlertState, OwnerGroup
+from app.models import (
+    AlertChannel,
+    AlertHistory,
+    AlertSettings,
+    AlertState,
+    OwnerGroup,
+    ResourceOwner,
+)
 from app.routers import alerts as alerts_router
 from app.services.alert_state import AlertStateManager
 from tests.conftest import auth_header
@@ -333,6 +340,140 @@ async def test_update_alert_settings_rejects_explicit_numeric_nulls(client, admi
         headers=auth_header(admin_token),
     )
     assert threshold_resp.status_code == 422
+
+
+# ── Owner Groups ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_owner_group_crud_deduplicates_emails(client, admin_token):
+    create = await client.post(
+        "/admin/alerts/owner-groups",
+        json={
+            "name": "database-team",
+            "emails": [
+                " dba@example.com ",
+                "ops@example.com",
+                "dba@example.com",
+                "",
+                " ops@example.com ",
+            ],
+            "enabled": True,
+        },
+        headers=auth_header(admin_token),
+    )
+    assert create.status_code == 201, create.text
+    body = create.json()
+    assert body["name"] == "database-team"
+    assert body["emails"] == ["dba@example.com", "ops@example.com"]
+    assert body["enabled"] is True
+    group_id = body["id"]
+
+    update = await client.put(
+        f"/admin/alerts/owner-groups/{group_id}",
+        json={
+            "name": "primary-database-team",
+            "emails": [
+                "primary@example.com",
+                "primary@example.com",
+                " secondary@example.com ",
+            ],
+            "enabled": False,
+        },
+        headers=auth_header(admin_token),
+    )
+    assert update.status_code == 200, update.text
+    body = update.json()
+    assert body["name"] == "primary-database-team"
+    assert body["emails"] == ["primary@example.com", "secondary@example.com"]
+    assert body["enabled"] is False
+
+    list_resp = await client.get(
+        "/admin/alerts/owner-groups",
+        headers=auth_header(admin_token),
+    )
+    assert list_resp.status_code == 200
+    assert any(
+        group["id"] == group_id
+        and group["name"] == "primary-database-team"
+        and group["emails"] == ["primary@example.com", "secondary@example.com"]
+        and group["enabled"] is False
+        for group in list_resp.json()
+    )
+
+    delete = await client.delete(
+        f"/admin/alerts/owner-groups/{group_id}",
+        headers=auth_header(admin_token),
+    )
+    assert delete.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_owner_group_rejects_empty_email_list(client, admin_token):
+    resp = await client.post(
+        "/admin/alerts/owner-groups",
+        json={"name": "empty-team", "emails": []},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 422
+
+    blank_resp = await client.post(
+        "/admin/alerts/owner-groups",
+        json={"name": "blank-team", "emails": [" ", ""]},
+        headers=auth_header(admin_token),
+    )
+    assert blank_resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_delete_fallback_owner_group_returns_409(client, admin_token, seeded_db):
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        group = OwnerGroup(name="fallback-team", emails='["fallback@example.com"]')
+        db.add(group)
+        await db.flush()
+        settings = await db.get(AlertSettings, 1)
+        if settings is None:
+            settings = AlertSettings(
+                id=1,
+                route_error_threshold_pct=10.0,
+                check_interval_seconds=60,
+            )
+            db.add(settings)
+        settings.fallback_owner_group_id = group.id
+        await db.commit()
+        group_id = group.id
+
+    resp = await client.delete(
+        f"/admin/alerts/owner-groups/{group_id}",
+        headers=auth_header(admin_token),
+    )
+
+    assert resp.status_code == 409
+    assert "fallback owner group" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_delete_resource_owner_group_returns_409(client, admin_token, seeded_db):
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        group = OwnerGroup(name="resource-team", emails='["owner@example.com"]')
+        db.add(group)
+        await db.flush()
+        db.add(ResourceOwner(
+            resource_type="database",
+            resource_id="analytics",
+            owner_group_id=group.id,
+        ))
+        await db.commit()
+        group_id = group.id
+
+    resp = await client.delete(
+        f"/admin/alerts/owner-groups/{group_id}",
+        headers=auth_header(admin_token),
+    )
+
+    assert resp.status_code == 409
+    assert "resource owner" in resp.json()["detail"]
 
 
 # ── Rules ───────────────────────────────────────────────────────────────────
