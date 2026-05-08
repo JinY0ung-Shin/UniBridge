@@ -12,20 +12,79 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
 from app.database import get_db
-from app.models import AlertChannel, AlertHistory, AlertRule, AlertRuleChannel
+from app.models import AlertChannel, AlertHistory, AlertRule, AlertRuleChannel, AlertSettings
 from app.schemas import (
     AlertChannelCreate, AlertChannelResponse, AlertChannelUpdate,
     AlertHistoryResponse,
     AlertRuleCreate, AlertRuleResponse, AlertRuleTestChannelResult,
     AlertRuleTestResponse, AlertRuleUpdate, AlertStatusResponse,
+    AlertSettingsResponse, AlertSettingsUpdate,
     RuleChannelDetail,
 )
-from app.services.alert_sender import render_template, send_webhook
+from app.services.alert_sender import render_recipient_items, render_template, send_webhook
 from app.services.alert_state import delete_alert_states_for_rule
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/alerts", tags=["Alerts"])
+
+
+async def _get_or_create_alert_settings(db: AsyncSession) -> AlertSettings:
+    result = await db.execute(select(AlertSettings).where(AlertSettings.id == 1))
+    settings = result.scalar_one_or_none()
+    if settings is None:
+        settings = AlertSettings(
+            id=1,
+            route_error_threshold_pct=10.0,
+            check_interval_seconds=60,
+        )
+        db.add(settings)
+        await db.commit()
+        await db.refresh(settings)
+    return settings
+
+
+# ── Settings ────────────────────────────────────────────────────────────────
+
+@router.get("/settings", response_model=AlertSettingsResponse)
+async def get_alert_settings(
+    _user: CurrentUser = Depends(require_permission("alerts.read")),
+    db: AsyncSession = Depends(get_db),
+) -> AlertSettingsResponse:
+    settings = await _get_or_create_alert_settings(db)
+    return AlertSettingsResponse.model_validate(settings)
+
+
+@router.put("/settings", response_model=AlertSettingsResponse)
+async def update_alert_settings(
+    body: AlertSettingsUpdate,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> AlertSettingsResponse:
+    settings = await _get_or_create_alert_settings(db)
+    if body.mail_channel_id is not None:
+        ch = await db.get(AlertChannel, body.mail_channel_id)
+        if ch is None:
+            raise HTTPException(status_code=422, detail="Mail channel not found")
+        settings.mail_channel_id = body.mail_channel_id
+    if body.fallback_owner_group_id is not None:
+        from app.models import OwnerGroup
+
+        group = await db.get(OwnerGroup, body.fallback_owner_group_id)
+        if group is None:
+            raise HTTPException(status_code=422, detail="Fallback owner group not found")
+        settings.fallback_owner_group_id = body.fallback_owner_group_id
+    if "mail_channel_id" in body.model_fields_set and body.mail_channel_id is None:
+        settings.mail_channel_id = None
+    if "fallback_owner_group_id" in body.model_fields_set and body.fallback_owner_group_id is None:
+        settings.fallback_owner_group_id = None
+    if body.route_error_threshold_pct is not None:
+        settings.route_error_threshold_pct = body.route_error_threshold_pct
+    if body.check_interval_seconds is not None:
+        settings.check_interval_seconds = body.check_interval_seconds
+    await db.commit()
+    await db.refresh(settings)
+    return AlertSettingsResponse.model_validate(settings)
 
 
 # ── Channels ────────────────────────────────────────────────────────────────
@@ -42,6 +101,7 @@ async def list_channels(
         rows.append(AlertChannelResponse(
             id=ch.id, name=ch.name, webhook_url=ch.webhook_url,
             payload_template=ch.payload_template,
+            recipient_item_template=ch.recipient_item_template,
             headers=json.loads(ch.headers) if ch.headers else None,
             enabled=ch.enabled, created_at=ch.created_at, updated_at=ch.updated_at,
         ))
@@ -58,6 +118,7 @@ async def create_channel(
         name=body.name,
         webhook_url=body.webhook_url,
         payload_template=body.payload_template,
+        recipient_item_template=body.recipient_item_template,
         headers=json.dumps(body.headers) if body.headers else None,
         enabled=body.enabled,
     )
@@ -71,6 +132,7 @@ async def create_channel(
     return AlertChannelResponse(
         id=ch.id, name=ch.name, webhook_url=ch.webhook_url,
         payload_template=ch.payload_template,
+        recipient_item_template=ch.recipient_item_template,
         headers=body.headers, enabled=ch.enabled,
         created_at=ch.created_at, updated_at=ch.updated_at,
     )
@@ -93,6 +155,8 @@ async def update_channel(
         ch.webhook_url = body.webhook_url
     if body.payload_template is not None:
         ch.payload_template = body.payload_template
+    if "recipient_item_template" in body.model_fields_set:
+        ch.recipient_item_template = body.recipient_item_template
     if body.headers is not None:
         ch.headers = json.dumps(body.headers)
     if body.enabled is not None:
@@ -106,6 +170,7 @@ async def update_channel(
     return AlertChannelResponse(
         id=ch.id, name=ch.name, webhook_url=ch.webhook_url,
         payload_template=ch.payload_template,
+        recipient_item_template=ch.recipient_item_template,
         headers=json.loads(ch.headers) if ch.headers else None,
         enabled=ch.enabled, created_at=ch.created_at, updated_at=ch.updated_at,
     )
@@ -136,6 +201,14 @@ async def test_channel(
     if ch is None:
         raise HTTPException(status_code=404, detail="Channel not found")
     now = datetime.now(timezone.utc).isoformat()
+    test_emails = ["test@example.com"]
+    try:
+        recipients_json = render_recipient_items(
+            ch.recipient_item_template or '{"email":"{{email}}"}',
+            test_emails,
+        )
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
     payload = render_template(
         ch.payload_template,
         alert_type="test",
@@ -143,7 +216,8 @@ async def test_channel(
         status="ok",
         message="This is a test alert from UniBridge.",
         timestamp=now,
-        recipients="test@example.com",
+        recipients=", ".join(test_emails),
+        recipients_json=recipients_json,
         rate="5.0",
         threshold="10.0",
         rule_name="test-rule",

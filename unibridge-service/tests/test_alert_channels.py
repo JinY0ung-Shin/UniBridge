@@ -1,6 +1,9 @@
 """Integration tests for alert channels API."""
 from __future__ import annotations
 
+import json
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from tests.conftest import auth_header
 
@@ -44,6 +47,46 @@ class TestAlertChannelsAPI:
         assert resp.status_code == 200
         assert resp.json()["name"] == "ch-updated"
         assert resp.json()["enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_channel_round_trips_recipient_item_template(self, client, admin_token):
+        template = '{"emailAddress":"{{email}}","recipientType":"TO"}'
+        resp = await client.post("/admin/alerts/channels", json={
+            "name": "mail-api",
+            "webhook_url": "http://mail.internal/api/send",
+            "payload_template": '{"recipients":{{recipients_json}}}',
+            "recipient_item_template": template,
+        }, headers=auth_header(admin_token))
+        assert resp.status_code == 201
+        assert resp.json()["recipient_item_template"] == template
+
+        ch_id = resp.json()["id"]
+        update = await client.put(f"/admin/alerts/channels/{ch_id}", json={
+            "recipient_item_template": '{"mail":"{{email}}"}',
+        }, headers=auth_header(admin_token))
+        assert update.status_code == 200
+        assert update.json()["recipient_item_template"] == '{"mail":"{{email}}"}'
+
+    @pytest.mark.asyncio
+    async def test_channel_test_injects_rendered_recipients_json(self, client, admin_token):
+        resp = await client.post("/admin/alerts/channels", json={
+            "name": "mail-json",
+            "webhook_url": "http://mail.internal/api/send",
+            "payload_template": '{"recipients":{{recipients_json}}}',
+            "recipient_item_template": '{"emailAddress":"{{email}}","recipientType":"TO"}',
+        }, headers=auth_header(admin_token))
+        assert resp.status_code == 201
+        ch_id = resp.json()["id"]
+
+        with patch("app.routers.alerts.send_webhook", AsyncMock(return_value=(True, None))) as mock_send:
+            test_resp = await client.post(
+                f"/admin/alerts/channels/{ch_id}/test",
+                headers=auth_header(admin_token),
+            )
+
+        assert test_resp.status_code == 200
+        payload = json.loads(mock_send.await_args.kwargs["payload"])
+        assert payload["recipients"][0]["emailAddress"] == "test@example.com"
 
     @pytest.mark.asyncio
     async def test_delete_channel(self, client, admin_token):

@@ -231,6 +231,34 @@ async def test_test_channel_not_found(client, admin_token):
     assert resp.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_get_and_update_alert_settings(client, admin_token):
+    ch = await client.post(
+        "/admin/alerts/channels",
+        json={"name": "mail-settings", "webhook_url": WEBHOOK, "payload_template": TEMPLATE},
+        headers=auth_header(admin_token),
+    )
+    resp = await client.put(
+        "/admin/alerts/settings",
+        json={
+            "mail_channel_id": ch.json()["id"],
+            "fallback_owner_group_id": None,
+            "route_error_threshold_pct": 12.5,
+            "check_interval_seconds": 90,
+        },
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mail_channel_id"] == ch.json()["id"]
+    assert body["route_error_threshold_pct"] == 12.5
+    assert body["check_interval_seconds"] == 90
+
+    get_resp = await client.get("/admin/alerts/settings", headers=auth_header(admin_token))
+    assert get_resp.status_code == 200
+    assert get_resp.json()["mail_channel_id"] == ch.json()["id"]
+
+
 # ── Rules ───────────────────────────────────────────────────────────────────
 
 async def _create_channel(client, admin_token, name="ch") -> int:

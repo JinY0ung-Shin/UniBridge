@@ -283,6 +283,7 @@ class AlertChannelCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     webhook_url: str = Field(..., min_length=1)
     payload_template: str = Field(..., min_length=1)
+    recipient_item_template: str | None = None
     headers: dict[str, str] | None = None
     enabled: bool = True
 
@@ -296,6 +297,7 @@ class AlertChannelUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
     webhook_url: str | None = Field(None, min_length=1)
     payload_template: str | None = None
+    recipient_item_template: str | None = None
     headers: dict[str, str] | None = None
     enabled: bool | None = None
 
@@ -312,12 +314,30 @@ class AlertChannelResponse(BaseModel):
     name: str
     webhook_url: str
     payload_template: str
+    recipient_item_template: str | None = None
     headers: dict[str, str] | None = None
     enabled: bool
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class AlertSettingsResponse(BaseModel):
+    mail_channel_id: int | None = None
+    fallback_owner_group_id: int | None = None
+    route_error_threshold_pct: float
+    check_interval_seconds: int
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class AlertSettingsUpdate(BaseModel):
+    mail_channel_id: int | None = None
+    fallback_owner_group_id: int | None = None
+    route_error_threshold_pct: float | None = Field(None, ge=0, le=100)
+    check_interval_seconds: int | None = Field(None, ge=30, le=3600)
 
 
 class RuleChannelMapping(BaseModel):
