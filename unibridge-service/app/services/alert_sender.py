@@ -18,9 +18,13 @@ def render_recipient_items(template: str, emails: list[str]) -> str:
         return "[]"
 
     quoted_email_placeholder = '"{{email}}"'
-    if quoted_email_placeholder not in template and "{{email}}" in template:
+    if quoted_email_placeholder not in template:
+        if "{{email}}" in template:
+            raise ValueError(
+                "recipient_item_template {{email}} placeholder must be a JSON string value"
+            )
         raise ValueError(
-            "recipient_item_template {{email}} placeholder must be a JSON string value"
+            'recipient_item_template must include "{{email}}" as a JSON string value'
         )
 
     items: list[dict] = []

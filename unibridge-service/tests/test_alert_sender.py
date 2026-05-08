@@ -92,6 +92,11 @@ class TestRecipientItemRendering:
         with pytest.raises(ValueError, match="JSON string value"):
             render_recipient_items(template, ["kim@company.com"])
 
+    def test_render_recipient_items_requires_email_placeholder(self):
+        template = '{"recipientType":"TO"}'
+        with pytest.raises(ValueError, match="must include"):
+            render_recipient_items(template, ["kim@company.com"])
+
     def test_render_recipient_items_empty_email_list_returns_empty_array(self):
         template = '{"emailAddress":{{email}},"recipientType":"TO"}'
         assert render_recipient_items(template, []) == "[]"
