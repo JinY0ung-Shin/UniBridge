@@ -68,6 +68,34 @@ class TestRecipientItemRendering:
         with pytest.raises(ValueError, match="JSON object"):
             render_recipient_items(template, ["kim@company.com"])
 
+    def test_render_recipient_items_escapes_quotes_and_backslashes(self):
+        template = '{"emailAddress":"{{email}}","recipientType":"TO"}'
+        email = 'kim"\\alerts@example.com'
+        result = render_recipient_items(template, [email])
+        parsed = json.loads(result)
+        assert parsed == [{"emailAddress": email, "recipientType": "TO"}]
+
+    def test_render_recipient_items_keeps_injection_as_email_value(self):
+        template = '{"emailAddress":"{{email}}","recipientType":"TO"}'
+        email = 'victim@example.com","recipientType":"BCC'
+        result = render_recipient_items(template, [email])
+        parsed = json.loads(result)
+        assert parsed == [{"emailAddress": email, "recipientType": "TO"}]
+
+    def test_render_recipient_items_rejects_invalid_json_template(self):
+        template = '{"emailAddress":"{{email}}","recipientType":"TO"'
+        with pytest.raises(ValueError, match="invalid JSON"):
+            render_recipient_items(template, ["kim@company.com"])
+
+    def test_render_recipient_items_rejects_unquoted_email_placeholder(self):
+        template = '{"emailAddress":{{email}},"recipientType":"TO"}'
+        with pytest.raises(ValueError, match="JSON string value"):
+            render_recipient_items(template, ["kim@company.com"])
+
+    def test_render_recipient_items_empty_email_list_returns_empty_array(self):
+        template = '{"emailAddress":{{email}},"recipientType":"TO"}'
+        assert render_recipient_items(template, []) == "[]"
+
     def test_render_template_injects_recipients_json_raw(self):
         payload = render_template(
             '{"recipients":{{recipients_json}},"to":"{{recipients}}"}',

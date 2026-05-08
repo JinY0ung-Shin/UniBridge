@@ -14,9 +14,21 @@ SEND_TIMEOUT = 10.0
 
 def render_recipient_items(template: str, emails: list[str]) -> str:
     """Render one JSON object per email and return a JSON array string."""
+    if not emails:
+        return "[]"
+
+    quoted_email_placeholder = '"{{email}}"'
+    if quoted_email_placeholder not in template and "{{email}}" in template:
+        raise ValueError(
+            "recipient_item_template {{email}} placeholder must be a JSON string value"
+        )
+
     items: list[dict] = []
     for email in emails:
-        rendered = template.replace("{{email}}", email)
+        rendered = template.replace(
+            quoted_email_placeholder,
+            json.dumps(email, ensure_ascii=False),
+        )
         try:
             parsed = json.loads(rendered)
         except json.JSONDecodeError as exc:
