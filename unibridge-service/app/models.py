@@ -1,5 +1,6 @@
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     Float,
     ForeignKey,
@@ -214,9 +215,13 @@ class AlertSettings(Base):
     id = Column(Integer, primary_key=True)
     mail_channel_id = Column(Integer, ForeignKey("alert_channels.id", ondelete="RESTRICT"), nullable=True)
     fallback_owner_group_id = Column(Integer, ForeignKey("owner_groups.id", ondelete="RESTRICT"), nullable=True)
-    route_error_threshold_pct = Column(Float, default=10.0, nullable=False)
-    check_interval_seconds = Column(Integer, default=60, nullable=False)
+    route_error_threshold_pct = Column(Float, default=10.0, nullable=False, server_default="10.0")
+    check_interval_seconds = Column(Integer, default=60, nullable=False, server_default="60")
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_alert_settings_singleton"),
+    )
 
 
 class AlertHistory(Base):

@@ -46,9 +46,10 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("mail_channel_id", sa.Integer(), nullable=True),
         sa.Column("fallback_owner_group_id", sa.Integer(), nullable=True),
-        sa.Column("route_error_threshold_pct", sa.Float(), nullable=False),
-        sa.Column("check_interval_seconds", sa.Integer(), nullable=False),
+        sa.Column("route_error_threshold_pct", sa.Float(), nullable=False, server_default="10.0"),
+        sa.Column("check_interval_seconds", sa.Integer(), nullable=False, server_default="60"),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint("id = 1", name="ck_alert_settings_singleton"),
         sa.ForeignKeyConstraint(["mail_channel_id"], ["alert_channels.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["fallback_owner_group_id"], ["owner_groups.id"], ondelete="RESTRICT"),
     )

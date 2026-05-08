@@ -201,7 +201,7 @@ async def test_permission_role_fk_cascades_on_role_delete():
 async def test_init_db_runs_alembic_and_stamps_head_for_file_sqlite(tmp_path):
     from unittest.mock import patch
 
-    from app.database import init_db
+    from app.database import ALEMBIC_HEAD_REVISION, init_db
 
     db_path = tmp_path / "meta.db"
     db_url = f"sqlite+aiosqlite:///{db_path}"
@@ -213,11 +213,16 @@ async def test_init_db_runs_alembic_and_stamps_head_for_file_sqlite(tmp_path):
 
     async with engine.connect() as conn:
         revision = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
+        alert_settings_row = (await conn.execute(text(
+            "SELECT id, route_error_threshold_pct, check_interval_seconds "
+            "FROM alert_settings WHERE id = 1"
+        ))).fetchone()
         permission_fks = await conn.run_sync(
             lambda sync_conn: inspect(sync_conn).get_foreign_keys("permissions")
         )
 
-    assert revision == "0004_alert_owner_routing"
+    assert revision == ALEMBIC_HEAD_REVISION
+    assert alert_settings_row == (1, 10.0, 60)
     assert any(
         fk["referred_table"] == "roles"
         and fk["constrained_columns"] == ["role"]
@@ -244,8 +249,58 @@ async def test_alert_owner_routing_schema_is_created_by_metadata():
         alert_history_cols = await conn.run_sync(
             lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("alert_history")}
         )
+        alert_settings_cols = await conn.run_sync(
+            lambda sync_conn: {
+                col["name"]: col for col in inspect(sync_conn).get_columns("alert_settings")
+            }
+        )
+        alert_settings_checks = await conn.run_sync(
+            lambda sync_conn: inspect(sync_conn).get_check_constraints("alert_settings")
+        )
 
     assert {"owner_groups", "resource_owners", "alert_settings"} <= table_names
     assert "recipient_item_template" in alert_channel_cols
     assert {"resource_type", "owner_group_id"} <= alert_history_cols
+    assert alert_settings_cols["route_error_threshold_pct"]["default"] is not None
+    assert alert_settings_cols["check_interval_seconds"]["default"] is not None
+    assert any(check["name"] == "ck_alert_settings_singleton" for check in alert_settings_checks)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_alert_settings_singleton_check_rejects_other_ids():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    with pytest.raises(IntegrityError):
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "INSERT INTO alert_settings "
+                "(id, route_error_threshold_pct, check_interval_seconds, updated_at) "
+                "VALUES (2, 10.0, 60, CURRENT_TIMESTAMP)"
+            ))
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_init_db_seeds_alert_settings_for_in_memory_sqlite():
+    from unittest.mock import patch
+
+    from app.database import init_db
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    with patch("app.database.engine", engine), patch("app.database.async_session", session_factory):
+        await init_db()
+        await init_db()
+
+    async with engine.connect() as conn:
+        rows = (await conn.execute(text(
+            "SELECT id, route_error_threshold_pct, check_interval_seconds FROM alert_settings"
+        ))).fetchall()
+
+    assert rows == [(1, 10.0, 60)]
     await engine.dispose()

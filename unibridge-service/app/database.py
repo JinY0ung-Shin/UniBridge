@@ -90,12 +90,22 @@ async def _stamp_metadata_schema(target_engine: AsyncEngine, revision: str) -> N
         )
 
 
+async def _seed_alert_settings_singleton(target_engine: AsyncEngine) -> None:
+    async with target_engine.begin() as conn:
+        await conn.execute(text(
+            "INSERT OR IGNORE INTO alert_settings "
+            "(id, route_error_threshold_pct, check_interval_seconds, updated_at) "
+            "VALUES (1, 10.0, 60, CURRENT_TIMESTAMP)"
+        ))
+
+
 async def _run_alembic_upgrade(target_engine: AsyncEngine) -> None:
     _ensure_sqlite_foreign_key_listener(target_engine)
 
     if _is_in_memory_sqlite(target_engine):
         async with target_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+        await _seed_alert_settings_singleton(target_engine)
         await _stamp_metadata_schema(target_engine, ALEMBIC_HEAD_REVISION)
         return
 
