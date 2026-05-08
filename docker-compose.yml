@@ -92,12 +92,12 @@ services:
     image: quay.io/keycloak/keycloak:26.0
     restart: unless-stopped
     logging: *default-logging
-    mem_limit: 1g
+    mem_limit: 2g
     cpus: "1.00"
     deploy:
       resources:
         limits:
-          memory: 1g
+          memory: 2g
           cpus: "1.00"
     entrypoint: /opt/init/docker-entrypoint.sh
     environment:

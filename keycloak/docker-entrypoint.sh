@@ -12,12 +12,18 @@ export KEYCLOAK_REDIRECT_URI KEYCLOAK_WEB_ORIGIN
 TEMPLATE="/opt/init/realm-export.json.tpl"
 IMPORT_DIR="/opt/keycloak/data/import"
 mkdir -p "$IMPORT_DIR"
-if command -v envsubst >/dev/null 2>&1 && [ -f "$TEMPLATE" ]; then
+if [ ! -f "$TEMPLATE" ]; then
+  echo "[init] WARNING: realm template missing at $TEMPLATE"
+elif command -v envsubst >/dev/null 2>&1; then
   envsubst < "$TEMPLATE" > "$IMPORT_DIR/realm-export.json"
-  echo "[init] Environment variables substituted in realm-export.json"
+  echo "[init] Environment variables substituted in realm-export.json (envsubst)"
 else
-  echo "[init] WARNING: envsubst not found or template missing; copying template as-is"
-  cp "$TEMPLATE" "$IMPORT_DIR/realm-export.json" 2>/dev/null || true
+  # envsubst is not present in keycloak's ubi-micro image; fall back to sed.
+  # Escape sed replacement metachars (\, &, |) in the secret before substitution.
+  SECRET_ESCAPED=$(printf '%s' "${KEYCLOAK_SERVICE_CLIENT_SECRET}" | sed -e 's/[\\&|]/\\&/g')
+  sed "s|\${KEYCLOAK_SERVICE_CLIENT_SECRET}|${SECRET_ESCAPED}|g" \
+    "$TEMPLATE" > "$IMPORT_DIR/realm-export.json"
+  echo "[init] Environment variables substituted in realm-export.json (sed fallback)"
 fi
 
 # Start mode: set KEYCLOAK_DEV_MODE=true for development (relaxed security)
