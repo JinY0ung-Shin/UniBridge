@@ -425,6 +425,37 @@ async def test_owner_group_rejects_empty_email_list(client, admin_token):
 
 
 @pytest.mark.asyncio
+async def test_owner_group_duplicate_name_returns_409(client, admin_token):
+    first = await client.post(
+        "/admin/alerts/owner-groups",
+        json={"name": "duplicate-team", "emails": ["one@example.com"]},
+        headers=auth_header(admin_token),
+    )
+    assert first.status_code == 201
+
+    duplicate_create = await client.post(
+        "/admin/alerts/owner-groups",
+        json={"name": "duplicate-team", "emails": ["two@example.com"]},
+        headers=auth_header(admin_token),
+    )
+    assert duplicate_create.status_code == 409
+
+    second = await client.post(
+        "/admin/alerts/owner-groups",
+        json={"name": "rename-target-team", "emails": ["two@example.com"]},
+        headers=auth_header(admin_token),
+    )
+    assert second.status_code == 201
+
+    duplicate_update = await client.put(
+        f"/admin/alerts/owner-groups/{second.json()['id']}",
+        json={"name": "duplicate-team"},
+        headers=auth_header(admin_token),
+    )
+    assert duplicate_update.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_delete_fallback_owner_group_returns_409(client, admin_token, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
