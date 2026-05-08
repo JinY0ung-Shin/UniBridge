@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app import metrics
 from app.database import async_session
-from app.models import AlertChannel, AlertHistory, AlertRule, AlertRuleChannel
+from app.models import AlertChannel, AlertHistory, AlertRule, AlertRuleChannel, AlertSettings
 from app.services.alert_owner_dispatcher import dispatch_owner_alert
 from app.services.alert_sender import render_template, send_webhook
 from app.services.alert_state import AlertStateManager, save_alert_state_to_db
@@ -25,6 +25,21 @@ _ROUTE_LABEL_CACHE: dict[str, str] = {}
 _ROUTE_LABEL_CACHE_TS: float = 0.0
 _ROUTE_LABEL_TTL = 300.0  # 5 minutes
 _UPSTREAM_NAME_BY_ID: dict[str, str] = {}
+
+
+async def _get_check_interval_seconds() -> int:
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(AlertSettings.check_interval_seconds).where(AlertSettings.id == 1)
+            )
+            interval = result.scalar_one_or_none()
+    except Exception as exc:
+        logger.warning("Failed to load alert check interval: %s", exc)
+        return CHECK_INTERVAL
+    if interval is None:
+        return CHECK_INTERVAL
+    return min(3600, max(30, int(interval)))
 
 
 async def _refresh_route_labels() -> None:
@@ -494,14 +509,15 @@ async def run_single_check(state: AlertStateManager) -> None:
 async def start_checker(state: AlertStateManager) -> asyncio.Task:
     """Start the periodic health check loop as a background task."""
     async def _loop():
-        logger.info("Alert checker started (interval=%ds)", CHECK_INTERVAL)
+        logger.info("Alert checker started")
         while True:
             cycle_start = _monotonic()
+            check_interval = await _get_check_interval_seconds()
             try:
                 await run_single_check(state)
             except Exception:
                 logger.exception("Alert checker cycle failed")
             elapsed = _monotonic() - cycle_start
-            await asyncio.sleep(max(0.0, CHECK_INTERVAL - elapsed))
+            await asyncio.sleep(max(0.0, check_interval - elapsed))
 
     return asyncio.create_task(_loop())

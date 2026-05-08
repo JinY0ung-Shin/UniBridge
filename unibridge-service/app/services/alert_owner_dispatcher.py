@@ -20,9 +20,6 @@ from app.services.alert_sender import render_recipient_items, render_template, s
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_RECIPIENT_ITEM_TEMPLATE = '{"email":"{{email}}"}'
-
-
 async def dispatch_owner_alert(
     *,
     resource_type: str,
@@ -79,6 +76,9 @@ async def dispatch_owner_alert(
             channel_recipient_item_template = channel.recipient_item_template
             channel_headers = channel.headers
             channel_webhook_url = channel.webhook_url
+            if channel_recipient_item_template is None or not channel_recipient_item_template.strip():
+                history.error_detail = "recipient_item_template is required for owner mail channel"
+                return
             emails = _parse_owner_emails(group.emails)
             history.recipients = json.dumps(emails, ensure_ascii=False)
             if not emails:
@@ -87,7 +87,7 @@ async def dispatch_owner_alert(
 
         try:
             recipients_json = render_recipient_items(
-                channel_recipient_item_template or DEFAULT_RECIPIENT_ITEM_TEMPLATE,
+                channel_recipient_item_template,
                 emails,
             )
             payload = _render_payload(

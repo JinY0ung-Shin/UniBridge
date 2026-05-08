@@ -517,10 +517,15 @@ async def test_channel(
         raise HTTPException(status_code=404, detail="Channel not found")
     now = datetime.now(timezone.utc).isoformat()
     test_emails = ["test@example.com"]
+    settings_result = await db.execute(
+        select(AlertSettings).where(AlertSettings.mail_channel_id == ch.id)
+    )
+    is_mail_channel = settings_result.scalar_one_or_none() is not None
     try:
-        recipients_json = render_recipient_items(
-            ch.recipient_item_template or '{"email":"{{email}}"}',
+        recipients_json = _render_channel_recipients_json(
+            ch,
             test_emails,
+            require_template=is_mail_channel,
         )
     except ValueError as exc:
         return {"success": False, "error": str(exc)}
@@ -540,6 +545,21 @@ async def test_channel(
     headers = json.loads(ch.headers) if ch.headers else None
     ok, err = await send_webhook(url=ch.webhook_url, payload=payload, headers=headers)
     return {"success": ok, "error": err}
+
+
+def _render_channel_recipients_json(
+    ch: AlertChannel,
+    emails: list[str],
+    *,
+    require_template: bool = False,
+) -> str:
+    template = ch.recipient_item_template
+    uses_recipients_json = "{{recipients_json}}" in ch.payload_template
+    if template is None or not template.strip():
+        if require_template or uses_recipients_json:
+            raise ValueError("recipient_item_template is required when using recipients_json")
+        return "[]"
+    return render_recipient_items(template, emails)
 
 
 # ── Rules ───────────────────────────────────────────────────────────────────
@@ -709,10 +729,7 @@ async def test_rule(
             continue
 
         try:
-            recipients_json = render_recipient_items(
-                ch.recipient_item_template or '{"email":"{{email}}"}',
-                recipients_list,
-            )
+            recipients_json = _render_channel_recipients_json(ch, recipients_list)
         except ValueError as exc:
             results.append(AlertRuleTestChannelResult(
                 channel_id=ch.id,

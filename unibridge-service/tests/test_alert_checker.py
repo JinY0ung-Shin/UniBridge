@@ -355,6 +355,7 @@ class TestAlertChecker:
             raise RuntimeError("stop loop")
 
         with patch("app.services.alert_checker.run_single_check", new_callable=AsyncMock), \
+             patch("app.services.alert_checker._get_check_interval_seconds", new=AsyncMock(return_value=60)), \
              patch("app.services.alert_checker._monotonic", side_effect=[100.0, 115.0]), \
              patch("app.services.alert_checker.asyncio.sleep", new=AsyncMock(side_effect=stop_after_sleep)):
             task = await alert_checker.start_checker(state)
@@ -362,6 +363,36 @@ class TestAlertChecker:
                 await task
 
         assert sleep_delays == [45.0]
+
+    @pytest.mark.asyncio
+    async def test_start_checker_uses_configured_check_interval(self):
+        from app.services import alert_checker
+
+        state = AlertStateManager()
+        sleep_delays: list[float] = []
+
+        async def stop_after_sleep(delay: float):
+            sleep_delays.append(delay)
+            raise RuntimeError("stop loop")
+
+        with patch("app.services.alert_checker.run_single_check", new_callable=AsyncMock), \
+             patch("app.services.alert_checker._get_check_interval_seconds", new=AsyncMock(return_value=90)), \
+             patch("app.services.alert_checker._monotonic", side_effect=[100.0, 115.0]), \
+             patch("app.services.alert_checker.asyncio.sleep", new=AsyncMock(side_effect=stop_after_sleep)):
+            task = await alert_checker.start_checker(state)
+            with pytest.raises(RuntimeError, match="stop loop"):
+                await task
+
+        assert sleep_delays == [75.0]
+
+    @pytest.mark.asyncio
+    async def test_get_check_interval_seconds_reads_alert_settings(self):
+        from app.services import alert_checker
+
+        fake_db = SimpleNamespace(execute=AsyncMock(return_value=_FakeResult([90])))
+
+        with patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)):
+            assert await alert_checker._get_check_interval_seconds() == 90
 
 
 class TestDispatchAlertMetrics:

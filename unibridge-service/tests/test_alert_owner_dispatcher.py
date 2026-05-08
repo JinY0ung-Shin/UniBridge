@@ -385,7 +385,7 @@ async def test_dispatch_owner_alert_sends_headers_and_alert_placeholders(engine)
 
 
 @pytest.mark.asyncio
-async def test_dispatch_owner_alert_uses_default_recipient_item_template(engine):
+async def test_dispatch_owner_alert_requires_recipient_item_template(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db, recipient_item_template=None)
@@ -405,8 +405,10 @@ async def test_dispatch_owner_alert_uses_default_recipient_item_template(engine)
             message="Database failed",
         )
 
-    payload = json.loads(send.await_args.kwargs["payload"])
-    assert payload["recipients"] == [{"email": "owner@example.com"}]
+    send.assert_not_awaited()
+    histories = await _history_rows(session_factory)
+    assert histories[0].success is False
+    assert "recipient_item_template" in histories[0].error_detail
 
 
 @pytest.mark.asyncio
