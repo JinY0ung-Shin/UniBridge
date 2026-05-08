@@ -474,6 +474,7 @@
     "resourceOwnerSaved": "리소스 소유자 저장",
     "legacyRecipients": "기존 수신자 설정",
     "legacyRecipientsHint": "기존 규칙 수신자는 호환을 위해 보존되지만 소유자 기반 메일 라우팅에는 사용되지 않습니다.",
+    "ownerRoutedLegacyRuleWarning": "DB/업스트림 헬스 규칙은 이제 리소스 소유자 라우팅으로 발송됩니다. 기존 채널 수신자는 읽기 전용이며 이 규칙 타입의 발송에는 사용되지 않습니다.",
     "addRecipient": "수신자 추가",
     "recipientsDuplicateHint": "메일 API처럼 수신자를 한 명씩만 받는 채널은, 같은 채널을 여러 행으로 나눠 수신자를 하나씩 등록하세요.",
     "typeDbHealth": "DB 연결",

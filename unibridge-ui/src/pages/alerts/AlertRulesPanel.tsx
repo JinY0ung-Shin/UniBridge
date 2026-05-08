@@ -190,6 +190,11 @@ export default function AlertRulesPanel() {
 
   const isSavingRule = createRuleMutation.isPending || updateRuleMutation.isPending;
   const showLegacyErrorRateOption = editingRule?.type === 'error_rate' || ruleForm.type === 'error_rate';
+  const hasOwnerRoutedLegacyRule = rules.some(
+    (rule) =>
+      (rule.type === 'db_health' || rule.type === 'upstream_health') &&
+      rule.channels.length > 0,
+  );
   const legacyRecipientsLabel = (mapping: RuleChannelDetail) =>
     `${mapping.channel_name}: ${mapping.recipients.length > 0 ? mapping.recipients.join(', ') : '-'}`;
 
@@ -201,6 +206,11 @@ export default function AlertRulesPanel() {
       </div>
       {rulesQuery.isLoading && <div className="loading-message">{t('common.loading')}</div>}
       {rulesQuery.isError && <div className="error-banner">{t('common.errorOccurred')}</div>}
+      {hasOwnerRoutedLegacyRule && (
+        <div className="alert-note alert-note--warning">
+          {t('alerts.ownerRoutedLegacyRuleWarning')}
+        </div>
+      )}
       {!rulesQuery.isLoading && rules.length === 0 && !rulesQuery.isError && (
         <div className="empty-state"><h3>{t('alerts.noRules')}</h3></div>
       )}

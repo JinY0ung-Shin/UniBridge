@@ -42,6 +42,19 @@ async def _get_check_interval_seconds() -> int:
     return min(3600, max(30, int(interval)))
 
 
+def _normalize_route_error_threshold_pct(value: float | int | None) -> float:
+    if value is None:
+        return 10.0
+    return min(100.0, max(0.0, float(value)))
+
+
+async def _load_route_error_default_threshold(db) -> float:
+    result = await db.execute(
+        select(AlertSettings.route_error_threshold_pct).where(AlertSettings.id == 1)
+    )
+    return _normalize_route_error_threshold_pct(result.scalar_one_or_none())
+
+
 async def _refresh_route_labels() -> None:
     """Refresh route_id → label cache from APISIX.
 
@@ -354,6 +367,7 @@ async def _evaluate_route_error_rule(
     rate: float,
     rule: AlertRule,
     display_target: str | None = None,
+    default_threshold: float = 10.0,
 ) -> None:
     if display_target is None:
         label = await _get_route_label(route_id)
@@ -361,7 +375,7 @@ async def _evaluate_route_error_rule(
     else:
         display = display_target
 
-    threshold = rule.threshold if rule.threshold is not None else 10.0
+    threshold = rule.threshold if rule.threshold is not None else default_threshold
     is_healthy = rate < threshold
     state_target = _route_state_target(route_id, rule.id)
     transition = state.update(
@@ -464,6 +478,11 @@ async def run_single_check(state: AlertStateManager) -> None:
             )
             result = await db.execute(rq)
             all_route_rules = result.scalars().all()
+            route_default_threshold = (
+                await _load_route_error_default_threshold(db)
+                if any(rule.threshold is None for rule in all_route_rules)
+                else 10.0
+            )
 
         rules_by_id = {rule.id: rule for rule in all_route_rules}
         processed_state_targets: set[str] = set()
@@ -482,6 +501,7 @@ async def run_single_check(state: AlertStateManager) -> None:
                     route_id=route_id,
                     rate=rate,
                     rule=rule,
+                    default_threshold=route_default_threshold,
                 )
 
         for entry in active_route_alerts:
@@ -503,6 +523,7 @@ async def run_single_check(state: AlertStateManager) -> None:
                 rate=0.0,
                 rule=rule,
                 display_target=entry.get("display_target"),
+                default_threshold=route_default_threshold,
             )
 
 

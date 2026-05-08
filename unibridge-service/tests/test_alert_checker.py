@@ -314,6 +314,46 @@ class TestAlertChecker:
         assert kwargs["threshold"] == 5.0
 
     @pytest.mark.asyncio
+    async def test_route_error_rate_uses_settings_threshold_when_rule_threshold_missing(self):
+        state = AlertStateManager()
+        state.update(
+            "route_error_rate",
+            "route-a:rule_42",
+            is_healthy=True,
+            display_target="checkout (route-a)",
+        )
+        rule = SimpleNamespace(
+            id=42,
+            target="route-a",
+            threshold=None,
+            name="checkout errors",
+        )
+        fake_db = SimpleNamespace(
+            execute=AsyncMock(side_effect=[
+                _FakeResult([rule]),
+                _FakeResult([3.0]),
+            ])
+        )
+
+        with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+             patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
+             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 4.0)])), \
+             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)), \
+             patch("app.services.alert_checker._get_route_label", new=AsyncMock(return_value="checkout")), \
+             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
+            mock_db.return_value = []
+            mock_up.return_value = []
+            mock_err.return_value = []
+
+            await run_single_check(state)
+
+        mock_dispatch.assert_called_once()
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs["threshold"] == 3.0
+        assert "threshold: 3.0%" in kwargs["message"]
+
+    @pytest.mark.asyncio
     async def test_global_error_rate_preserves_legacy_rule_dispatch(self):
         state = AlertStateManager()
         state.update("error_rate", "global:rule_9", is_healthy=True, display_target="global")
