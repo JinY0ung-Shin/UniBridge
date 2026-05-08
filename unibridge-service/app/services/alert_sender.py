@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 import httpx
@@ -11,6 +12,23 @@ logger = logging.getLogger(__name__)
 SEND_TIMEOUT = 10.0
 
 
+def render_recipient_items(template: str, emails: list[str]) -> str:
+    """Render one JSON object per email and return a JSON array string."""
+    items: list[dict] = []
+    for email in emails:
+        rendered = template.replace("{{email}}", email)
+        try:
+            parsed = json.loads(rendered)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"recipient_item_template rendered invalid JSON for {email}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("recipient_item_template must render to a JSON object")
+        items.append(parsed)
+    return json.dumps(items, ensure_ascii=False)
+
+
 def render_template(
     template: str,
     *,
@@ -20,6 +38,7 @@ def render_template(
     message: str,
     timestamp: str,
     recipients: str,
+    recipients_json: str = "[]",
     rate: str = "",
     threshold: str = "",
     rule_name: str = "",
@@ -28,7 +47,8 @@ def render_template(
 
     Supported placeholders:
       {{alert_type}}, {{target_name}}, {{status}}, {{message}},
-      {{timestamp}}, {{recipients}}, {{rate}}, {{threshold}}, {{rule_name}}
+      {{timestamp}}, {{recipients}}, {{recipients_json}}, {{rate}},
+      {{threshold}}, {{rule_name}}
     Unknown placeholders are left untouched.
     """
     replacements = {
@@ -38,6 +58,7 @@ def render_template(
         "{{message}}": message,
         "{{timestamp}}": timestamp,
         "{{recipients}}": recipients,
+        "{{recipients_json}}": recipients_json,
         "{{rate}}": rate,
         "{{threshold}}": threshold,
         "{{rule_name}}": rule_name,
