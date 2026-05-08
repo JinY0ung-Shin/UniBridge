@@ -5,7 +5,6 @@ import {
   createAlertRule,
   deleteAlertRule,
   getAdminDatabases,
-  getAlertChannels,
   getAlertRules,
   getGatewayRoutes,
   getGatewayUpstreams,
@@ -13,16 +12,11 @@ import {
   updateAlertRule,
   type AlertRule,
   type AlertRuleCreate,
-  type RuleChannelMapping,
+  type RuleChannelDetail,
 } from '../../api/client';
 import { useToast } from '../../components/useToast';
 
 type RuleType = 'db_health' | 'upstream_health' | 'error_rate' | 'route_error_rate';
-
-interface RuleChannelRow {
-  channel_id: number;
-  recipients: string;
-}
 
 const emptyRuleForm = () => ({
   name: '',
@@ -30,7 +24,6 @@ const emptyRuleForm = () => ({
   target: '',
   threshold: 5,
   enabled: true,
-  channelRows: [] as RuleChannelRow[],
 });
 
 function ruleTypeLabel(t: (k: string) => string, type: RuleType): string {
@@ -52,7 +45,6 @@ export default function AlertRulesPanel() {
   const [ruleForm, setRuleForm] = useState(emptyRuleForm());
   const [testingRuleIds, setTestingRuleIds] = useState<Set<number>>(new Set());
 
-  const channelsQuery = useQuery({ queryKey: ['alert-channels'], queryFn: getAlertChannels });
   const rulesQuery = useQuery({ queryKey: ['alert-rules'], queryFn: getAlertRules });
   const databasesQuery = useQuery({
     queryKey: ['admin-databases'],
@@ -70,8 +62,8 @@ export default function AlertRulesPanel() {
     enabled: showRuleModal,
   });
 
-  const channels = channelsQuery.data ?? [];
   const rules = rulesQuery.data ?? [];
+  const editingRule = editingRuleId !== null ? rules.find((rule) => rule.id === editingRuleId) : null;
 
   const createRuleMutation = useMutation({
     mutationFn: (body: AlertRuleCreate) => createAlertRule(body),
@@ -113,10 +105,6 @@ export default function AlertRulesPanel() {
       target: rule.target,
       threshold: rule.threshold ?? 5,
       enabled: rule.enabled,
-      channelRows: rule.channels.map((c) => ({
-        channel_id: c.channel_id,
-        recipients: c.recipients.join(', '),
-      })),
     });
     setEditingRuleId(rule.id);
     setShowRuleModal(true);
@@ -130,27 +118,17 @@ export default function AlertRulesPanel() {
 
   function handleRuleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const channelMappings: RuleChannelMapping[] = ruleForm.channelRows
-      .filter((r) => r.channel_id > 0)
-      .map((r) => ({
-        channel_id: r.channel_id,
-        recipients: r.recipients
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean),
-      }));
-    const body: AlertRuleCreate = {
+    const bodyBase: Omit<AlertRuleCreate, 'channels'> = {
       name: ruleForm.name,
       type: ruleForm.type,
       target: ruleForm.target,
       enabled: ruleForm.enabled,
-      channels: channelMappings,
       ...(ruleForm.type === 'error_rate' || ruleForm.type === 'route_error_rate'
         ? { threshold: ruleForm.threshold }
         : {}),
     };
-    if (editingRuleId !== null) updateRuleMutation.mutate({ id: editingRuleId, body });
-    else createRuleMutation.mutate(body);
+    if (editingRuleId !== null) updateRuleMutation.mutate({ id: editingRuleId, body: bodyBase });
+    else createRuleMutation.mutate({ ...bodyBase, channels: [] });
   }
 
   function handleDeleteRule(rule: AlertRule) {
@@ -210,28 +188,10 @@ export default function AlertRulesPanel() {
     }));
   }
 
-  function addChannelRow() {
-    setRuleForm((prev) => ({
-      ...prev,
-      channelRows: [...prev.channelRows, { channel_id: 0, recipients: '' }],
-    }));
-  }
-
-  function removeChannelRow(idx: number) {
-    setRuleForm((prev) => ({
-      ...prev,
-      channelRows: prev.channelRows.filter((_, i) => i !== idx),
-    }));
-  }
-
-  function updateChannelRow(idx: number, field: keyof RuleChannelRow, val: string | number) {
-    setRuleForm((prev) => ({
-      ...prev,
-      channelRows: prev.channelRows.map((r, i) => (i === idx ? { ...r, [field]: val } : r)),
-    }));
-  }
-
   const isSavingRule = createRuleMutation.isPending || updateRuleMutation.isPending;
+  const showLegacyErrorRateOption = editingRule?.type === 'error_rate' || ruleForm.type === 'error_rate';
+  const legacyRecipientsLabel = (mapping: RuleChannelDetail) =>
+    `${mapping.channel_name}: ${mapping.recipients.length > 0 ? mapping.recipients.join(', ') : '-'}`;
 
   return (
     <div className="alert-tab-content">
@@ -254,7 +214,7 @@ export default function AlertRulesPanel() {
                 <th>{t('alerts.ruleTarget')}</th>
                 <th>{t('alerts.threshold')}</th>
                 <th>{t('alerts.enabled')}</th>
-                <th>{t('alerts.channels')}</th>
+                <th>{t('alerts.legacyRecipients')}</th>
                 <th>{t('common.actions')}</th>
               </tr>
             </thead>
@@ -275,7 +235,11 @@ export default function AlertRulesPanel() {
                       {rule.channels.length === 0 ? (
                         <span className="text-muted">-</span>
                       ) : (
-                        rule.channels.map((c) => <span key={c.channel_id} className="channel-chip">{c.channel_name}</span>)
+                        rule.channels.map((c) => (
+                          <span key={c.channel_id} className="channel-chip" title={t('alerts.legacyRecipientsHint')}>
+                            {legacyRecipientsLabel(c)}
+                          </span>
+                        ))
                       )}
                     </div>
                   </td>
@@ -331,7 +295,9 @@ export default function AlertRulesPanel() {
                   <select value={ruleForm.type} onChange={(e) => handleRuleTypeChange(e.target.value as RuleType)}>
                     <option value="db_health">{t('alerts.typeDbHealth')}</option>
                     <option value="upstream_health">{t('alerts.typeUpstreamHealth')}</option>
-                    <option value="error_rate">{t('alerts.typeErrorRate')}</option>
+                    {showLegacyErrorRateOption && (
+                      <option value="error_rate">{t('alerts.typeErrorRate')}</option>
+                    )}
                     <option value="route_error_rate">{t('alerts.typeRouteErrorRate')}</option>
                   </select>
                 </div>
@@ -406,36 +372,17 @@ export default function AlertRulesPanel() {
                     {t('alerts.enabled')}
                   </label>
                 </div>
-                <div className="form-group form-group--full">
-                  <label>{t('alerts.channels')}</label>
-                  <p className="form-hint">{t('alerts.recipientsDuplicateHint')}</p>
-                  {ruleForm.channelRows.map((row, idx) => (
-                    <div key={idx} className="channel-mapping-row">
-                      <select
-                        value={row.channel_id}
-                        onChange={(e) => updateChannelRow(idx, 'channel_id', Number(e.target.value))}
-                      >
-                        <option value={0}>- {t('alerts.channels')} -</option>
-                        {channels.map((ch) => (
-                          <option key={ch.id} value={ch.id}>{ch.name}</option>
-                        ))}
-                      </select>
-                      <input
-                        type="text"
-                        className="recipients-input"
-                        placeholder={t('alerts.recipients') + ' (comma-separated)'}
-                        value={row.recipients}
-                        onChange={(e) => updateChannelRow(idx, 'recipients', e.target.value)}
-                      />
-                      <button type="button" className="btn btn-sm btn-danger" onClick={() => removeChannelRow(idx)}>
-                        &times;
-                      </button>
+                {editingRule && editingRule.channels.length > 0 && (
+                  <div className="form-group form-group--full">
+                    <label>{t('alerts.legacyRecipients')}</label>
+                    <p className="form-hint">{t('alerts.legacyRecipientsHint')}</p>
+                    <div className="channel-summary">
+                      {editingRule.channels.map((c) => (
+                        <span key={c.channel_id} className="channel-chip">{legacyRecipientsLabel(c)}</span>
+                      ))}
                     </div>
-                  ))}
-                  <button type="button" className="btn btn-sm btn-outline" onClick={addChannelRow}>
-                    + {t('alerts.channels')}
-                  </button>
-                </div>
+                  </div>
+                )}
               </div>
               <div className="modal-actions">
                 <button type="button" className="btn btn-secondary" onClick={closeRuleModal}>

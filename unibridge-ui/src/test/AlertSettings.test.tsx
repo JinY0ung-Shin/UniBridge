@@ -44,6 +44,7 @@ import {
   deleteAlertResourceOwner,
   getAlertRules,
   createAlertRule,
+  updateAlertRule,
   deleteAlertRule,
   testAlertRule,
   getAdminDatabases,
@@ -70,6 +71,7 @@ const mocks = {
   deleteResourceOwner: vi.mocked(deleteAlertResourceOwner),
   getRules: vi.mocked(getAlertRules),
   createRule: vi.mocked(createAlertRule),
+  updateRule: vi.mocked(updateAlertRule),
   deleteRule: vi.mocked(deleteAlertRule),
   testRule: vi.mocked(testAlertRule),
   getDatabases: vi.mocked(getAdminDatabases),
@@ -121,6 +123,7 @@ describe('AlertSettings page', () => {
     mocks.getResourceOwners.mockResolvedValue([]);
     mocks.getChannels.mockResolvedValue([]);
     mocks.getRules.mockResolvedValue([]);
+    mocks.updateRule.mockResolvedValue(ruleFixture);
     mocks.getDatabases.mockResolvedValue([]);
     mocks.getUpstreams.mockResolvedValue({ items: [], total: 0 });
     mocks.getRoutes.mockResolvedValue({ items: [], total: 0 });
@@ -149,6 +152,13 @@ describe('AlertSettings page', () => {
 
     await waitFor(() => expect(mocks.updateSettings).toHaveBeenCalled());
     expect(mocks.updateSettings.mock.calls[0][0]).toMatchObject({ mail_channel_id: 1 });
+  });
+
+  it('disables alert settings save before settings have loaded', async () => {
+    mocks.getSettings.mockReturnValue(new Promise(() => undefined));
+    renderWithProviders(<AlertSettings />);
+
+    expect(screen.getByRole('button', { name: /^Save Settings$|^설정 저장$/i })).toBeDisabled();
   });
 
   it('owner group tab creates group from comma-separated emails', async () => {
@@ -209,7 +219,7 @@ describe('AlertSettings page', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
     await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
     expect(screen.getByText('main-db')).toBeInTheDocument();
-    expect(screen.getByText('ops-slack')).toBeInTheDocument();
+    expect(screen.getByText('ops-slack: ops@example.com')).toBeInTheDocument();
   });
 
   it('rule with no channels shows em-dash placeholder', async () => {
@@ -234,15 +244,18 @@ describe('AlertSettings page', () => {
     fireEvent.click(screen.getByRole('button', { name: /\+\s*Add Channel/i }));
     await waitFor(() => expect(screen.getByText(/^Add Channel$/)).toBeInTheDocument());
 
-    const inputs = screen.getAllByRole('textbox');
-    await userEvent.type(inputs[0], 'new-ch');
-    await userEvent.type(inputs[1], 'https://hooks.example.com/new');
+    await userEvent.type(screen.getByLabelText(/Channel Name|채널 이름/i), 'new-ch');
+    await userEvent.type(screen.getByLabelText(/Webhook URL/i), 'https://hooks.example.com/new');
+    fireEvent.change(screen.getByLabelText(/Recipient Item Template|수신자 항목 템플릿/i), {
+      target: { value: '{"emailAddress":"{{email}}","recipientType":"TO"}' },
+    });
 
-    fireEvent.submit(inputs[0].closest('form')!);
+    fireEvent.submit(screen.getByLabelText(/Channel Name|채널 이름/i).closest('form')!);
     await waitFor(() => expect(mocks.createChannel).toHaveBeenCalled());
     const arg = mocks.createChannel.mock.calls[0][0];
     expect(arg.name).toBe('new-ch');
     expect(arg.webhook_url).toBe('https://hooks.example.com/new');
+    expect(arg.recipient_item_template).toBe('{"emailAddress":"{{email}}","recipientType":"TO"}');
   });
 
   it('open edit channel pre-fills form and submits update', async () => {
@@ -252,9 +265,8 @@ describe('AlertSettings page', () => {
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /^Edit$|^편집$/ }));
     await waitFor(() => expect(screen.getByText(/^Edit Channel$/)).toBeInTheDocument());
-    const inputs = screen.getAllByRole('textbox');
-    expect((inputs[0] as HTMLInputElement).value).toBe('ops-slack');
-    fireEvent.submit(inputs[0].closest('form')!);
+    expect(screen.getByLabelText(/Channel Name|채널 이름/i)).toHaveValue('ops-slack');
+    fireEvent.submit(screen.getByLabelText(/Channel Name|채널 이름/i).closest('form')!);
     await waitFor(() => expect(mocks.updateChannel).toHaveBeenCalled());
     expect(mocks.updateChannel.mock.calls[0][0]).toBe(1);
   });
@@ -393,6 +405,26 @@ describe('AlertSettings page', () => {
     await waitFor(() => expect(screen.getByText(/No rules|규칙이 없/i)).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /\+\s*Add Rule/i }));
     await waitFor(() => expect(screen.getByText(/^Add Rule$/)).toBeInTheDocument());
+    expect(screen.queryByPlaceholderText(/Recipients|수신자/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /^Error Rate$|^에러율$/ })).not.toBeInTheDocument();
+  });
+
+  it('edit rule shows legacy recipients read-only and preserves mappings on save', async () => {
+    mocks.getRules.mockResolvedValue([ruleFixture]);
+    renderWithProviders(<AlertSettings />);
+    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
+    await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$|^편집$/ }));
+    await waitFor(() => expect(screen.getByText(/^Edit Rule$|^규칙 수정$/)).toBeInTheDocument());
+    expect(screen.getAllByText(/Legacy recipients|기존 수신자 설정/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('ops-slack: ops@example.com').length).toBeGreaterThan(0);
+    expect(screen.queryByPlaceholderText(/Recipients|수신자/i)).not.toBeInTheDocument();
+
+    fireEvent.submit(screen.getByPlaceholderText(/DB Down Alert/i).closest('form')!);
+
+    await waitFor(() => expect(mocks.updateRule).toHaveBeenCalled());
+    expect(mocks.updateRule.mock.calls[0][1]).not.toHaveProperty('channels');
   });
 
   it('submits upstream alert target using upstream id when a display name exists', async () => {
@@ -434,5 +466,6 @@ describe('AlertSettings page', () => {
 
     await waitFor(() => expect(mocks.createRule).toHaveBeenCalled());
     expect(mocks.createRule.mock.calls[0][0].target).toBe('upstream-1');
+    expect(mocks.createRule.mock.calls[0][0].channels).toEqual([]);
   });
 });

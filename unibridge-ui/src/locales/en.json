@@ -472,6 +472,8 @@
     "resourceType": "Resource Type",
     "resource": "Resource",
     "resourceOwnerSaved": "Resource owner saved",
+    "legacyRecipients": "Legacy recipients",
+    "legacyRecipientsHint": "Legacy rule recipients are kept for compatibility and are not used by owner-based mail routing.",
     "addRecipient": "Add Recipient",
     "recipientsDuplicateHint": "For channels that accept only one recipient per call (e.g. mail APIs), register the same channel multiple times with one recipient per row.",
     "typeDbHealth": "DB Health",

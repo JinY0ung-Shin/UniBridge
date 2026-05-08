@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -58,24 +58,22 @@ export default function AlertMailChannelPanel() {
   const [showChannelModal, setShowChannelModal] = useState(false);
   const [editingChannelId, setEditingChannelId] = useState<number | null>(null);
   const [channelForm, setChannelForm] = useState(emptyChannelForm());
-  const [settingsForm, setSettingsForm] = useState(defaultSettings);
+  const [settingsDraft, setSettingsDraft] = useState<Partial<AlertSettings>>({});
   const [testingChannelIds, setTestingChannelIds] = useState<Set<number>>(new Set());
 
   const settingsQuery = useQuery({ queryKey: ['alert-settings'], queryFn: getAlertSettings });
   const channelsQuery = useQuery({ queryKey: ['alert-channels'], queryFn: getAlertChannels });
   const ownerGroupsQuery = useQuery({ queryKey: ['alert-owner-groups'], queryFn: getAlertOwnerGroups });
 
-  useEffect(() => {
-    if (settingsQuery.data) setSettingsForm(settingsQuery.data);
-  }, [settingsQuery.data]);
-
   const channels = channelsQuery.data ?? [];
   const ownerGroups = ownerGroupsQuery.data ?? [];
+  const settingsForm: AlertSettings = { ...defaultSettings, ...settingsQuery.data, ...settingsDraft };
 
   const updateSettingsMutation = useMutation({
     mutationFn: (body: Partial<AlertSettings>) => updateAlertSettings(body),
     onSuccess: (settings) => {
       queryClient.setQueryData(['alert-settings'], settings);
+      setSettingsDraft({});
       addToast({ type: 'success', title: t('alerts.saveSettings'), message: t('common.ok') });
     },
     onError: () => {
@@ -202,6 +200,7 @@ export default function AlertMailChannelPanel() {
   }
 
   const isSavingChannel = createChannelMutation.isPending || updateChannelMutation.isPending;
+  const hasSettings = Boolean(settingsQuery.data);
   const isLoading = channelsQuery.isLoading || settingsQuery.isLoading || ownerGroupsQuery.isLoading;
   const isError = channelsQuery.isError || settingsQuery.isError || ownerGroupsQuery.isError;
   const templateVars: [string, string][] = [
@@ -226,8 +225,9 @@ export default function AlertMailChannelPanel() {
             <select
               id="mail-channel-select"
               value={settingsForm.mail_channel_id ?? ''}
+              disabled={!hasSettings}
               onChange={(e) =>
-                setSettingsForm((prev) => ({
+                setSettingsDraft((prev) => ({
                   ...prev,
                   mail_channel_id: e.target.value ? Number(e.target.value) : null,
                 }))
@@ -244,8 +244,9 @@ export default function AlertMailChannelPanel() {
             <select
               id="fallback-owner-group-select"
               value={settingsForm.fallback_owner_group_id ?? ''}
+              disabled={!hasSettings}
               onChange={(e) =>
-                setSettingsForm((prev) => ({
+                setSettingsDraft((prev) => ({
                   ...prev,
                   fallback_owner_group_id: e.target.value ? Number(e.target.value) : null,
                 }))
@@ -266,8 +267,9 @@ export default function AlertMailChannelPanel() {
               max={100}
               step={0.1}
               value={settingsForm.route_error_threshold_pct}
+              disabled={!hasSettings}
               onChange={(e) =>
-                setSettingsForm((prev) => ({ ...prev, route_error_threshold_pct: Number(e.target.value) }))
+                setSettingsDraft((prev) => ({ ...prev, route_error_threshold_pct: Number(e.target.value) }))
               }
             />
           </div>
@@ -279,13 +281,14 @@ export default function AlertMailChannelPanel() {
               min={30}
               max={3600}
               value={settingsForm.check_interval_seconds}
+              disabled={!hasSettings}
               onChange={(e) =>
-                setSettingsForm((prev) => ({ ...prev, check_interval_seconds: Number(e.target.value) }))
+                setSettingsDraft((prev) => ({ ...prev, check_interval_seconds: Number(e.target.value) }))
               }
             />
           </div>
         </div>
-        <button type="submit" className="btn btn-primary" disabled={updateSettingsMutation.isPending}>
+        <button type="submit" className="btn btn-primary" disabled={!hasSettings || updateSettingsMutation.isPending}>
           {updateSettingsMutation.isPending ? t('common.saving') : t('alerts.saveSettings')}
         </button>
       </form>
@@ -359,8 +362,9 @@ export default function AlertMailChannelPanel() {
             <form onSubmit={handleChannelSubmit}>
               <div className="form-grid">
                 <div className="form-group form-group--full">
-                  <label>{t('alerts.channelName')}</label>
+                  <label htmlFor="alert-channel-name">{t('alerts.channelName')}</label>
                   <input
+                    id="alert-channel-name"
                     type="text"
                     value={channelForm.name}
                     onChange={(e) => updateChannelField('name', e.target.value)}
@@ -369,8 +373,9 @@ export default function AlertMailChannelPanel() {
                   />
                 </div>
                 <div className="form-group form-group--full">
-                  <label>{t('alerts.webhookUrl')}</label>
+                  <label htmlFor="alert-channel-webhook">{t('alerts.webhookUrl')}</label>
                   <input
+                    id="alert-channel-webhook"
                     type="url"
                     value={channelForm.webhook_url}
                     onChange={(e) => updateChannelField('webhook_url', e.target.value)}
@@ -379,8 +384,9 @@ export default function AlertMailChannelPanel() {
                   />
                 </div>
                 <div className="form-group form-group--full">
-                  <label>{t('alerts.payloadTemplate')}</label>
+                  <label htmlFor="alert-channel-payload-template">{t('alerts.payloadTemplate')}</label>
                   <textarea
+                    id="alert-channel-payload-template"
                     className="form-textarea"
                     rows={5}
                     value={channelForm.payload_template}
@@ -403,8 +409,9 @@ export default function AlertMailChannelPanel() {
                   </details>
                 </div>
                 <div className="form-group form-group--full">
-                  <label>{t('alerts.recipientItemTemplate')}</label>
+                  <label htmlFor="alert-channel-recipient-item-template">{t('alerts.recipientItemTemplate')}</label>
                   <textarea
+                    id="alert-channel-recipient-item-template"
                     className="form-textarea"
                     rows={3}
                     value={channelForm.recipient_item_template ?? ''}

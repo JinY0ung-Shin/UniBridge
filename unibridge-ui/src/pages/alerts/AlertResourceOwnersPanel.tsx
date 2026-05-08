@@ -13,6 +13,10 @@ function resourceLabel(row: AlertResourceOwner): string {
   return row.display_name || row.resource_id;
 }
 
+function resourceKey(row: Pick<AlertResourceOwner, 'resource_type' | 'resource_id'>): string {
+  return `${row.resource_type}:${row.resource_id}`;
+}
+
 export default function AlertResourceOwnersPanel() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -34,23 +38,59 @@ export default function AlertResourceOwnersPanel() {
       resourceId: string;
       ownerGroupId: number;
     }) => setAlertResourceOwner(resourceType, resourceId, { owner_group_id: ownerGroupId }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['alert-resource-owners'] });
+    onMutate: async ({ resourceType, resourceId, ownerGroupId }) => {
+      await queryClient.cancelQueries({ queryKey: ['alert-resource-owners'] });
+      const previous = queryClient.getQueryData<AlertResourceOwner[]>(['alert-resource-owners']);
+      const group = ownerGroups.find((item) => item.id === ownerGroupId);
+      queryClient.setQueryData<AlertResourceOwner[]>(['alert-resource-owners'], (rows) =>
+        rows?.map((row) =>
+          row.resource_type === resourceType && row.resource_id === resourceId
+            ? { ...row, owner_group_id: ownerGroupId, owner_group_name: group?.name ?? row.owner_group_name }
+            : row,
+        ),
+      );
+      return { previous };
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData<AlertResourceOwner[]>(['alert-resource-owners'], (rows) =>
+        rows?.map((row) => (resourceKey(row) === resourceKey(updated) ? updated : row)),
+      );
       addToast({ type: 'success', title: t('alerts.resourceOwnerSaved'), message: t('common.ok') });
     },
-    onError: () =>
-      addToast({ type: 'error', title: t('alerts.resourceOwnerSaved'), message: t('common.errorOccurred') }),
+    onError: (_error, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(['alert-resource-owners'], context.previous);
+      addToast({ type: 'error', title: t('alerts.resourceOwnerSaved'), message: t('common.errorOccurred') });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['alert-resource-owners'] });
+    },
   });
 
   const deleteMutation = useMutation({
     mutationFn: ({ resourceType, resourceId }: { resourceType: string; resourceId: string }) =>
       deleteAlertResourceOwner(resourceType, resourceId),
+    onMutate: async ({ resourceType, resourceId }) => {
+      await queryClient.cancelQueries({ queryKey: ['alert-resource-owners'] });
+      const previous = queryClient.getQueryData<AlertResourceOwner[]>(['alert-resource-owners']);
+      queryClient.setQueryData<AlertResourceOwner[]>(['alert-resource-owners'], (rows) =>
+        rows?.map((row) =>
+          row.resource_type === resourceType && row.resource_id === resourceId
+            ? { ...row, owner_group_id: null, owner_group_name: null }
+            : row,
+        ),
+      );
+      return { previous };
+    },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['alert-resource-owners'] });
       addToast({ type: 'success', title: t('alerts.resourceOwnerSaved'), message: t('common.ok') });
     },
-    onError: () =>
-      addToast({ type: 'error', title: t('alerts.resourceOwnerSaved'), message: t('common.errorOccurred') }),
+    onError: (_error, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(['alert-resource-owners'], context.previous);
+      addToast({ type: 'error', title: t('alerts.resourceOwnerSaved'), message: t('common.errorOccurred') });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['alert-resource-owners'] });
+    },
   });
 
   function handleOwnerChange(row: AlertResourceOwner, value: string) {
