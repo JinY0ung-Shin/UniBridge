@@ -18,24 +18,34 @@ from app.models import (
     AlertRule,
     AlertRuleChannel,
     AlertSettings,
+    DBConnection,
     OwnerGroup,
     ResourceOwner,
+    S3Connection,
 )
 from app.schemas import (
     AlertChannelCreate, AlertChannelResponse, AlertChannelUpdate,
     AlertHistoryResponse,
     OwnerGroupCreate, OwnerGroupResponse, OwnerGroupUpdate,
+    ResourceOwnerResponse, ResourceOwnerUpsert,
     AlertRuleCreate, AlertRuleResponse, AlertRuleTestChannelResult,
     AlertRuleTestResponse, AlertRuleUpdate, AlertStatusResponse,
     AlertSettingsResponse, AlertSettingsUpdate,
     RuleChannelDetail,
 )
+from app.services import apisix_client
 from app.services.alert_sender import render_recipient_items, render_template, send_webhook
 from app.services.alert_state import delete_alert_states_for_rule
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/alerts", tags=["Alerts"])
+
+RESOURCE_TYPES = {"db", "s3", "route", "upstream"}
+APISIX_RESOURCE_TYPES = {
+    "route": "routes",
+    "upstream": "upstreams",
+}
 
 
 async def _get_or_create_alert_settings(
@@ -58,6 +68,90 @@ async def _get_or_create_alert_settings(
         else:
             await db.flush()
     return settings
+
+
+def _validate_resource_type(resource_type: str) -> None:
+    if resource_type not in RESOURCE_TYPES:
+        raise HTTPException(status_code=422, detail="Unsupported resource type")
+
+
+async def _load_apisix_resources(resource_type: str) -> list[dict[str, Any]]:
+    apisix_type = APISIX_RESOURCE_TYPES[resource_type]
+    try:
+        result = await apisix_client.list_resources(apisix_type)
+    except Exception as exc:
+        logger.exception("Failed to load APISIX %s resources", apisix_type)
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to load {apisix_type} resources",
+        ) from exc
+    return result.get("items", [])
+
+
+async def _resource_exists(db: AsyncSession, resource_type: str, resource_id: str) -> bool:
+    _validate_resource_type(resource_type)
+    if resource_type == "db":
+        result = await db.execute(select(DBConnection).where(DBConnection.alias == resource_id))
+        return result.scalar_one_or_none() is not None
+    if resource_type == "s3":
+        result = await db.execute(select(S3Connection).where(S3Connection.alias == resource_id))
+        return result.scalar_one_or_none() is not None
+
+    items = await _load_apisix_resources(resource_type)
+    return any(str(item.get("id")) == resource_id for item in items if item.get("id") is not None)
+
+
+async def _list_resources_for_owners(db: AsyncSession) -> list[ResourceOwnerResponse]:
+    owner_result = await db.execute(
+        select(ResourceOwner, OwnerGroup)
+        .join(OwnerGroup, ResourceOwner.owner_group_id == OwnerGroup.id)
+    )
+    owners = {
+        (owner.resource_type, owner.resource_id): group
+        for owner, group in owner_result.all()
+    }
+
+    rows: list[ResourceOwnerResponse] = []
+
+    db_result = await db.execute(select(DBConnection.alias).order_by(DBConnection.alias))
+    for alias in db_result.scalars().all():
+        group = owners.get(("db", alias))
+        rows.append(ResourceOwnerResponse(
+            resource_type="db",
+            resource_id=alias,
+            display_name=alias,
+            owner_group_id=group.id if group else None,
+            owner_group_name=group.name if group else None,
+        ))
+
+    s3_result = await db.execute(select(S3Connection.alias).order_by(S3Connection.alias))
+    for alias in s3_result.scalars().all():
+        group = owners.get(("s3", alias))
+        rows.append(ResourceOwnerResponse(
+            resource_type="s3",
+            resource_id=alias,
+            display_name=alias,
+            owner_group_id=group.id if group else None,
+            owner_group_name=group.name if group else None,
+        ))
+
+    for resource_type in ("route", "upstream"):
+        for item in await _load_apisix_resources(resource_type):
+            raw_id = item.get("id")
+            if raw_id is None:
+                continue
+            resource_id = str(raw_id)
+            display_name = str(item.get("name") or item.get("uri") or resource_id)
+            group = owners.get((resource_type, resource_id))
+            rows.append(ResourceOwnerResponse(
+                resource_type=resource_type,
+                resource_id=resource_id,
+                display_name=display_name,
+                owner_group_id=group.id if group else None,
+                owner_group_name=group.name if group else None,
+            ))
+
+    return rows
 
 
 # ── Settings ────────────────────────────────────────────────────────────────
@@ -200,6 +294,84 @@ async def delete_owner_group(
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=409, detail="Owner group is in use")
+
+
+# ── Resource Owners ─────────────────────────────────────────────────────────
+
+@router.get("/resource-owners", response_model=list[ResourceOwnerResponse])
+async def list_resource_owners(
+    _user: CurrentUser = Depends(require_permission("alerts.read")),
+    db: AsyncSession = Depends(get_db),
+) -> list[ResourceOwnerResponse]:
+    return await _list_resources_for_owners(db)
+
+
+@router.put(
+    "/resource-owners/{resource_type}/{resource_id}",
+    response_model=ResourceOwnerResponse,
+)
+async def upsert_resource_owner(
+    resource_type: str,
+    resource_id: str,
+    body: ResourceOwnerUpsert,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> ResourceOwnerResponse:
+    _validate_resource_type(resource_type)
+
+    group = await db.get(OwnerGroup, body.owner_group_id)
+    if group is None:
+        raise HTTPException(status_code=422, detail="Owner group not found")
+
+    if not await _resource_exists(db, resource_type, resource_id):
+        raise HTTPException(status_code=422, detail="Resource not found")
+
+    result = await db.execute(
+        select(ResourceOwner).where(
+            ResourceOwner.resource_type == resource_type,
+            ResourceOwner.resource_id == resource_id,
+        )
+    )
+    owner = result.scalar_one_or_none()
+    if owner is None:
+        owner = ResourceOwner(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            owner_group_id=group.id,
+        )
+        db.add(owner)
+    else:
+        owner.owner_group_id = group.id
+    await db.commit()
+
+    return ResourceOwnerResponse(
+        resource_type=resource_type,
+        resource_id=resource_id,
+        display_name=resource_id,
+        owner_group_id=group.id,
+        owner_group_name=group.name,
+    )
+
+
+@router.delete(
+    "/resource-owners/{resource_type}/{resource_id}",
+    status_code=204,
+    response_model=None,
+)
+async def delete_resource_owner(
+    resource_type: str,
+    resource_id: str,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    _validate_resource_type(resource_type)
+    await db.execute(
+        sa_delete(ResourceOwner).where(
+            ResourceOwner.resource_type == resource_type,
+            ResourceOwner.resource_id == resource_id,
+        )
+    )
+    await db.commit()
 
 
 # ── Channels ────────────────────────────────────────────────────────────────

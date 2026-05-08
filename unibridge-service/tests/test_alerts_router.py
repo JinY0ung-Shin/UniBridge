@@ -14,8 +14,10 @@ from app.models import (
     AlertHistory,
     AlertSettings,
     AlertState,
+    DBConnection,
     OwnerGroup,
     ResourceOwner,
+    S3Connection,
 )
 from app.routers import alerts as alerts_router
 from app.services.alert_state import AlertStateManager
@@ -547,6 +549,173 @@ async def test_delete_resource_owner_group_returns_409(client, admin_token, seed
 
     assert resp.status_code == 409
     assert "resource owner" in resp.json()["detail"]
+
+
+# ── Resource Owners ─────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_resource_owner_upsert_and_delete_for_db(client, admin_token, seeded_db):
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        group = OwnerGroup(name="orders-team", emails='["orders@example.com"]')
+        db.add(group)
+        db.add(DBConnection(
+            alias="orders-db",
+            db_type="postgres",
+            host="localhost",
+            port=5432,
+            database="orders",
+            username="orders",
+            password_encrypted="encrypted",
+        ))
+        await db.commit()
+        await db.refresh(group)
+        group_id = group.id
+
+    with patch("app.routers.alerts.apisix_client") as mock_apisix:
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+        put_resp = await client.put(
+            "/admin/alerts/resource-owners/db/orders-db",
+            json={"owner_group_id": group_id},
+            headers=auth_header(admin_token),
+        )
+
+        assert put_resp.status_code == 200, put_resp.text
+        body = put_resp.json()
+        assert body["resource_type"] == "db"
+        assert body["resource_id"] == "orders-db"
+        assert body["display_name"] == "orders-db"
+        assert body["owner_group_id"] == group_id
+        assert body["owner_group_name"] == "orders-team"
+
+        list_resp = await client.get(
+            "/admin/alerts/resource-owners",
+            headers=auth_header(admin_token),
+        )
+
+        assert list_resp.status_code == 200, list_resp.text
+        rows = list_resp.json()
+        assert any(
+            row["resource_type"] == "db"
+            and row["resource_id"] == "orders-db"
+            and row["display_name"] == "orders-db"
+            and row["owner_group_id"] == group_id
+            and row["owner_group_name"] == "orders-team"
+            for row in rows
+        )
+
+        delete_resp = await client.delete(
+            "/admin/alerts/resource-owners/db/orders-db",
+            headers=auth_header(admin_token),
+        )
+
+    assert delete_resp.status_code == 204
+
+    async with session_factory() as db:
+        owner = (await db.execute(select(ResourceOwner))).scalar_one_or_none()
+    assert owner is None
+
+
+@pytest.mark.asyncio
+async def test_resource_owner_rejects_unknown_resource(client, admin_token, seeded_db):
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        group = OwnerGroup(name="missing-resource-team", emails='["missing@example.com"]')
+        db.add(group)
+        await db.commit()
+        await db.refresh(group)
+        group_id = group.id
+
+    resp = await client.put(
+        "/admin/alerts/resource-owners/db/missing-db",
+        json={"owner_group_id": group_id},
+        headers=auth_header(admin_token),
+    )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_resource_owner_rejects_unsupported_resource_type(client, admin_token):
+    resp = await client.put(
+        "/admin/alerts/resource-owners/cache/redis",
+        json={"owner_group_id": 1},
+        headers=auth_header(admin_token),
+    )
+
+    assert resp.status_code == 422
+
+    delete_resp = await client.delete(
+        "/admin/alerts/resource-owners/cache/redis",
+        headers=auth_header(admin_token),
+    )
+
+    assert delete_resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_resource_owner_rejects_missing_owner_group(client, admin_token, seeded_db):
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        db.add(S3Connection(
+            alias="reports-bucket",
+            endpoint_url="https://s3.example.com",
+            region="us-east-1",
+            access_key_id_encrypted="encrypted",
+            secret_access_key_encrypted="encrypted",
+        ))
+        await db.commit()
+
+    resp = await client.put(
+        "/admin/alerts/resource-owners/s3/reports-bucket",
+        json={"owner_group_id": 9999},
+        headers=auth_header(admin_token),
+    )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_resource_owner_validates_apisix_route_and_upstream(client, admin_token, seeded_db):
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        group = OwnerGroup(name="gateway-team", emails='["gateway@example.com"]')
+        db.add(group)
+        await db.commit()
+        await db.refresh(group)
+        group_id = group.id
+
+    async def list_resources(resource: str) -> dict[str, object]:
+        if resource == "routes":
+            return {"items": [{"id": "orders-route", "name": "Orders Route"}]}
+        if resource == "upstreams":
+            return {"items": [{"id": "orders-upstream", "name": "Orders Upstream"}]}
+        return {"items": []}
+
+    with patch("app.routers.alerts.apisix_client") as mock_apisix:
+        mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
+
+        route_resp = await client.put(
+            "/admin/alerts/resource-owners/route/orders-route",
+            json={"owner_group_id": group_id},
+            headers=auth_header(admin_token),
+        )
+        upstream_resp = await client.put(
+            "/admin/alerts/resource-owners/upstream/orders-upstream",
+            json={"owner_group_id": group_id},
+            headers=auth_header(admin_token),
+        )
+        missing_resp = await client.put(
+            "/admin/alerts/resource-owners/route/missing-route",
+            json={"owner_group_id": group_id},
+            headers=auth_header(admin_token),
+        )
+
+    assert route_resp.status_code == 200, route_resp.text
+    assert route_resp.json()["owner_group_name"] == "gateway-team"
+    assert upstream_resp.status_code == 200, upstream_resp.text
+    assert upstream_resp.json()["owner_group_name"] == "gateway-team"
+    assert missing_resp.status_code == 422
 
 
 # ── Rules ───────────────────────────────────────────────────────────────────

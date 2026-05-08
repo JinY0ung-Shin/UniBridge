@@ -398,6 +398,18 @@ class OwnerGroupResponse(BaseModel):
     updated_at: datetime | None = None
 
 
+class ResourceOwnerUpsert(BaseModel):
+    owner_group_id: int
+
+
+class ResourceOwnerResponse(BaseModel):
+    resource_type: str
+    resource_id: str
+    display_name: str
+    owner_group_id: int | None = None
+    owner_group_name: str | None = None
+
+
 class RuleChannelMapping(BaseModel):
     channel_id: int
     recipients: list[str]
