@@ -314,6 +314,36 @@ class TestAlertChecker:
         assert kwargs["threshold"] == 5.0
 
     @pytest.mark.asyncio
+    async def test_global_error_rate_preserves_legacy_rule_dispatch(self):
+        state = AlertStateManager()
+        state.update("error_rate", "global:rule_9", is_healthy=True, display_target="global")
+        rule = SimpleNamespace(id=9, target="global", threshold=10.0, name="global 5xx")
+        fake_db = SimpleNamespace(execute=AsyncMock(return_value=_FakeResult([rule])))
+
+        with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+             patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
+             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[])), \
+             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)), \
+             patch("app.services.alert_checker._dispatch_alert", new_callable=AsyncMock) as legacy_dispatch, \
+             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as owner_dispatch:
+            mock_db.return_value = []
+            mock_up.return_value = []
+            mock_err.return_value = [("global", 12.5)]
+
+            await run_single_check(state)
+
+        legacy_dispatch.assert_called_once()
+        owner_dispatch.assert_not_called()
+        kwargs = legacy_dispatch.call_args.kwargs
+        assert kwargs["rule_type"] == "error_rate"
+        assert kwargs["alert_type"] == "triggered"
+        assert kwargs["target"] == "global"
+        assert kwargs["rule_id"] == 9
+        assert kwargs["rate"] == 12.5
+        assert kwargs["threshold"] == 10.0
+
+    @pytest.mark.asyncio
     async def test_start_checker_schedules_from_cycle_start_to_avoid_drift(self):
         from app.services import alert_checker
 
