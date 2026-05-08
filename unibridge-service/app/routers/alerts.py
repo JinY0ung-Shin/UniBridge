@@ -415,6 +415,22 @@ async def test_rule(
             ))
             continue
 
+        try:
+            recipients_json = render_recipient_items(
+                ch.recipient_item_template or '{"email":"{{email}}"}',
+                recipients_list,
+            )
+        except ValueError as exc:
+            results.append(AlertRuleTestChannelResult(
+                channel_id=ch.id,
+                channel_name=ch.name,
+                recipients=recipients_list,
+                skipped=True,
+                success=None,
+                error=str(exc),
+            ))
+            continue
+
         payload = render_template(
             ch.payload_template,
             alert_type="test",
@@ -423,6 +439,7 @@ async def test_rule(
             message=f"[TEST] {rule.name} 규칙의 테스트 알림입니다.",
             timestamp=now,
             recipients=", ".join(recipients_list),
+            recipients_json=recipients_json,
             rate=threshold_str,
             threshold=threshold_str,
             rule_name=rule.name,
