@@ -1,12 +1,13 @@
 """Tests for alert_sender module."""
 from __future__ import annotations
 
+import json
 import socket
 
 import pytest
 from pytest_httpx import HTTPXMock
 
-from app.services.alert_sender import render_template, send_webhook
+from app.services.alert_sender import render_recipient_items, render_template, send_webhook
 
 
 class TestRenderTemplate:
@@ -50,6 +51,70 @@ class TestRenderTemplate:
         )
         assert '"rate":""' in result
         assert '"rule":""' in result
+
+
+class TestRecipientItemRendering:
+    def test_render_recipient_items_builds_json_array(self):
+        template = '{"emailAddress":"{{email}}","recipientType":"TO"}'
+        result = render_recipient_items(template, ["kim@company.com", "lee@company.com"])
+        parsed = json.loads(result)
+        assert parsed == [
+            {"emailAddress": "kim@company.com", "recipientType": "TO"},
+            {"emailAddress": "lee@company.com", "recipientType": "TO"},
+        ]
+
+    def test_render_recipient_items_rejects_non_object_template(self):
+        template = '"{{email}}"'
+        with pytest.raises(ValueError, match="JSON object"):
+            render_recipient_items(template, ["kim@company.com"])
+
+    def test_render_recipient_items_escapes_quotes_and_backslashes(self):
+        template = '{"emailAddress":"{{email}}","recipientType":"TO"}'
+        email = 'kim"\\alerts@example.com'
+        result = render_recipient_items(template, [email])
+        parsed = json.loads(result)
+        assert parsed == [{"emailAddress": email, "recipientType": "TO"}]
+
+    def test_render_recipient_items_keeps_injection_as_email_value(self):
+        template = '{"emailAddress":"{{email}}","recipientType":"TO"}'
+        email = 'victim@example.com","recipientType":"BCC'
+        result = render_recipient_items(template, [email])
+        parsed = json.loads(result)
+        assert parsed == [{"emailAddress": email, "recipientType": "TO"}]
+
+    def test_render_recipient_items_rejects_invalid_json_template(self):
+        template = '{"emailAddress":"{{email}}","recipientType":"TO"'
+        with pytest.raises(ValueError, match="invalid JSON"):
+            render_recipient_items(template, ["kim@company.com"])
+
+    def test_render_recipient_items_rejects_unquoted_email_placeholder(self):
+        template = '{"emailAddress":{{email}},"recipientType":"TO"}'
+        with pytest.raises(ValueError, match="JSON string value"):
+            render_recipient_items(template, ["kim@company.com"])
+
+    def test_render_recipient_items_requires_email_placeholder(self):
+        template = '{"recipientType":"TO"}'
+        with pytest.raises(ValueError, match="must include"):
+            render_recipient_items(template, ["kim@company.com"])
+
+    def test_render_recipient_items_empty_email_list_returns_empty_array(self):
+        template = '{"emailAddress":{{email}},"recipientType":"TO"}'
+        assert render_recipient_items(template, []) == "[]"
+
+    def test_render_template_injects_recipients_json_raw(self):
+        payload = render_template(
+            '{"recipients":{{recipients_json}},"to":"{{recipients}}"}',
+            alert_type="triggered",
+            target_name="payment-db",
+            status="장애 발생",
+            message="Database failed",
+            timestamp="2026-05-08T00:00:00+00:00",
+            recipients="kim@company.com, lee@company.com",
+            recipients_json='[{"emailAddress":"kim@company.com","recipientType":"TO"}]',
+        )
+        assert json.loads(payload)["recipients"] == [
+            {"emailAddress": "kim@company.com", "recipientType": "TO"}
+        ]
 
 
 class TestSendWebhook:

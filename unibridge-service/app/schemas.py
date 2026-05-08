@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services.webhook_security import validate_webhook_url
 
@@ -283,6 +283,7 @@ class AlertChannelCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     webhook_url: str = Field(..., min_length=1)
     payload_template: str = Field(..., min_length=1)
+    recipient_item_template: str | None = None
     headers: dict[str, str] | None = None
     enabled: bool = True
 
@@ -296,6 +297,7 @@ class AlertChannelUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
     webhook_url: str | None = Field(None, min_length=1)
     payload_template: str | None = None
+    recipient_item_template: str | None = None
     headers: dict[str, str] | None = None
     enabled: bool | None = None
 
@@ -312,12 +314,100 @@ class AlertChannelResponse(BaseModel):
     name: str
     webhook_url: str
     payload_template: str
+    recipient_item_template: str | None = None
     headers: dict[str, str] | None = None
     enabled: bool
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class AlertSettingsResponse(BaseModel):
+    mail_channel_id: int | None = None
+    fallback_owner_group_id: int | None = None
+    route_error_threshold_pct: float
+    check_interval_seconds: int
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class AlertSettingsUpdate(BaseModel):
+    mail_channel_id: int | None = None
+    fallback_owner_group_id: int | None = None
+    route_error_threshold_pct: float | None = Field(None, ge=0, le=100)
+    check_interval_seconds: int | None = Field(None, ge=30, le=3600)
+
+    @model_validator(mode="after")
+    def reject_explicit_numeric_nulls(self) -> "AlertSettingsUpdate":
+        for field_name in ("route_error_threshold_pct", "check_interval_seconds"):
+            if field_name in self.model_fields_set and getattr(self, field_name) is None:
+                raise ValueError(f"{field_name} cannot be null")
+        return self
+
+
+def _dedupe_emails(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    emails: list[str] = []
+    for value in values:
+        email = value.strip()
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        emails.append(email)
+    return emails
+
+
+class OwnerGroupCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    emails: list[str]
+    enabled: bool = True
+
+    @field_validator("emails")
+    @classmethod
+    def validate_emails(cls, v: list[str]) -> list[str]:
+        emails = _dedupe_emails(v)
+        if not emails:
+            raise ValueError("emails must include at least one address")
+        return emails
+
+
+class OwnerGroupUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=100)
+    emails: list[str] | None = None
+    enabled: bool | None = None
+
+    @field_validator("emails")
+    @classmethod
+    def validate_emails(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        emails = _dedupe_emails(v)
+        if not emails:
+            raise ValueError("emails must include at least one address")
+        return emails
+
+
+class OwnerGroupResponse(BaseModel):
+    id: int
+    name: str
+    emails: list[str]
+    enabled: bool
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ResourceOwnerUpsert(BaseModel):
+    owner_group_id: int
+
+
+class ResourceOwnerResponse(BaseModel):
+    resource_type: str
+    resource_id: str
+    display_name: str
+    owner_group_id: int | None = None
+    owner_group_name: str | None = None
 
 
 class RuleChannelMapping(BaseModel):

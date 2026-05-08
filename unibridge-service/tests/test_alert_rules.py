@@ -1,6 +1,8 @@
 """Integration tests for alert rules, history, and status API."""
 from __future__ import annotations
 
+import json
+
 import pytest
 from pytest_httpx import HTTPXMock
 from sqlalchemy import select
@@ -87,6 +89,20 @@ class TestAlertRulesAPI:
         recip_sets = [set(c["recipients"]) for c in data["channels"]]
         assert {"alice@x.com"} in recip_sets
         assert {"bob@x.com"} in recip_sets
+
+    @pytest.mark.asyncio
+    async def test_create_rule_without_channels_is_supported_for_owner_routing(self, client, admin_token):
+        resp = await client.post("/admin/alerts/rules", json={
+            "name": "owner-routed-db",
+            "type": "db_health",
+            "target": "owner-db",
+            "channels": [],
+        }, headers=auth_header(admin_token))
+
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["name"] == "owner-routed-db"
+        assert data["channels"] == []
 
     @pytest.mark.asyncio
     async def test_update_rule_accepts_duplicate_channel_mappings(self, client, admin_token):
@@ -187,6 +203,89 @@ class TestAlertRuleTestAPI:
         req = httpx_mock.get_request()
         assert b"alice@x.com, bob@x.com" in req.content
         assert b"recip-rule" in req.content
+
+    @pytest.mark.asyncio
+    async def test_rule_test_injects_recipients_json(self, client, admin_token, httpx_mock: HTTPXMock):
+        ch_resp = await client.post("/admin/alerts/channels", json={
+            "name": "rt-recip-json-ch",
+            "webhook_url": "http://hook.example.com/recip-json",
+            "payload_template": '{"recipients":{{recipients_json}},"rule":"{{rule_name}}"}',
+            "recipient_item_template": '{"emailAddress":"{{email}}","recipientType":"TO"}',
+        }, headers=auth_header(admin_token))
+        assert ch_resp.status_code == 201
+        rule_id = await self._create_rule(client, admin_token, name="recip-json-rule", channels=[
+            {"channel_id": ch_resp.json()["id"], "recipients": ["alice@x.com", "bob@x.com"]},
+        ])
+        httpx_mock.add_response(url="http://hook.example.com/recip-json", status_code=200)
+
+        resp = await client.post(f"/admin/alerts/rules/{rule_id}/test",
+                                 headers=auth_header(admin_token))
+
+        assert resp.status_code == 200
+        req = httpx_mock.get_request()
+        body = json.loads(req.content)
+        assert body["rule"] == "recip-json-rule"
+        assert [r["emailAddress"] for r in body["recipients"]] == ["alice@x.com", "bob@x.com"]
+        assert all(r["recipientType"] == "TO" for r in body["recipients"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+    async def test_rule_test_skips_invalid_recipient_item_template(self, client, admin_token,
+                                                                   httpx_mock: HTTPXMock):
+        ch_resp = await client.post("/admin/alerts/channels", json={
+            "name": "rt-bad-recipient-template-ch",
+            "webhook_url": "http://hook.example.com/bad-recipient-template",
+            "payload_template": '{"recipients":{{recipients_json}}}',
+            "recipient_item_template": '{"recipientType":"TO"}',
+        }, headers=auth_header(admin_token))
+        assert ch_resp.status_code == 201
+        ch_id = ch_resp.json()["id"]
+        rule_id = await self._create_rule(client, admin_token, name="bad-recipient-template-rule",
+                                          channels=[{"channel_id": ch_id, "recipients": ["alice@x.com"]}])
+
+        resp = await client.post(f"/admin/alerts/rules/{rule_id}/test",
+                                 headers=auth_header(admin_token))
+
+        assert resp.status_code == 200
+        result = resp.json()["results"][0]
+        assert result["channel_id"] == ch_id
+        assert result["skipped"] is True
+        assert result["success"] is None
+        assert "must include" in result["error"]
+        assert len(httpx_mock.get_requests()) == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.httpx_mock(assert_all_requests_were_expected=False)
+    async def test_rule_test_skips_missing_recipient_item_template_for_recipients_json(
+        self,
+        client,
+        admin_token,
+        httpx_mock: HTTPXMock,
+    ):
+        ch_resp = await client.post("/admin/alerts/channels", json={
+            "name": "rt-missing-recipient-template-ch",
+            "webhook_url": "http://hook.example.com/missing-recipient-template",
+            "payload_template": '{"recipients":{{recipients_json}}}',
+        }, headers=auth_header(admin_token))
+        assert ch_resp.status_code == 201
+        ch_id = ch_resp.json()["id"]
+        rule_id = await self._create_rule(
+            client,
+            admin_token,
+            name="missing-recipient-template-rule",
+            channels=[{"channel_id": ch_id, "recipients": ["alice@x.com"]}],
+        )
+
+        resp = await client.post(f"/admin/alerts/rules/{rule_id}/test",
+                                 headers=auth_header(admin_token))
+
+        assert resp.status_code == 200
+        result = resp.json()["results"][0]
+        assert result["channel_id"] == ch_id
+        assert result["skipped"] is True
+        assert result["success"] is None
+        assert "recipient_item_template" in result["error"]
+        assert len(httpx_mock.get_requests()) == 0
 
     @pytest.mark.asyncio
     async def test_rule_test_skips_disabled_channel(self, client, admin_token, httpx_mock: HTTPXMock):

@@ -12,20 +12,395 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
 from app.database import get_db
-from app.models import AlertChannel, AlertHistory, AlertRule, AlertRuleChannel
+from app.models import (
+    AlertChannel,
+    AlertHistory,
+    AlertRule,
+    AlertRuleChannel,
+    AlertSettings,
+    DBConnection,
+    OwnerGroup,
+    ResourceOwner,
+    S3Connection,
+)
 from app.schemas import (
     AlertChannelCreate, AlertChannelResponse, AlertChannelUpdate,
     AlertHistoryResponse,
+    OwnerGroupCreate, OwnerGroupResponse, OwnerGroupUpdate,
+    ResourceOwnerResponse, ResourceOwnerUpsert,
     AlertRuleCreate, AlertRuleResponse, AlertRuleTestChannelResult,
     AlertRuleTestResponse, AlertRuleUpdate, AlertStatusResponse,
+    AlertSettingsResponse, AlertSettingsUpdate,
     RuleChannelDetail,
 )
-from app.services.alert_sender import render_template, send_webhook
+from app.services import apisix_client
+from app.services.alert_sender import render_recipient_items, render_template, send_webhook
 from app.services.alert_state import delete_alert_states_for_rule
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/alerts", tags=["Alerts"])
+
+RESOURCE_TYPES = {"db", "s3", "route", "upstream"}
+APISIX_RESOURCE_TYPES = {
+    "route": "routes",
+    "upstream": "upstreams",
+}
+
+
+async def _get_or_create_alert_settings(
+    db: AsyncSession,
+    *,
+    commit: bool = True,
+) -> AlertSettings:
+    result = await db.execute(select(AlertSettings).where(AlertSettings.id == 1))
+    settings = result.scalar_one_or_none()
+    if settings is None:
+        settings = AlertSettings(
+            id=1,
+            route_error_threshold_pct=10.0,
+            check_interval_seconds=60,
+        )
+        db.add(settings)
+        try:
+            if commit:
+                await db.commit()
+                await db.refresh(settings)
+            else:
+                await db.flush()
+        except IntegrityError:
+            await db.rollback()
+            result = await db.execute(select(AlertSettings).where(AlertSettings.id == 1))
+            settings = result.scalar_one_or_none()
+            if settings is None:
+                raise
+    return settings
+
+
+def _validate_resource_type(resource_type: str) -> None:
+    if resource_type not in RESOURCE_TYPES:
+        raise HTTPException(status_code=422, detail="Unsupported resource type")
+
+
+async def _load_apisix_resources(resource_type: str) -> list[dict[str, Any]]:
+    apisix_type = APISIX_RESOURCE_TYPES[resource_type]
+    try:
+        result = await apisix_client.list_resources(apisix_type)
+    except Exception as exc:
+        logger.exception("Failed to load APISIX %s resources", apisix_type)
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to load {apisix_type} resources",
+        ) from exc
+    return result.get("items", [])
+
+
+def _apisix_resource_display_name(item: dict[str, Any], fallback: str) -> str:
+    return str(item.get("name") or item.get("uri") or fallback)
+
+
+async def _resource_display_name(
+    db: AsyncSession,
+    resource_type: str,
+    resource_id: str,
+) -> str | None:
+    _validate_resource_type(resource_type)
+    if resource_type == "db":
+        result = await db.execute(select(DBConnection.alias).where(DBConnection.alias == resource_id))
+        return result.scalar_one_or_none()
+    if resource_type == "s3":
+        result = await db.execute(select(S3Connection.alias).where(S3Connection.alias == resource_id))
+        return result.scalar_one_or_none()
+
+    items = await _load_apisix_resources(resource_type)
+    for item in items:
+        raw_id = item.get("id")
+        if raw_id is not None and str(raw_id) == resource_id:
+            return _apisix_resource_display_name(item, resource_id)
+    return None
+
+
+async def _list_resources_for_owners(db: AsyncSession) -> list[ResourceOwnerResponse]:
+    owner_result = await db.execute(
+        select(ResourceOwner, OwnerGroup)
+        .join(OwnerGroup, ResourceOwner.owner_group_id == OwnerGroup.id)
+    )
+    owners = {
+        (owner.resource_type, owner.resource_id): group
+        for owner, group in owner_result.all()
+    }
+
+    rows: list[ResourceOwnerResponse] = []
+
+    db_result = await db.execute(select(DBConnection.alias).order_by(DBConnection.alias))
+    for alias in db_result.scalars().all():
+        group = owners.get(("db", alias))
+        rows.append(ResourceOwnerResponse(
+            resource_type="db",
+            resource_id=alias,
+            display_name=alias,
+            owner_group_id=group.id if group else None,
+            owner_group_name=group.name if group else None,
+        ))
+
+    s3_result = await db.execute(select(S3Connection.alias).order_by(S3Connection.alias))
+    for alias in s3_result.scalars().all():
+        group = owners.get(("s3", alias))
+        rows.append(ResourceOwnerResponse(
+            resource_type="s3",
+            resource_id=alias,
+            display_name=alias,
+            owner_group_id=group.id if group else None,
+            owner_group_name=group.name if group else None,
+        ))
+
+    for resource_type in ("route", "upstream"):
+        for item in await _load_apisix_resources(resource_type):
+            raw_id = item.get("id")
+            if raw_id is None:
+                continue
+            resource_id = str(raw_id)
+            display_name = _apisix_resource_display_name(item, resource_id)
+            group = owners.get((resource_type, resource_id))
+            rows.append(ResourceOwnerResponse(
+                resource_type=resource_type,
+                resource_id=resource_id,
+                display_name=display_name,
+                owner_group_id=group.id if group else None,
+                owner_group_name=group.name if group else None,
+            ))
+
+    return rows
+
+
+# ── Settings ────────────────────────────────────────────────────────────────
+
+@router.get("/settings", response_model=AlertSettingsResponse)
+async def get_alert_settings(
+    _user: CurrentUser = Depends(require_permission("alerts.read")),
+    db: AsyncSession = Depends(get_db),
+) -> AlertSettingsResponse:
+    settings = await _get_or_create_alert_settings(db)
+    return AlertSettingsResponse.model_validate(settings)
+
+
+@router.put("/settings", response_model=AlertSettingsResponse)
+async def update_alert_settings(
+    body: AlertSettingsUpdate,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> AlertSettingsResponse:
+    if body.mail_channel_id is not None:
+        ch = await db.get(AlertChannel, body.mail_channel_id)
+        if ch is None:
+            raise HTTPException(status_code=422, detail="Mail channel not found")
+    if body.fallback_owner_group_id is not None:
+        group = await db.get(OwnerGroup, body.fallback_owner_group_id)
+        if group is None:
+            raise HTTPException(status_code=422, detail="Fallback owner group not found")
+
+    settings = await _get_or_create_alert_settings(db, commit=False)
+    for field_name in ("mail_channel_id", "fallback_owner_group_id"):
+        if field_name in body.model_fields_set:
+            setattr(settings, field_name, getattr(body, field_name))
+    if body.route_error_threshold_pct is not None:
+        settings.route_error_threshold_pct = body.route_error_threshold_pct
+    if body.check_interval_seconds is not None:
+        settings.check_interval_seconds = body.check_interval_seconds
+    await db.commit()
+    await db.refresh(settings)
+    return AlertSettingsResponse.model_validate(settings)
+
+
+# ── Owner Groups ────────────────────────────────────────────────────────────
+
+def _build_owner_group_response(group: OwnerGroup) -> OwnerGroupResponse:
+    return OwnerGroupResponse(
+        id=group.id,
+        name=group.name,
+        emails=json.loads(group.emails),
+        enabled=group.enabled,
+        created_at=group.created_at,
+        updated_at=group.updated_at,
+    )
+
+
+@router.get("/owner-groups", response_model=list[OwnerGroupResponse])
+async def list_owner_groups(
+    _user: CurrentUser = Depends(require_permission("alerts.read")),
+    db: AsyncSession = Depends(get_db),
+) -> list[OwnerGroupResponse]:
+    result = await db.execute(select(OwnerGroup).order_by(OwnerGroup.name))
+    groups = result.scalars().all()
+    return [_build_owner_group_response(group) for group in groups]
+
+
+@router.post("/owner-groups", response_model=OwnerGroupResponse, status_code=201)
+async def create_owner_group(
+    body: OwnerGroupCreate,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> OwnerGroupResponse:
+    group = OwnerGroup(
+        name=body.name,
+        emails=json.dumps(body.emails),
+        enabled=body.enabled,
+    )
+    db.add(group)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=f"Owner group name '{body.name}' already exists")
+    await db.refresh(group)
+    return _build_owner_group_response(group)
+
+
+@router.put("/owner-groups/{group_id}", response_model=OwnerGroupResponse)
+async def update_owner_group(
+    group_id: int,
+    body: OwnerGroupUpdate,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> OwnerGroupResponse:
+    group = await db.get(OwnerGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Owner group not found")
+    if body.name is not None:
+        group.name = body.name
+    if body.emails is not None:
+        group.emails = json.dumps(body.emails)
+    if body.enabled is not None:
+        group.enabled = body.enabled
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=f"Owner group name '{body.name}' already exists")
+    await db.refresh(group)
+    return _build_owner_group_response(group)
+
+
+@router.delete("/owner-groups/{group_id}", status_code=204, response_model=None)
+async def delete_owner_group(
+    group_id: int,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    group = await db.get(OwnerGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Owner group not found")
+    settings_result = await db.execute(
+        select(AlertSettings).where(AlertSettings.fallback_owner_group_id == group_id)
+    )
+    if settings_result.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail="Owner group is configured as the fallback owner group")
+    resource_owner_result = await db.execute(
+        select(ResourceOwner).where(ResourceOwner.owner_group_id == group_id)
+    )
+    if resource_owner_result.scalars().first() is not None:
+        raise HTTPException(status_code=409, detail="Owner group is assigned to a resource owner")
+    await db.delete(group)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Owner group is in use")
+
+
+# ── Resource Owners ─────────────────────────────────────────────────────────
+
+@router.get("/resource-owners", response_model=list[ResourceOwnerResponse])
+async def list_resource_owners(
+    _user: CurrentUser = Depends(require_permission("alerts.read")),
+    db: AsyncSession = Depends(get_db),
+) -> list[ResourceOwnerResponse]:
+    return await _list_resources_for_owners(db)
+
+
+@router.put(
+    "/resource-owners/{resource_type}/{resource_id}",
+    response_model=ResourceOwnerResponse,
+)
+async def upsert_resource_owner(
+    resource_type: str,
+    resource_id: str,
+    body: ResourceOwnerUpsert,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> ResourceOwnerResponse:
+    _validate_resource_type(resource_type)
+
+    group = await db.get(OwnerGroup, body.owner_group_id)
+    if group is None:
+        raise HTTPException(status_code=422, detail="Owner group not found")
+    group_id = group.id
+    group_name = group.name
+
+    display_name = await _resource_display_name(db, resource_type, resource_id)
+    if display_name is None:
+        raise HTTPException(status_code=422, detail="Resource not found")
+
+    result = await db.execute(
+        select(ResourceOwner).where(
+            ResourceOwner.resource_type == resource_type,
+            ResourceOwner.resource_id == resource_id,
+        )
+    )
+    owner = result.scalar_one_or_none()
+    if owner is None:
+        owner = ResourceOwner(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            owner_group_id=group_id,
+        )
+        db.add(owner)
+    else:
+        owner.owner_group_id = group_id
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        result = await db.execute(
+            select(ResourceOwner).where(
+                ResourceOwner.resource_type == resource_type,
+                ResourceOwner.resource_id == resource_id,
+            )
+        )
+        owner = result.scalar_one_or_none()
+        if owner is None:
+            raise HTTPException(status_code=409, detail="Resource owner conflict")
+        owner.owner_group_id = group_id
+        await db.commit()
+
+    return ResourceOwnerResponse(
+        resource_type=resource_type,
+        resource_id=resource_id,
+        display_name=display_name,
+        owner_group_id=group_id,
+        owner_group_name=group_name,
+    )
+
+
+@router.delete(
+    "/resource-owners/{resource_type}/{resource_id}",
+    status_code=204,
+    response_model=None,
+)
+async def delete_resource_owner(
+    resource_type: str,
+    resource_id: str,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    _validate_resource_type(resource_type)
+    await db.execute(
+        sa_delete(ResourceOwner).where(
+            ResourceOwner.resource_type == resource_type,
+            ResourceOwner.resource_id == resource_id,
+        )
+    )
+    await db.commit()
 
 
 # ── Channels ────────────────────────────────────────────────────────────────
@@ -42,6 +417,7 @@ async def list_channels(
         rows.append(AlertChannelResponse(
             id=ch.id, name=ch.name, webhook_url=ch.webhook_url,
             payload_template=ch.payload_template,
+            recipient_item_template=ch.recipient_item_template,
             headers=json.loads(ch.headers) if ch.headers else None,
             enabled=ch.enabled, created_at=ch.created_at, updated_at=ch.updated_at,
         ))
@@ -58,6 +434,7 @@ async def create_channel(
         name=body.name,
         webhook_url=body.webhook_url,
         payload_template=body.payload_template,
+        recipient_item_template=body.recipient_item_template,
         headers=json.dumps(body.headers) if body.headers else None,
         enabled=body.enabled,
     )
@@ -71,6 +448,7 @@ async def create_channel(
     return AlertChannelResponse(
         id=ch.id, name=ch.name, webhook_url=ch.webhook_url,
         payload_template=ch.payload_template,
+        recipient_item_template=ch.recipient_item_template,
         headers=body.headers, enabled=ch.enabled,
         created_at=ch.created_at, updated_at=ch.updated_at,
     )
@@ -93,6 +471,8 @@ async def update_channel(
         ch.webhook_url = body.webhook_url
     if body.payload_template is not None:
         ch.payload_template = body.payload_template
+    if "recipient_item_template" in body.model_fields_set:
+        ch.recipient_item_template = body.recipient_item_template
     if body.headers is not None:
         ch.headers = json.dumps(body.headers)
     if body.enabled is not None:
@@ -106,6 +486,7 @@ async def update_channel(
     return AlertChannelResponse(
         id=ch.id, name=ch.name, webhook_url=ch.webhook_url,
         payload_template=ch.payload_template,
+        recipient_item_template=ch.recipient_item_template,
         headers=json.loads(ch.headers) if ch.headers else None,
         enabled=ch.enabled, created_at=ch.created_at, updated_at=ch.updated_at,
     )
@@ -121,8 +502,20 @@ async def delete_channel(
     ch = result.scalar_one_or_none()
     if ch is None:
         raise HTTPException(status_code=404, detail="Channel not found")
-    await db.delete(ch)
-    await db.commit()
+    settings_result = await db.execute(
+        select(AlertSettings).where(AlertSettings.mail_channel_id == channel_id)
+    )
+    if settings_result.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Channel is configured as the default mail channel",
+        )
+    try:
+        await db.delete(ch)
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Channel is still referenced")
 
 
 @router.post("/channels/{channel_id}/test")
@@ -136,6 +529,19 @@ async def test_channel(
     if ch is None:
         raise HTTPException(status_code=404, detail="Channel not found")
     now = datetime.now(timezone.utc).isoformat()
+    test_emails = ["test@example.com"]
+    settings_result = await db.execute(
+        select(AlertSettings).where(AlertSettings.mail_channel_id == ch.id)
+    )
+    is_mail_channel = settings_result.scalar_one_or_none() is not None
+    try:
+        recipients_json = _render_channel_recipients_json(
+            ch,
+            test_emails,
+            require_template=is_mail_channel,
+        )
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
     payload = render_template(
         ch.payload_template,
         alert_type="test",
@@ -143,7 +549,8 @@ async def test_channel(
         status="ok",
         message="This is a test alert from UniBridge.",
         timestamp=now,
-        recipients="test@example.com",
+        recipients=", ".join(test_emails),
+        recipients_json=recipients_json,
         rate="5.0",
         threshold="10.0",
         rule_name="test-rule",
@@ -151,6 +558,21 @@ async def test_channel(
     headers = json.loads(ch.headers) if ch.headers else None
     ok, err = await send_webhook(url=ch.webhook_url, payload=payload, headers=headers)
     return {"success": ok, "error": err}
+
+
+def _render_channel_recipients_json(
+    ch: AlertChannel,
+    emails: list[str],
+    *,
+    require_template: bool = False,
+) -> str:
+    template = ch.recipient_item_template
+    uses_recipients_json = "{{recipients_json}}" in ch.payload_template
+    if template is None or not template.strip():
+        if require_template or uses_recipients_json:
+            raise ValueError("recipient_item_template is required when using recipients_json")
+        return "[]"
+    return render_recipient_items(template, emails)
 
 
 # ── Rules ───────────────────────────────────────────────────────────────────
@@ -319,6 +741,19 @@ async def test_rule(
             ))
             continue
 
+        try:
+            recipients_json = _render_channel_recipients_json(ch, recipients_list)
+        except ValueError as exc:
+            results.append(AlertRuleTestChannelResult(
+                channel_id=ch.id,
+                channel_name=ch.name,
+                recipients=recipients_list,
+                skipped=True,
+                success=None,
+                error=str(exc),
+            ))
+            continue
+
         payload = render_template(
             ch.payload_template,
             alert_type="test",
@@ -327,6 +762,7 @@ async def test_rule(
             message=f"[TEST] {rule.name} 규칙의 테스트 알림입니다.",
             timestamp=now,
             recipients=", ".join(recipients_list),
+            recipients_json=recipients_json,
             rate=threshold_str,
             threshold=threshold_str,
             rule_name=rule.name,

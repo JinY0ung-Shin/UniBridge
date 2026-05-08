@@ -46,6 +46,59 @@
   /* sits below tabs */
 }
 
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 24px 0 12px;
+}
+
+.section-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.settings-panel {
+  border-bottom: 1px solid var(--border-default);
+  padding-bottom: 20px;
+  margin-bottom: 8px;
+}
+
+.alert-note {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+}
+
+.alert-note--warning {
+  background: color-mix(in srgb, var(--accent-yellow, #d97706) 9%, transparent);
+  border-color: color-mix(in srgb, var(--accent-yellow, #d97706) 28%, var(--border-default));
+  color: var(--text-primary);
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 16px;
+  margin-bottom: 16px;
+}
+
+@media (max-width: 720px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .section-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 /* ── Table cells ───────────────────────────────────────────────────────────── */
 
 .cell-webhook-url {

@@ -9,7 +9,8 @@ from sqlalchemy import select
 
 from app import metrics
 from app.database import async_session
-from app.models import AlertChannel, AlertHistory, AlertRule, AlertRuleChannel
+from app.models import AlertChannel, AlertHistory, AlertRule, AlertRuleChannel, AlertSettings
+from app.services.alert_owner_dispatcher import dispatch_owner_alert
 from app.services.alert_sender import render_template, send_webhook
 from app.services.alert_state import AlertStateManager, save_alert_state_to_db
 
@@ -24,6 +25,34 @@ _ROUTE_LABEL_CACHE: dict[str, str] = {}
 _ROUTE_LABEL_CACHE_TS: float = 0.0
 _ROUTE_LABEL_TTL = 300.0  # 5 minutes
 _UPSTREAM_NAME_BY_ID: dict[str, str] = {}
+
+
+async def _get_check_interval_seconds() -> int:
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(AlertSettings.check_interval_seconds).where(AlertSettings.id == 1)
+            )
+            interval = result.scalar_one_or_none()
+    except Exception as exc:
+        logger.warning("Failed to load alert check interval: %s", exc)
+        return CHECK_INTERVAL
+    if interval is None:
+        return CHECK_INTERVAL
+    return min(3600, max(30, int(interval)))
+
+
+def _normalize_route_error_threshold_pct(value: float | int | None) -> float:
+    if value is None:
+        return 10.0
+    return min(100.0, max(0.0, float(value)))
+
+
+async def _load_route_error_default_threshold(db) -> float:
+    result = await db.execute(
+        select(AlertSettings.route_error_threshold_pct).where(AlertSettings.id == 1)
+    )
+    return _normalize_route_error_threshold_pct(result.scalar_one_or_none())
 
 
 async def _refresh_route_labels() -> None:
@@ -338,6 +367,7 @@ async def _evaluate_route_error_rule(
     rate: float,
     rule: AlertRule,
     display_target: str | None = None,
+    default_threshold: float = 10.0,
 ) -> None:
     if display_target is None:
         label = await _get_route_label(route_id)
@@ -345,7 +375,7 @@ async def _evaluate_route_error_rule(
     else:
         display = display_target
 
-    threshold = rule.threshold if rule.threshold is not None else 10.0
+    threshold = rule.threshold if rule.threshold is not None else default_threshold
     is_healthy = rate < threshold
     state_target = _route_state_target(route_id, rule.id)
     transition = state.update(
@@ -358,12 +388,13 @@ async def _evaluate_route_error_rule(
             f"Route '{display}' 5xx error rate is "
             f"{rate:.1f}% (threshold: {threshold}%)."
         )
-        await _dispatch_alert(
-            rule_type="route_error_rate", alert_type=transition,
-            target=route_id, message=msg,
+        await dispatch_owner_alert(
+            resource_type="route", resource_id=route_id,
+            alert_type=transition, target=route_id, message=msg,
             rule_id=rule.id,
             display_target=display,
             rate=rate, threshold=threshold,
+            rule_name=rule.name,
         )
 
 
@@ -376,9 +407,10 @@ async def run_single_check(state: AlertStateManager) -> None:
         await _persist_state_safely(state, "db_health", alias)
         if transition:
             msg = f"Database '{alias}' connection {'restored' if transition == 'resolved' else 'failed'}."
-            await _dispatch_alert(
-                rule_type="db_health", alert_type=transition,
-                target=alias, message=msg,
+            await dispatch_owner_alert(
+                resource_type="db", resource_id=alias,
+                alert_type=transition, target=alias, message=msg,
+                display_target=alias,
             )
 
     # 2. Upstream health
@@ -393,13 +425,10 @@ async def run_single_check(state: AlertStateManager) -> None:
         await _persist_state_safely(state, "upstream_health", uid)
         if transition:
             msg = f"Upstream '{display}' {'recovered' if transition == 'resolved' else 'is down'}."
-            match_targets = [uid, "*"]
-            if upstream_name and upstream_name != uid:
-                match_targets = [uid, upstream_name, "*"]
-            await _dispatch_alert(
-                rule_type="upstream_health", alert_type=transition,
-                target=uid, message=msg, display_target=display,
-                match_targets=match_targets,
+            await dispatch_owner_alert(
+                resource_type="upstream", resource_id=uid,
+                alert_type=transition, target=uid, message=msg,
+                display_target=display,
             )
 
     # 3. Error rate (global)
@@ -449,6 +478,11 @@ async def run_single_check(state: AlertStateManager) -> None:
             )
             result = await db.execute(rq)
             all_route_rules = result.scalars().all()
+            route_default_threshold = (
+                await _load_route_error_default_threshold(db)
+                if any(rule.threshold is None for rule in all_route_rules)
+                else 10.0
+            )
 
         rules_by_id = {rule.id: rule for rule in all_route_rules}
         processed_state_targets: set[str] = set()
@@ -467,6 +501,7 @@ async def run_single_check(state: AlertStateManager) -> None:
                     route_id=route_id,
                     rate=rate,
                     rule=rule,
+                    default_threshold=route_default_threshold,
                 )
 
         for entry in active_route_alerts:
@@ -488,20 +523,22 @@ async def run_single_check(state: AlertStateManager) -> None:
                 rate=0.0,
                 rule=rule,
                 display_target=entry.get("display_target"),
+                default_threshold=route_default_threshold,
             )
 
 
 async def start_checker(state: AlertStateManager) -> asyncio.Task:
     """Start the periodic health check loop as a background task."""
     async def _loop():
-        logger.info("Alert checker started (interval=%ds)", CHECK_INTERVAL)
+        logger.info("Alert checker started")
         while True:
             cycle_start = _monotonic()
+            check_interval = await _get_check_interval_seconds()
             try:
                 await run_single_check(state)
             except Exception:
                 logger.exception("Alert checker cycle failed")
             elapsed = _monotonic() - cycle_start
-            await asyncio.sleep(max(0.0, CHECK_INTERVAL - elapsed))
+            await asyncio.sleep(max(0.0, check_interval - elapsed))
 
     return asyncio.create_task(_loop())
