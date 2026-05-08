@@ -192,10 +192,14 @@ async def delete_owner_group(
     resource_owner_result = await db.execute(
         select(ResourceOwner).where(ResourceOwner.owner_group_id == group_id)
     )
-    if resource_owner_result.scalar_one_or_none() is not None:
+    if resource_owner_result.scalars().first() is not None:
         raise HTTPException(status_code=409, detail="Owner group is assigned to a resource owner")
     await db.delete(group)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Owner group is in use")
 
 
 # ── Channels ────────────────────────────────────────────────────────────────

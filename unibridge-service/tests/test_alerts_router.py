@@ -495,6 +495,11 @@ async def test_delete_resource_owner_group_returns_409(client, admin_token, seed
             resource_id="analytics",
             owner_group_id=group.id,
         ))
+        db.add(ResourceOwner(
+            resource_type="database",
+            resource_id="reporting",
+            owner_group_id=group.id,
+        ))
         await db.commit()
         group_id = group.id
 
