@@ -141,6 +141,7 @@ class AlertChannel(Base):
     name = Column(String(100), unique=True, nullable=False)
     webhook_url = Column(String, nullable=False)
     payload_template = Column(Text, nullable=False)
+    recipient_item_template = Column(Text, nullable=True)
     headers = Column(Text, nullable=True)  # JSON object
     enabled = Column(Boolean, default=True, nullable=False, server_default="true")
     created_at = Column(UtcDateTime, default=utcnow)
@@ -177,12 +178,55 @@ class AlertRuleChannel(Base):
     recipients = Column(Text, nullable=False)  # JSON array: ["user@example.com"]
 
 
+class OwnerGroup(Base):
+    __tablename__ = "owner_groups"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), unique=True, nullable=False)
+    emails = Column(Text, nullable=False)  # JSON array of strings
+    enabled = Column(Boolean, default=True, nullable=False, server_default="true")
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("enabled", True)
+        super().__init__(**kwargs)
+
+
+class ResourceOwner(Base):
+    __tablename__ = "resource_owners"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    resource_type = Column(String(20), nullable=False)
+    resource_id = Column(String(200), nullable=False)
+    owner_group_id = Column(Integer, ForeignKey("owner_groups.id", ondelete="RESTRICT"), nullable=False)
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("resource_type", "resource_id", name="uq_resource_owner_type_id"),
+    )
+
+
+class AlertSettings(Base):
+    __tablename__ = "alert_settings"
+
+    id = Column(Integer, primary_key=True)
+    mail_channel_id = Column(Integer, ForeignKey("alert_channels.id", ondelete="RESTRICT"), nullable=True)
+    fallback_owner_group_id = Column(Integer, ForeignKey("owner_groups.id", ondelete="RESTRICT"), nullable=True)
+    route_error_threshold_pct = Column(Float, default=10.0, nullable=False)
+    check_interval_seconds = Column(Integer, default=60, nullable=False)
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class AlertHistory(Base):
     __tablename__ = "alert_history"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     rule_id = Column(Integer, ForeignKey("alert_rules.id", ondelete="SET NULL"), nullable=True)
     channel_id = Column(Integer, ForeignKey("alert_channels.id", ondelete="SET NULL"), nullable=True)
+    owner_group_id = Column(Integer, ForeignKey("owner_groups.id", ondelete="SET NULL"), nullable=True)
+    resource_type = Column(String(20), nullable=True)
     alert_type = Column(String(20), nullable=False)  # "triggered" / "resolved"
     target = Column(String(100), nullable=False)
     message = Column(Text, nullable=False)

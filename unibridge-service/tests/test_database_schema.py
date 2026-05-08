@@ -201,7 +201,7 @@ async def test_permission_role_fk_cascades_on_role_delete():
 async def test_init_db_runs_alembic_and_stamps_head_for_file_sqlite(tmp_path):
     from unittest.mock import patch
 
-    from app.database import ALEMBIC_HEAD_REVISION, init_db
+    from app.database import init_db
 
     db_path = tmp_path / "meta.db"
     db_url = f"sqlite+aiosqlite:///{db_path}"
@@ -217,7 +217,7 @@ async def test_init_db_runs_alembic_and_stamps_head_for_file_sqlite(tmp_path):
             lambda sync_conn: inspect(sync_conn).get_foreign_keys("permissions")
         )
 
-    assert revision == ALEMBIC_HEAD_REVISION
+    assert revision == "0004_alert_owner_routing"
     assert any(
         fk["referred_table"] == "roles"
         and fk["constrained_columns"] == ["role"]
@@ -225,4 +225,27 @@ async def test_init_db_runs_alembic_and_stamps_head_for_file_sqlite(tmp_path):
         for fk in permission_fks
     )
 
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_alert_owner_routing_schema_is_created_by_metadata():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with engine.connect() as conn:
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+        alert_channel_cols = await conn.run_sync(
+            lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("alert_channels")}
+        )
+        alert_history_cols = await conn.run_sync(
+            lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("alert_history")}
+        )
+
+    assert {"owner_groups", "resource_owners", "alert_settings"} <= table_names
+    assert "recipient_item_template" in alert_channel_cols
+    assert {"resource_type", "owner_group_id"} <= alert_history_cols
     await engine.dispose()
