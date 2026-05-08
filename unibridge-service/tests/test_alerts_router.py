@@ -802,8 +802,10 @@ async def test_resource_owner_validates_apisix_route_and_upstream(client, admin_
         )
 
     assert route_resp.status_code == 200, route_resp.text
+    assert route_resp.json()["display_name"] == "Orders Route"
     assert route_resp.json()["owner_group_name"] == "gateway-team"
     assert upstream_resp.status_code == 200, upstream_resp.text
+    assert upstream_resp.json()["display_name"] == "Orders Upstream"
     assert upstream_resp.json()["owner_group_name"] == "gateway-team"
     assert missing_resp.status_code == 422
 

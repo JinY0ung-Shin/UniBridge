@@ -192,7 +192,7 @@ export default function AlertRulesPanel() {
   const showLegacyErrorRateOption = editingRule?.type === 'error_rate' || ruleForm.type === 'error_rate';
   const hasOwnerRoutedLegacyRule = rules.some(
     (rule) =>
-      (rule.type === 'db_health' || rule.type === 'upstream_health') &&
+      (rule.type === 'db_health' || rule.type === 'upstream_health' || rule.type === 'route_error_rate') &&
       rule.channels.length > 0,
   );
   const legacyRecipientsLabel = (mapping: RuleChannelDetail) =>

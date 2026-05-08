@@ -95,17 +95,29 @@ async def _load_apisix_resources(resource_type: str) -> list[dict[str, Any]]:
     return result.get("items", [])
 
 
-async def _resource_exists(db: AsyncSession, resource_type: str, resource_id: str) -> bool:
+def _apisix_resource_display_name(item: dict[str, Any], fallback: str) -> str:
+    return str(item.get("name") or item.get("uri") or fallback)
+
+
+async def _resource_display_name(
+    db: AsyncSession,
+    resource_type: str,
+    resource_id: str,
+) -> str | None:
     _validate_resource_type(resource_type)
     if resource_type == "db":
-        result = await db.execute(select(DBConnection).where(DBConnection.alias == resource_id))
-        return result.scalar_one_or_none() is not None
+        result = await db.execute(select(DBConnection.alias).where(DBConnection.alias == resource_id))
+        return result.scalar_one_or_none()
     if resource_type == "s3":
-        result = await db.execute(select(S3Connection).where(S3Connection.alias == resource_id))
-        return result.scalar_one_or_none() is not None
+        result = await db.execute(select(S3Connection.alias).where(S3Connection.alias == resource_id))
+        return result.scalar_one_or_none()
 
     items = await _load_apisix_resources(resource_type)
-    return any(str(item.get("id")) == resource_id for item in items if item.get("id") is not None)
+    for item in items:
+        raw_id = item.get("id")
+        if raw_id is not None and str(raw_id) == resource_id:
+            return _apisix_resource_display_name(item, resource_id)
+    return None
 
 
 async def _list_resources_for_owners(db: AsyncSession) -> list[ResourceOwnerResponse]:
@@ -148,7 +160,7 @@ async def _list_resources_for_owners(db: AsyncSession) -> list[ResourceOwnerResp
             if raw_id is None:
                 continue
             resource_id = str(raw_id)
-            display_name = str(item.get("name") or item.get("uri") or resource_id)
+            display_name = _apisix_resource_display_name(item, resource_id)
             group = owners.get((resource_type, resource_id))
             rows.append(ResourceOwnerResponse(
                 resource_type=resource_type,
@@ -183,21 +195,14 @@ async def update_alert_settings(
         if ch is None:
             raise HTTPException(status_code=422, detail="Mail channel not found")
     if body.fallback_owner_group_id is not None:
-        from app.models import OwnerGroup
-
         group = await db.get(OwnerGroup, body.fallback_owner_group_id)
         if group is None:
             raise HTTPException(status_code=422, detail="Fallback owner group not found")
 
     settings = await _get_or_create_alert_settings(db, commit=False)
-    if body.mail_channel_id is not None:
-        settings.mail_channel_id = body.mail_channel_id
-    if body.fallback_owner_group_id is not None:
-        settings.fallback_owner_group_id = body.fallback_owner_group_id
-    if "mail_channel_id" in body.model_fields_set and body.mail_channel_id is None:
-        settings.mail_channel_id = None
-    if "fallback_owner_group_id" in body.model_fields_set and body.fallback_owner_group_id is None:
-        settings.fallback_owner_group_id = None
+    for field_name in ("mail_channel_id", "fallback_owner_group_id"):
+        if field_name in body.model_fields_set:
+            setattr(settings, field_name, getattr(body, field_name))
     if body.route_error_threshold_pct is not None:
         settings.route_error_threshold_pct = body.route_error_threshold_pct
     if body.check_interval_seconds is not None:
@@ -332,7 +337,8 @@ async def upsert_resource_owner(
     group_id = group.id
     group_name = group.name
 
-    if not await _resource_exists(db, resource_type, resource_id):
+    display_name = await _resource_display_name(db, resource_type, resource_id)
+    if display_name is None:
         raise HTTPException(status_code=422, detail="Resource not found")
 
     result = await db.execute(
@@ -370,7 +376,7 @@ async def upsert_resource_owner(
     return ResourceOwnerResponse(
         resource_type=resource_type,
         resource_id=resource_id,
-        display_name=resource_id,
+        display_name=display_name,
         owner_group_id=group_id,
         owner_group_name=group_name,
     )

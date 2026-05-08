@@ -220,7 +220,24 @@ describe('AlertSettings page', () => {
     await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
     expect(screen.getByText('main-db')).toBeInTheDocument();
     expect(screen.getByText('ops-slack: ops@example.com')).toBeInTheDocument();
-    expect(screen.getByText(/DB and upstream health rules now use resource owner routing/i)).toBeInTheDocument();
+    expect(screen.getByText(/DB, upstream, and route error rules now use resource owner routing/i)).toBeInTheDocument();
+  });
+
+  it('shows owner-routing warning for route error rules with legacy recipients', async () => {
+    mocks.getRules.mockResolvedValue([
+      {
+        ...ruleFixture,
+        id: 13,
+        name: 'route-errors',
+        type: 'route_error_rate',
+        target: 'orders-route',
+        threshold: 7,
+      },
+    ]);
+    renderWithProviders(<AlertSettings />);
+    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
+    await waitFor(() => expect(screen.getByText('route-errors')).toBeInTheDocument());
+    expect(screen.getByText(/DB, upstream, and route error rules now use resource owner routing/i)).toBeInTheDocument();
   });
 
   it('rule with no channels shows em-dash placeholder', async () => {
