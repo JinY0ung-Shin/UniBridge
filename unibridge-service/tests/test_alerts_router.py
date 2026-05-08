@@ -456,6 +456,43 @@ async def test_owner_group_duplicate_name_returns_409(client, admin_token):
 
 
 @pytest.mark.asyncio
+async def test_owner_group_permissions_use_alert_read_and_write(client, admin_token, viewer_token):
+    create = await client.post(
+        "/admin/alerts/owner-groups",
+        json={"name": "permission-team", "emails": ["owner@example.com"]},
+        headers=auth_header(admin_token),
+    )
+    assert create.status_code == 201
+    group_id = create.json()["id"]
+
+    list_resp = await client.get(
+        "/admin/alerts/owner-groups",
+        headers=auth_header(viewer_token),
+    )
+    assert list_resp.status_code == 200
+
+    create_denied = await client.post(
+        "/admin/alerts/owner-groups",
+        json={"name": "viewer-team", "emails": ["viewer@example.com"]},
+        headers=auth_header(viewer_token),
+    )
+    assert create_denied.status_code == 403
+
+    update_denied = await client.put(
+        f"/admin/alerts/owner-groups/{group_id}",
+        json={"enabled": False},
+        headers=auth_header(viewer_token),
+    )
+    assert update_denied.status_code == 403
+
+    delete_denied = await client.delete(
+        f"/admin/alerts/owner-groups/{group_id}",
+        headers=auth_header(viewer_token),
+    )
+    assert delete_denied.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_delete_fallback_owner_group_returns_409(client, admin_token, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
