@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
-from app.models import AlertChannel, AlertHistory, AlertState
+from app.models import AlertChannel, AlertHistory, AlertState, OwnerGroup
 from app.routers import alerts as alerts_router
 from app.services.alert_state import AlertStateManager
 from tests.conftest import auth_header
@@ -232,31 +232,45 @@ async def test_test_channel_not_found(client, admin_token):
 
 
 @pytest.mark.asyncio
-async def test_get_and_update_alert_settings(client, admin_token):
+async def test_get_and_update_alert_settings(client, admin_token, seeded_db):
     ch = await client.post(
         "/admin/alerts/channels",
         json={"name": "mail-settings", "webhook_url": WEBHOOK, "payload_template": TEMPLATE},
         headers=auth_header(admin_token),
     )
+    assert ch.status_code == 201
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        group = OwnerGroup(
+            name="fallback-owners",
+            emails='["ops@company.com"]',
+        )
+        db.add(group)
+        await db.commit()
+        await db.refresh(group)
+        fallback_owner_group_id = group.id
+
+    expected = {
+        "mail_channel_id": ch.json()["id"],
+        "fallback_owner_group_id": fallback_owner_group_id,
+        "route_error_threshold_pct": 12.5,
+        "check_interval_seconds": 90,
+    }
     resp = await client.put(
         "/admin/alerts/settings",
-        json={
-            "mail_channel_id": ch.json()["id"],
-            "fallback_owner_group_id": None,
-            "route_error_threshold_pct": 12.5,
-            "check_interval_seconds": 90,
-        },
+        json=expected,
         headers=auth_header(admin_token),
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["mail_channel_id"] == ch.json()["id"]
-    assert body["route_error_threshold_pct"] == 12.5
-    assert body["check_interval_seconds"] == 90
+    for key, value in expected.items():
+        assert body[key] == value
 
     get_resp = await client.get("/admin/alerts/settings", headers=auth_header(admin_token))
     assert get_resp.status_code == 200
-    assert get_resp.json()["mail_channel_id"] == ch.json()["id"]
+    body = get_resp.json()
+    for key, value in expected.items():
+        assert body[key] == value
 
 
 # ── Rules ───────────────────────────────────────────────────────────────────
