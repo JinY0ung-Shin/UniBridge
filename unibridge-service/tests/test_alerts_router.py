@@ -718,6 +718,66 @@ async def test_resource_owner_validates_apisix_route_and_upstream(client, admin_
     assert missing_resp.status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_resource_owner_lists_apisix_resources_with_owner_mapping(client, admin_token, seeded_db):
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        group = OwnerGroup(name="route-team", emails='["route@example.com"]')
+        db.add(group)
+        await db.flush()
+        db.add(ResourceOwner(
+            resource_type="route",
+            resource_id="orders-route",
+            owner_group_id=group.id,
+        ))
+        await db.commit()
+        group_id = group.id
+
+    async def list_resources(resource: str) -> dict[str, object]:
+        if resource == "routes":
+            return {"items": [{"id": "orders-route", "name": "Orders Route"}]}
+        if resource == "upstreams":
+            return {"items": [{"id": "orders-upstream", "uri": "/orders"}]}
+        return {"items": []}
+
+    with patch("app.routers.alerts.apisix_client") as mock_apisix:
+        mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
+        resp = await client.get(
+            "/admin/alerts/resource-owners",
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()
+    assert any(
+        row["resource_type"] == "route"
+        and row["resource_id"] == "orders-route"
+        and row["display_name"] == "Orders Route"
+        and row["owner_group_id"] == group_id
+        and row["owner_group_name"] == "route-team"
+        for row in rows
+    )
+    assert any(
+        row["resource_type"] == "upstream"
+        and row["resource_id"] == "orders-upstream"
+        and row["display_name"] == "/orders"
+        and row["owner_group_id"] is None
+        for row in rows
+    )
+
+
+@pytest.mark.asyncio
+async def test_resource_owner_list_returns_503_when_apisix_fails(client, admin_token):
+    with patch("app.routers.alerts.apisix_client") as mock_apisix:
+        mock_apisix.list_resources = AsyncMock(side_effect=RuntimeError("apisix down"))
+        resp = await client.get(
+            "/admin/alerts/resource-owners",
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 503
+
+
 # ── Rules ───────────────────────────────────────────────────────────────────
 
 async def _create_channel(client, admin_token, name="ch") -> int:

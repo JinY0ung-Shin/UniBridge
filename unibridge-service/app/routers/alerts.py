@@ -342,7 +342,21 @@ async def upsert_resource_owner(
         db.add(owner)
     else:
         owner.owner_group_id = group.id
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        result = await db.execute(
+            select(ResourceOwner).where(
+                ResourceOwner.resource_type == resource_type,
+                ResourceOwner.resource_id == resource_id,
+            )
+        )
+        owner = result.scalar_one_or_none()
+        if owner is None:
+            raise HTTPException(status_code=409, detail="Resource owner conflict")
+        owner.owner_group_id = group.id
+        await db.commit()
 
     return ResourceOwnerResponse(
         resource_type=resource_type,
