@@ -6,7 +6,8 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import delete as sa_delete, insert as sa_insert, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from app.models import (
@@ -633,6 +634,53 @@ async def test_resource_owner_rejects_unknown_resource(client, admin_token, seed
     )
 
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_resource_owner_upsert_handles_concurrent_insert_conflict(client, admin_token, seeded_db):
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        group = OwnerGroup(name="race-team", emails='["race@example.com"]')
+        db.add(group)
+        db.add(DBConnection(
+            alias="race-db",
+            db_type="postgres",
+            host="localhost",
+            port=5432,
+            database="race",
+            username="race",
+            password_encrypted="encrypted",
+        ))
+        await db.commit()
+        await db.refresh(group)
+        group_id = group.id
+
+    original_commit = AsyncSession.commit
+    injected = False
+
+    async def commit_with_concurrent_insert(session: AsyncSession) -> None:
+        nonlocal injected
+        if not injected:
+            injected = True
+            async with seeded_db.begin() as conn:
+                await conn.execute(sa_insert(ResourceOwner).values(
+                    resource_type="db",
+                    resource_id="race-db",
+                    owner_group_id=group_id,
+                ))
+            raise IntegrityError("insert resource owner", {}, Exception("unique constraint"))
+        await original_commit(session)
+
+    with patch("app.routers.alerts.AsyncSession.commit", new=commit_with_concurrent_insert):
+        resp = await client.put(
+            "/admin/alerts/resource-owners/db/race-db",
+            json={"owner_group_id": group_id},
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["owner_group_id"] == group_id
+    assert resp.json()["owner_group_name"] == "race-team"
 
 
 @pytest.mark.asyncio

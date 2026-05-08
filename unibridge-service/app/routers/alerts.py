@@ -322,6 +322,8 @@ async def upsert_resource_owner(
     group = await db.get(OwnerGroup, body.owner_group_id)
     if group is None:
         raise HTTPException(status_code=422, detail="Owner group not found")
+    group_id = group.id
+    group_name = group.name
 
     if not await _resource_exists(db, resource_type, resource_id):
         raise HTTPException(status_code=422, detail="Resource not found")
@@ -337,11 +339,11 @@ async def upsert_resource_owner(
         owner = ResourceOwner(
             resource_type=resource_type,
             resource_id=resource_id,
-            owner_group_id=group.id,
+            owner_group_id=group_id,
         )
         db.add(owner)
     else:
-        owner.owner_group_id = group.id
+        owner.owner_group_id = group_id
     try:
         await db.commit()
     except IntegrityError:
@@ -355,15 +357,15 @@ async def upsert_resource_owner(
         owner = result.scalar_one_or_none()
         if owner is None:
             raise HTTPException(status_code=409, detail="Resource owner conflict")
-        owner.owner_group_id = group.id
+        owner.owner_group_id = group_id
         await db.commit()
 
     return ResourceOwnerResponse(
         resource_type=resource_type,
         resource_id=resource_id,
         display_name=resource_id,
-        owner_group_id=group.id,
-        owner_group_name=group.name,
+        owner_group_id=group_id,
+        owner_group_name=group_name,
     )
 
 
