@@ -62,11 +62,18 @@ async def _get_or_create_alert_settings(
             check_interval_seconds=60,
         )
         db.add(settings)
-        if commit:
-            await db.commit()
-            await db.refresh(settings)
-        else:
-            await db.flush()
+        try:
+            if commit:
+                await db.commit()
+                await db.refresh(settings)
+            else:
+                await db.flush()
+        except IntegrityError:
+            await db.rollback()
+            result = await db.execute(select(AlertSettings).where(AlertSettings.id == 1))
+            settings = result.scalar_one_or_none()
+            if settings is None:
+                raise
     return settings
 
 

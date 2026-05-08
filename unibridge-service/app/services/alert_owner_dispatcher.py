@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import metrics
 from app.database import async_session
 from app.models import (
     AlertChannel,
@@ -123,13 +124,24 @@ async def dispatch_owner_alert(
         history.success = False
         history.error_detail = str(exc)
     finally:
+        try:
+            metrics.record_alert_dispatch(
+                rule_id=history.rule_id if history.rule_id is not None else "owner",
+                channel_type="webhook",
+                status="success" if history.success else "failure",
+            )
+        except Exception as exc:
+            logger.warning("Owner alert metric recording failed: %s", exc)
         await _record_history(history)
 
 
 async def _record_history(history: AlertHistory) -> None:
-    async with async_session() as db:
-        db.add(history)
-        await db.commit()
+    try:
+        async with async_session() as db:
+            db.add(history)
+            await db.commit()
+    except Exception as exc:
+        logger.warning("Owner alert history recording failed: %s", exc)
 
 
 async def _load_settings(db: AsyncSession) -> AlertSettings | None:

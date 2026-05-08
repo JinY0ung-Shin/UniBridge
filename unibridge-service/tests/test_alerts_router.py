@@ -29,6 +29,36 @@ WEBHOOK = "https://hooks.example.com/svc"
 TEMPLATE = '{"text":"{{message}}","status":"{{status}}"}'
 
 
+class _SettingsResult:
+    def __init__(self, row):
+        self.row = row
+
+    def scalar_one_or_none(self):
+        return self.row
+
+
+class _RacingSettingsDb:
+    def __init__(self):
+        self.existing = AlertSettings(
+            id=1,
+            route_error_threshold_pct=10.0,
+            check_interval_seconds=60,
+        )
+        self.execute = AsyncMock(side_effect=[
+            _SettingsResult(None),
+            _SettingsResult(self.existing),
+        ])
+        self.rollback = AsyncMock()
+        self.refresh = AsyncMock()
+        self.added = []
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def commit(self):
+        raise IntegrityError("insert alert_settings", {}, Exception("unique constraint"))
+
+
 # ── Channels ────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -326,6 +356,18 @@ async def test_update_alert_settings_invalid_channel_does_not_create_settings_ro
     async with session_factory() as db:
         settings = (await db.execute(select(AlertSettings))).scalar_one_or_none()
     assert settings is None
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_alert_settings_handles_concurrent_insert_race():
+    db = _RacingSettingsDb()
+
+    settings = await alerts_router._get_or_create_alert_settings(db)
+
+    assert settings is db.existing
+    assert len(db.added) == 1
+    db.rollback.assert_awaited_once()
+    assert db.execute.await_count == 2
 
 
 @pytest.mark.asyncio
