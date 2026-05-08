@@ -109,7 +109,7 @@ class TestAlertChecker:
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
-             patch("app.services.alert_checker._dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = [("mydb", False)]
             mock_up.return_value = []
             mock_err.return_value = []
@@ -118,9 +118,13 @@ class TestAlertChecker:
 
             assert state.get_status("db_health", "mydb") == "alert"
             mock_dispatch.assert_called_once()
-            call_args = mock_dispatch.call_args
-            assert call_args[1]["alert_type"] == "triggered"
-            assert call_args[1]["target"] == "mydb"
+            kwargs = mock_dispatch.call_args.kwargs
+            assert kwargs["resource_type"] == "db"
+            assert kwargs["resource_id"] == "mydb"
+            assert kwargs["alert_type"] == "triggered"
+            assert kwargs["target"] == "mydb"
+            assert kwargs["message"] == "Database 'mydb' connection failed."
+            assert kwargs["display_target"] == "mydb"
 
     @pytest.mark.asyncio
     async def test_db_health_resolved(self):
@@ -132,7 +136,7 @@ class TestAlertChecker:
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
-             patch("app.services.alert_checker._dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = [("mydb", True)]
             mock_up.return_value = []
             mock_err.return_value = []
@@ -141,7 +145,13 @@ class TestAlertChecker:
 
             assert state.get_status("db_health", "mydb") == "ok"
             mock_dispatch.assert_called_once()
-            assert mock_dispatch.call_args[1]["alert_type"] == "resolved"
+            kwargs = mock_dispatch.call_args.kwargs
+            assert kwargs["resource_type"] == "db"
+            assert kwargs["resource_id"] == "mydb"
+            assert kwargs["alert_type"] == "resolved"
+            assert kwargs["target"] == "mydb"
+            assert kwargs["message"] == "Database 'mydb' connection restored."
+            assert kwargs["display_target"] == "mydb"
 
     @pytest.mark.asyncio
     async def test_no_dispatch_when_no_transition(self):
@@ -151,7 +161,7 @@ class TestAlertChecker:
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
-             patch("app.services.alert_checker._dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = [("mydb", True)]
             mock_up.return_value = []
             mock_err.return_value = []
@@ -169,7 +179,7 @@ class TestAlertChecker:
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
-             patch("app.services.alert_checker._dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = []
             mock_up.return_value = [("order-svc", False)]
             mock_err.return_value = []
@@ -178,7 +188,13 @@ class TestAlertChecker:
 
             assert state.get_status("upstream_health", "order-svc") == "alert"
             mock_dispatch.assert_called_once()
-            assert mock_dispatch.call_args[1]["rule_type"] == "upstream_health"
+            kwargs = mock_dispatch.call_args.kwargs
+            assert kwargs["resource_type"] == "upstream"
+            assert kwargs["resource_id"] == "order-svc"
+            assert kwargs["alert_type"] == "triggered"
+            assert kwargs["target"] == "order-svc"
+            assert kwargs["message"] == "Upstream 'order-svc' is down."
+            assert kwargs["display_target"] == "order-svc"
 
     @pytest.mark.asyncio
     async def test_upstream_health_dispatch_matches_existing_name_based_rules(self):
@@ -193,7 +209,7 @@ class TestAlertChecker:
                  patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
                  patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
                  patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
-                 patch("app.services.alert_checker._dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+                 patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
                 mock_db.return_value = []
                 mock_up.return_value = [("upstream-1", False)]
                 mock_err.return_value = []
@@ -202,8 +218,9 @@ class TestAlertChecker:
 
                 mock_dispatch.assert_called_once()
                 kwargs = mock_dispatch.call_args.kwargs
+                assert kwargs["resource_type"] == "upstream"
+                assert kwargs["resource_id"] == "upstream-1"
                 assert kwargs["target"] == "upstream-1"
-                assert kwargs["match_targets"] == ["upstream-1", "payments-api", "*"]
                 assert kwargs["display_target"] == "payments-api (upstream-1)"
         finally:
             alert_checker._UPSTREAM_NAME_BY_ID = {}
@@ -216,7 +233,7 @@ class TestAlertChecker:
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
-             patch("app.services.alert_checker._dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = [("boot-db", False)]
             mock_up.return_value = []
             mock_err.return_value = []
@@ -227,8 +244,8 @@ class TestAlertChecker:
 
             await run_single_check(state)
             mock_dispatch.assert_called_once()
-            assert mock_dispatch.call_args[1]["alert_type"] == "triggered"
-            assert mock_dispatch.call_args[1]["target"] == "boot-db"
+            assert mock_dispatch.call_args.kwargs["alert_type"] == "triggered"
+            assert mock_dispatch.call_args.kwargs["target"] == "boot-db"
 
     @pytest.mark.asyncio
     async def test_initial_unhealthy_db_recovery_does_not_send_resolved_without_trigger(self):
@@ -238,7 +255,7 @@ class TestAlertChecker:
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
-             patch("app.services.alert_checker._dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.side_effect = [[("boot-db", False)], [("boot-db", True)]]
             mock_up.return_value = []
             mock_err.return_value = []
@@ -248,6 +265,53 @@ class TestAlertChecker:
 
         mock_dispatch.assert_not_called()
         assert state.get_status("db_health", "boot-db") == "ok"
+
+    @pytest.mark.asyncio
+    async def test_route_error_rate_dispatches_owner_alert_with_rule_context(self):
+        state = AlertStateManager()
+        state.update(
+            "route_error_rate",
+            "route-a:rule_42",
+            is_healthy=True,
+            display_target="checkout (route-a)",
+        )
+
+        fake_db = SimpleNamespace(
+            execute=AsyncMock(return_value=_FakeResult([
+                SimpleNamespace(
+                    id=42,
+                    target="route-a",
+                    threshold=5.0,
+                    name="checkout errors",
+                )
+            ]))
+        )
+
+        with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+             patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
+             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 7.5)])), \
+             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)), \
+             patch("app.services.alert_checker._get_route_label", new=AsyncMock(return_value="checkout")), \
+             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
+            mock_db.return_value = []
+            mock_up.return_value = []
+            mock_err.return_value = []
+
+            await run_single_check(state)
+
+        mock_dispatch.assert_called_once()
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs["resource_type"] == "route"
+        assert kwargs["resource_id"] == "route-a"
+        assert kwargs["alert_type"] == "triggered"
+        assert kwargs["target"] == "route-a"
+        assert kwargs["message"] == "Route 'checkout (route-a)' 5xx error rate is 7.5% (threshold: 5.0%)."
+        assert kwargs["rule_id"] == 42
+        assert kwargs["rule_name"] == "checkout errors"
+        assert kwargs["display_target"] == "checkout (route-a)"
+        assert kwargs["rate"] == 7.5
+        assert kwargs["threshold"] == 5.0
 
     @pytest.mark.asyncio
     async def test_start_checker_schedules_from_cycle_start_to_avoid_drift(self):
@@ -384,7 +448,7 @@ class TestCheckRouteErrorRate:
              patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[])), \
              patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)), \
-             patch("app.services.alert_checker._dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = []
             mock_up.return_value = []
             mock_err.return_value = []
@@ -393,7 +457,8 @@ class TestCheckRouteErrorRate:
 
         mock_dispatch.assert_called_once()
         kwargs = mock_dispatch.call_args.kwargs
-        assert kwargs["rule_type"] == "route_error_rate"
+        assert kwargs["resource_type"] == "route"
+        assert kwargs["resource_id"] == "route-a"
         assert kwargs["alert_type"] == "resolved"
         assert kwargs["target"] == "route-a"
         assert kwargs["rate"] == 0.0

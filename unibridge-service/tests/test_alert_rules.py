@@ -91,6 +91,20 @@ class TestAlertRulesAPI:
         assert {"bob@x.com"} in recip_sets
 
     @pytest.mark.asyncio
+    async def test_create_rule_without_channels_is_supported_for_owner_routing(self, client, admin_token):
+        resp = await client.post("/admin/alerts/rules", json={
+            "name": "owner-routed-db",
+            "type": "db_health",
+            "target": "owner-db",
+            "channels": [],
+        }, headers=auth_header(admin_token))
+
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["name"] == "owner-routed-db"
+        assert data["channels"] == []
+
+    @pytest.mark.asyncio
     async def test_update_rule_accepts_duplicate_channel_mappings(self, client, admin_token):
         ch = await client.post("/admin/alerts/channels", json={
             "name": "dup-upd-ch",

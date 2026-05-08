@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app import metrics
 from app.database import async_session
 from app.models import AlertChannel, AlertHistory, AlertRule, AlertRuleChannel
+from app.services.alert_owner_dispatcher import dispatch_owner_alert
 from app.services.alert_sender import render_template, send_webhook
 from app.services.alert_state import AlertStateManager, save_alert_state_to_db
 
@@ -358,12 +359,13 @@ async def _evaluate_route_error_rule(
             f"Route '{display}' 5xx error rate is "
             f"{rate:.1f}% (threshold: {threshold}%)."
         )
-        await _dispatch_alert(
-            rule_type="route_error_rate", alert_type=transition,
-            target=route_id, message=msg,
+        await dispatch_owner_alert(
+            resource_type="route", resource_id=route_id,
+            alert_type=transition, target=route_id, message=msg,
             rule_id=rule.id,
             display_target=display,
             rate=rate, threshold=threshold,
+            rule_name=rule.name,
         )
 
 
@@ -376,9 +378,10 @@ async def run_single_check(state: AlertStateManager) -> None:
         await _persist_state_safely(state, "db_health", alias)
         if transition:
             msg = f"Database '{alias}' connection {'restored' if transition == 'resolved' else 'failed'}."
-            await _dispatch_alert(
-                rule_type="db_health", alert_type=transition,
-                target=alias, message=msg,
+            await dispatch_owner_alert(
+                resource_type="db", resource_id=alias,
+                alert_type=transition, target=alias, message=msg,
+                display_target=alias,
             )
 
     # 2. Upstream health
@@ -393,13 +396,10 @@ async def run_single_check(state: AlertStateManager) -> None:
         await _persist_state_safely(state, "upstream_health", uid)
         if transition:
             msg = f"Upstream '{display}' {'recovered' if transition == 'resolved' else 'is down'}."
-            match_targets = [uid, "*"]
-            if upstream_name and upstream_name != uid:
-                match_targets = [uid, upstream_name, "*"]
-            await _dispatch_alert(
-                rule_type="upstream_health", alert_type=transition,
-                target=uid, message=msg, display_target=display,
-                match_targets=match_targets,
+            await dispatch_owner_alert(
+                resource_type="upstream", resource_id=uid,
+                alert_type=transition, target=uid, message=msg,
+                display_target=display,
             )
 
     # 3. Error rate (global)
