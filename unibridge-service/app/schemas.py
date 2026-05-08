@@ -347,6 +347,16 @@ class AlertSettingsUpdate(BaseModel):
         return self
 
 
+class FallbackOwnerGroupTestRequest(BaseModel):
+    mail_channel_id: int
+    fallback_owner_group_id: int
+
+
+class AlertDeliveryTestResponse(BaseModel):
+    success: bool
+    error: str | None = None
+
+
 def _dedupe_emails(values: list[str]) -> list[str]:
     seen: set[str] = set()
     emails: list[str] = []

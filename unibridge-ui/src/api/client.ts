@@ -791,6 +791,17 @@ export async function updateAlertSettings(body: Partial<AlertSettings>): Promise
   return data;
 }
 
+export async function testFallbackOwnerGroup(
+  mailChannelId: number,
+  fallbackOwnerGroupId: number,
+): Promise<{ success: boolean; error: string | null }> {
+  const { data } = await client.post('/admin/alerts/settings/fallback-owner-group/test', {
+    mail_channel_id: mailChannelId,
+    fallback_owner_group_id: fallbackOwnerGroupId,
+  });
+  return data;
+}
+
 export async function getAlertChannels(): Promise<AlertChannel[]> {
   const { data } = await client.get('/admin/alerts/channels');
   return data;

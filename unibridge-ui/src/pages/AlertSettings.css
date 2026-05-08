@@ -88,9 +88,29 @@
   margin-bottom: 16px;
 }
 
+.setting-control-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.setting-control-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.setting-control-row .btn {
+  flex-shrink: 0;
+}
+
 @media (max-width: 720px) {
   .settings-grid {
     grid-template-columns: 1fr;
+  }
+
+  .setting-control-row {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .section-header {

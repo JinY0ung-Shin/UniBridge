@@ -8,6 +8,7 @@ import {
   getAlertOwnerGroups,
   getAlertSettings,
   testAlertChannel,
+  testFallbackOwnerGroup,
   updateAlertChannel,
   updateAlertSettings,
   type AlertChannel,
@@ -108,6 +109,26 @@ export default function AlertMailChannelPanel() {
     onError: () => addToast({ type: 'error', title: t('common.delete'), message: t('common.errorOccurred') }),
   });
 
+  const testFallbackOwnerGroupMutation = useMutation({
+    mutationFn: ({
+      mailChannelId,
+      fallbackOwnerGroupId,
+    }: {
+      mailChannelId: number;
+      fallbackOwnerGroupId: number;
+    }) => testFallbackOwnerGroup(mailChannelId, fallbackOwnerGroupId),
+    onSuccess: (result) => {
+      addToast({
+        type: result.success ? 'success' : 'error',
+        title: result.success ? t('alerts.testFallbackOwnerGroupSuccess') : t('alerts.testFallbackOwnerGroupFailed'),
+        message: result.error ?? undefined,
+      });
+    },
+    onError: () => {
+      addToast({ type: 'error', title: t('alerts.testFallbackOwnerGroupFailed') });
+    },
+  });
+
   function openCreateChannel() {
     setChannelForm(emptyChannelForm());
     setEditingChannelId(null);
@@ -199,10 +220,24 @@ export default function AlertMailChannelPanel() {
     });
   }
 
+  function handleTestFallbackOwnerGroup() {
+    if (settingsForm.mail_channel_id === null || settingsForm.fallback_owner_group_id === null) return;
+    testFallbackOwnerGroupMutation.mutate({
+      mailChannelId: settingsForm.mail_channel_id,
+      fallbackOwnerGroupId: settingsForm.fallback_owner_group_id,
+    });
+  }
+
   const isSavingChannel = createChannelMutation.isPending || updateChannelMutation.isPending;
   const hasSettings = Boolean(settingsQuery.data);
   const isLoading = channelsQuery.isLoading || settingsQuery.isLoading || ownerGroupsQuery.isLoading;
   const isError = channelsQuery.isError || settingsQuery.isError || ownerGroupsQuery.isError;
+  const canTestFallbackOwnerGroup = Boolean(
+    hasSettings &&
+    settingsForm.mail_channel_id !== null &&
+    settingsForm.fallback_owner_group_id !== null &&
+    !testFallbackOwnerGroupMutation.isPending,
+  );
   const templateVars: [string, string][] = [
     ['alert_type', t('alerts.varDesc_alert_type')],
     ['target_name', t('alerts.varDesc_target_name')],
@@ -241,22 +276,34 @@ export default function AlertMailChannelPanel() {
           </div>
           <div className="form-group">
             <label htmlFor="fallback-owner-group-select">{t('alerts.fallbackOwnerGroup')}</label>
-            <select
-              id="fallback-owner-group-select"
-              value={settingsForm.fallback_owner_group_id ?? ''}
-              disabled={!hasSettings}
-              onChange={(e) =>
-                setSettingsDraft((prev) => ({
-                  ...prev,
-                  fallback_owner_group_id: e.target.value ? Number(e.target.value) : null,
-                }))
-              }
-            >
-              <option value="">{t('alerts.unassigned')}</option>
-              {ownerGroups.map((group) => (
-                <option key={group.id} value={group.id}>{group.name}</option>
-              ))}
-            </select>
+            <div className="setting-control-row">
+              <select
+                id="fallback-owner-group-select"
+                value={settingsForm.fallback_owner_group_id ?? ''}
+                disabled={!hasSettings}
+                onChange={(e) =>
+                  setSettingsDraft((prev) => ({
+                    ...prev,
+                    fallback_owner_group_id: e.target.value ? Number(e.target.value) : null,
+                  }))
+                }
+              >
+                <option value="">{t('alerts.unassigned')}</option>
+                {ownerGroups.map((group) => (
+                  <option key={group.id} value={group.id}>{group.name}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="btn btn-sm btn-outline"
+                onClick={handleTestFallbackOwnerGroup}
+                disabled={!canTestFallbackOwnerGroup}
+              >
+                {testFallbackOwnerGroupMutation.isPending
+                  ? t('common.loading')
+                  : t('alerts.testFallbackOwnerGroup')}
+              </button>
+            </div>
           </div>
           <div className="form-group">
             <label htmlFor="route-threshold">{t('alerts.routeErrorThreshold')}</label>

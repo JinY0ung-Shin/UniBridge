@@ -25,7 +25,9 @@ from app.models import (
 )
 from app.schemas import (
     AlertChannelCreate, AlertChannelResponse, AlertChannelUpdate,
+    AlertDeliveryTestResponse,
     AlertHistoryResponse,
+    FallbackOwnerGroupTestRequest,
     OwnerGroupCreate, OwnerGroupResponse, OwnerGroupUpdate,
     ResourceOwnerResponse, ResourceOwnerUpsert,
     AlertRuleCreate, AlertRuleResponse, AlertRuleTestChannelResult,
@@ -210,6 +212,56 @@ async def update_alert_settings(
     await db.commit()
     await db.refresh(settings)
     return AlertSettingsResponse.model_validate(settings)
+
+
+@router.post("/settings/fallback-owner-group/test", response_model=AlertDeliveryTestResponse)
+async def test_fallback_owner_group(
+    body: FallbackOwnerGroupTestRequest,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> AlertDeliveryTestResponse:
+    ch = await db.get(AlertChannel, body.mail_channel_id)
+    if ch is None:
+        return AlertDeliveryTestResponse(success=False, error="Mail channel not found")
+    if not ch.enabled:
+        return AlertDeliveryTestResponse(success=False, error="Mail channel disabled")
+
+    group = await db.get(OwnerGroup, body.fallback_owner_group_id)
+    if group is None:
+        return AlertDeliveryTestResponse(success=False, error="Fallback owner group not found")
+    if not group.enabled:
+        return AlertDeliveryTestResponse(success=False, error="Fallback owner group disabled")
+
+    try:
+        emails = json.loads(group.emails)
+    except json.JSONDecodeError:
+        return AlertDeliveryTestResponse(success=False, error="Owner group emails must be valid JSON")
+    if not isinstance(emails, list) or not all(isinstance(email, str) for email in emails):
+        return AlertDeliveryTestResponse(success=False, error="Owner group emails must be a JSON array of strings")
+    if not emails:
+        return AlertDeliveryTestResponse(success=False, error="Owner group has no recipient emails")
+
+    try:
+        recipients_json = _render_channel_recipients_json(ch, emails, require_template=True)
+        payload = render_template(
+            ch.payload_template,
+            alert_type="test",
+            target_name=group.name,
+            status="테스트",
+            message="[TEST] Fallback owner group delivery test.",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            recipients=", ".join(emails),
+            recipients_json=recipients_json,
+            rate="",
+            threshold="",
+            rule_name="fallback-owner-group-test",
+        )
+        headers = json.loads(ch.headers) if ch.headers else None
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return AlertDeliveryTestResponse(success=False, error=str(exc))
+
+    ok, err = await send_webhook(url=ch.webhook_url, payload=payload, headers=headers)
+    return AlertDeliveryTestResponse(success=ok, error=err)
 
 
 # ── Owner Groups ────────────────────────────────────────────────────────────

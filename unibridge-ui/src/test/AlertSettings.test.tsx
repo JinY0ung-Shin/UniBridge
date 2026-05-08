@@ -5,6 +5,7 @@ vi.mock('../api/client', () => ({
   updateAlertChannel: vi.fn(),
   deleteAlertChannel: vi.fn(),
   testAlertChannel: vi.fn(),
+  testFallbackOwnerGroup: vi.fn(),
   getAlertSettings: vi.fn(),
   updateAlertSettings: vi.fn(),
   getAlertOwnerGroups: vi.fn(),
@@ -33,6 +34,7 @@ import {
   updateAlertChannel,
   deleteAlertChannel,
   testAlertChannel,
+  testFallbackOwnerGroup,
   getAlertSettings,
   updateAlertSettings,
   getAlertOwnerGroups,
@@ -60,6 +62,7 @@ const mocks = {
   updateChannel: vi.mocked(updateAlertChannel),
   deleteChannel: vi.mocked(deleteAlertChannel),
   testChannel: vi.mocked(testAlertChannel),
+  testFallbackOwnerGroup: vi.mocked(testFallbackOwnerGroup),
   getSettings: vi.mocked(getAlertSettings),
   updateSettings: vi.mocked(updateAlertSettings),
   getOwnerGroups: vi.mocked(getAlertOwnerGroups),
@@ -159,6 +162,30 @@ describe('AlertSettings page', () => {
     renderWithProviders(<AlertSettings />);
 
     expect(screen.getByRole('button', { name: /^Save Settings$|^설정 저장$/i })).toBeDisabled();
+  });
+
+  it('tests the selected fallback owner group with the selected mail channel', async () => {
+    mocks.getChannels.mockResolvedValue([channelFixture]);
+    mocks.getOwnerGroups.mockResolvedValue([
+      { id: 2, name: 'orders-team', emails: ['orders@example.com'], enabled: true },
+    ]);
+    mocks.testFallbackOwnerGroup.mockResolvedValue({ success: true, error: null });
+    renderWithProviders(<AlertSettings />);
+    await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
+
+    const testButton = screen.getByRole('button', {
+      name: /^Test Fallback Group$|^대체 그룹 테스트$/,
+    });
+    expect(testButton).toBeDisabled();
+
+    await userEvent.selectOptions(screen.getByLabelText(/Mail Channel|메일 채널/i), '1');
+    expect(testButton).toBeDisabled();
+
+    await userEvent.selectOptions(screen.getByLabelText(/Fallback Owner Group|대체 소유자 그룹/i), '2');
+    expect(testButton).toBeEnabled();
+    fireEvent.click(testButton);
+
+    await waitFor(() => expect(mocks.testFallbackOwnerGroup).toHaveBeenCalledWith(1, 2));
   });
 
   it('owner group tab creates group from comma-separated emails', async () => {

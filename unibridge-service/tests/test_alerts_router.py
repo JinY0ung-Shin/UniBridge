@@ -387,6 +387,81 @@ async def test_update_alert_settings_rejects_explicit_numeric_nulls(client, admi
     assert threshold_resp.status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_fallback_owner_group_test_sends_to_selected_group(client, admin_token):
+    ch = await client.post(
+        "/admin/alerts/channels",
+        json={
+            "name": "mail-fallback-test",
+            "webhook_url": WEBHOOK,
+            "payload_template": '{"to":{{recipients_json}},"text":"{{message}}"}',
+            "recipient_item_template": '{"email":"{{email}}"}',
+            "headers": {"X-Test": "yes"},
+        },
+        headers=auth_header(admin_token),
+    )
+    assert ch.status_code == 201
+    group = await client.post(
+        "/admin/alerts/owner-groups",
+        json={"name": "fallback-test-owners", "emails": ["ops@example.com"]},
+        headers=auth_header(admin_token),
+    )
+    assert group.status_code == 201
+
+    with patch("app.routers.alerts.send_webhook", AsyncMock(return_value=(True, None))) as send:
+        resp = await client.post(
+            "/admin/alerts/settings/fallback-owner-group/test",
+            json={
+                "mail_channel_id": ch.json()["id"],
+                "fallback_owner_group_id": group.json()["id"],
+            },
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"success": True, "error": None}
+    send.assert_awaited_once()
+    call = send.await_args.kwargs
+    assert call["url"] == WEBHOOK
+    assert call["headers"] == {"X-Test": "yes"}
+    assert "ops@example.com" in call["payload"]
+
+
+@pytest.mark.asyncio
+async def test_fallback_owner_group_test_requires_recipient_item_template(client, admin_token):
+    ch = await client.post(
+        "/admin/alerts/channels",
+        json={
+            "name": "mail-no-recipient-template",
+            "webhook_url": WEBHOOK,
+            "payload_template": '{"text":"{{message}}"}',
+        },
+        headers=auth_header(admin_token),
+    )
+    assert ch.status_code == 201
+    group = await client.post(
+        "/admin/alerts/owner-groups",
+        json={"name": "fallback-no-template-owners", "emails": ["ops@example.com"]},
+        headers=auth_header(admin_token),
+    )
+    assert group.status_code == 201
+
+    with patch("app.routers.alerts.send_webhook", AsyncMock(return_value=(True, None))) as send:
+        resp = await client.post(
+            "/admin/alerts/settings/fallback-owner-group/test",
+            json={
+                "mail_channel_id": ch.json()["id"],
+                "fallback_owner_group_id": group.json()["id"],
+            },
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["success"] is False
+    assert "recipient_item_template" in resp.json()["error"]
+    send.assert_not_awaited()
+
+
 # ── Owner Groups ────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
