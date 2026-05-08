@@ -89,6 +89,27 @@ class TestAlertChannelsAPI:
         assert payload["recipients"][0]["emailAddress"] == "test@example.com"
 
     @pytest.mark.asyncio
+    async def test_channel_test_with_malformed_recipient_item_template_does_not_send(self, client, admin_token):
+        resp = await client.post("/admin/alerts/channels", json={
+            "name": "mail-json-bad-template",
+            "webhook_url": "http://mail.internal/api/send",
+            "payload_template": '{"recipients":{{recipients_json}}}',
+            "recipient_item_template": '{"emailAddress":{{email}}}',
+        }, headers=auth_header(admin_token))
+        assert resp.status_code == 201
+        ch_id = resp.json()["id"]
+
+        with patch("app.routers.alerts.send_webhook", AsyncMock(return_value=(True, None))) as mock_send:
+            test_resp = await client.post(
+                f"/admin/alerts/channels/{ch_id}/test",
+                headers=auth_header(admin_token),
+            )
+
+        assert test_resp.status_code == 200
+        assert test_resp.json()["success"] is False
+        mock_send.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_delete_channel(self, client, admin_token):
         create = await client.post("/admin/alerts/channels", json={
             "name": "ch-delete",

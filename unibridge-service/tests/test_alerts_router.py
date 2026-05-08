@@ -6,10 +6,10 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
-from app.models import AlertChannel, AlertHistory, AlertState, OwnerGroup
+from app.models import AlertChannel, AlertHistory, AlertSettings, AlertState, OwnerGroup
 from app.routers import alerts as alerts_router
 from app.services.alert_state import AlertStateManager
 from tests.conftest import auth_header
@@ -271,6 +271,68 @@ async def test_get_and_update_alert_settings(client, admin_token, seeded_db):
     body = get_resp.json()
     for key, value in expected.items():
         assert body[key] == value
+
+
+@pytest.mark.asyncio
+async def test_delete_mail_channel_in_use_returns_409(client, admin_token):
+    ch = await client.post(
+        "/admin/alerts/channels",
+        json={"name": "mail-in-use", "webhook_url": WEBHOOK, "payload_template": TEMPLATE},
+        headers=auth_header(admin_token),
+    )
+    assert ch.status_code == 201
+    settings = await client.put(
+        "/admin/alerts/settings",
+        json={"mail_channel_id": ch.json()["id"]},
+        headers=auth_header(admin_token),
+    )
+    assert settings.status_code == 200
+
+    resp = await client.delete(
+        f"/admin/alerts/channels/{ch.json()['id']}",
+        headers=auth_header(admin_token),
+    )
+
+    assert resp.status_code == 409
+    assert "default mail channel" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_update_alert_settings_invalid_channel_does_not_create_settings_row(
+    client, admin_token, seeded_db,
+):
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        await db.execute(sa_delete(AlertSettings))
+        await db.commit()
+
+    resp = await client.put(
+        "/admin/alerts/settings",
+        json={"mail_channel_id": 9999},
+        headers=auth_header(admin_token),
+    )
+
+    assert resp.status_code == 422
+    async with session_factory() as db:
+        settings = (await db.execute(select(AlertSettings))).scalar_one_or_none()
+    assert settings is None
+
+
+@pytest.mark.asyncio
+async def test_update_alert_settings_rejects_explicit_numeric_nulls(client, admin_token):
+    interval_resp = await client.put(
+        "/admin/alerts/settings",
+        json={"check_interval_seconds": None},
+        headers=auth_header(admin_token),
+    )
+    assert interval_resp.status_code == 422
+
+    threshold_resp = await client.put(
+        "/admin/alerts/settings",
+        json={"route_error_threshold_pct": None},
+        headers=auth_header(admin_token),
+    )
+    assert threshold_resp.status_code == 422
 
 
 # ── Rules ───────────────────────────────────────────────────────────────────

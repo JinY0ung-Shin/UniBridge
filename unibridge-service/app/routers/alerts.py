@@ -29,7 +29,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/alerts", tags=["Alerts"])
 
 
-async def _get_or_create_alert_settings(db: AsyncSession) -> AlertSettings:
+async def _get_or_create_alert_settings(
+    db: AsyncSession,
+    *,
+    commit: bool = True,
+) -> AlertSettings:
     result = await db.execute(select(AlertSettings).where(AlertSettings.id == 1))
     settings = result.scalar_one_or_none()
     if settings is None:
@@ -39,8 +43,11 @@ async def _get_or_create_alert_settings(db: AsyncSession) -> AlertSettings:
             check_interval_seconds=60,
         )
         db.add(settings)
-        await db.commit()
-        await db.refresh(settings)
+        if commit:
+            await db.commit()
+            await db.refresh(settings)
+        else:
+            await db.flush()
     return settings
 
 
@@ -61,18 +68,21 @@ async def update_alert_settings(
     _user: CurrentUser = Depends(require_permission("alerts.write")),
     db: AsyncSession = Depends(get_db),
 ) -> AlertSettingsResponse:
-    settings = await _get_or_create_alert_settings(db)
     if body.mail_channel_id is not None:
         ch = await db.get(AlertChannel, body.mail_channel_id)
         if ch is None:
             raise HTTPException(status_code=422, detail="Mail channel not found")
-        settings.mail_channel_id = body.mail_channel_id
     if body.fallback_owner_group_id is not None:
         from app.models import OwnerGroup
 
         group = await db.get(OwnerGroup, body.fallback_owner_group_id)
         if group is None:
             raise HTTPException(status_code=422, detail="Fallback owner group not found")
+
+    settings = await _get_or_create_alert_settings(db, commit=False)
+    if body.mail_channel_id is not None:
+        settings.mail_channel_id = body.mail_channel_id
+    if body.fallback_owner_group_id is not None:
         settings.fallback_owner_group_id = body.fallback_owner_group_id
     if "mail_channel_id" in body.model_fields_set and body.mail_channel_id is None:
         settings.mail_channel_id = None
@@ -186,8 +196,20 @@ async def delete_channel(
     ch = result.scalar_one_or_none()
     if ch is None:
         raise HTTPException(status_code=404, detail="Channel not found")
-    await db.delete(ch)
-    await db.commit()
+    settings_result = await db.execute(
+        select(AlertSettings).where(AlertSettings.mail_channel_id == channel_id)
+    )
+    if settings_result.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Channel is configured as the default mail channel",
+        )
+    try:
+        await db.delete(ch)
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Channel is still referenced")
 
 
 @router.post("/channels/{channel_id}/test")

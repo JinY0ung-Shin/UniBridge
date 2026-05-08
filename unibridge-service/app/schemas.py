@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.services.webhook_security import validate_webhook_url
 
@@ -338,6 +338,13 @@ class AlertSettingsUpdate(BaseModel):
     fallback_owner_group_id: int | None = None
     route_error_threshold_pct: float | None = Field(None, ge=0, le=100)
     check_interval_seconds: int | None = Field(None, ge=30, le=3600)
+
+    @model_validator(mode="after")
+    def reject_explicit_numeric_nulls(self) -> "AlertSettingsUpdate":
+        for field_name in ("route_error_threshold_pct", "check_interval_seconds"):
+            if field_name in self.model_fields_set and getattr(self, field_name) is None:
+                raise ValueError(f"{field_name} cannot be null")
+        return self
 
 
 class RuleChannelMapping(BaseModel):
