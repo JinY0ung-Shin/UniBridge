@@ -50,8 +50,9 @@ async def dispatch_owner_alert(
         error_detail=None,
     )
 
-    async with async_session() as db:
-        try:
+    send_args: dict[str, Any] | None = None
+    try:
+        async with async_session() as db:
             settings = await _load_settings(db)
             if settings is None or settings.mail_channel_id is None:
                 history.error_detail = "Mail channel not configured"
@@ -74,52 +75,61 @@ async def dispatch_owner_alert(
                 return
 
             history.owner_group_id = group.id
+            channel_template = channel.payload_template
+            channel_recipient_item_template = channel.recipient_item_template
+            channel_headers = channel.headers
+            channel_webhook_url = channel.webhook_url
             emails = _parse_owner_emails(group.emails)
             history.recipients = json.dumps(emails, ensure_ascii=False)
             if not emails:
                 history.error_detail = "Owner group has no recipient emails"
                 return
 
-            try:
-                recipients_json = render_recipient_items(
-                    channel.recipient_item_template or DEFAULT_RECIPIENT_ITEM_TEMPLATE,
-                    emails,
-                )
-                payload = _render_payload(
-                    channel,
-                    alert_type=alert_type,
-                    display_target=display_target if display_target is not None else target,
-                    message=message,
-                    emails=emails,
-                    recipients_json=recipients_json,
-                    rate=rate,
-                    threshold=threshold,
-                    rule_name=rule_name,
-                )
-                headers = _parse_headers(channel.headers)
-            except Exception as exc:
-                history.error_detail = str(exc)
-                return
-
-            try:
-                ok, err = await send_webhook(
-                    url=channel.webhook_url,
-                    payload=payload,
-                    headers=headers,
-                )
-                history.success = ok
-                history.error_detail = err
-            except Exception as exc:
-                logger.warning("Owner alert webhook dispatch failed: %s", exc)
-                history.success = False
-                history.error_detail = str(exc)
+        try:
+            recipients_json = render_recipient_items(
+                channel_recipient_item_template or DEFAULT_RECIPIENT_ITEM_TEMPLATE,
+                emails,
+            )
+            payload = _render_payload(
+                channel_template,
+                alert_type=alert_type,
+                display_target=display_target if display_target is not None else target,
+                message=message,
+                emails=emails,
+                recipients_json=recipients_json,
+                rate=rate,
+                threshold=threshold,
+                rule_name=rule_name,
+            )
+            send_args = {
+                "url": channel_webhook_url,
+                "payload": payload,
+                "headers": _parse_headers(channel_headers),
+            }
         except Exception as exc:
-            logger.warning("Owner alert dispatch failed before webhook send: %s", exc)
+            history.error_detail = str(exc)
+            return
+
+        try:
+            ok, err = await send_webhook(**send_args)
+            history.success = ok
+            history.error_detail = err
+        except Exception as exc:
+            logger.warning("Owner alert webhook dispatch failed: %s", exc)
             history.success = False
             history.error_detail = str(exc)
-        finally:
-            db.add(history)
-            await db.commit()
+    except Exception as exc:
+        logger.warning("Owner alert dispatch failed before webhook send: %s", exc)
+        history.success = False
+        history.error_detail = str(exc)
+    finally:
+        await _record_history(history)
+
+
+async def _record_history(history: AlertHistory) -> None:
+    async with async_session() as db:
+        db.add(history)
+        await db.commit()
 
 
 async def _load_settings(db: AsyncSession) -> AlertSettings | None:
@@ -193,7 +203,7 @@ def _parse_headers(headers_json: str | None) -> dict[str, str] | None:
 
 
 def _render_payload(
-    channel: AlertChannel,
+    payload_template: str,
     *,
     alert_type: str,
     display_target: str,
@@ -206,7 +216,7 @@ def _render_payload(
 ) -> str:
     status_label = "장애 발생" if alert_type == "triggered" else "정상 복구"
     return render_template(
-        channel.payload_template,
+        payload_template,
         alert_type=alert_type,
         target_name=display_target,
         status=status_label,
