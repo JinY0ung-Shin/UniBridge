@@ -5,6 +5,15 @@ vi.mock('../api/client', () => ({
   updateAlertChannel: vi.fn(),
   deleteAlertChannel: vi.fn(),
   testAlertChannel: vi.fn(),
+  getAlertSettings: vi.fn(),
+  updateAlertSettings: vi.fn(),
+  getAlertOwnerGroups: vi.fn(),
+  createAlertOwnerGroup: vi.fn(),
+  updateAlertOwnerGroup: vi.fn(),
+  deleteAlertOwnerGroup: vi.fn(),
+  getAlertResourceOwners: vi.fn(),
+  setAlertResourceOwner: vi.fn(),
+  deleteAlertResourceOwner: vi.fn(),
   getAlertRules: vi.fn(),
   createAlertRule: vi.fn(),
   updateAlertRule: vi.fn(),
@@ -24,6 +33,15 @@ import {
   updateAlertChannel,
   deleteAlertChannel,
   testAlertChannel,
+  getAlertSettings,
+  updateAlertSettings,
+  getAlertOwnerGroups,
+  createAlertOwnerGroup,
+  updateAlertOwnerGroup,
+  deleteAlertOwnerGroup,
+  getAlertResourceOwners,
+  setAlertResourceOwner,
+  deleteAlertResourceOwner,
   getAlertRules,
   createAlertRule,
   deleteAlertRule,
@@ -41,6 +59,15 @@ const mocks = {
   updateChannel: vi.mocked(updateAlertChannel),
   deleteChannel: vi.mocked(deleteAlertChannel),
   testChannel: vi.mocked(testAlertChannel),
+  getSettings: vi.mocked(getAlertSettings),
+  updateSettings: vi.mocked(updateAlertSettings),
+  getOwnerGroups: vi.mocked(getAlertOwnerGroups),
+  createOwnerGroup: vi.mocked(createAlertOwnerGroup),
+  updateOwnerGroup: vi.mocked(updateAlertOwnerGroup),
+  deleteOwnerGroup: vi.mocked(deleteAlertOwnerGroup),
+  getResourceOwners: vi.mocked(getAlertResourceOwners),
+  setResourceOwner: vi.mocked(setAlertResourceOwner),
+  deleteResourceOwner: vi.mocked(deleteAlertResourceOwner),
   getRules: vi.mocked(getAlertRules),
   createRule: vi.mocked(createAlertRule),
   deleteRule: vi.mocked(deleteAlertRule),
@@ -72,6 +99,26 @@ const ruleFixture = {
 describe('AlertSettings page', () => {
   beforeEach(() => {
     Object.values(mocks).forEach((m) => m.mockReset());
+    mocks.getSettings.mockResolvedValue({
+      mail_channel_id: null,
+      fallback_owner_group_id: null,
+      route_error_threshold_pct: 10,
+      check_interval_seconds: 60,
+    });
+    mocks.updateSettings.mockResolvedValue({
+      mail_channel_id: 1,
+      fallback_owner_group_id: null,
+      route_error_threshold_pct: 10,
+      check_interval_seconds: 60,
+    });
+    mocks.getOwnerGroups.mockResolvedValue([]);
+    mocks.createOwnerGroup.mockResolvedValue({
+      id: 2,
+      name: 'orders',
+      emails: ['primary@example.com', 'backup@example.com'],
+      enabled: true,
+    });
+    mocks.getResourceOwners.mockResolvedValue([]);
     mocks.getChannels.mockResolvedValue([]);
     mocks.getRules.mockResolvedValue([]);
     mocks.getDatabases.mockResolvedValue([]);
@@ -89,6 +136,64 @@ describe('AlertSettings page', () => {
     await waitFor(() => {
       expect(screen.getByText(/No rules|규칙이 없/i)).toBeInTheDocument();
     });
+  });
+
+  it('mail channel tab saves selected channel', async () => {
+    mocks.getChannels.mockResolvedValue([channelFixture]);
+    renderWithProviders(<AlertSettings />);
+    await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
+
+    const mailSelect = screen.getByLabelText(/Mail Channel|메일 채널/i);
+    await userEvent.selectOptions(mailSelect, '1');
+    fireEvent.click(screen.getByRole('button', { name: /^Save Settings$|^설정 저장$/i }));
+
+    await waitFor(() => expect(mocks.updateSettings).toHaveBeenCalled());
+    expect(mocks.updateSettings.mock.calls[0][0]).toMatchObject({ mail_channel_id: 1 });
+  });
+
+  it('owner group tab creates group from comma-separated emails', async () => {
+    renderWithProviders(<AlertSettings />);
+    fireEvent.click(screen.getByRole('button', { name: /^Owner Groups$|^소유자 그룹$/i }));
+    await waitFor(() => expect(screen.getByText(/No owner groups|소유자 그룹이 없/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /\+\s*Add Owner Group|\+\s*소유자 그룹 추가/i }));
+    await userEvent.type(screen.getByLabelText(/Owner Group Name|소유자 그룹 이름/i), 'orders');
+    await userEvent.type(
+      screen.getByLabelText(/Emails|이메일/i),
+      'primary@example.com, backup@example.com',
+    );
+    fireEvent.submit(screen.getByLabelText(/Owner Group Name|소유자 그룹 이름/i).closest('form')!);
+
+    await waitFor(() => expect(mocks.createOwnerGroup).toHaveBeenCalled());
+    expect(mocks.createOwnerGroup.mock.calls[0][0]).toMatchObject({
+      name: 'orders',
+      emails: ['primary@example.com', 'backup@example.com'],
+      enabled: true,
+    });
+  });
+
+  it('resource owners tab assigns owner group', async () => {
+    mocks.getOwnerGroups.mockResolvedValue([
+      { id: 2, name: 'orders-team', emails: ['orders@example.com'], enabled: true },
+    ]);
+    mocks.getResourceOwners.mockResolvedValue([
+      {
+        resource_type: 'db',
+        resource_id: 'orders-db',
+        display_name: 'orders-db',
+        owner_group_id: null,
+        owner_group_name: null,
+      },
+    ]);
+    renderWithProviders(<AlertSettings />);
+    fireEvent.click(screen.getByRole('button', { name: /^Resource Owners$|^리소스 소유자$/i }));
+    await waitFor(() => expect(screen.getByText('orders-db')).toBeInTheDocument());
+
+    await userEvent.selectOptions(screen.getByLabelText(/Owner group for orders-db/i), '2');
+
+    await waitFor(() =>
+      expect(mocks.setResourceOwner).toHaveBeenCalledWith('db', 'orders-db', { owner_group_id: 2 }),
+    );
   });
 
   it('renders channels table with truncated webhook url', async () => {

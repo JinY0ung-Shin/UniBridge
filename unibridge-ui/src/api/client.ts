@@ -681,6 +681,7 @@ export interface AlertChannel {
   name: string;
   webhook_url: string;
   payload_template: string;
+  recipient_item_template?: string | null;
   headers: Record<string, string> | null;
   enabled: boolean;
   created_at?: string;
@@ -691,8 +692,40 @@ export interface AlertChannelCreate {
   name: string;
   webhook_url: string;
   payload_template: string;
+  recipient_item_template?: string | null;
   headers?: Record<string, string>;
   enabled?: boolean;
+}
+
+export interface AlertSettings {
+  mail_channel_id: number | null;
+  fallback_owner_group_id: number | null;
+  route_error_threshold_pct: number;
+  check_interval_seconds: number;
+  updated_at?: string | null;
+}
+
+export interface AlertOwnerGroup {
+  id: number;
+  name: string;
+  emails: string[];
+  enabled: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AlertOwnerGroupCreate {
+  name: string;
+  emails: string[];
+  enabled?: boolean;
+}
+
+export interface AlertResourceOwner {
+  resource_type: string;
+  resource_id: string;
+  display_name: string;
+  owner_group_id: number | null;
+  owner_group_name: string | null;
 }
 
 export interface RuleChannelMapping {
@@ -748,6 +781,16 @@ export interface AlertStatus {
 }
 
 // Channels
+export async function getAlertSettings(): Promise<AlertSettings> {
+  const { data } = await client.get('/admin/alerts/settings');
+  return data;
+}
+
+export async function updateAlertSettings(body: Partial<AlertSettings>): Promise<AlertSettings> {
+  const { data } = await client.put('/admin/alerts/settings', body);
+  return data;
+}
+
 export async function getAlertChannels(): Promise<AlertChannel[]> {
   const { data } = await client.get('/admin/alerts/channels');
   return data;
@@ -770,6 +813,50 @@ export async function deleteAlertChannel(id: number): Promise<void> {
 export async function testAlertChannel(id: number): Promise<{ success: boolean; error: string | null }> {
   const { data } = await client.post(`/admin/alerts/channels/${id}/test`);
   return data;
+}
+
+export async function getAlertOwnerGroups(): Promise<AlertOwnerGroup[]> {
+  const { data } = await client.get('/admin/alerts/owner-groups');
+  return data;
+}
+
+export async function createAlertOwnerGroup(body: AlertOwnerGroupCreate): Promise<AlertOwnerGroup> {
+  const { data } = await client.post('/admin/alerts/owner-groups', body);
+  return data;
+}
+
+export async function updateAlertOwnerGroup(
+  id: number,
+  body: Partial<AlertOwnerGroupCreate>,
+): Promise<AlertOwnerGroup> {
+  const { data } = await client.put(`/admin/alerts/owner-groups/${id}`, body);
+  return data;
+}
+
+export async function deleteAlertOwnerGroup(id: number): Promise<void> {
+  await client.delete(`/admin/alerts/owner-groups/${id}`);
+}
+
+export async function getAlertResourceOwners(): Promise<AlertResourceOwner[]> {
+  const { data } = await client.get('/admin/alerts/resource-owners');
+  return data;
+}
+
+export async function setAlertResourceOwner(
+  resourceType: string,
+  resourceId: string,
+  body: { owner_group_id: number },
+): Promise<AlertResourceOwner> {
+  const type = encodeURIComponent(resourceType);
+  const id = encodeURIComponent(resourceId);
+  const { data } = await client.put(`/admin/alerts/resource-owners/${type}/${id}`, body);
+  return data;
+}
+
+export async function deleteAlertResourceOwner(resourceType: string, resourceId: string): Promise<void> {
+  const type = encodeURIComponent(resourceType);
+  const id = encodeURIComponent(resourceId);
+  await client.delete(`/admin/alerts/resource-owners/${type}/${id}`);
 }
 
 // Rules
