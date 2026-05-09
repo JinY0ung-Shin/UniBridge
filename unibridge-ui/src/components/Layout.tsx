@@ -24,7 +24,7 @@ const navItems = [
   { to: '/roles', labelKey: 'nav.roles', icon: 'Roles', section: 'admin', permission: 'admin.roles.read' },
   { to: '/users', labelKey: 'nav.users', icon: 'Users', section: 'admin', permission: 'admin.users.read' },
   { to: '/alerts/status', labelKey: 'nav.alertStatus', icon: 'Alert Status', section: 'alerts', permission: 'alerts.read' },
-  { to: '/alerts/settings', labelKey: 'nav.alertSettings', icon: 'Alert Settings', section: 'alerts', permission: 'alerts.write' },
+  { to: '/alerts/settings', labelKey: 'nav.alertSettings', icon: 'Alert Settings', section: 'alerts', permission: 'alerts.read' },
   { to: '/alerts/history', labelKey: 'nav.alertHistory', icon: 'Alert History', section: 'alerts', permission: 'alerts.read' },
 ];
 

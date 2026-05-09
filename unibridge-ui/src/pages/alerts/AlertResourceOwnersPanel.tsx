@@ -8,6 +8,7 @@ import {
   type AlertResourceOwner,
 } from '../../api/client';
 import { useToast } from '../../components/useToast';
+import { useCanWrite } from '../../components/useCanWrite';
 
 function resourceLabel(row: AlertResourceOwner): string {
   return row.display_name || row.resource_id;
@@ -21,6 +22,7 @@ export default function AlertResourceOwnersPanel() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { addToast } = useToast();
+  const canWrite = useCanWrite('alerts.write');
 
   const groupsQuery = useQuery({ queryKey: ['alert-owner-groups'], queryFn: getAlertOwnerGroups });
   const resourcesQuery = useQuery({ queryKey: ['alert-resource-owners'], queryFn: getAlertResourceOwners });
@@ -135,7 +137,7 @@ export default function AlertResourceOwnersPanel() {
                       aria-label={`Owner group for ${resourceLabel(row)}`}
                       value={row.owner_group_id ?? ''}
                       onChange={(e) => handleOwnerChange(row, e.target.value)}
-                      disabled={assignMutation.isPending || deleteMutation.isPending}
+                      disabled={!canWrite || assignMutation.isPending || deleteMutation.isPending}
                     >
                       <option value="">{t('alerts.unassigned')}</option>
                       {ownerGroups.map((group) => (

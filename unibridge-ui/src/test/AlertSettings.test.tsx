@@ -518,3 +518,119 @@ describe('AlertSettings page', () => {
     expect(mocks.createRule.mock.calls[0][0].channels).toEqual([]);
   });
 });
+
+describe('AlertSettings page (alerts.read only)', () => {
+  beforeEach(() => {
+    Object.values(mocks).forEach((m) => m.mockReset());
+    mocks.getSettings.mockResolvedValue({
+      mail_channel_id: 1,
+      fallback_owner_group_id: 2,
+      route_error_threshold_pct: 10,
+      check_interval_seconds: 60,
+    });
+    mocks.getOwnerGroups.mockResolvedValue([
+      { id: 2, name: 'orders-team', emails: ['orders@example.com'], enabled: true },
+    ]);
+    mocks.getResourceOwners.mockResolvedValue([
+      {
+        resource_type: 'db',
+        resource_id: 'orders-db',
+        display_name: 'orders-db',
+        owner_group_id: null,
+        owner_group_name: null,
+      },
+    ]);
+    mocks.getChannels.mockResolvedValue([channelFixture]);
+    mocks.getRules.mockResolvedValue([ruleFixture]);
+    mocks.getDatabases.mockResolvedValue([]);
+    mocks.getUpstreams.mockResolvedValue({ items: [], total: 0 });
+    mocks.getRoutes.mockResolvedValue({ items: [], total: 0 });
+  });
+
+  it('mail channel tab: hides write buttons and disables form for viewer', async () => {
+    renderWithProviders(<AlertSettings />, { permissions: ['alerts.read'] });
+    await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
+
+    expect(screen.queryByRole('button', { name: /\+\s*Add Channel|\+\s*채널 추가/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Save Settings$|^설정 저장$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Test Fallback Group$|^대체 그룹 테스트$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Test Send$|^테스트 발송$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Edit$|^편집$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Delete$|^삭제$/ })).not.toBeInTheDocument();
+
+    expect(screen.getByLabelText(/Mail Channel|메일 채널/i)).toBeDisabled();
+    expect(screen.getByLabelText(/Fallback Owner Group|대체 소유자 그룹/i)).toBeDisabled();
+  });
+
+  it('mail channel tab: masks webhook URL path for viewer', async () => {
+    mocks.getChannels.mockResolvedValue([
+      { ...channelFixture, webhook_url: 'https://hooks.example.com/services/T1/B2/SECRETXYZ' },
+    ]);
+    renderWithProviders(<AlertSettings />, { permissions: ['alerts.read'] });
+    await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
+
+    expect(screen.queryByText(/SECRETXYZ/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/services\/T1\/B2/)).not.toBeInTheDocument();
+    expect(screen.getByText(/hooks\.example\.com\/\*\*\*/)).toBeInTheDocument();
+  });
+
+  it('mail channel tab: viewer mask strips userinfo even if backend leaks it', async () => {
+    mocks.getChannels.mockResolvedValue([
+      { ...channelFixture, webhook_url: 'https://token:secret@hooks.example.com/path' },
+    ]);
+    renderWithProviders(<AlertSettings />, { permissions: ['alerts.read'] });
+    await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
+
+    expect(screen.queryByText(/token/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/secret/)).not.toBeInTheDocument();
+    expect(screen.getByText('https://hooks.example.com/***')).toBeInTheDocument();
+  });
+
+  it('mail channel tab: writer can see full webhook URL and Test Send buttons', async () => {
+    mocks.getChannels.mockResolvedValue([
+      { ...channelFixture, webhook_url: 'https://hooks.example.com/services/T1/B2/SECRETXYZ' },
+    ]);
+    renderWithProviders(<AlertSettings />, { permissions: ['alerts.read', 'alerts.write'] });
+    await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
+
+    expect(screen.getByText(/services\/T1\/B2\/SECRETXYZ/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Test Send$|^테스트 발송$/i })).toBeInTheDocument();
+  });
+
+  it('owner groups tab: hides add/edit/delete for viewer but shows data', async () => {
+    renderWithProviders(<AlertSettings />, { permissions: ['alerts.read'] });
+    fireEvent.click(screen.getByRole('button', { name: /^Owner Groups$|^소유자 그룹$/i }));
+    await waitFor(() => expect(screen.getByText('orders-team')).toBeInTheDocument());
+
+    expect(screen.queryByRole('button', { name: /\+\s*Add Owner Group|\+\s*소유자 그룹 추가/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Edit$|^편집$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Delete$|^삭제$/ })).not.toBeInTheDocument();
+  });
+
+  it('resource owners tab: disables owner-group select for viewer', async () => {
+    renderWithProviders(<AlertSettings />, { permissions: ['alerts.read'] });
+    fireEvent.click(screen.getByRole('button', { name: /^Resource Owners$|^리소스 소유자$/i }));
+    await waitFor(() => expect(screen.getByText('orders-db')).toBeInTheDocument());
+
+    expect(screen.getByLabelText(/Owner group for orders-db/i)).toBeDisabled();
+  });
+
+  it('rules tab: hides add/test/edit/delete for viewer but shows rule data', async () => {
+    renderWithProviders(<AlertSettings />, { permissions: ['alerts.read'] });
+    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
+    await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
+
+    expect(screen.queryByRole('button', { name: /\+\s*Add Rule|\+\s*규칙 추가/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Test Send$|^테스트 발송$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Edit$|^편집$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Delete$|^삭제$/ })).not.toBeInTheDocument();
+  });
+
+  it('rules tab: writer sees Test Send button on each rule row', async () => {
+    renderWithProviders(<AlertSettings />, { permissions: ['alerts.read', 'alerts.write'] });
+    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
+    await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
+
+    expect(screen.getByRole('button', { name: /^Test Send$|^테스트 발송$/i })).toBeInTheDocument();
+  });
+});

@@ -33,6 +33,37 @@ class TestAlertChannelsAPI:
         assert len(resp.json()) >= 1
 
     @pytest.mark.asyncio
+    async def test_list_channels_masks_webhook_and_headers_for_non_writers(
+        self, client, admin_token, viewer_token
+    ):
+        secret_path = "/services/T123/B456/SECRETTOKEN"
+        await client.post("/admin/alerts/channels", json={
+            "name": "secret-ch",
+            "webhook_url": f"https://hooks.example.com{secret_path}",
+            "payload_template": "{}",
+            "headers": {"Authorization": "Bearer super-secret"},
+        }, headers=auth_header(admin_token))
+
+        # viewer: alerts.read but not alerts.write — must see masked URL and no headers
+        resp = await client.get("/admin/alerts/channels", headers=auth_header(viewer_token))
+        assert resp.status_code == 200
+        viewer_rows = [c for c in resp.json() if c["name"] == "secret-ch"]
+        assert len(viewer_rows) == 1
+        viewer_ch = viewer_rows[0]
+        assert "SECRETTOKEN" not in viewer_ch["webhook_url"]
+        assert secret_path not in viewer_ch["webhook_url"]
+        assert viewer_ch["webhook_url"] == "https://hooks.example.com/***"
+        assert viewer_ch["headers"] is None
+
+        # admin: alerts.write — full URL and headers preserved
+        resp = await client.get("/admin/alerts/channels", headers=auth_header(admin_token))
+        admin_rows = [c for c in resp.json() if c["name"] == "secret-ch"]
+        assert len(admin_rows) == 1
+        admin_ch = admin_rows[0]
+        assert admin_ch["webhook_url"] == f"https://hooks.example.com{secret_path}"
+        assert admin_ch["headers"] == {"Authorization": "Bearer super-secret"}
+
+    @pytest.mark.asyncio
     async def test_update_channel(self, client, admin_token):
         create = await client.post("/admin/alerts/channels", json={
             "name": "ch-update",

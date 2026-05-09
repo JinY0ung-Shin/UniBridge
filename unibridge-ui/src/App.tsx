@@ -54,7 +54,7 @@ function App() {
         <Route path="/roles" element={<ProtectedRoute permission="admin.roles.read"><Roles /></ProtectedRoute>} />
         <Route path="/users" element={<ProtectedRoute permission="admin.users.read"><Users /></ProtectedRoute>} />
         <Route path="/alerts/status" element={<ProtectedRoute permission="alerts.read"><AlertStatus /></ProtectedRoute>} />
-        <Route path="/alerts/settings" element={<ProtectedRoute permission="alerts.write"><AlertSettings /></ProtectedRoute>} />
+        <Route path="/alerts/settings" element={<ProtectedRoute permission="alerts.read"><AlertSettings /></ProtectedRoute>} />
         <Route path="/alerts/history" element={<ProtectedRoute permission="alerts.read"><AlertHistory /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

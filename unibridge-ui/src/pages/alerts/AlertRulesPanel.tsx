@@ -15,6 +15,7 @@ import {
   type RuleChannelDetail,
 } from '../../api/client';
 import { useToast } from '../../components/useToast';
+import { useCanWrite } from '../../components/useCanWrite';
 import ResourceModal from '../../components/ResourceModal';
 
 type RuleType = 'db_health' | 'upstream_health' | 'error_rate' | 'route_error_rate';
@@ -41,6 +42,7 @@ export default function AlertRulesPanel() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { addToast } = useToast();
+  const canWrite = useCanWrite('alerts.write');
   const [showRuleModal, setShowRuleModal] = useState(false);
   const [editingRuleId, setEditingRuleId] = useState<number | null>(null);
   const [ruleForm, setRuleForm] = useState(emptyRuleForm());
@@ -203,7 +205,9 @@ export default function AlertRulesPanel() {
     <div className="alert-tab-content">
       <div className="section-header">
         <h2>{t('alerts.rulesTab')}</h2>
-        <button className="btn btn-primary" onClick={openCreateRule}>+ {t('alerts.addRule')}</button>
+        {canWrite && (
+          <button className="btn btn-primary" onClick={openCreateRule}>+ {t('alerts.addRule')}</button>
+        )}
       </div>
       {rulesQuery.isLoading && <div className="loading-message">{t('common.loading')}</div>}
       {rulesQuery.isError && <div className="error-banner">{t('common.errorOccurred')}</div>}
@@ -226,7 +230,7 @@ export default function AlertRulesPanel() {
                 <th>{t('alerts.threshold')}</th>
                 <th>{t('alerts.enabled')}</th>
                 <th>{t('alerts.legacyRecipients')}</th>
-                <th>{t('common.actions')}</th>
+                {canWrite && <th>{t('common.actions')}</th>}
               </tr>
             </thead>
             <tbody>
@@ -254,27 +258,29 @@ export default function AlertRulesPanel() {
                       )}
                     </div>
                   </td>
-                  <td>
-                    <div className="action-buttons">
-                      <button
-                        className="btn btn-sm btn-outline"
-                        onClick={() => handleTestRule(rule)}
-                        disabled={testingRuleIds.has(rule.id)}
-                      >
-                        {testingRuleIds.has(rule.id) ? t('common.loading') : t('alerts.testRule')}
-                      </button>
-                      <button className="btn btn-sm btn-secondary" onClick={() => openEditRule(rule)}>
-                        {t('common.edit')}
-                      </button>
-                      <button
-                        className="btn btn-sm btn-danger"
-                        onClick={() => handleDeleteRule(rule)}
-                        disabled={deleteRuleMutation.isPending}
-                      >
-                        {t('common.delete')}
-                      </button>
-                    </div>
-                  </td>
+                  {canWrite && (
+                    <td>
+                      <div className="action-buttons">
+                        <button
+                          className="btn btn-sm btn-outline"
+                          onClick={() => handleTestRule(rule)}
+                          disabled={testingRuleIds.has(rule.id)}
+                        >
+                          {testingRuleIds.has(rule.id) ? t('common.loading') : t('alerts.testRule')}
+                        </button>
+                        <button className="btn btn-sm btn-secondary" onClick={() => openEditRule(rule)}>
+                          {t('common.edit')}
+                        </button>
+                        <button
+                          className="btn btn-sm btn-danger"
+                          onClick={() => handleDeleteRule(rule)}
+                          disabled={deleteRuleMutation.isPending}
+                        >
+                          {t('common.delete')}
+                        </button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

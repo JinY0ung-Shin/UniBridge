@@ -10,6 +10,7 @@ import {
   type AlertOwnerGroupCreate,
 } from '../../api/client';
 import { useToast } from '../../components/useToast';
+import { useCanWrite } from '../../components/useCanWrite';
 import ResourceModal from '../../components/ResourceModal';
 
 const emptyForm = () => ({
@@ -29,6 +30,7 @@ export default function AlertOwnerGroupsPanel() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { addToast } = useToast();
+  const canWrite = useCanWrite('alerts.write');
   const [showModal, setShowModal] = useState(false);
   const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
   const [form, setForm] = useState(emptyForm());
@@ -102,7 +104,9 @@ export default function AlertOwnerGroupsPanel() {
     <div className="alert-tab-content">
       <div className="section-header">
         <h2>{t('alerts.ownerGroupsTab')}</h2>
-        <button className="btn btn-primary" onClick={openCreate}>+ {t('alerts.addOwnerGroup')}</button>
+        {canWrite && (
+          <button className="btn btn-primary" onClick={openCreate}>+ {t('alerts.addOwnerGroup')}</button>
+        )}
       </div>
 
       {groupsQuery.isLoading && <div className="loading-message">{t('common.loading')}</div>}
@@ -118,7 +122,7 @@ export default function AlertOwnerGroupsPanel() {
                 <th>{t('common.name')}</th>
                 <th>{t('alerts.emails')}</th>
                 <th>{t('alerts.enabled')}</th>
-                <th>{t('common.actions')}</th>
+                {canWrite && <th>{t('common.actions')}</th>}
               </tr>
             </thead>
             <tbody>
@@ -131,20 +135,22 @@ export default function AlertOwnerGroupsPanel() {
                       {group.enabled ? t('common.active') : t('common.disabled')}
                     </span>
                   </td>
-                  <td>
-                    <div className="action-buttons">
-                      <button className="btn btn-sm btn-secondary" onClick={() => openEdit(group)}>
-                        {t('common.edit')}
-                      </button>
-                      <button
-                        className="btn btn-sm btn-danger"
-                        onClick={() => handleDelete(group)}
-                        disabled={deleteMutation.isPending}
-                      >
-                        {t('common.delete')}
-                      </button>
-                    </div>
-                  </td>
+                  {canWrite && (
+                    <td>
+                      <div className="action-buttons">
+                        <button className="btn btn-sm btn-secondary" onClick={() => openEdit(group)}>
+                          {t('common.edit')}
+                        </button>
+                        <button
+                          className="btn btn-sm btn-danger"
+                          onClick={() => handleDelete(group)}
+                          disabled={deleteMutation.isPending}
+                        >
+                          {t('common.delete')}
+                        </button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

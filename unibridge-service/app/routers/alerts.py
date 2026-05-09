@@ -10,7 +10,9 @@ from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import CurrentUser, require_permission
+from urllib.parse import urlparse
+
+from app.auth import CurrentUser, get_role_permissions, require_permission
 from app.database import get_db
 from app.models import (
     AlertChannel,
@@ -42,6 +44,17 @@ from app.services.alert_state import delete_alert_states_for_rule
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/alerts", tags=["Alerts"])
+
+def _mask_webhook_url(url: str) -> str:
+    """Reconstruct from hostname/port only so userinfo, path, query, and fragment never leak to non-writers."""
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.hostname:
+        return "***"
+    host = parsed.hostname
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    return f"{parsed.scheme}://{host}/***"
+
 
 RESOURCE_TYPES = {"db", "s3", "route", "upstream"}
 APISIX_RESOURCE_TYPES = {
@@ -459,18 +472,22 @@ async def delete_resource_owner(
 
 @router.get("/channels", response_model=list[AlertChannelResponse])
 async def list_channels(
-    _user: CurrentUser = Depends(require_permission("alerts.read")),
+    user: CurrentUser = Depends(require_permission("alerts.read")),
     db: AsyncSession = Depends(get_db),
 ) -> list[AlertChannelResponse]:
+    user_perms = await get_role_permissions(db, user.role)
+    can_write = "alerts.write" in user_perms
     result = await db.execute(select(AlertChannel).order_by(AlertChannel.id))
     channels = result.scalars().all()
     rows = []
     for ch in channels:
+        webhook_url = ch.webhook_url if can_write else _mask_webhook_url(ch.webhook_url)
+        headers = (json.loads(ch.headers) if ch.headers else None) if can_write else None
         rows.append(AlertChannelResponse(
-            id=ch.id, name=ch.name, webhook_url=ch.webhook_url,
+            id=ch.id, name=ch.name, webhook_url=webhook_url,
             payload_template=ch.payload_template,
             recipient_item_template=ch.recipient_item_template,
-            headers=json.loads(ch.headers) if ch.headers else None,
+            headers=headers,
             enabled=ch.enabled, created_at=ch.created_at, updated_at=ch.updated_at,
         ))
     return rows

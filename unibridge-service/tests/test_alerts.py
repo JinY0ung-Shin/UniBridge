@@ -85,6 +85,14 @@ class TestAlertSchemas:
                 channels=[],
             )
 
+    def test_channel_create_rejects_userinfo_in_webhook_url(self):
+        with pytest.raises(Exception):
+            AlertChannelCreate(
+                name="userinfo-leak",
+                webhook_url="https://token:secret@hooks.example.com/path",
+                payload_template="{}",
+            )
+
     def test_channel_create_rejects_hostname_that_resolves_private(self, monkeypatch):
         def fake_getaddrinfo(*_args, **_kwargs):
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.10.5", 443))]
@@ -101,6 +109,28 @@ class TestAlertSchemas:
     def test_alert_status_response(self):
         s = AlertStatusResponse(target="mydb", type="db_health", status="alert", since="2026-04-11T12:00:00")
         assert s.status == "alert"
+
+
+class TestMaskWebhookUrl:
+    def test_strips_userinfo(self):
+        from app.routers.alerts import _mask_webhook_url
+        masked = _mask_webhook_url("https://token:secret@hooks.example.com/path/X?q=1")
+        assert "token" not in masked
+        assert "secret" not in masked
+        assert masked == "https://hooks.example.com/***"
+
+    def test_preserves_port(self):
+        from app.routers.alerts import _mask_webhook_url
+        assert _mask_webhook_url("https://hooks.example.com:8443/svc/abc") == "https://hooks.example.com:8443/***"
+
+    def test_strips_path_query_fragment(self):
+        from app.routers.alerts import _mask_webhook_url
+        assert _mask_webhook_url("https://hooks.example.com/p?q=1#f") == "https://hooks.example.com/***"
+
+    def test_unparseable_url_falls_back_to_stars(self):
+        from app.routers.alerts import _mask_webhook_url
+        assert _mask_webhook_url("not a url") == "***"
+
 
 class TestAlertPermissions:
     def test_alerts_read_in_all_permissions(self):

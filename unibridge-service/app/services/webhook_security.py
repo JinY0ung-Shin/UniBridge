@@ -29,6 +29,8 @@ def validate_webhook_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ValueError("webhook_url must use http or https scheme")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("webhook_url must not contain userinfo (user:pass@)")
     hostname = parsed.hostname
     if not hostname:
         raise ValueError("webhook_url must include a hostname")

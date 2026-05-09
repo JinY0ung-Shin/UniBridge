@@ -16,6 +16,7 @@ import {
   type AlertSettings,
 } from '../../api/client';
 import { useToast } from '../../components/useToast';
+import { useCanWrite } from '../../components/useCanWrite';
 import ResourceModal from '../../components/ResourceModal';
 
 type HeaderPair = { key: string; value: string };
@@ -53,10 +54,20 @@ function truncate(str: string, max = 60): string {
   return str.length > max ? str.slice(0, max) + '...' : str;
 }
 
+function maskWebhookUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.host}/***`;
+  } catch {
+    return '***';
+  }
+}
+
 export default function AlertMailChannelPanel() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { addToast } = useToast();
+  const canWrite = useCanWrite('alerts.write');
   const [showChannelModal, setShowChannelModal] = useState(false);
   const [editingChannelId, setEditingChannelId] = useState<number | null>(null);
   const [channelForm, setChannelForm] = useState(emptyChannelForm());
@@ -261,7 +272,7 @@ export default function AlertMailChannelPanel() {
             <select
               id="mail-channel-select"
               value={settingsForm.mail_channel_id ?? ''}
-              disabled={!hasSettings}
+              disabled={!hasSettings || !canWrite}
               onChange={(e) =>
                 setSettingsDraft((prev) => ({
                   ...prev,
@@ -281,7 +292,7 @@ export default function AlertMailChannelPanel() {
               <select
                 id="fallback-owner-group-select"
                 value={settingsForm.fallback_owner_group_id ?? ''}
-                disabled={!hasSettings}
+                disabled={!hasSettings || !canWrite}
                 onChange={(e) =>
                   setSettingsDraft((prev) => ({
                     ...prev,
@@ -294,16 +305,18 @@ export default function AlertMailChannelPanel() {
                   <option key={group.id} value={group.id}>{group.name}</option>
                 ))}
               </select>
-              <button
-                type="button"
-                className="btn btn-sm btn-outline"
-                onClick={handleTestFallbackOwnerGroup}
-                disabled={!canTestFallbackOwnerGroup}
-              >
-                {testFallbackOwnerGroupMutation.isPending
-                  ? t('common.loading')
-                  : t('alerts.testFallbackOwnerGroup')}
-              </button>
+              {canWrite && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline"
+                  onClick={handleTestFallbackOwnerGroup}
+                  disabled={!canTestFallbackOwnerGroup}
+                >
+                  {testFallbackOwnerGroupMutation.isPending
+                    ? t('common.loading')
+                    : t('alerts.testFallbackOwnerGroup')}
+                </button>
+              )}
             </div>
           </div>
           <div className="form-group">
@@ -315,7 +328,7 @@ export default function AlertMailChannelPanel() {
               max={100}
               step={0.1}
               value={settingsForm.route_error_threshold_pct}
-              disabled={!hasSettings}
+              disabled={!hasSettings || !canWrite}
               onChange={(e) =>
                 setSettingsDraft((prev) => ({ ...prev, route_error_threshold_pct: Number(e.target.value) }))
               }
@@ -329,21 +342,25 @@ export default function AlertMailChannelPanel() {
               min={30}
               max={3600}
               value={settingsForm.check_interval_seconds}
-              disabled={!hasSettings}
+              disabled={!hasSettings || !canWrite}
               onChange={(e) =>
                 setSettingsDraft((prev) => ({ ...prev, check_interval_seconds: Number(e.target.value) }))
               }
             />
           </div>
         </div>
-        <button type="submit" className="btn btn-primary" disabled={!hasSettings || updateSettingsMutation.isPending}>
-          {updateSettingsMutation.isPending ? t('common.saving') : t('alerts.saveSettings')}
-        </button>
+        {canWrite && (
+          <button type="submit" className="btn btn-primary" disabled={!hasSettings || updateSettingsMutation.isPending}>
+            {updateSettingsMutation.isPending ? t('common.saving') : t('alerts.saveSettings')}
+          </button>
+        )}
       </form>
 
       <div className="section-header">
         <h2>{t('alerts.channels')}</h2>
-        <button className="btn btn-primary" onClick={openCreateChannel}>+ {t('alerts.addChannel')}</button>
+        {canWrite && (
+          <button className="btn btn-primary" onClick={openCreateChannel}>+ {t('alerts.addChannel')}</button>
+        )}
       </div>
 
       {isLoading && <div className="loading-message">{t('common.loading')}</div>}
@@ -359,40 +376,44 @@ export default function AlertMailChannelPanel() {
                 <th>{t('common.name')}</th>
                 <th>{t('alerts.webhookUrl')}</th>
                 <th>{t('alerts.enabled')}</th>
-                <th>{t('common.actions')}</th>
+                {canWrite && <th>{t('common.actions')}</th>}
               </tr>
             </thead>
             <tbody>
               {channels.map((ch) => (
                 <tr key={ch.id}>
                   <td className="cell-alias">{ch.name}</td>
-                  <td className="cell-webhook-url">{truncate(ch.webhook_url)}</td>
+                  <td className="cell-webhook-url">
+                    {truncate(canWrite ? ch.webhook_url : maskWebhookUrl(ch.webhook_url))}
+                  </td>
                   <td>
                     <span className={`badge ${ch.enabled ? 'badge-ok' : 'badge-unknown'}`}>
                       {ch.enabled ? t('common.active') : t('common.disabled')}
                     </span>
                   </td>
-                  <td>
-                    <div className="action-buttons">
-                      <button
-                        className="btn btn-sm btn-outline"
-                        onClick={() => handleTestChannel(ch)}
-                        disabled={testingChannelIds.has(ch.id)}
-                      >
-                        {testingChannelIds.has(ch.id) ? t('common.loading') : t('alerts.testChannel')}
-                      </button>
-                      <button className="btn btn-sm btn-secondary" onClick={() => openEditChannel(ch)}>
-                        {t('common.edit')}
-                      </button>
-                      <button
-                        className="btn btn-sm btn-danger"
-                        onClick={() => handleDeleteChannel(ch)}
-                        disabled={deleteChannelMutation.isPending}
-                      >
-                        {t('common.delete')}
-                      </button>
-                    </div>
-                  </td>
+                  {canWrite && (
+                    <td>
+                      <div className="action-buttons">
+                        <button
+                          className="btn btn-sm btn-outline"
+                          onClick={() => handleTestChannel(ch)}
+                          disabled={testingChannelIds.has(ch.id)}
+                        >
+                          {testingChannelIds.has(ch.id) ? t('common.loading') : t('alerts.testChannel')}
+                        </button>
+                        <button className="btn btn-sm btn-secondary" onClick={() => openEditChannel(ch)}>
+                          {t('common.edit')}
+                        </button>
+                        <button
+                          className="btn btn-sm btn-danger"
+                          onClick={() => handleDeleteChannel(ch)}
+                          disabled={deleteChannelMutation.isPending}
+                        >
+                          {t('common.delete')}
+                        </button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
