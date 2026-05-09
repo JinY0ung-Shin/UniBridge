@@ -15,7 +15,7 @@ import {
   getMetricsRoutesComparison,
   type RouteComparisonRow,
 } from '../api/client';
-import { useTheme } from '../components/useTheme';
+import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
 import './GatewayMonitoring.css';
 
 const TIME_RANGES = ['15m', '1h', '6h', '24h', '7d', '30d', '60d'];
@@ -34,10 +34,6 @@ function formatTimestamp(ts: number, range: string): string {
     return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}h`;
   }
   return formatTime(ts);
-}
-
-function getCssVar(name: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
 function BarCell({ value, max, suffix = '' }: { value: number; max: number; suffix?: string }) {
@@ -62,19 +58,6 @@ function latencyClass(v: number | null, max: number): string {
   if (ratio >= 0.8) return 'heatmap-cell heatmap-cell--red';
   if (ratio >= 0.5) return 'heatmap-cell heatmap-cell--yellow';
   return 'heatmap-cell';
-}
-
-function getStatusColor(code: string): string {
-  const green = getCssVar('--accent-green');
-  const blue = getCssVar('--accent-blue');
-  const yellow = getCssVar('--accent-yellow');
-  const red = getCssVar('--accent-red');
-  const muted = getCssVar('--text-tertiary');
-  if (code.startsWith('2')) return green;
-  if (code.startsWith('3')) return blue;
-  if (code.startsWith('4')) return yellow;
-  if (code.startsWith('5')) return red;
-  return muted;
 }
 
 type SortColumn = 'route' | 'requests' | 'share' | 'error_rate' | 'latency_p50_ms' | 'latency_p95_ms';
@@ -125,8 +108,6 @@ function GatewayMonitoring() {
   const [range, setRange] = useState('1h');
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
   const [sort, setSort] = useState<{ column: SortColumn; dir: SortDir }>({ column: 'requests', dir: 'desc' });
-  // Subscribe so chart CSS variables are reread after theme changes.
-  useTheme();
 
   const toggleSort = (column: SortColumn) => {
     setSort((prev) =>
@@ -137,17 +118,7 @@ function GatewayMonitoring() {
   };
 
 
-  const chartColors = {
-    grid: getCssVar('--chart-grid'),
-    axis: getCssVar('--chart-axis'),
-    tooltipBg: getCssVar('--chart-tooltip-bg'),
-    tooltipBorder: getCssVar('--chart-tooltip-border'),
-    blue: getCssVar('--accent-blue'),
-    green: getCssVar('--accent-green'),
-    yellow: getCssVar('--accent-yellow'),
-    red: getCssVar('--accent-red'),
-    textSecondary: getCssVar('--text-secondary'),
-  };
+  const chartColors = useChartTheme();
 
   const summaryQuery = useQuery({
     queryKey: ['metrics-summary', range],
@@ -382,7 +353,7 @@ function GatewayMonitoring() {
                 />
                 <Bar dataKey="count" name="Requests">
                   {(statusQuery.data ?? []).map((entry, index) => (
-                    <Cell key={index} fill={getStatusColor(entry.code)} />
+                    <Cell key={index} fill={statusCodeColor(entry.code, chartColors)} />
                   ))}
                 </Bar>
               </BarChart>
@@ -553,7 +524,7 @@ function GatewayMonitoring() {
                         />
                         <Bar dataKey="count" name="Requests">
                           {(routeStatusQuery.data ?? []).map((entry, index) => (
-                            <Cell key={index} fill={getStatusColor(entry.code)} />
+                            <Cell key={index} fill={statusCodeColor(entry.code, chartColors)} />
                           ))}
                         </Bar>
                       </BarChart>

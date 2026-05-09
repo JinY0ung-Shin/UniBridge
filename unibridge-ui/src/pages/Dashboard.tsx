@@ -7,7 +7,7 @@ import {
 } from 'recharts';
 import { getHealth, getAdminDatabases, getMetricsSummary, getMetricsRequests, getLlmSummary, getLlmTokens, type DatabaseHealth } from '../api/client';
 import { usePermissions } from '../components/usePermissions';
-import { useTheme } from '../components/useTheme';
+import { useChartTheme } from '../components/useChartTheme';
 import './Dashboard.css';
 
 interface DashboardDbEntry {
@@ -20,25 +20,11 @@ function formatTime(ts: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-function getCssVar(name: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
-
 function Dashboard() {
   const { t } = useTranslation();
   const { permissions } = usePermissions();
-  // Subscribe so chart CSS variables are reread after theme changes.
-  useTheme();
+  const chartColors = useChartTheme();
   const canViewMonitoring = permissions.includes('gateway.monitoring.read');
-
-  const chartColors = {
-    grid: getCssVar('--chart-grid'),
-    axis: getCssVar('--chart-axis'),
-    tooltipBg: getCssVar('--chart-tooltip-bg'),
-    tooltipBorder: getCssVar('--chart-tooltip-border'),
-    blue: getCssVar('--accent-blue'),
-    textSecondary: getCssVar('--text-secondary'),
-  };
 
   const healthQuery = useQuery({
     queryKey: ['health'],
@@ -252,7 +238,7 @@ function Dashboard() {
                         itemStyle={{ color: chartColors.textSecondary }}
                       />
                       <Line type="monotone" dataKey="prompt" stroke={chartColors.blue} strokeWidth={2} dot={false} name="Prompt" />
-                      <Line type="monotone" dataKey="completion" stroke={getCssVar('--accent-green')} strokeWidth={2} dot={false} name="Completion" />
+                      <Line type="monotone" dataKey="completion" stroke={chartColors.green} strokeWidth={2} dot={false} name="Completion" />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>

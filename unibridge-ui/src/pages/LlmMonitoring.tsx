@@ -13,7 +13,7 @@ import {
   getLlmErrors,
   getLlmRequestsTotal,
 } from '../api/client';
-import { useTheme } from '../components/useTheme';
+import { useChartTheme } from '../components/useChartTheme';
 import './LlmMonitoring.css';
 
 const TIME_RANGES = ['15m', '1h', '6h', '24h', '7d', '30d', '60d'];
@@ -35,10 +35,6 @@ function formatTimestamp(ts: number, range: string): string {
   return formatTime(ts);
 }
 
-function getCssVar(name: string): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
-
 function formatCost(value: number): string {
   return `$${value.toFixed(2)}`;
 }
@@ -52,20 +48,7 @@ function formatTokens(value: number): string {
 function LlmMonitoring() {
   const { t } = useTranslation();
   const [range, setRange] = useState('1h');
-  // Subscribe so chart CSS variables are reread after theme changes.
-  useTheme();
-
-  const chartColors = {
-    grid: getCssVar('--chart-grid'),
-    axis: getCssVar('--chart-axis'),
-    tooltipBg: getCssVar('--chart-tooltip-bg'),
-    tooltipBorder: getCssVar('--chart-tooltip-border'),
-    blue: getCssVar('--accent-blue'),
-    green: getCssVar('--accent-green'),
-    yellow: getCssVar('--accent-yellow'),
-    red: getCssVar('--accent-red'),
-    textSecondary: getCssVar('--text-secondary'),
-  };
+  const chartColors = useChartTheme();
 
   const summaryQuery = useQuery({
     queryKey: ['llm-summary', range],
