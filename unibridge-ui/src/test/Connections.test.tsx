@@ -95,6 +95,7 @@ describe('Connections', () => {
     await userEvent.click(screen.getByRole('button', { name: '+ Add Connection' }));
 
     expect(screen.getByRole('heading', { name: 'Add Connection' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Add Connection' })).toHaveAttribute('aria-modal', 'true');
   });
 
   it('opens edit modal on edit button click', async () => {
@@ -254,6 +255,7 @@ describe('Connections', () => {
     await waitFor(() => {
       expect(screen.getByText(/MATCH \(n\) RETURN n LIMIT 10/)).toBeInTheDocument();
     });
+    expect(screen.getByRole('dialog', { name: /cURL — graph-db/ })).toHaveAttribute('aria-modal', 'true');
     expect(screen.queryByText(/SELECT \* FROM/)).not.toBeInTheDocument();
     expect(mockedGetDbTables).not.toHaveBeenCalled();
   });

@@ -74,7 +74,8 @@ describe('GatewayUpstreams', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add Upstream' }));
 
-    expect(screen.getByText('Add Upstream')).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: 'Add Upstream' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
   });
 
   it('opens edit modal on edit button click', async () => {

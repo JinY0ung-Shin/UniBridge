@@ -10,6 +10,7 @@ import {
   testS3Connection,
   type S3ConnectionConfig,
 } from '../api/client';
+import ResourceModal from '../components/ResourceModal';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
 import './Connections.css';
@@ -292,128 +293,125 @@ function S3Connections() {
       )}
 
       {canWrite && showModal && (
-        <div className="modal-overlay" onClick={closeModal}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{editingAlias ? t('s3.editAlias', { alias: editingAlias }) : t('s3.addTitle')}</h2>
-              <button className="modal-close" onClick={closeModal}>&times;</button>
+        <ResourceModal
+          title={editingAlias ? t('s3.editAlias', { alias: editingAlias }) : t('s3.addTitle')}
+          onClose={closeModal}
+          closeLabel={t('common.close')}
+        >
+          <form onSubmit={handleSubmit}>
+            <div className="form-grid">
+              <div className="form-group">
+                <label>{t('s3.alias')}</label>
+                <input
+                  type="text"
+                  value={form.alias}
+                  onChange={(e) => updateField('alias', e.target.value)}
+                  required
+                  disabled={!!editingAlias}
+                  placeholder="e.g., my-s3"
+                />
+              </div>
+              <div className="form-group">
+                <label>{t('s3.region')}</label>
+                <input
+                  type="text"
+                  value={form.region}
+                  onChange={(e) => updateField('region', e.target.value)}
+                  required
+                  placeholder="us-east-1"
+                />
+              </div>
+              <div className="form-group form-group--full">
+                <label>{t('s3.endpointUrl')} <span className="hint">{t('s3.endpointUrlHint')}</span></label>
+                <input
+                  type="text"
+                  value={form.endpoint_url ?? ''}
+                  onChange={(e) => updateField('endpoint_url', e.target.value)}
+                  placeholder="https://minio.example.com:9000"
+                />
+              </div>
+              <div className="form-group">
+                <label>
+                  {t('s3.accessKeyId')}
+                  {editingAlias && <span className="hint"> {t('s3.secretAccessKeyHint')}</span>}
+                </label>
+                <input
+                  type="text"
+                  value={form.access_key_id ?? ''}
+                  onChange={(e) => updateField('access_key_id', e.target.value)}
+                  required={!editingAlias}
+                  placeholder={editingAlias ? (form.access_key_id_masked || 'AKIAIOSFODNN7EXAMPLE') : 'AKIAIOSFODNN7EXAMPLE'}
+                />
+              </div>
+              <div className="form-group">
+                <label>
+                  {t('s3.secretAccessKey')}
+                  {editingAlias && <span className="hint"> {t('s3.secretAccessKeyHint')}</span>}
+                </label>
+                <input
+                  type="password"
+                  value={form.secret_access_key ?? ''}
+                  onChange={(e) => updateField('secret_access_key', e.target.value)}
+                  placeholder="********"
+                  required={!editingAlias}
+                />
+              </div>
+              <div className="form-group">
+                <label>{t('s3.defaultBucket')} <span className="hint">{t('s3.defaultBucketHint')}</span></label>
+                <input
+                  type="text"
+                  value={form.default_bucket ?? ''}
+                  onChange={(e) => updateField('default_bucket', e.target.value)}
+                  placeholder="my-bucket"
+                />
+              </div>
+              <div className="form-group">
+                <label>&nbsp;</label>
+                <label className="method-check">
+                  <input
+                    type="checkbox"
+                    checked={form.use_ssl}
+                    onChange={(e) => updateField('use_ssl', e.target.checked)}
+                  />
+                  {t('s3.useSsl')}
+                </label>
+              </div>
             </div>
-            <form onSubmit={handleSubmit}>
-              <div className="form-grid">
-                <div className="form-group">
-                  <label>{t('s3.alias')}</label>
-                  <input
-                    type="text"
-                    value={form.alias}
-                    onChange={(e) => updateField('alias', e.target.value)}
-                    required
-                    disabled={!!editingAlias}
-                    placeholder="e.g., my-s3"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>{t('s3.region')}</label>
-                  <input
-                    type="text"
-                    value={form.region}
-                    onChange={(e) => updateField('region', e.target.value)}
-                    required
-                    placeholder="us-east-1"
-                  />
-                </div>
-                <div className="form-group form-group--full">
-                  <label>{t('s3.endpointUrl')} <span className="hint">{t('s3.endpointUrlHint')}</span></label>
-                  <input
-                    type="text"
-                    value={form.endpoint_url ?? ''}
-                    onChange={(e) => updateField('endpoint_url', e.target.value)}
-                    placeholder="https://minio.example.com:9000"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>
-                    {t('s3.accessKeyId')}
-                    {editingAlias && <span className="hint"> {t('s3.secretAccessKeyHint')}</span>}
-                  </label>
-                  <input
-                    type="text"
-                    value={form.access_key_id ?? ''}
-                    onChange={(e) => updateField('access_key_id', e.target.value)}
-                    required={!editingAlias}
-                    placeholder={editingAlias ? (form.access_key_id_masked || 'AKIAIOSFODNN7EXAMPLE') : 'AKIAIOSFODNN7EXAMPLE'}
-                  />
-                </div>
-                <div className="form-group">
-                  <label>
-                    {t('s3.secretAccessKey')}
-                    {editingAlias && <span className="hint"> {t('s3.secretAccessKeyHint')}</span>}
-                  </label>
-                  <input
-                    type="password"
-                    value={form.secret_access_key ?? ''}
-                    onChange={(e) => updateField('secret_access_key', e.target.value)}
-                    placeholder="********"
-                    required={!editingAlias}
-                  />
-                </div>
-                <div className="form-group">
-                  <label>{t('s3.defaultBucket')} <span className="hint">{t('s3.defaultBucketHint')}</span></label>
-                  <input
-                    type="text"
-                    value={form.default_bucket ?? ''}
-                    onChange={(e) => updateField('default_bucket', e.target.value)}
-                    placeholder="my-bucket"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>&nbsp;</label>
-                  <label className="method-check">
-                    <input
-                      type="checkbox"
-                      checked={form.use_ssl}
-                      onChange={(e) => updateField('use_ssl', e.target.checked)}
-                    />
-                    {t('s3.useSsl')}
-                  </label>
-                </div>
-              </div>
 
-              {(createMutation.isError || updateMutation.isError) && (
-                <div className="form-error">
-                  {(createMutation.error as Error)?.message ||
-                    (updateMutation.error as Error)?.message ||
-                    t('common.errorOccurred')}
-                </div>
-              )}
-
-              <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeModal}>
-                  {t('common.cancel')}
-                </button>
-                <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                  {isSaving ? t('common.saving') : editingAlias ? t('common.update') : t('common.create')}
-                </button>
+            {(createMutation.isError || updateMutation.isError) && (
+              <div className="form-error">
+                {(createMutation.error as Error)?.message ||
+                  (updateMutation.error as Error)?.message ||
+                  t('common.errorOccurred')}
               </div>
-            </form>
-          </div>
-        </div>
+            )}
+
+            <div className="modal-actions">
+              <button type="button" className="btn btn-secondary" onClick={closeModal}>
+                {t('common.cancel')}
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                {isSaving ? t('common.saving') : editingAlias ? t('common.update') : t('common.create')}
+              </button>
+            </div>
+          </form>
+        </ResourceModal>
       )}
 
       {curlModal && (
-        <div className="modal-overlay" onClick={() => setCurlModal(null)}>
-          <div className="modal modal--sm" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>cURL — {curlModal.alias}</h2>
-              <button className="modal-close" onClick={() => setCurlModal(null)}>&times;</button>
-            </div>
-            <div className="curl-block">
-              <pre className="curl-code">{curlModal.curl}</pre>
-              <button className="btn btn-sm btn-secondary curl-copy-btn" onClick={handleCurlCopy}>
-                {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
-              </button>
-            </div>
+        <ResourceModal
+          title={`cURL — ${curlModal.alias}`}
+          onClose={() => setCurlModal(null)}
+          closeLabel={t('common.close')}
+          className="modal--sm"
+        >
+          <div className="curl-block">
+            <pre className="curl-code">{curlModal.curl}</pre>
+            <button className="btn btn-sm btn-secondary curl-copy-btn" onClick={handleCurlCopy}>
+              {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
+            </button>
           </div>
-        </div>
+        </ResourceModal>
       )}
     </div>
   );

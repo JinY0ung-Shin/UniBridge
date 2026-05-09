@@ -194,6 +194,8 @@ describe('AlertSettings page', () => {
     await waitFor(() => expect(screen.getByText(/No owner groups|소유자 그룹이 없/i)).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /\+\s*Add Owner Group|\+\s*소유자 그룹 추가/i }));
+    const dialog = await screen.findByRole('dialog', { name: /^Add Owner Group$|^소유자 그룹 추가$/i });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
     await userEvent.type(screen.getByLabelText(/Owner Group Name|소유자 그룹 이름/i), 'orders');
     await userEvent.type(
       screen.getByLabelText(/Emails|이메일/i),
@@ -287,7 +289,8 @@ describe('AlertSettings page', () => {
     renderWithProviders(<AlertSettings />);
     await waitFor(() => expect(screen.getByText(/No channels/i)).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /\+\s*Add Channel/i }));
-    await waitFor(() => expect(screen.getByText(/^Add Channel$/)).toBeInTheDocument());
+    const dialog = await screen.findByRole('dialog', { name: /^Add Channel$/ });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
 
     await userEvent.type(screen.getByLabelText(/Channel Name|채널 이름/i), 'new-ch');
     await userEvent.type(screen.getByLabelText(/Webhook URL/i), 'https://hooks.example.com/new');
@@ -449,7 +452,8 @@ describe('AlertSettings page', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
     await waitFor(() => expect(screen.getByText(/No rules|규칙이 없/i)).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /\+\s*Add Rule/i }));
-    await waitFor(() => expect(screen.getByText(/^Add Rule$/)).toBeInTheDocument());
+    const dialog = await screen.findByRole('dialog', { name: /^Add Rule$/ });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
     expect(screen.queryByPlaceholderText(/Recipients|수신자/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('option', { name: /^Error Rate$|^에러율$/ })).not.toBeInTheDocument();
   });

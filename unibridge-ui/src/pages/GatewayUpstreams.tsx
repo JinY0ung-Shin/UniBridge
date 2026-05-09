@@ -8,6 +8,7 @@ import {
   type GatewayUpstream,
 } from '../api/client';
 import { useCanWrite } from '../components/useCanWrite';
+import ResourceModal from '../components/ResourceModal';
 import './GatewayUpstreams.css';
 
 interface NodeEntry {
@@ -181,14 +182,14 @@ function GatewayUpstreams() {
                   <td><span className="badge badge-type">{u.type}</span></td>
                   <td className="cell-nodes">{formatNodes(u.nodes || {})}</td>
                   <td>
-	                    <div className="action-buttons">
-	                      {canWrite && !u.system && (
-	                        <>
-	                          <button className="btn btn-sm btn-secondary" onClick={() => openEdit(u)}>{t('common.edit')}</button>
-	                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(u)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
-	                        </>
-	                      )}
-	                    </div>
+                    <div className="action-buttons">
+                      {canWrite && !u.system && (
+                        <>
+                          <button className="btn btn-sm btn-secondary" onClick={() => openEdit(u)}>{t('common.edit')}</button>
+                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(u)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
+                        </>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -205,84 +206,82 @@ function GatewayUpstreams() {
       )}
 
       {canWrite && showModal && (
-        <div className="modal-overlay" onClick={closeModal}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{editingId ? t('gatewayUpstreams.editTitle') : t('gatewayUpstreams.addTitle')}</h2>
-              <button className="modal-close" onClick={closeModal}>&times;</button>
-            </div>
-            <form onSubmit={handleSubmit}>
-              <div className="form-grid">
-                <div className="form-group">
-                  <label>{t('common.name')}</label>
-                  <input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-backend" />
-                  <span className="field-hint">{t('gatewayUpstreams.nameHint')}</span>
-                </div>
-                <div className="form-group">
-                  <label>{t('common.type')}</label>
-                  <select value={type} onChange={(e) => setType(e.target.value)}>
-                    <option value="roundrobin">Round Robin</option>
-                    <option value="chash">Consistent Hash</option>
-                    <option value="ewma">EWMA</option>
-                    <option value="least_conn">Least Connections</option>
-                  </select>
-                  <span className="field-hint">{t('gatewayUpstreams.typeHint')}</span>
-                </div>
-                <div className="form-group form-group--full">
-                  <label>{t('gatewayUpstreams.nodesLabel')}</label>
-                  <span className="field-hint">{t('gatewayUpstreams.nodesHint')}</span>
-                  <div className="nodes-list">
-                    <div className="node-row node-row--header">
-                      <span className="node-label node-host">{t('gatewayUpstreams.hostIp')}</span>
-                      <span className="node-label node-port">{t('gatewayUpstreams.port')}</span>
-                      <span className="node-label node-weight">{t('gatewayUpstreams.weight')}</span>
-                    </div>
-                    {nodes.map((node, idx) => (
-                      <div key={idx} className="node-row">
-                        <input
-                          className="node-host"
-                          placeholder="e.g. 192.168.1.10 or api.example.com"
-                          value={node.host}
-                          onChange={(e) => updateNode(idx, 'host', e.target.value)}
-                          required
-                        />
-                        <input
-                          className="node-port"
-                          placeholder="8080"
-                          type="number"
-                          value={node.port}
-                          onChange={(e) => updateNode(idx, 'port', e.target.value)}
-                        />
-                        <input
-                          className="node-weight"
-                          placeholder="1"
-                          type="number"
-                          value={node.weight}
-                          onChange={(e) => updateNode(idx, 'weight', e.target.value)}
-                        />
-                        {nodes.length > 1 && (
-                          <button type="button" className="node-remove" onClick={() => removeNode(idx)}>&times;</button>
-                        )}
-                      </div>
-                    ))}
-                    <button type="button" className="btn btn-sm btn-secondary add-node-btn" onClick={addNode}>
-                      {t('gatewayUpstreams.addNode')}
-                    </button>
+        <ResourceModal
+          title={editingId ? t('gatewayUpstreams.editTitle') : t('gatewayUpstreams.addTitle')}
+          onClose={closeModal}
+          closeLabel={t('common.close')}
+        >
+          <form onSubmit={handleSubmit}>
+            <div className="form-grid">
+              <div className="form-group">
+                <label>{t('common.name')}</label>
+                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-backend" />
+                <span className="field-hint">{t('gatewayUpstreams.nameHint')}</span>
+              </div>
+              <div className="form-group">
+                <label>{t('common.type')}</label>
+                <select value={type} onChange={(e) => setType(e.target.value)}>
+                  <option value="roundrobin">Round Robin</option>
+                  <option value="chash">Consistent Hash</option>
+                  <option value="ewma">EWMA</option>
+                  <option value="least_conn">Least Connections</option>
+                </select>
+                <span className="field-hint">{t('gatewayUpstreams.typeHint')}</span>
+              </div>
+              <div className="form-group form-group--full">
+                <label>{t('gatewayUpstreams.nodesLabel')}</label>
+                <span className="field-hint">{t('gatewayUpstreams.nodesHint')}</span>
+                <div className="nodes-list">
+                  <div className="node-row node-row--header">
+                    <span className="node-label node-host">{t('gatewayUpstreams.hostIp')}</span>
+                    <span className="node-label node-port">{t('gatewayUpstreams.port')}</span>
+                    <span className="node-label node-weight">{t('gatewayUpstreams.weight')}</span>
                   </div>
+                  {nodes.map((node, idx) => (
+                    <div key={idx} className="node-row">
+                      <input
+                        className="node-host"
+                        placeholder="e.g. 192.168.1.10 or api.example.com"
+                        value={node.host}
+                        onChange={(e) => updateNode(idx, 'host', e.target.value)}
+                        required
+                      />
+                      <input
+                        className="node-port"
+                        placeholder="8080"
+                        type="number"
+                        value={node.port}
+                        onChange={(e) => updateNode(idx, 'port', e.target.value)}
+                      />
+                      <input
+                        className="node-weight"
+                        placeholder="1"
+                        type="number"
+                        value={node.weight}
+                        onChange={(e) => updateNode(idx, 'weight', e.target.value)}
+                      />
+                      {nodes.length > 1 && (
+                        <button type="button" className="node-remove" onClick={() => removeNode(idx)}>&times;</button>
+                      )}
+                    </div>
+                  ))}
+                  <button type="button" className="btn btn-sm btn-secondary add-node-btn" onClick={addNode}>
+                    {t('gatewayUpstreams.addNode')}
+                  </button>
                 </div>
               </div>
+            </div>
 
-              {error && <div className="form-error">{error}</div>}
+            {error && <div className="form-error">{error}</div>}
 
-              <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
-                <button type="submit" className="btn btn-primary" disabled={saveMutation.isPending}>
-                  {saveMutation.isPending ? t('common.saving') : editingId ? t('common.update') : t('common.create')}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
+              <button type="submit" className="btn btn-primary" disabled={saveMutation.isPending}>
+                {saveMutation.isPending ? t('common.saving') : editingId ? t('common.update') : t('common.create')}
+              </button>
+            </div>
+          </form>
+        </ResourceModal>
       )}
     </div>
   );

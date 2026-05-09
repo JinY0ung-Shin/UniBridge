@@ -76,7 +76,9 @@ describe('Users page flows', () => {
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /Add User|사용자 추가/i }));
-    await waitFor(() => expect(screen.getByPlaceholderText('username')).toBeInTheDocument());
+    const dialog = await screen.findByRole('dialog', { name: /Add User|사용자 추가/i });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getByPlaceholderText('username')).toBeInTheDocument();
 
     const usernameInput = screen.getByPlaceholderText('username');
     const pwInputs = screen.getAllByDisplayValue(''); // empty inputs
@@ -101,9 +103,8 @@ describe('Users page flows', () => {
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /^Role$|^역할$/ }));
-    await waitFor(() =>
-      expect(screen.getByText(/Change.*Role|역할.*변경/i)).toBeInTheDocument(),
-    );
+    const dialog = await screen.findByRole('dialog', { name: /Change.*Role|역할.*변경/i });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
 
     const select = screen.getByRole('combobox');
     fireEvent.change(select, { target: { value: 'admin' } });
@@ -118,9 +119,9 @@ describe('Users page flows', () => {
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /Reset.*Password|비밀번호.*재설정|Reset PW/i }));
-    await waitFor(() =>
-      expect(screen.getAllByDisplayValue('').length).toBeGreaterThan(0),
-    );
+    const dialog = await screen.findByRole('dialog', { name: /Reset.*Password|비밀번호.*재설정/i });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getAllByDisplayValue('').length).toBeGreaterThan(0);
 
     const pwInput = screen
       .getAllByDisplayValue('')

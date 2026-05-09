@@ -15,6 +15,7 @@ import {
   type RuleChannelDetail,
 } from '../../api/client';
 import { useToast } from '../../components/useToast';
+import ResourceModal from '../../components/ResourceModal';
 
 type RuleType = 'db_health' | 'upstream_health' | 'error_rate' | 'route_error_rate';
 
@@ -282,129 +283,127 @@ export default function AlertRulesPanel() {
       )}
 
       {showRuleModal && (
-        <div className="modal-overlay" onClick={closeRuleModal}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{editingRuleId !== null ? t('alerts.editRule') : t('alerts.addRule')}</h2>
-              <button className="modal-close" onClick={closeRuleModal}>&times;</button>
-            </div>
-            <form onSubmit={handleRuleSubmit}>
-              <div className="form-grid">
-                <div className="form-group form-group--full">
-                  <label>{t('alerts.ruleName')}</label>
-                  <input
-                    type="text"
-                    value={ruleForm.name}
-                    onChange={(e) => updateRuleField('name', e.target.value)}
+        <ResourceModal
+          title={editingRuleId !== null ? t('alerts.editRule') : t('alerts.addRule')}
+          onClose={closeRuleModal}
+          closeLabel={t('common.close')}
+        >
+          <form onSubmit={handleRuleSubmit}>
+            <div className="form-grid">
+              <div className="form-group form-group--full">
+                <label>{t('alerts.ruleName')}</label>
+                <input
+                  type="text"
+                  value={ruleForm.name}
+                  onChange={(e) => updateRuleField('name', e.target.value)}
+                  required
+                  placeholder="e.g., DB Down Alert"
+                />
+              </div>
+              <div className="form-group">
+                <label>{t('alerts.ruleType')}</label>
+                <select value={ruleForm.type} onChange={(e) => handleRuleTypeChange(e.target.value as RuleType)}>
+                  <option value="db_health">{t('alerts.typeDbHealth')}</option>
+                  <option value="upstream_health">{t('alerts.typeUpstreamHealth')}</option>
+                  {showLegacyErrorRateOption && (
+                    <option value="error_rate">{t('alerts.typeErrorRate')}</option>
+                  )}
+                  <option value="route_error_rate">{t('alerts.typeRouteErrorRate')}</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label>{t('alerts.ruleTarget')}</label>
+                {ruleForm.type === 'error_rate' ? (
+                  <input type="text" value="*" disabled title={t('alerts.targetGlobalHint')} />
+                ) : ruleForm.type === 'db_health' ? (
+                  <select
+                    value={ruleForm.target}
+                    onChange={(e) => updateRuleField('target', e.target.value)}
                     required
-                    placeholder="e.g., DB Down Alert"
+                  >
+                    <option value="">- {t('alerts.selectTargetDb')} -</option>
+                    {ruleForm.target && !(databasesQuery.data ?? []).some((db) => db.alias === ruleForm.target) && (
+                      <option value={ruleForm.target}>{ruleForm.target} (missing)</option>
+                    )}
+                    {(databasesQuery.data ?? []).map((db) => (
+                      <option key={db.alias} value={db.alias}>{db.alias}</option>
+                    ))}
+                  </select>
+                ) : ruleForm.type === 'upstream_health' ? (
+                  <select
+                    value={ruleForm.target}
+                    onChange={(e) => updateRuleField('target', e.target.value)}
+                    required
+                  >
+                    <option value="">- {t('alerts.selectTargetUpstream')} -</option>
+                    {ruleForm.target && !(upstreamsQuery.data?.items ?? []).some((up) => up.id === ruleForm.target) && (
+                      <option value={ruleForm.target}>{ruleForm.target} (missing)</option>
+                    )}
+                    {(upstreamsQuery.data?.items ?? []).map((up) => (
+                      <option key={up.id} value={up.id}>{up.name ?? up.id}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <select
+                    value={ruleForm.target}
+                    onChange={(e) => updateRuleField('target', e.target.value)}
+                    required
+                  >
+                    <option value="">- {t('alerts.selectTargetRoute')} -</option>
+                    {ruleForm.target && !(gatewayRoutesQuery.data?.items ?? []).some((rt) => rt.id === ruleForm.target) && (
+                      <option value={ruleForm.target}>{ruleForm.target} (missing)</option>
+                    )}
+                    {(gatewayRoutesQuery.data?.items ?? []).map((rt) => (
+                      <option key={rt.id} value={rt.id}>{rt.name ? `${rt.name} (${rt.id})` : rt.id}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              {(ruleForm.type === 'error_rate' || ruleForm.type === 'route_error_rate') && (
+                <div className="form-group">
+                  <label>{t('alerts.threshold')}</label>
+                  <input
+                    type="number"
+                    value={ruleForm.threshold}
+                    onChange={(e) => updateRuleField('threshold', Number(e.target.value))}
+                    min={0}
+                    max={100}
+                    step={0.1}
                   />
                 </div>
-                <div className="form-group">
-                  <label>{t('alerts.ruleType')}</label>
-                  <select value={ruleForm.type} onChange={(e) => handleRuleTypeChange(e.target.value as RuleType)}>
-                    <option value="db_health">{t('alerts.typeDbHealth')}</option>
-                    <option value="upstream_health">{t('alerts.typeUpstreamHealth')}</option>
-                    {showLegacyErrorRateOption && (
-                      <option value="error_rate">{t('alerts.typeErrorRate')}</option>
-                    )}
-                    <option value="route_error_rate">{t('alerts.typeRouteErrorRate')}</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>{t('alerts.ruleTarget')}</label>
-                  {ruleForm.type === 'error_rate' ? (
-                    <input type="text" value="*" disabled title={t('alerts.targetGlobalHint')} />
-                  ) : ruleForm.type === 'db_health' ? (
-                    <select
-                      value={ruleForm.target}
-                      onChange={(e) => updateRuleField('target', e.target.value)}
-                      required
-                    >
-                      <option value="">- {t('alerts.selectTargetDb')} -</option>
-                      {ruleForm.target && !(databasesQuery.data ?? []).some((db) => db.alias === ruleForm.target) && (
-                        <option value={ruleForm.target}>{ruleForm.target} (missing)</option>
-                      )}
-                      {(databasesQuery.data ?? []).map((db) => (
-                        <option key={db.alias} value={db.alias}>{db.alias}</option>
-                      ))}
-                    </select>
-                  ) : ruleForm.type === 'upstream_health' ? (
-                    <select
-                      value={ruleForm.target}
-                      onChange={(e) => updateRuleField('target', e.target.value)}
-                      required
-                    >
-                      <option value="">- {t('alerts.selectTargetUpstream')} -</option>
-                      {ruleForm.target && !(upstreamsQuery.data?.items ?? []).some((up) => up.id === ruleForm.target) && (
-                        <option value={ruleForm.target}>{ruleForm.target} (missing)</option>
-                      )}
-                      {(upstreamsQuery.data?.items ?? []).map((up) => (
-                        <option key={up.id} value={up.id}>{up.name ?? up.id}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <select
-                      value={ruleForm.target}
-                      onChange={(e) => updateRuleField('target', e.target.value)}
-                      required
-                    >
-                      <option value="">- {t('alerts.selectTargetRoute')} -</option>
-                      {ruleForm.target && !(gatewayRoutesQuery.data?.items ?? []).some((rt) => rt.id === ruleForm.target) && (
-                        <option value={ruleForm.target}>{ruleForm.target} (missing)</option>
-                      )}
-                      {(gatewayRoutesQuery.data?.items ?? []).map((rt) => (
-                        <option key={rt.id} value={rt.id}>{rt.name ? `${rt.name} (${rt.id})` : rt.id}</option>
-                      ))}
-                    </select>
-                  )}
-                </div>
-                {(ruleForm.type === 'error_rate' || ruleForm.type === 'route_error_rate') && (
-                  <div className="form-group">
-                    <label>{t('alerts.threshold')}</label>
-                    <input
-                      type="number"
-                      value={ruleForm.threshold}
-                      onChange={(e) => updateRuleField('threshold', Number(e.target.value))}
-                      min={0}
-                      max={100}
-                      step={0.1}
-                    />
-                  </div>
-                )}
+              )}
+              <div className="form-group form-group--full">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={ruleForm.enabled}
+                    onChange={(e) => updateRuleField('enabled', e.target.checked)}
+                  />
+                  {t('alerts.enabled')}
+                </label>
+              </div>
+              {editingRule && editingRule.channels.length > 0 && (
                 <div className="form-group form-group--full">
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={ruleForm.enabled}
-                      onChange={(e) => updateRuleField('enabled', e.target.checked)}
-                    />
-                    {t('alerts.enabled')}
-                  </label>
-                </div>
-                {editingRule && editingRule.channels.length > 0 && (
-                  <div className="form-group form-group--full">
-                    <label>{t('alerts.legacyRecipients')}</label>
-                    <p className="form-hint">{t('alerts.legacyRecipientsHint')}</p>
-                    <div className="channel-summary">
-                      {editingRule.channels.map((c) => (
-                        <span key={c.channel_id} className="channel-chip">{legacyRecipientsLabel(c)}</span>
-                      ))}
-                    </div>
+                  <label>{t('alerts.legacyRecipients')}</label>
+                  <p className="form-hint">{t('alerts.legacyRecipientsHint')}</p>
+                  <div className="channel-summary">
+                    {editingRule.channels.map((c) => (
+                      <span key={c.channel_id} className="channel-chip">{legacyRecipientsLabel(c)}</span>
+                    ))}
                   </div>
-                )}
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeRuleModal}>
-                  {t('alerts.cancel')}
-                </button>
-                <button type="submit" className="btn btn-primary" disabled={isSavingRule}>
-                  {isSavingRule ? t('common.saving') : t('alerts.save')}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+                </div>
+              )}
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-secondary" onClick={closeRuleModal}>
+                {t('alerts.cancel')}
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={isSavingRule}>
+                {isSavingRule ? t('common.saving') : t('alerts.save')}
+              </button>
+            </div>
+          </form>
+        </ResourceModal>
       )}
     </div>
   );

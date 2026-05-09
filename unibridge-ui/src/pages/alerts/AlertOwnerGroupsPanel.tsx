@@ -10,6 +10,7 @@ import {
   type AlertOwnerGroupCreate,
 } from '../../api/client';
 import { useToast } from '../../components/useToast';
+import ResourceModal from '../../components/ResourceModal';
 
 const emptyForm = () => ({
   name: '',
@@ -152,58 +153,56 @@ export default function AlertOwnerGroupsPanel() {
       )}
 
       {showModal && (
-        <div className="modal-overlay" onClick={closeModal}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{editingGroupId !== null ? t('alerts.editOwnerGroup') : t('alerts.addOwnerGroup')}</h2>
-              <button className="modal-close" onClick={closeModal}>&times;</button>
-            </div>
-            <form onSubmit={handleSubmit}>
-              <div className="form-grid">
-                <div className="form-group form-group--full">
-                  <label htmlFor="owner-group-name">{t('alerts.ownerGroupName')}</label>
+        <ResourceModal
+          title={editingGroupId !== null ? t('alerts.editOwnerGroup') : t('alerts.addOwnerGroup')}
+          onClose={closeModal}
+          closeLabel={t('common.close')}
+        >
+          <form onSubmit={handleSubmit}>
+            <div className="form-grid">
+              <div className="form-group form-group--full">
+                <label htmlFor="owner-group-name">{t('alerts.ownerGroupName')}</label>
+                <input
+                  id="owner-group-name"
+                  type="text"
+                  value={form.name}
+                  onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+                  required
+                />
+              </div>
+              <div className="form-group form-group--full">
+                <label htmlFor="owner-group-emails">{t('alerts.emails')}</label>
+                <textarea
+                  id="owner-group-emails"
+                  className="form-textarea"
+                  rows={4}
+                  value={form.emails}
+                  onChange={(e) => setForm((prev) => ({ ...prev, emails: e.target.value }))}
+                  required
+                />
+                <p className="form-hint">{t('alerts.ownerGroupEmailHint')}</p>
+              </div>
+              <div className="form-group form-group--full">
+                <label className="checkbox-label">
                   <input
-                    id="owner-group-name"
-                    type="text"
-                    value={form.name}
-                    onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
-                    required
+                    type="checkbox"
+                    checked={form.enabled}
+                    onChange={(e) => setForm((prev) => ({ ...prev, enabled: e.target.checked }))}
                   />
-                </div>
-                <div className="form-group form-group--full">
-                  <label htmlFor="owner-group-emails">{t('alerts.emails')}</label>
-                  <textarea
-                    id="owner-group-emails"
-                    className="form-textarea"
-                    rows={4}
-                    value={form.emails}
-                    onChange={(e) => setForm((prev) => ({ ...prev, emails: e.target.value }))}
-                    required
-                  />
-                  <p className="form-hint">{t('alerts.ownerGroupEmailHint')}</p>
-                </div>
-                <div className="form-group form-group--full">
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={form.enabled}
-                      onChange={(e) => setForm((prev) => ({ ...prev, enabled: e.target.checked }))}
-                    />
-                    {t('alerts.enabled')}
-                  </label>
-                </div>
+                  {t('alerts.enabled')}
+                </label>
               </div>
-              <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeModal}>
-                  {t('alerts.cancel')}
-                </button>
-                <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                  {isSaving ? t('common.saving') : t('alerts.save')}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-secondary" onClick={closeModal}>
+                {t('alerts.cancel')}
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                {isSaving ? t('common.saving') : t('alerts.save')}
+              </button>
+            </div>
+          </form>
+        </ResourceModal>
       )}
     </div>
   );

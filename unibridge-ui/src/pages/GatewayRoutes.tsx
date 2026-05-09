@@ -11,6 +11,7 @@ import {
 } from '../api/client';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
+import ResourceModal from '../components/ResourceModal';
 import './GatewayRoutes.css';
 
 const METHOD_COLORS: Record<string, string> = {
@@ -232,20 +233,19 @@ function GatewayRoutes() {
       )}
 
       {curlModal && (
-        <div className="modal-overlay" onClick={() => setCurlModal(null)}>
-          <div className="modal modal--sm" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{t('gatewayRoutes.curlTitle')}</h2>
-              <button className="modal-close" onClick={() => setCurlModal(null)}>&times;</button>
-            </div>
-            <div className="curl-block">
-              <pre className="curl-code">{curlModal.curl}</pre>
-              <button className="btn btn-sm btn-secondary curl-copy-btn" onClick={handleCopy}>
-                {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
-              </button>
-            </div>
+        <ResourceModal
+          title={t('gatewayRoutes.curlTitle')}
+          onClose={() => setCurlModal(null)}
+          closeLabel={t('common.close')}
+          className="modal--sm"
+        >
+          <div className="curl-block">
+            <pre className="curl-code">{curlModal.curl}</pre>
+            <button className="btn btn-sm btn-secondary curl-copy-btn" onClick={handleCopy}>
+              {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
+            </button>
           </div>
-        </div>
+        </ResourceModal>
       )}
     </div>
   );

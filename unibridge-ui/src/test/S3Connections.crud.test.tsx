@@ -71,6 +71,7 @@ describe('S3Connections CRUD', () => {
     await waitFor(() =>
       expect(screen.getByPlaceholderText(/my-s3/i)).toBeInTheDocument(),
     );
+    expect(screen.getByRole('dialog', { name: /Add S3 Connection/i })).toHaveAttribute('aria-modal', 'true');
 
     const aliasInput = screen.getByPlaceholderText(/my-s3/);
     await userEvent.type(aliasInput, 'new-bucket');
@@ -146,6 +147,7 @@ describe('S3Connections CRUD', () => {
     await waitFor(() => expect(screen.getByText('curl-me')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /^cURL$/ }));
     await waitFor(() => expect(screen.getByText(/cURL — curl-me/)).toBeInTheDocument());
+    expect(screen.getByRole('dialog', { name: /cURL — curl-me/ })).toHaveAttribute('aria-modal', 'true');
     expect(screen.getByText(/objects\/download\?bucket=mybkt/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Copy|복사|복사됨|Copied/i }));

@@ -13,6 +13,7 @@ import {
   type S3ObjectMetadata,
 } from '../api/client';
 import { useToast } from '../components/useToast';
+import ResourceModal from '../components/ResourceModal';
 import { formatKST } from '../utils/time';
 import './S3Browser.css';
 
@@ -318,31 +319,30 @@ function S3Browser() {
 
       {/* Metadata modal */}
       {metadataModal && (
-        <div className="modal-overlay" onClick={() => setMetadataModal(null)}>
-          <div className="modal modal--sm" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{t('s3.metadata')}</h2>
-              <button className="modal-close" onClick={() => setMetadataModal(null)}>&times;</button>
-            </div>
-            <div className="s3-metadata-body">
-              <table className="s3-metadata-table">
-                <tbody>
-                  <tr><td>Key</td><td className="mono">{metadataModal.key}</td></tr>
-                  <tr><td>Size</td><td>{formatBytes(metadataModal.size)}</td></tr>
-                  <tr><td>Content-Type</td><td>{metadataModal.content_type}</td></tr>
-                  <tr><td>Last Modified</td><td>{formatKST(metadataModal.last_modified)}</td></tr>
-                  <tr><td>ETag</td><td className="mono">{metadataModal.etag}</td></tr>
-                  {metadataModal.storage_class && (
-                    <tr><td>Storage Class</td><td>{metadataModal.storage_class}</td></tr>
-                  )}
-                  {Object.entries(metadataModal.metadata).map(([k, v]) => (
-                    <tr key={k}><td>x-amz-meta-{k}</td><td>{v}</td></tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+        <ResourceModal
+          title={t('s3.metadata')}
+          onClose={() => setMetadataModal(null)}
+          closeLabel={t('common.close')}
+          className="modal--sm"
+        >
+          <div className="s3-metadata-body">
+            <table className="s3-metadata-table">
+              <tbody>
+                <tr><td>Key</td><td className="mono">{metadataModal.key}</td></tr>
+                <tr><td>Size</td><td>{formatBytes(metadataModal.size)}</td></tr>
+                <tr><td>Content-Type</td><td>{metadataModal.content_type}</td></tr>
+                <tr><td>Last Modified</td><td>{formatKST(metadataModal.last_modified)}</td></tr>
+                <tr><td>ETag</td><td className="mono">{metadataModal.etag}</td></tr>
+                {metadataModal.storage_class && (
+                  <tr><td>Storage Class</td><td>{metadataModal.storage_class}</td></tr>
+                )}
+                {Object.entries(metadataModal.metadata).map(([k, v]) => (
+                  <tr key={k}><td>x-amz-meta-{k}</td><td>{v}</td></tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        </div>
+        </ResourceModal>
       )}
     </div>
   );

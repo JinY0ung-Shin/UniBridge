@@ -9,6 +9,7 @@ import {
   getAllPermissions,
   type RoleInfo,
 } from '../api/client';
+import ResourceModal from '../components/ResourceModal';
 import { useCanWrite } from '../components/useCanWrite';
 import './Roles.css';
 
@@ -190,14 +191,14 @@ function Roles() {
                   <td className="perm-count">{t('roles.permissionCount', { count: role.permissions.length })}</td>
                   <td>{role.is_system ? <span className="system-badge">{t('roles.system')}</span> : '—'}</td>
                   <td>
-	                    {canWrite && (
-	                      <div className="action-buttons">
-	                        <button className="btn btn-sm btn-secondary" onClick={() => openEdit(role)}>{t('common.edit')}</button>
-	                        {!role.is_system && (
-	                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(role)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
-	                        )}
-	                      </div>
-	                    )}
+                    {canWrite && (
+                      <div className="action-buttons">
+                        <button className="btn btn-sm btn-secondary" onClick={() => openEdit(role)}>{t('common.edit')}</button>
+                        {!role.is_system && (
+                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(role)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
+                        )}
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -207,65 +208,64 @@ function Roles() {
       )}
 
       {canWrite && showModal && (
-        <div className="modal-overlay" onClick={closeModal}>
-          <div className="modal" style={{ width: 600 }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{editingRole ? t('roles.editTitle', { name: editingRole.name }) : t('roles.addTitle')}</h2>
-              <button className="modal-close" onClick={closeModal}>&times;</button>
+        <ResourceModal
+          title={editingRole ? t('roles.editTitle', { name: editingRole.name }) : t('roles.addTitle')}
+          onClose={closeModal}
+          closeLabel={t('common.close')}
+          style={{ width: 600 }}
+        >
+          <form onSubmit={handleSubmit}>
+            <div className="form-grid">
+              <div className="form-group form-group--full">
+                <label>{t('common.name')}</label>
+                <input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="role-name"
+                  required
+                  disabled={!!editingRole}
+                />
+              </div>
+              <div className="form-group form-group--full">
+                <label>{t('roles.description')}</label>
+                <input
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Role description"
+                />
+              </div>
             </div>
-            <form onSubmit={handleSubmit}>
-              <div className="form-grid">
-                <div className="form-group form-group--full">
-                  <label>{t('common.name')}</label>
-                  <input
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="role-name"
-                    required
-                    disabled={!!editingRole}
-                  />
-                </div>
-                <div className="form-group form-group--full">
-                  <label>{t('roles.description')}</label>
-                  <input
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    placeholder="Role description"
-                  />
-                </div>
-              </div>
 
-              <div className="perm-grid">
-                {Object.entries(permGroups).map(([category, perms]) => (
-                  <div key={category} className="perm-category">
-                    <div className="perm-category-title">{category}</div>
-                    <div className="perm-checks">
-                      {perms.map((perm) => (
-                        <label key={perm} className="perm-check">
-                          <input
-                            type="checkbox"
-                            checked={selectedPerms.has(perm)}
-                            onChange={() => togglePerm(perm)}
-                          />
-                          <span className="perm-name">{perm.split('.').slice(1).join('.')}</span>
-                        </label>
-                      ))}
-                    </div>
+            <div className="perm-grid">
+              {Object.entries(permGroups).map(([category, perms]) => (
+                <div key={category} className="perm-category">
+                  <div className="perm-category-title">{category}</div>
+                  <div className="perm-checks">
+                    {perms.map((perm) => (
+                      <label key={perm} className="perm-check">
+                        <input
+                          type="checkbox"
+                          checked={selectedPerms.has(perm)}
+                          onChange={() => togglePerm(perm)}
+                        />
+                        <span className="perm-name">{perm.split('.').slice(1).join('.')}</span>
+                      </label>
+                    ))}
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
+            </div>
 
-              {error && <div className="form-error">{error}</div>}
+            {error && <div className="form-error">{error}</div>}
 
-              <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
-                <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                  {isSaving ? t('common.saving') : editingRole ? t('common.update') : t('common.create')}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
+              <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                {isSaving ? t('common.saving') : editingRole ? t('common.update') : t('common.create')}
+              </button>
+            </div>
+          </form>
+        </ResourceModal>
       )}
     </div>
   );

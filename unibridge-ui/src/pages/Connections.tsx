@@ -10,6 +10,7 @@ import {
   getDbTables,
   type DatabaseConfig,
 } from '../api/client';
+import ResourceModal from '../components/ResourceModal';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
 import './Connections.css';
@@ -279,205 +280,202 @@ function Connections() {
 
       {/* Modal */}
       {canWrite && showModal && (
-        <div className="modal-overlay" onClick={closeModal}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{editingAlias ? t('connections.editAlias', { alias: editingAlias }) : t('connections.addTitle')}</h2>
-              <button className="modal-close" onClick={closeModal}>&times;</button>
-            </div>
-            <form onSubmit={handleSubmit}>
-              <div className="form-grid">
+        <ResourceModal
+          title={editingAlias ? t('connections.editAlias', { alias: editingAlias }) : t('connections.addTitle')}
+          onClose={closeModal}
+          closeLabel={t('common.close')}
+        >
+          <form onSubmit={handleSubmit}>
+            <div className="form-grid">
+              <div className="form-group">
+                <label>{t('connections.alias')}</label>
+                <input
+                  type="text"
+                  value={form.alias}
+                  onChange={(e) => updateField('alias', e.target.value)}
+                  required
+                  disabled={!!editingAlias}
+                  placeholder="e.g., main-db"
+                />
+              </div>
+              <div className="form-group">
+                <label>{t('common.type')}</label>
+                <select
+                  value={form.db_type}
+                  onChange={(e) => {
+                    const newType = e.target.value as DatabaseConfig['db_type'];
+                    let nextProtocol: DatabaseConfig['protocol'] = null;
+                    let nextSecure: DatabaseConfig['secure'] = null;
+                    if (newType === 'clickhouse') {
+                      nextProtocol = 'http';
+                      nextSecure = false;
+                    } else if (newType === 'neo4j') {
+                      nextProtocol = 'bolt';
+                    }
+                    setForm((prev) => ({
+                      ...prev,
+                      db_type: newType,
+                      port: DEFAULT_PORTS[newType] ?? prev.port,
+                      protocol: nextProtocol,
+                      secure: nextSecure,
+                    }));
+                  }}
+                >
+                  <option value="postgres">PostgreSQL</option>
+                  <option value="mssql">MS SQL</option>
+                  <option value="clickhouse">ClickHouse</option>
+                  <option value="neo4j">Neo4j</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label>{t('connections.host')}</label>
+                <input
+                  type="text"
+                  value={form.host}
+                  onChange={(e) => updateField('host', e.target.value)}
+                  required
+                  placeholder="localhost"
+                />
+              </div>
+              <div className="form-group">
+                <label>{t('connections.port')}</label>
+                <input
+                  type="number"
+                  value={form.port}
+                  onChange={(e) => updateField('port', Number(e.target.value))}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>{t('connections.database')}</label>
+                <input
+                  type="text"
+                  value={form.database}
+                  onChange={(e) => updateField('database', e.target.value)}
+                  required
+                  placeholder="mydb"
+                />
+              </div>
+              <div className="form-group">
+                <label>{t('connections.username')}</label>
+                <input
+                  type="text"
+                  value={form.username}
+                  onChange={(e) => updateField('username', e.target.value)}
+                  required
+                  placeholder="dbuser"
+                />
+              </div>
+              <div className="form-group form-group--full">
+                <label>{t('connections.password')} {editingAlias && <span className="hint">{t('connections.passwordHint')}</span>}</label>
+                <input
+                  type="password"
+                  value={form.password ?? ''}
+                  onChange={(e) => updateField('password', e.target.value)}
+                  placeholder="********"
+                />
+              </div>
+              {form.db_type === 'clickhouse' && (
                 <div className="form-group">
-                  <label>{t('connections.alias')}</label>
-                  <input
-                    type="text"
-                    value={form.alias}
-                    onChange={(e) => updateField('alias', e.target.value)}
-                    required
-                    disabled={!!editingAlias}
-                    placeholder="e.g., main-db"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>{t('common.type')}</label>
+                  <label>{t('connections.protocol')}</label>
                   <select
-                    value={form.db_type}
+                    value={form.protocol ?? 'http'}
                     onChange={(e) => {
-                      const newType = e.target.value as DatabaseConfig['db_type'];
-                      let nextProtocol: DatabaseConfig['protocol'] = null;
-                      let nextSecure: DatabaseConfig['secure'] = null;
-                      if (newType === 'clickhouse') {
-                        nextProtocol = 'http';
-                        nextSecure = false;
-                      } else if (newType === 'neo4j') {
-                        nextProtocol = 'bolt';
-                      }
+                      const proto = e.target.value as 'http' | 'https';
+                      const isSecure = proto === 'https';
                       setForm((prev) => ({
                         ...prev,
-                        db_type: newType,
-                        port: DEFAULT_PORTS[newType] ?? prev.port,
-                        protocol: nextProtocol,
-                        secure: nextSecure,
+                        protocol: proto,
+                        secure: isSecure,
+                        port: isSecure ? 8443 : 8123,
                       }));
                     }}
                   >
-                    <option value="postgres">PostgreSQL</option>
-                    <option value="mssql">MS SQL</option>
-                    <option value="clickhouse">ClickHouse</option>
-                    <option value="neo4j">Neo4j</option>
+                    <option value="http">HTTP</option>
+                    <option value="https">HTTPS</option>
                   </select>
                 </div>
+              )}
+              {form.db_type === 'neo4j' && (
                 <div className="form-group">
-                  <label>{t('connections.host')}</label>
-                  <input
-                    type="text"
-                    value={form.host}
-                    onChange={(e) => updateField('host', e.target.value)}
-                    required
-                    placeholder="localhost"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>{t('connections.port')}</label>
-                  <input
-                    type="number"
-                    value={form.port}
-                    onChange={(e) => updateField('port', Number(e.target.value))}
-                    required
-                  />
-                </div>
-                <div className="form-group">
-                  <label>{t('connections.database')}</label>
-                  <input
-                    type="text"
-                    value={form.database}
-                    onChange={(e) => updateField('database', e.target.value)}
-                    required
-                    placeholder="mydb"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>{t('connections.username')}</label>
-                  <input
-                    type="text"
-                    value={form.username}
-                    onChange={(e) => updateField('username', e.target.value)}
-                    required
-                    placeholder="dbuser"
-                  />
-                </div>
-                <div className="form-group form-group--full">
-                  <label>{t('connections.password')} {editingAlias && <span className="hint">{t('connections.passwordHint')}</span>}</label>
-                  <input
-                    type="password"
-                    value={form.password ?? ''}
-                    onChange={(e) => updateField('password', e.target.value)}
-                    placeholder="********"
-                  />
-                </div>
-                {form.db_type === 'clickhouse' && (
-                  <div className="form-group">
-                    <label>{t('connections.protocol')}</label>
-                    <select
-                      value={form.protocol ?? 'http'}
-                      onChange={(e) => {
-                        const proto = e.target.value as 'http' | 'https';
-                        const isSecure = proto === 'https';
-                        setForm((prev) => ({
-                          ...prev,
-                          protocol: proto,
-                          secure: isSecure,
-                          port: isSecure ? 8443 : 8123,
-                        }));
-                      }}
-                    >
-                      <option value="http">HTTP</option>
-                      <option value="https">HTTPS</option>
-                    </select>
-                  </div>
-                )}
-                {form.db_type === 'neo4j' && (
-                  <div className="form-group">
-                    <label>{t('connections.protocol')}</label>
-                    <select
-                      value={form.protocol ?? 'bolt'}
-                      onChange={(e) => {
-                        const proto = e.target.value as (typeof NEO4J_PROTOCOLS)[number];
-                        setForm((prev) => ({
-                          ...prev,
-                          protocol: proto,
-                          secure: null,
-                        }));
-                      }}
-                    >
-                      {NEO4J_PROTOCOLS.map((p) => (
-                        <option key={p} value={p}>{p}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-                {form.db_type !== 'clickhouse' && form.db_type !== 'neo4j' && (
-                  <>
-                    <div className="form-group">
-                      <label>{t('connections.poolSize')}</label>
-                      <input
-                        type="number"
-                        value={form.pool_size}
-                        onChange={(e) => updateField('pool_size', Number(e.target.value))}
-                        min={1}
-                        max={100}
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label>{t('connections.maxOverflow')}</label>
-                      <input
-                        type="number"
-                        value={form.max_overflow}
-                        onChange={(e) => updateField('max_overflow', Number(e.target.value))}
-                        min={0}
-                        max={100}
-                      />
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {(createMutation.isError || updateMutation.isError) && (
-                <div className="form-error">
-                  {(createMutation.error as Error)?.message ||
-                    (updateMutation.error as Error)?.message ||
-                    t('common.errorOccurred')}
+                  <label>{t('connections.protocol')}</label>
+                  <select
+                    value={form.protocol ?? 'bolt'}
+                    onChange={(e) => {
+                      const proto = e.target.value as (typeof NEO4J_PROTOCOLS)[number];
+                      setForm((prev) => ({
+                        ...prev,
+                        protocol: proto,
+                        secure: null,
+                      }));
+                    }}
+                  >
+                    {NEO4J_PROTOCOLS.map((p) => (
+                      <option key={p} value={p}>{p}</option>
+                    ))}
+                  </select>
                 </div>
               )}
+              {form.db_type !== 'clickhouse' && form.db_type !== 'neo4j' && (
+                <>
+                  <div className="form-group">
+                    <label>{t('connections.poolSize')}</label>
+                    <input
+                      type="number"
+                      value={form.pool_size}
+                      onChange={(e) => updateField('pool_size', Number(e.target.value))}
+                      min={1}
+                      max={100}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>{t('connections.maxOverflow')}</label>
+                    <input
+                      type="number"
+                      value={form.max_overflow}
+                      onChange={(e) => updateField('max_overflow', Number(e.target.value))}
+                      min={0}
+                      max={100}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
 
-              <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeModal}>
-                  {t('common.cancel')}
-                </button>
-                <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                  {isSaving ? t('common.saving') : editingAlias ? t('common.update') : t('common.create')}
-                </button>
+            {(createMutation.isError || updateMutation.isError) && (
+              <div className="form-error">
+                {(createMutation.error as Error)?.message ||
+                  (updateMutation.error as Error)?.message ||
+                  t('common.errorOccurred')}
               </div>
-            </form>
-          </div>
-        </div>
+            )}
+
+            <div className="modal-actions">
+              <button type="button" className="btn btn-secondary" onClick={closeModal}>
+                {t('common.cancel')}
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                {isSaving ? t('common.saving') : editingAlias ? t('common.update') : t('common.create')}
+              </button>
+            </div>
+          </form>
+        </ResourceModal>
       )}
 
       {curlModal && (
-        <div className="modal-overlay" onClick={() => setCurlModal(null)}>
-          <div className="modal modal--sm" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>cURL — {curlModal.alias}</h2>
-              <button className="modal-close" onClick={() => setCurlModal(null)}>&times;</button>
-            </div>
-            <div className="curl-block">
-              <pre className="curl-code">{curlModal.curl}</pre>
-              <button className="btn btn-sm btn-secondary curl-copy-btn" onClick={handleCurlCopy}>
-                {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
-              </button>
-            </div>
+        <ResourceModal
+          title={`cURL — ${curlModal.alias}`}
+          onClose={() => setCurlModal(null)}
+          closeLabel={t('common.close')}
+          className="modal--sm"
+        >
+          <div className="curl-block">
+            <pre className="curl-code">{curlModal.curl}</pre>
+            <button className="btn btn-sm btn-secondary curl-copy-btn" onClick={handleCurlCopy}>
+              {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
+            </button>
           </div>
-        </div>
+        </ResourceModal>
       )}
     </div>
   );

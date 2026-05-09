@@ -87,7 +87,8 @@ describe('ApiKeys', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
 
-    expect(screen.getByRole('heading', { name: 'Add API Key' })).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: 'Add API Key' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
   });
 
   it('opens edit modal on edit button click', async () => {

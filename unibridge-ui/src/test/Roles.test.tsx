@@ -98,5 +98,6 @@ describe('Roles', () => {
     await userEvent.click(screen.getByRole('button', { name: '+ Add Role' }));
 
     expect(screen.getByRole('heading', { name: 'Add Role' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Add Role' })).toHaveAttribute('aria-modal', 'true');
   });
 });

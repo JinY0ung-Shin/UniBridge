@@ -234,7 +234,9 @@ describe('S3Browser page', () => {
     renderWithProviders(<S3Browser />);
     await waitFor(() => expect(screen.getByText('file.txt')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /metadata|메타/i }));
-    await waitFor(() => expect(screen.getByText('Content-Type')).toBeInTheDocument());
+    const dialog = await screen.findByRole('dialog', { name: /Metadata|메타데이터/i });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getByText('Content-Type')).toBeInTheDocument();
     expect(screen.getByText('text/plain')).toBeInTheDocument();
     expect(screen.getByText(/x-amz-meta-foo/)).toBeInTheDocument();
   });

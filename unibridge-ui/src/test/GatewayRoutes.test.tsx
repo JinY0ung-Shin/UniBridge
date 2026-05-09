@@ -9,16 +9,18 @@ vi.mock('../api/client', () => ({
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getGatewayRoutes, deleteGatewayRoute } from '../api/client';
+import { getGatewayRoutes, deleteGatewayRoute, getGatewayRouteCurl } from '../api/client';
 import GatewayRoutes from '../pages/GatewayRoutes';
 import { renderWithProviders, makeGatewayRoute } from './helpers';
 
 const mockedGetGatewayRoutes = vi.mocked(getGatewayRoutes);
 const mockedDeleteGatewayRoute = vi.mocked(deleteGatewayRoute);
+const mockedGetGatewayRouteCurl = vi.mocked(getGatewayRouteCurl);
 
 describe('GatewayRoutes', () => {
   beforeEach(() => {
     mockedGetGatewayRoutes.mockResolvedValue({ items: [], total: 0 });
+    mockedGetGatewayRouteCurl.mockResolvedValue({ curl: 'curl http://localhost/gateway/route-1' });
   });
 
   it('renders routes table', async () => {
@@ -82,6 +84,23 @@ describe('GatewayRoutes', () => {
     expect(screen.getByRole('button', { name: 'cURL' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+  });
+
+  it('opens cURL modal as an accessible dialog', async () => {
+    const route = makeGatewayRoute();
+    mockedGetGatewayRoutes.mockResolvedValue({ items: [route], total: 1 });
+
+    renderWithProviders(<GatewayRoutes />);
+
+    await waitFor(() => {
+      expect(screen.getByText('test-route')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'cURL' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'cURL Sample' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getByText('curl http://localhost/gateway/route-1')).toBeInTheDocument();
   });
 
   it('hides write actions for users with read-only route permission', async () => {

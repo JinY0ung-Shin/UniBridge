@@ -13,6 +13,7 @@ import {
 } from '../api/client';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
+import ResourceModal from '../components/ResourceModal';
 import './ApiKeys.css';
 
 function generateKey(): string {
@@ -221,14 +222,14 @@ function ApiKeys() {
                   <td className="cell-key">{k.api_key || '\u2014'}</td>
                   <td><div className="cell-tags">{renderTags(k.allowed_databases)}</div></td>
                   <td><div className="cell-tags">{renderTags(k.allowed_routes)}</div></td>
-	                  <td>
-	                    {canWrite && (
-	                      <div className="action-buttons">
-	                        <button className="btn btn-sm btn-secondary" onClick={() => openEdit(k)}>{t('common.edit')}</button>
-	                        <button className="btn btn-sm btn-danger" onClick={() => handleDelete(k)} disabled={deleteMut.isPending}>{t('common.delete')}</button>
-	                      </div>
-	                    )}
-	                  </td>
+                  <td>
+                    {canWrite && (
+                      <div className="action-buttons">
+                        <button className="btn btn-sm btn-secondary" onClick={() => openEdit(k)}>{t('common.edit')}</button>
+                        <button className="btn btn-sm btn-danger" onClick={() => handleDelete(k)} disabled={deleteMut.isPending}>{t('common.delete')}</button>
+                      </div>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -244,117 +245,116 @@ function ApiKeys() {
       )}
 
       {canWrite && showModal && (
-        <div className="modal-overlay" onClick={createdKey ? undefined : closeModal}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{editingName ? t('apiKeys.editTitle') : t('apiKeys.addTitle')}</h2>
-              <button className="modal-close" onClick={closeModal}>&times;</button>
-            </div>
-
-            {createdKey ? (
-              <>
-                <div className="key-created-banner">
-                  <p>{t('apiKeys.keyCreatedMessage')}</p>
-                  <div className="key-display">
-                    <code>{createdKey}</code>
-                    <button className="copy-btn" onClick={handleCopy}>
-                      {copied ? t('apiKeys.copied') : t('apiKeys.copy')}
-                    </button>
-                  </div>
-                </div>
-                <div className="modal-actions">
-                  <button className="btn btn-primary" onClick={closeModal}>{t('common.done')}</button>
-                </div>
-              </>
-            ) : (
-              <form onSubmit={handleSubmit}>
-                <div className="form-grid">
-                  <div className="form-group">
-                    <label>{t('apiKeys.keyName')}</label>
-                    <input
-                      value={form.name}
-                      onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
-                      placeholder="my-app"
-                      required
-                      disabled={!!editingName}
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>{t('apiKeys.description')}</label>
-                    <input
-                      value={form.description}
-                      onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))}
-                      placeholder={t('apiKeys.descriptionPlaceholder')}
-                    />
-                  </div>
-                  <div className="form-group form-group--full">
-                    <label>{t('apiKeys.apiKey')}</label>
-                    <input
-                      value={form.apiKey}
-                      onChange={(e) => setForm((p) => ({ ...p, apiKey: e.target.value }))}
-                      placeholder={editingName ? t('apiKeys.apiKeyPlaceholderEdit') : t('apiKeys.apiKeyPlaceholderNew')}
-                    />
-                    <button type="button" className="btn btn-sm btn-secondary generate-btn" onClick={() => setForm((p) => ({ ...p, apiKey: generateKey() }))}>
-                      {t('apiKeys.generateKey')}
-                    </button>
-                  </div>
-                  <div className="form-group form-group--full">
-                    <label>{t('apiKeys.allowedDatabases')}</label>
-                    <div className="checkbox-list">
-                      {databases.length === 0 && s3Connections.length === 0 && <div className="checkbox-list-empty">{t('apiKeys.noneSelected')}</div>}
-                      {databases.map((db) => (
-                        <label key={`db-${db.alias}`} className="checkbox-list-item">
-                          <input
-                            type="checkbox"
-                            checked={form.allowedDatabases.includes(db.alias)}
-                            onChange={() => toggleDb(db.alias)}
-                          />
-                          <span className="checkbox-list-label">{db.alias}</span>
-                          <span className="tag">{db.db_type}</span>
-                        </label>
-                      ))}
-                      {s3Connections.map((conn) => (
-                        <label key={`s3-${conn.alias}`} className="checkbox-list-item">
-                          <input
-                            type="checkbox"
-                            checked={form.allowedDatabases.includes(conn.alias)}
-                            onChange={() => toggleDb(conn.alias)}
-                          />
-                          <span className="checkbox-list-label">{conn.alias}</span>
-                          <span className="tag">S3</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="form-group form-group--full">
-                    <label>{t('apiKeys.allowedRoutes')}</label>
-                    <div className="checkbox-list">
-                      {routes.length === 0 && <div className="checkbox-list-empty">{t('apiKeys.noneSelected')}</div>}
-                      {routes.map((r) => (
-                        <label key={r.id} className="checkbox-list-item">
-                          <input
-                            type="checkbox"
-                            checked={form.allowedRoutes.includes(r.id)}
-                            onChange={() => toggleRoute(r.id)}
-                          />
-                          <span className="checkbox-list-label">{r.name || r.id}</span>
-                          <span className="tag">{r.uri}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="modal-actions">
-                  <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
-                  <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                    {isSaving ? t('common.saving') : editingName ? t('common.update') : t('common.create')}
+        <ResourceModal
+          title={editingName ? t('apiKeys.editTitle') : t('apiKeys.addTitle')}
+          onClose={closeModal}
+          closeLabel={t('common.close')}
+          closeOnOverlayClick={!createdKey}
+          closeOnEscape={!createdKey}
+        >
+          {createdKey ? (
+            <>
+              <div className="key-created-banner">
+                <p>{t('apiKeys.keyCreatedMessage')}</p>
+                <div className="key-display">
+                  <code>{createdKey}</code>
+                  <button className="copy-btn" onClick={handleCopy}>
+                    {copied ? t('apiKeys.copied') : t('apiKeys.copy')}
                   </button>
                 </div>
-              </form>
-            )}
-          </div>
-        </div>
+              </div>
+              <div className="modal-actions">
+                <button className="btn btn-primary" onClick={closeModal}>{t('common.done')}</button>
+              </div>
+            </>
+          ) : (
+            <form onSubmit={handleSubmit}>
+              <div className="form-grid">
+                <div className="form-group">
+                  <label>{t('apiKeys.keyName')}</label>
+                  <input
+                    value={form.name}
+                    onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+                    placeholder="my-app"
+                    required
+                    disabled={!!editingName}
+                  />
+                </div>
+                <div className="form-group">
+                  <label>{t('apiKeys.description')}</label>
+                  <input
+                    value={form.description}
+                    onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))}
+                    placeholder={t('apiKeys.descriptionPlaceholder')}
+                  />
+                </div>
+                <div className="form-group form-group--full">
+                  <label>{t('apiKeys.apiKey')}</label>
+                  <input
+                    value={form.apiKey}
+                    onChange={(e) => setForm((p) => ({ ...p, apiKey: e.target.value }))}
+                    placeholder={editingName ? t('apiKeys.apiKeyPlaceholderEdit') : t('apiKeys.apiKeyPlaceholderNew')}
+                  />
+                  <button type="button" className="btn btn-sm btn-secondary generate-btn" onClick={() => setForm((p) => ({ ...p, apiKey: generateKey() }))}>
+                    {t('apiKeys.generateKey')}
+                  </button>
+                </div>
+                <div className="form-group form-group--full">
+                  <label>{t('apiKeys.allowedDatabases')}</label>
+                  <div className="checkbox-list">
+                    {databases.length === 0 && s3Connections.length === 0 && <div className="checkbox-list-empty">{t('apiKeys.noneSelected')}</div>}
+                    {databases.map((db) => (
+                      <label key={`db-${db.alias}`} className="checkbox-list-item">
+                        <input
+                          type="checkbox"
+                          checked={form.allowedDatabases.includes(db.alias)}
+                          onChange={() => toggleDb(db.alias)}
+                        />
+                        <span className="checkbox-list-label">{db.alias}</span>
+                        <span className="tag">{db.db_type}</span>
+                      </label>
+                    ))}
+                    {s3Connections.map((conn) => (
+                      <label key={`s3-${conn.alias}`} className="checkbox-list-item">
+                        <input
+                          type="checkbox"
+                          checked={form.allowedDatabases.includes(conn.alias)}
+                          onChange={() => toggleDb(conn.alias)}
+                        />
+                        <span className="checkbox-list-label">{conn.alias}</span>
+                        <span className="tag">S3</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className="form-group form-group--full">
+                  <label>{t('apiKeys.allowedRoutes')}</label>
+                  <div className="checkbox-list">
+                    {routes.length === 0 && <div className="checkbox-list-empty">{t('apiKeys.noneSelected')}</div>}
+                    {routes.map((r) => (
+                      <label key={r.id} className="checkbox-list-item">
+                        <input
+                          type="checkbox"
+                          checked={form.allowedRoutes.includes(r.id)}
+                          onChange={() => toggleRoute(r.id)}
+                        />
+                        <span className="checkbox-list-label">{r.name || r.id}</span>
+                        <span className="tag">{r.uri}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="modal-actions">
+                <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
+                <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                  {isSaving ? t('common.saving') : editingName ? t('common.update') : t('common.create')}
+                </button>
+              </div>
+            </form>
+          )}
+        </ResourceModal>
       )}
     </div>
   );

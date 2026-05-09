@@ -13,6 +13,7 @@ import {
 } from '../api/client';
 import { useCanWrite } from '../components/useCanWrite';
 import { useAuth } from '../components/useAuth';
+import ResourceModal from '../components/ResourceModal';
 import './Users.css';
 
 function roleBadgeClass(role: string | null): string {
@@ -286,143 +287,133 @@ function Users() {
 
       {/* Create User Modal */}
       {modalMode === 'create' && (
-        <div className="modal-overlay" onClick={closeModal}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{t('users.addTitle')}</h2>
-              <button className="modal-close" onClick={closeModal}>&times;</button>
+        <ResourceModal title={t('users.addTitle')} onClose={closeModal} closeLabel={t('common.close')}>
+          <form onSubmit={handleCreateSubmit}>
+            <div className="form-grid">
+              <div className="form-group form-group--full">
+                <label>{t('connections.username')}</label>
+                <input
+                  value={newUsername}
+                  onChange={(e) => setNewUsername(e.target.value)}
+                  placeholder="username"
+                  required
+                />
+              </div>
+              <div className="form-group form-group--full">
+                <label>{t('users.emailOptional')}</label>
+                <input
+                  type="email"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  placeholder="user@example.com"
+                />
+              </div>
+              <div className="form-group form-group--full">
+                <label>{t('users.passwordMin')}</label>
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="********"
+                  minLength={8}
+                  required
+                />
+              </div>
+              <div className="form-group form-group--full">
+                <label>{t('users.role')}</label>
+                <select value={newRole} onChange={(e) => setNewRole(e.target.value)} required>
+                  {roles.map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+              </div>
             </div>
-            <form onSubmit={handleCreateSubmit}>
-              <div className="form-grid">
-                <div className="form-group form-group--full">
-                  <label>{t('connections.username')}</label>
-                  <input
-                    value={newUsername}
-                    onChange={(e) => setNewUsername(e.target.value)}
-                    placeholder="username"
-                    required
-                  />
-                </div>
-                <div className="form-group form-group--full">
-                  <label>{t('users.emailOptional')}</label>
-                  <input
-                    type="email"
-                    value={newEmail}
-                    onChange={(e) => setNewEmail(e.target.value)}
-                    placeholder="user@example.com"
-                  />
-                </div>
-                <div className="form-group form-group--full">
-                  <label>{t('users.passwordMin')}</label>
-                  <input
-                    type="password"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="********"
-                    minLength={8}
-                    required
-                  />
-                </div>
-                <div className="form-group form-group--full">
-                  <label>{t('users.role')}</label>
-                  <select value={newRole} onChange={(e) => setNewRole(e.target.value)} required>
-                    {roles.map((r) => (
-                      <option key={r} value={r}>{r}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
 
-              {error && <div className="form-error">{error}</div>}
+            {error && <div className="form-error">{error}</div>}
 
-              <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
-                <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                  {createMutation.isPending ? t('users.creating') : t('common.create')}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
+              <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                {createMutation.isPending ? t('users.creating') : t('common.create')}
+              </button>
+            </div>
+          </form>
+        </ResourceModal>
       )}
 
       {/* Change Role Modal */}
       {modalMode === 'role' && selectedUser && (
-        <div className="modal-overlay" onClick={closeModal}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{t('users.changeRoleTitle', { name: selectedUser.username })}</h2>
-              <button className="modal-close" onClick={closeModal}>&times;</button>
+        <ResourceModal
+          title={t('users.changeRoleTitle', { name: selectedUser.username })}
+          onClose={closeModal}
+          closeLabel={t('common.close')}
+        >
+          <form onSubmit={handleRoleSubmit}>
+            <div className="form-grid">
+              <div className="form-group form-group--full">
+                <label>{t('users.role')}</label>
+                <select value={changeRoleValue} onChange={(e) => setChangeRoleValue(e.target.value)} required>
+                  {roles.map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+              </div>
             </div>
-            <form onSubmit={handleRoleSubmit}>
-              <div className="form-grid">
-                <div className="form-group form-group--full">
-                  <label>{t('users.role')}</label>
-                  <select value={changeRoleValue} onChange={(e) => setChangeRoleValue(e.target.value)} required>
-                    {roles.map((r) => (
-                      <option key={r} value={r}>{r}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
 
-              {error && <div className="form-error">{error}</div>}
+            {error && <div className="form-error">{error}</div>}
 
-              <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
-                <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                  {changeRoleMutation.isPending ? t('common.saving') : t('users.updateRole')}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
+              <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                {changeRoleMutation.isPending ? t('common.saving') : t('users.updateRole')}
+              </button>
+            </div>
+          </form>
+        </ResourceModal>
       )}
 
       {/* Reset Password Modal */}
       {modalMode === 'password' && selectedUser && (
-        <div className="modal-overlay" onClick={closeModal}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{t('users.resetPasswordTitle', { name: selectedUser.username })}</h2>
-              <button className="modal-close" onClick={closeModal}>&times;</button>
-            </div>
-            <form onSubmit={handlePasswordSubmit}>
-              <div className="form-grid">
-                <div className="form-group form-group--full">
-                  <label>{t('users.newPassword')}</label>
+        <ResourceModal
+          title={t('users.resetPasswordTitle', { name: selectedUser.username })}
+          onClose={closeModal}
+          closeLabel={t('common.close')}
+        >
+          <form onSubmit={handlePasswordSubmit}>
+            <div className="form-grid">
+              <div className="form-group form-group--full">
+                <label>{t('users.newPassword')}</label>
+                <input
+                  type="password"
+                  value={resetPwValue}
+                  onChange={(e) => setResetPwValue(e.target.value)}
+                  placeholder="********"
+                  minLength={8}
+                  required
+                />
+              </div>
+              <div className="form-group form-group--full">
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input
-                    type="password"
-                    value={resetPwValue}
-                    onChange={(e) => setResetPwValue(e.target.value)}
-                    placeholder="********"
-                    minLength={8}
-                    required
+                    type="checkbox"
+                    checked={resetPwTemporary}
+                    onChange={(e) => setResetPwTemporary(e.target.checked)}
                   />
-                </div>
-                <div className="form-group form-group--full">
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <input
-                      type="checkbox"
-                      checked={resetPwTemporary}
-                      onChange={(e) => setResetPwTemporary(e.target.checked)}
-                    />
-                    {t('users.temporary')}
-                  </label>
-                </div>
+                  {t('users.temporary')}
+                </label>
               </div>
+            </div>
 
-              {error && <div className="form-error">{error}</div>}
+            {error && <div className="form-error">{error}</div>}
 
-              <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
-                <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                  {resetPasswordMutation.isPending ? t('users.resetting') : t('users.resetPassword')}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
+              <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                {resetPasswordMutation.isPending ? t('users.resetting') : t('users.resetPassword')}
+              </button>
+            </div>
+          </form>
+        </ResourceModal>
       )}
     </div>
   );

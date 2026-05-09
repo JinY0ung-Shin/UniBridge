@@ -16,6 +16,7 @@ import {
   type AlertSettings,
 } from '../../api/client';
 import { useToast } from '../../components/useToast';
+import ResourceModal from '../../components/ResourceModal';
 
 type HeaderPair = { key: string; value: string };
 
@@ -400,122 +401,120 @@ export default function AlertMailChannelPanel() {
       )}
 
       {showChannelModal && (
-        <div className="modal-overlay" onClick={closeChannelModal}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>{editingChannelId !== null ? t('alerts.editChannel') : t('alerts.addChannel')}</h2>
-              <button className="modal-close" onClick={closeChannelModal}>&times;</button>
-            </div>
-            <form onSubmit={handleChannelSubmit}>
-              <div className="form-grid">
-                <div className="form-group form-group--full">
-                  <label htmlFor="alert-channel-name">{t('alerts.channelName')}</label>
-                  <input
-                    id="alert-channel-name"
-                    type="text"
-                    value={channelForm.name}
-                    onChange={(e) => updateChannelField('name', e.target.value)}
-                    required
-                    placeholder="e.g., Slack Ops"
-                  />
-                </div>
-                <div className="form-group form-group--full">
-                  <label htmlFor="alert-channel-webhook">{t('alerts.webhookUrl')}</label>
-                  <input
-                    id="alert-channel-webhook"
-                    type="url"
-                    value={channelForm.webhook_url}
-                    onChange={(e) => updateChannelField('webhook_url', e.target.value)}
-                    required
-                    placeholder="https://hooks.slack.com/services/..."
-                  />
-                </div>
-                <div className="form-group form-group--full">
-                  <label htmlFor="alert-channel-payload-template">{t('alerts.payloadTemplate')}</label>
-                  <textarea
-                    id="alert-channel-payload-template"
-                    className="form-textarea"
-                    rows={5}
-                    value={channelForm.payload_template}
-                    onChange={(e) => updateChannelField('payload_template', e.target.value)}
-                    required
-                  />
-                  <details className="template-vars">
-                    <summary className="form-hint template-vars-toggle">
-                      {t('alerts.templateVarsToggle', { count: templateVars.length })}
-                    </summary>
-                    <p className="form-hint">{t('alerts.templateHelp')}</p>
-                    <dl className="template-vars-list">
-                      {templateVars.map(([name, desc]) => (
-                        <div key={name} className="template-var-row">
-                          <dt><code>{`{{${name}}}`}</code></dt>
-                          <dd>{desc}</dd>
-                        </div>
-                      ))}
-                    </dl>
-                  </details>
-                </div>
-                <div className="form-group form-group--full">
-                  <label htmlFor="alert-channel-recipient-item-template">{t('alerts.recipientItemTemplate')}</label>
-                  <textarea
-                    id="alert-channel-recipient-item-template"
-                    className="form-textarea"
-                    rows={3}
-                    value={channelForm.recipient_item_template ?? ''}
-                    onChange={(e) => updateChannelField('recipient_item_template', e.target.value)}
-                    placeholder='{"email":"{{email}}"}'
-                  />
-                  <p className="form-hint">{t('alerts.recipientItemTemplateHelp')}</p>
-                </div>
-                <div className="form-group form-group--full">
-                  <label>{t('alerts.headers')}</label>
-                  {channelForm.headerPairs.map((pair, idx) => (
-                    <div key={idx} className="header-row">
-                      <input
-                        type="text"
-                        className="header-key"
-                        placeholder={t('alerts.headerName')}
-                        value={pair.key}
-                        onChange={(e) => updateHeaderPair(idx, 'key', e.target.value)}
-                      />
-                      <input
-                        type="text"
-                        className="header-value"
-                        placeholder={t('alerts.headerValue')}
-                        value={pair.value}
-                        onChange={(e) => updateHeaderPair(idx, 'value', e.target.value)}
-                      />
-                      <button type="button" className="btn btn-sm btn-danger" onClick={() => removeHeaderPair(idx)}>
-                        &times;
-                      </button>
-                    </div>
-                  ))}
-                  <button type="button" className="btn btn-sm btn-outline" onClick={addHeaderPair}>
-                    + {t('alerts.addHeader')}
-                  </button>
-                </div>
-                <div className="form-group form-group--full">
-                  <label className="checkbox-label">
+        <ResourceModal
+          title={editingChannelId !== null ? t('alerts.editChannel') : t('alerts.addChannel')}
+          onClose={closeChannelModal}
+          closeLabel={t('common.close')}
+        >
+          <form onSubmit={handleChannelSubmit}>
+            <div className="form-grid">
+              <div className="form-group form-group--full">
+                <label htmlFor="alert-channel-name">{t('alerts.channelName')}</label>
+                <input
+                  id="alert-channel-name"
+                  type="text"
+                  value={channelForm.name}
+                  onChange={(e) => updateChannelField('name', e.target.value)}
+                  required
+                  placeholder="e.g., Slack Ops"
+                />
+              </div>
+              <div className="form-group form-group--full">
+                <label htmlFor="alert-channel-webhook">{t('alerts.webhookUrl')}</label>
+                <input
+                  id="alert-channel-webhook"
+                  type="url"
+                  value={channelForm.webhook_url}
+                  onChange={(e) => updateChannelField('webhook_url', e.target.value)}
+                  required
+                  placeholder="https://hooks.slack.com/services/..."
+                />
+              </div>
+              <div className="form-group form-group--full">
+                <label htmlFor="alert-channel-payload-template">{t('alerts.payloadTemplate')}</label>
+                <textarea
+                  id="alert-channel-payload-template"
+                  className="form-textarea"
+                  rows={5}
+                  value={channelForm.payload_template}
+                  onChange={(e) => updateChannelField('payload_template', e.target.value)}
+                  required
+                />
+                <details className="template-vars">
+                  <summary className="form-hint template-vars-toggle">
+                    {t('alerts.templateVarsToggle', { count: templateVars.length })}
+                  </summary>
+                  <p className="form-hint">{t('alerts.templateHelp')}</p>
+                  <dl className="template-vars-list">
+                    {templateVars.map(([name, desc]) => (
+                      <div key={name} className="template-var-row">
+                        <dt><code>{`{{${name}}}`}</code></dt>
+                        <dd>{desc}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </details>
+              </div>
+              <div className="form-group form-group--full">
+                <label htmlFor="alert-channel-recipient-item-template">{t('alerts.recipientItemTemplate')}</label>
+                <textarea
+                  id="alert-channel-recipient-item-template"
+                  className="form-textarea"
+                  rows={3}
+                  value={channelForm.recipient_item_template ?? ''}
+                  onChange={(e) => updateChannelField('recipient_item_template', e.target.value)}
+                  placeholder='{"email":"{{email}}"}'
+                />
+                <p className="form-hint">{t('alerts.recipientItemTemplateHelp')}</p>
+              </div>
+              <div className="form-group form-group--full">
+                <label>{t('alerts.headers')}</label>
+                {channelForm.headerPairs.map((pair, idx) => (
+                  <div key={idx} className="header-row">
                     <input
-                      type="checkbox"
-                      checked={channelForm.enabled}
-                      onChange={(e) => updateChannelField('enabled', e.target.checked)}
+                      type="text"
+                      className="header-key"
+                      placeholder={t('alerts.headerName')}
+                      value={pair.key}
+                      onChange={(e) => updateHeaderPair(idx, 'key', e.target.value)}
                     />
-                    {t('alerts.enabled')}
-                  </label>
-                </div>
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="btn btn-secondary" onClick={closeChannelModal}>
-                  {t('alerts.cancel')}
+                    <input
+                      type="text"
+                      className="header-value"
+                      placeholder={t('alerts.headerValue')}
+                      value={pair.value}
+                      onChange={(e) => updateHeaderPair(idx, 'value', e.target.value)}
+                    />
+                    <button type="button" className="btn btn-sm btn-danger" onClick={() => removeHeaderPair(idx)}>
+                      &times;
+                    </button>
+                  </div>
+                ))}
+                <button type="button" className="btn btn-sm btn-outline" onClick={addHeaderPair}>
+                  + {t('alerts.addHeader')}
                 </button>
-                <button type="submit" className="btn btn-primary" disabled={isSavingChannel}>
-                  {isSavingChannel ? t('common.saving') : t('alerts.save')}
-                </button>
               </div>
-            </form>
-          </div>
-        </div>
+              <div className="form-group form-group--full">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={channelForm.enabled}
+                    onChange={(e) => updateChannelField('enabled', e.target.checked)}
+                  />
+                  {t('alerts.enabled')}
+                </label>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-secondary" onClick={closeChannelModal}>
+                {t('alerts.cancel')}
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={isSavingChannel}>
+                {isSavingChannel ? t('common.saving') : t('alerts.save')}
+              </button>
+            </div>
+          </form>
+        </ResourceModal>
       )}
     </div>
   );
