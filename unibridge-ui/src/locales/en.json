@@ -173,7 +173,8 @@
     "curl": "cURL",
     "curlTitle": "cURL Sample",
     "curlCopied": "Copied",
-    "curlCopy": "Copy"
+    "curlCopy": "Copy",
+    "curlFailed": "Failed to generate cURL command"
   },
   "gatewayRouteForm": {
     "editTitle": "Edit Route",

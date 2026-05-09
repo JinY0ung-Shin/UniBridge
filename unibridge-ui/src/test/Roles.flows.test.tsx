@@ -190,15 +190,13 @@ describe('Roles page flows', () => {
     cs.mockRestore();
   });
 
-  it('delete error path alerts API detail', async () => {
+  it('delete error path shows toast with API detail', async () => {
     mocks.remove.mockRejectedValue({ response: { data: { detail: 'cannot delete' } } });
     const cs = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
     renderWithProviders(<Roles />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('custom')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /^Delete$|^삭제$/ }));
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('cannot delete'));
-    alertSpy.mockRestore();
+    await waitFor(() => expect(screen.getByText('cannot delete')).toBeInTheDocument());
     cs.mockRestore();
   });
 

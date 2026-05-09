@@ -13,6 +13,7 @@ import {
 } from '../api/client';
 import { useCanWrite } from '../components/useCanWrite';
 import { useAuth } from '../components/useAuth';
+import { useToast } from '../components/useToast';
 import ResourceModal from '../components/ResourceModal';
 import './Users.css';
 
@@ -39,6 +40,7 @@ function Users() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { username: currentUsername } = useAuth();
+  const { addToast } = useToast();
   const canWrite = useCanWrite('admin.users.write');
 
   const [search, setSearch] = useState('');
@@ -110,7 +112,7 @@ function Users() {
       queryClient.invalidateQueries({ queryKey: ['users'] });
     },
     onError: (err: unknown) => {
-      alert(extractErrorMessage(err, t('users.toggleFailed')));
+      addToast({ type: 'error', title: extractErrorMessage(err, t('users.toggleFailed')) });
     },
   });
 
@@ -120,7 +122,7 @@ function Users() {
       queryClient.invalidateQueries({ queryKey: ['users'] });
     },
     onError: (err: unknown) => {
-      alert(extractErrorMessage(err, t('users.deleteFailed')));
+      addToast({ type: 'error', title: extractErrorMessage(err, t('users.deleteFailed')) });
     },
   });
 

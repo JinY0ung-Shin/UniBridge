@@ -170,16 +170,14 @@ describe('Users page flows', () => {
     cs.mockRestore();
   });
 
-  it('delete error path calls alert', async () => {
+  it('delete error path shows toast with API detail', async () => {
     mocks.remove.mockRejectedValue({ response: { data: { detail: 'forbidden' } } });
     const cs = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
     renderWithProviders(<Users />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /^Delete$|^삭제$/ }));
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('forbidden'));
+    await waitFor(() => expect(screen.getByText('forbidden')).toBeInTheDocument());
     cs.mockRestore();
-    alertSpy.mockRestore();
   });
 
   it('shows error banner when fetch users fails', async () => {

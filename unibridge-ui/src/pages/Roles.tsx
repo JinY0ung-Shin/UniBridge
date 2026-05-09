@@ -11,6 +11,7 @@ import {
 } from '../api/client';
 import ResourceModal from '../components/ResourceModal';
 import { useCanWrite } from '../components/useCanWrite';
+import { useToast } from '../components/useToast';
 import './Roles.css';
 
 function groupPermissions(perms: string[]): Record<string, string[]> {
@@ -27,6 +28,7 @@ function groupPermissions(perms: string[]): Record<string, string[]> {
 function Roles() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const { addToast } = useToast();
   const canWrite = useCanWrite('admin.roles.write');
 
   const [showModal, setShowModal] = useState(false);
@@ -85,10 +87,11 @@ function Roles() {
       queryClient.invalidateQueries({ queryKey: ['roles'] });
     },
     onError: (err: unknown) => {
-      if (err && typeof err === 'object' && 'response' in err) {
-        const axiosErr = err as { response?: { data?: { detail?: string } } };
-        alert(axiosErr.response?.data?.detail ?? t('roles.deleteFailed'));
-      }
+      const detail =
+        err && typeof err === 'object' && 'response' in err
+          ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
+          : undefined;
+      addToast({ type: 'error', title: t('roles.deleteFailed'), message: detail });
     },
   });
 

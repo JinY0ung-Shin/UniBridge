@@ -8,6 +8,7 @@ import {
   type GatewayUpstream,
 } from '../api/client';
 import { useCanWrite } from '../components/useCanWrite';
+import { useToast } from '../components/useToast';
 import ResourceModal from '../components/ResourceModal';
 import './GatewayUpstreams.css';
 
@@ -39,6 +40,7 @@ function entriesToNodes(entries: NodeEntry[]): Record<string, number> {
 function GatewayUpstreams() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const { addToast } = useToast();
   const canWrite = useCanWrite('gateway.upstreams.write');
 
   const [showModal, setShowModal] = useState(false);
@@ -76,10 +78,11 @@ function GatewayUpstreams() {
       queryClient.invalidateQueries({ queryKey: ['gateway-upstreams'] });
     },
     onError: (err: unknown) => {
-      if (err && typeof err === 'object' && 'response' in err) {
-        const axiosErr = err as { response?: { data?: { detail?: string } } };
-        alert(axiosErr.response?.data?.detail ?? t('gatewayUpstreams.deleteFailed'));
-      }
+      const detail =
+        err && typeof err === 'object' && 'response' in err
+          ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
+          : undefined;
+      addToast({ type: 'error', title: t('gatewayUpstreams.deleteFailed'), message: detail });
     },
   });
 

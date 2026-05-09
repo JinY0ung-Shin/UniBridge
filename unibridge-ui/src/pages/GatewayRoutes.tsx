@@ -41,12 +41,11 @@ function GatewayRoutes() {
       queryClient.invalidateQueries({ queryKey: ['gateway-routes'] });
     },
     onError: (err: unknown) => {
-      if (err && typeof err === 'object' && 'response' in err) {
-        const axiosErr = err as { response?: { data?: { detail?: string } } };
-        alert(axiosErr.response?.data?.detail ?? t('gatewayRoutes.deleteFailed'));
-      } else {
-        alert(t('gatewayRoutes.deleteFailed'));
-      }
+      const detail =
+        err && typeof err === 'object' && 'response' in err
+          ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
+          : undefined;
+      addToast({ type: 'error', title: t('gatewayRoutes.deleteFailed'), message: detail });
     },
   });
 
@@ -96,7 +95,7 @@ function GatewayRoutes() {
       setCurlModal({ routeName: route.name || route.uri, curl });
       setCurlCopied(false);
     } catch {
-      alert('Failed to generate cURL command');
+      addToast({ type: 'error', title: t('gatewayRoutes.curlFailed') });
     }
   }
 

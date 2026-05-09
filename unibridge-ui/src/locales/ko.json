@@ -173,7 +173,8 @@
     "curl": "cURL",
     "curlTitle": "cURL 샘플",
     "curlCopied": "복사됨",
-    "curlCopy": "복사"
+    "curlCopy": "복사",
+    "curlFailed": "cURL 명령 생성에 실패했습니다"
   },
   "gatewayRouteForm": {
     "editTitle": "라우트 편집",
