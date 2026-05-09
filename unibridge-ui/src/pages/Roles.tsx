@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   getRoles,
@@ -10,9 +10,12 @@ import {
   type RoleInfo,
 } from '../api/client';
 import ResourceModal from '../components/ResourceModal';
+import DataTablePageHeader from '../components/DataTablePageHeader';
 import { useCanWrite } from '../components/useCanWrite';
-import { useToast } from '../components/useToast';
+import { useResourceMutation } from '../components/useResourceMutation';
 import './Roles.css';
+
+const ROLES_KEY = ['roles'];
 
 function groupPermissions(perms: string[]): Record<string, string[]> {
   const groups: Record<string, string[]> = {};
@@ -27,8 +30,6 @@ function groupPermissions(perms: string[]): Record<string, string[]> {
 
 function Roles() {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
-  const { addToast } = useToast();
   const canWrite = useCanWrite('admin.roles.write');
 
   const [showModal, setShowModal] = useState(false);
@@ -38,61 +39,28 @@ function Roles() {
   const [selectedPerms, setSelectedPerms] = useState<Set<string>>(new Set());
   const [error, setError] = useState('');
 
-  const rolesQuery = useQuery({
-    queryKey: ['roles'],
-    queryFn: getRoles,
-  });
+  const rolesQuery = useQuery({ queryKey: ROLES_KEY, queryFn: getRoles });
+  const permsQuery = useQuery({ queryKey: ['all-permissions'], queryFn: getAllPermissions });
 
-  const permsQuery = useQuery({
-    queryKey: ['all-permissions'],
-    queryFn: getAllPermissions,
-  });
-
-  const createMutation = useMutation({
+  const createMutation = useResourceMutation({
     mutationFn: (data: { name: string; description: string; permissions: string[] }) => createRole(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['roles'] });
-      closeModal();
-    },
-    onError: (err: unknown) => {
-      if (err && typeof err === 'object' && 'response' in err) {
-        const axiosErr = err as { response?: { data?: { detail?: string } } };
-        setError(axiosErr.response?.data?.detail ?? t('roles.createFailed'));
-      } else {
-        setError(t('roles.createFailed'));
-      }
-    },
+    invalidateKey: ROLES_KEY,
+    onSuccess: () => closeModal(),
+    errorMode: { kind: 'setError', setError, fallback: t('roles.createFailed') },
   });
 
-  const updateMutation = useMutation({
-    mutationFn: (data: { id: number; body: { description?: string; permissions?: string[] } }) =>
-      updateRole(data.id, data.body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['roles'] });
-      closeModal();
-    },
-    onError: (err: unknown) => {
-      if (err && typeof err === 'object' && 'response' in err) {
-        const axiosErr = err as { response?: { data?: { detail?: string } } };
-        setError(axiosErr.response?.data?.detail ?? t('roles.updateFailed'));
-      } else {
-        setError(t('roles.updateFailed'));
-      }
-    },
+  const updateMutation = useResourceMutation({
+    mutationFn: ({ id, body }: { id: number; body: { description?: string; permissions?: string[] } }) =>
+      updateRole(id, body),
+    invalidateKey: ROLES_KEY,
+    onSuccess: () => closeModal(),
+    errorMode: { kind: 'setError', setError, fallback: t('roles.updateFailed') },
   });
 
-  const deleteMutation = useMutation({
+  const deleteMutation = useResourceMutation({
     mutationFn: (id: number) => deleteRole(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['roles'] });
-    },
-    onError: (err: unknown) => {
-      const detail =
-        err && typeof err === 'object' && 'response' in err
-          ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
-          : undefined;
-      addToast({ type: 'error', title: t('roles.deleteFailed'), message: detail });
-    },
+    invalidateKey: ROLES_KEY,
+    errorMode: { kind: 'toast', title: t('roles.deleteFailed') },
   });
 
   const roles = rolesQuery.data ?? [];
@@ -161,15 +129,13 @@ function Roles() {
 
   return (
     <div className="roles-page">
-      <div className="page-header">
-        <div>
-          <h1>{t('roles.title')}</h1>
-          <p className="page-subtitle">{t('roles.subtitle')}</p>
-        </div>
-        {canWrite && (
-          <button className="btn btn-primary" onClick={openCreate}>{t('roles.addRole')}</button>
-        )}
-      </div>
+      <DataTablePageHeader
+        title={t('roles.title')}
+        subtitle={t('roles.subtitle')}
+        canAdd={canWrite}
+        addLabel={t('roles.addRole')}
+        onAdd={openCreate}
+      />
 
       {rolesQuery.isLoading && <div className="loading-message">{t('roles.loadingRoles')}</div>}
       {rolesQuery.isError && <div className="error-banner">{t('roles.loadFailed')}</div>}

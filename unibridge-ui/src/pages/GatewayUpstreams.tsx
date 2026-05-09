@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   getGatewayUpstreams,
@@ -8,9 +8,12 @@ import {
   type GatewayUpstream,
 } from '../api/client';
 import { useCanWrite } from '../components/useCanWrite';
-import { useToast } from '../components/useToast';
+import { useResourceMutation } from '../components/useResourceMutation';
 import ResourceModal from '../components/ResourceModal';
+import DataTablePageHeader from '../components/DataTablePageHeader';
 import './GatewayUpstreams.css';
+
+const UPSTREAMS_KEY = ['gateway-upstreams'];
 
 interface NodeEntry {
   host: string;
@@ -39,8 +42,6 @@ function entriesToNodes(entries: NodeEntry[]): Record<string, number> {
 
 function GatewayUpstreams() {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
-  const { addToast } = useToast();
   const canWrite = useCanWrite('gateway.upstreams.write');
 
   const [showModal, setShowModal] = useState(false);
@@ -51,39 +52,22 @@ function GatewayUpstreams() {
   const [error, setError] = useState('');
 
   const upstreamsQuery = useQuery({
-    queryKey: ['gateway-upstreams'],
+    queryKey: UPSTREAMS_KEY,
     queryFn: getGatewayUpstreams,
   });
 
-  const saveMutation = useMutation({
-    mutationFn: (data: { id: string; body: Record<string, unknown> }) =>
-      saveGatewayUpstream(data.id, data.body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['gateway-upstreams'] });
-      closeModal();
-    },
-    onError: (err: unknown) => {
-      if (err && typeof err === 'object' && 'response' in err) {
-        const axiosErr = err as { response?: { data?: { detail?: string } } };
-        setError(axiosErr.response?.data?.detail ?? t('gatewayUpstreams.saveFailed'));
-      } else {
-        setError(t('gatewayUpstreams.saveFailed'));
-      }
-    },
+  const saveMutation = useResourceMutation({
+    mutationFn: ({ id, body }: { id: string; body: Record<string, unknown> }) =>
+      saveGatewayUpstream(id, body),
+    invalidateKey: UPSTREAMS_KEY,
+    onSuccess: () => closeModal(),
+    errorMode: { kind: 'setError', setError, fallback: t('gatewayUpstreams.saveFailed') },
   });
 
-  const deleteMutation = useMutation({
+  const deleteMutation = useResourceMutation({
     mutationFn: (id: string) => deleteGatewayUpstream(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['gateway-upstreams'] });
-    },
-    onError: (err: unknown) => {
-      const detail =
-        err && typeof err === 'object' && 'response' in err
-          ? (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
-          : undefined;
-      addToast({ type: 'error', title: t('gatewayUpstreams.deleteFailed'), message: detail });
-    },
+    invalidateKey: UPSTREAMS_KEY,
+    errorMode: { kind: 'toast', title: t('gatewayUpstreams.deleteFailed') },
   });
 
   const upstreams = upstreamsQuery.data?.items ?? [];
@@ -151,15 +135,13 @@ function GatewayUpstreams() {
 
   return (
     <div className="gateway-upstreams">
-      <div className="page-header">
-        <div>
-          <h1>{t('gatewayUpstreams.title')}</h1>
-          <p className="page-subtitle">{t('gatewayUpstreams.subtitle')}</p>
-        </div>
-        {canWrite && (
-          <button className="btn btn-primary" onClick={openCreate}>{t('gatewayUpstreams.addUpstream')}</button>
-        )}
-      </div>
+      <DataTablePageHeader
+        title={t('gatewayUpstreams.title')}
+        subtitle={t('gatewayUpstreams.subtitle')}
+        canAdd={canWrite}
+        addLabel={t('gatewayUpstreams.addUpstream')}
+        onAdd={openCreate}
+      />
 
       {upstreamsQuery.isLoading && <div className="loading-message">{t('gatewayUpstreams.loadingUpstreams')}</div>}
       {upstreamsQuery.isError && <div className="error-banner">{t('gatewayUpstreams.loadFailed')}</div>}
