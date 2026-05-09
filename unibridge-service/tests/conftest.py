@@ -1,6 +1,7 @@
 """Shared test fixtures for unibridge-service."""
 from __future__ import annotations
 
+import asyncio
 import os
 
 # Override settings BEFORE any app import
@@ -23,6 +24,13 @@ from app.models import Base, Role, RolePermission
 
 
 # ── Database fixtures ──────────────────────────────────────────────────────
+
+@pytest.fixture(scope="session", autouse=True)
+def dispose_app_database_engine():
+    yield
+    from app.database import engine
+    asyncio.run(engine.dispose())
+
 
 @pytest.fixture
 async def engine():

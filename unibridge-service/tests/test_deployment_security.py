@@ -18,7 +18,7 @@ COMPOSE_SERVICE_LIMITS = {
     "etcd": {"memory": "256m", "cpus": "0.50"},
     "apisix": {"memory": "512m", "cpus": "1.00"},
     "keycloak-db": {"memory": "512m", "cpus": "0.50"},
-    "keycloak": {"memory": "1g", "cpus": "1.00"},
+    "keycloak": {"memory": "2g", "cpus": "1.00"},
     "unibridge-service": {"memory": "512m", "cpus": "1.00"},
     "prometheus": {"memory": "512m", "cpus": "0.50"},
     "litellm-db": {"memory": "512m", "cpus": "0.50"},
