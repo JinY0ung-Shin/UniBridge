@@ -17,4 +17,21 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (!id.includes('node_modules')) return undefined;
+          if (id.includes('recharts')) return 'recharts';
+          if (id.includes('keycloak-js')) return 'keycloak';
+          if (id.includes('@tanstack/react-query')) return 'tanstack-query';
+          if (id.includes('i18next') || id.includes('react-i18next')) return 'i18n';
+          if (id.includes('react-router-dom') || id.match(/[\\/]react(-dom)?[\\/]/)) {
+            return 'react-vendor';
+          }
+          return undefined;
+        },
+      },
+    },
+  },
 })
