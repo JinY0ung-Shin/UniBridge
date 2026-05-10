@@ -260,7 +260,7 @@ class AlertState(Base):
     status = Column(String(20), nullable=False)
     since = Column(UtcDateTime, default=utcnow, nullable=False)
     display_target = Column(String(200), nullable=True)
-    alert_notified = Column(Boolean, default=True, nullable=False, server_default="true")
+    fail_count = Column(Integer, default=0, nullable=False, server_default="0")
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)
 
     __table_args__ = (
