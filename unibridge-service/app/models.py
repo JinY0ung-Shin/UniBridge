@@ -217,10 +217,20 @@ class AlertSettings(Base):
     fallback_owner_group_id = Column(Integer, ForeignKey("owner_groups.id", ondelete="RESTRICT"), nullable=True)
     route_error_threshold_pct = Column(Float, default=10.0, nullable=False, server_default="10.0")
     check_interval_seconds = Column(Integer, default=60, nullable=False, server_default="60")
+    trigger_after_failures = Column(
+        Integer,
+        default=2,
+        nullable=False,
+        server_default="2",
+    )
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
     __table_args__ = (
         CheckConstraint("id = 1", name="ck_alert_settings_singleton"),
+        CheckConstraint(
+            "trigger_after_failures BETWEEN 1 AND 10",
+            name="ck_alert_settings_trigger_after_failures_range",
+        ),
     )
 
 
