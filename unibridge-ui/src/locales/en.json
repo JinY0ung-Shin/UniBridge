@@ -467,6 +467,8 @@
     "fallbackOwnerGroup": "Fallback Owner Group",
     "routeErrorThreshold": "Route Error Threshold (%)",
     "checkInterval": "Check Interval (seconds)",
+    "triggerAfterFailures": "Consecutive failures to trigger",
+    "triggerAfterFailuresHelp": "An alert fires only after this many consecutive failed checks (1–10).",
     "saveSettings": "Save Settings",
     "unassigned": "Unassigned",
     "addOwnerGroup": "Add Owner Group",

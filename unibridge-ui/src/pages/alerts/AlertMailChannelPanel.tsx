@@ -26,6 +26,7 @@ const defaultSettings: AlertSettings = {
   fallback_owner_group_id: null,
   route_error_threshold_pct: 10,
   check_interval_seconds: 60,
+  trigger_after_failures: 2,
 };
 
 const emptyChannelForm = (): AlertChannelCreate & { headerPairs: HeaderPair[] } => ({
@@ -229,6 +230,7 @@ export default function AlertMailChannelPanel() {
       fallback_owner_group_id: settingsForm.fallback_owner_group_id,
       route_error_threshold_pct: settingsForm.route_error_threshold_pct,
       check_interval_seconds: settingsForm.check_interval_seconds,
+      trigger_after_failures: settingsForm.trigger_after_failures,
     });
   }
 
@@ -347,6 +349,25 @@ export default function AlertMailChannelPanel() {
                 setSettingsDraft((prev) => ({ ...prev, check_interval_seconds: Number(e.target.value) }))
               }
             />
+          </div>
+          <div className="form-group">
+            <label htmlFor="trigger-after-failures">{t('alerts.triggerAfterFailures')}</label>
+            <input
+              id="trigger-after-failures"
+              type="number"
+              min={1}
+              max={10}
+              step={1}
+              value={settingsForm.trigger_after_failures}
+              disabled={!hasSettings || !canWrite}
+              onChange={(e) =>
+                setSettingsDraft((prev) => ({
+                  ...prev,
+                  trigger_after_failures: Number(e.target.value),
+                }))
+              }
+            />
+            <p className="form-hint">{t('alerts.triggerAfterFailuresHelp')}</p>
           </div>
         </div>
         {canWrite && (

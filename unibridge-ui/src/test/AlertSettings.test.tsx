@@ -109,12 +109,14 @@ describe('AlertSettings page', () => {
       fallback_owner_group_id: null,
       route_error_threshold_pct: 10,
       check_interval_seconds: 60,
+      trigger_after_failures: 2,
     });
     mocks.updateSettings.mockResolvedValue({
       mail_channel_id: 1,
       fallback_owner_group_id: null,
       route_error_threshold_pct: 10,
       check_interval_seconds: 60,
+      trigger_after_failures: 2,
     });
     mocks.getOwnerGroups.mockResolvedValue([]);
     mocks.createOwnerGroup.mockResolvedValue({
@@ -527,6 +529,7 @@ describe('AlertSettings page (alerts.read only)', () => {
       fallback_owner_group_id: 2,
       route_error_threshold_pct: 10,
       check_interval_seconds: 60,
+      trigger_after_failures: 2,
     });
     mocks.getOwnerGroups.mockResolvedValue([
       { id: 2, name: 'orders-team', emails: ['orders@example.com'], enabled: true },
