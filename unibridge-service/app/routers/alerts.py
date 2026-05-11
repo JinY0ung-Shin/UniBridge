@@ -75,6 +75,7 @@ async def _get_or_create_alert_settings(
             id=1,
             route_error_threshold_pct=10.0,
             check_interval_seconds=60,
+            trigger_after_failures=2,
         )
         db.add(settings)
         try:
@@ -222,6 +223,8 @@ async def update_alert_settings(
         settings.route_error_threshold_pct = body.route_error_threshold_pct
     if body.check_interval_seconds is not None:
         settings.check_interval_seconds = body.check_interval_seconds
+    if body.trigger_after_failures is not None:
+        settings.trigger_after_failures = body.trigger_after_failures
     await db.commit()
     await db.refresh(settings)
     return AlertSettingsResponse.model_validate(settings)

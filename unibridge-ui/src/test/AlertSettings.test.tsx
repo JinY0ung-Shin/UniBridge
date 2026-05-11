@@ -109,12 +109,14 @@ describe('AlertSettings page', () => {
       fallback_owner_group_id: null,
       route_error_threshold_pct: 10,
       check_interval_seconds: 60,
+      trigger_after_failures: 2,
     });
     mocks.updateSettings.mockResolvedValue({
       mail_channel_id: 1,
       fallback_owner_group_id: null,
       route_error_threshold_pct: 10,
       check_interval_seconds: 60,
+      trigger_after_failures: 2,
     });
     mocks.getOwnerGroups.mockResolvedValue([]);
     mocks.createOwnerGroup.mockResolvedValue({
@@ -155,6 +157,24 @@ describe('AlertSettings page', () => {
 
     await waitFor(() => expect(mocks.updateSettings).toHaveBeenCalled());
     expect(mocks.updateSettings.mock.calls[0][0]).toMatchObject({ mail_channel_id: 1 });
+  });
+
+  it('saves updated trigger_after_failures via settings form', async () => {
+    renderWithProviders(<AlertSettings />);
+    const failuresInput = await screen.findByLabelText(
+      /연속 실패 횟수|Consecutive failures/i,
+    );
+    await waitFor(() => expect(failuresInput).toHaveValue(2));
+
+    await userEvent.clear(failuresInput);
+    await userEvent.type(failuresInput, '5');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save Settings$|^설정 저장$/i }));
+
+    await waitFor(() => expect(mocks.updateSettings).toHaveBeenCalled());
+    expect(mocks.updateSettings.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ trigger_after_failures: 5 }),
+    );
   });
 
   it('disables alert settings save before settings have loaded', async () => {
@@ -527,6 +547,7 @@ describe('AlertSettings page (alerts.read only)', () => {
       fallback_owner_group_id: 2,
       route_error_threshold_pct: 10,
       check_interval_seconds: 60,
+      trigger_after_failures: 2,
     });
     mocks.getOwnerGroups.mockResolvedValue([
       { id: 2, name: 'orders-team', emails: ['orders@example.com'], enabled: true },

@@ -467,6 +467,8 @@
     "fallbackOwnerGroup": "대체 소유자 그룹",
     "routeErrorThreshold": "라우트 에러율 임계치 (%)",
     "checkInterval": "확인 주기 (초)",
+    "triggerAfterFailures": "연속 실패 횟수",
+    "triggerAfterFailuresHelp": "이 횟수만큼 연속으로 실패해야 알람이 발송됩니다 (1~10).",
     "saveSettings": "설정 저장",
     "unassigned": "미지정",
     "addOwnerGroup": "소유자 그룹 추가",

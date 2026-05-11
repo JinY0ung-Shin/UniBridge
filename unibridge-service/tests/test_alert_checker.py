@@ -103,7 +103,8 @@ class TestAlertChecker:
     @pytest.mark.asyncio
     async def test_db_health_triggered(self):
         state = AlertStateManager()
-        state.update("db_health", "mydb", is_healthy=True)
+        # Seed fail_count=1 so the next unhealthy observation crosses N=2.
+        state.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
@@ -114,7 +115,7 @@ class TestAlertChecker:
             mock_up.return_value = []
             mock_err.return_value = []
 
-            await run_single_check(state)
+            await run_single_check(state, trigger_after_failures=2)
 
             assert state.get_status("db_health", "mydb") == "alert"
             mock_dispatch.assert_called_once()
@@ -129,8 +130,8 @@ class TestAlertChecker:
     @pytest.mark.asyncio
     async def test_db_health_resolved(self):
         state = AlertStateManager()
-        state.update("db_health", "mydb", is_healthy=False)
-        state.update("db_health", "mydb", is_healthy=False)
+        state.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
+        state.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
@@ -141,7 +142,7 @@ class TestAlertChecker:
             mock_up.return_value = []
             mock_err.return_value = []
 
-            await run_single_check(state)
+            await run_single_check(state, trigger_after_failures=2)
 
             assert state.get_status("db_health", "mydb") == "ok"
             mock_dispatch.assert_called_once()
@@ -166,14 +167,15 @@ class TestAlertChecker:
             mock_up.return_value = []
             mock_err.return_value = []
 
-            await run_single_check(state)
+            await run_single_check(state, trigger_after_failures=2)
 
             mock_dispatch.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_upstream_health_triggered(self):
         state = AlertStateManager()
-        state.update("upstream_health", "order-svc", is_healthy=True)
+        # Seed fail_count=1 so the next unhealthy observation crosses N=2.
+        state.update("upstream_health", "order-svc", is_healthy=False, trigger_after_failures=2)
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
@@ -184,7 +186,7 @@ class TestAlertChecker:
             mock_up.return_value = [("order-svc", False)]
             mock_err.return_value = []
 
-            await run_single_check(state)
+            await run_single_check(state, trigger_after_failures=2)
 
             assert state.get_status("upstream_health", "order-svc") == "alert"
             mock_dispatch.assert_called_once()
@@ -201,7 +203,8 @@ class TestAlertChecker:
         from app.services import alert_checker
 
         state = AlertStateManager()
-        state.update("upstream_health", "upstream-1", is_healthy=True)
+        # Seed fail_count=1 so the next unhealthy observation crosses N=2.
+        state.update("upstream_health", "upstream-1", is_healthy=False, trigger_after_failures=2)
         alert_checker._UPSTREAM_NAME_BY_ID = {"upstream-1": "payments-api"}
 
         try:
@@ -214,7 +217,7 @@ class TestAlertChecker:
                 mock_up.return_value = [("upstream-1", False)]
                 mock_err.return_value = []
 
-                await run_single_check(state)
+                await run_single_check(state, trigger_after_failures=2)
 
                 mock_dispatch.assert_called_once()
                 kwargs = mock_dispatch.call_args.kwargs
@@ -238,14 +241,15 @@ class TestAlertChecker:
             mock_up.return_value = []
             mock_err.return_value = []
 
-            await run_single_check(state)
+            await run_single_check(state, trigger_after_failures=2)
             mock_dispatch.assert_not_called()
-            assert state.get_status("db_health", "boot-db") == "alert"
+            assert state.get_status("db_health", "boot-db") == "ok"
 
-            await run_single_check(state)
+            await run_single_check(state, trigger_after_failures=2)
             mock_dispatch.assert_called_once()
             assert mock_dispatch.call_args.kwargs["alert_type"] == "triggered"
             assert mock_dispatch.call_args.kwargs["target"] == "boot-db"
+            assert state.get_status("db_health", "boot-db") == "alert"
 
     @pytest.mark.asyncio
     async def test_initial_unhealthy_db_recovery_does_not_send_resolved_without_trigger(self):
@@ -260,8 +264,8 @@ class TestAlertChecker:
             mock_up.return_value = []
             mock_err.return_value = []
 
-            await run_single_check(state)
-            await run_single_check(state)
+            await run_single_check(state, trigger_after_failures=2)
+            await run_single_check(state, trigger_after_failures=2)
 
         mock_dispatch.assert_not_called()
         assert state.get_status("db_health", "boot-db") == "ok"
@@ -269,11 +273,13 @@ class TestAlertChecker:
     @pytest.mark.asyncio
     async def test_route_error_rate_dispatches_owner_alert_with_rule_context(self):
         state = AlertStateManager()
+        # Seed fail_count=1 so the next unhealthy observation crosses N=2.
         state.update(
             "route_error_rate",
             "route-a:rule_42",
-            is_healthy=True,
+            is_healthy=False,
             display_target="checkout (route-a)",
+            trigger_after_failures=2,
         )
 
         fake_db = SimpleNamespace(
@@ -298,7 +304,7 @@ class TestAlertChecker:
             mock_up.return_value = []
             mock_err.return_value = []
 
-            await run_single_check(state)
+            await run_single_check(state, trigger_after_failures=2)
 
         mock_dispatch.assert_called_once()
         kwargs = mock_dispatch.call_args.kwargs
@@ -316,11 +322,13 @@ class TestAlertChecker:
     @pytest.mark.asyncio
     async def test_route_error_rate_uses_settings_threshold_when_rule_threshold_missing(self):
         state = AlertStateManager()
+        # Seed fail_count=1 so the next unhealthy observation crosses N=2.
         state.update(
             "route_error_rate",
             "route-a:rule_42",
-            is_healthy=True,
+            is_healthy=False,
             display_target="checkout (route-a)",
+            trigger_after_failures=2,
         )
         rule = SimpleNamespace(
             id=42,
@@ -346,7 +354,7 @@ class TestAlertChecker:
             mock_up.return_value = []
             mock_err.return_value = []
 
-            await run_single_check(state)
+            await run_single_check(state, trigger_after_failures=2)
 
         mock_dispatch.assert_called_once()
         kwargs = mock_dispatch.call_args.kwargs
@@ -356,7 +364,8 @@ class TestAlertChecker:
     @pytest.mark.asyncio
     async def test_global_error_rate_preserves_legacy_rule_dispatch(self):
         state = AlertStateManager()
-        state.update("error_rate", "global:rule_9", is_healthy=True, display_target="global")
+        # Seed fail_count=1 so the next unhealthy observation crosses N=2.
+        state.update("error_rate", "global:rule_9", is_healthy=False, display_target="global", trigger_after_failures=2)
         rule = SimpleNamespace(id=9, target="global", threshold=10.0, name="global 5xx")
         fake_db = SimpleNamespace(execute=AsyncMock(return_value=_FakeResult([rule])))
 
@@ -371,7 +380,7 @@ class TestAlertChecker:
             mock_up.return_value = []
             mock_err.return_value = [("global", 12.5)]
 
-            await run_single_check(state)
+            await run_single_check(state, trigger_after_failures=2)
 
         legacy_dispatch.assert_called_once()
         owner_dispatch.assert_not_called()
@@ -530,12 +539,24 @@ class TestCheckRouteErrorRate:
             "route-a:rule_42",
             is_healthy=True,
             display_target="checkout (route-a)",
+            trigger_after_failures=2,
         )
         state.update(
             "route_error_rate",
             "route-a:rule_42",
             is_healthy=False,
             display_target="checkout (route-a)",
+            trigger_after_failures=2,
+        )
+        # With N=2, one unhealthy isn't enough — push a second so the entry
+        # is actually in 'alert' status, which is the precondition for
+        # resolution dispatch on the next healthy observation.
+        state.update(
+            "route_error_rate",
+            "route-a:rule_42",
+            is_healthy=False,
+            display_target="checkout (route-a)",
+            trigger_after_failures=2,
         )
 
         fake_db = SimpleNamespace(
@@ -554,7 +575,7 @@ class TestCheckRouteErrorRate:
             mock_up.return_value = []
             mock_err.return_value = []
 
-            await run_single_check(state)
+            await run_single_check(state, trigger_after_failures=2)
 
         mock_dispatch.assert_called_once()
         kwargs = mock_dispatch.call_args.kwargs
@@ -651,3 +672,44 @@ class TestRouteLabelCache:
         finally:
             alert_checker._ROUTE_LABEL_CACHE = {}
             alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
+
+
+@pytest.mark.asyncio
+async def test_run_single_check_respects_trigger_after_failures(monkeypatch, seeded_db):
+    """With N=3, two consecutive unhealthy cycles must not dispatch; the third does."""
+    from app.services import alert_checker
+    from app.services.alert_state import AlertStateManager
+
+    async def _async_return(value):
+        return value
+
+    monkeypatch.setattr(
+        alert_checker,
+        "_check_db_health",
+        lambda: _async_return([("main-db", False)]),
+    )
+    monkeypatch.setattr(
+        alert_checker, "_check_upstream_health", lambda: _async_return([]),
+    )
+    monkeypatch.setattr(
+        alert_checker, "_check_error_rate", lambda: _async_return([]),
+    )
+    monkeypatch.setattr(
+        alert_checker, "_check_route_error_rate", lambda: _async_return([]),
+    )
+
+    dispatched: list[str] = []
+
+    async def fake_dispatch_owner_alert(**kwargs):
+        dispatched.append(kwargs["alert_type"])
+
+    monkeypatch.setattr(
+        alert_checker, "dispatch_owner_alert", fake_dispatch_owner_alert,
+    )
+
+    state = AlertStateManager()
+    await alert_checker.run_single_check(state, trigger_after_failures=3)
+    await alert_checker.run_single_check(state, trigger_after_failures=3)
+    assert dispatched == []
+    await alert_checker.run_single_check(state, trigger_after_failures=3)
+    assert dispatched == ["triggered"]

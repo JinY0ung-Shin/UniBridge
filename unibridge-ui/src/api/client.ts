@@ -702,6 +702,7 @@ export interface AlertSettings {
   fallback_owner_group_id: number | null;
   route_error_threshold_pct: number;
   check_interval_seconds: number;
+  trigger_after_failures: number;
   updated_at?: string | null;
 }
 

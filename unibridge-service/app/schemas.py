@@ -328,6 +328,7 @@ class AlertSettingsResponse(BaseModel):
     fallback_owner_group_id: int | None = None
     route_error_threshold_pct: float
     check_interval_seconds: int
+    trigger_after_failures: int
     updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
@@ -338,10 +339,15 @@ class AlertSettingsUpdate(BaseModel):
     fallback_owner_group_id: int | None = None
     route_error_threshold_pct: float | None = Field(None, ge=0, le=100)
     check_interval_seconds: int | None = Field(None, ge=30, le=3600)
+    trigger_after_failures: int | None = Field(None, ge=1, le=10)
 
     @model_validator(mode="after")
     def reject_explicit_numeric_nulls(self) -> "AlertSettingsUpdate":
-        for field_name in ("route_error_threshold_pct", "check_interval_seconds"):
+        for field_name in (
+            "route_error_threshold_pct",
+            "check_interval_seconds",
+            "trigger_after_failures",
+        ):
             if field_name in self.model_fields_set and getattr(self, field_name) is None:
                 raise ValueError(f"{field_name} cannot be null")
         return self
