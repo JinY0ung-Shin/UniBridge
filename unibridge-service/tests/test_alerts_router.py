@@ -1340,3 +1340,47 @@ async def test_alert_status_with_state(client, admin_token):
         assert rows[0]["status"] == "alert"
     finally:
         alerts_router.set_alert_state(None)
+
+
+@pytest.mark.asyncio
+async def test_update_alert_settings_trigger_after_failures(client, admin_token):
+    resp = await client.put(
+        "/admin/alerts/settings",
+        json={"trigger_after_failures": 5},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["trigger_after_failures"] == 5
+
+    resp_get = await client.get(
+        "/admin/alerts/settings",
+        headers=auth_header(admin_token),
+    )
+    assert resp_get.status_code == 200
+    assert resp_get.json()["trigger_after_failures"] == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_value", [0, -1, 11, 100])
+async def test_update_alert_settings_trigger_after_failures_out_of_range(
+    client, admin_token, invalid_value,
+):
+    resp = await client.put(
+        "/admin/alerts/settings",
+        json={"trigger_after_failures": invalid_value},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_update_alert_settings_trigger_after_failures_rejects_null(
+    client, admin_token,
+):
+    resp = await client.put(
+        "/admin/alerts/settings",
+        json={"trigger_after_failures": None},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 422
