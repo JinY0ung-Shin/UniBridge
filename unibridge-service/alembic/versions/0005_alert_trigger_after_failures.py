@@ -3,6 +3,14 @@
 Revision ID: 0005_alert_trigger_after_failures
 Revises: 0004_alert_owner_routing
 Create Date: 2026-05-11
+
+Upgrade collapses the legacy two-state distinction (alert+notified vs
+alert+unnotified) into a single counter, which is intentionally lossy:
+the pre-notification state (alert, alert_notified=FALSE) is rewritten to
+(ok, fail_count=N-1). Downgrade cannot reconstruct the original row from
+that compacted shape — (ok, fail_count>0) is also a legitimate steady
+state under the new model — so the downgrade restores alert_notified
+conservatively (TRUE for ok rows, matching the old default).
 """
 from __future__ import annotations
 
@@ -87,6 +95,11 @@ def downgrade() -> None:
             )
         )
 
+    # Best-effort restore: alert rows recover their notified flag from
+    # fail_count; ok rows always become alert_notified=TRUE because the
+    # upgrade's collapse of (alert, FALSE) → (ok, fail_count=N-1) is
+    # one-way (see module docstring). Rolling forward and back on a row
+    # that started as (alert, FALSE) yields (ok, TRUE), not the original.
     op.execute(sa.text(
         """
         UPDATE alert_state

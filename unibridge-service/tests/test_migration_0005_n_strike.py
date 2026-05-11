@@ -89,9 +89,17 @@ def test_migration_0005_fail_count_backfill_and_downgrade(alembic_sqlite_url):
             ))
         }
 
+    # 'a' (originally alert+notified) round-trips cleanly.
     assert result["a"].status == "alert"
     assert result["a"].alert_notified in (1, True)
+    # 'b' was originally (alert, alert_notified=FALSE). The upgrade
+    # intentionally collapses that into (ok, fail_count=N-1); the downgrade
+    # cannot reconstruct the original because (ok, fail_count>0) is a
+    # legitimate new-model state too. Verify the documented one-way behavior
+    # rather than a clean round-trip.
     assert result["b"].status == "ok"
+    assert result["b"].alert_notified in (1, True)
     assert result["c"].status == "ok"
+    assert result["c"].alert_notified in (1, True)
 
     engine.dispose()
