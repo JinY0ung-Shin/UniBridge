@@ -1070,7 +1070,7 @@ async def test_update_rule_retarget_clears_old_rule_scoped_alert_state(
             target=state_target,
             status="alert",
             display_target="checkout (route-a)",
-            alert_notified=True,
+            fail_count=2,
         ))
         await db.commit()
 
@@ -1138,7 +1138,7 @@ async def test_delete_rule_clears_rule_scoped_alert_state(client, admin_token, s
             target=state_target,
             status="alert",
             display_target="checkout (route-a)",
-            alert_notified=True,
+            fail_count=2,
         ))
         await db.commit()
 
@@ -1149,7 +1149,7 @@ async def test_delete_rule_clears_rule_scoped_alert_state(client, admin_token, s
         status="alert",
         since="2026-05-07T00:00:00+00:00",
         display_target="checkout (route-a)",
-        alert_notified=True,
+        fail_count=2,
     )
     alerts_router.set_alert_state(state)
 
@@ -1328,8 +1328,8 @@ async def test_alert_status_no_state(client, admin_token):
 @pytest.mark.asyncio
 async def test_alert_status_with_state(client, admin_token):
     state = AlertStateManager()
-    state.update("db_health", "db-x", is_healthy=False)
-    state.update("db_health", "db-x", is_healthy=False)  # transition to active alert
+    state.update("db_health", "db-x", is_healthy=False, trigger_after_failures=2)
+    state.update("db_health", "db-x", is_healthy=False, trigger_after_failures=2)  # transition to active alert
     alerts_router.set_alert_state(state)
     try:
         resp = await client.get("/admin/alerts/status", headers=auth_header(admin_token))
