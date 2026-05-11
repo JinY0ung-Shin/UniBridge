@@ -42,6 +42,21 @@ async def _get_check_interval_seconds() -> int:
     return min(3600, max(30, int(interval)))
 
 
+async def _get_trigger_after_failures() -> int:
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(AlertSettings.trigger_after_failures).where(AlertSettings.id == 1)
+            )
+            value = result.scalar_one_or_none()
+    except Exception as exc:
+        logger.warning("Failed to load alert trigger_after_failures: %s", exc)
+        return 2
+    if value is None:
+        return 2
+    return min(10, max(1, int(value)))
+
+
 def _normalize_route_error_threshold_pct(value: float | int | None) -> float:
     if value is None:
         return 10.0
@@ -366,6 +381,7 @@ async def _evaluate_route_error_rule(
     route_id: str,
     rate: float,
     rule: AlertRule,
+    trigger_after_failures: int,
     display_target: str | None = None,
     default_threshold: float = 10.0,
 ) -> None:
@@ -379,8 +395,11 @@ async def _evaluate_route_error_rule(
     is_healthy = rate < threshold
     state_target = _route_state_target(route_id, rule.id)
     transition = state.update(
-        "route_error_rate", state_target, is_healthy=is_healthy,
+        "route_error_rate",
+        state_target,
+        is_healthy=is_healthy,
         display_target=display,
+        trigger_after_failures=trigger_after_failures,
     )
     await _persist_state_safely(state, "route_error_rate", state_target)
     if transition:
@@ -398,12 +417,16 @@ async def _evaluate_route_error_rule(
         )
 
 
-async def run_single_check(state: AlertStateManager) -> None:
+async def run_single_check(state: AlertStateManager, *, trigger_after_failures: int) -> None:
     """Execute one round of all health checks."""
     # 1. DB health
     db_results = await _check_db_health()
     for alias, is_healthy in db_results:
-        transition = state.update("db_health", alias, is_healthy=is_healthy)
+        transition = state.update(
+            "db_health", alias,
+            is_healthy=is_healthy,
+            trigger_after_failures=trigger_after_failures,
+        )
         await _persist_state_safely(state, "db_health", alias)
         if transition:
             msg = f"Database '{alias}' connection {'restored' if transition == 'resolved' else 'failed'}."
@@ -419,8 +442,10 @@ async def run_single_check(state: AlertStateManager) -> None:
         upstream_name = _UPSTREAM_NAME_BY_ID.get(uid)
         display = f"{upstream_name} ({uid})" if upstream_name and upstream_name != uid else uid
         transition = state.update(
-            "upstream_health", uid, is_healthy=is_healthy,
+            "upstream_health", uid,
+            is_healthy=is_healthy,
             display_target=display,
+            trigger_after_failures=trigger_after_failures,
         )
         await _persist_state_safely(state, "upstream_health", uid)
         if transition:
@@ -444,15 +469,14 @@ async def run_single_check(state: AlertStateManager) -> None:
             rules = result.scalars().all()
 
         for rule in rules:
-            # Honor explicit threshold=0 (user wants aggressive alerting).
-            # Use `is not None` instead of `or` so 0.0 is not treated as falsy.
             threshold = rule.threshold if rule.threshold is not None else 10.0
             is_healthy = rate < threshold
-            # Use rule ID in state key so multiple rules with different thresholds don't collide
             state_target = f"{target_name}:rule_{rule.id}"
             transition = state.update(
-                "error_rate", state_target, is_healthy=is_healthy,
+                "error_rate", state_target,
+                is_healthy=is_healthy,
                 display_target=target_name,
+                trigger_after_failures=trigger_after_failures,
             )
             await _persist_state_safely(state, "error_rate", state_target)
             if transition:
@@ -501,6 +525,7 @@ async def run_single_check(state: AlertStateManager) -> None:
                     route_id=route_id,
                     rate=rate,
                     rule=rule,
+                    trigger_after_failures=trigger_after_failures,
                     default_threshold=route_default_threshold,
                 )
 
@@ -522,6 +547,7 @@ async def run_single_check(state: AlertStateManager) -> None:
                 route_id=route_id,
                 rate=0.0,
                 rule=rule,
+                trigger_after_failures=trigger_after_failures,
                 display_target=entry.get("display_target"),
                 default_threshold=route_default_threshold,
             )
@@ -534,8 +560,9 @@ async def start_checker(state: AlertStateManager) -> asyncio.Task:
         while True:
             cycle_start = _monotonic()
             check_interval = await _get_check_interval_seconds()
+            trigger_after_failures = await _get_trigger_after_failures()
             try:
-                await run_single_check(state)
+                await run_single_check(state, trigger_after_failures=trigger_after_failures)
             except Exception:
                 logger.exception("Alert checker cycle failed")
             elapsed = _monotonic() - cycle_start
