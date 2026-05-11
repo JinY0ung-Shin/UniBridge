@@ -22,8 +22,8 @@ def _rule_state_suffix(rule_id: int) -> str:
 class AlertStateManager:
     """In-memory alert state tracker.
 
-    Tracks (type, target) → status transitions.
-    Returns transition type on state change, None if no change.
+    Each entry: status ∈ {"ok", "alert"}, fail_count is the consecutive
+    failure tally, since is the timestamp of the most recent status flip.
     """
 
     def __init__(self) -> None:
@@ -43,7 +43,7 @@ class AlertStateManager:
             "status": entry["status"],
             "since": entry["since"],
             "display_target": entry.get("display_target", target),
-            "alert_notified": entry.get("alert_notified", True),
+            "fail_count": entry.get("fail_count", 0),
         }
 
     def set_entry(
@@ -54,71 +54,95 @@ class AlertStateManager:
         status: str,
         since: str,
         display_target: str | None = None,
-        alert_notified: bool = True,
+        fail_count: int = 0,
     ) -> None:
         self._states[(alert_type, target)] = {
             "status": status,
             "since": since,
             "display_target": display_target or target,
-            "alert_notified": alert_notified,
+            "fail_count": fail_count,
         }
 
     def update(
-        self, alert_type: str, target: str, *, is_healthy: bool, display_target: str | None = None,
+        self,
+        alert_type: str,
+        target: str,
+        *,
+        is_healthy: bool,
+        trigger_after_failures: int,
+        display_target: str | None = None,
     ) -> str | None:
         """Update state and return transition type if changed.
 
-        Args:
-            alert_type: Check type (db_health, upstream_health, error_rate).
-            target: Internal state key (may include rule ID for scoping).
-            is_healthy: Whether the check passed.
-            display_target: Human-readable target name for API display.
-                            Defaults to target if not provided.
-
-        Returns:
-            "triggered" — transitioned ok → alert
-            "resolved"  — transitioned alert → ok
-            None        — no change
+        Returns "triggered" / "resolved" / None. fail_count drives status:
+        flip to "alert" only when fail_count reaches trigger_after_failures.
         """
         key = (alert_type, target)
-        current = self._states.get(key)
-        new_status = "ok" if is_healthy else "alert"
         now = datetime.now(timezone.utc).isoformat()
+        entry = self._states.get(key)
 
-        if current is None:
+        if entry is None:
+            if is_healthy:
+                self._states[key] = {
+                    "status": "ok",
+                    "since": now,
+                    "display_target": display_target or target,
+                    "fail_count": 0,
+                }
+                logger.info("Alert state %s/%s initialized as ok", alert_type, target)
+                return None
+            fail_count = 1
+            if fail_count >= trigger_after_failures:
+                self._states[key] = {
+                    "status": "alert",
+                    "since": now,
+                    "display_target": display_target or target,
+                    "fail_count": fail_count,
+                }
+                logger.info("Alert state %s/%s initialized as alert", alert_type, target)
+                return "triggered"
             self._states[key] = {
-                "status": new_status,
+                "status": "ok",
                 "since": now,
                 "display_target": display_target or target,
-                "alert_notified": is_healthy,
+                "fail_count": fail_count,
             }
-            logger.info("Alert state %s/%s initialized as %s", alert_type, target, new_status)
+            logger.info(
+                "Alert state %s/%s initialized as ok (fail_count=%d)",
+                alert_type, target, fail_count,
+            )
             return None
 
-        current_status = current["status"]
-        if current_status == new_status:
-            if new_status == "alert" and not current.get("alert_notified", True):
-                current["alert_notified"] = True
-                logger.info("Alert state %s/%s: initial alert confirmed", alert_type, target)
-                return "triggered"
+        # Update display_target on every observation so renames propagate.
+        if display_target is not None:
+            entry["display_target"] = display_target
+
+        if is_healthy:
+            was_alert = entry["status"] == "alert"
+            entry["fail_count"] = 0
+            if was_alert:
+                entry["status"] = "ok"
+                entry["since"] = now
+                logger.info("Alert state %s/%s: alert → ok", alert_type, target)
+                return "resolved"
             return None
 
-        alert_was_notified = current.get("alert_notified", True)
-        self._states[key] = {
-            "status": new_status,
-            "since": now,
-            "display_target": display_target or target,
-            "alert_notified": True,
-        }
-        if is_healthy and not alert_was_notified:
-            transition = None
-        else:
-            transition = "resolved" if is_healthy else "triggered"
-        logger.info("Alert state %s/%s: %s → %s", alert_type, target, current_status, new_status)
-        return transition
+        # unhealthy
+        entry["fail_count"] = entry.get("fail_count", 0) + 1
+        if entry["status"] == "alert":
+            entry["fail_count"] = min(entry["fail_count"], trigger_after_failures)
+            return None
+        if entry["fail_count"] >= trigger_after_failures:
+            entry["status"] = "alert"
+            entry["since"] = now
+            logger.info(
+                "Alert state %s/%s: ok → alert (fail_count=%d, threshold=%d)",
+                alert_type, target, entry["fail_count"], trigger_after_failures,
+            )
+            return "triggered"
+        return None
 
     def get_all_alerts(self) -> list[dict]:
-        """Return all entries currently in 'alert' status."""
         return [
             {
                 "type": k[0],
@@ -131,7 +155,6 @@ class AlertStateManager:
         ]
 
     def get_all_statuses(self) -> list[dict]:
-        """Return all known entries, including both ok and alert states."""
         return [
             {
                 "type": k[0],
@@ -148,7 +171,6 @@ class AlertStateManager:
         alert_type: str | None = None,
         status: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return internal state entries for checker coordination."""
         rows: list[dict[str, Any]] = []
         for (entry_type, target), entry in self._states.items():
             if alert_type is not None and entry_type != alert_type:
@@ -161,12 +183,11 @@ class AlertStateManager:
                 "status": entry["status"],
                 "since": entry["since"],
                 "display_target": entry.get("display_target", target),
-                "alert_notified": entry.get("alert_notified", True),
+                "fail_count": entry.get("fail_count", 0),
             })
         return rows
 
     def clear_rule_states(self, rule_id: int) -> None:
-        """Remove in-memory states whose key is scoped to an alert rule."""
         suffix = _rule_state_suffix(rule_id)
         for key in list(self._states):
             alert_type, target = key
@@ -212,7 +233,7 @@ async def save_alert_state_to_db(
     row.status = entry["status"]
     row.since = _parse_since(entry["since"])
     row.display_target = entry["display_target"]
-    row.alert_notified = bool(entry["alert_notified"])
+    row.fail_count = int(entry["fail_count"])
     row.updated_at = utcnow()
     await db.commit()
 
@@ -237,7 +258,7 @@ async def load_alert_state_from_db(
             status=row.status,
             since=since.isoformat(),
             display_target=row.display_target,
-            alert_notified=row.alert_notified,
+            fail_count=row.fail_count,
         )
 
 
