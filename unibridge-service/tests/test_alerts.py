@@ -140,54 +140,91 @@ class TestAlertPermissions:
         assert "alerts.write" in ALL_PERMISSIONS
 
 class TestAlertState:
+    """N-strike behavior. Defaults to N=2 (matching production default)."""
+
     def test_initial_state_is_ok(self):
         mgr = AlertStateManager()
         assert mgr.get_status("db_health", "mydb") == "ok"
 
-    def test_initial_alert_is_silent_and_visible(self):
+    def test_n2_cold_start_first_failure_is_silent(self):
         mgr = AlertStateManager()
-        transition = mgr.update("db_health", "mydb", is_healthy=False)
+        transition = mgr.update(
+            "db_health", "mydb", is_healthy=False, trigger_after_failures=2,
+        )
         assert transition is None
+        assert mgr.get_status("db_health", "mydb") == "ok"
+
+    def test_n2_cold_start_second_failure_triggers(self):
+        mgr = AlertStateManager()
+        mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
+        transition = mgr.update(
+            "db_health", "mydb", is_healthy=False, trigger_after_failures=2,
+        )
+        assert transition == "triggered"
         assert mgr.get_status("db_health", "mydb") == "alert"
 
-    def test_initial_alert_triggers_when_still_alert_on_next_update(self):
+    def test_n1_cold_start_first_failure_triggers_immediately(self):
         mgr = AlertStateManager()
-        mgr.update("db_health", "mydb", is_healthy=False)
-        transition = mgr.update("db_health", "mydb", is_healthy=False)
+        transition = mgr.update(
+            "db_health", "mydb", is_healthy=False, trigger_after_failures=1,
+        )
         assert transition == "triggered"
+        assert mgr.get_status("db_health", "mydb") == "alert"
 
-    def test_no_transition_when_notified_alert_stays_alert(self):
+    def test_already_alert_stays_silent_on_more_failures(self):
         mgr = AlertStateManager()
-        mgr.update("db_health", "mydb", is_healthy=False)
-        mgr.update("db_health", "mydb", is_healthy=False)
-        transition = mgr.update("db_health", "mydb", is_healthy=False)
+        mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
+        mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
+        transition = mgr.update(
+            "db_health", "mydb", is_healthy=False, trigger_after_failures=2,
+        )
         assert transition is None
 
-    def test_transition_alert_to_ok(self):
+    def test_resolved_emitted_on_healthy_after_alert(self):
         mgr = AlertStateManager()
-        mgr.update("db_health", "mydb", is_healthy=False)
-        mgr.update("db_health", "mydb", is_healthy=False)
-        transition = mgr.update("db_health", "mydb", is_healthy=True)
+        mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
+        mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
+        transition = mgr.update(
+            "db_health", "mydb", is_healthy=True, trigger_after_failures=2,
+        )
         assert transition == "resolved"
         assert mgr.get_status("db_health", "mydb") == "ok"
 
-    def test_initial_alert_recovery_does_not_resolve_unnotified_alert(self):
+    def test_healthy_after_unnotified_failure_does_not_resolve(self):
         mgr = AlertStateManager()
-        mgr.update("db_health", "mydb", is_healthy=False)
-        transition = mgr.update("db_health", "mydb", is_healthy=True)
+        mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
+        transition = mgr.update(
+            "db_health", "mydb", is_healthy=True, trigger_after_failures=2,
+        )
         assert transition is None
         assert mgr.get_status("db_health", "mydb") == "ok"
 
+    def test_flap_resets_counter_no_emission(self):
+        mgr = AlertStateManager()
+        mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=3)
+        mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=3)
+        # Healthy mid-streak resets counter
+        mgr.update("db_health", "mydb", is_healthy=True, trigger_after_failures=3)
+        # Now must take 3 more failures to fire
+        mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=3)
+        mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=3)
+        transition = mgr.update(
+            "db_health", "mydb", is_healthy=False, trigger_after_failures=3,
+        )
+        assert transition == "triggered"
+
     def test_no_transition_when_still_ok(self):
         mgr = AlertStateManager()
-        transition = mgr.update("db_health", "mydb", is_healthy=True)
+        transition = mgr.update(
+            "db_health", "mydb", is_healthy=True, trigger_after_failures=2,
+        )
         assert transition is None
 
     def test_get_all_alerts(self):
         mgr = AlertStateManager()
-        mgr.update("db_health", "db1", is_healthy=False)
-        mgr.update("upstream_health", "svc1", is_healthy=False)
-        mgr.update("db_health", "db2", is_healthy=True)
+        mgr.update("db_health", "db1", is_healthy=False, trigger_after_failures=1)
+        mgr.update("upstream_health", "svc1", is_healthy=False, trigger_after_failures=1)
+        mgr.update("db_health", "db2", is_healthy=True, trigger_after_failures=1)
         alerts = mgr.get_all_alerts()
         assert len(alerts) == 2
         targets = {a["target"] for a in alerts}
@@ -195,20 +232,29 @@ class TestAlertState:
 
     def test_get_all_statuses_includes_known_ok_and_alert_states(self):
         mgr = AlertStateManager()
-        mgr.update("db_health", "db1", is_healthy=False)
-        mgr.update("db_health", "db2", is_healthy=True)
-
+        mgr.update("db_health", "db1", is_healthy=False, trigger_after_failures=1)
+        mgr.update("db_health", "db2", is_healthy=True, trigger_after_failures=1)
         statuses = mgr.get_all_statuses()
-
         status_by_target = {entry["target"]: entry["status"] for entry in statuses}
         assert status_by_target == {"db1": "alert", "db2": "ok"}
 
     def test_reset_clears_all(self):
         mgr = AlertStateManager()
-        mgr.update("db_health", "mydb", is_healthy=False)
+        mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=1)
         mgr.reset()
         assert mgr.get_status("db_health", "mydb") == "ok"
         assert mgr.get_all_alerts() == []
+
+    def test_n_lowered_mid_flight_fires_on_next_failure(self):
+        mgr = AlertStateManager()
+        # Build up to fail_count=2 under N=5
+        mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=5)
+        mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=5)
+        # N tightened to 3; next failure should fire (counter becomes 3)
+        transition = mgr.update(
+            "db_health", "mydb", is_healthy=False, trigger_after_failures=3,
+        )
+        assert transition == "triggered"
 
     @pytest.mark.asyncio
     async def test_persist_and_restore_alert_state(self, seeded_db):
@@ -219,8 +265,8 @@ class TestAlertState:
 
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         mgr = AlertStateManager()
-        mgr.update("db_health", "main-db", is_healthy=False)
-        mgr.update("db_health", "main-db", is_healthy=False)
+        mgr.update("db_health", "main-db", is_healthy=False, trigger_after_failures=2)
+        mgr.update("db_health", "main-db", is_healthy=False, trigger_after_failures=2)
 
         async with session_factory() as db:
             await save_alert_state_to_db(db, mgr, "db_health", "main-db")
@@ -233,3 +279,7 @@ class TestAlertState:
         statuses = restored.get_all_statuses()
         assert statuses[0]["target"] == "main-db"
         assert statuses[0]["status"] == "alert"
+        # fail_count must round-trip
+        entry = restored.get_entry("db_health", "main-db")
+        assert entry is not None
+        assert entry["fail_count"] == 2
