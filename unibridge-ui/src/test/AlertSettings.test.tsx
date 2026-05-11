@@ -159,6 +159,24 @@ describe('AlertSettings page', () => {
     expect(mocks.updateSettings.mock.calls[0][0]).toMatchObject({ mail_channel_id: 1 });
   });
 
+  it('saves updated trigger_after_failures via settings form', async () => {
+    renderWithProviders(<AlertSettings />);
+    const failuresInput = await screen.findByLabelText(
+      /연속 실패 횟수|Consecutive failures/i,
+    );
+    await waitFor(() => expect(failuresInput).toHaveValue(2));
+
+    await userEvent.clear(failuresInput);
+    await userEvent.type(failuresInput, '5');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save Settings$|^설정 저장$/i }));
+
+    await waitFor(() => expect(mocks.updateSettings).toHaveBeenCalled());
+    expect(mocks.updateSettings.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ trigger_after_failures: 5 }),
+    );
+  });
+
   it('disables alert settings save before settings have loaded', async () => {
     mocks.getSettings.mockReturnValue(new Promise(() => undefined));
     renderWithProviders(<AlertSettings />);
