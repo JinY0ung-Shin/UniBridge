@@ -21,6 +21,7 @@ from app.schemas import (
     SystemConfigResponse,
     SystemConfigUpdate,
 )
+from app.services.alert_state import delete_alert_state
 from app.services.connection_manager import connection_manager, encrypt_password
 from app.services.settings_manager import settings_manager
 
@@ -278,9 +279,14 @@ async def delete_connection(
     # Remove engine
     await connection_manager.remove_connection(alias)
 
-    # Delete from meta-DB
+    # Delete from meta-DB and clear any lingering alert state
+    await delete_alert_state(db, "db_health", alias)
     await db.delete(conn)
     await db.commit()
+
+    from app.routers import alerts as alerts_router
+    if alerts_router._alert_state is not None:
+        alerts_router._alert_state.discard("db_health", alias)
 
 
 @router.post("/admin/query/databases/{alias}/test")

@@ -266,13 +266,60 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
                 raise
 
-    from app.services.alert_state import AlertStateManager, load_alert_state_from_db
+    from app.services.alert_state import (
+        AlertStateManager,
+        load_alert_state_from_db,
+        purge_stale_states,
+    )
     from app.services.alert_checker import start_checker
     from app.routers.alerts import set_alert_state
+    from app.models import AlertRule
 
     alert_state = AlertStateManager()
     async for db in get_db():
         await load_alert_state_from_db(db, alert_state)
+
+        # Collect ground truth for stale-state purge. APISIX-derived
+        # sets stay None when the API call fails, so a transient APISIX
+        # outage does not wipe upstream/route alert state.
+        db_aliases_result = await db.execute(select(DBConnection.alias))
+        known_db_aliases = set(db_aliases_result.scalars().all())
+
+        rule_ids_result = await db.execute(select(AlertRule.id))
+        known_rule_ids = set(rule_ids_result.scalars().all())
+
+        known_upstream_ids: set[str] | None
+        known_route_ids: set[str] | None
+        try:
+            from app.services import apisix_client as _apisix
+            upstream_data = await _apisix.list_resources("upstreams")
+            known_upstream_ids = {
+                str(item.get("id"))
+                for item in upstream_data.get("items", [])
+                if item.get("id") is not None
+            }
+        except Exception as exc:
+            logger.warning("Stale-state purge: could not list upstreams (%s) — skipping", exc)
+            known_upstream_ids = None
+        try:
+            route_data = await _apisix.list_resources("routes")
+            known_route_ids = {
+                str(item.get("id"))
+                for item in route_data.get("items", [])
+                if item.get("id") is not None
+            }
+        except Exception as exc:
+            logger.warning("Stale-state purge: could not list routes (%s) — skipping", exc)
+            known_route_ids = None
+
+        await purge_stale_states(
+            db,
+            alert_state,
+            known_db_aliases=known_db_aliases,
+            known_upstream_ids=known_upstream_ids,
+            known_route_ids=known_route_ids,
+            known_rule_ids=known_rule_ids,
+        )
         break
     set_alert_state(alert_state)
     app.state.alert_task = await start_checker(alert_state)

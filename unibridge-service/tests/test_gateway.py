@@ -619,6 +619,28 @@ class TestDeleteUpstream:
         assert resp.status_code == 204
         assert resp.content == b""
 
+    async def test_clears_lingering_alert_state(self, client, admin_token):
+        from app.routers import alerts as alerts_router
+        from app.services.alert_state import AlertStateManager
+
+        mgr = AlertStateManager()
+        mgr.update("upstream_health", "u1", is_healthy=False, trigger_after_failures=1)
+        assert mgr.get_status("upstream_health", "u1") == "alert"
+        alerts_router.set_alert_state(mgr)
+        try:
+            with patch(
+                "app.routers.gateway.apisix_client.delete_resource",
+                new_callable=AsyncMock,
+                return_value=None,
+            ):
+                resp = await client.delete(
+                    "/admin/gateway/upstreams/u1", headers=auth_header(admin_token)
+                )
+            assert resp.status_code == 204
+            assert mgr.get_entry("upstream_health", "u1") is None
+        finally:
+            alerts_router.set_alert_state(None)
+
 
 # ---------------------------------------------------------------------------
 # Metrics endpoint tests (mock prometheus_client)

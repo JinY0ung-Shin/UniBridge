@@ -510,6 +510,38 @@ class TestDeleteConnection:
             )
         assert resp.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_delete_clears_lingering_alert_state(self, client, admin_token):
+        """Deleting a DB connection must purge its db_health alert state.
+
+        Previously the state was stranded: the periodic checker stopped
+        probing the alias once removed, but `_states` still held an
+        `alert` entry that the /alerts/status endpoint kept echoing.
+        """
+        from app.routers import alerts as alerts_router
+        from app.services.alert_state import AlertStateManager
+
+        mgr = AlertStateManager()
+        mgr.update("db_health", "testdb", is_healthy=False, trigger_after_failures=1)
+        assert mgr.get_status("db_health", "testdb") == "alert"
+        alerts_router.set_alert_state(mgr)
+        try:
+            with _cm_patch():
+                await client.post(
+                    "/admin/query/databases",
+                    json=_make_db_payload(),
+                    headers=auth_header(admin_token),
+                )
+                resp = await client.delete(
+                    "/admin/query/databases/testdb",
+                    headers=auth_header(admin_token),
+                )
+            assert resp.status_code == 204
+            assert mgr.get_status("db_health", "testdb") == "ok"
+            assert mgr.get_entry("db_health", "testdb") is None
+        finally:
+            alerts_router.set_alert_state(None)
+
 
 class TestTestConnection:
     """POST /admin/query/databases/{alias}/test"""

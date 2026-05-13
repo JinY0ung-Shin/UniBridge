@@ -194,6 +194,9 @@ class AlertStateManager:
             if alert_type in _RULE_SCOPED_ALERT_TYPES and target.endswith(suffix):
                 del self._states[key]
 
+    def discard(self, alert_type: str, target: str) -> None:
+        self._states.pop((alert_type, target), None)
+
     def reset(self) -> None:
         self._states.clear()
 
@@ -262,6 +265,23 @@ async def load_alert_state_from_db(
         )
 
 
+async def delete_alert_state(
+    db: AsyncSession,
+    alert_type: str,
+    target: str,
+) -> None:
+    """Delete a single persisted alert-state row by (alert_type, target)."""
+    result = await db.execute(
+        select(AlertState).where(
+            AlertState.alert_type == alert_type,
+            AlertState.target == target,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row is not None:
+        await db.delete(row)
+
+
 async def delete_alert_states_for_rule(db: AsyncSession, rule_id: int) -> None:
     """Delete persisted states whose key is scoped to an alert rule."""
     suffix = _rule_state_suffix(rule_id)
@@ -271,3 +291,77 @@ async def delete_alert_states_for_rule(db: AsyncSession, rule_id: int) -> None:
     for row in result.scalars().all():
         if row.target.endswith(suffix):
             await db.delete(row)
+
+
+def _parse_rule_scoped_target(value: str) -> tuple[str, int] | None:
+    """Split a rule-scoped target `{prefix}:rule_{rule_id}` into its parts."""
+    marker = ":rule_"
+    idx = value.rfind(marker)
+    if idx <= 0:
+        return None
+    prefix = value[:idx]
+    suffix = value[idx + len(marker):]
+    if not suffix:
+        return None
+    try:
+        return prefix, int(suffix)
+    except ValueError:
+        return None
+
+
+async def purge_stale_states(
+    db: AsyncSession,
+    state: AlertStateManager,
+    *,
+    known_db_aliases: set[str],
+    known_upstream_ids: set[str] | None,
+    known_route_ids: set[str] | None,
+    known_rule_ids: set[int],
+) -> list[tuple[str, str]]:
+    """Drop alert states whose targets no longer exist.
+
+    Pass None for `known_upstream_ids` / `known_route_ids` to skip the
+    corresponding alert types when APISIX is unreachable — better to
+    leave state alone than to wipe it because of a transient outage.
+    Returns the (alert_type, target) pairs that were removed.
+    """
+    result = await db.execute(select(AlertState))
+    removed: list[tuple[str, str]] = []
+    for row in result.scalars().all():
+        atype = row.alert_type
+        target = row.target
+        should_remove = False
+
+        if atype == "db_health":
+            should_remove = target not in known_db_aliases
+        elif atype == "upstream_health":
+            if known_upstream_ids is not None:
+                should_remove = target not in known_upstream_ids
+        elif atype == "route_error_rate":
+            parsed = _parse_rule_scoped_target(target)
+            if parsed is None:
+                should_remove = True
+            else:
+                route_id, rule_id = parsed
+                if rule_id not in known_rule_ids:
+                    should_remove = True
+                elif known_route_ids is not None and route_id not in known_route_ids:
+                    should_remove = True
+        elif atype == "error_rate":
+            parsed = _parse_rule_scoped_target(target)
+            if parsed is None or parsed[1] not in known_rule_ids:
+                should_remove = True
+
+        if should_remove:
+            state.discard(atype, target)
+            await db.delete(row)
+            removed.append((atype, target))
+
+    if removed:
+        await db.commit()
+        logger.info(
+            "Purged %d stale alert state entr%s at startup",
+            len(removed),
+            "y" if len(removed) == 1 else "ies",
+        )
+    return removed

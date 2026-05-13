@@ -256,6 +256,145 @@ class TestAlertState:
         )
         assert transition == "triggered"
 
+    def test_discard_removes_only_matching_entry(self):
+        mgr = AlertStateManager()
+        mgr.update("db_health", "db1", is_healthy=False, trigger_after_failures=1)
+        mgr.update("db_health", "db2", is_healthy=False, trigger_after_failures=1)
+        mgr.update("upstream_health", "db1", is_healthy=False, trigger_after_failures=1)
+
+        mgr.discard("db_health", "db1")
+
+        assert mgr.get_status("db_health", "db1") == "ok"
+        assert mgr.get_status("db_health", "db2") == "alert"
+        assert mgr.get_status("upstream_health", "db1") == "alert"
+
+    def test_discard_is_noop_when_missing(self):
+        mgr = AlertStateManager()
+        mgr.discard("db_health", "never-existed")
+        assert mgr.get_all_alerts() == []
+
+    def test_parse_rule_scoped_target(self):
+        from app.services.alert_state import _parse_rule_scoped_target
+        assert _parse_rule_scoped_target("global:rule_7") == ("global", 7)
+        assert _parse_rule_scoped_target("route-abc:rule_42") == ("route-abc", 42)
+        assert _parse_rule_scoped_target("no-suffix") is None
+        assert _parse_rule_scoped_target(":rule_1") is None  # empty prefix
+        assert _parse_rule_scoped_target("foo:rule_") is None  # empty suffix
+        assert _parse_rule_scoped_target("foo:rule_NaN") is None
+
+    @pytest.mark.asyncio
+    async def test_purge_stale_states(self, seeded_db):
+        from app.services.alert_state import (
+            purge_stale_states,
+            save_alert_state_to_db,
+        )
+
+        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        mgr = AlertStateManager()
+        mgr.update("db_health", "live-db", is_healthy=False, trigger_after_failures=1)
+        mgr.update("db_health", "ghost-db", is_healthy=False, trigger_after_failures=1)
+        mgr.update("upstream_health", "live-up", is_healthy=False, trigger_after_failures=1)
+        mgr.update("upstream_health", "ghost-up", is_healthy=False, trigger_after_failures=1)
+        mgr.update("error_rate", "global:rule_1", is_healthy=False, trigger_after_failures=1)
+        mgr.update("error_rate", "global:rule_99", is_healthy=False, trigger_after_failures=1)
+        mgr.update("route_error_rate", "live-route:rule_1", is_healthy=False, trigger_after_failures=1)
+        mgr.update("route_error_rate", "ghost-route:rule_1", is_healthy=False, trigger_after_failures=1)
+        mgr.update("route_error_rate", "live-route:rule_99", is_healthy=False, trigger_after_failures=1)
+        mgr.update("route_error_rate", "malformed-target", is_healthy=False, trigger_after_failures=1)
+
+        async with session_factory() as db:
+            for atype, target in [
+                ("db_health", "live-db"),
+                ("db_health", "ghost-db"),
+                ("upstream_health", "live-up"),
+                ("upstream_health", "ghost-up"),
+                ("error_rate", "global:rule_1"),
+                ("error_rate", "global:rule_99"),
+                ("route_error_rate", "live-route:rule_1"),
+                ("route_error_rate", "ghost-route:rule_1"),
+                ("route_error_rate", "live-route:rule_99"),
+                ("route_error_rate", "malformed-target"),
+            ]:
+                await save_alert_state_to_db(db, mgr, atype, target)
+
+        async with session_factory() as db:
+            removed = await purge_stale_states(
+                db,
+                mgr,
+                known_db_aliases={"live-db"},
+                known_upstream_ids={"live-up"},
+                known_route_ids={"live-route"},
+                known_rule_ids={1},
+            )
+
+        removed_set = set(removed)
+        assert ("db_health", "ghost-db") in removed_set
+        assert ("upstream_health", "ghost-up") in removed_set
+        assert ("error_rate", "global:rule_99") in removed_set
+        assert ("route_error_rate", "ghost-route:rule_1") in removed_set
+        assert ("route_error_rate", "live-route:rule_99") in removed_set
+        assert ("route_error_rate", "malformed-target") in removed_set
+        assert len(removed) == 6
+
+        assert mgr.get_status("db_health", "live-db") == "alert"
+        assert mgr.get_status("db_health", "ghost-db") == "ok"
+        assert mgr.get_status("upstream_health", "live-up") == "alert"
+        assert mgr.get_status("upstream_health", "ghost-up") == "ok"
+        assert mgr.get_status("error_rate", "global:rule_1") == "alert"
+        assert mgr.get_status("error_rate", "global:rule_99") == "ok"
+        assert mgr.get_status("route_error_rate", "live-route:rule_1") == "alert"
+
+    @pytest.mark.asyncio
+    async def test_purge_stale_states_skips_when_apisix_unknown(self, seeded_db):
+        from app.services.alert_state import (
+            purge_stale_states,
+            save_alert_state_to_db,
+        )
+
+        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        mgr = AlertStateManager()
+        mgr.update("upstream_health", "any-up", is_healthy=False, trigger_after_failures=1)
+        mgr.update("route_error_rate", "any-route:rule_1", is_healthy=False, trigger_after_failures=1)
+        async with session_factory() as db:
+            await save_alert_state_to_db(db, mgr, "upstream_health", "any-up")
+            await save_alert_state_to_db(db, mgr, "route_error_rate", "any-route:rule_1")
+
+        async with session_factory() as db:
+            removed = await purge_stale_states(
+                db,
+                mgr,
+                known_db_aliases=set(),
+                known_upstream_ids=None,
+                known_route_ids=None,
+                known_rule_ids={1},
+            )
+        assert removed == []
+        assert mgr.get_status("upstream_health", "any-up") == "alert"
+        assert mgr.get_status("route_error_rate", "any-route:rule_1") == "alert"
+
+    @pytest.mark.asyncio
+    async def test_delete_alert_state_removes_persisted_row(self, seeded_db):
+        from app.services.alert_state import (
+            delete_alert_state,
+            save_alert_state_to_db,
+        )
+
+        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        mgr = AlertStateManager()
+        mgr.update("db_health", "doomed-db", is_healthy=False, trigger_after_failures=1)
+        async with session_factory() as db:
+            await save_alert_state_to_db(db, mgr, "db_health", "doomed-db")
+
+        async with session_factory() as db:
+            await delete_alert_state(db, "db_health", "doomed-db")
+            await db.commit()
+
+        restored = AlertStateManager()
+        async with session_factory() as db:
+            from app.services.alert_state import load_alert_state_from_db
+            await load_alert_state_from_db(db, restored)
+        assert restored.get_all_statuses() == []
+
     @pytest.mark.asyncio
     async def test_persist_and_restore_alert_state(self, seeded_db):
         from app.services.alert_state import (

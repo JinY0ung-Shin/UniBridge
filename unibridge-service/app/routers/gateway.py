@@ -10,11 +10,14 @@ from typing import Any, NoReturn
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 import httpx
 from httpx import HTTPStatusError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
 from app.config import settings
+from app.database import get_db
 from app.services import apisix_client
 from app.services import prometheus_client
+from app.services.alert_state import delete_alert_state
 
 logger = logging.getLogger(__name__)
 
@@ -443,6 +446,7 @@ async def save_upstream(
 async def delete_upstream(
     upstream_id: str,
     _admin: CurrentUser = Depends(require_permission("gateway.upstreams.write")),
+    db: AsyncSession = Depends(get_db),
 ) -> None:
     if upstream_id in PROTECTED_UPSTREAM_IDS:
         raise HTTPException(
@@ -458,6 +462,14 @@ async def delete_upstream(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Failed to connect to APISIX: {exc}",
         )
+
+    await delete_alert_state(db, "upstream_health", upstream_id)
+    await db.commit()
+
+    from app.routers import alerts as alerts_router
+    if alerts_router._alert_state is not None:
+        alerts_router._alert_state.discard("upstream_health", upstream_id)
+
     logger.info("Upstream deleted: id=%s user=%s", upstream_id, _admin.username)
 
 
