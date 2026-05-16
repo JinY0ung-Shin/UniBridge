@@ -13,5 +13,5 @@ httpx==0.28.1
 prometheus-fastapi-instrumentator>=7.0,<8
 clickhouse-connect==0.15.1
 neo4j==6.2.0
-sqlglot==30.7.0
+sqlglot==30.8.0
 boto3>=1.43.6,<2
