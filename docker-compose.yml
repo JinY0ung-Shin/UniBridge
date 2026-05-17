@@ -297,12 +297,12 @@ services:
     image: ghcr.io/berriai/litellm:main-v1.83.14-stable.patch.3
     restart: unless-stopped
     logging: *default-logging
-    mem_limit: 512m
+    mem_limit: 1g
     cpus: "1.00"
     deploy:
       resources:
         limits:
-          memory: 512m
+          memory: 1g
           cpus: "1.00"
     entrypoint: ["sh", "-c"]
     command:

@@ -22,7 +22,7 @@ COMPOSE_SERVICE_LIMITS = {
     "unibridge-service": {"memory": "512m", "cpus": "1.00"},
     "prometheus": {"memory": "512m", "cpus": "0.50"},
     "litellm-db": {"memory": "512m", "cpus": "0.50"},
-    "litellm": {"memory": "512m", "cpus": "1.00"},
+    "litellm": {"memory": "1g", "cpus": "1.00"},
     "unibridge-ui": {"memory": "128m", "cpus": "0.25"},
     "blackbox-exporter": {"memory": "128m", "cpus": "0.25"},
 }
