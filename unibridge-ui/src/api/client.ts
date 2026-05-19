@@ -187,6 +187,51 @@ export interface QueryResult {
   truncated: boolean;
 }
 
+export interface QueryTemplate {
+  id: number;
+  path: string;
+  name: string;
+  description: string;
+  database: string;
+  sql: string;
+  default_limit?: number | null;
+  timeout?: number | null;
+  enabled: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface QueryTemplateCreate {
+  path: string;
+  name: string;
+  description?: string;
+  database: string;
+  sql: string;
+  default_limit?: number | null;
+  timeout?: number | null;
+  enabled?: boolean;
+}
+
+export interface QueryTemplateUpdate {
+  name?: string;
+  description?: string;
+  database?: string;
+  sql?: string;
+  default_limit?: number | null;
+  timeout?: number | null;
+  enabled?: boolean;
+}
+
+export interface QueryTemplateExecuteRequest {
+  params?: Record<string, unknown>;
+  limit?: number;
+  timeout?: number;
+}
+
+function encodeTemplatePath(path: string): string {
+  return path.split('/').map(encodeURIComponent).join('/');
+}
+
 /* ── Query endpoints ── */
 
 export async function getDatabases(): Promise<DatabaseConfig[]> {
@@ -196,6 +241,11 @@ export async function getDatabases(): Promise<DatabaseConfig[]> {
 
 export async function executeQuery(req: QueryRequest): Promise<QueryResult> {
   const { data } = await client.post('/query/execute', req);
+  return data;
+}
+
+export async function executeQueryTemplate(path: string, req: QueryTemplateExecuteRequest = {}): Promise<QueryResult> {
+  const { data } = await client.post(`/query/templates/${encodeTemplatePath(path)}`, req);
   return data;
 }
 
@@ -270,6 +320,27 @@ export async function getQuerySettings(): Promise<QuerySettings> {
 export async function updateQuerySettings(body: QuerySettingsUpdate): Promise<QuerySettings> {
   const { data } = await client.put('/admin/query/settings', body);
   return data;
+}
+
+/* ── Admin: Query Templates ── */
+
+export async function getQueryTemplates(): Promise<QueryTemplate[]> {
+  const { data } = await client.get('/admin/query/templates');
+  return data;
+}
+
+export async function createQueryTemplate(body: QueryTemplateCreate): Promise<QueryTemplate> {
+  const { data } = await client.post('/admin/query/templates', body);
+  return data;
+}
+
+export async function updateQueryTemplate(path: string, body: QueryTemplateUpdate): Promise<QueryTemplate> {
+  const { data } = await client.put(`/admin/query/templates/${encodeTemplatePath(path)}`, body);
+  return data;
+}
+
+export async function deleteQueryTemplate(path: string): Promise<void> {
+  await client.delete(`/admin/query/templates/${encodeTemplatePath(path)}`);
 }
 
 /* ── Auth ── */

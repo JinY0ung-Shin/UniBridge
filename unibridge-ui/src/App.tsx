@@ -9,6 +9,7 @@ const Connections = lazy(() => import('./pages/Connections'));
 const Permissions = lazy(() => import('./pages/Permissions'));
 const AuditLogs = lazy(() => import('./pages/AuditLogs'));
 const QueryPlayground = lazy(() => import('./pages/QueryPlayground'));
+const QueryTemplates = lazy(() => import('./pages/QueryTemplates'));
 const GatewayRoutes = lazy(() => import('./pages/GatewayRoutes'));
 const GatewayRouteForm = lazy(() => import('./pages/GatewayRouteForm'));
 const GatewayUpstreams = lazy(() => import('./pages/GatewayUpstreams'));
@@ -54,6 +55,7 @@ function App() {
           <Route path="/permissions" element={<ProtectedRoute permission="query.permissions.read"><Permissions /></ProtectedRoute>} />
           <Route path="/audit-logs" element={<ProtectedRoute permission="query.audit.read"><AuditLogs /></ProtectedRoute>} />
           <Route path="/query" element={<ProtectedRoute permission="query.execute"><QueryPlayground /></ProtectedRoute>} />
+          <Route path="/query-templates" element={<ProtectedRoute permission="query.settings.read"><QueryTemplates /></ProtectedRoute>} />
           <Route path="/query-settings" element={<ProtectedRoute permission="query.settings.read"><QuerySettings /></ProtectedRoute>} />
           <Route path="/s3" element={<ProtectedRoute permission="s3.connections.read"><S3Connections /></ProtectedRoute>} />
           <Route path="/s3/browse/:alias" element={<ProtectedRoute permission="s3.browse"><S3Browser /></ProtectedRoute>} />

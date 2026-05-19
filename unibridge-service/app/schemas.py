@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 from typing import Any
 from urllib.parse import urlparse
 
@@ -23,6 +24,80 @@ class QueryResponse(BaseModel):
     row_count: int
     truncated: bool
     elapsed_ms: int
+
+
+_QUERY_TEMPLATE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def normalize_query_template_path(value: str) -> str:
+    path = value.strip().strip("/")
+    if not path:
+        raise ValueError("Template path must not be empty")
+    if len(path) > 200:
+        raise ValueError("Template path must be 200 characters or fewer")
+
+    segments = path.split("/")
+    if any(segment in {"", ".", ".."} for segment in segments):
+        raise ValueError("Template path must not contain empty, '.', or '..' segments")
+    if any(_QUERY_TEMPLATE_PATH_SEGMENT_RE.fullmatch(segment) is None for segment in segments):
+        raise ValueError("Template path segments may only contain letters, digits, '.', '_', and '-'")
+    return path
+
+
+class QueryTemplateCreate(BaseModel):
+    path: str = Field(..., min_length=1, max_length=200)
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field("", max_length=255)
+    database: str = Field(..., min_length=1, description="Database alias to run the template against")
+    sql: str = Field(..., min_length=1, description="Read-only SQL/Cypher template using named bind parameters")
+    default_limit: int | None = Field(None, ge=1)
+    timeout: int | None = Field(None, ge=1)
+    enabled: bool = True
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        return normalize_query_template_path(value)
+
+    @field_validator("name", "description", "database", "sql")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class QueryTemplateUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=100)
+    description: str | None = Field(None, max_length=255)
+    database: str | None = Field(None, min_length=1)
+    sql: str | None = Field(None, min_length=1)
+    default_limit: int | None = Field(None, ge=1)
+    timeout: int | None = Field(None, ge=1)
+    enabled: bool | None = None
+
+    @field_validator("name", "description", "database", "sql")
+    @classmethod
+    def strip_optional_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class QueryTemplateResponse(BaseModel):
+    id: int
+    path: str
+    name: str
+    description: str
+    database: str
+    sql: str
+    default_limit: int | None = None
+    timeout: int | None = None
+    enabled: bool
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class QueryTemplateExecuteRequest(BaseModel):
+    params: dict[str, Any] | None = Field(None, description="Named bind parameters for the stored query")
+    limit: int | None = Field(None, ge=1, description="Override the template default row limit")
+    timeout: int | None = Field(None, ge=1, description="Override the template default timeout")
 
 
 # ── DB Connections ───────────────────────────────────────────────────────────

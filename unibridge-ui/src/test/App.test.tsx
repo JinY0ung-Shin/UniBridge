@@ -27,6 +27,8 @@ vi.mock('../api/client', () => ({
       'query.execute',
       'query.permissions.read',
       'query.audit.read',
+      'query.settings.read',
+      'query.settings.write',
       'admin.roles.read',
       'admin.users.read',
       'gateway.routes.read',
@@ -148,6 +150,7 @@ describe('App', () => {
     expect(screen.getByText('Permissions')).toBeInTheDocument();
     expect(screen.getByText('Audit Logs')).toBeInTheDocument();
     expect(screen.getByText('Query Playground')).toBeInTheDocument();
+    expect(screen.getByText('Query Templates')).toBeInTheDocument();
     expect(screen.getByText('Gateway Routes')).toBeInTheDocument();
     expect(screen.getByText('Gateway Upstreams')).toBeInTheDocument();
     expect(screen.getByText('API Keys')).toBeInTheDocument();

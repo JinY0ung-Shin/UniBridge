@@ -14,6 +14,8 @@ export const ADMIN_PERMISSIONS = [
   'query.permissions.read',
   'query.permissions.write',
   'query.audit.read',
+  'query.settings.read',
+  'query.settings.write',
   'admin.roles.read',
   'admin.roles.write',
   'admin.users.read',
