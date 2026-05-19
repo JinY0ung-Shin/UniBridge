@@ -226,7 +226,9 @@ function LlmMonitoring() {
               <thead>
                 <tr>
                   <th>{t('llmMonitoring.model')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.tokens')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.inputTokens')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.outputTokens')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.totalTokenShort')}</th>
                   <th style={{ textAlign: 'right' }}>{t('llmMonitoring.requests')}</th>
                   <th style={{ textAlign: 'right' }}>{t('llmMonitoring.cost')}</th>
                 </tr>
@@ -235,6 +237,12 @@ function LlmMonitoring() {
                 {(byModelQuery.data ?? []).map((m) => (
                   <tr key={m.model}>
                     <td className="cell-alias">{m.model}</td>
+                    <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                      {formatTokens(m.input_tokens)}
+                    </td>
+                    <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                      {formatTokens(m.output_tokens)}
+                    </td>
                     <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
                       {formatTokens(m.tokens)}
                     </td>

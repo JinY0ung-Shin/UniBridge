@@ -82,7 +82,14 @@ describe('LlmMonitoring', () => {
 
   it('renders request count in model usage table', async () => {
     mockedGetLlmByModel.mockResolvedValue([
-      { model: 'gpt-4', tokens: 5000, requests: 25, cost: 12.345 },
+      {
+        model: 'gpt-4',
+        tokens: 5000,
+        input_tokens: 3000,
+        output_tokens: 2000,
+        requests: 25,
+        cost: 12.345,
+      },
     ]);
     const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
 
@@ -93,6 +100,11 @@ describe('LlmMonitoring', () => {
     });
 
     expect(screen.getAllByText('Requests').length).toBeGreaterThan(0);
+    expect(screen.getByText('Input Tokens')).toBeInTheDocument();
+    expect(screen.getByText('Output Tokens')).toBeInTheDocument();
+    expect(screen.getByText('3.0K')).toBeInTheDocument();
+    expect(screen.getByText('2.0K')).toBeInTheDocument();
+    expect(screen.getByText('5.0K')).toBeInTheDocument();
     expect(screen.getByText('25')).toBeInTheDocument();
   });
 });

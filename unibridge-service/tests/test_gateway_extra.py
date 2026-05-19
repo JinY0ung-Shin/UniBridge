@@ -696,38 +696,95 @@ async def test_llm_metrics_tokens_prom_error(client, admin_token):
 @pytest.mark.asyncio
 async def test_llm_metrics_by_model(client, admin_token):
     tokens = [
-        {"metric": {"model": "gpt-4"}, "value": [0, "5000"]},
+        {
+            "metric": {
+                "requested_model": "GaussO3.2-260402-vllm",
+                "model": "GaussO3.2-260402",
+            },
+            "value": [0, "5000"],
+        },
         {"metric": {"model": "claude"}, "value": [0, "0"]},
         {"metric": {"model": "bad"}, "value": [0, "bogus"]},
     ]
     cost = [
-        {"metric": {"model": "gpt-4"}, "value": [0, "12.345"]},
+        {
+            "metric": {
+                "requested_model": "GaussO3.2-260402-vllm",
+                "model": "GaussO3.2-260402",
+            },
+            "value": [0, "12.345"],
+        },
         {"metric": {"model": "missing-cost"}, "value": [0, "bad"]},
     ]
+    input_tokens = [
+        {
+            "metric": {
+                "requested_model": "GaussO3.2-260402-vllm",
+                "model": "GaussO3.2-260402",
+            },
+            "value": [0, "3000"],
+        },
+        {
+            "metric": {"requested_model": "split-only"},
+            "value": [0, "7"],
+        },
+    ]
+    output_tokens = [
+        {
+            "metric": {
+                "requested_model": "GaussO3.2-260402-vllm",
+                "model": "GaussO3.2-260402",
+            },
+            "value": [0, "2000"],
+        },
+        {
+            "metric": {"requested_model": "split-only"},
+            "value": [0, "5"],
+        },
+    ]
     requests = [
-        {"metric": {"requested_model": "gpt-4"}, "value": [0, "25"]},
+        {
+            "metric": {
+                "requested_model": "GaussO3.2-260402-vllm",
+                "model": "GaussO3.2-260402",
+            },
+            "value": [0, "25"],
+        },
         {"metric": {"requested_model": "request-only"}, "value": [0, "3"]},
         {"metric": {"requested_model": "bad"}, "value": [0, "bogus"]},
     ]
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
-               side_effect=[tokens, cost, requests]):
+               side_effect=[tokens, input_tokens, output_tokens, cost, requests]) as prom_query:
         resp = await client.get(
             "/admin/gateway/metrics/llm/by-model?range=1h",
             headers=auth_header(admin_token),
         )
     assert resp.status_code == 200
     rows = resp.json()
-    assert len(rows) == 2
-    assert rows[0]["model"] == "gpt-4"
+    assert len(rows) == 3
+    assert rows[0]["model"] == "GaussO3.2-260402-vllm"
     assert rows[0]["tokens"] == 5000
+    assert rows[0]["input_tokens"] == 3000
+    assert rows[0]["output_tokens"] == 2000
     assert rows[0]["cost"] == 12.345
     assert rows[0]["requests"] == 25
     assert rows[1] == {
+        "model": "split-only",
+        "tokens": 12,
+        "input_tokens": 7,
+        "output_tokens": 5,
+        "cost": 0.0,
+        "requests": 0,
+    }
+    assert rows[2] == {
         "model": "request-only",
         "tokens": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
         "cost": 0.0,
         "requests": 3,
     }
+    assert all("sum by (requested_model, model)" in call.args[0] for call in prom_query.call_args_list)
 
 
 @pytest.mark.asyncio

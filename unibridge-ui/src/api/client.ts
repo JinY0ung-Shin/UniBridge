@@ -544,6 +544,8 @@ export interface LlmTokenSeries {
 export interface LlmModelUsage {
   model: string;
   tokens: number;
+  input_tokens: number;
+  output_tokens: number;
   cost: number;
   requests: number;
 }

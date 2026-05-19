@@ -1053,15 +1053,27 @@ async def llm_metrics_by_model(
     if time_range not in VALID_RANGES:
         time_range = "1h"
     try:
-        token_results, cost_results, request_results = await asyncio.gather(
+        (
+            token_results,
+            input_token_results,
+            output_token_results,
+            cost_results,
+            request_results,
+        ) = await asyncio.gather(
             prometheus_client.instant_query(
-                f"sum by (model) (increase(litellm_total_tokens_metric_total[{time_range}]))"
+                f"sum by (requested_model, model) (increase(litellm_total_tokens_metric_total[{time_range}]))"
             ),
             prometheus_client.instant_query(
-                f"sum by (model) (increase(litellm_spend_metric_total[{time_range}]))"
+                f"sum by (requested_model, model) (increase(litellm_input_tokens_metric_total[{time_range}]))"
             ),
             prometheus_client.instant_query(
-                f"sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total[{time_range}]))"
+                f"sum by (requested_model, model) (increase(litellm_output_tokens_metric_total[{time_range}]))"
+            ),
+            prometheus_client.instant_query(
+                f"sum by (requested_model, model) (increase(litellm_spend_metric_total[{time_range}]))"
+            ),
+            prometheus_client.instant_query(
+                f"sum by (requested_model, model) (increase(litellm_proxy_total_requests_metric_total[{time_range}]))"
             ),
         )
     except Exception as exc:
@@ -1071,15 +1083,31 @@ async def llm_metrics_by_model(
 
     token_map: dict[str, int] = {}
     for r in token_results:
-        model = _metric_label(r, "model", "requested_model")
+        model = _metric_label(r, "requested_model", "model")
         try:
             token_map[model] = round(float(r["value"][1]))
         except (IndexError, ValueError, TypeError):
             token_map[model] = 0
 
+    input_token_map: dict[str, int] = {}
+    for r in input_token_results:
+        model = _metric_label(r, "requested_model", "model")
+        try:
+            input_token_map[model] = round(float(r["value"][1]))
+        except (IndexError, ValueError, TypeError):
+            input_token_map[model] = 0
+
+    output_token_map: dict[str, int] = {}
+    for r in output_token_results:
+        model = _metric_label(r, "requested_model", "model")
+        try:
+            output_token_map[model] = round(float(r["value"][1]))
+        except (IndexError, ValueError, TypeError):
+            output_token_map[model] = 0
+
     cost_map: dict[str, float] = {}
     for r in cost_results:
-        model = _metric_label(r, "model", "requested_model")
+        model = _metric_label(r, "requested_model", "model")
         try:
             cost_map[model] = round(float(r["value"][1]), 4)
         except (IndexError, ValueError, TypeError):
@@ -1094,15 +1122,27 @@ async def llm_metrics_by_model(
             request_map[model] = 0
 
     models = []
-    for model in token_map.keys() | cost_map.keys() | request_map.keys():
+    for model in (
+        token_map.keys()
+        | input_token_map.keys()
+        | output_token_map.keys()
+        | cost_map.keys()
+        | request_map.keys()
+    ):
         tokens = token_map.get(model, 0)
+        input_tokens = input_token_map.get(model, 0)
+        output_tokens = output_token_map.get(model, 0)
+        if tokens == 0 and (input_tokens > 0 or output_tokens > 0):
+            tokens = input_tokens + output_tokens
         cost = cost_map.get(model, 0.0)
         requests = request_map.get(model, 0)
-        if tokens > 0 or cost > 0 or requests > 0:
+        if tokens > 0 or input_tokens > 0 or output_tokens > 0 or cost > 0 or requests > 0:
             models.append(
                 {
                     "model": model,
                     "tokens": tokens,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
                     "cost": cost,
                     "requests": requests,
                 }
