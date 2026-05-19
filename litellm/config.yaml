@@ -1,6 +1,7 @@
 # litellm/config.yaml
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
+  always_include_stream_usage: true
 
 litellm_settings:
   success_callback: ["prometheus"]
