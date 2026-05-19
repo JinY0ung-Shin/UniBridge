@@ -36,6 +36,42 @@ describe('GatewayRoutes', () => {
     expect(screen.getByText('/api/test/*')).toBeInTheDocument();
   });
 
+  it('renders multiple service keys', async () => {
+    const route = makeGatewayRoute({
+      service_keys: [
+        { header_name: 'X-Api-Key', header_value: '***1234' },
+        { header_name: 'Authorization', header_value: '***5678' },
+      ],
+    });
+    mockedGetGatewayRoutes.mockResolvedValue({ items: [route], total: 1 });
+
+    renderWithProviders(<GatewayRoutes />);
+
+    await waitFor(() => {
+      expect(screen.getByText('X-Api-Key')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('***1234')).toBeInTheDocument();
+    expect(screen.getByText('Authorization')).toBeInTheDocument();
+    expect(screen.getByText('***5678')).toBeInTheDocument();
+  });
+
+  it('renders legacy service key when service_keys is absent', async () => {
+    const route = makeGatewayRoute({
+      service_key: { header_name: 'X-Legacy-Key', header_value: '***9999' },
+      service_keys: undefined,
+    });
+    mockedGetGatewayRoutes.mockResolvedValue({ items: [route], total: 1 });
+
+    renderWithProviders(<GatewayRoutes />);
+
+    await waitFor(() => {
+      expect(screen.getByText('X-Legacy-Key')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('***9999')).toBeInTheDocument();
+  });
+
   it('renders empty state when no routes', async () => {
     mockedGetGatewayRoutes.mockResolvedValue({ items: [], total: 0 });
 

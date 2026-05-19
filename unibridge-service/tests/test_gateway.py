@@ -6,16 +6,25 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from app.routers.gateway import (
     _extract_scalar,
     _extract_service_key,
+    _extract_service_keys,
     _extract_timeseries,
     _get_step,
     _inject_plugins,
+    _service_headers_for_route,
 )
 from tests.conftest import auth_header
+
+
+def _http_status(code: int, body: str = "boom") -> httpx.HTTPStatusError:
+    req = httpx.Request("GET", "http://apisix")
+    res = httpx.Response(code, request=req, text=body)
+    return httpx.HTTPStatusError("err", request=req, response=res)
 
 
 # ---------------------------------------------------------------------------
@@ -23,47 +32,167 @@ from tests.conftest import auth_header
 # ---------------------------------------------------------------------------
 
 
-class TestExtractServiceKey:
-    def test_route_with_proxy_rewrite(self):
+class TestExtractServiceKeys:
+    def test_route_with_single_header(self):
         route = {
             "plugins": {
                 "proxy-rewrite": {"headers": {"set": {"X-Api-Key": "supersecret1234"}}}
             }
         }
-        result = _extract_service_key(route)
-        assert result is not None
-        assert result["header_name"] == "X-Api-Key"
-        assert result["header_value"] == "***1234"
+        result = _extract_service_keys(route)
+        assert result == [{"header_name": "X-Api-Key", "header_value": "***1234"}]
+        assert _extract_service_key(route) == {
+            "header_name": "X-Api-Key",
+            "header_value": "***1234",
+        }
+
+    def test_route_with_multiple_headers(self):
+        route = {
+            "plugins": {
+                "proxy-rewrite": {
+                    "headers": {
+                        "set": {
+                            "X-Api-Key": "supersecret1234",
+                            "Authorization": "Bearer longvalue5678",
+                        }
+                    }
+                }
+            }
+        }
+        result = _extract_service_keys(route)
+        by_name = {entry["header_name"]: entry["header_value"] for entry in result}
+        assert by_name == {
+            "X-Api-Key": "***1234",
+            "Authorization": "***5678",
+        }
 
     def test_route_without_plugins(self):
-        route = {"uri": "/test"}
-        assert _extract_service_key(route) is None
+        assert _extract_service_keys({"uri": "/test"}) == []
+
+    def test_route_with_malformed_plugins(self):
+        assert _extract_service_keys({"plugins": None}) == []
+        assert _extract_service_keys({"plugins": {"proxy-rewrite": None}}) == []
+        assert (
+            _extract_service_keys(
+                {"plugins": {"proxy-rewrite": {"headers": "bad"}}}
+            )
+            == []
+        )
 
     def test_route_with_empty_plugins(self):
-        route = {"plugins": {}}
-        assert _extract_service_key(route) is None
+        assert _extract_service_keys({"plugins": {}}) == []
 
     def test_route_with_proxy_rewrite_no_headers_set(self):
-        route = {"plugins": {"proxy-rewrite": {}}}
-        assert _extract_service_key(route) is None
+        assert _extract_service_keys({"plugins": {"proxy-rewrite": {}}}) == []
 
     def test_route_with_proxy_rewrite_empty_headers_set(self):
-        route = {"plugins": {"proxy-rewrite": {"headers": {"set": {}}}}}
-        assert _extract_service_key(route) is None
+        assert (
+            _extract_service_keys({"plugins": {"proxy-rewrite": {"headers": {"set": {}}}}})
+            == []
+        )
+
+    def test_service_headers_for_route_returns_unmasked_values(self):
+        route = {
+            "plugins": {
+                "proxy-rewrite": {
+                    "headers": {
+                        "set": {
+                            "X-Api-Key": "supersecret1234",
+                            "Authorization": "Bearer longvalue5678",
+                        }
+                    }
+                }
+            }
+        }
+        assert _service_headers_for_route(route) == {
+            "X-Api-Key": "supersecret1234",
+            "Authorization": "Bearer longvalue5678",
+        }
 
 
 class TestInjectPlugins:
-    def test_with_service_key(self):
+    def test_with_single_service_key(self):
         body = {
             "uri": "/test",
-            "service_key": {"header_name": "X-Api-Key", "header_value": "my-secret"},
+            "service_keys": [{"header_name": "X-Api-Key", "header_value": "my-secret"}],
         }
         result = _inject_plugins(body)
-        assert "service_key" not in result
+        assert "service_keys" not in result
         assert (
             result["plugins"]["proxy-rewrite"]["headers"]["set"]["X-Api-Key"]
             == "my-secret"
         )
+
+    def test_with_multiple_service_keys(self):
+        body = {
+            "uri": "/test",
+            "service_keys": [
+                {"header_name": "X-Api-Key", "header_value": "secret-a"},
+                {"header_name": "Authorization", "header_value": "Bearer xyz"},
+            ],
+        }
+        result = _inject_plugins(body)
+        headers_set = result["plugins"]["proxy-rewrite"]["headers"]["set"]
+        assert headers_set == {
+            "X-Api-Key": "secret-a",
+            "Authorization": "Bearer xyz",
+        }
+
+    def test_empty_value_preserves_existing_for_same_header(self):
+        body = {
+            "uri": "/test",
+            "service_keys": [
+                {"header_name": "X-Api-Key", "header_value": ""},
+                {"header_name": "Authorization", "header_value": "Bearer new"},
+            ],
+        }
+        existing = {
+            "proxy-rewrite": {"headers": {"set": {"X-Api-Key": "old-secret"}}}
+        }
+        result = _inject_plugins(body, existing_plugins=existing)
+        headers_set = result["plugins"]["proxy-rewrite"]["headers"]["set"]
+        assert headers_set == {
+            "X-Api-Key": "old-secret",
+            "Authorization": "Bearer new",
+        }
+
+    def test_empty_list_clears_all_headers(self):
+        body = {"uri": "/test", "service_keys": []}
+        existing = {
+            "proxy-rewrite": {"headers": {"set": {"X-Api-Key": "old"}}},
+            "rate-limiting": {"rate": 5},
+        }
+        result = _inject_plugins(body, existing_plugins=existing)
+        assert "headers" not in result["plugins"].get("proxy-rewrite", {})
+        assert "rate-limiting" in result["plugins"]
+
+    def test_omitted_service_keys_preserves_existing_headers(self):
+        body = {"uri": "/test"}
+        existing = {
+            "proxy-rewrite": {"headers": {"set": {"X-Api-Key": "keep-me"}}}
+        }
+        result = _inject_plugins(body, existing_plugins=existing)
+        assert (
+            result["plugins"]["proxy-rewrite"]["headers"]["set"]
+            == {"X-Api-Key": "keep-me"}
+        )
+
+    def test_malformed_existing_proxy_rewrite_is_ignored(self):
+        body = {
+            "uri": "/test",
+            "service_keys": [{"header_name": "X-Key", "header_value": "new"}],
+        }
+        result = _inject_plugins(body, existing_plugins={"proxy-rewrite": None})
+        assert result["plugins"]["proxy-rewrite"]["headers"]["set"] == {"X-Key": "new"}
+
+    def test_malformed_existing_headers_is_ignored(self):
+        body = {
+            "uri": "/test",
+            "service_keys": [{"header_name": "X-Key", "header_value": "new"}],
+        }
+        existing = {"proxy-rewrite": {"headers": "bad"}}
+        result = _inject_plugins(body, existing_plugins=existing)
+        assert result["plugins"]["proxy-rewrite"]["headers"]["set"] == {"X-Key": "new"}
 
     def test_with_require_auth_true(self):
         body = {"uri": "/test", "require_auth": True}
@@ -87,7 +216,7 @@ class TestInjectPlugins:
     def test_preserves_existing_plugins(self):
         body = {
             "uri": "/test",
-            "service_key": {"header_name": "X-Key", "header_value": "val"},
+            "service_keys": [{"header_name": "X-Key", "header_value": "val"}],
         }
         existing = {"rate-limiting": {"rate": 5}}
         result = _inject_plugins(body, existing_plugins=existing)
@@ -131,10 +260,53 @@ class TestInjectPlugins:
     def test_service_key_missing_header_name_ignored(self):
         body = {
             "uri": "/test",
-            "service_key": {"header_name": "", "header_value": "val"},
+            "service_keys": [{"header_name": "", "header_value": "val"}],
         }
         result = _inject_plugins(body)
         assert "plugins" not in result
+
+    def test_empty_value_for_unknown_header_skipped(self):
+        body = {
+            "uri": "/test",
+            "service_keys": [
+                {"header_name": "X-New", "header_value": ""},
+            ],
+        }
+        result = _inject_plugins(body)
+        assert "plugins" not in result
+
+    def test_preserves_headers_add_when_updating_set(self):
+        body = {
+            "uri": "/test",
+            "service_keys": [{"header_name": "X-Set", "header_value": "v"}],
+        }
+        existing = {
+            "proxy-rewrite": {
+                "headers": {
+                    "set": {"X-Old": "stale"},
+                    "add": {"X-Trace": "1"},
+                    "remove": ["X-Internal"],
+                }
+            }
+        }
+        pr = _inject_plugins(body, existing_plugins=existing)["plugins"]["proxy-rewrite"]
+        assert pr["headers"]["set"] == {"X-Set": "v"}
+        assert pr["headers"]["add"] == {"X-Trace": "1"}
+        assert pr["headers"]["remove"] == ["X-Internal"]
+
+    def test_empty_list_keeps_other_header_ops_but_drops_set(self):
+        body = {"uri": "/test", "service_keys": []}
+        existing = {
+            "proxy-rewrite": {
+                "headers": {
+                    "set": {"X-Old": "stale"},
+                    "add": {"X-Trace": "1"},
+                }
+            }
+        }
+        pr = _inject_plugins(body, existing_plugins=existing)["plugins"]["proxy-rewrite"]
+        assert "set" not in pr["headers"]
+        assert pr["headers"]["add"] == {"X-Trace": "1"}
 
 
 class TestExtractScalar:
@@ -248,10 +420,16 @@ class TestListRoutes:
         data = resp.json()
         assert data["total"] == 2
         item0 = data["items"][0]
-        assert item0["service_key"]["header_name"] == "X-Api-Key"
-        assert item0["service_key"]["header_value"] == "***1234"
+        assert item0["service_keys"] == [
+            {"header_name": "X-Api-Key", "header_value": "***1234"}
+        ]
+        assert item0["service_key"] == {
+            "header_name": "X-Api-Key",
+            "header_value": "***1234",
+        }
         assert item0["require_auth"] is True
         item1 = data["items"][1]
+        assert item1["service_keys"] == []
         assert item1["service_key"] is None
         assert item1["require_auth"] is False
 
@@ -290,8 +468,13 @@ class TestGetRoute:
             )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["service_key"]["header_name"] == "Authorization"
-        assert data["service_key"]["header_value"] == "***1234"
+        assert data["service_keys"] == [
+            {"header_name": "Authorization", "header_value": "***1234"}
+        ]
+        assert data["service_key"] == {
+            "header_name": "Authorization",
+            "header_value": "***1234",
+        }
         assert data["require_auth"] is True
 
 
@@ -309,7 +492,53 @@ class TestSaveRoute:
             patch(
                 "app.routers.gateway.apisix_client.get_resource",
                 new_callable=AsyncMock,
-                side_effect=Exception("not found"),
+                side_effect=_http_status(404, "not found"),
+            ),
+            patch(
+                "app.routers.gateway.apisix_client.put_resource",
+                new_callable=AsyncMock,
+                return_value=deepcopy(saved_route),
+            ) as mock_put,
+        ):
+            resp = await client.put(
+                "/admin/gateway/routes/r1",
+                json={
+                    "uri": "/api/test/*",
+                    "upstream_id": "u1",
+                    "service_keys": [
+                        {
+                            "header_name": "X-Key",
+                            "header_value": "newsecretkey1234",
+                        }
+                    ],
+                    "require_auth": True,
+                },
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["require_auth"] is True
+        assert data["service_keys"] == [
+            {"header_name": "X-Key", "header_value": "***1234"}
+        ]
+        # Verify the body passed to put_resource had plugins injected
+        call_body = mock_put.call_args[0][2]
+        assert "service_keys" not in call_body
+        assert "require_auth" not in call_body
+
+    async def test_legacy_service_key_payload_is_accepted(self, client, admin_token):
+        saved_route = {
+            "id": "r1",
+            "uri": "/test",
+            "plugins": {
+                "proxy-rewrite": {"headers": {"set": {"X-Key": "legacy-secret"}}},
+            },
+        }
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=_http_status(404, "not found"),
             ),
             patch(
                 "app.routers.gateway.apisix_client.put_resource",
@@ -324,20 +553,18 @@ class TestSaveRoute:
                     "upstream_id": "u1",
                     "service_key": {
                         "header_name": "X-Key",
-                        "header_value": "newsecretkey1234",
+                        "header_value": "legacy-secret",
                     },
-                    "require_auth": True,
                 },
                 headers=auth_header(admin_token),
             )
+
         assert resp.status_code == 200
-        data = resp.json()
-        assert data["require_auth"] is True
-        assert data["service_key"]["header_value"] == "***1234"
-        # Verify the body passed to put_resource had plugins injected
         call_body = mock_put.call_args[0][2]
         assert "service_key" not in call_body
-        assert "require_auth" not in call_body
+        assert call_body["plugins"]["proxy-rewrite"]["headers"]["set"] == {
+            "X-Key": "legacy-secret"
+        }
 
     async def test_inline_upstream_rejected(self, client, admin_token):
         resp = await client.put(
@@ -397,11 +624,13 @@ class TestSaveRoute:
         assert "key-auth" in call_body.get("plugins", {})
 
     async def test_apisix_error_returns_502(self, client, admin_token):
+        # get_resource returns 404 (new route) so we proceed to the put,
+        # which fails — the response is the put failure surfaced as 502.
         with (
             patch(
                 "app.routers.gateway.apisix_client.get_resource",
                 new_callable=AsyncMock,
-                side_effect=Exception("timeout"),
+                side_effect=_http_status(404, "not found"),
             ),
             patch(
                 "app.routers.gateway.apisix_client.put_resource",
@@ -415,6 +644,179 @@ class TestSaveRoute:
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 502
+
+
+class TestSaveRouteValidation:
+    """Verify save_route rejects malformed payloads with 400."""
+
+    async def test_service_keys_must_be_list(self, client, admin_token):
+        resp = await client.put(
+            "/admin/gateway/routes/r1",
+            json={
+                "uri": "/api/test/*",
+                "upstream_id": "u1",
+                "service_keys": {"header_name": "X", "header_value": "v"},
+            },
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+        assert "service_keys" in resp.json()["detail"]
+
+    async def test_service_keys_entry_must_be_object(self, client, admin_token):
+        resp = await client.put(
+            "/admin/gateway/routes/r1",
+            json={
+                "uri": "/api/test/*",
+                "upstream_id": "u1",
+                "service_keys": ["X-Api-Key: v"],
+            },
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_legacy_service_key_must_be_object(self, client, admin_token):
+        resp = await client.put(
+            "/admin/gateway/routes/r1",
+            json={
+                "uri": "/api/test/*",
+                "upstream_id": "u1",
+                "service_key": "X-Api-Key: v",
+            },
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_service_keys_missing_header_name_rejected(self, client, admin_token):
+        resp = await client.put(
+            "/admin/gateway/routes/r1",
+            json={
+                "uri": "/api/test/*",
+                "upstream_id": "u1",
+                "service_keys": [{"header_value": "v"}],
+            },
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+        assert "header_name" in resp.json()["detail"]
+
+    async def test_service_keys_empty_header_name_rejected(self, client, admin_token):
+        resp = await client.put(
+            "/admin/gateway/routes/r1",
+            json={
+                "uri": "/api/test/*",
+                "upstream_id": "u1",
+                "service_keys": [{"header_name": "   ", "header_value": "v"}],
+            },
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_service_keys_non_string_value_rejected(self, client, admin_token):
+        resp = await client.put(
+            "/admin/gateway/routes/r1",
+            json={
+                "uri": "/api/test/*",
+                "upstream_id": "u1",
+                "service_keys": [{"header_name": "X", "header_value": 123}],
+            },
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_service_keys_duplicate_case_insensitive_rejected(
+        self, client, admin_token
+    ):
+        resp = await client.put(
+            "/admin/gateway/routes/r1",
+            json={
+                "uri": "/api/test/*",
+                "upstream_id": "u1",
+                "service_keys": [
+                    {"header_name": "X-Api-Key", "header_value": "a"},
+                    {"header_name": "x-api-key", "header_value": "b"},
+                ],
+            },
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+        assert "Duplicate" in resp.json()["detail"]
+
+
+class TestSaveRouteExistingLookup:
+    """Verify save_route distinguishes 404 (new route) from transient errors."""
+
+    async def test_404_treated_as_new_route(self, client, admin_token):
+        saved = {
+            "id": "r1",
+            "uri": "/api/test/*",
+            "plugins": {},
+        }
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=_http_status(404, "not found"),
+            ),
+            patch(
+                "app.routers.gateway.apisix_client.put_resource",
+                new_callable=AsyncMock,
+                return_value=deepcopy(saved),
+            ),
+        ):
+            resp = await client.put(
+                "/admin/gateway/routes/r1",
+                json={"uri": "/api/test/*", "upstream_id": "u1"},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+
+    async def test_non_404_http_error_returns_502_before_put(
+        self, client, admin_token
+    ):
+        put_mock = AsyncMock(return_value={"id": "r1", "plugins": {}})
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=_http_status(500, "etcd down"),
+            ),
+            patch(
+                "app.routers.gateway.apisix_client.put_resource",
+                put_mock,
+            ),
+        ):
+            resp = await client.put(
+                "/admin/gateway/routes/r1",
+                json={"uri": "/api/test/*", "upstream_id": "u1"},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 502
+        # We must NOT proceed to PUT when the lookup failed for a non-404 reason;
+        # otherwise we'd silently drop preserved service-key values.
+        assert put_mock.await_count == 0
+
+    async def test_connection_error_returns_502_before_put(
+        self, client, admin_token
+    ):
+        put_mock = AsyncMock(return_value={"id": "r1", "plugins": {}})
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=ConnectionError("network down"),
+            ),
+            patch(
+                "app.routers.gateway.apisix_client.put_resource",
+                put_mock,
+            ),
+        ):
+            resp = await client.put(
+                "/admin/gateway/routes/r1",
+                json={"uri": "/api/test/*", "upstream_id": "u1"},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 502
+        assert put_mock.await_count == 0
 
 
 class TestDeleteRoute:
@@ -453,7 +855,7 @@ class TestDeleteRoute:
 
 
 class _MockAsyncClient:
-    def __init__(self, response, capture: dict[str, str]):
+    def __init__(self, response, capture: dict[str, object]):
         self._response = response
         self._capture = capture
 
@@ -463,8 +865,9 @@ class _MockAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def get(self, url: str):
+    async def get(self, url: str, **kwargs):
         self._capture["url"] = url
+        self._capture["headers"] = kwargs.get("headers")
         return self._response
 
 
@@ -495,6 +898,49 @@ class TestRouteTest:
         assert resp.status_code == 200
         assert resp.json()["reachable"] is True
         assert capture["url"] == "http://unibridge-service:8000/health"
+
+    async def test_forwards_service_headers_to_upstream_probe(self, client, admin_token):
+        route = {
+            "id": "external-api",
+            "upstream_id": "external",
+            "plugins": {
+                "proxy-rewrite": {
+                    "headers": {
+                        "set": {
+                            "X-Api-Key": "raw-secret",
+                            "Authorization": "Bearer token",
+                        }
+                    }
+                }
+            },
+        }
+        upstream = {"id": "external", "nodes": {"api.example.test:443": 1}}
+        response = SimpleNamespace(
+            status_code=200, json=lambda: {"status": "ok"}, text="ok"
+        )
+        capture: dict[str, object] = {}
+
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=[route, upstream],
+            ),
+            patch(
+                "app.routers.gateway.httpx.AsyncClient",
+                side_effect=lambda *args, **kwargs: _MockAsyncClient(response, capture),
+            ),
+        ):
+            resp = await client.post(
+                "/admin/gateway/routes/external-api/test",
+                headers=auth_header(admin_token),
+            )
+
+        assert resp.status_code == 200
+        assert capture["headers"] == {
+            "X-Api-Key": "raw-secret",
+            "Authorization": "Bearer token",
+        }
 
     async def test_uses_litellm_liveliness_for_llm_proxy(self, client, admin_token):
         route = {"id": "llm-proxy", "upstream_id": "litellm"}

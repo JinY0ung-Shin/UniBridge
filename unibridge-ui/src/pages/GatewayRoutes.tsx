@@ -18,6 +18,11 @@ const METHOD_COLORS: Record<string, string> = {
   GET: 'get', POST: 'post', PUT: 'put', DELETE: 'delete', PATCH: 'patch',
 };
 
+function routeServiceKeys(route: GatewayRoute) {
+  if (route.service_keys?.length) return route.service_keys;
+  return route.service_key ? [route.service_key] : [];
+}
+
 function GatewayRoutes() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -173,7 +178,18 @@ function GatewayRoutes() {
                   </td>
                   <td>{route.upstream_id || '—'}</td>
                   <td className="cell-service-key">
-                    {route.service_key ? `${route.service_key.header_name}: ${route.service_key.header_value}` : '—'}
+                    {routeServiceKeys(route).length > 0 ? (
+                      <div className="service-key-cell">
+                        {routeServiceKeys(route).map((sk) => (
+                          <div key={sk.header_name} className="service-key-cell-item">
+                            <span className="service-key-cell-name">{sk.header_name}</span>
+                            <span className="service-key-cell-value">{sk.header_value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      '—'
+                    )}
                   </td>
                   <td>
                     <div className="status-cell">

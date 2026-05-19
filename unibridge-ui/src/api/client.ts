@@ -367,6 +367,7 @@ export interface GatewayRoute {
   require_auth?: boolean;
   strip_prefix?: boolean;
   service_key?: GatewayServiceKey | null;
+  service_keys?: GatewayServiceKey[];
   plugins?: Record<string, unknown>;
   system?: boolean;
 }

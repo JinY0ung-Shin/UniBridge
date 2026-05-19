@@ -183,3 +183,47 @@
   justify-content: flex-end;
   padding-top: 8px;
 }
+
+.service-key-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.service-key-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.service-key-row .field {
+  margin: 0;
+}
+
+.service-key-remove {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.service-key-add {
+  align-self: flex-start;
+}
+
+@media (max-width: 640px) {
+  .form-row,
+  .service-key-row {
+    grid-template-columns: 1fr;
+  }
+
+  .service-key-remove {
+    justify-self: flex-start;
+  }
+}

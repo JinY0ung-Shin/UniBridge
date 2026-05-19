@@ -75,6 +75,45 @@ describe('GatewayRouteForm', () => {
     });
   });
 
+  it('submits multiple service keys for a new route', async () => {
+    const user = userEvent.setup();
+    const upstream = makeGatewayUpstream({ id: 'us-1', name: 'my-upstream' });
+    mockedGetGatewayUpstreams.mockResolvedValue({ items: [upstream], total: 1 });
+    mockedSaveGatewayRoute.mockResolvedValue(makeGatewayRoute());
+
+    renderWithProviders(<GatewayRouteForm />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: 'my-upstream' })).toBeInTheDocument();
+    });
+
+    await user.type(screen.getByPlaceholderText('myservice/*'), 'external/*');
+    await user.selectOptions(screen.getAllByRole('combobox')[1], 'us-1');
+    await user.click(screen.getByRole('button', { name: '+ Add Header' }));
+    await user.click(screen.getByRole('button', { name: '+ Add Header' }));
+
+    const headerNameInputs = screen.getAllByPlaceholderText('Authorization');
+    const headerValueInputs = screen.getAllByPlaceholderText('Bearer sk-xxx...');
+    await user.type(headerNameInputs[0], 'X-Api-Key');
+    await user.type(headerValueInputs[0], 'secret-1');
+    await user.type(headerNameInputs[1], 'Authorization');
+    await user.type(headerValueInputs[1], 'Bearer secret-2');
+
+    await user.click(screen.getByRole('button', { name: 'Create Route' }));
+
+    await waitFor(() => {
+      expect(mockedSaveGatewayRoute).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          service_keys: [
+            { header_name: 'X-Api-Key', header_value: 'secret-1' },
+            { header_name: 'Authorization', header_value: 'Bearer secret-2' },
+          ],
+        }),
+      );
+    });
+  });
+
   it('submit button is disabled when no upstream selected', async () => {
     renderWithProviders(<GatewayRouteForm />);
 
@@ -139,6 +178,44 @@ describe('GatewayRouteForm', () => {
 
     await waitFor(() => {
       expect(screen.getByPlaceholderText('My API Route')).toHaveValue('new-route');
+    });
+  });
+
+  it('preserves existing service key values when editing without retyping secrets', async () => {
+    vi.mocked(useParams).mockReturnValue({ id: 'route-1' });
+    const user = userEvent.setup();
+    const route = makeGatewayRoute({
+      service_keys: [
+        { header_name: 'X-Api-Key', header_value: '***1234' },
+        { header_name: 'Authorization', header_value: '***5678' },
+      ],
+    });
+    mockedGetGatewayRoute.mockResolvedValue(route);
+    mockedSaveGatewayRoute.mockResolvedValue(route);
+
+    renderWithProviders(<GatewayRouteForm />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Edit Route' })).toBeInTheDocument();
+    });
+
+    expect(screen.getByDisplayValue('X-Api-Key')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('***1234')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Authorization')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('***5678')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Update Route' }));
+
+    await waitFor(() => {
+      expect(mockedSaveGatewayRoute).toHaveBeenCalledWith(
+        'route-1',
+        expect.objectContaining({
+          service_keys: [
+            { header_name: 'X-Api-Key', header_value: '' },
+            { header_name: 'Authorization', header_value: '' },
+          ],
+        }),
+      );
     });
   });
 });

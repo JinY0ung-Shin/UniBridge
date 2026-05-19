@@ -185,6 +185,7 @@ export function makeGatewayRoute(overrides = {}) {
     require_auth: false,
     strip_prefix: false,
     service_key: null,
+    service_keys: [],
     plugins: {},
     ...overrides,
   };

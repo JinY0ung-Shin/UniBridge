@@ -10,7 +10,7 @@ from app.routers.gateway import (
     PROTECTED_ROUTE_IDS,
     PROTECTED_UPSTREAM_IDS,
     _extract_scalar,
-    _extract_service_key,
+    _extract_service_keys,
     _extract_strip_prefix,
     _extract_timeseries,
     _get_step,
@@ -35,16 +35,30 @@ def test_mask_value_short_and_long():
     assert _mask_value("supersecretkey") == "***tkey"
 
 
-def test_extract_service_key_present_and_absent():
-    assert _extract_service_key({}) is None
+def test_extract_service_keys_present_and_absent():
+    assert _extract_service_keys({}) == []
     assert (
-        _extract_service_key({"plugins": {"proxy-rewrite": {"headers": {"set": {}}}}})
-        is None
+        _extract_service_keys({"plugins": {"proxy-rewrite": {"headers": {"set": {}}}}})
+        == []
     )
-    out = _extract_service_key({
+    out = _extract_service_keys({
         "plugins": {"proxy-rewrite": {"headers": {"set": {"X-Token": "longvalue123"}}}}
     })
-    assert out == {"header_name": "X-Token", "header_value": "***e123"}
+    assert out == [{"header_name": "X-Token", "header_value": "***e123"}]
+
+    multi = _extract_service_keys({
+        "plugins": {
+            "proxy-rewrite": {
+                "headers": {
+                    "set": {
+                        "X-Token": "longvalue123",
+                        "Authorization": "Bearer abcdef",
+                    }
+                }
+            }
+        }
+    })
+    assert {entry["header_name"] for entry in multi} == {"X-Token", "Authorization"}
 
 
 def test_extract_strip_prefix_true_when_regex_uri():
@@ -177,9 +191,11 @@ async def test_save_route_upstream_id_required(client, admin_token):
 
 @pytest.mark.asyncio
 async def test_save_route_apisix_http_and_generic_errors(client, admin_token):
+    # get_resource returns 404 (new route), then put_resource fails — both
+    # error variants must surface as 502 from the put path.
     body = {"uri": "/api/x", "upstream_id": "u1"}
     with patch("app.routers.gateway.apisix_client") as mock:
-        mock.get_resource = AsyncMock(side_effect=Exception("nope"))
+        mock.get_resource = AsyncMock(side_effect=_http_status(404, "no"))
         mock.put_resource = AsyncMock(side_effect=_http_status(500, "boom"))
         resp = await client.put(
             "/admin/gateway/routes/r1",
@@ -189,7 +205,7 @@ async def test_save_route_apisix_http_and_generic_errors(client, admin_token):
     assert resp.status_code == 502
 
     with patch("app.routers.gateway.apisix_client") as mock:
-        mock.get_resource = AsyncMock(side_effect=Exception("nope"))
+        mock.get_resource = AsyncMock(side_effect=_http_status(404, "no"))
         mock.put_resource = AsyncMock(side_effect=RuntimeError("fail"))
         resp = await client.put(
             "/admin/gateway/routes/r1",
@@ -214,7 +230,8 @@ async def test_save_route_success(client, admin_token):
         )
     assert resp.status_code == 200
     data = resp.json()
-    assert "service_key" in data
+    assert "service_keys" in data
+    assert isinstance(data["service_keys"], list)
     assert "require_auth" in data
     assert "strip_prefix" in data
 

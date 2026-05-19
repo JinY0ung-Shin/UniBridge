@@ -62,6 +62,26 @@
   color: var(--text-tertiary);
 }
 
+.service-key-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.service-key-cell-item {
+  display: flex;
+  gap: 4px;
+  align-items: baseline;
+}
+
+.service-key-cell-name {
+  color: var(--text-secondary);
+}
+
+.service-key-cell-value {
+  color: var(--text-tertiary);
+}
+
 .status-cell {
   display: flex;
   flex-direction: column;

@@ -13,20 +13,51 @@ import './GatewayRouteForm.css';
 
 const ALL_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
 
+interface ServiceKeyRow {
+  rowKey: string;
+  header_name: string;
+  header_value: string;
+  isExisting: boolean;
+  existingPlaceholder: string;
+}
+
+function makeRowKey(): string {
+  return crypto.randomUUID();
+}
+
+function routeServiceKeys(route: GatewayRoute | undefined) {
+  if (!route) return [];
+  if (route.service_keys?.length) return route.service_keys;
+  return route.service_key ? [route.service_key] : [];
+}
+
+function initialServiceKeys(route: GatewayRoute | undefined): ServiceKeyRow[] {
+  return routeServiceKeys(route).map((sk) => ({
+    rowKey: makeRowKey(),
+    header_name: sk.header_name,
+    header_value: '',
+    isExisting: true,
+    existingPlaceholder: sk.header_value,
+  }));
+}
+
 function routeFormKey(route: GatewayRoute | undefined, isEdit: boolean): string {
   if (!isEdit) return 'new';
   if (!route) return 'loading';
-  return [
+  const serviceKeySignature = JSON.stringify(
+    routeServiceKeys(route).map((key) => [key.header_name, key.header_value]),
+  );
+  return JSON.stringify([
     route.id,
     route.name ?? '',
     route.uri,
-    route.methods?.join('\0') ?? '',
+    route.methods ?? [],
     route.upstream_id ?? '',
     route.status,
-    String(route.require_auth),
-    String(route.strip_prefix),
-    route.service_key?.header_name ?? '',
-  ].join(':');
+    route.require_auth,
+    route.strip_prefix,
+    serviceKeySignature,
+  ]);
 }
 
 function GatewayRouteEditor({
@@ -51,8 +82,7 @@ function GatewayRouteEditor({
   const [statusVal, setStatusVal] = useState(initialRoute?.status ?? 1);
   const [requireAuth, setRequireAuth] = useState(!!initialRoute?.require_auth);
   const [stripPrefix, setStripPrefix] = useState(initialRoute ? !!initialRoute.strip_prefix : true);
-  const [keyHeader, setKeyHeader] = useState(initialRoute?.service_key?.header_name || '');
-  const [keyValue, setKeyValue] = useState('');
+  const [serviceKeys, setServiceKeys] = useState<ServiceKeyRow[]>(() => initialServiceKeys(initialRoute));
   const [error, setError] = useState('');
 
   const saveMutation = useMutation({
@@ -79,6 +109,17 @@ function GatewayRouteEditor({
 
     const uri = `/api/${uriSuffix.replace(/^\/+/, '')}`;
     const routeId = id || crypto.randomUUID();
+
+    const service_keys = serviceKeys
+      .map((row) => {
+        const headerName = row.header_name.trim();
+        const headerValue = row.header_value.trim();
+        if (!headerName) return null;
+        if (!row.isExisting && !headerValue) return null;
+        return { header_name: headerName, header_value: headerValue };
+      })
+      .filter((entry): entry is { header_name: string; header_value: string } => entry !== null);
+
     const body: Record<string, unknown> = {
       name: name.trim() || undefined,
       uri,
@@ -87,23 +128,8 @@ function GatewayRouteEditor({
       status: statusVal,
       require_auth: requireAuth,
       strip_prefix: stripPrefix,
+      service_keys,
     };
-
-    if (keyHeader.trim()) {
-      if (keyValue.trim()) {
-        body.service_key = {
-          header_name: keyHeader.trim(),
-          header_value: keyValue.trim(),
-        };
-      } else if (!isEdit) {
-        // Only require value for new routes; editing without value preserves existing
-        body.service_key = {
-          header_name: keyHeader.trim(),
-          header_value: '',
-        };
-      }
-      // When editing and keyValue is empty, omit service_key to preserve existing value
-    }
 
     setError('');
     saveMutation.mutate({ routeId, body });
@@ -113,6 +139,43 @@ function GatewayRouteEditor({
     setMethods((prev) =>
       prev.includes(method) ? prev.filter((m) => m !== method) : [...prev, method]
     );
+  }
+
+  function updateKeyRow(rowKey: string, patch: Partial<Pick<ServiceKeyRow, 'header_name' | 'header_value'>>) {
+    setServiceKeys((prev) =>
+      prev.map((row) => {
+        if (row.rowKey !== rowKey) return row;
+        const next = { ...row, ...patch };
+        // If the user renamed an existing row, we can no longer preserve the
+        // old secret under the new key; force them to type a fresh value.
+        if (
+          patch.header_name !== undefined &&
+          row.isExisting &&
+          patch.header_name.trim() !== row.header_name.trim()
+        ) {
+          next.isExisting = false;
+          next.existingPlaceholder = '';
+        }
+        return next;
+      })
+    );
+  }
+
+  function addKeyRow() {
+    setServiceKeys((prev) => [
+      ...prev,
+      {
+        rowKey: makeRowKey(),
+        header_name: '',
+        header_value: '',
+        isExisting: false,
+        existingPlaceholder: '',
+      },
+    ]);
+  }
+
+  function removeKeyRow(rowKey: string) {
+    setServiceKeys((prev) => prev.filter((row) => row.rowKey !== rowKey));
   }
 
   return (
@@ -211,22 +274,51 @@ function GatewayRouteEditor({
           <span className="field-hint" style={{ marginBottom: 12, display: 'block' }}>
             {t('gatewayRouteForm.serviceKeyDesc')}
           </span>
-          <div className="form-row">
-            <div className="field">
-              <label>{t('gatewayRouteForm.headerName')}</label>
-              <input value={keyHeader} onChange={(e) => setKeyHeader(e.target.value)} placeholder="Authorization" />
+
+          {serviceKeys.length > 0 && (
+            <div className="service-key-list">
+              {serviceKeys.map((row) => (
+                <div className="service-key-row" key={row.rowKey}>
+                  <div className="field service-key-name">
+                    <label>{t('gatewayRouteForm.headerName')}</label>
+                    <input
+                      value={row.header_name}
+                      onChange={(e) => updateKeyRow(row.rowKey, { header_name: e.target.value })}
+                      placeholder="Authorization"
+                    />
+                  </div>
+                  <div className="field service-key-value">
+                    <label>{t('gatewayRouteForm.headerValue')}</label>
+                    <input
+                      type="password"
+                      value={row.header_value}
+                      onChange={(e) => updateKeyRow(row.rowKey, { header_value: e.target.value })}
+                      placeholder={
+                        row.isExisting
+                          ? row.existingPlaceholder || t('gatewayRouteForm.headerValueEditPlaceholder')
+                          : t('gatewayRouteForm.headerValueNewHint')
+                      }
+                    />
+                    {row.isExisting && (
+                      <span className="field-hint">{t('gatewayRouteForm.headerValueEditHint')}</span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-danger service-key-remove"
+                    onClick={() => removeKeyRow(row.rowKey)}
+                    aria-label={t('gatewayRouteForm.removeHeader')}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
             </div>
-            <div className="field">
-              <label>{t('gatewayRouteForm.headerValue')}</label>
-              <input
-                type="password"
-                value={keyValue}
-                onChange={(e) => setKeyValue(e.target.value)}
-                placeholder={isEdit ? t('gatewayRouteForm.headerValueEditPlaceholder') : t('gatewayRouteForm.headerValueNewHint')}
-              />
-              {isEdit && <span className="field-hint">{t('gatewayRouteForm.headerValueEditHint')}</span>}
-            </div>
-          </div>
+          )}
+
+          <button type="button" className="btn btn-sm btn-secondary service-key-add" onClick={addKeyRow}>
+            {t('gatewayRouteForm.addHeader')}
+          </button>
         </div>
 
         {error && <div className="error-banner">{error}</div>}

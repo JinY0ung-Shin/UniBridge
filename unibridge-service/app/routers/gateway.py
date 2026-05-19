@@ -36,15 +36,41 @@ def _mask_value(value: str) -> str:
     return "***" + value[-MASK_KEEP:]
 
 
+def _headers_set_for_route(route: dict[str, Any]) -> dict[str, str]:
+    plugins = route.get("plugins") or {}
+    if not isinstance(plugins, dict):
+        return {}
+    pr = plugins.get("proxy-rewrite") or {}
+    if not isinstance(pr, dict):
+        return {}
+    headers = pr.get("headers") or {}
+    if not isinstance(headers, dict):
+        return {}
+    headers_set = headers.get("set") or {}
+    if not isinstance(headers_set, dict):
+        return {}
+    return {
+        name: value
+        for name, value in headers_set.items()
+        if isinstance(name, str) and isinstance(value, str)
+    }
+
+
+def _extract_service_keys(route: dict[str, Any]) -> list[dict[str, str]]:
+    headers_set = _headers_set_for_route(route)
+    return [
+        {"header_name": name, "header_value": _mask_value(value)}
+        for name, value in headers_set.items()
+    ]
+
+
 def _extract_service_key(route: dict[str, Any]) -> dict[str, str] | None:
-    plugins = route.get("plugins", {})
-    pr = plugins.get("proxy-rewrite", {})
-    headers_set = pr.get("headers", {}).get("set", {})
-    if not headers_set:
-        return None
-    for name, value in headers_set.items():
-        return {"header_name": name, "header_value": _mask_value(value)}
-    return None
+    keys = _extract_service_keys(route)
+    return keys[0] if keys else None
+
+
+def _service_headers_for_route(route: dict[str, Any]) -> dict[str, str]:
+    return _headers_set_for_route(route)
 
 
 def _extract_strip_prefix(route: dict[str, Any]) -> bool:
@@ -64,24 +90,53 @@ def _health_path_for_route(route: dict[str, Any]) -> str:
 def _inject_plugins(
     body: dict[str, Any], existing_plugins: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    """Inject service_key, strip_prefix, and require_auth into APISIX plugins config, preserving others."""
-    service_key = body.pop("service_key", None)
+    """Inject service_keys, strip_prefix, and require_auth into APISIX plugins config, preserving others."""
+    legacy_service_key = body.pop("service_key", None)
+    service_keys = body.pop("service_keys", None)
+    if service_keys is None and legacy_service_key is not None:
+        service_keys = [legacy_service_key]
     require_auth = body.pop("require_auth", None)
     strip_prefix = body.pop("strip_prefix", None)
     plugins = dict(existing_plugins or {})
 
     # Build proxy-rewrite from existing config
-    pr_config = dict(plugins.get("proxy-rewrite", {}))
+    existing_pr = plugins.get("proxy-rewrite")
+    pr_config = dict(existing_pr) if isinstance(existing_pr, dict) else {}
 
-    # Service key → proxy-rewrite headers
-    if (
-        service_key
-        and service_key.get("header_name")
-        and service_key.get("header_value")
-    ):
-        pr_config["headers"] = {
-            "set": {service_key["header_name"]: service_key["header_value"]}
-        }
+    # Service keys → proxy-rewrite headers.set (other header ops like
+    # headers.add / headers.remove are preserved).
+    # - None: preserve existing headers entirely
+    # - list: replace `set` with the provided entries. For each entry, an
+    #   empty/missing header_value means "preserve existing value for this
+    #   header_name" (lets the UI edit other fields without retyping secrets).
+    if service_keys is not None:
+        existing_raw_headers = pr_config.get("headers")
+        existing_headers = (
+            dict(existing_raw_headers) if isinstance(existing_raw_headers, dict) else {}
+        )
+        existing_raw_set = existing_headers.get("set")
+        existing_set = dict(existing_raw_set) if isinstance(existing_raw_set, dict) else {}
+        new_set: dict[str, str] = {}
+        for sk in service_keys:
+            if not isinstance(sk, dict):
+                continue
+            name = (sk.get("header_name") or "").strip()
+            if not name:
+                continue
+            value = sk.get("header_value")
+            if value in (None, ""):
+                if name in existing_set:
+                    new_set[name] = existing_set[name]
+                continue
+            new_set[name] = value
+        if new_set:
+            existing_headers["set"] = new_set
+        else:
+            existing_headers.pop("set", None)
+        if existing_headers:
+            pr_config["headers"] = existing_headers
+        else:
+            pr_config.pop("headers", None)
 
     # Strip prefix → proxy-rewrite regex_uri
     if strip_prefix is True:
@@ -114,6 +169,57 @@ def _inject_plugins(
     elif "plugins" in body:
         del body["plugins"]
     return body
+
+
+def _validate_service_keys(value: Any) -> None:
+    """Validate service_keys payload shape; raise 400 if malformed."""
+    if value is None:
+        return
+    if not isinstance(value, list):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="service_keys must be a list",
+        )
+    seen: set[str] = set()
+    for idx, entry in enumerate(value):
+        if not isinstance(entry, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"service_keys[{idx}] must be an object",
+            )
+        name = entry.get("header_name")
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"service_keys[{idx}].header_name is required",
+            )
+        hv = entry.get("header_value")
+        if hv is not None and not isinstance(hv, str):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"service_keys[{idx}].header_value must be a string",
+            )
+        normalized = name.strip().lower()
+        if normalized in seen:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Duplicate header name: {name}",
+            )
+        seen.add(normalized)
+
+
+def _validate_service_keys_payload(body: dict[str, Any]) -> None:
+    if "service_keys" in body:
+        _validate_service_keys(body.get("service_keys"))
+        return
+    if "service_key" in body and body.get("service_key") is not None:
+        _validate_service_keys([body.get("service_key")])
+
+
+def _attach_service_key_fields(route: dict[str, Any]) -> None:
+    service_keys = _extract_service_keys(route)
+    route["service_keys"] = service_keys
+    route["service_key"] = service_keys[0] if service_keys else None
 
 
 def _handle_apisix_error(exc: HTTPStatusError, resource: str) -> NoReturn:
@@ -154,7 +260,7 @@ async def list_routes(
             detail=f"Failed to connect to APISIX: {exc}",
         )
     for item in result.get("items", []):
-        item["service_key"] = _extract_service_key(item)
+        _attach_service_key_fields(item)
         item["require_auth"] = "key-auth" in item.get("plugins", {})
         item["strip_prefix"] = _extract_strip_prefix(item)
         item["system"] = item.get("id") in PROTECTED_ROUTE_IDS
@@ -175,7 +281,7 @@ async def get_route(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Failed to connect to APISIX: {exc}",
         )
-    route["service_key"] = _extract_service_key(route)
+    _attach_service_key_fields(route)
     route["require_auth"] = "key-auth" in route.get("plugins", {})
     route["strip_prefix"] = _extract_strip_prefix(route)
     return route
@@ -205,14 +311,24 @@ async def save_route(
             status_code=status.HTTP_400_BAD_REQUEST, detail="upstream_id is required."
         )
 
+    _validate_service_keys_payload(body)
+
+    # Look up existing route so we can (a) preserve plugins we don't manage and
+    # (b) honor "blank value = preserve existing secret" for service_keys. Only
+    # APISIX 404 means "new route, proceed"; any other failure is fatal to avoid
+    # silently losing previously stored headers.
     existing_plugins: dict[str, Any] | None = None
     try:
         existing = await apisix_client.get_resource("routes", route_id)
         existing_plugins = existing.get("plugins")
-    except HTTPStatusError:
-        pass
-    except Exception:
-        pass  # New route, APISIX unreachable for existing check is non-fatal
+    except HTTPStatusError as exc:
+        if exc.response.status_code != 404:
+            _handle_apisix_error(exc, "Route")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to look up existing route: {exc}",
+        )
 
     body = _inject_plugins(body, existing_plugins)
 
@@ -232,7 +348,7 @@ async def save_route(
         body.get("upstream_id"),
         _admin.username,
     )
-    result["service_key"] = _extract_service_key(result)
+    _attach_service_key_fields(result)
     result["require_auth"] = "key-auth" in result.get("plugins", {})
     result["strip_prefix"] = _extract_strip_prefix(result)
     return result
@@ -307,7 +423,7 @@ async def test_route(
     try:
         ssl_verify: str | bool = settings.SSL_CA_CERT_PATH or settings.SSL_VERIFY
         async with httpx.AsyncClient(timeout=5.0, verify=ssl_verify) as client:
-            resp = await client.get(url)
+            resp = await client.get(url, headers=_service_headers_for_route(route))
         elapsed_ms = round((time.monotonic() - start) * 1000)
         body: Any = None
         try:
