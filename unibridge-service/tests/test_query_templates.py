@@ -155,6 +155,24 @@ async def test_mutating_query_template_is_rejected(client, admin_token):
     assert resp.json()["detail"] == "Query templates must be read-only SELECT/EXPLAIN statements"
 
 
+async def test_explain_analyze_mutating_query_template_is_rejected(client, admin_token):
+    await _create_database(client, admin_token)
+
+    resp = await client.post(
+        "/admin/query/templates",
+        json={
+            "path": "reports/analyze-delete",
+            "name": "Analyze delete",
+            "database": "maindb",
+            "sql": "EXPLAIN (ANALYZE, FORMAT JSON) DELETE FROM users WHERE id = :id",
+        },
+        headers=auth_header(admin_token),
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Query templates must be read-only SELECT/EXPLAIN statements"
+
+
 async def test_query_template_crud(client, admin_token):
     await _create_database(client, admin_token)
     await _create_template(client, admin_token)

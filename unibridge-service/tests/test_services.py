@@ -92,6 +92,11 @@ class TestDetectStatementType:
     def test_explain_analyze_delete_is_delete(self):
         assert detect_statement_type("EXPLAIN ANALYZE DELETE FROM t WHERE id = 1") == "delete"
 
+    def test_explain_analyze_delete_with_options_is_delete(self):
+        assert detect_statement_type(
+            "EXPLAIN (ANALYZE, FORMAT JSON) DELETE FROM t WHERE id = 1"
+        ) == "delete"
+
     def test_merge(self):
         assert detect_statement_type(
             "MERGE INTO users USING staging ON users.id = staging.id WHEN MATCHED THEN DELETE"
