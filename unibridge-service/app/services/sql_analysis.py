@@ -87,6 +87,8 @@ def _split_explain(sql: str) -> tuple[bool, str] | None:
             elif char == ")":
                 depth -= 1
                 if depth == 0:
+                    options = rest[1:index]
+                    analyze = re.search(r"\bANALYZE\b", options, re.IGNORECASE) is not None
                     rest = rest[index + 1:].lstrip()
                     break
 

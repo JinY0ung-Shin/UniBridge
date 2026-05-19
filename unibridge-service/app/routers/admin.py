@@ -10,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
 from app.database import get_db
-from app.models import AuditLog, DBConnection, Permission, Role
+from app.models import AuditLog, DBConnection, Permission, QueryTemplate, Role
+from app.routers.query import _detect_statement_type
 from app.schemas import (
     AuditLogResponse,
     DBConnectionCreate,
@@ -18,8 +19,12 @@ from app.schemas import (
     DBConnectionUpdate,
     PermissionCreate,
     PermissionResponse,
+    QueryTemplateCreate,
+    QueryTemplateResponse,
+    QueryTemplateUpdate,
     SystemConfigResponse,
     SystemConfigUpdate,
+    normalize_query_template_path,
 )
 from app.services.alert_state import delete_alert_state
 from app.services.connection_manager import connection_manager, encrypt_password
@@ -100,6 +105,42 @@ def _to_connection_response(conn: DBConnection, status_value: str) -> DBConnecti
         query_timeout=conn.query_timeout if conn.query_timeout is not None else 30,
         status=status_value,
     )
+
+
+def _to_template_response(template: QueryTemplate) -> QueryTemplateResponse:
+    return QueryTemplateResponse(
+        id=template.id,
+        path=template.path,
+        name=template.name,
+        description=template.description or "",
+        database=template.db_alias,
+        sql=template.sql,
+        default_limit=template.default_limit,
+        timeout=template.timeout,
+        enabled=template.enabled,
+        created_at=template.created_at,
+        updated_at=template.updated_at,
+    )
+
+
+async def _get_database_or_404(db: AsyncSession, alias: str) -> DBConnection:
+    result = await db.execute(select(DBConnection).where(DBConnection.alias == alias))
+    connection = result.scalar_one_or_none()
+    if connection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Database alias '{alias}' not found",
+        )
+    return connection
+
+
+def _validate_read_only_template_sql(sql: str, db_type: str) -> None:
+    statement_type = _detect_statement_type(sql, db_type)
+    if statement_type not in {"select", "explain"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Query templates must be read-only SELECT/EXPLAIN statements",
+        )
 
 
 # ── DB Connection CRUD ───────────────────────────────────────────────────────
@@ -479,6 +520,136 @@ async def delete_permission(
             detail=f"Permission ID {permission_id} not found",
         )
     await db.delete(perm)
+    await db.commit()
+
+
+# ── Query Templates ──────────────────────────────────────────────────────────
+
+
+@router.get("/admin/query/templates", response_model=list[QueryTemplateResponse])
+async def list_query_templates(
+    _admin: CurrentUser = Depends(require_permission("query.settings.read")),
+    db: AsyncSession = Depends(get_db),
+) -> list[QueryTemplateResponse]:
+    """List saved query templates."""
+    result = await db.execute(select(QueryTemplate).order_by(QueryTemplate.path.asc()))
+    return [_to_template_response(template) for template in result.scalars().all()]
+
+
+@router.post(
+    "/admin/query/templates",
+    response_model=QueryTemplateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_query_template(
+    body: QueryTemplateCreate,
+    _admin: CurrentUser = Depends(require_permission("query.settings.write")),
+    db: AsyncSession = Depends(get_db),
+) -> QueryTemplateResponse:
+    """Create a read-only query template exposed under /query/templates/{path}."""
+    existing = await db.execute(
+        select(QueryTemplate).where(QueryTemplate.path == body.path)
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Query template path '{body.path}' already exists",
+        )
+
+    connection = await _get_database_or_404(db, body.database)
+    _validate_read_only_template_sql(body.sql, connection.db_type)
+
+    template = QueryTemplate(
+        path=body.path,
+        name=body.name,
+        description=body.description,
+        db_alias=body.database,
+        sql=body.sql,
+        default_limit=body.default_limit,
+        timeout=body.timeout,
+        enabled=body.enabled,
+    )
+    db.add(template)
+    await db.commit()
+    await db.refresh(template)
+    return _to_template_response(template)
+
+
+@router.put("/admin/query/templates/{template_path:path}", response_model=QueryTemplateResponse)
+async def update_query_template(
+    template_path: str,
+    body: QueryTemplateUpdate,
+    _admin: CurrentUser = Depends(require_permission("query.settings.write")),
+    db: AsyncSession = Depends(get_db),
+) -> QueryTemplateResponse:
+    """Update a saved query template."""
+    try:
+        normalized_path = normalize_query_template_path(template_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    result = await db.execute(
+        select(QueryTemplate).where(QueryTemplate.path == normalized_path)
+    )
+    template = result.scalar_one_or_none()
+    if template is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Query template path '{normalized_path}' not found",
+        )
+
+    new_database = body.database if body.database is not None else template.db_alias
+    new_sql = body.sql if body.sql is not None else template.sql
+    if body.database is not None or body.sql is not None:
+        connection = await _get_database_or_404(db, new_database)
+        _validate_read_only_template_sql(new_sql, connection.db_type)
+
+    if body.name is not None:
+        template.name = body.name
+    if body.description is not None:
+        template.description = body.description
+    if body.database is not None:
+        template.db_alias = body.database
+    if body.sql is not None:
+        template.sql = body.sql
+    if "default_limit" in body.model_fields_set:
+        template.default_limit = body.default_limit
+    if "timeout" in body.model_fields_set:
+        template.timeout = body.timeout
+    if body.enabled is not None:
+        template.enabled = body.enabled
+
+    await db.commit()
+    await db.refresh(template)
+    return _to_template_response(template)
+
+
+@router.delete(
+    "/admin/query/templates/{template_path:path}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+)
+async def delete_query_template(
+    template_path: str,
+    _admin: CurrentUser = Depends(require_permission("query.settings.write")),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Delete a saved query template."""
+    try:
+        normalized_path = normalize_query_template_path(template_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    result = await db.execute(
+        select(QueryTemplate).where(QueryTemplate.path == normalized_path)
+    )
+    template = result.scalar_one_or_none()
+    if template is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Query template path '{normalized_path}' not found",
+        )
+    await db.delete(template)
     await db.commit()
 
 

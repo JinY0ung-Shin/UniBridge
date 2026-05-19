@@ -74,6 +74,26 @@ class Permission(Base):
     role_ref = relationship("Role", back_populates="db_permissions", foreign_keys=[role])
 
 
+class QueryTemplate(Base):
+    __tablename__ = "query_templates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    path = Column(String(200), unique=True, nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    description = Column(String(255), default="")
+    db_alias = Column(String, nullable=False)
+    sql = Column(Text, nullable=False)
+    default_limit = Column(Integer, nullable=True)
+    timeout = Column(Integer, nullable=True)
+    enabled = Column(Boolean, default=True, nullable=False, server_default="true")
+    created_at = Column(UtcDateTime, default=utcnow)
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("enabled", True)
+        super().__init__(**kwargs)
+
+
 class ApiKeyAccess(Base):
     __tablename__ = "api_key_access"
 

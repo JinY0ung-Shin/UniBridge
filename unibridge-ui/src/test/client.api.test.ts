@@ -154,6 +154,34 @@ describe('api client API helpers', () => {
     ]);
   });
 
+  it('query template endpoints', async () => {
+    const mod = await importClient(keycloak);
+    const calls: Array<{ method?: string; url?: string }> = [];
+    mod.default.defaults.adapter = makeAdapter((c) => {
+      calls.push({ method: c.method, url: c.url });
+      return { id: 1, path: 'reports/users' };
+    });
+
+    await mod.getQueryTemplates();
+    await mod.createQueryTemplate({
+      path: 'reports/users',
+      name: 'Users',
+      database: 'main',
+      sql: 'SELECT * FROM users',
+    });
+    await mod.updateQueryTemplate('reports/users', { enabled: false });
+    await mod.deleteQueryTemplate('reports/users');
+    await mod.executeQueryTemplate('reports/users', { params: { active: true } });
+
+    expect(calls).toEqual([
+      { method: 'get', url: '/admin/query/templates' },
+      { method: 'post', url: '/admin/query/templates' },
+      { method: 'put', url: '/admin/query/templates/reports/users' },
+      { method: 'delete', url: '/admin/query/templates/reports/users' },
+      { method: 'post', url: '/query/templates/reports/users' },
+    ]);
+  });
+
   it('getToken POSTs auth token request', async () => {
     const mod = await importClient(keycloak);
     let body: { username?: string; role?: string } | undefined;

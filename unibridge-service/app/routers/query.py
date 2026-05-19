@@ -13,8 +13,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import metrics
 from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_role_permissions, require_permission
 from app.database import get_db
-from app.models import Permission
-from app.schemas import DBConnectionResponse, HealthResponse, QueryRequest, QueryResponse
+from app.models import Permission, QueryTemplate
+from app.schemas import (
+    DBConnectionResponse,
+    HealthResponse,
+    QueryRequest,
+    QueryResponse,
+    QueryTemplateExecuteRequest,
+    normalize_query_template_path,
+)
 from app.middleware.rate_limiter import rate_limiter
 from app.services.audit import log_query
 from app.services.connection_manager import connection_manager
@@ -310,6 +317,45 @@ async def execute(
         logger.exception("Failed to write audit log for successful query")
 
     return response
+
+
+@router.post("/query/templates/{template_path:path}", response_model=QueryResponse)
+async def execute_template(
+    template_path: str,
+    body: QueryTemplateExecuteRequest | None = None,
+    user: CurrentUser | ApiKeyUser = Depends(get_current_user_or_apikey),
+    db: AsyncSession = Depends(get_db),
+) -> QueryResponse:
+    """Execute a saved read-only query template by stable path."""
+    try:
+        normalized_path = normalize_query_template_path(template_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    result = await db.execute(
+        select(QueryTemplate).where(QueryTemplate.path == normalized_path)
+    )
+    template = result.scalar_one_or_none()
+    if template is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Query template path '{normalized_path}' not found",
+        )
+    if not template.enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Query template path '{normalized_path}' is disabled",
+        )
+
+    execute_body = body or QueryTemplateExecuteRequest()
+    request = QueryRequest(
+        database=template.db_alias,
+        sql=template.sql,
+        params=execute_body.params,
+        limit=execute_body.limit if execute_body.limit is not None else template.default_limit,
+        timeout=execute_body.timeout if execute_body.timeout is not None else template.timeout,
+    )
+    return await execute(request, user=user, db=db)
 
 
 @router.get("/query/databases", response_model=list[DBConnectionResponse])
