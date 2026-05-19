@@ -79,4 +79,20 @@ describe('LlmMonitoring', () => {
       'https://localhost:4000/ui',
     );
   });
+
+  it('renders request count in model usage table', async () => {
+    mockedGetLlmByModel.mockResolvedValue([
+      { model: 'gpt-4', tokens: 5000, requests: 25, cost: 12.345 },
+    ]);
+    const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
+
+    renderWithProviders(<LlmMonitoring />);
+
+    await waitFor(() => {
+      expect(screen.getByText('gpt-4')).toBeInTheDocument();
+    });
+
+    expect(screen.getAllByText('Requests').length).toBeGreaterThan(0);
+    expect(screen.getByText('25')).toBeInTheDocument();
+  });
 });

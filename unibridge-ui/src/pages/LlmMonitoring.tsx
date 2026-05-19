@@ -227,6 +227,7 @@ function LlmMonitoring() {
                 <tr>
                   <th>{t('llmMonitoring.model')}</th>
                   <th style={{ textAlign: 'right' }}>{t('llmMonitoring.tokens')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.requests')}</th>
                   <th style={{ textAlign: 'right' }}>{t('llmMonitoring.cost')}</th>
                 </tr>
               </thead>
@@ -236,6 +237,9 @@ function LlmMonitoring() {
                     <td className="cell-alias">{m.model}</td>
                     <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
                       {formatTokens(m.tokens)}
+                    </td>
+                    <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                      {m.requests.toLocaleString()}
                     </td>
                     <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
                       {formatCost(m.cost)}

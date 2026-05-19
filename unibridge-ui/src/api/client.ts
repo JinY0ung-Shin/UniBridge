@@ -545,6 +545,7 @@ export interface LlmModelUsage {
   model: string;
   tokens: number;
   cost: number;
+  requests: number;
 }
 
 export interface LlmKeyUsage {

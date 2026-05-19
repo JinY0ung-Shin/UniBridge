@@ -704,18 +704,30 @@ async def test_llm_metrics_by_model(client, admin_token):
         {"metric": {"model": "gpt-4"}, "value": [0, "12.345"]},
         {"metric": {"model": "missing-cost"}, "value": [0, "bad"]},
     ]
+    requests = [
+        {"metric": {"requested_model": "gpt-4"}, "value": [0, "25"]},
+        {"metric": {"requested_model": "request-only"}, "value": [0, "3"]},
+        {"metric": {"requested_model": "bad"}, "value": [0, "bogus"]},
+    ]
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
-               side_effect=[tokens, cost]):
+               side_effect=[tokens, cost, requests]):
         resp = await client.get(
             "/admin/gateway/metrics/llm/by-model?range=1h",
             headers=auth_header(admin_token),
         )
     assert resp.status_code == 200
     rows = resp.json()
-    assert len(rows) == 1
+    assert len(rows) == 2
     assert rows[0]["model"] == "gpt-4"
     assert rows[0]["tokens"] == 5000
     assert rows[0]["cost"] == 12.345
+    assert rows[0]["requests"] == 25
+    assert rows[1] == {
+        "model": "request-only",
+        "tokens": 0,
+        "cost": 0.0,
+        "requests": 3,
+    }
 
 
 @pytest.mark.asyncio

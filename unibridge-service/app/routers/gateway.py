@@ -635,6 +635,17 @@ def _labels(route: str | None, *extra: str) -> str:
     return "{" + ",".join(parts) + "}" if parts else ""
 
 
+def _metric_label(row: dict[str, Any], *names: str) -> str:
+    metric = row.get("metric", {})
+    if not isinstance(metric, dict):
+        return "unknown"
+    for name in names:
+        value = metric.get(name)
+        if isinstance(value, str) and value:
+            return value
+    return "unknown"
+
+
 def _extract_scalar(results: list[dict[str, Any]]) -> float:
     """Extract single scalar value from Prometheus instant query result."""
     if not results:
@@ -1038,16 +1049,19 @@ async def llm_metrics_by_model(
     time_range: str = Query("1h", alias="range", description="Time range"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
-    """Token usage and cost breakdown by model."""
+    """Token usage, request count, and cost breakdown by model."""
     if time_range not in VALID_RANGES:
         time_range = "1h"
     try:
-        token_results, cost_results = await asyncio.gather(
+        token_results, cost_results, request_results = await asyncio.gather(
             prometheus_client.instant_query(
                 f"sum by (model) (increase(litellm_total_tokens_metric_total[{time_range}]))"
             ),
             prometheus_client.instant_query(
                 f"sum by (model) (increase(litellm_spend_metric_total[{time_range}]))"
+            ),
+            prometheus_client.instant_query(
+                f"sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total[{time_range}]))"
             ),
         )
     except Exception as exc:
@@ -1055,30 +1069,45 @@ async def llm_metrics_by_model(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
 
+    token_map: dict[str, int] = {}
+    for r in token_results:
+        model = _metric_label(r, "model", "requested_model")
+        try:
+            token_map[model] = round(float(r["value"][1]))
+        except (IndexError, ValueError, TypeError):
+            token_map[model] = 0
+
     cost_map: dict[str, float] = {}
     for r in cost_results:
-        model = r.get("metric", {}).get("model", "unknown")
+        model = _metric_label(r, "model", "requested_model")
         try:
             cost_map[model] = round(float(r["value"][1]), 4)
         except (IndexError, ValueError, TypeError):
             cost_map[model] = 0.0
 
-    models = []
-    for r in token_results:
-        model = r.get("metric", {}).get("model", "unknown")
+    request_map: dict[str, int] = {}
+    for r in request_results:
+        model = _metric_label(r, "requested_model", "model")
         try:
-            tokens = round(float(r["value"][1]))
+            request_map[model] = round(float(r["value"][1]))
         except (IndexError, ValueError, TypeError):
-            tokens = 0
-        if tokens > 0:
+            request_map[model] = 0
+
+    models = []
+    for model in token_map.keys() | cost_map.keys() | request_map.keys():
+        tokens = token_map.get(model, 0)
+        cost = cost_map.get(model, 0.0)
+        requests = request_map.get(model, 0)
+        if tokens > 0 or cost > 0 or requests > 0:
             models.append(
                 {
                     "model": model,
                     "tokens": tokens,
-                    "cost": cost_map.get(model, 0.0),
+                    "cost": cost,
+                    "requests": requests,
                 }
             )
-    models.sort(key=lambda x: x["tokens"], reverse=True)
+    models.sort(key=lambda x: (x["tokens"], x["requests"]), reverse=True)
     return models
 
 
