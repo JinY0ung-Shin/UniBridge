@@ -14,6 +14,7 @@ import {
   getLlmRequestsTotal,
 } from '../api/client';
 import { useChartTheme } from '../components/useChartTheme';
+import './Monitoring.css';
 import './LlmMonitoring.css';
 
 const TIME_RANGES = ['15m', '1h', '6h', '24h', '7d', '30d', '60d'];

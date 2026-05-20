@@ -16,6 +16,7 @@ import {
   type RouteComparisonRow,
 } from '../api/client';
 import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
+import './Monitoring.css';
 import './GatewayMonitoring.css';
 
 const TIME_RANGES = ['15m', '1h', '6h', '24h', '7d', '30d', '60d'];
