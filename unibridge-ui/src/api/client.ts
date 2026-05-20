@@ -552,6 +552,8 @@ export interface LlmModelUsage {
 
 export interface LlmKeyUsage {
   api_key: string;
+  input_tokens: number;
+  output_tokens: number;
   tokens: number;
   requests: number;
 }

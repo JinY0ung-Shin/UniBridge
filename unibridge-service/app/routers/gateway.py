@@ -1156,16 +1156,27 @@ async def llm_metrics_top_keys(
     time_range: str = Query("1h", alias="range", description="Time range"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
-    """Top API keys by token usage."""
+    """Top UniBridge API keys by token usage."""
     if time_range not in VALID_RANGES:
         time_range = "1h"
     try:
-        token_results, req_results = await asyncio.gather(
+        (
+            token_results,
+            input_token_results,
+            output_token_results,
+            req_results,
+        ) = await asyncio.gather(
             prometheus_client.instant_query(
-                f"topk(10, sum by (hashed_api_key) (increase(litellm_total_tokens_metric_total[{time_range}])))"
+                f"topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total[{time_range}])))"
             ),
             prometheus_client.instant_query(
-                f"sum by (hashed_api_key) (increase(litellm_proxy_total_requests_metric_total[{time_range}]))"
+                f"sum by (end_user) (increase(litellm_input_tokens_metric_total[{time_range}]))"
+            ),
+            prometheus_client.instant_query(
+                f"sum by (end_user) (increase(litellm_output_tokens_metric_total[{time_range}]))"
+            ),
+            prometheus_client.instant_query(
+                f"sum by (end_user) (increase(litellm_proxy_total_requests_metric_total[{time_range}]))"
             ),
         )
     except Exception as exc:
@@ -1173,9 +1184,25 @@ async def llm_metrics_top_keys(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
 
+    input_token_map: dict[str, int] = {}
+    for r in input_token_results:
+        key = _metric_label(r, "end_user")
+        try:
+            input_token_map[key] = round(float(r["value"][1]))
+        except (IndexError, ValueError, TypeError):
+            input_token_map[key] = 0
+
+    output_token_map: dict[str, int] = {}
+    for r in output_token_results:
+        key = _metric_label(r, "end_user")
+        try:
+            output_token_map[key] = round(float(r["value"][1]))
+        except (IndexError, ValueError, TypeError):
+            output_token_map[key] = 0
+
     req_map: dict[str, int] = {}
     for r in req_results:
-        key = r.get("metric", {}).get("hashed_api_key", "unknown")
+        key = _metric_label(r, "end_user")
         try:
             req_map[key] = round(float(r["value"][1]))
         except (IndexError, ValueError, TypeError):
@@ -1183,17 +1210,24 @@ async def llm_metrics_top_keys(
 
     keys = []
     for r in token_results:
-        key = r.get("metric", {}).get("hashed_api_key", "unknown")
+        key = _metric_label(r, "end_user")
         try:
             tokens = round(float(r["value"][1]))
         except (IndexError, ValueError, TypeError):
             tokens = 0
-        if tokens > 0:
+        input_tokens = input_token_map.get(key, 0)
+        output_tokens = output_token_map.get(key, 0)
+        if tokens == 0 and (input_tokens > 0 or output_tokens > 0):
+            tokens = input_tokens + output_tokens
+        requests = req_map.get(key, 0)
+        if tokens > 0 or input_tokens > 0 or output_tokens > 0 or requests > 0:
             keys.append(
                 {
                     "api_key": key,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
                     "tokens": tokens,
-                    "requests": req_map.get(key, 0),
+                    "requests": requests,
                 }
             )
     return keys

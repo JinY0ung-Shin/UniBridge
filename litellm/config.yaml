@@ -6,6 +6,7 @@ general_settings:
 litellm_settings:
   success_callback: ["prometheus"]
   service_callback: ["prometheus"]
+  enable_end_user_cost_tracking_prometheus_only: true
   drop_params: true
   num_retries: 2
 

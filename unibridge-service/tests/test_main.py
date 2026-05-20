@@ -207,6 +207,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     assert route_calls["llm-proxy"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["llm-consumer"]
     }
+    llm_headers = route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]["headers"]["set"]
+    assert llm_headers["Authorization"] == "Bearer sk-test"
+    assert llm_headers["x-litellm-end-user-id"] == "$consumer_name"
 
 
 @pytest.mark.asyncio

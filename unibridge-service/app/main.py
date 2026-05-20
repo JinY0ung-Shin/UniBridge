@@ -205,6 +205,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                     "headers": {
                                         "set": {
                                             "Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}",
+                                            "x-litellm-end-user-id": "$consumer_name",
                                         },
                                     },
                                 },

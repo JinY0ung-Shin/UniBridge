@@ -107,4 +107,31 @@ describe('LlmMonitoring', () => {
     expect(screen.getByText('5.0K')).toBeInTheDocument();
     expect(screen.getByText('25')).toBeInTheDocument();
   });
+
+  it('renders UniBridge API key usage with input and output tokens', async () => {
+    mockedGetLlmTopKeys.mockResolvedValue([
+      {
+        api_key: 'customer-portal',
+        input_tokens: 3000,
+        output_tokens: 2000,
+        tokens: 5000,
+        requests: 25,
+      },
+    ]);
+    const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
+
+    renderWithProviders(<LlmMonitoring />);
+
+    await waitFor(() => {
+      expect(screen.getByText('customer-portal')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('API Key Name')).toBeInTheDocument();
+    expect(screen.getAllByText('Input Tokens').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Output Tokens').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('3.0K').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('2.0K').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('5.0K').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('25').length).toBeGreaterThan(0);
+  });
 });

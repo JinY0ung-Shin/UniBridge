@@ -801,16 +801,23 @@ async def test_llm_metrics_by_model_prom_error(client, admin_token):
 @pytest.mark.asyncio
 async def test_llm_metrics_top_keys(client, admin_token):
     tokens = [
-        {"metric": {"hashed_api_key": "k1"}, "value": [0, "1000"]},
-        {"metric": {"hashed_api_key": "k2"}, "value": [0, "0"]},
-        {"metric": {"hashed_api_key": "k3"}, "value": [0, "bogus"]},
+        {"metric": {"end_user": "customer-portal"}, "value": [0, "1000"]},
+        {"metric": {"end_user": "internal-batch"}, "value": [0, "0"]},
+        {"metric": {"end_user": "bad-key"}, "value": [0, "bogus"]},
+    ]
+    input_tokens = [
+        {"metric": {"end_user": "customer-portal"}, "value": [0, "650"]},
+        {"metric": {"end_user": "bad-key"}, "value": [0, "bogus"]},
+    ]
+    output_tokens = [
+        {"metric": {"end_user": "customer-portal"}, "value": [0, "350"]},
     ]
     requests = [
-        {"metric": {"hashed_api_key": "k1"}, "value": [0, "50"]},
-        {"metric": {"hashed_api_key": "k2"}, "value": [0, "bad"]},
+        {"metric": {"end_user": "customer-portal"}, "value": [0, "50"]},
+        {"metric": {"end_user": "internal-batch"}, "value": [0, "bad"]},
     ]
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
-               side_effect=[tokens, requests]):
+               side_effect=[tokens, input_tokens, output_tokens, requests]) as prom_query:
         resp = await client.get(
             "/admin/gateway/metrics/llm/top-keys?range=1h",
             headers=auth_header(admin_token),
@@ -818,7 +825,14 @@ async def test_llm_metrics_top_keys(client, admin_token):
     assert resp.status_code == 200
     rows = resp.json()
     assert len(rows) == 1
-    assert rows[0] == {"api_key": "k1", "tokens": 1000, "requests": 50}
+    assert rows[0] == {
+        "api_key": "customer-portal",
+        "input_tokens": 650,
+        "output_tokens": 350,
+        "tokens": 1000,
+        "requests": 50,
+    }
+    assert all("sum by (end_user)" in call.args[0] for call in prom_query.call_args_list)
 
 
 @pytest.mark.asyncio
