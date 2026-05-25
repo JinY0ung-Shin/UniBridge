@@ -408,6 +408,16 @@ function QueryTemplates() {
                 spellCheck={false}
                 required
               />
+              <div className="template-parameter-help">
+                <span>{t('queryTemplates.parameterSyntaxTitle')}</span>
+                <p>{t('queryTemplates.parameterSyntaxIntro')}</p>
+                <p className="template-parameter-examples">
+                  <code>:id</code> Postgres / MSSQL
+                  <code>{'{id:UInt64}'}</code> ClickHouse
+                  <code>$id</code> Neo4j
+                </p>
+                <p>{t('queryTemplates.parameterSyntaxWarning')}</p>
+              </div>
             </div>
 
             <label className="template-toggle">
@@ -486,6 +496,17 @@ function QueryTemplates() {
                   rows={7}
                   spellCheck={false}
                 />
+                <div className="template-parameter-help">
+                  <span>{t('queryTemplates.parameterSyntaxTitle')}</span>
+                  <p>{t('queryTemplates.paramsJsonHelp')}</p>
+                  <p className="template-parameter-examples">
+                    <code>{'{"id": 1}'}</code>
+                    <code>:id</code> Postgres / MSSQL
+                    <code>{'{id:UInt64}'}</code> ClickHouse
+                    <code>$id</code> Neo4j
+                  </p>
+                  <p>{t('queryTemplates.parameterSyntaxWarning')}</p>
+                </div>
               </div>
               <div className="template-run-options">
                 <div className="form-group">

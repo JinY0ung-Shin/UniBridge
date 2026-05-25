@@ -68,6 +68,9 @@ describe('QueryTemplates', () => {
       expect(screen.getAllByText('Users report').length).toBeGreaterThanOrEqual(1);
     });
 
+    expect(screen.getAllByText('Parameter syntax')).toHaveLength(2);
+    expect(screen.getByText(/Params JSON is always an object/)).toBeInTheDocument();
+
     await user.click(screen.getByRole('button', { name: 'Run' }));
 
     await waitFor(() => {

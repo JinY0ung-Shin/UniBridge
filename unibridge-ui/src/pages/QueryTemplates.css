@@ -147,6 +147,40 @@
   border-color: var(--accent-blue);
 }
 
+.template-parameter-help {
+  margin-top: 8px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.template-parameter-help span {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.template-parameter-help p {
+  margin: 3px 0;
+}
+
+.template-parameter-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  align-items: center;
+}
+
+.template-parameter-examples code {
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
 .template-toggle {
   display: inline-flex;
   align-items: center;
