@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from typing import Any
 
@@ -28,6 +29,7 @@ except ImportError:  # pragma: no cover - test environment may omit neo4j
 
 from app.config import settings
 from app.schemas import QueryResponse
+from app.services.connection_manager import run_clickhouse_locked
 from app.services.sql_analysis import statement_type
 
 # Re-exported for callers that import from this module
@@ -337,6 +339,7 @@ async def _execute_clickhouse(
     sql: str,
     params: dict[str, Any] | None,
     limit: int,
+    lock: threading.Lock | None,
 ) -> QueryResponse:
     """Core execution logic for ClickHouse via clickhouse-connect."""
     start = time.monotonic()
@@ -349,10 +352,20 @@ async def _execute_clickhouse(
         if limit:
             ch_settings["max_result_rows"] = limit + 1
             ch_settings["result_overflow_mode"] = "break"
-        result = await asyncio.to_thread(
-            client.query, sql, parameters=params or {},
-            settings=ch_settings,
-        )
+        if lock is None:
+            result = await asyncio.to_thread(
+                client.query, sql, parameters=params or {},
+                settings=ch_settings,
+            )
+        else:
+            result = await asyncio.to_thread(
+                run_clickhouse_locked,
+                lock,
+                client.query,
+                sql,
+                parameters=params or {},
+                settings=ch_settings,
+            )
         columns = list(result.column_names)
         all_rows = result.result_rows
 
@@ -364,7 +377,16 @@ async def _execute_clickhouse(
         rows = [list(row) for row in all_rows]
         row_count = len(rows)
     else:
-        await asyncio.to_thread(client.command, sql, parameters=params or {})
+        if lock is None:
+            await asyncio.to_thread(client.command, sql, parameters=params or {})
+        else:
+            await asyncio.to_thread(
+                run_clickhouse_locked,
+                lock,
+                client.command,
+                sql,
+                parameters=params or {},
+            )
         columns = []
         rows = []
         row_count = 0
@@ -387,11 +409,16 @@ async def execute_clickhouse_query(
     params: dict[str, Any] | None = None,
     limit: int | None = None,
     timeout: int | None = None,
+    lock: threading.Lock | None = None,
 ) -> QueryResponse:
     """Execute a ClickHouse query with timeout and row limit.
 
     Mirrors ``execute_query`` but uses a clickhouse-connect client
     instead of a SQLAlchemy engine.
+
+    ``lock`` serializes access to the underlying clickhouse-connect client
+    inside the worker thread. This keeps the client protected even when the
+    awaiting coroutine times out while the thread continues running.
     """
     effective_limit = limit or settings.DEFAULT_ROW_LIMIT
     effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
@@ -401,11 +428,11 @@ async def execute_clickhouse_query(
             "Multi-statement SQL is not allowed. Remove semicolons or contact an admin."
         )
 
+    async def _run() -> QueryResponse:
+        return await _execute_clickhouse(client, sql, params, effective_limit, lock)
+
     try:
-        return await asyncio.wait_for(
-            _execute_clickhouse(client, sql, params, effective_limit),
-            timeout=effective_timeout,
-        )
+        return await asyncio.wait_for(_run(), timeout=effective_timeout)
     except asyncio.TimeoutError:
         logger.warning("Query timed out after %ds", effective_timeout)
         raise

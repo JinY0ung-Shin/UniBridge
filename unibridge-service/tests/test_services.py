@@ -1,7 +1,9 @@
 """Comprehensive unit tests for the services layer."""
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -494,7 +496,10 @@ class TestConnectionManagerClickHouse:
         mgr = object.__new__(ConnectionManager)
         mgr._engines = {}
         mgr._ch_clients = {}
+        mgr._ch_locks = {}
+        mgr._neo4j_drivers = {}
         mgr._db_types = {}
+        mgr._databases = {}
         return mgr
 
     @pytest.mark.asyncio
@@ -509,6 +514,7 @@ class TestConnectionManagerClickHouse:
 
         assert "ch_test" in mgr._ch_clients
         assert mgr._ch_clients["ch_test"] is mock_client
+        assert isinstance(mgr.get_clickhouse_lock("ch_test"), type(threading.Lock()))
         assert mgr.get_db_type("ch_test") == "clickhouse"
         assert "ch_test" not in mgr._engines
         set_pool_metric.assert_not_called()
@@ -562,6 +568,12 @@ class TestConnectionManagerClickHouse:
             mgr.get_clickhouse_client("nonexistent")
 
     @pytest.mark.asyncio
+    async def test_get_clickhouse_lock_missing_raises(self):
+        mgr = self._fresh_manager()
+        with pytest.raises(KeyError, match="No ClickHouse lock"):
+            mgr.get_clickhouse_lock("nonexistent")
+
+    @pytest.mark.asyncio
     async def test_has_connection_clickhouse(self):
         mgr = self._fresh_manager()
         mock_client = MagicMock()
@@ -584,8 +596,32 @@ class TestConnectionManagerClickHouse:
         await mgr.remove_connection("ch_test")
 
         assert "ch_test" not in mgr._ch_clients
+        assert "ch_test" not in mgr._ch_locks
         assert mgr.get_db_type("ch_test") == "unknown"
         mock_client.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_remove_clickhouse_connection_closes_under_lock(self):
+        mgr = self._fresh_manager()
+        close_entered = threading.Event()
+        mock_client = MagicMock()
+        mock_client.close.side_effect = close_entered.set
+        conn = _make_ch_conn()
+
+        with _patch("clickhouse_connect.get_client", return_value=mock_client):
+            await mgr.add_connection(conn)
+
+        ch_lock = mgr.get_clickhouse_lock("ch_test")
+        ch_lock.acquire()
+        remove_task = asyncio.create_task(mgr.remove_connection("ch_test"))
+        try:
+            await asyncio.sleep(0.05)
+            assert not close_entered.is_set()
+        finally:
+            ch_lock.release()
+
+        await remove_task
+        assert close_entered.is_set()
 
     @pytest.mark.asyncio
     async def test_test_connection_clickhouse_success(self):
@@ -772,6 +808,44 @@ class TestExecuteClickHouseQuery:
         mock_client.query = slow_query
         with pytest.raises(_asyncio.TimeoutError):
             await execute_clickhouse_query(mock_client, "SELECT 1", timeout=1)
+
+    @pytest.mark.asyncio
+    async def test_lock_stays_held_after_timeout_until_worker_returns(self):
+        import asyncio as _asyncio
+
+        lock = threading.Lock()
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_entered = threading.Event()
+        mock_client = MagicMock()
+
+        def query(sql, *args, **kwargs):
+            if sql == "SELECT slow":
+                first_started.set()
+                release_first.wait(timeout=2)
+                return self._make_query_result(["x"], [(1,)])
+            second_entered.set()
+            return self._make_query_result(["x"], [(2,)])
+
+        mock_client.query.side_effect = query
+
+        first_task = _asyncio.create_task(
+            execute_clickhouse_query(mock_client, "SELECT slow", timeout=0.1, lock=lock)
+        )
+        assert await _asyncio.to_thread(first_started.wait, 1)
+        with pytest.raises(_asyncio.TimeoutError):
+            await first_task
+
+        second_task = _asyncio.create_task(
+            execute_clickhouse_query(mock_client, "SELECT fast", timeout=1, lock=lock)
+        )
+        await _asyncio.sleep(0.05)
+        assert not second_entered.is_set()
+
+        release_first.set()
+        resp = await second_task
+        assert second_entered.is_set()
+        assert resp.rows == [[2]]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

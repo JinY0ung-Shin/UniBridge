@@ -242,9 +242,10 @@ async def execute(
     try:
         if db_type == "clickhouse":
             ch_client = connection_manager.get_clickhouse_client(req.database)
+            ch_lock = connection_manager.get_clickhouse_lock(req.database)
             response = await execute_clickhouse_query(
                 client=ch_client, sql=req.sql, params=req.params,
-                limit=req.limit, timeout=req.timeout,
+                limit=req.limit, timeout=req.timeout, lock=ch_lock,
             )
         elif db_type == "neo4j":
             neo4j_driver = connection_manager.get_neo4j_driver(req.database)

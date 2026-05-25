@@ -27,7 +27,11 @@ from app.schemas import (
     normalize_query_template_path,
 )
 from app.services.alert_state import delete_alert_state
-from app.services.connection_manager import connection_manager, encrypt_password
+from app.services.connection_manager import (
+    connection_manager,
+    encrypt_password,
+    run_clickhouse_locked,
+)
 from app.services.settings_manager import settings_manager
 
 logger = logging.getLogger(__name__)
@@ -362,7 +366,10 @@ async def list_tables(
     try:
         if db_type == "clickhouse":
             client = connection_manager.get_clickhouse_client(alias)
+            ch_lock = connection_manager.get_clickhouse_lock(alias)
             result = await asyncio.to_thread(
+                run_clickhouse_locked,
+                ch_lock,
                 client.query,
                 "SELECT name FROM system.tables WHERE database = currentDatabase() ORDER BY name",
             )
@@ -426,7 +433,10 @@ async def upsert_permission(
 
             if db_type == "clickhouse":
                 client = connection_manager.get_clickhouse_client(body.db_alias)
+                ch_lock = connection_manager.get_clickhouse_lock(body.db_alias)
                 ch_result = await asyncio.to_thread(
+                    run_clickhouse_locked,
+                    ch_lock,
                     client.query,
                     "SELECT name FROM system.tables WHERE database = currentDatabase()",
                 )

@@ -1,6 +1,7 @@
 """Comprehensive integration tests for the admin router."""
 from __future__ import annotations
 
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -79,6 +80,7 @@ def _cm_patch():
     mock_cm.get_status = MagicMock(return_value={"status": "registered"})
     mock_cm.get_db_type = MagicMock(return_value="postgres")
     mock_cm.get_engine = MagicMock(return_value=MagicMock())
+    mock_cm.get_clickhouse_lock = MagicMock(return_value=threading.Lock())
     mock_cm.has_connection = MagicMock(return_value=True)
     mock_cm.test_connection = AsyncMock(return_value=(True, "Connection successful"))
     return patch("app.routers.admin.connection_manager", mock_cm)

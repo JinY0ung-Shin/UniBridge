@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -14,6 +15,17 @@ from app.config import settings
 from app.models import DBConnection
 
 logger = logging.getLogger(__name__)
+
+
+def run_clickhouse_locked(
+    lock: threading.Lock,
+    func: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Run a clickhouse-connect client call while holding its thread lock."""
+    with lock:
+        return func(*args, **kwargs)
 
 
 def _get_fernet() -> Fernet:
@@ -82,6 +94,7 @@ class ConnectionManager:
     _instance: ConnectionManager | None = None
     _engines: dict[str, AsyncEngine]
     _ch_clients: dict[str, Any]
+    _ch_locks: dict[str, threading.Lock]
     _neo4j_drivers: dict[str, Any]
     _db_types: dict[str, str]
     _databases: dict[str, str]
@@ -91,6 +104,7 @@ class ConnectionManager:
             cls._instance = super().__new__(cls)
             cls._instance._engines = {}
             cls._instance._ch_clients = {}
+            cls._instance._ch_locks = {}
             cls._instance._neo4j_drivers = {}
             cls._instance._db_types = {}
             cls._instance._databases = {}
@@ -102,6 +116,8 @@ class ConnectionManager:
             self._engines = {}
         if not hasattr(self, "_ch_clients"):
             self._ch_clients = {}
+        if not hasattr(self, "_ch_locks"):
+            self._ch_locks = {}
         if not hasattr(self, "_neo4j_drivers"):
             self._neo4j_drivers = {}
         if not hasattr(self, "_db_types"):
@@ -147,6 +163,7 @@ class ConnectionManager:
                 send_receive_timeout=query_timeout,
             )
             self._ch_clients[conn.alias] = client
+            self._ch_locks[conn.alias] = threading.Lock()
         elif conn.db_type == "neo4j":
             from neo4j import GraphDatabase
 
@@ -177,6 +194,7 @@ class ConnectionManager:
         self._ensure_registries()
         engine = self._engines.pop(alias, None)
         client = self._ch_clients.pop(alias, None)
+        ch_lock = self._ch_locks.pop(alias, None)
         neo4j_driver = self._neo4j_drivers.pop(alias, None)
         self._db_types.pop(alias, None)
         self._databases.pop(alias, None)
@@ -184,7 +202,10 @@ class ConnectionManager:
             await engine.dispose()
             logger.info("Engine disposed for alias '%s'", alias)
         if client is not None:
-            await asyncio.to_thread(client.close)
+            if ch_lock is not None:
+                await asyncio.to_thread(run_clickhouse_locked, ch_lock, client.close)
+            else:
+                await asyncio.to_thread(client.close)
             logger.info("ClickHouse client closed for alias '%s'", alias)
         if neo4j_driver is not None:
             await asyncio.to_thread(neo4j_driver.close)
@@ -203,6 +224,18 @@ class ConnectionManager:
             return self._ch_clients[alias]
         except KeyError:
             raise KeyError(f"No ClickHouse client registered for alias '{alias}'")
+
+    def get_clickhouse_lock(self, alias: str) -> threading.Lock:
+        """Return the thread lock serializing access to the ClickHouse client.
+
+        The clickhouse-connect HTTP client is not safe for concurrent use from
+        a single instance, so callers must hold this lock inside the worker
+        thread around each client call.
+        """
+        try:
+            return self._ch_locks[alias]
+        except KeyError:
+            raise KeyError(f"No ClickHouse lock registered for alias '{alias}'")
 
     def get_neo4j_driver(self, alias: str) -> Any:
         """Return the Neo4j driver for a given alias, or raise KeyError."""
@@ -233,7 +266,11 @@ class ConnectionManager:
         try:
             if db_type == "clickhouse":
                 client = self.get_clickhouse_client(alias)
-                ok = await asyncio.to_thread(client.ping)
+                ok = await asyncio.to_thread(
+                    run_clickhouse_locked,
+                    self.get_clickhouse_lock(alias),
+                    client.ping,
+                )
                 if ok:
                     return True, "Connection successful"
                 return False, "Ping failed"
