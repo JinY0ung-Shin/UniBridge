@@ -183,7 +183,8 @@ class ConnectionManager:
         elif conn.db_type == "graphdb":
             import httpx as _httpx
 
-            base_url = f"{conn.protocol}://{conn.host}:{conn.port}"
+            protocol = conn.protocol or "http"
+            base_url = f"{protocol}://{conn.host}:{conn.port}"
             timeout_s = conn.query_timeout if conn.query_timeout is not None else 30
             client = _httpx.AsyncClient(
                 base_url=base_url,
@@ -315,20 +316,17 @@ class ConnectionManager:
             elif db_type == "graphdb":
                 client = self.get_graphdb_client(alias)
                 repo = self.get_database_name(alias)
-                try:
-                    resp = await client.post(
-                        f"/repositories/{repo}",
-                        content="ASK { FILTER(false) }",
-                        headers={
-                            "Content-Type": "application/sparql-query",
-                            "Accept": "application/sparql-results+json",
-                        },
-                    )
-                    if resp.status_code == 200:
-                        return True, "Connection successful"
-                    return False, f"GraphDB returned {resp.status_code}"
-                except Exception as exc:  # noqa: BLE001
-                    return False, str(exc)
+                resp = await client.post(
+                    f"/repositories/{repo}",
+                    content="ASK { FILTER(false) }",
+                    headers={
+                        "Content-Type": "application/sparql-query",
+                        "Accept": "application/sparql-results+json",
+                    },
+                )
+                if resp.status_code == 200:
+                    return True, "Connection successful"
+                return False, f"GraphDB returned {resp.status_code}"
             else:
                 engine = self.get_engine(alias)
                 async with engine.connect() as conn:

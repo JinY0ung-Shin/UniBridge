@@ -151,6 +151,29 @@ async def test_test_connection_failure_returns_message(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_test_connection_exception_returns_message(monkeypatch):
+    """Verify that httpx exceptions during test_connection are caught and reported."""
+    class ExplodingClient:
+        def __init__(self, **kwargs):
+            self.base_url = kwargs["base_url"]
+
+        async def post(self, *a, **k):
+            raise RuntimeError("network down")
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(httpx, "AsyncClient", ExplodingClient)
+
+    cm = ConnectionManager()
+    await cm.add_connection(_make_conn("kg-explode"))
+    ok, msg = await cm.test_connection("kg-explode")
+    assert ok is False
+    assert "network down" in msg
+    await cm.remove_connection("kg-explode")
+
+
+@pytest.mark.asyncio
 async def test_update_pool_metrics_skips_graphdb(monkeypatch):
     """graphdb has no SQLAlchemy pool — update_pool_metrics must not crash."""
     class FakeClient:
