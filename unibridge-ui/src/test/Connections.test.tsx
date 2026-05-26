@@ -20,6 +20,15 @@ const mockedCreateDatabase = vi.mocked(createDatabase);
 const mockedTestDatabase = vi.mocked(testDatabase);
 const mockedDeleteDatabase = vi.mocked(deleteDatabase);
 const mockedGetDbTables = vi.mocked(getDbTables);
+const clipboardWriteText = vi.fn();
+
+beforeEach(() => {
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: clipboardWriteText },
+  });
+  clipboardWriteText.mockResolvedValue(undefined);
+});
 
 describe('Connections', () => {
   beforeEach(() => {
@@ -258,6 +267,52 @@ describe('Connections', () => {
     expect(screen.getByRole('dialog', { name: /cURL — graph-db/ })).toHaveAttribute('aria-modal', 'true');
     expect(screen.queryByText(/SELECT \* FROM/)).not.toBeInTheDocument();
     expect(mockedGetDbTables).not.toHaveBeenCalled();
+  });
+
+  it('sets copied state only after clipboard write succeeds', async () => {
+    const db = makeDatabase();
+    mockedGetAdminDatabases.mockResolvedValue([db]);
+
+    renderWithProviders(<Connections />);
+
+    await waitFor(() => {
+      expect(screen.getByText('test-db')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'cURL' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }));
+
+    await waitFor(() => {
+      expect(clipboardWriteText).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument();
+  });
+
+  it('shows copy failure when clipboard write rejects', async () => {
+    clipboardWriteText.mockRejectedValueOnce(new Error('not allowed'));
+    const db = makeDatabase();
+    mockedGetAdminDatabases.mockResolvedValue([db]);
+
+    renderWithProviders(<Connections />);
+
+    await waitFor(() => {
+      expect(screen.getByText('test-db')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'cURL' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to copy cURL command')).toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copied' })).not.toBeInTheDocument();
   });
 
 });

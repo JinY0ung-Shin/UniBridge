@@ -33,6 +33,23 @@ def _make_conn(alias: str = "kg"):
     return conn
 
 
+class FakeStreamResponse:
+    def __init__(self, status_code=200, chunks: list[bytes] | None = None):
+        self.status_code = status_code
+        self.headers: dict[str, str] = {}
+        self._chunks = chunks if chunks is not None else [b'{"boolean": false}']
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def aiter_bytes(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
 @pytest.mark.asyncio
 async def test_add_remove_graphdb_round_trip(monkeypatch):
     created = []
@@ -94,19 +111,16 @@ async def test_dispose_all_closes_graphdb(monkeypatch):
 async def test_test_connection_uses_ask_filter_false(monkeypatch):
     captured = {}
 
-    class FakeResponse:
-        def __init__(self, status_code=200):
-            self.status_code = status_code
-
     class FakeClient:
         def __init__(self, **kwargs):
             self.base_url = kwargs["base_url"]
 
-        async def post(self, path, content, headers):
+        def stream(self, method, path, content, headers):
+            captured["method"] = method
             captured["path"] = path
             captured["body"] = content
             captured["headers"] = dict(headers)
-            return FakeResponse(200)
+            return FakeStreamResponse(200)
 
         async def aclose(self):
             pass
@@ -118,6 +132,7 @@ async def test_test_connection_uses_ask_filter_false(monkeypatch):
     ok, msg = await cm.test_connection("kg-ping")
     assert ok is True
     assert msg == "Connection successful"
+    assert captured["method"] == "POST"
     assert captured["path"] == "/repositories/my-repo"
     assert captured["body"] == "ASK { FILTER(false) }"
     assert captured["headers"]["Content-Type"] == "application/sparql-query"
@@ -127,15 +142,12 @@ async def test_test_connection_uses_ask_filter_false(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_test_connection_failure_returns_message(monkeypatch):
-    class FakeResponse:
-        status_code = 500
-
     class FakeClient:
         def __init__(self, **kwargs):
             self.base_url = kwargs["base_url"]
 
-        async def post(self, *a, **k):
-            return FakeResponse()
+        def stream(self, *a, **k):
+            return FakeStreamResponse(500)
 
         async def aclose(self):
             pass
@@ -157,7 +169,7 @@ async def test_test_connection_exception_returns_message(monkeypatch):
         def __init__(self, **kwargs):
             self.base_url = kwargs["base_url"]
 
-        async def post(self, *a, **k):
+        def stream(self, *a, **k):
             raise RuntimeError("network down")
 
         async def aclose(self):
@@ -171,6 +183,56 @@ async def test_test_connection_exception_returns_message(monkeypatch):
     assert ok is False
     assert "network down" in msg
     await cm.remove_connection("kg-explode")
+
+
+@pytest.mark.asyncio
+async def test_test_connection_encodes_repository_path(monkeypatch):
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.base_url = kwargs["base_url"]
+
+        def stream(self, method, path, content, headers):
+            captured["path"] = path
+            return FakeStreamResponse(200)
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    cm = ConnectionManager()
+    conn = _make_conn("kg-path")
+    conn.database = "repo/statements?update=bad"
+    await cm.add_connection(conn)
+    ok, _msg = await cm.test_connection("kg-path")
+    assert ok is True
+    assert captured["path"] == "/repositories/repo%2Fstatements%3Fupdate%3Dbad"
+    await cm.remove_connection("kg-path")
+
+
+@pytest.mark.asyncio
+async def test_test_connection_caps_large_response(monkeypatch):
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.base_url = kwargs["base_url"]
+
+        def stream(self, *a, **k):
+            return FakeStreamResponse(200, chunks=[b"x" * 101])
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(cm_mod.settings, "GRAPHDB_MAX_RESPONSE_BYTES", 100)
+
+    cm = ConnectionManager()
+    await cm.add_connection(_make_conn("kg-big"))
+    ok, msg = await cm.test_connection("kg-big")
+    assert ok is False
+    assert "GRAPHDB_MAX_RESPONSE_BYTES" in msg
+    await cm.remove_connection("kg-big")
 
 
 @pytest.mark.asyncio

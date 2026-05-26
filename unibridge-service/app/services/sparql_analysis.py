@@ -19,7 +19,11 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-__all__ = ["detect_sparql_statement_type", "StatementType"]
+__all__ = [
+    "detect_sparql_statement_type",
+    "strip_sparql_strings_and_comments",
+    "StatementType",
+]
 
 StatementType = Literal["select", "ask", "construct", "describe", "reject"]
 
@@ -86,6 +90,11 @@ def _strip_strings_and_comments(text: str) -> str:
     text = _BLOCK_COMMENT.sub(" ", text)
     text = _LINE_COMMENT.sub("", text)
     return text
+
+
+def strip_sparql_strings_and_comments(text: str) -> str:
+    """Public wrapper for non-structural SPARQL text checks."""
+    return _strip_strings_and_comments(text)
 
 
 def _contains_top_level_semicolon(text: str) -> bool:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal, InvalidOperation
 import json
 import logging
 import threading
@@ -33,6 +34,11 @@ except ImportError:  # pragma: no cover - test environment may omit neo4j
 from app.config import settings
 from app.schemas import QueryResponse
 from app.services.connection_manager import run_clickhouse_locked
+from app.services.graphdb_utils import (
+    GraphDBResponseTooLarge,
+    graphdb_repository_path,
+    read_capped_response,
+)
 from app.services.sql_analysis import statement_type
 
 # Re-exported for callers that import from this module
@@ -583,7 +589,8 @@ _XSD_INT = {_XSD + s for s in (
     "negativeInteger", "nonPositiveInteger",
     "unsignedLong", "unsignedInt", "unsignedShort", "unsignedByte",
 )}
-_XSD_FLOAT = {_XSD + s for s in ("decimal", "double", "float")}
+_XSD_DECIMAL = {_XSD + "decimal"}
+_XSD_FLOAT = {_XSD + s for s in ("double", "float")}
 
 
 def _coerce_binding_value(binding: dict[str, Any]) -> Any:
@@ -606,28 +613,20 @@ def _coerce_binding_value(binding: dict[str, Any]) -> Any:
             return int(value)
         except (TypeError, ValueError):
             return value
+    if datatype in _XSD_DECIMAL:
+        try:
+            return Decimal(value)
+        except (InvalidOperation, TypeError, ValueError):
+            return value
     if datatype in _XSD_FLOAT:
         try:
             return float(value)
         except (TypeError, ValueError):
             return value
+    language = binding.get("xml:lang")
+    if language:
+        return {"value": value, "xml:lang": language}
     return value
-
-
-async def _read_capped_response(resp: httpx.Response, max_bytes: int) -> bytes:
-    """Stream resp.aiter_bytes up to max_bytes; raise 413 if exceeded.
-
-    Caller must have already checked Content-Length if present.
-    """
-    buf = bytearray()
-    async for chunk in resp.aiter_bytes():
-        buf.extend(chunk)
-        if len(buf) > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail="GraphDB response exceeded GRAPHDB_MAX_RESPONSE_BYTES",
-            )
-    return bytes(buf)
 
 
 def _truncate_preview(body: str, max_chars: int = 200) -> str:
@@ -650,7 +649,9 @@ def _map_graphdb_error(status_code: int, body_preview: str, repo: str) -> HTTPEx
             status_code=404, detail=f"GraphDB repository not found: {repo}"
         )
     if 400 <= status_code < 500:
-        sanitized = "".join(c for c in body_preview if c.isprintable() or c in " \t")
+        sanitized = "".join(
+            c for c in body_preview if c.isprintable() or c in " \t\r\n"
+        )
         return HTTPException(
             status_code=400,
             detail=f"GraphDB rejected query: {_truncate_preview(sanitized)}",
@@ -687,7 +688,7 @@ async def execute_graphdb_query(
             stream_kwargs["timeout"] = timeout
         async with client.stream(
             "POST",
-            f"/repositories/{repo}",
+            graphdb_repository_path(repo),
             content=sparql,
             headers={
                 "Content-Type": "application/sparql-query",
@@ -695,22 +696,13 @@ async def execute_graphdb_query(
             },
             **stream_kwargs,
         ) as resp:
-            content_length = resp.headers.get("content-length")
-            if content_length is not None:
-                try:
-                    if int(content_length) > max_bytes:
-                        raise HTTPException(
-                            status_code=413,
-                            detail="GraphDB response exceeded GRAPHDB_MAX_RESPONSE_BYTES",
-                        )
-                except ValueError:
-                    pass  # malformed header — fall through to streaming guard
-
-            raw = await _read_capped_response(resp, max_bytes)
+            raw = await read_capped_response(resp, max_bytes)
 
             if resp.status_code >= 400:
                 preview = raw.decode("utf-8", errors="replace")
                 raise _map_graphdb_error(resp.status_code, preview, repo)
+    except GraphDBResponseTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except httpx.TimeoutException as exc:
         raise HTTPException(status_code=504, detail="GraphDB query timed out") from exc
     except HTTPException:
@@ -740,13 +732,27 @@ async def execute_graphdb_query(
         ) from exc
 
     if statement_type == "ask":
-        raw_val = parsed.get("boolean", False)
+        if "boolean" not in parsed:
+            raise HTTPException(
+                status_code=502,
+                detail="GraphDB returned malformed ASK result",
+            )
+        raw_val = parsed["boolean"]
         if isinstance(raw_val, bool):
             ask_value = raw_val
         elif isinstance(raw_val, str):
-            ask_value = raw_val.strip().lower() == "true"
+            normalized = raw_val.strip().lower()
+            if normalized not in {"true", "false"}:
+                raise HTTPException(
+                    status_code=502,
+                    detail="GraphDB returned malformed ASK result",
+                )
+            ask_value = normalized == "true"
         else:
-            ask_value = bool(raw_val)
+            raise HTTPException(
+                status_code=502,
+                detail="GraphDB returned malformed ASK result",
+            )
         return QueryResponse(
             columns=["boolean"], rows=[[ask_value]], row_count=1,
             truncated=False, elapsed_ms=elapsed_ms, graph=None,
@@ -756,9 +762,10 @@ async def execute_graphdb_query(
     head = parsed.get("head", {})
     columns = list(head.get("vars", []))
     bindings = parsed.get("results", {}).get("bindings", [])
+    sampled_bindings = bindings[: limit + 1] if limit else bindings
     raw_rows = [
         [_coerce_binding_value(b[v]) if v in b else None for v in columns]
-        for b in bindings
+        for b in sampled_bindings
     ]
     truncated = len(raw_rows) > limit
     rows = raw_rows[:limit] if truncated else raw_rows

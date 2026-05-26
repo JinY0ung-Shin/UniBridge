@@ -155,8 +155,8 @@ async def test_upsert_permission_accepts_no_allowed_tables_for_graphdb(client, a
 
 
 @pytest.mark.asyncio
-async def test_upsert_permission_accepts_empty_list_for_graphdb(client, admin_token):
-    """allowed_tables=[] (empty) is falsy and must be accepted for graphdb."""
+async def test_upsert_permission_rejects_empty_list_for_graphdb(client, admin_token):
+    """GraphDB must reject any allowed_tables value, including an empty list."""
     with _cm_patch("graphdb"):
         await client.post(
             "/admin/query/databases",
@@ -173,4 +173,5 @@ async def test_upsert_permission_accepts_empty_list_for_graphdb(client, admin_to
             },
             headers=auth_header(admin_token),
         )
-    assert resp.status_code in (200, 201), resp.text
+    assert resp.status_code == 400, resp.text
+    assert "allowed_tables" in resp.json()["detail"].lower()

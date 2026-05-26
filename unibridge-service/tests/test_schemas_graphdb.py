@@ -1,6 +1,12 @@
 import pytest
 from pydantic import ValidationError
-from app.schemas import DBConnectionCreate, QueryResponse
+from app.schemas import (
+    DBConnectionCreate,
+    QueryRequest,
+    QueryResponse,
+    QueryTemplateCreate,
+    QueryTemplateExecuteRequest,
+)
 
 
 def test_db_connection_create_accepts_graphdb():
@@ -41,3 +47,25 @@ def test_query_response_graph_field_accepts_turtle():
         graph="@prefix ex: <http://example.org/> . ex:a ex:b ex:c .",
     )
     assert resp.graph.startswith("@prefix")
+
+
+@pytest.mark.parametrize(
+    "model,payload",
+    [
+        (QueryRequest, {"database": "kg", "sql": "SELECT ?s WHERE { ?s ?p ?o }"}),
+        (
+            QueryTemplateCreate,
+            {
+                "path": "kg/report",
+                "name": "KG report",
+                "database": "kg",
+                "sql": "SELECT ?s WHERE { ?s ?p ?o }",
+            },
+        ),
+        (QueryTemplateExecuteRequest, {}),
+    ],
+)
+def test_query_timeout_is_capped_at_connection_limit(model, payload):
+    model(**payload, timeout=300)
+    with pytest.raises(ValidationError):
+        model(**payload, timeout=301)

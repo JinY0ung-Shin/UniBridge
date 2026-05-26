@@ -129,6 +129,21 @@ def _to_connection_response(conn: DBConnection, status_value: str) -> DBConnecti
     )
 
 
+def _to_permission_response(perm: Permission) -> PermissionResponse:
+    return PermissionResponse(
+        id=perm.id,
+        role=perm.role,
+        db_alias=perm.db_alias,
+        allow_select=perm.allow_select,
+        allow_insert=perm.allow_insert,
+        allow_update=perm.allow_update,
+        allow_delete=perm.allow_delete,
+        allowed_tables=json.loads(perm.allowed_tables)
+        if perm.allowed_tables
+        else None,
+    )
+
+
 def _to_template_response(template: QueryTemplate) -> QueryTemplateResponse:
     return QueryTemplateResponse(
         id=template.id,
@@ -157,7 +172,13 @@ async def _get_database_or_404(db: AsyncSession, alias: str) -> DBConnection:
 
 
 def _validate_read_only_template_sql(sql: str, db_type: str) -> None:
-    statement_type = _detect_statement_type(sql, db_type)
+    try:
+        statement_type = _detect_statement_type(sql, db_type)
+    except HTTPException as exc:
+        if db_type == "graphdb" and exc.status_code == 422:
+            statement_type = "reject"
+        else:
+            raise
     if statement_type not in {"select", "explain"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -426,9 +447,7 @@ async def list_permissions(
     result = await db.execute(select(Permission))
     perms = []
     for p in result.scalars().all():
-        resp = PermissionResponse.model_validate(p)
-        resp.allowed_tables = json.loads(p.allowed_tables) if p.allowed_tables else None
-        perms.append(resp)
+        perms.append(_to_permission_response(p))
     return perms
 
 
@@ -449,14 +468,14 @@ async def upsert_permission(
     # Graph backends (neo4j, graphdb) do not expose tables for ACL validation.
     db_type_for_perm = connection_manager.get_db_type(body.db_alias)
     if db_type_for_perm in ("neo4j", "graphdb"):
-        if body.allowed_tables:
+        if body.allowed_tables is not None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
                     f"allowed_tables is not supported for {db_type_for_perm} connections"
                 ),
             )
-        # empty list / None — fall through, skip relational table validation
+        # None — fall through, skip relational table validation
     # Validate allowed_tables against actual DB tables (relational backends only)
     elif body.allowed_tables is not None and len(body.allowed_tables) > 0:
         try:
@@ -514,8 +533,7 @@ async def upsert_permission(
     )
     perm = result.scalar_one_or_none()
 
-    # Normalize empty list to None — both mean "no table-level restriction".
-    allowed_tables_json = json.dumps(body.allowed_tables) if body.allowed_tables else None
+    allowed_tables_json = json.dumps(body.allowed_tables) if body.allowed_tables is not None else None
 
     if perm is None:
         perm = Permission(
@@ -538,9 +556,7 @@ async def upsert_permission(
     await db.commit()
     await db.refresh(perm)
 
-    resp = PermissionResponse.model_validate(perm)
-    resp.allowed_tables = json.loads(perm.allowed_tables) if perm.allowed_tables else None
-    return resp
+    return _to_permission_response(perm)
 
 
 @router.delete(

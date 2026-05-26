@@ -151,6 +151,36 @@ async def test_insert_rejected_with_422(client, admin_token):
             )
     assert resp.status_code == 422, resp.text
 
+    audit_resp = await client.get(
+        "/admin/query/audit-logs",
+        params={"database": "kg-insert"},
+        headers=auth_header(admin_token),
+    )
+    assert audit_resp.status_code == 200, audit_resp.text
+    logs = audit_resp.json()
+    assert len(logs) == 1
+    assert logs[0]["status"] == "error"
+    assert "Unsupported SPARQL statement" in logs[0]["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_write_sparql_template_returns_read_only_400(client, admin_token):
+    with _cm_patch("graphdb"):
+        await _register_graphdb(client, admin_token, "kg-template")
+        resp = await client.post(
+            "/admin/query/templates",
+            json={
+                "path": "kg/write",
+                "name": "KG write",
+                "database": "kg-template",
+                "sql": "INSERT DATA { <a> <b> <c> }",
+            },
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 400, resp.text
+    assert "read-only" in resp.json()["detail"].lower()
+
 
 @pytest.mark.asyncio
 async def test_non_empty_params_rejected_with_422(client, admin_token):
@@ -219,6 +249,32 @@ async def test_validate_sql_skipped_for_graphdb(client, admin_token):
 
 
 @pytest.mark.asyncio
+async def test_extra_blocked_keywords_apply_to_graphdb(client, admin_token, monkeypatch):
+    monkeypatch.setattr(
+        "app.routers.query.settings_manager.blocked_sql_keywords",
+        ["credit_card"],
+    )
+
+    with _cm_patch("graphdb"):
+        await _register_graphdb(client, admin_token, "kg-blocked")
+        with _patch_query_cm_db_type_only():
+            resp = await client.post(
+                "/query/execute",
+                json={
+                    "database": "kg-blocked",
+                    "sql": (
+                        "SELECT ?credit_card WHERE { "
+                        "?s <http://ex/credit_card> ?credit_card }"
+                    ),
+                },
+                headers=auth_header(admin_token),
+            )
+
+    assert resp.status_code == 403, resp.text
+    assert "credit_card" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
 async def test_graphdb_executor_http_exception_status_is_preserved(client, admin_token):
     """Executor HTTPException statuses must not be collapsed into generic 400."""
     with _cm_patch("graphdb"):
@@ -237,6 +293,45 @@ async def test_graphdb_executor_http_exception_status_is_preserved(client, admin
             )
     assert resp.status_code == 413, resp.text
     assert resp.json()["detail"] == "too large"
+
+
+@pytest.mark.asyncio
+async def test_graphdb_executor_504_records_timeout(client, admin_token):
+    with _cm_patch("graphdb"):
+        await _register_graphdb(client, admin_token, "kg-slow")
+        with _patch_query_cm(), patch(
+            "app.routers.query.execute_graphdb_query",
+            AsyncMock(
+                side_effect=HTTPException(
+                    status_code=504,
+                    detail="GraphDB query timed out",
+                )
+            ),
+        ), patch("app.routers.query.metrics.record_query") as record_query:
+            resp = await client.post(
+                "/query/execute",
+                json={
+                    "database": "kg-slow",
+                    "sql": "SELECT ?s WHERE { ?s ?p ?o }",
+                },
+                headers=auth_header(admin_token),
+            )
+
+    assert resp.status_code == 504, resp.text
+    assert any(
+        call.kwargs["db_alias"] == "kg-slow"
+        and call.kwargs["status"] == "timeout"
+        for call in record_query.call_args_list
+    )
+    audit_resp = await client.get(
+        "/admin/query/audit-logs",
+        params={"database": "kg-slow"},
+        headers=auth_header(admin_token),
+    )
+    assert audit_resp.status_code == 200, audit_resp.text
+    logs = audit_resp.json()
+    assert len(logs) == 1
+    assert logs[0]["status"] == "timeout"
 
 
 @pytest.mark.asyncio

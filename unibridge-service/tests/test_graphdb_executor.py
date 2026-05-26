@@ -5,6 +5,8 @@ to ``POST /repositories/{repo}`` with a fixture chosen by the test.
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 from fastapi import HTTPException
 
@@ -93,6 +95,30 @@ async def test_select_truncates_to_limit():
 
 
 @pytest.mark.asyncio
+async def test_repository_id_is_encoded_in_request_path():
+    seen = {}
+
+    def handler(request):
+        seen["raw_path"] = request.url.raw_path
+        seen["query"] = request.url.query
+        return httpx.Response(200, json=SELECT_JSON)
+
+    async with _client_with_response(handler) as client:
+        await execute_graphdb_query(
+            client=client,
+            repo="myrepo/statements?update=DELETE",
+            sparql="SELECT ?s WHERE {}",
+            statement_type="select",
+            limit=100,
+        )
+
+    assert seen == {
+        "raw_path": b"/repositories/myrepo%2Fstatements%3Fupdate%3DDELETE",
+        "query": b"",
+    }
+
+
+@pytest.mark.asyncio
 async def test_ask_returns_boolean_table():
     def handler(_):
         return httpx.Response(200, json={"head": {}, "boolean": True})
@@ -108,16 +134,33 @@ async def test_ask_returns_boolean_table():
 
 
 @pytest.mark.asyncio
-async def test_ask_defaults_to_false_if_boolean_missing():
+async def test_ask_rejects_missing_boolean():
     def handler(_):
         return httpx.Response(200, json={"head": {}})
 
     async with _client_with_response(handler) as client:
-        resp = await execute_graphdb_query(
-            client=client, repo="r", sparql="ASK { }",
-            statement_type="ask", limit=100,
-        )
-    assert resp.rows == [[False]]
+        with pytest.raises(HTTPException) as exc:
+            await execute_graphdb_query(
+                client=client, repo="r", sparql="ASK { }",
+                statement_type="ask", limit=100,
+            )
+    assert exc.value.status_code == 502
+    assert "malformed ask" in exc.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_ask_rejects_non_boolean_values():
+    def handler(_):
+        return httpx.Response(200, json={"head": {}, "boolean": None})
+
+    async with _client_with_response(handler) as client:
+        with pytest.raises(HTTPException) as exc:
+            await execute_graphdb_query(
+                client=client, repo="r", sparql="ASK { }",
+                statement_type="ask", limit=100,
+            )
+    assert exc.value.status_code == 502
+    assert "malformed ask" in exc.value.detail.lower()
 
 
 @pytest.mark.asyncio
@@ -276,6 +319,23 @@ async def test_4xx_passes_400_with_body_preview():
 
 
 @pytest.mark.asyncio
+async def test_4xx_preserves_newlines_in_body_preview():
+    body = "MalformedQueryException\n  at line 3 col 5\n  near 'SELEC'"
+
+    def handler(_):
+        return httpx.Response(400, text=body)
+
+    async with _client_with_response(handler) as client:
+        with pytest.raises(HTTPException) as exc:
+            await execute_graphdb_query(
+                client=client, repo="r", sparql="SELECT broken",
+                statement_type="select", limit=100,
+            )
+    assert exc.value.status_code == 400
+    assert "\n  at line 3 col 5\n" in exc.value.detail
+
+
+@pytest.mark.asyncio
 async def test_4xx_strips_control_chars_from_preview():
     """Control chars in the upstream body must not appear in the response detail."""
     def handler(_):
@@ -357,10 +417,12 @@ async def test_non_utf8_body_maps_to_502():
 @pytest.mark.asyncio
 async def test_xsd_datatypes_coerced():
     body = {
-        "head": {"vars": ["i", "f", "b", "s"]},
+        "head": {"vars": ["i", "d", "f", "b", "s"]},
         "results": {"bindings": [{
             "i": {"type": "literal", "value": "-7",
                   "datatype": "http://www.w3.org/2001/XMLSchema#int"},
+            "d": {"type": "literal", "value": "123456789.987654321",
+                  "datatype": "http://www.w3.org/2001/XMLSchema#decimal"},
             "f": {"type": "literal", "value": "3.14",
                   "datatype": "http://www.w3.org/2001/XMLSchema#double"},
             "b": {"type": "literal", "value": "FALSE",
@@ -377,4 +439,30 @@ async def test_xsd_datatypes_coerced():
             client=client, repo="r", sparql="SELECT * WHERE {}",
             statement_type="select", limit=100,
         )
-    assert resp.rows == [[-7, 3.14, False, "hello"]]
+    assert resp.rows == [[-7, Decimal("123456789.987654321"), 3.14, False, "hello"]]
+
+
+@pytest.mark.asyncio
+async def test_language_tagged_literals_preserve_language_tag():
+    body = {
+        "head": {"vars": ["label"]},
+        "results": {
+            "bindings": [{
+                "label": {
+                    "type": "literal",
+                    "value": "Bonjour",
+                    "xml:lang": "fr",
+                },
+            }],
+        },
+    }
+
+    def handler(_):
+        return httpx.Response(200, json=body)
+
+    async with _client_with_response(handler) as client:
+        resp = await execute_graphdb_query(
+            client=client, repo="r", sparql="SELECT * WHERE {}",
+            statement_type="select", limit=100,
+        )
+    assert resp.rows == [[{"value": "Bonjour", "xml:lang": "fr"}]]

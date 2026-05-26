@@ -833,6 +833,16 @@ class TestUpsertPermission:
         assert len(list_resp.json()) == 2
 
     @pytest.mark.asyncio
+    async def test_upsert_preserves_empty_allowed_tables(self, client, admin_token):
+        resp = await client.put(
+            "/admin/query/permissions",
+            json={**PERMISSION_PAYLOAD, "allowed_tables": []},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["allowed_tables"] == []
+
+    @pytest.mark.asyncio
     async def test_upsert_unknown_role_returns_400(self, client, admin_token):
         resp = await client.put(
             "/admin/query/permissions",
@@ -1094,7 +1104,7 @@ async def _seed_audit_logs(app):
     """Insert sample audit log rows into the test database."""
     from datetime import datetime
 
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.database import get_db
     from app.models import AuditLog

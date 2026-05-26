@@ -107,6 +107,7 @@
     "noConnectionsDesc": "Click \"Add Connection\" to register your first database.",
     "deleteConfirm": "Delete database \"{{alias}}\"? This action cannot be undone.",
     "testFailed": "Connection test failed",
+    "copyFailed": "Failed to copy cURL command",
     "protocol": "Protocol",
     "repositoryId": "Repository ID"
   },

@@ -35,7 +35,10 @@ from app.services.query_executor import (
     execute_query,
 )
 from app.services.settings_manager import settings_manager
-from app.services.sparql_analysis import detect_sparql_statement_type
+from app.services.sparql_analysis import (
+    detect_sparql_statement_type,
+    strip_sparql_strings_and_comments,
+)
 from app.services.sql_validator import validate_sql
 from app.services.table_access import check_table_access, extract_tables
 
@@ -138,6 +141,52 @@ def _detect_statement_type(sql: str, db_type: str) -> str:
     return detect_statement_type(sql)
 
 
+def _extra_blocked_keyword_error(sql: str, blocked_keywords: list[str]) -> str | None:
+    if not blocked_keywords:
+        return None
+    pattern = re.compile(
+        r"\b(" + "|".join(re.escape(keyword) for keyword in blocked_keywords) + r")\b",
+        re.IGNORECASE,
+    )
+    match = pattern.search(sql)
+    if match:
+        return f"Blocked SQL keyword: {match.group(0).upper()}"
+    return None
+
+
+async def _record_failed_query(
+    db: AsyncSession,
+    *,
+    username: str,
+    database_alias: str,
+    db_type: str,
+    sql: str,
+    params: dict | None,
+    metric_status: str,
+    audit_status: str,
+    error_message: str,
+    duration_seconds: float = 0,
+) -> None:
+    metrics.record_query(
+        db_alias=database_alias,
+        db_type=db_type,
+        status=metric_status,
+        duration_seconds=duration_seconds,
+    )
+    try:
+        await log_query(
+            db,
+            user=username,
+            database_alias=database_alias,
+            sql=sql,
+            params=params,
+            status=audit_status,
+            error_message=error_message,
+        )
+    except Exception:
+        logger.exception("Failed to write audit log for failed query")
+
+
 @router.post("/query/execute", response_model=QueryResponse)
 async def execute(
     req: QueryRequest,
@@ -191,7 +240,21 @@ async def execute(
                 "GraphDB does not support bind parameters; pass the SPARQL inline"
             ),
         )
-    statement_type = _detect_statement_type(req.sql, db_type)
+    try:
+        statement_type = _detect_statement_type(req.sql, db_type)
+    except HTTPException as exc:
+        await _record_failed_query(
+            db,
+            username=username,
+            database_alias=req.database,
+            db_type=db_type,
+            sql=req.sql,
+            params=req.params,
+            metric_status="error",
+            audit_status="error",
+            error_message=str(exc.detail),
+        )
+        raise
     if db_type == "neo4j" and statement_type != "select":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -235,8 +298,19 @@ async def execute(
                     detail=f"Role '{user.role}' is not allowed to execute {statement_type.upper()} on '{req.database}'",
                 )
 
-    # 2b. SQL keyword blacklist check (skip for SPARQL backends)
-    if db_type != "graphdb":
+    # 2b. SQL keyword blacklist check. For SPARQL, keep the operator-defined
+    # deny-list but skip SQL parser/default keyword rules that are SQL-specific.
+    if db_type == "graphdb":
+        blocked_error = _extra_blocked_keyword_error(
+            strip_sparql_strings_and_comments(req.sql),
+            settings_manager.blocked_sql_keywords,
+        )
+        if blocked_error:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=blocked_error,
+            )
+    else:
         blocked_error = validate_sql(req.sql, extra_blocked=settings_manager.blocked_sql_keywords)
         if blocked_error:
             raise HTTPException(
@@ -317,7 +391,7 @@ async def execute(
         )
         try:
             await log_query(db, user=username, database_alias=req.database,
-                            sql=req.sql, params=req.params, status="error",
+                            sql=req.sql, params=req.params, status="timeout",
                             error_message="Query timed out")
         except Exception:
             logger.exception("Failed to write audit log for timed-out query")
@@ -326,18 +400,23 @@ async def execute(
             detail="Query timed out",
         )
     except HTTPException as exc:
-        metrics.record_query(
-            db_alias=req.database,
+        status_label = (
+            "timeout"
+            if exc.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+            else "error"
+        )
+        await _record_failed_query(
+            db,
+            username=username,
+            database_alias=req.database,
             db_type=db_type,
-            status="error",
+            sql=req.sql,
+            params=req.params,
+            metric_status=status_label,
+            audit_status=status_label,
+            error_message=str(exc.detail),
             duration_seconds=time.monotonic() - query_started_at,
         )
-        try:
-            await log_query(db, user=username, database_alias=req.database,
-                            sql=req.sql, params=req.params, status="error",
-                            error_message=str(exc.detail))
-        except Exception:
-            logger.exception("Failed to write audit log for failed query")
         raise
     except Exception as exc:
         metrics.record_query(

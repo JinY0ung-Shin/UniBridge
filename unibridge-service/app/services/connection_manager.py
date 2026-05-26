@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from app import metrics
 from app.config import settings
 from app.models import DBConnection
+from app.services.graphdb_utils import graphdb_repository_path, read_capped_response
 
 logger = logging.getLogger(__name__)
 
@@ -316,14 +317,19 @@ class ConnectionManager:
             elif db_type == "graphdb":
                 client = self.get_graphdb_client(alias)
                 repo = self.get_database_name(alias)
-                resp = await client.post(
-                    f"/repositories/{repo}",
+                async with client.stream(
+                    "POST",
+                    graphdb_repository_path(repo),
                     content="ASK { FILTER(false) }",
                     headers={
                         "Content-Type": "application/sparql-query",
                         "Accept": "application/sparql-results+json",
                     },
-                )
+                ) as resp:
+                    await read_capped_response(
+                        resp,
+                        settings.GRAPHDB_MAX_RESPONSE_BYTES,
+                    )
                 if resp.status_code == 200:
                     return True, "Connection successful"
                 return False, f"GraphDB returned {resp.status_code}"

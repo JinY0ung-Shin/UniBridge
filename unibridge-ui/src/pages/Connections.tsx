@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -95,6 +95,20 @@ function Connections() {
   });
 
   const databases = dbsQuery.data ?? [];
+  const curlCopyTimeoutRef = useRef<number | null>(null);
+
+  function clearCurlCopyTimer() {
+    if (curlCopyTimeoutRef.current !== null) {
+      window.clearTimeout(curlCopyTimeoutRef.current);
+      curlCopyTimeoutRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      clearCurlCopyTimer();
+    };
+  }, []);
 
   function openCreate() {
     setForm({ ...emptyForm });
@@ -154,12 +168,26 @@ function Connections() {
     setCurlCopied(false);
   }
 
-  function handleCurlCopy() {
-    if (curlModal) {
-      navigator.clipboard.writeText(curlModal.curl);
+  async function handleCurlCopy() {
+    if (!curlModal) return;
+    clearCurlCopyTimer();
+    try {
+      await navigator.clipboard.writeText(curlModal.curl);
       setCurlCopied(true);
-      setTimeout(() => setCurlCopied(false), 2000);
+      curlCopyTimeoutRef.current = window.setTimeout(() => {
+        setCurlCopied(false);
+        curlCopyTimeoutRef.current = null;
+      }, 2000);
+    } catch {
+      setCurlCopied(false);
+      addToast({ type: 'error', title: t('connections.copyFailed') });
     }
+  }
+
+  function closeCurlModal() {
+    clearCurlCopyTimer();
+    setCurlCopied(false);
+    setCurlModal(null);
   }
 
   function handleTest(alias: string) {
@@ -490,7 +518,7 @@ function Connections() {
       {curlModal && (
         <ResourceModal
           title={`cURL — ${curlModal.alias}`}
-          onClose={() => setCurlModal(null)}
+          onClose={closeCurlModal}
           closeLabel={t('common.close')}
           className="modal--sm"
         >
