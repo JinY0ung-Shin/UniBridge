@@ -24,6 +24,14 @@ class QueryResponse(BaseModel):
     row_count: int
     truncated: bool
     elapsed_ms: int
+    graph: str | None = Field(
+        default=None,
+        description=(
+            "Set when the underlying engine returned a graph (e.g., SPARQL "
+            "CONSTRUCT/DESCRIBE). When set, columns/rows are empty and "
+            "row_count is 0 — they do not apply to graph results."
+        ),
+    )
 
 
 _QUERY_TEMPLATE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -104,7 +112,7 @@ class QueryTemplateExecuteRequest(BaseModel):
 
 class DBConnectionCreate(BaseModel):
     alias: str = Field(..., min_length=1, max_length=100)
-    db_type: str = Field(..., pattern=r"^(postgres|mssql|clickhouse|neo4j)$")
+    db_type: str = Field(..., pattern=r"^(postgres|mssql|clickhouse|neo4j|graphdb)$")
     host: str = Field(..., min_length=1)
     port: int = Field(..., ge=1, le=65535)
     database: str = Field(..., min_length=1)

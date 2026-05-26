@@ -23,7 +23,7 @@ class DBConnection(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     alias = Column(String, unique=True, nullable=False, index=True)
-    db_type = Column(String, nullable=False)  # "postgres", "mssql", or "clickhouse"
+    db_type = Column(String, nullable=False)  # "postgres", "mssql", "clickhouse", "neo4j", or "graphdb"
     host = Column(String, nullable=False)
     port = Column(Integer, nullable=False)
     database = Column(String, nullable=False)
