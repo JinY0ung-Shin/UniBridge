@@ -62,14 +62,19 @@ PERMISSION_PAYLOAD = {
 }
 
 
-def _cm_patch():
+def _cm_patch(db_type: str = "postgres"):
     """Return a context-manager that patches the connection_manager singleton.
+
+    Args:
+        db_type: Value returned by the mocked ``get_db_type`` (defaults to
+            ``"postgres"``). Pass ``"graphdb"``/``"neo4j"`` etc. to drive the
+            graph-backend branches.
 
     Mocked methods:
       - add_connection  (async, no-op)
       - remove_connection (async, no-op)
       - get_status  -> {"status": "registered"}
-      - get_db_type -> "postgres"
+      - get_db_type -> ``db_type`` (parameterized)
       - get_engine  -> MagicMock
       - has_connection -> True
       - test_connection (async) -> True
@@ -78,7 +83,7 @@ def _cm_patch():
     mock_cm.add_connection = AsyncMock()
     mock_cm.remove_connection = AsyncMock()
     mock_cm.get_status = MagicMock(return_value={"status": "registered"})
-    mock_cm.get_db_type = MagicMock(return_value="postgres")
+    mock_cm.get_db_type = MagicMock(return_value=db_type)
     mock_cm.get_engine = MagicMock(return_value=MagicMock())
     mock_cm.get_clickhouse_lock = MagicMock(return_value=threading.Lock())
     mock_cm.has_connection = MagicMock(return_value=True)
@@ -828,6 +833,16 @@ class TestUpsertPermission:
         assert len(list_resp.json()) == 2
 
     @pytest.mark.asyncio
+    async def test_upsert_preserves_empty_allowed_tables(self, client, admin_token):
+        resp = await client.put(
+            "/admin/query/permissions",
+            json={**PERMISSION_PAYLOAD, "allowed_tables": []},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["allowed_tables"] == []
+
+    @pytest.mark.asyncio
     async def test_upsert_unknown_role_returns_400(self, client, admin_token):
         resp = await client.put(
             "/admin/query/permissions",
@@ -1089,7 +1104,7 @@ async def _seed_audit_logs(app):
     """Insert sample audit log rows into the test database."""
     from datetime import datetime
 
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.database import get_db
     from app.models import AuditLog

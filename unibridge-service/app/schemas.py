@@ -15,7 +15,7 @@ class QueryRequest(BaseModel):
     sql: str = Field(..., description="SQL statement to execute")
     params: dict[str, Any] | None = Field(None, description="Named bind parameters")
     limit: int | None = Field(None, ge=1, description="Maximum number of rows to return")
-    timeout: int | None = Field(None, ge=1, description="Query timeout in seconds")
+    timeout: int | None = Field(None, ge=1, le=300, description="Query timeout in seconds")
 
 
 class QueryResponse(BaseModel):
@@ -24,6 +24,14 @@ class QueryResponse(BaseModel):
     row_count: int
     truncated: bool
     elapsed_ms: int
+    graph: str | None = Field(
+        default=None,
+        description=(
+            "Set when the underlying engine returned a graph (e.g., SPARQL "
+            "CONSTRUCT/DESCRIBE). When set, columns/rows are empty and "
+            "row_count is 0 — they do not apply to graph results."
+        ),
+    )
 
 
 _QUERY_TEMPLATE_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -51,7 +59,7 @@ class QueryTemplateCreate(BaseModel):
     database: str = Field(..., min_length=1, description="Database alias to run the template against")
     sql: str = Field(..., min_length=1, description="Read-only SQL/Cypher template using named bind parameters")
     default_limit: int | None = Field(None, ge=1)
-    timeout: int | None = Field(None, ge=1)
+    timeout: int | None = Field(None, ge=1, le=300)
     enabled: bool = True
 
     @field_validator("path")
@@ -71,7 +79,7 @@ class QueryTemplateUpdate(BaseModel):
     database: str | None = Field(None, min_length=1)
     sql: str | None = Field(None, min_length=1)
     default_limit: int | None = Field(None, ge=1)
-    timeout: int | None = Field(None, ge=1)
+    timeout: int | None = Field(None, ge=1, le=300)
     enabled: bool | None = None
 
     @field_validator("name", "description", "database", "sql")
@@ -97,14 +105,14 @@ class QueryTemplateResponse(BaseModel):
 class QueryTemplateExecuteRequest(BaseModel):
     params: dict[str, Any] | None = Field(None, description="Named bind parameters for the stored query")
     limit: int | None = Field(None, ge=1, description="Override the template default row limit")
-    timeout: int | None = Field(None, ge=1, description="Override the template default timeout")
+    timeout: int | None = Field(None, ge=1, le=300, description="Override the template default timeout")
 
 
 # ── DB Connections ───────────────────────────────────────────────────────────
 
 class DBConnectionCreate(BaseModel):
     alias: str = Field(..., min_length=1, max_length=100)
-    db_type: str = Field(..., pattern=r"^(postgres|mssql|clickhouse|neo4j)$")
+    db_type: str = Field(..., pattern=r"^(postgres|mssql|clickhouse|neo4j|graphdb)$")
     host: str = Field(..., min_length=1)
     port: int = Field(..., ge=1, le=65535)
     database: str = Field(..., min_length=1)

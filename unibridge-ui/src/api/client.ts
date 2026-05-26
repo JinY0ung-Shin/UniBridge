@@ -103,7 +103,7 @@ export type Neo4jProtocol = 'bolt' | 'bolt+s' | 'bolt+ssc' | 'neo4j' | 'neo4j+s'
 
 export interface DatabaseConfig {
   alias: string;
-  db_type: 'postgres' | 'mssql' | 'clickhouse' | 'neo4j';
+  db_type: 'postgres' | 'mssql' | 'clickhouse' | 'neo4j' | 'graphdb';
   host: string;
   port: number;
   database: string;
@@ -185,6 +185,7 @@ export interface QueryResult {
   row_count: number;
   elapsed_ms: number;
   truncated: boolean;
+  graph?: string | null; // populated for SPARQL CONSTRUCT/DESCRIBE responses
 }
 
 export interface QueryTemplate {

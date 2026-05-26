@@ -123,7 +123,9 @@ function QueryPlayground() {
             </div>
           )}
 
-          {result.columns.length > 0 && result.rows.length > 0 ? (
+          {result.graph ? (
+            <pre className="rdf-graph">{result.graph}</pre>
+          ) : result.columns.length > 0 && result.rows.length > 0 ? (
             <div className="results-table-container">
               <table className="results-table">
                 <thead>

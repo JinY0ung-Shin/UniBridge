@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal, InvalidOperation
+import json
 import logging
 import threading
 import time
 from typing import Any
 
+import httpx
+from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -30,6 +34,11 @@ except ImportError:  # pragma: no cover - test environment may omit neo4j
 from app.config import settings
 from app.schemas import QueryResponse
 from app.services.connection_manager import run_clickhouse_locked
+from app.services.graphdb_utils import (
+    GraphDBResponseTooLarge,
+    graphdb_repository_path,
+    read_capped_response,
+)
 from app.services.sql_analysis import statement_type
 
 # Re-exported for callers that import from this module
@@ -38,6 +47,7 @@ __all__ = [
     "check_permission",
     "detect_statement_type",
     "execute_clickhouse_query",
+    "execute_graphdb_query",
     "execute_neo4j_query",
     "execute_query",
 ]
@@ -567,3 +577,199 @@ async def execute_neo4j_query(
     except asyncio.TimeoutError:
         logger.warning("Query timed out after %ds", effective_timeout)
         raise
+
+
+# --- GraphDB executor ---------------------------------------------------------
+
+_XSD = "http://www.w3.org/2001/XMLSchema#"
+_XSD_BOOL = {_XSD + "boolean"}
+_XSD_INT = {_XSD + s for s in (
+    "integer", "long", "int", "short", "byte",
+    "nonNegativeInteger", "positiveInteger",
+    "negativeInteger", "nonPositiveInteger",
+    "unsignedLong", "unsignedInt", "unsignedShort", "unsignedByte",
+)}
+_XSD_DECIMAL = {_XSD + "decimal"}
+_XSD_FLOAT = {_XSD + s for s in ("double", "float")}
+
+
+def _coerce_binding_value(binding: dict[str, Any]) -> Any:
+    """Convert a SPARQL Results JSON binding into a Python value (best-effort).
+
+    See spec §5.1. Failures fall back to the raw string value (never None).
+    """
+    btype = binding.get("type")
+    value = binding.get("value", "")
+    if btype == "uri":
+        return value
+    if btype == "bnode":
+        return f"_:{value}"
+    # literal or typed-literal
+    datatype = binding.get("datatype")
+    if datatype in _XSD_BOOL:
+        return value.strip().lower() == "true"
+    if datatype in _XSD_INT:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+    if datatype in _XSD_DECIMAL:
+        try:
+            return Decimal(value)
+        except (InvalidOperation, TypeError, ValueError):
+            return value
+    if datatype in _XSD_FLOAT:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return value
+    language = binding.get("xml:lang")
+    if language:
+        return {"value": value, "xml:lang": language}
+    return value
+
+
+def _truncate_preview(body: str, max_chars: int = 200) -> str:
+    return body if len(body) <= max_chars else body[: max_chars - 1] + "…"
+
+
+def _map_graphdb_error(status_code: int, body_preview: str, repo: str) -> HTTPException:
+    # Log the raw preview for operators regardless of mapping.
+    logger.warning(
+        "GraphDB returned status=%d for repo=%s body=%r",
+        status_code,
+        repo,
+        body_preview[:500],
+    )
+
+    if status_code in (401, 403):
+        return HTTPException(status_code=502, detail="GraphDB authentication failed")
+    if status_code == 404 and "repository" in body_preview.lower():
+        return HTTPException(
+            status_code=404, detail=f"GraphDB repository not found: {repo}"
+        )
+    if 400 <= status_code < 500:
+        sanitized = "".join(
+            c for c in body_preview if c.isprintable() or c in " \t\r\n"
+        )
+        return HTTPException(
+            status_code=400,
+            detail=f"GraphDB rejected query: {_truncate_preview(sanitized)}",
+        )
+    return HTTPException(status_code=502, detail="GraphDB upstream error")
+
+
+async def execute_graphdb_query(
+    *,
+    client: httpx.AsyncClient,
+    repo: str,
+    sparql: str,
+    statement_type: str,
+    limit: int,
+    timeout: int | float | None = None,
+) -> QueryResponse:
+    """Execute a SPARQL read against GraphDB and map the response.
+
+    URL-pinned to ``POST /repositories/{repo}`` — defense in depth against
+    SPARQL Update slipping through. Streaming + size cap from
+    ``settings.GRAPHDB_MAX_RESPONSE_BYTES``.
+    """
+    accept = (
+        "text/turtle"
+        if statement_type in ("construct", "describe")
+        else "application/sparql-results+json"
+    )
+    max_bytes = settings.GRAPHDB_MAX_RESPONSE_BYTES
+
+    start = time.monotonic()
+    try:
+        stream_kwargs: dict[str, Any] = {}
+        if timeout is not None:
+            stream_kwargs["timeout"] = timeout
+        async with client.stream(
+            "POST",
+            graphdb_repository_path(repo),
+            content=sparql,
+            headers={
+                "Content-Type": "application/sparql-query",
+                "Accept": accept,
+            },
+            **stream_kwargs,
+        ) as resp:
+            raw = await read_capped_response(resp, max_bytes)
+
+            if resp.status_code >= 400:
+                preview = raw.decode("utf-8", errors="replace")
+                raise _map_graphdb_error(resp.status_code, preview, repo)
+    except GraphDBResponseTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="GraphDB query timed out") from exc
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="GraphDB upstream error") from exc
+
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+
+    if statement_type in ("construct", "describe"):
+        try:
+            turtle = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(
+                status_code=502, detail="GraphDB returned non-UTF-8 graph payload"
+            ) from exc
+        return QueryResponse(
+            columns=[], rows=[], row_count=0, truncated=False,
+            elapsed_ms=elapsed_ms, graph=turtle,
+        )
+
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=502, detail="GraphDB returned malformed SPARQL Results JSON"
+        ) from exc
+
+    if statement_type == "ask":
+        if "boolean" not in parsed:
+            raise HTTPException(
+                status_code=502,
+                detail="GraphDB returned malformed ASK result",
+            )
+        raw_val = parsed["boolean"]
+        if isinstance(raw_val, bool):
+            ask_value = raw_val
+        elif isinstance(raw_val, str):
+            normalized = raw_val.strip().lower()
+            if normalized not in {"true", "false"}:
+                raise HTTPException(
+                    status_code=502,
+                    detail="GraphDB returned malformed ASK result",
+                )
+            ask_value = normalized == "true"
+        else:
+            raise HTTPException(
+                status_code=502,
+                detail="GraphDB returned malformed ASK result",
+            )
+        return QueryResponse(
+            columns=["boolean"], rows=[[ask_value]], row_count=1,
+            truncated=False, elapsed_ms=elapsed_ms, graph=None,
+        )
+
+    # SELECT
+    head = parsed.get("head", {})
+    columns = list(head.get("vars", []))
+    bindings = parsed.get("results", {}).get("bindings", [])
+    sampled_bindings = bindings[: limit + 1] if limit else bindings
+    raw_rows = [
+        [_coerce_binding_value(b[v]) if v in b else None for v in columns]
+        for b in sampled_bindings
+    ]
+    truncated = len(raw_rows) > limit
+    rows = raw_rows[:limit] if truncated else raw_rows
+    return QueryResponse(
+        columns=columns, rows=rows, row_count=len(rows),
+        truncated=truncated, elapsed_ms=elapsed_ms, graph=None,
+    )

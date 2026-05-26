@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import metrics
 from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_role_permissions, require_permission
+from app.config import settings
 from app.database import get_db
 from app.models import Permission, QueryTemplate
 from app.schemas import (
@@ -25,8 +26,19 @@ from app.schemas import (
 from app.middleware.rate_limiter import rate_limiter
 from app.services.audit import log_query
 from app.services.connection_manager import connection_manager
-from app.services.query_executor import check_permission, detect_statement_type, execute_clickhouse_query, execute_neo4j_query, execute_query
+from app.services.query_executor import (
+    check_permission,
+    detect_statement_type,
+    execute_clickhouse_query,
+    execute_graphdb_query,
+    execute_neo4j_query,
+    execute_query,
+)
 from app.services.settings_manager import settings_manager
+from app.services.sparql_analysis import (
+    detect_sparql_statement_type,
+    strip_sparql_strings_and_comments,
+)
 from app.services.sql_validator import validate_sql
 from app.services.table_access import check_table_access, extract_tables
 
@@ -114,7 +126,65 @@ def _detect_neo4j_statement_type(sql: str) -> str:
 def _detect_statement_type(sql: str, db_type: str) -> str:
     if db_type == "neo4j":
         return _detect_neo4j_statement_type(sql)
+    if db_type == "graphdb":
+        raw = detect_sparql_statement_type(sql)
+        if raw == "reject":
+            raise HTTPException(
+                status_code=422,
+                detail="Unsupported SPARQL statement",
+            )
+        # All read SPARQL forms (select/ask/construct/describe) normalize to
+        # "select" so downstream gates (API-key SELECT check, check_permission,
+        # _validate_read_only_template_sql) treat them uniformly. The raw form
+        # is re-derived locally in the graphdb executor dispatch.
+        return "select"
     return detect_statement_type(sql)
+
+
+def _extra_blocked_keyword_error(sql: str, blocked_keywords: list[str]) -> str | None:
+    if not blocked_keywords:
+        return None
+    pattern = re.compile(
+        r"\b(" + "|".join(re.escape(keyword) for keyword in blocked_keywords) + r")\b",
+        re.IGNORECASE,
+    )
+    match = pattern.search(sql)
+    if match:
+        return f"Blocked SQL keyword: {match.group(0).upper()}"
+    return None
+
+
+async def _record_failed_query(
+    db: AsyncSession,
+    *,
+    username: str,
+    database_alias: str,
+    db_type: str,
+    sql: str,
+    params: dict | None,
+    metric_status: str,
+    audit_status: str,
+    error_message: str,
+    duration_seconds: float = 0,
+) -> None:
+    metrics.record_query(
+        db_alias=database_alias,
+        db_type=db_type,
+        status=metric_status,
+        duration_seconds=duration_seconds,
+    )
+    try:
+        await log_query(
+            db,
+            user=username,
+            database_alias=database_alias,
+            sql=sql,
+            params=params,
+            status=audit_status,
+            error_message=error_message,
+        )
+    except Exception:
+        logger.exception("Failed to write audit log for failed query")
 
 
 @router.post("/query/execute", response_model=QueryResponse)
@@ -163,7 +233,28 @@ async def execute(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Database '{req.database}' is not registered or not connected",
         )
-    statement_type = _detect_statement_type(req.sql, db_type)
+    if db_type == "graphdb" and req.params:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "GraphDB does not support bind parameters; pass the SPARQL inline"
+            ),
+        )
+    try:
+        statement_type = _detect_statement_type(req.sql, db_type)
+    except HTTPException as exc:
+        await _record_failed_query(
+            db,
+            username=username,
+            database_alias=req.database,
+            db_type=db_type,
+            sql=req.sql,
+            params=req.params,
+            metric_status="error",
+            audit_status="error",
+            error_message=str(exc.detail),
+        )
+        raise
     if db_type == "neo4j" and statement_type != "select":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -207,13 +298,25 @@ async def execute(
                     detail=f"Role '{user.role}' is not allowed to execute {statement_type.upper()} on '{req.database}'",
                 )
 
-    # 2b. SQL keyword blacklist check
-    blocked_error = validate_sql(req.sql, extra_blocked=settings_manager.blocked_sql_keywords)
-    if blocked_error:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=blocked_error,
+    # 2b. SQL keyword blacklist check. For SPARQL, keep the operator-defined
+    # deny-list but skip SQL parser/default keyword rules that are SQL-specific.
+    if db_type == "graphdb":
+        blocked_error = _extra_blocked_keyword_error(
+            strip_sparql_strings_and_comments(req.sql),
+            settings_manager.blocked_sql_keywords,
         )
+        if blocked_error:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=blocked_error,
+            )
+    else:
+        blocked_error = validate_sql(req.sql, extra_blocked=settings_manager.blocked_sql_keywords)
+        if blocked_error:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=blocked_error,
+            )
 
     # 2c. Table-level access check (JWT non-admin users only)
     if isinstance(user, CurrentUser):
@@ -221,7 +324,7 @@ async def execute(
         if "query.databases.write" not in user_perms_for_tables and perm is not None:
             allowed_tables_raw = perm.allowed_tables
             allowed_tables = json.loads(allowed_tables_raw) if allowed_tables_raw else None
-            if allowed_tables is not None and db_type != "neo4j":
+            if allowed_tables is not None and db_type not in ("neo4j", "graphdb"):
                 referenced = extract_tables(req.sql, db_type=db_type)
                 table_error = check_table_access(referenced, allowed_tables)
                 if table_error:
@@ -257,6 +360,22 @@ async def execute(
                 limit=req.limit,
                 timeout=req.timeout,
             )
+        elif db_type == "graphdb":
+            graphdb_client = connection_manager.get_graphdb_client(req.database)
+            repo = connection_manager.get_database_name(req.database)
+            # Re-derive the raw SPARQL form (select/ask/construct/describe) for
+            # the executor; statement_type was normalized to "select" by
+            # _detect_statement_type so the upstream gates pass uniformly.
+            raw_form = detect_sparql_statement_type(req.sql)
+            effective_limit = req.limit or settings.DEFAULT_ROW_LIMIT
+            response = await execute_graphdb_query(
+                client=graphdb_client,
+                repo=repo,
+                sparql=req.sql,
+                statement_type=raw_form,
+                limit=effective_limit,
+                timeout=req.timeout,
+            )
         else:
             engine = connection_manager.get_engine(req.database)
             response = await execute_query(
@@ -272,7 +391,7 @@ async def execute(
         )
         try:
             await log_query(db, user=username, database_alias=req.database,
-                            sql=req.sql, params=req.params, status="error",
+                            sql=req.sql, params=req.params, status="timeout",
                             error_message="Query timed out")
         except Exception:
             logger.exception("Failed to write audit log for timed-out query")
@@ -280,6 +399,25 @@ async def execute(
             status_code=status.HTTP_408_REQUEST_TIMEOUT,
             detail="Query timed out",
         )
+    except HTTPException as exc:
+        status_label = (
+            "timeout"
+            if exc.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+            else "error"
+        )
+        await _record_failed_query(
+            db,
+            username=username,
+            database_alias=req.database,
+            db_type=db_type,
+            sql=req.sql,
+            params=req.params,
+            metric_status=status_label,
+            audit_status=status_label,
+            error_message=str(exc.detail),
+            duration_seconds=time.monotonic() - query_started_at,
+        )
+        raise
     except Exception as exc:
         metrics.record_query(
             db_alias=req.database,

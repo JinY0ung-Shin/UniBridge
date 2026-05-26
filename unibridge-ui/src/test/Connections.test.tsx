@@ -20,6 +20,15 @@ const mockedCreateDatabase = vi.mocked(createDatabase);
 const mockedTestDatabase = vi.mocked(testDatabase);
 const mockedDeleteDatabase = vi.mocked(deleteDatabase);
 const mockedGetDbTables = vi.mocked(getDbTables);
+const clipboardWriteText = vi.fn();
+
+beforeEach(() => {
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: clipboardWriteText },
+  });
+  clipboardWriteText.mockResolvedValue(undefined);
+});
 
 describe('Connections', () => {
   beforeEach(() => {
@@ -258,6 +267,192 @@ describe('Connections', () => {
     expect(screen.getByRole('dialog', { name: /cURL — graph-db/ })).toHaveAttribute('aria-modal', 'true');
     expect(screen.queryByText(/SELECT \* FROM/)).not.toBeInTheDocument();
     expect(mockedGetDbTables).not.toHaveBeenCalled();
+  });
+
+  it('sets copied state only after clipboard write succeeds', async () => {
+    const db = makeDatabase();
+    mockedGetAdminDatabases.mockResolvedValue([db]);
+
+    renderWithProviders(<Connections />);
+
+    await waitFor(() => {
+      expect(screen.getByText('test-db')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'cURL' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }));
+
+    await waitFor(() => {
+      expect(clipboardWriteText).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument();
+  });
+
+  it('shows copy failure when clipboard write rejects', async () => {
+    clipboardWriteText.mockRejectedValueOnce(new Error('not allowed'));
+    const db = makeDatabase();
+    mockedGetAdminDatabases.mockResolvedValue([db]);
+
+    renderWithProviders(<Connections />);
+
+    await waitFor(() => {
+      expect(screen.getByText('test-db')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'cURL' }));
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to copy cURL command')).toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copied' })).not.toBeInTheDocument();
+  });
+
+});
+
+describe('Connections — graphdb', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedGetAdminDatabases.mockResolvedValue([]);
+  });
+
+  it('selecting graphdb sets port 7200 and shows Repository ID label', async () => {
+    renderWithProviders(<Connections />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No connections yet')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add Connection' }));
+
+    const [typeSelect] = screen.getAllByRole('combobox');
+    await userEvent.selectOptions(typeSelect, 'graphdb');
+
+    expect(screen.getByDisplayValue('7200')).toBeInTheDocument();
+    expect(screen.getByText('Repository ID')).toBeInTheDocument();
+    expect(screen.queryByText('Database', { selector: 'label' })).not.toBeInTheDocument();
+  });
+
+  it('hides secure / pool_size / max_overflow inputs for graphdb', async () => {
+    renderWithProviders(<Connections />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No connections yet')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add Connection' }));
+
+    const [typeSelect] = screen.getAllByRole('combobox');
+    await userEvent.selectOptions(typeSelect, 'graphdb');
+
+    expect(screen.queryByText('Pool Size')).not.toBeInTheDocument();
+    expect(screen.queryByText('Max Overflow')).not.toBeInTheDocument();
+    expect(screen.queryByText(/secure/i)).not.toBeInTheDocument();
+  });
+
+  it('protocol select for graphdb only offers http and https', async () => {
+    renderWithProviders(<Connections />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No connections yet')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add Connection' }));
+
+    const [typeSelect] = screen.getAllByRole('combobox');
+    await userEvent.selectOptions(typeSelect, 'graphdb');
+
+    const comboboxes = screen.getAllByRole('combobox');
+    expect(comboboxes).toHaveLength(2);
+    const protocolSelect = comboboxes[1] as HTMLSelectElement;
+    const optionValues = Array.from(protocolSelect.options).map((o) => o.value);
+    expect(optionValues).toEqual(['http', 'https']);
+  });
+
+  it('submits graphdb payload with protocol http and no pool fields', async () => {
+    mockedCreateDatabase.mockClear();
+    mockedCreateDatabase.mockResolvedValue(
+      makeDatabase({
+        alias: 'graphdb-1',
+        db_type: 'graphdb' as const,
+        port: 7200,
+        protocol: 'http' as const,
+        database: 'my-repo',
+      }),
+    );
+
+    renderWithProviders(<Connections />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No connections yet')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add Connection' }));
+
+    const [typeSelect] = screen.getAllByRole('combobox');
+    await userEvent.selectOptions(typeSelect, 'graphdb');
+
+    await userEvent.type(screen.getByPlaceholderText('e.g., main-db'), 'graphdb-1');
+    await userEvent.type(screen.getByPlaceholderText('localhost'), 'graph.example.com');
+    await userEvent.type(screen.getByPlaceholderText('my-repo'), 'my-repo');
+    await userEvent.type(screen.getByPlaceholderText('dbuser'), 'admin');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(mockedCreateDatabase).toHaveBeenCalledTimes(1);
+    });
+
+    const submitted = mockedCreateDatabase.mock.calls[0][0];
+    expect(submitted).toMatchObject({
+      alias: 'graphdb-1',
+      db_type: 'graphdb',
+      host: 'graph.example.com',
+      port: 7200,
+      protocol: 'http',
+      database: 'my-repo',
+      secure: null,
+    });
+  });
+
+  it('shows SPARQL cURL sample for graphdb connections', async () => {
+    const db = makeDatabase({
+      alias: 'gdb-1',
+      db_type: 'graphdb' as const,
+      port: 7200,
+      database: 'my-repo',
+      protocol: 'http' as const,
+    });
+    mockedGetAdminDatabases.mockResolvedValue([db]);
+
+    renderWithProviders(<Connections />);
+
+    await waitFor(() => {
+      expect(screen.getByText('gdb-1')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'cURL' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/SELECT \?s \?p \?o WHERE/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/SELECT \* FROM/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/MATCH \(n\)/)).not.toBeInTheDocument();
+    expect(mockedGetDbTables).not.toHaveBeenCalled();
+  });
+});
+
+describe('Connections (error case)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedGetAdminDatabases.mockResolvedValue([]);
   });
 
   it('shows error message when create fails', async () => {

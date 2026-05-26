@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -20,6 +20,7 @@ const DEFAULT_PORTS: Record<string, number> = {
   mssql: 1433,
   clickhouse: 8123,
   neo4j: 7687,
+  graphdb: 7200,
 };
 
 const NEO4J_PROTOCOLS = ['bolt', 'bolt+s', 'bolt+ssc', 'neo4j', 'neo4j+s', 'neo4j+ssc'] as const;
@@ -94,6 +95,20 @@ function Connections() {
   });
 
   const databases = dbsQuery.data ?? [];
+  const curlCopyTimeoutRef = useRef<number | null>(null);
+
+  function clearCurlCopyTimer() {
+    if (curlCopyTimeoutRef.current !== null) {
+      window.clearTimeout(curlCopyTimeoutRef.current);
+      curlCopyTimeoutRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      clearCurlCopyTimer();
+    };
+  }, []);
 
   function openCreate() {
     setForm({ ...emptyForm });
@@ -137,7 +152,9 @@ function Connections() {
     const alias = db.alias;
     let sampleQuery = 'MATCH (n) RETURN n LIMIT 10';
     let tableName = '<TABLE>';
-    if (db.db_type !== 'neo4j') {
+    if (db.db_type === 'graphdb') {
+      sampleQuery = 'SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10';
+    } else if (db.db_type !== 'neo4j') {
       try {
         const tables = await getDbTables(alias);
         if (tables.length > 0) tableName = tables[0];
@@ -151,12 +168,26 @@ function Connections() {
     setCurlCopied(false);
   }
 
-  function handleCurlCopy() {
-    if (curlModal) {
-      navigator.clipboard.writeText(curlModal.curl);
+  async function handleCurlCopy() {
+    if (!curlModal) return;
+    clearCurlCopyTimer();
+    try {
+      await navigator.clipboard.writeText(curlModal.curl);
       setCurlCopied(true);
-      setTimeout(() => setCurlCopied(false), 2000);
+      curlCopyTimeoutRef.current = window.setTimeout(() => {
+        setCurlCopied(false);
+        curlCopyTimeoutRef.current = null;
+      }, 2000);
+    } catch {
+      setCurlCopied(false);
+      addToast({ type: 'error', title: t('connections.copyFailed') });
     }
+  }
+
+  function closeCurlModal() {
+    clearCurlCopyTimer();
+    setCurlCopied(false);
+    setCurlModal(null);
   }
 
   function handleTest(alias: string) {
@@ -311,6 +342,9 @@ function Connections() {
                       nextSecure = false;
                     } else if (newType === 'neo4j') {
                       nextProtocol = 'bolt';
+                    } else if (newType === 'graphdb') {
+                      nextProtocol = 'http';
+                      nextSecure = null;
                     }
                     setForm((prev) => ({
                       ...prev,
@@ -325,6 +359,7 @@ function Connections() {
                   <option value="mssql">MS SQL</option>
                   <option value="clickhouse">ClickHouse</option>
                   <option value="neo4j">Neo4j</option>
+                  <option value="graphdb">Ontotext GraphDB</option>
                 </select>
               </div>
               <div className="form-group">
@@ -347,13 +382,17 @@ function Connections() {
                 />
               </div>
               <div className="form-group">
-                <label>{t('connections.database')}</label>
+                <label>
+                  {form.db_type === 'graphdb'
+                    ? t('connections.repositoryId')
+                    : t('connections.database')}
+                </label>
                 <input
                   type="text"
                   value={form.database}
                   onChange={(e) => updateField('database', e.target.value)}
                   required
-                  placeholder="mydb"
+                  placeholder={form.db_type === 'graphdb' ? 'my-repo' : 'mydb'}
                 />
               </div>
               <div className="form-group">
@@ -416,7 +455,21 @@ function Connections() {
                   </select>
                 </div>
               )}
-              {form.db_type !== 'clickhouse' && form.db_type !== 'neo4j' && (
+              {form.db_type === 'graphdb' && (
+                <div className="form-group">
+                  <label>{t('connections.protocol')}</label>
+                  <select
+                    value={form.protocol ?? 'http'}
+                    onChange={(e) =>
+                      updateField('protocol', e.target.value as DatabaseConfig['protocol'])
+                    }
+                  >
+                    <option value="http">http</option>
+                    <option value="https">https</option>
+                  </select>
+                </div>
+              )}
+              {form.db_type !== 'clickhouse' && form.db_type !== 'neo4j' && form.db_type !== 'graphdb' && (
                 <>
                   <div className="form-group">
                     <label>{t('connections.poolSize')}</label>
@@ -465,7 +518,7 @@ function Connections() {
       {curlModal && (
         <ResourceModal
           title={`cURL — ${curlModal.alias}`}
-          onClose={() => setCurlModal(null)}
+          onClose={closeCurlModal}
           closeLabel={t('common.close')}
           className="modal--sm"
         >
