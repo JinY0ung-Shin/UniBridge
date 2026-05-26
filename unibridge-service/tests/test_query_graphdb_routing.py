@@ -1,11 +1,13 @@
 """End-to-end routing tests for the GraphDB path of POST /query/execute."""
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+from fastapi import HTTPException
 import httpx
 import pytest
 
+from app.schemas import QueryResponse
 from tests.test_admin import _cm_patch, auth_header
 
 
@@ -214,3 +216,54 @@ async def test_validate_sql_skipped_for_graphdb(client, admin_token):
             )
     # Must pass — the validate_sql skip for graphdb is the only thing preventing 403.
     assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_graphdb_executor_http_exception_status_is_preserved(client, admin_token):
+    """Executor HTTPException statuses must not be collapsed into generic 400."""
+    with _cm_patch("graphdb"):
+        await _register_graphdb(client, admin_token, "kg-too-large")
+        with _patch_query_cm(), patch(
+            "app.routers.query.execute_graphdb_query",
+            AsyncMock(side_effect=HTTPException(status_code=413, detail="too large")),
+        ):
+            resp = await client.post(
+                "/query/execute",
+                json={
+                    "database": "kg-too-large",
+                    "sql": "DESCRIBE <http://ex/x>",
+                },
+                headers=auth_header(admin_token),
+            )
+    assert resp.status_code == 413, resp.text
+    assert resp.json()["detail"] == "too large"
+
+
+@pytest.mark.asyncio
+async def test_timeout_override_forwarded_to_graphdb_executor(client, admin_token):
+    execute_mock = AsyncMock(
+        return_value=QueryResponse(
+            columns=["s"],
+            rows=[["http://ex/a"]],
+            row_count=1,
+            truncated=False,
+            elapsed_ms=1,
+        )
+    )
+    with _cm_patch("graphdb"):
+        await _register_graphdb(client, admin_token, "kg-timeout")
+        with _patch_query_cm(), patch(
+            "app.routers.query.execute_graphdb_query",
+            execute_mock,
+        ):
+            resp = await client.post(
+                "/query/execute",
+                json={
+                    "database": "kg-timeout",
+                    "sql": "SELECT ?s WHERE { ?s ?p ?o }",
+                    "timeout": 7,
+                },
+                headers=auth_header(admin_token),
+            )
+    assert resp.status_code == 200, resp.text
+    assert execute_mock.await_args.kwargs["timeout"] == 7

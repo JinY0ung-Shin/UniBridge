@@ -182,8 +182,8 @@ async def test_describe_returns_graph_field():
 
 @pytest.mark.asyncio
 async def test_413_when_content_length_exceeds_limit(monkeypatch):
-    from app import config as cfg_mod
-    monkeypatch.setattr(cfg_mod.settings, "GRAPHDB_MAX_RESPONSE_BYTES", 100)
+    from app.services import query_executor as executor_mod
+    monkeypatch.setattr(executor_mod.settings, "GRAPHDB_MAX_RESPONSE_BYTES", 100)
 
     big = "x" * 500
     def handler(_):
@@ -201,8 +201,8 @@ async def test_413_when_content_length_exceeds_limit(monkeypatch):
 @pytest.mark.asyncio
 async def test_413_when_streamed_body_exceeds_limit(monkeypatch):
     """Force chunked transfer (no Content-Length) so the streaming guard fires."""
-    from app import config as cfg_mod
-    monkeypatch.setattr(cfg_mod.settings, "GRAPHDB_MAX_RESPONSE_BYTES", 100)
+    from app.services import query_executor as executor_mod
+    monkeypatch.setattr(executor_mod.settings, "GRAPHDB_MAX_RESPONSE_BYTES", 100)
 
     async def body_gen():
         for _ in range(5):
@@ -225,8 +225,8 @@ async def test_413_when_streamed_body_exceeds_limit(monkeypatch):
 async def test_413_with_misleading_small_content_length(monkeypatch):
     """If Content-Length lies (claims small body, actual body is huge),
     the streaming guard must still fire 413."""
-    from app import config as cfg_mod
-    monkeypatch.setattr(cfg_mod.settings, "GRAPHDB_MAX_RESPONSE_BYTES", 100)
+    from app.services import query_executor as executor_mod
+    monkeypatch.setattr(executor_mod.settings, "GRAPHDB_MAX_RESPONSE_BYTES", 100)
 
     async def body_gen():
         for _ in range(5):

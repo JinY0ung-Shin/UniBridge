@@ -300,6 +300,7 @@ async def execute(
                 sparql=req.sql,
                 statement_type=raw_form,
                 limit=effective_limit,
+                timeout=req.timeout,
             )
         else:
             engine = connection_manager.get_engine(req.database)
@@ -324,6 +325,20 @@ async def execute(
             status_code=status.HTTP_408_REQUEST_TIMEOUT,
             detail="Query timed out",
         )
+    except HTTPException as exc:
+        metrics.record_query(
+            db_alias=req.database,
+            db_type=db_type,
+            status="error",
+            duration_seconds=time.monotonic() - query_started_at,
+        )
+        try:
+            await log_query(db, user=username, database_alias=req.database,
+                            sql=req.sql, params=req.params, status="error",
+                            error_message=str(exc.detail))
+        except Exception:
+            logger.exception("Failed to write audit log for failed query")
+        raise
     except Exception as exc:
         metrics.record_query(
             db_alias=req.database,

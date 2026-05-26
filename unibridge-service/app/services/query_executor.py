@@ -665,6 +665,7 @@ async def execute_graphdb_query(
     sparql: str,
     statement_type: str,
     limit: int,
+    timeout: int | float | None = None,
 ) -> QueryResponse:
     """Execute a SPARQL read against GraphDB and map the response.
 
@@ -681,6 +682,9 @@ async def execute_graphdb_query(
 
     start = time.monotonic()
     try:
+        stream_kwargs: dict[str, Any] = {}
+        if timeout is not None:
+            stream_kwargs["timeout"] = timeout
         async with client.stream(
             "POST",
             f"/repositories/{repo}",
@@ -689,6 +693,7 @@ async def execute_graphdb_query(
                 "Content-Type": "application/sparql-query",
                 "Accept": accept,
             },
+            **stream_kwargs,
         ) as resp:
             content_length = resp.headers.get("content-length")
             if content_length is not None:
