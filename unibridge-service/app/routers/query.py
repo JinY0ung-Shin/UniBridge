@@ -114,6 +114,19 @@ def _detect_neo4j_statement_type(sql: str) -> str:
 def _detect_statement_type(sql: str, db_type: str) -> str:
     if db_type == "neo4j":
         return _detect_neo4j_statement_type(sql)
+    if db_type == "graphdb":
+        from app.services.sparql_analysis import detect_sparql_statement_type
+        raw = detect_sparql_statement_type(sql)
+        if raw == "reject":
+            raise HTTPException(
+                status_code=422,
+                detail="Unsupported SPARQL statement",
+            )
+        # All read SPARQL forms (select/ask/construct/describe) normalize to
+        # "select" so downstream gates (API-key SELECT check, check_permission,
+        # _validate_read_only_template_sql) treat them uniformly. The raw form
+        # is re-derived locally in the graphdb executor dispatch.
+        return "select"
     return detect_statement_type(sql)
 
 
@@ -163,6 +176,13 @@ async def execute(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Database '{req.database}' is not registered or not connected",
         )
+    if db_type == "graphdb" and req.params:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "GraphDB does not support bind parameters; pass the SPARQL inline"
+            ),
+        )
     statement_type = _detect_statement_type(req.sql, db_type)
     if db_type == "neo4j" and statement_type != "select":
         raise HTTPException(
@@ -207,13 +227,14 @@ async def execute(
                     detail=f"Role '{user.role}' is not allowed to execute {statement_type.upper()} on '{req.database}'",
                 )
 
-    # 2b. SQL keyword blacklist check
-    blocked_error = validate_sql(req.sql, extra_blocked=settings_manager.blocked_sql_keywords)
-    if blocked_error:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=blocked_error,
-        )
+    # 2b. SQL keyword blacklist check (skip for SPARQL backends)
+    if db_type != "graphdb":
+        blocked_error = validate_sql(req.sql, extra_blocked=settings_manager.blocked_sql_keywords)
+        if blocked_error:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=blocked_error,
+            )
 
     # 2c. Table-level access check (JWT non-admin users only)
     if isinstance(user, CurrentUser):
@@ -221,7 +242,7 @@ async def execute(
         if "query.databases.write" not in user_perms_for_tables and perm is not None:
             allowed_tables_raw = perm.allowed_tables
             allowed_tables = json.loads(allowed_tables_raw) if allowed_tables_raw else None
-            if allowed_tables is not None and db_type != "neo4j":
+            if allowed_tables is not None and db_type not in ("neo4j", "graphdb"):
                 referenced = extract_tables(req.sql, db_type=db_type)
                 table_error = check_table_access(referenced, allowed_tables)
                 if table_error:
@@ -256,6 +277,25 @@ async def execute(
                 params=req.params,
                 limit=req.limit,
                 timeout=req.timeout,
+            )
+        elif db_type == "graphdb":
+            from app.config import settings as _settings
+            from app.services.query_executor import execute_graphdb_query
+            from app.services.sparql_analysis import detect_sparql_statement_type
+
+            graphdb_client = connection_manager.get_graphdb_client(req.database)
+            repo = connection_manager.get_database_name(req.database)
+            # Re-derive the raw SPARQL form (select/ask/construct/describe) for
+            # the executor; statement_type was normalized to "select" by
+            # _detect_statement_type so the upstream gates pass uniformly.
+            raw_form = detect_sparql_statement_type(req.sql)
+            effective_limit = req.limit or _settings.DEFAULT_ROW_LIMIT
+            response = await execute_graphdb_query(
+                client=graphdb_client,
+                repo=repo,
+                sparql=req.sql,
+                statement_type=raw_form,
+                limit=effective_limit,
             )
         else:
             engine = connection_manager.get_engine(req.database)
