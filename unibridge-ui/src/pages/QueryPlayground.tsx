@@ -36,6 +36,12 @@ function QueryPlayground() {
   });
 
   const databases = dbsQuery.data ?? [];
+  const selectedDbType = databases.find((d) => d.alias === selectedDb)?.db_type;
+  const isSparql = selectedDbType === 'graphdb';
+  const editorLabel = isSparql ? 'SPARQL' : 'SQL';
+  const editorPlaceholder = isSparql
+    ? 'SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10'
+    : 'SELECT * FROM users LIMIT 10;';
 
   function handleExecute() {
     if (!selectedDb || !sql.trim()) return;
@@ -84,7 +90,7 @@ function QueryPlayground() {
 
       <div className="editor-container">
         <div className="editor-topbar">
-          <span className="editor-topbar-label">SQL</span>
+          <span className="editor-topbar-label">{editorLabel}</span>
           <div className="editor-topbar-dots">
             <span className="editor-topbar-dot" />
             <span className="editor-topbar-dot" />
@@ -93,7 +99,7 @@ function QueryPlayground() {
         </div>
         <textarea
           className="sql-editor"
-          placeholder="SELECT * FROM users LIMIT 10;"
+          placeholder={editorPlaceholder}
           value={sql}
           onChange={(e) => setSql(e.target.value)}
           onKeyDown={handleKeyDown}

@@ -58,6 +58,14 @@ function Permissions() {
   const permissions = permsQuery.data ?? [];
   const databases = dbsQuery.data ?? [];
   const dbAliases = databases.map((d) => d.alias);
+  const dbTypeByAlias: Record<string, string> = Object.fromEntries(
+    databases.map((d) => [d.alias, d.db_type]),
+  );
+
+  function isGraphBackend(alias: string): boolean {
+    const dbType = dbTypeByAlias[alias];
+    return dbType === 'graphdb' || dbType === 'neo4j';
+  }
 
   function toggleOperation(perm: Permission, key: 'allow_select' | 'allow_insert' | 'allow_update' | 'allow_delete') {
     updateMut.mutate({ ...perm, [key]: !perm[key] });
@@ -192,7 +200,9 @@ function Permissions() {
                     </td>
                   ))}
                   <td>
-                    {editingTablesFor === `${perm.role}:${perm.db_alias}` ? (
+                    {isGraphBackend(perm.db_alias) ? (
+                      <span className="hint">{t('permissions.tableAclNotApplicable')}</span>
+                    ) : editingTablesFor === `${perm.role}:${perm.db_alias}` ? (
                       <div className="table-selector">
                         {tablesLoading ? (
                           <span>{t('common.loading')}</span>

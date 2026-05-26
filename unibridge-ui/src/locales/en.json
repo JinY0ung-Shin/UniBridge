@@ -125,7 +125,8 @@
     "removeConfirm": "Remove permissions for role \"{{role}}\" on \"{{db}}\"?",
     "allowedTables": "Allowed Tables",
     "allTables": "All tables",
-    "noTablesFound": "No tables found"
+    "noTablesFound": "No tables found",
+    "tableAclNotApplicable": "Not applicable to graph databases"
   },
   "auditLogs": {
     "title": "Audit Logs",
