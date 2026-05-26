@@ -113,3 +113,109 @@ describe('QueryPlayground', () => {
     });
   });
 });
+
+describe('QueryPlayground — graph rendering', () => {
+  async function selectDbAndExecute(user: ReturnType<typeof userEvent.setup>) {
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: 'test-db' })).toBeInTheDocument();
+    });
+    await user.selectOptions(screen.getByRole('combobox'), 'test-db');
+    // SQL contents don't affect rendering (executeQuery is mocked); use a simple string
+    // because userEvent.type interprets { and } as keyboard key descriptors.
+    await user.type(
+      screen.getByPlaceholderText('SELECT * FROM users LIMIT 10;'),
+      'QUERY',
+    );
+    await user.click(screen.getByRole('button', { name: /execute/i }));
+  }
+
+  it('renders Turtle in a <pre> when result.graph is set', async () => {
+    const user = userEvent.setup();
+    mockGetDatabases.mockResolvedValue([makeDatabase()]);
+    mockExecuteQuery.mockResolvedValue({
+      columns: [],
+      rows: [],
+      row_count: 0,
+      truncated: false,
+      elapsed_ms: 5,
+      graph: '@prefix ex: <http://ex/> . ex:a ex:b ex:c .',
+    });
+
+    const { container } = renderWithProviders(<QueryPlayground />);
+
+    await selectDbAndExecute(user);
+
+    await waitFor(() => {
+      const pre = container.querySelector('pre.rdf-graph');
+      expect(pre).not.toBeNull();
+      expect(pre?.textContent).toContain('ex:a ex:b ex:c');
+    });
+  });
+
+  it('falls back to no-rows when graph is empty string', async () => {
+    const user = userEvent.setup();
+    mockGetDatabases.mockResolvedValue([makeDatabase()]);
+    mockExecuteQuery.mockResolvedValue({
+      columns: [],
+      rows: [],
+      row_count: 0,
+      truncated: false,
+      elapsed_ms: 3,
+      graph: '',
+    });
+
+    const { container } = renderWithProviders(<QueryPlayground />);
+
+    await selectDbAndExecute(user);
+
+    await waitFor(() => {
+      expect(container.querySelector('.no-rows')).not.toBeNull();
+    });
+    expect(container.querySelector('pre.rdf-graph')).toBeNull();
+  });
+
+  it('renders ASK boolean as a single-row table', async () => {
+    const user = userEvent.setup();
+    mockGetDatabases.mockResolvedValue([makeDatabase()]);
+    mockExecuteQuery.mockResolvedValue({
+      columns: ['boolean'],
+      rows: [[true]],
+      row_count: 1,
+      truncated: false,
+      elapsed_ms: 2,
+      graph: null,
+    });
+
+    const { container } = renderWithProviders(<QueryPlayground />);
+
+    await selectDbAndExecute(user);
+
+    await waitFor(() => {
+      expect(screen.getByText('true')).toBeInTheDocument();
+    });
+    expect(container.querySelector('table.results-table')).not.toBeNull();
+    expect(container.querySelector('pre.rdf-graph')).toBeNull();
+  });
+
+  it('renders SELECT table when graph is undefined', async () => {
+    const user = userEvent.setup();
+    mockGetDatabases.mockResolvedValue([makeDatabase()]);
+    mockExecuteQuery.mockResolvedValue({
+      columns: ['s'],
+      rows: [['http://ex/a']],
+      row_count: 1,
+      truncated: false,
+      elapsed_ms: 4,
+    });
+
+    const { container } = renderWithProviders(<QueryPlayground />);
+
+    await selectDbAndExecute(user);
+
+    await waitFor(() => {
+      expect(screen.getByText('http://ex/a')).toBeInTheDocument();
+    });
+    expect(container.querySelector('table.results-table')).not.toBeNull();
+    expect(container.querySelector('pre.rdf-graph')).toBeNull();
+  });
+});
