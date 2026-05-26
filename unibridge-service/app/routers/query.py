@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import metrics
 from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_role_permissions, require_permission
+from app.config import settings
 from app.database import get_db
 from app.models import Permission, QueryTemplate
 from app.schemas import (
@@ -25,8 +26,16 @@ from app.schemas import (
 from app.middleware.rate_limiter import rate_limiter
 from app.services.audit import log_query
 from app.services.connection_manager import connection_manager
-from app.services.query_executor import check_permission, detect_statement_type, execute_clickhouse_query, execute_neo4j_query, execute_query
+from app.services.query_executor import (
+    check_permission,
+    detect_statement_type,
+    execute_clickhouse_query,
+    execute_graphdb_query,
+    execute_neo4j_query,
+    execute_query,
+)
 from app.services.settings_manager import settings_manager
+from app.services.sparql_analysis import detect_sparql_statement_type
 from app.services.sql_validator import validate_sql
 from app.services.table_access import check_table_access, extract_tables
 
@@ -115,7 +124,6 @@ def _detect_statement_type(sql: str, db_type: str) -> str:
     if db_type == "neo4j":
         return _detect_neo4j_statement_type(sql)
     if db_type == "graphdb":
-        from app.services.sparql_analysis import detect_sparql_statement_type
         raw = detect_sparql_statement_type(sql)
         if raw == "reject":
             raise HTTPException(
@@ -279,17 +287,13 @@ async def execute(
                 timeout=req.timeout,
             )
         elif db_type == "graphdb":
-            from app.config import settings as _settings
-            from app.services.query_executor import execute_graphdb_query
-            from app.services.sparql_analysis import detect_sparql_statement_type
-
             graphdb_client = connection_manager.get_graphdb_client(req.database)
             repo = connection_manager.get_database_name(req.database)
             # Re-derive the raw SPARQL form (select/ask/construct/describe) for
             # the executor; statement_type was normalized to "select" by
             # _detect_statement_type so the upstream gates pass uniformly.
             raw_form = detect_sparql_statement_type(req.sql)
-            effective_limit = req.limit or _settings.DEFAULT_ROW_LIMIT
+            effective_limit = req.limit or settings.DEFAULT_ROW_LIMIT
             response = await execute_graphdb_query(
                 client=graphdb_client,
                 repo=repo,

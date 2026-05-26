@@ -189,7 +189,18 @@ async def test_empty_params_allowed(client, admin_token):
 
 @pytest.mark.asyncio
 async def test_validate_sql_skipped_for_graphdb(client, admin_token):
-    """A SPARQL query containing the substring `GRANT` (in a URI) must pass — sqlglot blacklist is skipped."""
+    """A SPARQL query that would trip the sqlglot blacklist if applied must pass for graphdb."""
+    # First confirm the SPARQL string would fail validate_sql on a SQL backend:
+    from app.services.sql_validator import validate_sql
+    sparql_with_blacklisted_kw = (
+        "SELECT ?x WHERE { ?x <http://example.org/p> ?o . FILTER(?x = ?GRANT) }"
+    )
+    # Sanity: this would be blocked if validate_sql ran on it
+    # (?GRANT is a SPARQL variable — the bare token "GRANT" matches the blacklist).
+    assert validate_sql(sparql_with_blacklisted_kw) is not None, (
+        "Precondition failed: test string must trip the sqlglot blacklist"
+    )
+
     with _cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-grant")
         with _patch_query_cm():
@@ -197,8 +208,9 @@ async def test_validate_sql_skipped_for_graphdb(client, admin_token):
                 "/query/execute",
                 json={
                     "database": "kg-grant",
-                    "sql": "SELECT ?x WHERE { ?x <http://ex/granted> ?y }",
+                    "sql": sparql_with_blacklisted_kw,
                 },
                 headers=auth_header(admin_token),
             )
+    # Must pass — the validate_sql skip for graphdb is the only thing preventing 403.
     assert resp.status_code == 200, resp.text
