@@ -107,7 +107,7 @@ def _validate_connection_options(
     if protocol is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="protocol is only valid for clickhouse or neo4j connections",
+            detail="protocol is only valid for clickhouse, neo4j, or graphdb connections",
         )
     return None, None
 
@@ -460,7 +460,7 @@ async def upsert_permission(
     # Validate allowed_tables against actual DB tables (relational backends only)
     elif body.allowed_tables is not None and len(body.allowed_tables) > 0:
         try:
-            db_type = connection_manager.get_db_type(body.db_alias)
+            db_type = db_type_for_perm
             if db_type == "unknown":
                 raise KeyError(body.db_alias)
 
@@ -514,7 +514,8 @@ async def upsert_permission(
     )
     perm = result.scalar_one_or_none()
 
-    allowed_tables_json = json.dumps(body.allowed_tables) if body.allowed_tables is not None else None
+    # Normalize empty list to None — both mean "no table-level restriction".
+    allowed_tables_json = json.dumps(body.allowed_tables) if body.allowed_tables else None
 
     if perm is None:
         perm = Permission(
