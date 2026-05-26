@@ -121,6 +121,33 @@ async def test_ask_defaults_to_false_if_boolean_missing():
 
 
 @pytest.mark.asyncio
+async def test_ask_handles_string_boolean_safely():
+    """A non-spec server returning {"boolean": "false"} must not be misread as True."""
+    def handler(_):
+        return httpx.Response(200, json={"head": {}, "boolean": "false"})
+
+    async with _client_with_response(handler) as client:
+        resp = await execute_graphdb_query(
+            client=client, repo="r", sparql="ASK { }",
+            statement_type="ask", limit=100,
+        )
+    assert resp.rows == [[False]]
+
+
+@pytest.mark.asyncio
+async def test_ask_handles_string_true():
+    def handler(_):
+        return httpx.Response(200, json={"head": {}, "boolean": "TRUE"})
+
+    async with _client_with_response(handler) as client:
+        resp = await execute_graphdb_query(
+            client=client, repo="r", sparql="ASK { }",
+            statement_type="ask", limit=100,
+        )
+    assert resp.rows == [[True]]
+
+
+@pytest.mark.asyncio
 async def test_construct_returns_graph_field():
     turtle = "@prefix ex: <http://ex/> .\nex:a ex:b ex:c .\n"
     def handler(request):
@@ -173,13 +200,41 @@ async def test_413_when_content_length_exceeds_limit(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_413_when_streamed_body_exceeds_limit(monkeypatch):
+    """Force chunked transfer (no Content-Length) so the streaming guard fires."""
     from app import config as cfg_mod
     monkeypatch.setattr(cfg_mod.settings, "GRAPHDB_MAX_RESPONSE_BYTES", 100)
 
-    big = "y" * 500
+    async def body_gen():
+        for _ in range(5):
+            yield b"y" * 100
+
     def handler(_):
-        # Omit Content-Length to force the streaming path.
-        return httpx.Response(200, text=big)
+        # async generator content forces chunked encoding (no Content-Length)
+        return httpx.Response(200, content=body_gen())
+
+    async with _client_with_response(handler) as client:
+        with pytest.raises(HTTPException) as exc:
+            await execute_graphdb_query(
+                client=client, repo="r", sparql="DESCRIBE <http://ex/x>",
+                statement_type="describe", limit=100,
+            )
+    assert exc.value.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_413_with_misleading_small_content_length(monkeypatch):
+    """If Content-Length lies (claims small body, actual body is huge),
+    the streaming guard must still fire 413."""
+    from app import config as cfg_mod
+    monkeypatch.setattr(cfg_mod.settings, "GRAPHDB_MAX_RESPONSE_BYTES", 100)
+
+    async def body_gen():
+        for _ in range(5):
+            yield b"z" * 100
+
+    def handler(_):
+        # Server claims tiny CL but sends a lot — streaming guard must catch.
+        return httpx.Response(200, content=body_gen(), headers={"Content-Length": "10"})
 
     async with _client_with_response(handler) as client:
         with pytest.raises(HTTPException) as exc:
@@ -218,6 +273,25 @@ async def test_4xx_passes_400_with_body_preview():
             )
     assert exc.value.status_code == 400
     assert "Lexical" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_4xx_strips_control_chars_from_preview():
+    """Control chars in the upstream body must not appear in the response detail."""
+    def handler(_):
+        return httpx.Response(400, text="Bad\x00query\x07\x1bhere")
+
+    async with _client_with_response(handler) as client:
+        with pytest.raises(HTTPException) as exc:
+            await execute_graphdb_query(
+                client=client, repo="r", sparql="SELECT broken",
+                statement_type="select", limit=100,
+            )
+    assert exc.value.status_code == 400
+    assert "\x00" not in exc.value.detail
+    assert "\x07" not in exc.value.detail
+    assert "\x1b" not in exc.value.detail
+    assert "Badqueryhere" in exc.value.detail
 
 
 @pytest.mark.asyncio

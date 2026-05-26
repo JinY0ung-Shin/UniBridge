@@ -630,11 +630,19 @@ async def _read_capped_response(resp: httpx.Response, max_bytes: int) -> bytes:
     return bytes(buf)
 
 
-def _truncate_preview(text: str, max_chars: int = 200) -> str:
-    return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
+def _truncate_preview(body: str, max_chars: int = 200) -> str:
+    return body if len(body) <= max_chars else body[: max_chars - 1] + "…"
 
 
 def _map_graphdb_error(status_code: int, body_preview: str, repo: str) -> HTTPException:
+    # Log the raw preview for operators regardless of mapping.
+    logger.warning(
+        "GraphDB returned status=%d for repo=%s body=%r",
+        status_code,
+        repo,
+        body_preview[:500],
+    )
+
     if status_code in (401, 403):
         return HTTPException(status_code=502, detail="GraphDB authentication failed")
     if status_code == 404 and "repository" in body_preview.lower():
@@ -642,9 +650,10 @@ def _map_graphdb_error(status_code: int, body_preview: str, repo: str) -> HTTPEx
             status_code=404, detail=f"GraphDB repository not found: {repo}"
         )
     if 400 <= status_code < 500:
+        sanitized = "".join(c for c in body_preview if c.isprintable() or c in " \t")
         return HTTPException(
             status_code=400,
-            detail=f"GraphDB rejected query: {_truncate_preview(body_preview)}",
+            detail=f"GraphDB rejected query: {_truncate_preview(sanitized)}",
         )
     return HTTPException(status_code=502, detail="GraphDB upstream error")
 
@@ -726,7 +735,13 @@ async def execute_graphdb_query(
         ) from exc
 
     if statement_type == "ask":
-        ask_value = bool(parsed.get("boolean", False))
+        raw_val = parsed.get("boolean", False)
+        if isinstance(raw_val, bool):
+            ask_value = raw_val
+        elif isinstance(raw_val, str):
+            ask_value = raw_val.strip().lower() == "true"
+        else:
+            ask_value = bool(raw_val)
         return QueryResponse(
             columns=["boolean"], rows=[[ask_value]], row_count=1,
             truncated=False, elapsed_ms=elapsed_ms, graph=None,
