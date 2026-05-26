@@ -68,6 +68,37 @@ def test_keyword_in_triple_quoted_literal_ignored():
     assert detect(sparql) == "select"
 
 
+def test_hash_comment_terminated_by_cr_returns_select():
+    assert detect("# INSERT DATA { ex:a ex:b ex:c }\rSELECT ?s WHERE { ?s ?p ?o }") == "select"
+
+
+def test_hash_comment_then_write_after_cr_rejects():
+    # The CR ends the comment; the next line's INSERT must be rejected.
+    assert detect("# fine\rINSERT DATA { ex:a ex:b ex:c }") == "reject"
+
+
+# ---------------------------------------------------------------------------
+# Whitespace policy: VT/FF/NEL match Python's ``\s`` but SPARQL treats them
+# as illegal — the disallow list must catch them before the regex does.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("sep", ["\x0b", "\x0c", "\x85"])
+def test_vt_ff_nel_rejected_as_whitespace(sep):
+    assert detect(f"SELECT{sep}?s WHERE {{ ?s ?p ?o }}") == "reject"
+
+
+# ---------------------------------------------------------------------------
+# PREFIX label PN_PREFIX legitimately allows ``-`` and ``.``.
+# ---------------------------------------------------------------------------
+
+def test_prefix_with_hyphen_accepted():
+    assert detect("PREFIX dcat-ap: <http://example.org/> SELECT ?s WHERE { ?s ?p ?o }") == "select"
+
+
+def test_prefix_with_dot_accepted():
+    assert detect("PREFIX foaf.v0.1: <http://example.org/> SELECT ?s WHERE { ?s ?p ?o }") == "select"
+
+
 # ---------------------------------------------------------------------------
 # Negative: write forms must all reject
 # ---------------------------------------------------------------------------

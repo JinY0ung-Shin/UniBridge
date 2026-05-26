@@ -19,15 +19,24 @@ from __future__ import annotations
 import re
 from typing import Literal
 
+__all__ = ["detect_sparql_statement_type", "StatementType"]
+
 StatementType = Literal["select", "ask", "construct", "describe", "reject"]
 
 # Unicode whitespace that SPARQL spec does not list as legal — we reject these
 # conservatively rather than silently normalize, to avoid bypass vectors.
+# Also includes ASCII control whitespace (VT/FF) and NEL that Python's ``\s``
+# would otherwise match, so the regex token-separator class and this disallow
+# list agree on exactly which characters count as whitespace.
 _DISALLOWED_WHITESPACE = re.compile(
-    "[   -     　﻿​‌‍]"
+    "[\x0b\x0c\x85\xa0  -     　﻿​‌‍]"
 )
 
-_LINE_COMMENT = re.compile(r"#[^\n]*")
+# ``\r`` is a legal SPARQL line terminator (Windows CRLF / classic Mac CR), so
+# a ``#`` line comment must end at either ``\n`` or ``\r``. Without ``\r`` in
+# the terminator class the comment would swallow the next line on CR-only or
+# CRLF inputs and falsely reject legitimate SELECT queries that follow.
+_LINE_COMMENT = re.compile(r"#[^\n\r]*")
 _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 
 # Triple-quoted strings must be matched before single-quoted to avoid
@@ -37,19 +46,23 @@ _TRIPLE_SQ = re.compile(r"'''(?:[^'\\]|\\.|'(?!''))*'''", re.DOTALL)
 _DQ = re.compile(r'"(?:[^"\\\n]|\\.)*"')
 _SQ = re.compile(r"'(?:[^'\\\n]|\\.)*'")
 
+# Use an explicit ASCII whitespace class ``[ \t\r\n]`` instead of ``\s`` so the
+# token separator matches exactly what ``_DISALLOWED_WHITESPACE`` lets through.
+# The PREFIX label uses ``[\w.\-]*`` because SPARQL ``PN_PREFIX`` legitimately
+# permits ``-`` and ``.`` (e.g. ``dcat-ap``, ``foaf.v0.1``).
 _PROLOGUE = re.compile(
     r"""
-    ^\s*
+    ^[ \t\r\n]*
     (?:
-        BASE \s+ < [^>]* >
+        BASE [ \t\r\n]+ < [^>]* >
         |
-        PREFIX \s+ \w* : \s* < [^>]* >
+        PREFIX [ \t\r\n]+ [\w.\-]* : [ \t\r\n]* < [^>]* >
     )
     """,
     re.IGNORECASE | re.VERBOSE,
 )
 
-_FIRST_KEYWORD = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)")
+_FIRST_KEYWORD = re.compile(r"^[ \t\r\n]*([A-Za-z_][A-Za-z0-9_]*)")
 
 _READ_KEYWORDS = {
     "SELECT": "select",
