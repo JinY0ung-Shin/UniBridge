@@ -96,6 +96,7 @@ class ConnectionManager:
     _ch_clients: dict[str, Any]
     _ch_locks: dict[str, threading.Lock]
     _neo4j_drivers: dict[str, Any]
+    _graphdb_clients: dict[str, Any]
     _db_types: dict[str, str]
     _databases: dict[str, str]
 
@@ -106,6 +107,7 @@ class ConnectionManager:
             cls._instance._ch_clients = {}
             cls._instance._ch_locks = {}
             cls._instance._neo4j_drivers = {}
+            cls._instance._graphdb_clients = {}
             cls._instance._db_types = {}
             cls._instance._databases = {}
         return cls._instance
@@ -120,6 +122,8 @@ class ConnectionManager:
             self._ch_locks = {}
         if not hasattr(self, "_neo4j_drivers"):
             self._neo4j_drivers = {}
+        if not hasattr(self, "_graphdb_clients"):
+            self._graphdb_clients = {}
         if not hasattr(self, "_db_types"):
             self._db_types = {}
         if not hasattr(self, "_databases"):
@@ -142,6 +146,7 @@ class ConnectionManager:
             conn.alias in self._engines
             or conn.alias in self._ch_clients
             or conn.alias in self._neo4j_drivers
+            or conn.alias in self._graphdb_clients
         ):
             await self.remove_connection(conn.alias)
 
@@ -175,6 +180,19 @@ class ConnectionManager:
                 auth=(conn.username, password),
             )
             self._neo4j_drivers[conn.alias] = driver
+        elif conn.db_type == "graphdb":
+            import httpx as _httpx
+
+            base_url = f"{conn.protocol}://{conn.host}:{conn.port}"
+            timeout_s = conn.query_timeout if conn.query_timeout is not None else 30
+            client = _httpx.AsyncClient(
+                base_url=base_url,
+                timeout=_httpx.Timeout(timeout_s),
+                auth=_httpx.BasicAuth(conn.username, password),
+                headers={"User-Agent": f"UniBridge/{settings.APP_VERSION}-graphdb"},
+                follow_redirects=False,
+            )
+            self._graphdb_clients[conn.alias] = client
         else:
             url = _build_url(conn, password)
             engine_kwargs: dict[str, Any] = {"echo": False}
@@ -196,6 +214,7 @@ class ConnectionManager:
         client = self._ch_clients.pop(alias, None)
         ch_lock = self._ch_locks.pop(alias, None)
         neo4j_driver = self._neo4j_drivers.pop(alias, None)
+        graphdb_client = self._graphdb_clients.pop(alias, None)
         self._db_types.pop(alias, None)
         self._databases.pop(alias, None)
         if engine is not None:
@@ -210,6 +229,9 @@ class ConnectionManager:
         if neo4j_driver is not None:
             await asyncio.to_thread(neo4j_driver.close)
             logger.info("Neo4j driver closed for alias '%s'", alias)
+        if graphdb_client is not None:
+            await graphdb_client.aclose()
+            logger.info("GraphDB client closed for alias '%s'", alias)
 
     def get_engine(self, alias: str) -> AsyncEngine:
         """Return the SQLAlchemy engine for a given alias, or raise KeyError."""
@@ -244,6 +266,13 @@ class ConnectionManager:
         except KeyError:
             raise KeyError(f"No Neo4j driver registered for alias '{alias}'")
 
+    def get_graphdb_client(self, alias: str) -> Any:
+        """Return the GraphDB httpx.AsyncClient for a given alias, or raise KeyError."""
+        try:
+            return self._graphdb_clients[alias]
+        except KeyError:
+            raise KeyError(f"No GraphDB client registered for alias '{alias}'")
+
     def get_db_type(self, alias: str) -> str:
         """Return the database type for a given alias."""
         return self._db_types.get(alias, "unknown")
@@ -258,7 +287,12 @@ class ConnectionManager:
     def has_connection(self, alias: str) -> bool:
         """Return True if the alias has a registered connection."""
         self._ensure_registries()
-        return alias in self._engines or alias in self._ch_clients or alias in self._neo4j_drivers
+        return (
+            alias in self._engines
+            or alias in self._ch_clients
+            or alias in self._neo4j_drivers
+            or alias in self._graphdb_clients
+        )
 
     async def test_connection(self, alias: str) -> tuple[bool, str]:
         """Test connectivity. Returns (ok, message)."""
@@ -278,6 +312,23 @@ class ConnectionManager:
                 driver = self.get_neo4j_driver(alias)
                 await asyncio.to_thread(driver.verify_connectivity)
                 return True, "Connection successful"
+            elif db_type == "graphdb":
+                client = self.get_graphdb_client(alias)
+                repo = self.get_database_name(alias)
+                try:
+                    resp = await client.post(
+                        f"/repositories/{repo}",
+                        content="ASK { FILTER(false) }",
+                        headers={
+                            "Content-Type": "application/sparql-query",
+                            "Accept": "application/sparql-results+json",
+                        },
+                    )
+                    if resp.status_code == 200:
+                        return True, "Connection successful"
+                    return False, f"GraphDB returned {resp.status_code}"
+                except Exception as exc:  # noqa: BLE001
+                    return False, str(exc)
             else:
                 engine = self.get_engine(alias)
                 async with engine.connect() as conn:
@@ -302,6 +353,12 @@ class ConnectionManager:
                 "status": "registered",
                 "driver": "neo4j",
             }
+        if alias in self._graphdb_clients:
+            return {
+                "alias": alias,
+                "status": "registered",
+                "driver": "httpx (graphdb)",
+            }
 
         engine = self._engines.get(alias)
         if engine is None:
@@ -322,7 +379,11 @@ class ConnectionManager:
         self._ensure_registries()
         aliases = [alias] if alias is not None else self.list_aliases()
         for current_alias in aliases:
-            if current_alias in self._ch_clients or current_alias in self._neo4j_drivers:
+            if (
+                current_alias in self._ch_clients
+                or current_alias in self._neo4j_drivers
+                or current_alias in self._graphdb_clients
+            ):
                 continue
 
             engine = self._engines.get(current_alias)
@@ -343,6 +404,7 @@ class ConnectionManager:
             list(self._engines.keys())
             + list(self._ch_clients.keys())
             + list(self._neo4j_drivers.keys())
+            + list(self._graphdb_clients.keys())
         )
 
     async def dispose_all(self) -> None:
