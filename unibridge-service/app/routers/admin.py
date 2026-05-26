@@ -81,6 +81,24 @@ def _validate_connection_options(
             )
         return protocol, None
 
+    if db_type == "graphdb":
+        if protocol is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="GraphDB connections require protocol field (http or https)",
+            )
+        if protocol not in {"http", "https"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="GraphDB protocol must be http or https",
+            )
+        if secure is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="secure is not valid for graphdb connections (use protocol)",
+            )
+        return protocol, None
+
     if secure is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -363,6 +381,10 @@ async def list_tables(
             detail=f"Database alias '{alias}' is not registered",
         )
 
+    # Graph backends do not expose relational tables; return empty list.
+    if db_type in ("neo4j", "graphdb"):
+        return []
+
     try:
         if db_type == "clickhouse":
             client = connection_manager.get_clickhouse_client(alias)
@@ -424,8 +446,19 @@ async def upsert_permission(
             detail=f"Role '{body.role}' does not exist",
         )
 
-    # Validate allowed_tables against actual DB tables
-    if body.allowed_tables is not None and len(body.allowed_tables) > 0:
+    # Graph backends (neo4j, graphdb) do not expose tables for ACL validation.
+    db_type_for_perm = connection_manager.get_db_type(body.db_alias)
+    if db_type_for_perm in ("neo4j", "graphdb"):
+        if body.allowed_tables:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"allowed_tables is not supported for {db_type_for_perm} connections"
+                ),
+            )
+        # empty list / None — fall through, skip relational table validation
+    # Validate allowed_tables against actual DB tables (relational backends only)
+    elif body.allowed_tables is not None and len(body.allowed_tables) > 0:
         try:
             db_type = connection_manager.get_db_type(body.db_alias)
             if db_type == "unknown":
