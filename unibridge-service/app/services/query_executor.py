@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import time
 from typing import Any
 
+import httpx
+from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -38,6 +41,7 @@ __all__ = [
     "check_permission",
     "detect_statement_type",
     "execute_clickhouse_query",
+    "execute_graphdb_query",
     "execute_neo4j_query",
     "execute_query",
 ]
@@ -567,3 +571,178 @@ async def execute_neo4j_query(
     except asyncio.TimeoutError:
         logger.warning("Query timed out after %ds", effective_timeout)
         raise
+
+
+# --- GraphDB executor ---------------------------------------------------------
+
+_XSD = "http://www.w3.org/2001/XMLSchema#"
+_XSD_BOOL = {_XSD + "boolean"}
+_XSD_INT = {_XSD + s for s in (
+    "integer", "long", "int", "short", "byte",
+    "nonNegativeInteger", "positiveInteger",
+    "negativeInteger", "nonPositiveInteger",
+    "unsignedLong", "unsignedInt", "unsignedShort", "unsignedByte",
+)}
+_XSD_FLOAT = {_XSD + s for s in ("decimal", "double", "float")}
+
+
+def _coerce_binding_value(binding: dict[str, Any]) -> Any:
+    """Convert a SPARQL Results JSON binding into a Python value (best-effort).
+
+    See spec §5.1. Failures fall back to the raw string value (never None).
+    """
+    btype = binding.get("type")
+    value = binding.get("value", "")
+    if btype == "uri":
+        return value
+    if btype == "bnode":
+        return f"_:{value}"
+    # literal or typed-literal
+    datatype = binding.get("datatype")
+    if datatype in _XSD_BOOL:
+        return value.strip().lower() == "true"
+    if datatype in _XSD_INT:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+    if datatype in _XSD_FLOAT:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return value
+    return value
+
+
+async def _read_capped_response(resp: httpx.Response, max_bytes: int) -> bytes:
+    """Stream resp.aiter_bytes up to max_bytes; raise 413 if exceeded.
+
+    Caller must have already checked Content-Length if present.
+    """
+    buf = bytearray()
+    async for chunk in resp.aiter_bytes():
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail="GraphDB response exceeded GRAPHDB_MAX_RESPONSE_BYTES",
+            )
+    return bytes(buf)
+
+
+def _truncate_preview(text: str, max_chars: int = 200) -> str:
+    return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
+
+
+def _map_graphdb_error(status_code: int, body_preview: str, repo: str) -> HTTPException:
+    if status_code in (401, 403):
+        return HTTPException(status_code=502, detail="GraphDB authentication failed")
+    if status_code == 404 and "repository" in body_preview.lower():
+        return HTTPException(
+            status_code=404, detail=f"GraphDB repository not found: {repo}"
+        )
+    if 400 <= status_code < 500:
+        return HTTPException(
+            status_code=400,
+            detail=f"GraphDB rejected query: {_truncate_preview(body_preview)}",
+        )
+    return HTTPException(status_code=502, detail="GraphDB upstream error")
+
+
+async def execute_graphdb_query(
+    *,
+    client: httpx.AsyncClient,
+    repo: str,
+    sparql: str,
+    statement_type: str,
+    limit: int,
+) -> QueryResponse:
+    """Execute a SPARQL read against GraphDB and map the response.
+
+    URL-pinned to ``POST /repositories/{repo}`` — defense in depth against
+    SPARQL Update slipping through. Streaming + size cap from
+    ``settings.GRAPHDB_MAX_RESPONSE_BYTES``.
+    """
+    accept = (
+        "text/turtle"
+        if statement_type in ("construct", "describe")
+        else "application/sparql-results+json"
+    )
+    max_bytes = settings.GRAPHDB_MAX_RESPONSE_BYTES
+
+    start = time.monotonic()
+    try:
+        async with client.stream(
+            "POST",
+            f"/repositories/{repo}",
+            content=sparql,
+            headers={
+                "Content-Type": "application/sparql-query",
+                "Accept": accept,
+            },
+        ) as resp:
+            content_length = resp.headers.get("content-length")
+            if content_length is not None:
+                try:
+                    if int(content_length) > max_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail="GraphDB response exceeded GRAPHDB_MAX_RESPONSE_BYTES",
+                        )
+                except ValueError:
+                    pass  # malformed header — fall through to streaming guard
+
+            raw = await _read_capped_response(resp, max_bytes)
+
+            if resp.status_code >= 400:
+                preview = raw.decode("utf-8", errors="replace")
+                raise _map_graphdb_error(resp.status_code, preview, repo)
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="GraphDB query timed out") from exc
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="GraphDB upstream error") from exc
+
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+
+    if statement_type in ("construct", "describe"):
+        try:
+            turtle = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(
+                status_code=502, detail="GraphDB returned non-UTF-8 graph payload"
+            ) from exc
+        return QueryResponse(
+            columns=[], rows=[], row_count=0, truncated=False,
+            elapsed_ms=elapsed_ms, graph=turtle,
+        )
+
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=502, detail="GraphDB returned malformed SPARQL Results JSON"
+        ) from exc
+
+    if statement_type == "ask":
+        ask_value = bool(parsed.get("boolean", False))
+        return QueryResponse(
+            columns=["boolean"], rows=[[ask_value]], row_count=1,
+            truncated=False, elapsed_ms=elapsed_ms, graph=None,
+        )
+
+    # SELECT
+    head = parsed.get("head", {})
+    columns = list(head.get("vars", []))
+    bindings = parsed.get("results", {}).get("bindings", [])
+    raw_rows = [
+        [_coerce_binding_value(b[v]) if v in b else None for v in columns]
+        for b in bindings
+    ]
+    truncated = len(raw_rows) > limit
+    rows = raw_rows[:limit] if truncated else raw_rows
+    return QueryResponse(
+        columns=columns, rows=rows, row_count=len(rows),
+        truncated=truncated, elapsed_ms=elapsed_ms, graph=None,
+    )
