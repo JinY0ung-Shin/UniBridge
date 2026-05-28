@@ -39,28 +39,28 @@ function Dashboard() {
 
   const gwSummaryQuery = useQuery({
     queryKey: ['dashboard-gw-summary'],
-    queryFn: () => getMetricsSummary('1h'),
+    queryFn: () => getMetricsSummary(),
     refetchInterval: 30_000,
     enabled: canViewMonitoring,
   });
 
   const gwRequestsQuery = useQuery({
     queryKey: ['dashboard-gw-requests'],
-    queryFn: () => getMetricsRequests('1h'),
+    queryFn: () => getMetricsRequests(),
     refetchInterval: 30_000,
     enabled: canViewMonitoring,
   });
 
   const llmSummaryQuery = useQuery({
     queryKey: ['dashboard-llm-summary'],
-    queryFn: () => getLlmSummary('1h'),
+    queryFn: () => getLlmSummary(),
     refetchInterval: 30_000,
     enabled: canViewMonitoring,
   });
 
   const llmTokensQuery = useQuery({
     queryKey: ['dashboard-llm-tokens'],
-    queryFn: () => getLlmTokens('1h'),
+    queryFn: () => getLlmTokens(),
     refetchInterval: 30_000,
     enabled: canViewMonitoring,
   });
