@@ -290,6 +290,15 @@
     "selectRoutes": "Select routes",
     "allSelected": "{{count}} selected"
   },
+  "timeRange": {
+    "custom": "Custom",
+    "start": "Start",
+    "end": "End",
+    "apply": "Apply",
+    "cancel": "Cancel",
+    "clear": "Clear custom range",
+    "invalid": "Start must be before end and end cannot be in the future."
+  },
   "gatewayMonitoring": {
     "title": "Gateway Monitoring",
     "subtitle": "Real-time API traffic and performance metrics",
