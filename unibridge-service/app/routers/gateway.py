@@ -1041,12 +1041,10 @@ async def metrics_requests_total(
 
 @router.get("/metrics/llm/summary")
 async def llm_metrics_summary(
-    time_range: str = Query("1h", alias="range", description="Time range"),
+    tw: TimeWindow = Depends(resolve_time_window),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
     """LLM token usage summary: total tokens, cost, requests, latency."""
-    if time_range not in VALID_RANGES:
-        time_range = "1h"
     try:
         (
             tokens,
@@ -1058,25 +1056,32 @@ async def llm_metrics_summary(
             latency_count,
         ) = await asyncio.gather(
             prometheus_client.instant_query(
-                f"sum(increase(litellm_total_tokens_metric_total[{time_range}]))"
+                f"sum(increase(litellm_total_tokens_metric_total[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_input_tokens_metric_total[{time_range}]))"
+                f"sum(increase(litellm_input_tokens_metric_total[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_output_tokens_metric_total[{time_range}]))"
+                f"sum(increase(litellm_output_tokens_metric_total[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_spend_metric_total[{time_range}]))"
+                f"sum(increase(litellm_spend_metric_total[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_proxy_total_requests_metric_total[{time_range}]))"
+                f"sum(increase(litellm_proxy_total_requests_metric_total[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                "sum(rate(litellm_request_total_latency_metric_sum[5m]))"
+                "sum(rate(litellm_request_total_latency_metric_sum[5m]))",
+                eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                "sum(rate(litellm_request_total_latency_metric_count[5m]))"
+                "sum(rate(litellm_request_total_latency_metric_count[5m]))",
+                eval_time=tw.eval_time,
             ),
         )
     except Exception as exc:
@@ -1100,24 +1105,25 @@ async def llm_metrics_summary(
 
 @router.get("/metrics/llm/tokens")
 async def llm_metrics_tokens(
-    time_range: str = Query("1h", alias="range", description="Time range"),
+    tw: TimeWindow = Depends(resolve_time_window),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, list[dict[str, Any]]]:
     """Token usage trend: prompt and completion tokens over time."""
-    if time_range not in VALID_RANGES:
-        time_range = "1h"
-    step, window = RANGE_VOLUME.get(time_range, ("3600s", "1h"))
     try:
         prompt_results, completion_results = await asyncio.gather(
             prometheus_client.range_query(
-                f"sum(increase(litellm_input_tokens_metric_total[{window}]))",
-                duration=time_range,
-                step=step,
+                f"sum(increase(litellm_input_tokens_metric_total[{tw.volume_window}]))",
+                duration=tw.promql_window,
+                step=tw.volume_step,
+                start=tw.start,
+                end=tw.end,
             ),
             prometheus_client.range_query(
-                f"sum(increase(litellm_output_tokens_metric_total[{window}]))",
-                duration=time_range,
-                step=step,
+                f"sum(increase(litellm_output_tokens_metric_total[{tw.volume_window}]))",
+                duration=tw.promql_window,
+                step=tw.volume_step,
+                start=tw.start,
+                end=tw.end,
             ),
         )
     except Exception as exc:
@@ -1133,12 +1139,10 @@ async def llm_metrics_tokens(
 
 @router.get("/metrics/llm/by-model")
 async def llm_metrics_by_model(
-    time_range: str = Query("1h", alias="range", description="Time range"),
+    tw: TimeWindow = Depends(resolve_time_window),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """Token usage, request count, and cost breakdown by model."""
-    if time_range not in VALID_RANGES:
-        time_range = "1h"
     try:
         (
             token_results,
@@ -1148,19 +1152,24 @@ async def llm_metrics_by_model(
             request_results,
         ) = await asyncio.gather(
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_total_tokens_metric_total[{time_range}]))"
+                f"sum by (requested_model, model) (increase(litellm_total_tokens_metric_total[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_input_tokens_metric_total[{time_range}]))"
+                f"sum by (requested_model, model) (increase(litellm_input_tokens_metric_total[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_output_tokens_metric_total[{time_range}]))"
+                f"sum by (requested_model, model) (increase(litellm_output_tokens_metric_total[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_spend_metric_total[{time_range}]))"
+                f"sum by (requested_model, model) (increase(litellm_spend_metric_total[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_proxy_total_requests_metric_total[{time_range}]))"
+                f"sum by (requested_model, model) (increase(litellm_proxy_total_requests_metric_total[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
             ),
         )
     except Exception as exc:
@@ -1240,12 +1249,10 @@ async def llm_metrics_by_model(
 
 @router.get("/metrics/llm/top-keys")
 async def llm_metrics_top_keys(
-    time_range: str = Query("1h", alias="range", description="Time range"),
+    tw: TimeWindow = Depends(resolve_time_window),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """Top UniBridge API keys by token usage."""
-    if time_range not in VALID_RANGES:
-        time_range = "1h"
     try:
         (
             token_results,
@@ -1254,16 +1261,20 @@ async def llm_metrics_top_keys(
             req_results,
         ) = await asyncio.gather(
             prometheus_client.instant_query(
-                f"topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total[{time_range}])))"
+                f"topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total[{tw.promql_window}])))",
+                eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (end_user) (increase(litellm_input_tokens_metric_total[{time_range}]))"
+                f"sum by (end_user) (increase(litellm_input_tokens_metric_total[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (end_user) (increase(litellm_output_tokens_metric_total[{time_range}]))"
+                f"sum by (end_user) (increase(litellm_output_tokens_metric_total[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (end_user) (increase(litellm_proxy_total_requests_metric_total[{time_range}]))"
+                f"sum by (end_user) (increase(litellm_proxy_total_requests_metric_total[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
             ),
         )
     except Exception as exc:
@@ -1322,24 +1333,25 @@ async def llm_metrics_top_keys(
 
 @router.get("/metrics/llm/errors")
 async def llm_metrics_errors(
-    time_range: str = Query("1h", alias="range", description="Time range"),
+    tw: TimeWindow = Depends(resolve_time_window),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """LLM request success/error rate over time."""
-    if time_range not in VALID_RANGES:
-        time_range = "1h"
-    step, window = RANGE_VOLUME.get(time_range, ("3600s", "1h"))
     try:
         success_results, error_results = await asyncio.gather(
             prometheus_client.range_query(
-                f"sum(increase(litellm_proxy_total_requests_metric_total[{window}])) - sum(increase(litellm_proxy_failed_requests_metric_total[{window}]))",
-                duration=time_range,
-                step=step,
+                f"sum(increase(litellm_proxy_total_requests_metric_total[{tw.volume_window}])) - sum(increase(litellm_proxy_failed_requests_metric_total[{tw.volume_window}]))",
+                duration=tw.promql_window,
+                step=tw.volume_step,
+                start=tw.start,
+                end=tw.end,
             ),
             prometheus_client.range_query(
-                f"sum(increase(litellm_proxy_failed_requests_metric_total[{window}]))",
-                duration=time_range,
-                step=step,
+                f"sum(increase(litellm_proxy_failed_requests_metric_total[{tw.volume_window}]))",
+                duration=tw.promql_window,
+                step=tw.volume_step,
+                start=tw.start,
+                end=tw.end,
             ),
         )
     except Exception as exc:
@@ -1365,18 +1377,17 @@ async def llm_metrics_errors(
 
 @router.get("/metrics/llm/requests-total")
 async def llm_metrics_requests_total(
-    time_range: str = Query("1h", alias="range", description="Time range"),
+    tw: TimeWindow = Depends(resolve_time_window),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """LLM request volume per time bucket."""
-    if time_range not in VALID_RANGES:
-        time_range = "1h"
-    step, window = RANGE_VOLUME.get(time_range, ("3600s", "1h"))
     try:
         results = await prometheus_client.range_query(
-            f"sum(increase(litellm_proxy_total_requests_metric_total[{window}]))",
-            duration=time_range,
-            step=step,
+            f"sum(increase(litellm_proxy_total_requests_metric_total[{tw.volume_window}]))",
+            duration=tw.promql_window,
+            step=tw.volume_step,
+            start=tw.start,
+            end=tw.end,
         )
     except Exception as exc:
         raise HTTPException(

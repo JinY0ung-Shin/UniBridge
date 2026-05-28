@@ -1837,3 +1837,28 @@ class TestMetricsCustomRange:
             headers=auth_header(admin_token),
         )
         assert resp.status_code == 400
+
+
+class TestLlmMetricsCustomRange:
+    async def test_llm_summary_custom_eval_time(self, client, admin_token):
+        scalar = [{"value": [1000, "3"]}]
+        mock = AsyncMock(side_effect=[scalar] * 7)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/llm/summary?start=1000000&end=1003600",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            assert call.kwargs.get("eval_time") == 1003600.0
+
+    async def test_llm_tokens_custom_start_end(self, client, admin_token):
+        mock = AsyncMock(return_value=[{"values": [[1000000, "2"]]}])
+        with patch("app.routers.gateway.prometheus_client.range_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/llm/tokens?start=1000000&end=1003600",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert mock.call_args.kwargs.get("start") == 1000000.0
+        assert mock.call_args.kwargs.get("end") == 1003600.0
