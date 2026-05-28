@@ -790,11 +790,13 @@ def _extract_timeseries(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def metrics_summary(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
+    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
     _validate_route(route)
-    hs = _labels(route, None)
-    hs5 = _labels(route, None, 'code=~"5.."')
+    _validate_consumer(consumer)
+    hs = _labels(route, consumer)
+    hs5 = _labels(route, consumer, 'code=~"5.."')
     try:
         total_results, error_rate_results, latency_results = await asyncio.gather(
             prometheus_client.instant_query(
@@ -826,10 +828,12 @@ async def metrics_summary(
 async def metrics_requests(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
+    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     _validate_route(route)
-    hs = _labels(route, None)
+    _validate_consumer(consumer)
+    hs = _labels(route, consumer)
     try:
         results = await prometheus_client.range_query(
             f"sum(rate(apisix_http_status{hs}[5m]))",
@@ -849,10 +853,12 @@ async def metrics_requests(
 async def metrics_status_codes(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
+    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     _validate_route(route)
-    hs = _labels(route, None)
+    _validate_consumer(consumer)
+    hs = _labels(route, consumer)
     try:
         results = await prometheus_client.instant_query(
             f"sum by (code) (increase(apisix_http_status{hs}[{tw.promql_window}]))",
@@ -881,10 +887,12 @@ async def metrics_status_codes(
 async def metrics_latency(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
+    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, list[dict[str, Any]]]:
     _validate_route(route)
-    hs = _labels(route, None)
+    _validate_consumer(consumer)
+    hs = _labels(route, consumer)
     step = tw.step
     try:
         p50, p95, p99 = await asyncio.gather(
@@ -1033,11 +1041,13 @@ async def metrics_routes_comparison(
 async def metrics_requests_total(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
+    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """Request volume per time bucket (total count, not rate)."""
     _validate_route(route)
-    hs = _labels(route, None)
+    _validate_consumer(consumer)
+    hs = _labels(route, consumer)
     try:
         results = await prometheus_client.range_query(
             f"sum(increase(apisix_http_status{hs}[{tw.volume_window}]))",
