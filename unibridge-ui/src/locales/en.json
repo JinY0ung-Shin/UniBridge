@@ -307,6 +307,8 @@
     "partialLoadFailed": "Some metrics failed to load. Data may be incomplete.",
     "totalRequests": "Total Requests ({{range}})",
     "customRange": "custom",
+    "apiKeyFilter": "API Key",
+    "allApiKeys": "All",
     "errorRate": "Error Rate (5xx)",
     "avgLatency": "Avg Latency",
     "requestTrend": "Request Trend",
