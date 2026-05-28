@@ -5,6 +5,7 @@ import logging
 import math
 import re
 import time
+from dataclasses import dataclass
 from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -612,6 +613,99 @@ RANGE_VOLUME = {
     "30d": ("86400s", "1d"),
     "60d": ("86400s", "1d"),
 }
+
+_TIER_ORDER = ["15m", "1h", "6h", "24h", "7d", "30d", "60d"]
+_TIER_SECONDS = {
+    "15m": 900,
+    "1h": 3600,
+    "6h": 21600,
+    "24h": 86400,
+    "7d": 604800,
+    "30d": 2592000,
+    "60d": 5184000,
+}
+
+
+def _tier_for_span(span: int) -> str:
+    """Smallest preset tier whose duration covers the given span (seconds)."""
+    for key in _TIER_ORDER:
+        if span <= _TIER_SECONDS[key]:
+            return key
+    return "60d"
+
+
+@dataclass
+class TimeWindow:
+    promql_window: str        # increase() window for summary-type instant queries
+    step: str                 # range_query step for non-volume series
+    volume_step: str          # range_query step for volume series
+    volume_window: str        # increase() window for volume series
+    eval_time: float | None   # custom → end epoch; preset → None (= now)
+    start: float | None       # custom → start epoch; preset → None
+    end: float | None
+    is_custom: bool
+
+
+def _validate_custom_range(start: int, end: int) -> None:
+    now = time.time()
+    if end <= start:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start must be before end",
+        )
+    if end - start < 60:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="time range must span at least 60 seconds",
+        )
+    if end > now + 60:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="end must not be in the future",
+        )
+
+
+def resolve_time_window(
+    time_range: str = Query(
+        "1h", alias="range", description="Preset range: 15m, 1h, 6h, 24h, 7d, 30d, 60d"
+    ),
+    start: int | None = Query(None, description="Custom range start (epoch seconds)"),
+    end: int | None = Query(None, description="Custom range end (epoch seconds)"),
+) -> TimeWindow:
+    if start is not None or end is not None:
+        if start is None or end is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="both start and end are required for a custom range",
+            )
+        _validate_custom_range(start, end)
+        span = end - start
+        tier = _tier_for_span(span)
+        vstep, vwindow = RANGE_VOLUME[tier]
+        return TimeWindow(
+            promql_window=f"{span}s",
+            step=RANGE_STEPS[tier],
+            volume_step=vstep,
+            volume_window=vwindow,
+            eval_time=float(end),
+            start=float(start),
+            end=float(end),
+            is_custom=True,
+        )
+    if time_range not in VALID_RANGES:
+        time_range = "1h"
+    vstep, vwindow = RANGE_VOLUME[time_range]
+    return TimeWindow(
+        promql_window=time_range,
+        step=RANGE_STEPS[time_range],
+        volume_step=vstep,
+        volume_window=vwindow,
+        eval_time=None,
+        start=None,
+        end=None,
+        is_custom=False,
+    )
+
 
 _SAFE_ROUTE_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
 

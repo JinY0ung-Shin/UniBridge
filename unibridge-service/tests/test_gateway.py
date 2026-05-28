@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from fastapi import HTTPException
 
 from app.routers.gateway import (
     _extract_scalar,
@@ -1736,3 +1737,70 @@ class TestPermissions:
     async def test_unauthenticated_returns_401(self, client):
         resp = await client.get("/admin/gateway/routes")
         assert resp.status_code in (401, 403)
+
+
+class TestResolveTimeWindow:
+    def test_preset_window(self):
+        from app.routers.gateway import resolve_time_window
+
+        tw = resolve_time_window(time_range="6h", start=None, end=None)
+        assert tw.is_custom is False
+        assert tw.promql_window == "6h"
+        assert tw.step == "300s"          # RANGE_STEPS["6h"]
+        assert tw.volume_window == "30m"  # RANGE_VOLUME["6h"][1]
+        assert tw.volume_step == "1800s"  # RANGE_VOLUME["6h"][0]
+        assert tw.eval_time is None and tw.start is None and tw.end is None
+
+    def test_invalid_preset_defaults_to_1h(self):
+        from app.routers.gateway import resolve_time_window
+
+        tw = resolve_time_window(time_range="nope", start=None, end=None)
+        assert tw.promql_window == "1h"
+        assert tw.step == "60s"
+
+    def test_custom_window_maps_to_tier(self):
+        from app.routers.gateway import resolve_time_window
+
+        # 2 day span → tier "7d"
+        start, end = 1_000_000, 1_000_000 + 2 * 86400
+        tw = resolve_time_window(time_range="1h", start=start, end=end)
+        assert tw.is_custom is True
+        assert tw.promql_window == f"{2 * 86400}s"
+        assert tw.step == "3600s"          # RANGE_STEPS["7d"]
+        assert tw.volume_window == "1h"    # RANGE_VOLUME["7d"][1]
+        assert tw.eval_time == float(end)
+        assert tw.start == float(start) and tw.end == float(end)
+
+    def test_custom_requires_both_bounds(self):
+        from fastapi import HTTPException
+        from app.routers.gateway import resolve_time_window
+
+        with pytest.raises(HTTPException) as exc:
+            resolve_time_window(time_range="1h", start=100, end=None)
+        assert exc.value.status_code == 400
+
+    def test_custom_rejects_reversed_range(self):
+        from fastapi import HTTPException
+        from app.routers.gateway import resolve_time_window
+
+        with pytest.raises(HTTPException) as exc:
+            resolve_time_window(time_range="1h", start=500, end=100)
+        assert exc.value.status_code == 400
+
+    def test_custom_rejects_future_end(self):
+        import time as _t
+        from fastapi import HTTPException
+        from app.routers.gateway import resolve_time_window
+
+        future = int(_t.time()) + 10_000
+        with pytest.raises(HTTPException) as exc:
+            resolve_time_window(time_range="1h", start=future - 3600, end=future)
+        assert exc.value.status_code == 400
+
+    def test_custom_rejects_tiny_span(self):
+        from fastapi import HTTPException
+        from app.routers.gateway import resolve_time_window
+
+        with pytest.raises(HTTPException) as exc:
+            resolve_time_window(time_range="1h", start=1000, end=1030)  # 30s
+        assert exc.value.status_code == 400
