@@ -290,6 +290,15 @@
     "selectRoutes": "Select routes",
     "allSelected": "{{count}} selected"
   },
+  "timeRange": {
+    "custom": "Custom",
+    "start": "Start",
+    "end": "End",
+    "apply": "Apply",
+    "cancel": "Cancel",
+    "clear": "Clear custom range",
+    "invalid": "Start must be before end, span at least 60 seconds, and end cannot be in the future."
+  },
   "gatewayMonitoring": {
     "title": "Gateway Monitoring",
     "subtitle": "Real-time API traffic and performance metrics",
@@ -297,6 +306,7 @@
     "loadFailed": "Failed to load metrics. Is Prometheus running?",
     "partialLoadFailed": "Some metrics failed to load. Data may be incomplete.",
     "totalRequests": "Total Requests ({{range}})",
+    "customRange": "custom",
     "errorRate": "Error Rate (5xx)",
     "avgLatency": "Avg Latency",
     "requestTrend": "Request Trend",
@@ -322,6 +332,7 @@
     "loadFailed": "Failed to load LLM metrics. Is Prometheus running?",
     "partialLoadFailed": "Some LLM metrics failed to load. Data may be incomplete.",
     "totalTokens": "Total Tokens ({{range}})",
+    "customRange": "custom",
     "promptTokens": "Prompt Tokens",
     "completionTokens": "Completion Tokens",
     "estimatedCost": "Estimated Cost",

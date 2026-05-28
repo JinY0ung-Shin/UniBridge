@@ -1,5 +1,7 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import keycloak from '../keycloak';
+import { type TimeSelection, DEFAULT_SELECTION, timeParams } from '../utils/timeRange';
+export type { TimeSelection } from '../utils/timeRange';
 
 const API_BASE = '/_api';
 
@@ -476,33 +478,33 @@ export interface LatencyData {
   p99: TimeSeriesPoint[];
 }
 
-export async function getMetricsSummary(range = '1h', route?: string): Promise<MetricsSummary> {
-  const { data } = await client.get('/admin/gateway/metrics/summary', { params: { range, route } });
+export async function getMetricsSummary(sel: TimeSelection = DEFAULT_SELECTION, route?: string): Promise<MetricsSummary> {
+  const { data } = await client.get('/admin/gateway/metrics/summary', { params: { ...timeParams(sel), route } });
   return data;
 }
 
-export async function getMetricsRequests(range = '1h', route?: string): Promise<TimeSeriesPoint[]> {
-  const { data } = await client.get('/admin/gateway/metrics/requests', { params: { range, route } });
+export async function getMetricsRequests(sel: TimeSelection = DEFAULT_SELECTION, route?: string): Promise<TimeSeriesPoint[]> {
+  const { data } = await client.get('/admin/gateway/metrics/requests', { params: { ...timeParams(sel), route } });
   return data;
 }
 
-export async function getMetricsStatusCodes(range = '1h', route?: string): Promise<StatusCodeData[]> {
-  const { data } = await client.get('/admin/gateway/metrics/status-codes', { params: { range, route } });
+export async function getMetricsStatusCodes(sel: TimeSelection = DEFAULT_SELECTION, route?: string): Promise<StatusCodeData[]> {
+  const { data } = await client.get('/admin/gateway/metrics/status-codes', { params: { ...timeParams(sel), route } });
   return data;
 }
 
-export async function getMetricsLatency(range = '1h', route?: string): Promise<LatencyData> {
-  const { data } = await client.get('/admin/gateway/metrics/latency', { params: { range, route } });
+export async function getMetricsLatency(sel: TimeSelection = DEFAULT_SELECTION, route?: string): Promise<LatencyData> {
+  const { data } = await client.get('/admin/gateway/metrics/latency', { params: { ...timeParams(sel), route } });
   return data;
 }
 
-export async function getMetricsTopRoutes(range = '1h'): Promise<TopRoute[]> {
-  const { data } = await client.get('/admin/gateway/metrics/top-routes', { params: { range } });
+export async function getMetricsTopRoutes(sel: TimeSelection = DEFAULT_SELECTION): Promise<TopRoute[]> {
+  const { data } = await client.get('/admin/gateway/metrics/top-routes', { params: { ...timeParams(sel) } });
   return data;
 }
 
-export async function getMetricsRequestsTotal(range = '1h', route?: string): Promise<TimeSeriesPoint[]> {
-  const { data } = await client.get('/admin/gateway/metrics/requests-total', { params: { range, route } });
+export async function getMetricsRequestsTotal(sel: TimeSelection = DEFAULT_SELECTION, route?: string): Promise<TimeSeriesPoint[]> {
+  const { data } = await client.get('/admin/gateway/metrics/requests-total', { params: { ...timeParams(sel), route } });
   return data;
 }
 
@@ -521,8 +523,8 @@ export type RouteComparisonResponse = {
   routes: RouteComparisonRow[];
 };
 
-export async function getMetricsRoutesComparison(range = '1h'): Promise<RouteComparisonResponse> {
-  const { data } = await client.get('/admin/gateway/metrics/routes-comparison', { params: { range } });
+export async function getMetricsRoutesComparison(sel: TimeSelection = DEFAULT_SELECTION): Promise<RouteComparisonResponse> {
+  const { data } = await client.get('/admin/gateway/metrics/routes-comparison', { params: { ...timeParams(sel) } });
   return data;
 }
 
@@ -565,33 +567,33 @@ export interface LlmErrorPoint {
   error: number;
 }
 
-export async function getLlmSummary(range = '1h'): Promise<LlmSummary> {
-  const { data } = await client.get('/admin/gateway/metrics/llm/summary', { params: { range } });
+export async function getLlmSummary(sel: TimeSelection = DEFAULT_SELECTION): Promise<LlmSummary> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/summary', { params: { ...timeParams(sel) } });
   return data;
 }
 
-export async function getLlmTokens(range = '1h'): Promise<LlmTokenSeries> {
-  const { data } = await client.get('/admin/gateway/metrics/llm/tokens', { params: { range } });
+export async function getLlmTokens(sel: TimeSelection = DEFAULT_SELECTION): Promise<LlmTokenSeries> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/tokens', { params: { ...timeParams(sel) } });
   return data;
 }
 
-export async function getLlmByModel(range = '1h'): Promise<LlmModelUsage[]> {
-  const { data } = await client.get('/admin/gateway/metrics/llm/by-model', { params: { range } });
+export async function getLlmByModel(sel: TimeSelection = DEFAULT_SELECTION): Promise<LlmModelUsage[]> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/by-model', { params: { ...timeParams(sel) } });
   return data;
 }
 
-export async function getLlmTopKeys(range = '1h'): Promise<LlmKeyUsage[]> {
-  const { data } = await client.get('/admin/gateway/metrics/llm/top-keys', { params: { range } });
+export async function getLlmTopKeys(sel: TimeSelection = DEFAULT_SELECTION): Promise<LlmKeyUsage[]> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/top-keys', { params: { ...timeParams(sel) } });
   return data;
 }
 
-export async function getLlmErrors(range = '1h'): Promise<LlmErrorPoint[]> {
-  const { data } = await client.get('/admin/gateway/metrics/llm/errors', { params: { range } });
+export async function getLlmErrors(sel: TimeSelection = DEFAULT_SELECTION): Promise<LlmErrorPoint[]> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/errors', { params: { ...timeParams(sel) } });
   return data;
 }
 
-export async function getLlmRequestsTotal(range = '1h'): Promise<TimeSeriesPoint[]> {
-  const { data } = await client.get('/admin/gateway/metrics/llm/requests-total', { params: { range } });
+export async function getLlmRequestsTotal(sel: TimeSelection = DEFAULT_SELECTION): Promise<TimeSeriesPoint[]> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/requests-total', { params: { ...timeParams(sel) } });
   return data;
 }
 

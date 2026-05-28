@@ -244,17 +244,13 @@ describe('api client API helpers', () => {
       calls.push({ url: c.url, params: c.params });
       return {};
     });
-    await mod.getMetricsSummary('5m', 'r1');
-    await mod.getMetricsRequests('1h');
-    await mod.getMetricsStatusCodes('1h', 'r1');
-    await mod.getMetricsLatency('15m');
-    await mod.getMetricsTopRoutes('1h');
-    await mod.getMetricsRequestsTotal('1h');
-    await mod.getMetricsRoutesComparison('1h');
+    await mod.getMetricsSummary({ kind: 'preset', value: '6h' }, 'r1');
+    await mod.getMetricsRequests({ kind: 'custom', start: 1000, end: 2000 });
+    await mod.getMetricsStatusCodes({ kind: 'preset', value: '1h' }, 'r1');
 
-    expect(calls[0]).toEqual({ url: '/admin/gateway/metrics/summary', params: { range: '5m', route: 'r1' } });
-    expect(calls[1].params).toEqual({ range: '1h', route: undefined });
-    expect(calls[6].url).toBe('/admin/gateway/metrics/routes-comparison');
+    expect(calls[0]).toEqual({ url: '/admin/gateway/metrics/summary', params: { range: '6h', route: 'r1' } });
+    expect(calls[1]).toEqual({ url: '/admin/gateway/metrics/requests', params: { start: 1000, end: 2000, route: undefined } });
+    expect(calls[2].params).toEqual({ range: '1h', route: 'r1' });
   });
 
   it('llm metrics endpoints', async () => {

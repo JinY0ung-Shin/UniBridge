@@ -18,24 +18,9 @@ import {
 import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
 import './Monitoring.css';
 import './GatewayMonitoring.css';
-
-const TIME_RANGES = ['15m', '1h', '6h', '24h', '7d', '30d', '60d'];
-
-function formatTime(ts: number): string {
-  const d = new Date(ts * 1000);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
-function formatTimestamp(ts: number, range: string): string {
-  const d = new Date(ts * 1000);
-  if (['30d', '60d'].includes(range)) {
-    return `${d.getMonth() + 1}/${d.getDate()}`;
-  }
-  if (range === '7d') {
-    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}h`;
-  }
-  return formatTime(ts);
-}
+import TimeRangeSelector from '../components/TimeRangeSelector';
+import { type TimeSelection, selectionKey, selectionSpanSeconds } from '../utils/timeRange';
+import { formatChartTime, formatChartTimestamp } from '../utils/time';
 
 function BarCell({ value, max, suffix = '' }: { value: number; max: number; suffix?: string }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
@@ -106,7 +91,11 @@ function SortableHeader({
 
 function GatewayMonitoring() {
   const { t } = useTranslation();
-  const [range, setRange] = useState('1h');
+  const [selection, setSelection] = useState<TimeSelection>({ kind: 'preset', value: '1h' });
+  const selKey = selectionKey(selection);
+  const span = selectionSpanSeconds(selection);
+  const refetchInterval = selection.kind === 'custom' ? false : 30_000;
+  const rangeLabel = selection.kind === 'preset' ? selection.value : t('gatewayMonitoring.customRange');
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
   const [sort, setSort] = useState<{ column: SortColumn; dir: SortDir }>({ column: 'requests', dir: 'desc' });
 
@@ -122,33 +111,33 @@ function GatewayMonitoring() {
   const chartColors = useChartTheme();
 
   const summaryQuery = useQuery({
-    queryKey: ['metrics-summary', range],
-    queryFn: () => getMetricsSummary(range),
-    refetchInterval: 30_000,
+    queryKey: ['metrics-summary', selKey],
+    queryFn: () => getMetricsSummary(selection),
+    refetchInterval,
   });
 
   const requestsQuery = useQuery({
-    queryKey: ['metrics-requests', range],
-    queryFn: () => getMetricsRequests(range),
-    refetchInterval: 30_000,
+    queryKey: ['metrics-requests', selKey],
+    queryFn: () => getMetricsRequests(selection),
+    refetchInterval,
   });
 
   const statusQuery = useQuery({
-    queryKey: ['metrics-status-codes', range],
-    queryFn: () => getMetricsStatusCodes(range),
-    refetchInterval: 30_000,
+    queryKey: ['metrics-status-codes', selKey],
+    queryFn: () => getMetricsStatusCodes(selection),
+    refetchInterval,
   });
 
   const latencyQuery = useQuery({
-    queryKey: ['metrics-latency', range],
-    queryFn: () => getMetricsLatency(range),
-    refetchInterval: 30_000,
+    queryKey: ['metrics-latency', selKey],
+    queryFn: () => getMetricsLatency(selection),
+    refetchInterval,
   });
 
   const routesComparisonQuery = useQuery({
-    queryKey: ['metrics-routes-comparison', range],
-    queryFn: () => getMetricsRoutesComparison(range),
-    refetchInterval: 30_000,
+    queryKey: ['metrics-routes-comparison', selKey],
+    queryFn: () => getMetricsRoutesComparison(selection),
+    refetchInterval,
   });
 
   const routeLabel = (r: RouteComparisonRow) => r.name || r.route;
@@ -190,49 +179,49 @@ function GatewayMonitoring() {
   }, [routesComparisonQuery.data]);
 
   const requestsTotalQuery = useQuery({
-    queryKey: ['metrics-requests-total', range],
-    queryFn: () => getMetricsRequestsTotal(range),
-    refetchInterval: 30_000,
+    queryKey: ['metrics-requests-total', selKey],
+    queryFn: () => getMetricsRequestsTotal(selection),
+    refetchInterval,
   });
 
   // Route drill-down queries
   const routeSummaryQuery = useQuery({
-    queryKey: ['metrics-summary', range, selectedRoute],
-    queryFn: () => getMetricsSummary(range, selectedRoute!),
-    refetchInterval: 30_000,
+    queryKey: ['metrics-summary', selKey, selectedRoute],
+    queryFn: () => getMetricsSummary(selection, selectedRoute!),
+    refetchInterval,
     enabled: !!selectedRoute,
   });
 
   const routeRequestsQuery = useQuery({
-    queryKey: ['metrics-requests', range, selectedRoute],
-    queryFn: () => getMetricsRequests(range, selectedRoute!),
-    refetchInterval: 30_000,
+    queryKey: ['metrics-requests', selKey, selectedRoute],
+    queryFn: () => getMetricsRequests(selection, selectedRoute!),
+    refetchInterval,
     enabled: !!selectedRoute,
   });
 
   const routeStatusQuery = useQuery({
-    queryKey: ['metrics-status-codes', range, selectedRoute],
-    queryFn: () => getMetricsStatusCodes(range, selectedRoute!),
-    refetchInterval: 30_000,
+    queryKey: ['metrics-status-codes', selKey, selectedRoute],
+    queryFn: () => getMetricsStatusCodes(selection, selectedRoute!),
+    refetchInterval,
     enabled: !!selectedRoute,
   });
 
   const routeVolumQuery = useQuery({
-    queryKey: ['metrics-requests-total', range, selectedRoute],
-    queryFn: () => getMetricsRequestsTotal(range, selectedRoute!),
-    refetchInterval: 30_000,
+    queryKey: ['metrics-requests-total', selKey, selectedRoute],
+    queryFn: () => getMetricsRequestsTotal(selection, selectedRoute!),
+    refetchInterval,
     enabled: !!selectedRoute,
   });
 
   const summary = summaryQuery.data;
   const requestsData = (requestsQuery.data ?? []).map((p) => ({
-    time: formatTime(p.timestamp),
+    time: formatChartTime(p.timestamp),
     rps: p.value,
   }));
 
   const latencyData = latencyQuery.data;
   const latencyChartData = (latencyData?.p50 ?? []).map((p, i) => ({
-    time: formatTime(p.timestamp),
+    time: formatChartTime(p.timestamp),
     p50: p.value,
     p95: latencyData?.p95?.[i]?.value ?? 0,
     p99: latencyData?.p99?.[i]?.value ?? 0,
@@ -252,17 +241,7 @@ function GatewayMonitoring() {
           <h1>{t('gatewayMonitoring.title')}</h1>
           <p className="page-subtitle">{t('gatewayMonitoring.subtitle')}</p>
         </div>
-        <div className="time-range-toggle">
-          {TIME_RANGES.map((r) => (
-            <button
-              key={r}
-              className={`time-range-btn ${r === range ? 'time-range-btn--active' : ''}`}
-              onClick={() => setRange(r)}
-            >
-              {r}
-            </button>
-          ))}
-        </div>
+        <TimeRangeSelector value={selection} onChange={setSelection} />
       </div>
 
       {isLoading && <div className="loading-message">{t('gatewayMonitoring.loadingMetrics')}</div>}
@@ -274,7 +253,7 @@ function GatewayMonitoring() {
         <div className="metric-cards">
           <div className="metric-card">
             <div className="metric-card__value">{summary.total_requests.toLocaleString()}</div>
-            <div className="metric-card__label">{t('gatewayMonitoring.totalRequests', { range })}</div>
+            <div className="metric-card__label">{t('gatewayMonitoring.totalRequests', { range: rangeLabel })}</div>
           </div>
           <div className="metric-card">
             <div className="metric-card__value" style={{ color: summary.error_rate > 5 ? 'var(--accent-red)' : 'var(--accent-green)' }}>
@@ -319,7 +298,7 @@ function GatewayMonitoring() {
         {(requestsTotalQuery.data ?? []).length > 0 ? (
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={(requestsTotalQuery.data ?? []).map((p) => ({ time: formatTimestamp(p.timestamp, range), requests: Math.round(p.value) }))}>
+              <BarChart data={(requestsTotalQuery.data ?? []).map((p) => ({ time: formatChartTimestamp(p.timestamp, span), requests: Math.round(p.value) }))}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
                 <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
@@ -446,7 +425,7 @@ function GatewayMonitoring() {
               <div className="metric-cards">
                 <div className="metric-card">
                   <div className="metric-card__value">{routeSummaryQuery.data.total_requests.toLocaleString()}</div>
-                  <div className="metric-card__label">{t('gatewayMonitoring.totalRequests', { range })}</div>
+                  <div className="metric-card__label">{t('gatewayMonitoring.totalRequests', { range: rangeLabel })}</div>
                 </div>
                 <div className="metric-card">
                   <div className="metric-card__value" style={{ color: routeSummaryQuery.data.error_rate > 5 ? 'var(--accent-red)' : 'var(--accent-green)' }}>
@@ -466,7 +445,7 @@ function GatewayMonitoring() {
                 {(routeRequestsQuery.data ?? []).length > 0 ? (
                   <div className="chart-container">
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={(routeRequestsQuery.data ?? []).map((p) => ({ time: formatTime(p.timestamp), rps: p.value }))}>
+                      <LineChart data={(routeRequestsQuery.data ?? []).map((p) => ({ time: formatChartTime(p.timestamp), rps: p.value }))}>
                         <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
                         <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
@@ -490,7 +469,7 @@ function GatewayMonitoring() {
                 {(routeVolumQuery.data ?? []).length > 0 ? (
                   <div className="chart-container">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={(routeVolumQuery.data ?? []).map((p) => ({ time: formatTimestamp(p.timestamp, range), requests: Math.round(p.value) }))}>
+                      <BarChart data={(routeVolumQuery.data ?? []).map((p) => ({ time: formatChartTimestamp(p.timestamp, span), requests: Math.round(p.value) }))}>
                         <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
                         <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />

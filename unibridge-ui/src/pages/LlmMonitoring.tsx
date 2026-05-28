@@ -16,25 +16,11 @@ import {
 import { useChartTheme } from '../components/useChartTheme';
 import './Monitoring.css';
 import './LlmMonitoring.css';
+import TimeRangeSelector from '../components/TimeRangeSelector';
+import { type TimeSelection, selectionKey, selectionSpanSeconds } from '../utils/timeRange';
+import { formatChartTimestamp } from '../utils/time';
 
-const TIME_RANGES = ['15m', '1h', '6h', '24h', '7d', '30d', '60d'];
 const LITELLM_ADMIN_URL = window.__RUNTIME_CONFIG__?.LITELLM_ADMIN_URL || import.meta.env.VITE_LITELLM_ADMIN_URL || 'https://localhost:4000/ui';
-
-function formatTime(ts: number): string {
-  const d = new Date(ts * 1000);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
-function formatTimestamp(ts: number, range: string): string {
-  const d = new Date(ts * 1000);
-  if (['30d', '60d'].includes(range)) {
-    return `${d.getMonth() + 1}/${d.getDate()}`;
-  }
-  if (range === '7d') {
-    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}h`;
-  }
-  return formatTime(ts);
-}
 
 function formatCost(value: number): string {
   return `$${value.toFixed(2)}`;
@@ -48,55 +34,59 @@ function formatTokens(value: number): string {
 
 function LlmMonitoring() {
   const { t } = useTranslation();
-  const [range, setRange] = useState('1h');
+  const [selection, setSelection] = useState<TimeSelection>({ kind: 'preset', value: '1h' });
+  const selKey = selectionKey(selection);
+  const span = selectionSpanSeconds(selection);
+  const refetchInterval = selection.kind === 'custom' ? false : 30_000;
+  const rangeLabel = selection.kind === 'preset' ? selection.value : t('llmMonitoring.customRange');
   const chartColors = useChartTheme();
 
   const summaryQuery = useQuery({
-    queryKey: ['llm-summary', range],
-    queryFn: () => getLlmSummary(range),
-    refetchInterval: 30_000,
+    queryKey: ['llm-summary', selKey],
+    queryFn: () => getLlmSummary(selection),
+    refetchInterval,
   });
 
   const tokensQuery = useQuery({
-    queryKey: ['llm-tokens', range],
-    queryFn: () => getLlmTokens(range),
-    refetchInterval: 30_000,
+    queryKey: ['llm-tokens', selKey],
+    queryFn: () => getLlmTokens(selection),
+    refetchInterval,
   });
 
   const byModelQuery = useQuery({
-    queryKey: ['llm-by-model', range],
-    queryFn: () => getLlmByModel(range),
-    refetchInterval: 30_000,
+    queryKey: ['llm-by-model', selKey],
+    queryFn: () => getLlmByModel(selection),
+    refetchInterval,
   });
 
   const topKeysQuery = useQuery({
-    queryKey: ['llm-top-keys', range],
-    queryFn: () => getLlmTopKeys(range),
-    refetchInterval: 30_000,
+    queryKey: ['llm-top-keys', selKey],
+    queryFn: () => getLlmTopKeys(selection),
+    refetchInterval,
   });
 
   const errorsQuery = useQuery({
-    queryKey: ['llm-errors', range],
-    queryFn: () => getLlmErrors(range),
-    refetchInterval: 30_000,
+    queryKey: ['llm-errors', selKey],
+    queryFn: () => getLlmErrors(selection),
+    refetchInterval,
   });
 
   const requestsTotalQuery = useQuery({
-    queryKey: ['llm-requests-total', range],
-    queryFn: () => getLlmRequestsTotal(range),
-    refetchInterval: 30_000,
+    queryKey: ['llm-requests-total', selKey],
+    queryFn: () => getLlmRequestsTotal(selection),
+    refetchInterval,
   });
 
   const summary = summaryQuery.data;
   const tokenData = tokensQuery.data;
   const tokenChartData = (tokenData?.prompt ?? []).map((p, i) => ({
-    time: formatTimestamp(p.timestamp, range),
+    time: formatChartTimestamp(p.timestamp, span),
     prompt: Math.round(p.value),
     completion: Math.round(tokenData?.completion?.[i]?.value ?? 0),
   }));
 
   const errorChartData = (errorsQuery.data ?? []).map((p) => ({
-    time: formatTimestamp(p.timestamp, range),
+    time: formatChartTimestamp(p.timestamp, span),
     success: p.success,
     error: p.error,
   }));
@@ -128,17 +118,7 @@ function LlmMonitoring() {
               <path d="M10.5 1.5L1.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
           </a>
-          <div className="time-range-toggle">
-            {TIME_RANGES.map((r) => (
-              <button
-                key={r}
-                className={`time-range-btn ${r === range ? 'time-range-btn--active' : ''}`}
-                onClick={() => setRange(r)}
-              >
-                {r}
-            </button>
-          ))}
-          </div>
+          <TimeRangeSelector value={selection} onChange={setSelection} />
         </div>
       </div>
 
@@ -151,7 +131,7 @@ function LlmMonitoring() {
         <div className="metric-cards">
           <div className="metric-card">
             <div className="metric-card__value">{formatTokens(summary.total_tokens)}</div>
-            <div className="metric-card__label">{t('llmMonitoring.totalTokens', { range })}</div>
+            <div className="metric-card__label">{t('llmMonitoring.totalTokens', { range: rangeLabel })}</div>
           </div>
           <div className="metric-card">
             <div className="metric-card__value">{formatCost(summary.estimated_cost)}</div>
@@ -159,7 +139,7 @@ function LlmMonitoring() {
           </div>
           <div className="metric-card">
             <div className="metric-card__value">{summary.total_requests.toLocaleString()}</div>
-            <div className="metric-card__label">{t('llmMonitoring.totalRequests', { range })}</div>
+            <div className="metric-card__label">{t('llmMonitoring.totalRequests', { range: rangeLabel })}</div>
           </div>
           <div className="metric-card">
             <div className="metric-card__value">{summary.avg_latency_ms}ms</div>
@@ -200,7 +180,7 @@ function LlmMonitoring() {
         {(requestsTotalQuery.data ?? []).length > 0 ? (
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={(requestsTotalQuery.data ?? []).map((p) => ({ time: formatTimestamp(p.timestamp, range), requests: Math.round(p.value) }))}>
+              <BarChart data={(requestsTotalQuery.data ?? []).map((p) => ({ time: formatChartTimestamp(p.timestamp, span), requests: Math.round(p.value) }))}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
                 <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />

@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { formatKST, kstDateToUtcIso } from '../utils/time';
+import {
+  formatKST,
+  kstDateToUtcIso,
+  kstLocalToEpoch,
+  epochToKstLocal,
+  formatChartTime,
+  formatChartTimestamp,
+  formatKstChip,
+} from '../utils/time';
 
 describe('formatKST', () => {
   it('converts UTC ISO to KST string', () => {
@@ -55,5 +63,37 @@ describe('kstDateToUtcIso', () => {
   it('returns undefined for malformed input', () => {
     expect(kstDateToUtcIso('not-a-date', 'start')).toBeUndefined();
     expect(kstDateToUtcIso('2026/04/22', 'start')).toBeUndefined();
+  });
+});
+
+describe('KST monitoring helpers', () => {
+  // 2026-05-20 09:00 KST == 2026-05-20 00:00 UTC
+  const epoch = Date.UTC(2026, 4, 20, 0, 0, 0) / 1000;
+
+  it('kstLocalToEpoch interprets input as KST (+09:00)', () => {
+    expect(kstLocalToEpoch('2026-05-20T09:00')).toBe(epoch);
+  });
+
+  it('kstLocalToEpoch accepts datetime-local values with seconds', () => {
+    expect(kstLocalToEpoch('2026-05-20T09:00:30')).toBe(epoch + 30);
+  });
+
+  it('epochToKstLocal round-trips', () => {
+    expect(epochToKstLocal(epoch)).toBe('2026-05-20T09:00');
+  });
+
+  it('formatChartTime renders KST HH:mm regardless of host TZ', () => {
+    expect(formatChartTime(epoch)).toBe('09:00');
+  });
+
+  it('formatChartTimestamp picks granularity by span', () => {
+    expect(formatChartTimestamp(epoch, 3600)).toBe('09:00');            // <=24h
+    expect(formatChartTimestamp(epoch, 2 * 86400)).toBe('5/20 09h');    // >24h, <=7d
+    expect(formatChartTimestamp(epoch, 30 * 86400)).toBe('5/20');       // >7d
+  });
+
+  it('formatKstChip renders start~end', () => {
+    const end = epoch + 2 * 86400 + 9 * 3600; // 5/22 18:00 KST
+    expect(formatKstChip(epoch, end)).toBe('5/20 09:00~5/22 18:00');
   });
 });
