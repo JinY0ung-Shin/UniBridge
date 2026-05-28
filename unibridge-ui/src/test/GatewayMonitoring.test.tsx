@@ -86,6 +86,11 @@ describe('GatewayMonitoring', () => {
     expect(screen.getByRole('button', { name: '24h' })).toBeInTheDocument();
   });
 
+  it('renders the custom range toggle', () => {
+    renderWithProviders(<GatewayMonitoring />);
+    expect(screen.getByTestId('custom-toggle')).toBeInTheDocument();
+  });
+
   it('renders chart panel titles', async () => {
     mockedGetMetricsSummary.mockResolvedValue({
       total_requests: 100,

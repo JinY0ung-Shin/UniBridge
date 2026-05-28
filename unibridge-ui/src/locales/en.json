@@ -306,6 +306,7 @@
     "loadFailed": "Failed to load metrics. Is Prometheus running?",
     "partialLoadFailed": "Some metrics failed to load. Data may be incomplete.",
     "totalRequests": "Total Requests ({{range}})",
+    "customRange": "custom",
     "errorRate": "Error Rate (5xx)",
     "avgLatency": "Avg Latency",
     "requestTrend": "Request Trend",
