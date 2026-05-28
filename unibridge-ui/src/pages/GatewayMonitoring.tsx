@@ -13,6 +13,7 @@ import {
   getMetricsStatusCodes,
   getMetricsLatency,
   getMetricsRoutesComparison,
+  getApiKeys,
   type RouteComparisonRow,
 } from '../api/client';
 import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
@@ -98,6 +99,7 @@ function GatewayMonitoring() {
   const rangeLabel = selection.kind === 'preset' ? selection.value : t('gatewayMonitoring.customRange');
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
   const [sort, setSort] = useState<{ column: SortColumn; dir: SortDir }>({ column: 'requests', dir: 'desc' });
+  const [selectedConsumer, setSelectedConsumer] = useState<string>('');
 
   const toggleSort = (column: SortColumn) => {
     setSort((prev) =>
@@ -110,33 +112,44 @@ function GatewayMonitoring() {
 
   const chartColors = useChartTheme();
 
+  const apiKeysQuery = useQuery({
+    queryKey: ['api-keys', 'gateway-monitoring-filter'],
+    queryFn: getApiKeys,
+    staleTime: 5 * 60 * 1000,
+    refetchInterval: false,
+  });
+  const apiKeyOptions = useMemo(() => {
+    const items = apiKeysQuery.data ?? [];
+    return [...items].sort((a, b) => a.name.localeCompare(b.name));
+  }, [apiKeysQuery.data]);
+
   const summaryQuery = useQuery({
-    queryKey: ['metrics-summary', selKey],
-    queryFn: () => getMetricsSummary(selection),
+    queryKey: ['metrics-summary', selKey, selectedConsumer],
+    queryFn: () => getMetricsSummary(selection, undefined, selectedConsumer || undefined),
     refetchInterval,
   });
 
   const requestsQuery = useQuery({
-    queryKey: ['metrics-requests', selKey],
-    queryFn: () => getMetricsRequests(selection),
+    queryKey: ['metrics-requests', selKey, selectedConsumer],
+    queryFn: () => getMetricsRequests(selection, undefined, selectedConsumer || undefined),
     refetchInterval,
   });
 
   const statusQuery = useQuery({
-    queryKey: ['metrics-status-codes', selKey],
-    queryFn: () => getMetricsStatusCodes(selection),
+    queryKey: ['metrics-status-codes', selKey, selectedConsumer],
+    queryFn: () => getMetricsStatusCodes(selection, undefined, selectedConsumer || undefined),
     refetchInterval,
   });
 
   const latencyQuery = useQuery({
-    queryKey: ['metrics-latency', selKey],
-    queryFn: () => getMetricsLatency(selection),
+    queryKey: ['metrics-latency', selKey, selectedConsumer],
+    queryFn: () => getMetricsLatency(selection, undefined, selectedConsumer || undefined),
     refetchInterval,
   });
 
   const routesComparisonQuery = useQuery({
-    queryKey: ['metrics-routes-comparison', selKey],
-    queryFn: () => getMetricsRoutesComparison(selection),
+    queryKey: ['metrics-routes-comparison', selKey, selectedConsumer],
+    queryFn: () => getMetricsRoutesComparison(selection, selectedConsumer || undefined),
     refetchInterval,
   });
 
@@ -179,36 +192,36 @@ function GatewayMonitoring() {
   }, [routesComparisonQuery.data]);
 
   const requestsTotalQuery = useQuery({
-    queryKey: ['metrics-requests-total', selKey],
-    queryFn: () => getMetricsRequestsTotal(selection),
+    queryKey: ['metrics-requests-total', selKey, selectedConsumer],
+    queryFn: () => getMetricsRequestsTotal(selection, undefined, selectedConsumer || undefined),
     refetchInterval,
   });
 
   // Route drill-down queries
   const routeSummaryQuery = useQuery({
-    queryKey: ['metrics-summary', selKey, selectedRoute],
-    queryFn: () => getMetricsSummary(selection, selectedRoute!),
+    queryKey: ['metrics-summary', selKey, selectedRoute, selectedConsumer],
+    queryFn: () => getMetricsSummary(selection, selectedRoute!, selectedConsumer || undefined),
     refetchInterval,
     enabled: !!selectedRoute,
   });
 
   const routeRequestsQuery = useQuery({
-    queryKey: ['metrics-requests', selKey, selectedRoute],
-    queryFn: () => getMetricsRequests(selection, selectedRoute!),
+    queryKey: ['metrics-requests', selKey, selectedRoute, selectedConsumer],
+    queryFn: () => getMetricsRequests(selection, selectedRoute!, selectedConsumer || undefined),
     refetchInterval,
     enabled: !!selectedRoute,
   });
 
   const routeStatusQuery = useQuery({
-    queryKey: ['metrics-status-codes', selKey, selectedRoute],
-    queryFn: () => getMetricsStatusCodes(selection, selectedRoute!),
+    queryKey: ['metrics-status-codes', selKey, selectedRoute, selectedConsumer],
+    queryFn: () => getMetricsStatusCodes(selection, selectedRoute!, selectedConsumer || undefined),
     refetchInterval,
     enabled: !!selectedRoute,
   });
 
   const routeVolumQuery = useQuery({
-    queryKey: ['metrics-requests-total', selKey, selectedRoute],
-    queryFn: () => getMetricsRequestsTotal(selection, selectedRoute!),
+    queryKey: ['metrics-requests-total', selKey, selectedRoute, selectedConsumer],
+    queryFn: () => getMetricsRequestsTotal(selection, selectedRoute!, selectedConsumer || undefined),
     refetchInterval,
     enabled: !!selectedRoute,
   });
@@ -241,7 +254,22 @@ function GatewayMonitoring() {
           <h1>{t('gatewayMonitoring.title')}</h1>
           <p className="page-subtitle">{t('gatewayMonitoring.subtitle')}</p>
         </div>
-        <TimeRangeSelector value={selection} onChange={setSelection} />
+        <div className="page-header__filters">
+          <label className="api-key-filter">
+            <span className="api-key-filter__label">{t('gatewayMonitoring.apiKeyFilter')}</span>
+            <select
+              className="api-key-filter__select"
+              value={selectedConsumer}
+              onChange={(e) => setSelectedConsumer(e.target.value)}
+            >
+              <option value="">{t('gatewayMonitoring.allApiKeys')}</option>
+              {apiKeyOptions.map((k) => (
+                <option key={k.name} value={k.name}>{k.name}</option>
+              ))}
+            </select>
+          </label>
+          <TimeRangeSelector value={selection} onChange={setSelection} />
+        </div>
       </div>
 
       {isLoading && <div className="loading-message">{t('gatewayMonitoring.loadingMetrics')}</div>}

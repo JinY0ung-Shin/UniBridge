@@ -20,6 +20,7 @@ vi.mock('../api/client', () => ({
   getMetricsLatency: vi.fn(),
   getMetricsRoutesComparison: vi.fn(),
   getMetricsRequestsTotal: vi.fn(),
+  getApiKeys: vi.fn(),
 }));
 
 import { screen, waitFor } from '@testing-library/react';
@@ -31,6 +32,7 @@ import {
   getMetricsLatency,
   getMetricsRoutesComparison,
   getMetricsRequestsTotal,
+  getApiKeys,
 } from '../api/client';
 import GatewayMonitoring from '../pages/GatewayMonitoring';
 import { renderWithProviders } from './helpers';
@@ -41,15 +43,18 @@ const mockedGetMetricsStatusCodes = vi.mocked(getMetricsStatusCodes);
 const mockedGetMetricsLatency = vi.mocked(getMetricsLatency);
 const mockedGetMetricsRoutesComparison = vi.mocked(getMetricsRoutesComparison);
 const mockedGetMetricsRequestsTotal = vi.mocked(getMetricsRequestsTotal);
+const mockedGetApiKeys = vi.mocked(getApiKeys);
 
 describe('GatewayMonitoring', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     mockedGetMetricsSummary.mockResolvedValue({ total_requests: 0, error_rate: 0, avg_latency_ms: 0 });
     mockedGetMetricsRequests.mockResolvedValue([]);
     mockedGetMetricsStatusCodes.mockResolvedValue([]);
     mockedGetMetricsLatency.mockResolvedValue({ p50: [], p95: [], p99: [] });
     mockedGetMetricsRoutesComparison.mockResolvedValue({ total_requests: 0, routes: [] });
     mockedGetMetricsRequestsTotal.mockResolvedValue([]);
+    mockedGetApiKeys.mockResolvedValue([]);
   });
 
   it('renders loading state', async () => {
@@ -207,5 +212,64 @@ describe('GatewayMonitoring', () => {
 
     rows = container.querySelectorAll('.comparison-table tbody tr');
     expect(rows[0].textContent).toContain('small');
+  });
+
+  it('renders the API key filter dropdown with "All" default', async () => {
+    mockedGetApiKeys.mockResolvedValue([
+      { name: 'alice', description: '', api_key: null, key_created: true, allowed_databases: [], allowed_routes: [], created_at: null },
+      { name: 'bob',   description: '', api_key: null, key_created: true, allowed_databases: [], allowed_routes: [], created_at: null },
+    ]);
+
+    renderWithProviders(<GatewayMonitoring />);
+
+    const select = await screen.findByLabelText(/API Key/i) as HTMLSelectElement;
+    expect(select.value).toBe('');                       // 기본 = 전체 (빈 문자열)
+    expect(screen.getByRole('option', { name: 'All' })).toBeInTheDocument();
+    // apiKeysQuery is async — wait for options to populate
+    expect(await screen.findByRole('option', { name: 'alice' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'bob' })).toBeInTheDocument();
+  });
+
+  it('passes selected consumer to metric calls when changed', async () => {
+    const userEvent = (await import('@testing-library/user-event')).default;
+    const user = userEvent.setup();
+
+    mockedGetApiKeys.mockResolvedValue([
+      { name: 'alice', description: '', api_key: null, key_created: true, allowed_databases: [], allowed_routes: [], created_at: null },
+    ]);
+
+    renderWithProviders(<GatewayMonitoring />);
+
+    const select = await screen.findByLabelText(/API Key/i) as HTMLSelectElement;
+    // wait for apiKeysQuery to populate options before selecting
+    await screen.findByRole('option', { name: 'alice' });
+    await user.selectOptions(select, 'alice');
+
+    await waitFor(() => {
+      // Find the most recent call with consumer == 'alice'
+      const calls = mockedGetMetricsSummary.mock.calls;
+      const hasConsumer = calls.some((args) => args[2] === 'alice');
+      expect(hasConsumer).toBe(true);
+    });
+
+    // Routes-comparison has consumer as 2nd arg (no route arg)
+    await waitFor(() => {
+      const calls = mockedGetMetricsRoutesComparison.mock.calls;
+      const hasConsumer = calls.some((args) => args[1] === 'alice');
+      expect(hasConsumer).toBe(true);
+    });
+  });
+
+  it('omits consumer parameter when "All" is selected (default)', async () => {
+    renderWithProviders(<GatewayMonitoring />);
+
+    await waitFor(() => {
+      expect(mockedGetMetricsSummary).toHaveBeenCalled();
+    });
+
+    // Every call so far should have undefined consumer (3rd arg)
+    for (const args of mockedGetMetricsSummary.mock.calls) {
+      expect(args[2]).toBeUndefined();
+    }
   });
 });

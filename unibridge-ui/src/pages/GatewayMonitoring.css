@@ -135,3 +135,32 @@
   outline: 2px solid var(--accent-blue, #3b82f6);
   outline-offset: -2px;
 }
+
+.page-header__filters {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.api-key-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.api-key-filter__select {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.api-key-filter__select:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
