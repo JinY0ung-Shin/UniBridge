@@ -1668,6 +1668,37 @@ class TestConsumerFilter:
         )
         assert resp.status_code == 400
 
+    async def test_top_routes_excludes_llm_proxy_by_default(self, client, admin_token):
+        results = [{"metric": {"route": "x"}, "value": [0, "10"]}]
+        mock = AsyncMock(return_value=results)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/top-routes?range=1h",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert 'route!="llm-proxy"' in mock.call_args.args[0]
+
+    async def test_top_routes_with_consumer(self, client, admin_token):
+        results = [{"metric": {"route": "x"}, "value": [0, "10"]}]
+        mock = AsyncMock(return_value=results)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/top-routes?range=1h&consumer=alice",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        q = mock.call_args.args[0]
+        assert 'consumer="alice"' in q
+        assert 'route!="llm-proxy"' in q
+
+    async def test_top_routes_invalid_consumer_returns_400(self, client, admin_token):
+        resp = await client.get(
+            '/admin/gateway/metrics/top-routes?range=1h&consumer=bad name',
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
 
 # ---------------------------------------------------------------------------
 # Request volume endpoint tests

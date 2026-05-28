@@ -924,11 +924,14 @@ async def metrics_latency(
 @router.get("/metrics/top-routes")
 async def metrics_top_routes(
     tw: TimeWindow = Depends(resolve_time_window),
+    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
+    _validate_consumer(consumer)
+    hs = _labels(None, consumer)
     try:
         results = await prometheus_client.instant_query(
-            f"topk(10, sum by (route) (increase(apisix_http_status[{tw.promql_window}])))",
+            f"topk(10, sum by (route) (increase(apisix_http_status{hs}[{tw.promql_window}])))",
             eval_time=tw.eval_time,
         )
     except Exception as exc:
