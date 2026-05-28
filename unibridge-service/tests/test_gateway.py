@@ -1804,3 +1804,36 @@ class TestResolveTimeWindow:
         with pytest.raises(HTTPException) as exc:
             resolve_time_window(time_range="1h", start=1000, end=1030)  # 30s
         assert exc.value.status_code == 400
+
+
+class TestMetricsCustomRange:
+    async def test_summary_custom_passes_eval_time(self, client, admin_token):
+        scalar = [{"value": [1000, "5"]}]
+        mock = AsyncMock(side_effect=[scalar, scalar, scalar])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/summary?start=1000000&end=1003600",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        # every instant_query call evaluated at end=1003600
+        for call in mock.call_args_list:
+            assert call.kwargs.get("eval_time") == 1003600.0
+
+    async def test_requests_custom_passes_start_end(self, client, admin_token):
+        mock = AsyncMock(return_value=[{"values": [[1000000, "1"]]}])
+        with patch("app.routers.gateway.prometheus_client.range_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/requests?start=1000000&end=1003600",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert mock.call_args.kwargs.get("start") == 1000000.0
+        assert mock.call_args.kwargs.get("end") == 1003600.0
+
+    async def test_summary_rejects_reversed_custom_range(self, client, admin_token):
+        resp = await client.get(
+            "/admin/gateway/metrics/summary?start=2000&end=1000",
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
