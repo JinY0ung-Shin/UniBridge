@@ -297,7 +297,7 @@
     "apply": "Apply",
     "cancel": "Cancel",
     "clear": "Clear custom range",
-    "invalid": "Start must be before end and end cannot be in the future."
+    "invalid": "Start must be before end, span at least 60 seconds, and end cannot be in the future."
   },
   "gatewayMonitoring": {
     "title": "Gateway Monitoring",

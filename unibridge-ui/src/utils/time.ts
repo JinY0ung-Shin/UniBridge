@@ -95,9 +95,12 @@ export function formatKstChip(startSeconds: number, endSeconds: number): string 
   );
 }
 
-/** "YYYY-MM-DDTHH:mm" (datetime-local, interpreted as KST) → epoch seconds. */
+const DATETIME_LOCAL_MINUTE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+
+/** "YYYY-MM-DDTHH:mm" or "...:ss" (datetime-local, interpreted as KST) → epoch seconds. */
 export function kstLocalToEpoch(local: string): number {
-  return Math.floor(Date.parse(`${local}:00+09:00`) / 1000);
+  const normalized = DATETIME_LOCAL_MINUTE_RE.test(local) ? `${local}:00` : local;
+  return Math.floor(Date.parse(`${normalized}+09:00`) / 1000);
 }
 
 /** epoch seconds → "YYYY-MM-DDTHH:mm" wall-clock string in KST (for datetime-local value). */

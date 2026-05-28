@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import TimeRangeSelector from '../components/TimeRangeSelector';
@@ -60,6 +60,39 @@ describe('TimeRangeSelector', () => {
     await user.clear(end);
     await user.type(end, '2026-05-20T09:00');
     expect(screen.getByTestId('custom-apply')).toBeDisabled();
+  });
+
+  it('disables apply when the custom span is shorter than 60 seconds', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <TimeRangeSelector value={{ kind: 'preset', value: '1h' }} onChange={vi.fn()} />,
+    );
+    await user.click(screen.getByTestId('custom-toggle'));
+    const start = screen.getByTestId('custom-start') as HTMLInputElement;
+    const end = screen.getByTestId('custom-end') as HTMLInputElement;
+    fireEvent.change(start, { target: { value: '2026-05-20T09:00:00' } });
+    fireEvent.change(end, { target: { value: '2026-05-20T09:00:30' } });
+    expect(screen.getByTestId('custom-apply')).toBeDisabled();
+  });
+
+  it('refreshes the default custom range when the popover opens', async () => {
+    const user = userEvent.setup();
+    const mountedAt = Date.UTC(2026, 4, 20, 0, 0, 0) / 1000;
+    const openedAt = mountedAt + 600;
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(mountedAt * 1000);
+    try {
+      renderWithProviders(
+        <TimeRangeSelector value={{ kind: 'preset', value: '1h' }} onChange={vi.fn()} />,
+      );
+      dateNow.mockReturnValue(openedAt * 1000);
+
+      await user.click(screen.getByTestId('custom-toggle'));
+
+      expect((screen.getByTestId('custom-start') as HTMLInputElement).value).toBe('2026-05-20T08:10');
+      expect((screen.getByTestId('custom-end') as HTMLInputElement).value).toBe('2026-05-20T09:10');
+    } finally {
+      dateNow.mockRestore();
+    }
   });
 
   it('shows a chip for an active custom selection and clears it back to 1h', async () => {

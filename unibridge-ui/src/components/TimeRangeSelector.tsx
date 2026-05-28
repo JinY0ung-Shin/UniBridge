@@ -4,13 +4,18 @@ import { TIME_RANGES, type TimeSelection } from '../utils/timeRange';
 import { kstLocalToEpoch, epochToKstLocal, formatKstChip } from '../utils/time';
 import './TimeRangeSelector.css';
 
+const MIN_CUSTOM_SPAN_SECONDS = 60;
+
 interface TimeRangeSelectorProps {
   value: TimeSelection;
   onChange: (next: TimeSelection) => void;
 }
 
-function defaultLocalRange(): { start: string; end: string } {
-  const nowSec = Math.floor(Date.now() / 1000);
+function currentEpochSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+function defaultLocalRange(nowSec: number): { start: string; end: string } {
   return {
     start: epochToKstLocal(nowSec - 3600),
     end: epochToKstLocal(nowSec),
@@ -20,7 +25,8 @@ function defaultLocalRange(): { start: string; end: string } {
 function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const initial = defaultLocalRange();
+  const [validationNowSec, setValidationNowSec] = useState(currentEpochSeconds);
+  const initial = defaultLocalRange(validationNowSec);
   const [startLocal, setStartLocal] = useState(
     value.kind === 'custom' ? epochToKstLocal(value.start) : initial.start,
   );
@@ -30,23 +36,47 @@ function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
 
   const startEpoch = startLocal ? kstLocalToEpoch(startLocal) : NaN;
   const endEpoch = endLocal ? kstLocalToEpoch(endLocal) : NaN;
-  const [nowSec] = useState(() => Math.floor(Date.now() / 1000));
   const valid =
     Number.isFinite(startEpoch) &&
     Number.isFinite(endEpoch) &&
     startEpoch < endEpoch &&
-    endEpoch <= nowSec + 60;
+    endEpoch - startEpoch >= MIN_CUSTOM_SPAN_SECONDS &&
+    endEpoch <= validationNowSec + 60;
 
   const apply = () => {
     if (!Number.isFinite(startEpoch) || !Number.isFinite(endEpoch)) return;
     if (startEpoch >= endEpoch) return;
-    const now = Math.floor(Date.now() / 1000);
+    if (endEpoch - startEpoch < MIN_CUSTOM_SPAN_SECONDS) return;
+    const now = currentEpochSeconds();
     if (endEpoch > now + 60) return;
     onChange({ kind: 'custom', start: startEpoch, end: endEpoch });
     setOpen(false);
   };
 
   const clearCustom = () => onChange({ kind: 'preset', value: '1h' });
+
+  const toggleCustom = () => {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    const now = currentEpochSeconds();
+    const next = defaultLocalRange(now);
+    setValidationNowSec(now);
+    setStartLocal(next.start);
+    setEndLocal(next.end);
+    setOpen(true);
+  };
+
+  const updateStartLocal = (next: string) => {
+    setValidationNowSec(currentEpochSeconds());
+    setStartLocal(next);
+  };
+
+  const updateEndLocal = (next: string) => {
+    setValidationNowSec(currentEpochSeconds());
+    setEndLocal(next);
+  };
 
   return (
     <div className="time-range-selector">
@@ -78,7 +108,7 @@ function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
             type="button"
             className="time-range-btn time-range-btn--custom"
             data-testid="custom-toggle"
-            onClick={() => setOpen((o) => !o)}
+            onClick={toggleCustom}
           >
             {t('timeRange.custom')} ▾
           </button>
@@ -93,7 +123,7 @@ function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
               type="datetime-local"
               data-testid="custom-start"
               value={startLocal}
-              onChange={(e) => setStartLocal(e.target.value)}
+              onChange={(e) => updateStartLocal(e.target.value)}
             />
           </label>
           <label className="time-range-field">
@@ -102,7 +132,7 @@ function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
               type="datetime-local"
               data-testid="custom-end"
               value={endLocal}
-              onChange={(e) => setEndLocal(e.target.value)}
+              onChange={(e) => updateEndLocal(e.target.value)}
             />
           </label>
           {!valid && <div className="time-range-error">{t('timeRange.invalid')}</div>}

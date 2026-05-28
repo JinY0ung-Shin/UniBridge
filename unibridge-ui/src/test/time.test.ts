@@ -74,6 +74,10 @@ describe('KST monitoring helpers', () => {
     expect(kstLocalToEpoch('2026-05-20T09:00')).toBe(epoch);
   });
 
+  it('kstLocalToEpoch accepts datetime-local values with seconds', () => {
+    expect(kstLocalToEpoch('2026-05-20T09:00:30')).toBe(epoch + 30);
+  });
+
   it('epochToKstLocal round-trips', () => {
     expect(epochToKstLocal(epoch)).toBe('2026-05-20T09:00');
   });
