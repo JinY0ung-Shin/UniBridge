@@ -17,11 +17,18 @@ def _base_url() -> str:
     return settings.PROMETHEUS_URL.rstrip("/")
 
 
-async def instant_query(query: str) -> list[dict[str, Any]]:
-    """Execute a Prometheus instant query. Returns list of result items."""
+async def instant_query(query: str, eval_time: float | None = None) -> list[dict[str, Any]]:
+    """Execute a Prometheus instant query. Returns list of result items.
+
+    eval_time (epoch seconds) sets the evaluation timestamp; when omitted
+    Prometheus evaluates at server "now".
+    """
     url = f"{_base_url()}/api/v1/query"
+    params: dict[str, str] = {"query": query}
+    if eval_time is not None:
+        params["time"] = str(eval_time)
     async with httpx.AsyncClient(timeout=PROM_TIMEOUT) as client:
-        resp = await client.get(url, params={"query": query})
+        resp = await client.get(url, params=params)
         resp.raise_for_status()
         data = resp.json()
     if data.get("status") != "success":
@@ -34,18 +41,26 @@ async def range_query(
     query: str,
     duration: str = "1h",
     step: str = "60s",
+    start: float | None = None,
+    end: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Execute a Prometheus range query over the given duration ending at now."""
+    """Execute a Prometheus range query.
+
+    When start and end (epoch seconds) are both given they are used directly;
+    otherwise the window is duration ending at now.
+    """
     url = f"{_base_url()}/api/v1/query_range"
-    end = time.time()
-    duration_seconds = _parse_duration(duration)
-    start = end - duration_seconds
+    if start is not None and end is not None:
+        start_ts, end_ts = float(start), float(end)
+    else:
+        end_ts = time.time()
+        start_ts = end_ts - _parse_duration(duration)
 
     async with httpx.AsyncClient(timeout=PROM_TIMEOUT) as client:
         resp = await client.get(url, params={
             "query": query,
-            "start": str(start),
-            "end": str(end),
+            "start": str(start_ts),
+            "end": str(end_ts),
             "step": step,
         })
         resp.raise_for_status()
