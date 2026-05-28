@@ -30,7 +30,7 @@ function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
 
   const startEpoch = startLocal ? kstLocalToEpoch(startLocal) : NaN;
   const endEpoch = endLocal ? kstLocalToEpoch(endLocal) : NaN;
-  const nowSec = Math.floor(Date.now() / 1000);
+  const [nowSec] = useState(() => Math.floor(Date.now() / 1000));
   const valid =
     Number.isFinite(startEpoch) &&
     Number.isFinite(endEpoch) &&
@@ -38,7 +38,10 @@ function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
     endEpoch <= nowSec + 60;
 
   const apply = () => {
-    if (!valid) return;
+    if (!Number.isFinite(startEpoch) || !Number.isFinite(endEpoch)) return;
+    if (startEpoch >= endEpoch) return;
+    const now = Math.floor(Date.now() / 1000);
+    if (endEpoch > now + 60) return;
     onChange({ kind: 'custom', start: startEpoch, end: endEpoch });
     setOpen(false);
   };
