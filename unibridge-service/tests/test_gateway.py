@@ -1630,6 +1630,44 @@ class TestConsumerFilter:
         for call in mock.call_args_list:
             assert 'route!="llm-proxy"' in call.args[0]
 
+    async def test_routes_comparison_excludes_llm_proxy_by_default(self, client, admin_token):
+        requests_result = [{"metric": {"route": "x"}, "value": [0, "10"]}]
+        mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        list_mock = AsyncMock(return_value={"items": [], "total": 0})
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock), \
+             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=1h",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        # All 4 PromQL queries should include the llm-proxy exclusion
+        for call in mock.call_args_list:
+            assert 'route!="llm-proxy"' in call.args[0]
+
+    async def test_routes_comparison_with_consumer(self, client, admin_token):
+        requests_result = [{"metric": {"route": "x"}, "value": [0, "10"]}]
+        mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        list_mock = AsyncMock(return_value={"items": [], "total": 0})
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock), \
+             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=1h&consumer=alice",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            q = call.args[0]
+            assert 'consumer="alice"' in q
+            assert 'route!="llm-proxy"' in q
+
+    async def test_routes_comparison_invalid_consumer_returns_400(self, client, admin_token):
+        resp = await client.get(
+            '/admin/gateway/metrics/routes-comparison?range=1h&consumer=bad name',
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
 
 # ---------------------------------------------------------------------------
 # Request volume endpoint tests

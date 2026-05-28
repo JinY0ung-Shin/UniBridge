@@ -952,25 +952,31 @@ async def metrics_top_routes(
 @router.get("/metrics/routes-comparison")
 async def metrics_routes_comparison(
     tw: TimeWindow = Depends(resolve_time_window),
+    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
     """Per-route comparison: requests, share, error_rate, p50/p95 latency in one payload."""
+    _validate_consumer(consumer)
+    # Routes-comparison never targets a single route — it groups by route.
+    # Default selector hides llm-proxy (LLM monitoring page covers that).
+    hs = _labels(None, consumer)
+    hs5 = _labels(None, consumer, 'code=~"5.."')
     try:
         requests_res, errors_res, p50_res, p95_res = await asyncio.gather(
             prometheus_client.instant_query(
-                f"topk(10, sum by (route) (increase(apisix_http_status[{tw.promql_window}])))",
+                f"topk(10, sum by (route) (increase(apisix_http_status{hs}[{tw.promql_window}])))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f'sum by (route) (increase(apisix_http_status{{code=~"5.."}}[{tw.promql_window}]))',
+                f"sum by (route) (increase(apisix_http_status{hs5}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                "histogram_quantile(0.5, sum by (route, le) (rate(apisix_http_latency_bucket[5m])))",
+                f"histogram_quantile(0.5, sum by (route, le) (rate(apisix_http_latency_bucket{hs}[5m])))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                "histogram_quantile(0.95, sum by (route, le) (rate(apisix_http_latency_bucket[5m])))",
+                f"histogram_quantile(0.95, sum by (route, le) (rate(apisix_http_latency_bucket{hs}[5m])))",
                 eval_time=tw.eval_time,
             ),
         )
