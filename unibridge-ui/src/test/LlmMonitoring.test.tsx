@@ -65,6 +65,12 @@ describe('LlmMonitoring', () => {
     vi.resetModules();
   });
 
+  it('renders the custom range toggle', async () => {
+    const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
+    renderWithProviders(<LlmMonitoring />);
+    expect(screen.getByTestId('custom-toggle')).toBeInTheDocument();
+  });
+
   it('links LiteLLM Admin to the separate-origin UI path', async () => {
     const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
 

@@ -332,6 +332,7 @@
     "loadFailed": "Failed to load LLM metrics. Is Prometheus running?",
     "partialLoadFailed": "Some LLM metrics failed to load. Data may be incomplete.",
     "totalTokens": "Total Tokens ({{range}})",
+    "customRange": "custom",
     "promptTokens": "Prompt Tokens",
     "completionTokens": "Completion Tokens",
     "estimatedCost": "Estimated Cost",
