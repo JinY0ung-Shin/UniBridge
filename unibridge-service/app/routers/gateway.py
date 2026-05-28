@@ -708,6 +708,7 @@ def resolve_time_window(
 
 
 _SAFE_ROUTE_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
+_SAFE_CONSUMER_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
 
 
 def _get_step(time_range: str) -> str:
@@ -721,11 +722,27 @@ def _validate_route(route: str | None) -> None:
         )
 
 
-def _labels(route: str | None, *extra: str) -> str:
-    """Build PromQL label selector like {code=~"5..",route="x"} or empty."""
+def _validate_consumer(consumer: str | None) -> None:
+    if consumer and not _SAFE_CONSUMER_RE.match(consumer):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid consumer name"
+        )
+
+
+def _labels(route: str | None, consumer: str | None, *extra: str) -> str:
+    """Build PromQL label selector.
+
+    Defaults exclude the ``llm-proxy`` route so the gateway monitoring page
+    omits LLM traffic (shown separately on the LLM monitoring page). When
+    ``route`` is explicitly set, that filter replaces the default exclusion.
+    """
     parts = list(extra)
     if route:
         parts.append(f'route="{route}"')
+    else:
+        parts.append('route!="llm-proxy"')
+    if consumer:
+        parts.append(f'consumer="{consumer}"')
     return "{" + ",".join(parts) + "}" if parts else ""
 
 

@@ -17,7 +17,9 @@ from app.routers.gateway import (
     _extract_timeseries,
     _get_step,
     _inject_plugins,
+    _labels,
     _service_headers_for_route,
+    _validate_consumer,
 )
 from tests.conftest import auth_header
 
@@ -1862,3 +1864,45 @@ class TestLlmMetricsCustomRange:
         assert resp.status_code == 200
         assert mock.call_args.kwargs.get("start") == 1000000.0
         assert mock.call_args.kwargs.get("end") == 1003600.0
+
+
+class TestLabelsHelper:
+    """_labels() builds PromQL label selectors with llm-proxy exclusion default."""
+
+    def test_no_args_excludes_llm_proxy(self):
+        assert _labels(None, None) == '{route!="llm-proxy"}'
+
+    def test_route_replaces_llm_proxy_exclusion(self):
+        # Explicit route filter should not include the llm-proxy exclusion
+        assert _labels("query-api", None) == '{route="query-api"}'
+
+    def test_consumer_adds_label(self):
+        assert _labels(None, "alice") == '{route!="llm-proxy",consumer="alice"}'
+
+    def test_route_and_consumer(self):
+        assert _labels("query-api", "alice") == '{route="query-api",consumer="alice"}'
+
+    def test_extra_labels_prepended(self):
+        # Existing usage: _labels(route, None, 'code=~"5.."')
+        assert _labels(None, None, 'code=~"5.."') == '{code=~"5..",route!="llm-proxy"}'
+        assert _labels("query-api", "alice", 'code=~"5.."') == \
+            '{code=~"5..",route="query-api",consumer="alice"}'
+
+
+class TestValidateConsumer:
+    def test_accepts_safe_names(self):
+        for name in ("alice", "my-app", "user_1", "svc.prod", "ABC123"):
+            _validate_consumer(name)  # no exception
+
+    def test_none_is_allowed(self):
+        _validate_consumer(None)
+
+    def test_empty_string_is_allowed(self):
+        # Empty string is falsy; treated like None
+        _validate_consumer("")
+
+    def test_rejects_unsafe_names(self):
+        for bad in ('alice"; drop', "a b", "name/etc", "x\"y", "name;"):
+            with pytest.raises(HTTPException) as ei:
+                _validate_consumer(bad)
+            assert ei.value.status_code == 400
