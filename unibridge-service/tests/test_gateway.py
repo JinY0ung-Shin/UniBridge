@@ -17,7 +17,9 @@ from app.routers.gateway import (
     _extract_timeseries,
     _get_step,
     _inject_plugins,
+    _labels,
     _service_headers_for_route,
+    _validate_consumer,
 )
 from tests.conftest import auth_header
 
@@ -1527,6 +1529,177 @@ class TestRouteFilter:
         assert resp.status_code == 400
 
 
+class TestConsumerFilter:
+    """Verify the optional consumer query parameter filters PromQL correctly."""
+
+    async def test_summary_with_consumer(self, client, admin_token):
+        total = [{"value": [0, "10"]}]
+        err = [{"value": [0, "0"]}]
+        lat = [{"value": [0, "5"]}]
+        mock = AsyncMock(side_effect=[total, err, lat])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/summary?range=1h&consumer=alice",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            assert 'consumer="alice"' in call.args[0]
+
+    async def test_requests_with_consumer(self, client, admin_token):
+        ts = [{"values": [[1000, "5"]]}]
+        mock = AsyncMock(return_value=ts)
+        with patch("app.routers.gateway.prometheus_client.range_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/requests?range=1h&consumer=alice",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert 'consumer="alice"' in mock.call_args.args[0]
+
+    async def test_status_codes_with_consumer(self, client, admin_token):
+        results = [{"metric": {"code": "200"}, "value": [0, "5"]}]
+        mock = AsyncMock(return_value=results)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/status-codes?range=1h&consumer=alice",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert 'consumer="alice"' in mock.call_args.args[0]
+
+    async def test_latency_with_consumer(self, client, admin_token):
+        p = [{"values": [[1000, "10"]]}]
+        mock = AsyncMock(side_effect=[p, p, p])
+        with patch("app.routers.gateway.prometheus_client.range_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/latency?range=1h&consumer=alice",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            assert 'consumer="alice"' in call.args[0]
+
+    async def test_requests_total_with_consumer(self, client, admin_token):
+        ts = [{"values": [[1000, "5"]]}]
+        mock = AsyncMock(return_value=ts)
+        with patch("app.routers.gateway.prometheus_client.range_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/requests-total?range=1h&consumer=alice",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert 'consumer="alice"' in mock.call_args.args[0]
+
+    async def test_consumer_and_route_together(self, client, admin_token):
+        total = [{"value": [0, "10"]}]
+        err = [{"value": [0, "0"]}]
+        lat = [{"value": [0, "5"]}]
+        mock = AsyncMock(side_effect=[total, err, lat])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/summary?range=1h&route=query-api&consumer=alice",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            q = call.args[0]
+            assert 'route="query-api"' in q
+            assert 'consumer="alice"' in q
+            # llm-proxy exclusion is replaced by explicit route filter
+            assert 'route!="llm-proxy"' not in q
+
+    async def test_invalid_consumer_returns_400(self, client, admin_token):
+        resp = await client.get(
+            '/admin/gateway/metrics/summary?range=1h&consumer="; drop',
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_no_consumer_excludes_llm_proxy(self, client, admin_token):
+        total = [{"value": [0, "10"]}]
+        err = [{"value": [0, "0"]}]
+        lat = [{"value": [0, "5"]}]
+        mock = AsyncMock(side_effect=[total, err, lat])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/summary?range=1h",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            assert 'route!="llm-proxy"' in call.args[0]
+
+    async def test_routes_comparison_excludes_llm_proxy_by_default(self, client, admin_token):
+        requests_result = [{"metric": {"route": "x"}, "value": [0, "10"]}]
+        mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        list_mock = AsyncMock(return_value={"items": [], "total": 0})
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock), \
+             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=1h",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        # All 4 PromQL queries should include the llm-proxy exclusion
+        for call in mock.call_args_list:
+            assert 'route!="llm-proxy"' in call.args[0]
+
+    async def test_routes_comparison_with_consumer(self, client, admin_token):
+        requests_result = [{"metric": {"route": "x"}, "value": [0, "10"]}]
+        mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        list_mock = AsyncMock(return_value={"items": [], "total": 0})
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock), \
+             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=1h&consumer=alice",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            q = call.args[0]
+            assert 'consumer="alice"' in q
+            assert 'route!="llm-proxy"' in q
+
+    async def test_routes_comparison_invalid_consumer_returns_400(self, client, admin_token):
+        resp = await client.get(
+            '/admin/gateway/metrics/routes-comparison?range=1h&consumer=bad name',
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_top_routes_excludes_llm_proxy_by_default(self, client, admin_token):
+        results = [{"metric": {"route": "x"}, "value": [0, "10"]}]
+        mock = AsyncMock(return_value=results)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/top-routes?range=1h",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert 'route!="llm-proxy"' in mock.call_args.args[0]
+
+    async def test_top_routes_with_consumer(self, client, admin_token):
+        results = [{"metric": {"route": "x"}, "value": [0, "10"]}]
+        mock = AsyncMock(return_value=results)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/top-routes?range=1h&consumer=alice",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        q = mock.call_args.args[0]
+        assert 'consumer="alice"' in q
+        assert 'route!="llm-proxy"' in q
+
+    async def test_top_routes_invalid_consumer_returns_400(self, client, admin_token):
+        resp = await client.get(
+            '/admin/gateway/metrics/top-routes?range=1h&consumer=bad name',
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+
 # ---------------------------------------------------------------------------
 # Request volume endpoint tests
 # ---------------------------------------------------------------------------
@@ -1862,3 +2035,45 @@ class TestLlmMetricsCustomRange:
         assert resp.status_code == 200
         assert mock.call_args.kwargs.get("start") == 1000000.0
         assert mock.call_args.kwargs.get("end") == 1003600.0
+
+
+class TestLabelsHelper:
+    """_labels() builds PromQL label selectors with llm-proxy exclusion default."""
+
+    def test_no_args_excludes_llm_proxy(self):
+        assert _labels(None, None) == '{route!="llm-proxy"}'
+
+    def test_route_replaces_llm_proxy_exclusion(self):
+        # Explicit route filter should not include the llm-proxy exclusion
+        assert _labels("query-api", None) == '{route="query-api"}'
+
+    def test_consumer_adds_label(self):
+        assert _labels(None, "alice") == '{route!="llm-proxy",consumer="alice"}'
+
+    def test_route_and_consumer(self):
+        assert _labels("query-api", "alice") == '{route="query-api",consumer="alice"}'
+
+    def test_extra_labels_prepended(self):
+        # Existing usage: _labels(route, None, 'code=~"5.."')
+        assert _labels(None, None, 'code=~"5.."') == '{code=~"5..",route!="llm-proxy"}'
+        assert _labels("query-api", "alice", 'code=~"5.."') == \
+            '{code=~"5..",route="query-api",consumer="alice"}'
+
+
+class TestValidateConsumer:
+    def test_accepts_safe_names(self):
+        for name in ("alice", "my-app", "user_1", "svc.prod", "ABC123"):
+            _validate_consumer(name)  # no exception
+
+    def test_none_is_allowed(self):
+        _validate_consumer(None)
+
+    def test_empty_string_is_allowed(self):
+        # Empty string is falsy; treated like None
+        _validate_consumer("")
+
+    def test_rejects_unsafe_names(self):
+        for bad in ('alice"; drop', "a b", "name/etc", "x\"y", "name;"):
+            with pytest.raises(HTTPException) as ei:
+                _validate_consumer(bad)
+            assert ei.value.status_code == 400

@@ -478,23 +478,47 @@ export interface LatencyData {
   p99: TimeSeriesPoint[];
 }
 
-export async function getMetricsSummary(sel: TimeSelection = DEFAULT_SELECTION, route?: string): Promise<MetricsSummary> {
-  const { data } = await client.get('/admin/gateway/metrics/summary', { params: { ...timeParams(sel), route } });
+export async function getMetricsSummary(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  route?: string,
+  consumer?: string,
+): Promise<MetricsSummary> {
+  const { data } = await client.get('/admin/gateway/metrics/summary', {
+    params: { ...timeParams(sel), route, consumer },
+  });
   return data;
 }
 
-export async function getMetricsRequests(sel: TimeSelection = DEFAULT_SELECTION, route?: string): Promise<TimeSeriesPoint[]> {
-  const { data } = await client.get('/admin/gateway/metrics/requests', { params: { ...timeParams(sel), route } });
+export async function getMetricsRequests(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  route?: string,
+  consumer?: string,
+): Promise<TimeSeriesPoint[]> {
+  const { data } = await client.get('/admin/gateway/metrics/requests', {
+    params: { ...timeParams(sel), route, consumer },
+  });
   return data;
 }
 
-export async function getMetricsStatusCodes(sel: TimeSelection = DEFAULT_SELECTION, route?: string): Promise<StatusCodeData[]> {
-  const { data } = await client.get('/admin/gateway/metrics/status-codes', { params: { ...timeParams(sel), route } });
+export async function getMetricsStatusCodes(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  route?: string,
+  consumer?: string,
+): Promise<StatusCodeData[]> {
+  const { data } = await client.get('/admin/gateway/metrics/status-codes', {
+    params: { ...timeParams(sel), route, consumer },
+  });
   return data;
 }
 
-export async function getMetricsLatency(sel: TimeSelection = DEFAULT_SELECTION, route?: string): Promise<LatencyData> {
-  const { data } = await client.get('/admin/gateway/metrics/latency', { params: { ...timeParams(sel), route } });
+export async function getMetricsLatency(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  route?: string,
+  consumer?: string,
+): Promise<LatencyData> {
+  const { data } = await client.get('/admin/gateway/metrics/latency', {
+    params: { ...timeParams(sel), route, consumer },
+  });
   return data;
 }
 
@@ -503,8 +527,14 @@ export async function getMetricsTopRoutes(sel: TimeSelection = DEFAULT_SELECTION
   return data;
 }
 
-export async function getMetricsRequestsTotal(sel: TimeSelection = DEFAULT_SELECTION, route?: string): Promise<TimeSeriesPoint[]> {
-  const { data } = await client.get('/admin/gateway/metrics/requests-total', { params: { ...timeParams(sel), route } });
+export async function getMetricsRequestsTotal(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  route?: string,
+  consumer?: string,
+): Promise<TimeSeriesPoint[]> {
+  const { data } = await client.get('/admin/gateway/metrics/requests-total', {
+    params: { ...timeParams(sel), route, consumer },
+  });
   return data;
 }
 
@@ -523,8 +553,13 @@ export type RouteComparisonResponse = {
   routes: RouteComparisonRow[];
 };
 
-export async function getMetricsRoutesComparison(sel: TimeSelection = DEFAULT_SELECTION): Promise<RouteComparisonResponse> {
-  const { data } = await client.get('/admin/gateway/metrics/routes-comparison', { params: { ...timeParams(sel) } });
+export async function getMetricsRoutesComparison(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  consumer?: string,
+): Promise<RouteComparisonResponse> {
+  const { data } = await client.get('/admin/gateway/metrics/routes-comparison', {
+    params: { ...timeParams(sel), consumer },
+  });
   return data;
 }
 

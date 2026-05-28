@@ -14,7 +14,6 @@ from app.routers.gateway import (
     _extract_strip_prefix,
     _extract_timeseries,
     _get_step,
-    _labels,
     _mask_value,
     _validate_route,
 )
@@ -79,16 +78,6 @@ def test_validate_route_accepts_safe_and_rejects_unsafe():
     with pytest.raises(HTTPException) as exc:
         _validate_route("bad/route")
     assert exc.value.status_code == 400
-
-
-def test_labels_with_and_without_route():
-    assert _labels(None) == ""
-    assert _labels(None, 'code=~"5.."') == '{code=~"5.."}'
-    assert _labels("query-api") == '{route="query-api"}'
-    out = _labels("query-api", 'code="200"')
-    assert out.startswith("{") and out.endswith("}")
-    parts = out.strip("{}").split(",")
-    assert set(parts) == {'route="query-api"', 'code="200"'}
 
 
 def test_extract_scalar_handles_empty_and_invalid():
