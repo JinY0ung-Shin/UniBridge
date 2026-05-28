@@ -890,17 +890,23 @@ Inside `function GatewayMonitoring()`, after the existing `useState<{ column: So
 Right above the existing `summaryQuery`, add the api-keys query:
 
 ```ts
+  const { permissions, loaded: permissionsLoaded } = usePermissions();
+  const canReadApiKeys = permissionsLoaded && permissions.includes('apikeys.read');
+
   const apiKeysQuery = useQuery({
     queryKey: ['api-keys', 'gateway-monitoring-filter'],
     queryFn: getApiKeys,
     staleTime: 5 * 60 * 1000,
     refetchInterval: false,
+    enabled: canReadApiKeys,
   });
   const apiKeyOptions = useMemo(() => {
     const items = apiKeysQuery.data ?? [];
     return [...items].sort((a, b) => a.name.localeCompare(b.name));
   }, [apiKeysQuery.data]);
 ```
+
+Render the API key dropdown only when `canReadApiKeys` is true. Monitoring-only users keep the default “All” behavior and do not call `/admin/api-keys`.
 
 Update every metrics `useQuery` to include `selectedConsumer` in `queryKey` and pass it as the appropriate argument. The full set of updates:
 

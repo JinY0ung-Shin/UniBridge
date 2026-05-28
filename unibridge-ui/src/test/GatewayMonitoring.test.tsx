@@ -35,7 +35,7 @@ import {
   getApiKeys,
 } from '../api/client';
 import GatewayMonitoring from '../pages/GatewayMonitoring';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, VIEWER_PERMISSIONS } from './helpers';
 
 const mockedGetMetricsSummary = vi.mocked(getMetricsSummary);
 const mockedGetMetricsRequests = vi.mocked(getMetricsRequests);
@@ -268,6 +268,21 @@ describe('GatewayMonitoring', () => {
     });
 
     // Every call so far should have undefined consumer (3rd arg)
+    for (const args of mockedGetMetricsSummary.mock.calls) {
+      expect(args[2]).toBeUndefined();
+    }
+  });
+
+  it('hides the API key filter and skips API key fetch without apikeys.read', async () => {
+    renderWithProviders(<GatewayMonitoring />, { permissions: VIEWER_PERMISSIONS });
+
+    expect(screen.queryByLabelText(/API Key/i)).not.toBeInTheDocument();
+    expect(mockedGetApiKeys).not.toHaveBeenCalled();
+
+    await waitFor(() => {
+      expect(mockedGetMetricsSummary).toHaveBeenCalled();
+    });
+
     for (const args of mockedGetMetricsSummary.mock.calls) {
       expect(args[2]).toBeUndefined();
     }

@@ -17,6 +17,7 @@ import {
   type RouteComparisonRow,
 } from '../api/client';
 import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
+import { usePermissions } from '../components/usePermissions';
 import './Monitoring.css';
 import './GatewayMonitoring.css';
 import TimeRangeSelector from '../components/TimeRangeSelector';
@@ -92,6 +93,7 @@ function SortableHeader({
 
 function GatewayMonitoring() {
   const { t } = useTranslation();
+  const { permissions, loaded: permissionsLoaded } = usePermissions();
   const [selection, setSelection] = useState<TimeSelection>({ kind: 'preset', value: '1h' });
   const selKey = selectionKey(selection);
   const span = selectionSpanSeconds(selection);
@@ -111,12 +113,14 @@ function GatewayMonitoring() {
 
 
   const chartColors = useChartTheme();
+  const canReadApiKeys = permissionsLoaded && permissions.includes('apikeys.read');
 
   const apiKeysQuery = useQuery({
     queryKey: ['api-keys', 'gateway-monitoring-filter'],
     queryFn: getApiKeys,
     staleTime: 5 * 60 * 1000,
     refetchInterval: false,
+    enabled: canReadApiKeys,
   });
   const apiKeyOptions = useMemo(() => {
     const items = apiKeysQuery.data ?? [];
@@ -255,19 +259,21 @@ function GatewayMonitoring() {
           <p className="page-subtitle">{t('gatewayMonitoring.subtitle')}</p>
         </div>
         <div className="page-header__filters">
-          <label className="api-key-filter">
-            <span className="api-key-filter__label">{t('gatewayMonitoring.apiKeyFilter')}</span>
-            <select
-              className="api-key-filter__select"
-              value={selectedConsumer}
-              onChange={(e) => setSelectedConsumer(e.target.value)}
-            >
-              <option value="">{t('gatewayMonitoring.allApiKeys')}</option>
-              {apiKeyOptions.map((k) => (
-                <option key={k.name} value={k.name}>{k.name}</option>
-              ))}
-            </select>
-          </label>
+          {canReadApiKeys && (
+            <label className="api-key-filter">
+              <span className="api-key-filter__label">{t('gatewayMonitoring.apiKeyFilter')}</span>
+              <select
+                className="api-key-filter__select"
+                value={selectedConsumer}
+                onChange={(e) => setSelectedConsumer(e.target.value)}
+              >
+                <option value="">{t('gatewayMonitoring.allApiKeys')}</option>
+                {apiKeyOptions.map((k) => (
+                  <option key={k.name} value={k.name}>{k.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <TimeRangeSelector value={selection} onChange={setSelection} />
         </div>
       </div>
