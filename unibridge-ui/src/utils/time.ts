@@ -50,3 +50,58 @@ export function kstDateToUtcIso(
   const parsed = new Date(iso);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
+
+const KST_TZ = 'Asia/Seoul';
+
+function kstParts(epochSeconds: number): Record<string, string> {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: KST_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const parts: Record<string, string> = {};
+  for (const p of fmt.formatToParts(new Date(epochSeconds * 1000))) {
+    if (p.type !== 'literal') parts[p.type] = p.value;
+  }
+  if (parts.hour === '24') parts.hour = '00'; // some engines emit 24 at midnight
+  return parts;
+}
+
+/** epoch seconds → "HH:mm" in KST. */
+export function formatChartTime(epochSeconds: number): string {
+  const p = kstParts(epochSeconds);
+  return `${p.hour}:${p.minute}`;
+}
+
+/** epoch seconds → span-aware axis label in KST. */
+export function formatChartTimestamp(epochSeconds: number, spanSeconds: number): string {
+  const p = kstParts(epochSeconds);
+  if (spanSeconds > 7 * 86400) return `${Number(p.month)}/${Number(p.day)}`;
+  if (spanSeconds > 86400) return `${Number(p.month)}/${Number(p.day)} ${p.hour}h`;
+  return `${p.hour}:${p.minute}`;
+}
+
+/** Two epochs → "M/D HH:mm~M/D HH:mm" chip text in KST. */
+export function formatKstChip(startSeconds: number, endSeconds: number): string {
+  const s = kstParts(startSeconds);
+  const e = kstParts(endSeconds);
+  return (
+    `${Number(s.month)}/${Number(s.day)} ${s.hour}:${s.minute}` +
+    `~${Number(e.month)}/${Number(e.day)} ${e.hour}:${e.minute}`
+  );
+}
+
+/** "YYYY-MM-DDTHH:mm" (datetime-local, interpreted as KST) → epoch seconds. */
+export function kstLocalToEpoch(local: string): number {
+  return Math.floor(Date.parse(`${local}:00+09:00`) / 1000);
+}
+
+/** epoch seconds → "YYYY-MM-DDTHH:mm" wall-clock string in KST (for datetime-local value). */
+export function epochToKstLocal(epochSeconds: number): string {
+  const p = kstParts(epochSeconds);
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+}
