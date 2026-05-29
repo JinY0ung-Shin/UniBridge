@@ -168,7 +168,7 @@ export function makeUser(overrides = {}) {
     username: 'testuser',
     email: 'test@example.com',
     enabled: true,
-    role: 'developer',
+    role: 'user',
     createdTimestamp: Date.now(),
     ...overrides,
   };
