@@ -13,7 +13,7 @@ from app.config import settings
 from app.models import Base
 
 ALEMBIC_BASELINE_REVISION = "0001_initial"
-ALEMBIC_HEAD_REVISION = "0006_query_templates"
+ALEMBIC_HEAD_REVISION = "0007_apikey_owner_ratelimit"
 _SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
 # Ensure the data directory exists for SQLite
