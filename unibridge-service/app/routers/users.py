@@ -53,7 +53,7 @@ def _get_kc_admin() -> KeycloakAdminClient:
 def _resolve_role(realm_roles: list[dict]) -> str | None:
     """Pick the highest-priority application role from a list of realm role dicts.
 
-    Uses ROLE_PRIORITY from auth.py (admin > developer > viewer).
+    Uses ROLE_PRIORITY from auth.py (admin > user).
     """
     role_names = {r["name"] for r in realm_roles}
     return next((r for r in ROLE_PRIORITY if r in role_names), None)
