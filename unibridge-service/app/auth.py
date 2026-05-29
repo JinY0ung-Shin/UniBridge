@@ -41,6 +41,7 @@ ALL_PERMISSIONS = [
     "gateway.monitoring.read",
     "apikeys.read",
     "apikeys.write",
+    "apikeys.self",
     "admin.roles.read",
     "admin.roles.write",
     "admin.users.read",
@@ -101,6 +102,7 @@ async def invalidate_permission_cache() -> None:
 class CurrentUser:
     username: str
     role: str
+    sub: str = ""
 
 
 @dataclass
@@ -129,7 +131,7 @@ _JWKS_CACHE_TTL = 300.0  # 5 minutes
 _jwks_lock = asyncio.Lock()
 
 # Priority order: first match wins (highest privilege first)
-ROLE_PRIORITY = ["admin", "developer", "viewer"]
+ROLE_PRIORITY = ["admin", "user"]
 
 
 async def _get_jwks() -> dict:
@@ -209,7 +211,7 @@ async def _verify_keycloak_token(token: str) -> CurrentUser:
     logger.debug("JWT username=%s, roles claim=%s", username, payload.get("roles"))
 
     # Extract role: check custom "roles" claim, then standard realm_access
-    # Uses priority ordering so admin > developer > viewer
+    # Uses priority ordering so admin > user
     role = None
     role_claim = payload.get("roles")
     if isinstance(role_claim, list):
@@ -227,7 +229,7 @@ async def _verify_keycloak_token(token: str) -> CurrentUser:
     if not username or not role:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing username or valid role")
 
-    return CurrentUser(username=username, role=role)
+    return CurrentUser(username=username, role=role, sub=payload.get("sub", ""))
 
 
 # ── Unified user dependency ────────────────────────────────────────────────
@@ -263,7 +265,7 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token: missing subject or role",
             )
-        return CurrentUser(username=username, role=role)
+        return CurrentUser(username=username, role=role, sub=payload.get("sub", ""))
     except JWTError as exc:
         logger.error("Dev JWT verification failed: %s", exc)
         raise HTTPException(
