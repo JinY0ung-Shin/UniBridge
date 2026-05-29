@@ -369,11 +369,11 @@ async def test_test_s3_connection_ok_and_error(client, admin_token):
 # ── Browse endpoints (JWT path) ─────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_browse_jwt_lacking_permission_403(client, developer_token):
-    """Developer role does NOT have s3.browse permission per seeded_db."""
+async def test_browse_jwt_lacking_permission_403(client, user_token):
+    """User role does NOT have s3.browse permission per seeded_db."""
     resp = await client.get(
         "/s3/some/buckets",
-        headers=auth_header(developer_token),
+        headers=auth_header(user_token),
     )
     assert resp.status_code == 403
 

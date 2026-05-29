@@ -216,8 +216,8 @@ describe('GatewayMonitoring', () => {
 
   it('renders the API key filter dropdown with "All" default', async () => {
     mockedGetApiKeys.mockResolvedValue([
-      { name: 'alice', description: '', api_key: null, key_created: true, allowed_databases: [], allowed_routes: [], created_at: null },
-      { name: 'bob',   description: '', api_key: null, key_created: true, allowed_databases: [], allowed_routes: [], created_at: null },
+      { name: 'alice', description: '', api_key: null, key_created: true, allowed_databases: [], allowed_routes: [], rate_limit_per_minute: null, owner: null, created_at: null },
+      { name: 'bob',   description: '', api_key: null, key_created: true, allowed_databases: [], allowed_routes: [], rate_limit_per_minute: null, owner: null, created_at: null },
     ]);
 
     renderWithProviders(<GatewayMonitoring />);
@@ -235,7 +235,7 @@ describe('GatewayMonitoring', () => {
     const user = userEvent.setup();
 
     mockedGetApiKeys.mockResolvedValue([
-      { name: 'alice', description: '', api_key: null, key_created: true, allowed_databases: [], allowed_routes: [], created_at: null },
+      { name: 'alice', description: '', api_key: null, key_created: true, allowed_databases: [], allowed_routes: [], rate_limit_per_minute: null, owner: null, created_at: null },
     ]);
 
     renderWithProviders(<GatewayMonitoring />);

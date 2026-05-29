@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from httpx import HTTPStatusError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
@@ -20,6 +22,36 @@ router = APIRouter(prefix="/admin/api-keys", tags=["API Keys"])
 
 MASK_KEEP = 4
 DENY_ALL_CONSUMER = "__deny_all__"
+
+
+def _build_limit_count_plugin(rate_limit_per_minute: int | None) -> dict | None:
+    """Build APISIX limit-count plugin config for a per-consumer rate limit.
+
+    Returns None when unlimited (caller omits the plugin / removes it).
+    """
+    if rate_limit_per_minute is None:
+        return None
+    return {
+        "count": rate_limit_per_minute,
+        "time_window": 60,
+        "rejected_code": 429,
+        "key_type": "var",
+        "key": "consumer_name",
+    }
+
+
+SELF_RATE_LIMIT = 30
+SELF_ALLOWED_ROUTES = ["query-api", "s3-api"]
+SELF_ALLOWED_DATABASES = ["*"]
+
+
+def _self_consumer_name(sub: str) -> str:
+    """Derive a stable APISIX-safe consumer name from a Keycloak sub (UUID)."""
+    return "self_" + sub.replace("-", "")
+
+
+def _generate_api_key() -> str:
+    return secrets.token_urlsafe(32)
 
 
 def _mask_key(value: str) -> str:
@@ -48,6 +80,8 @@ def _to_response(
         key_created=key_created,
         allowed_databases=json.loads(access.allowed_databases) if access.allowed_databases else [],
         allowed_routes=json.loads(access.allowed_routes) if access.allowed_routes else [],
+        rate_limit_per_minute=access.rate_limit_per_minute,
+        owner=access.owner,
         created_at=access.created_at,
     )
 
@@ -182,6 +216,12 @@ async def create_api_key(
             detail=f"API key name '{DENY_ALL_CONSUMER}' is reserved",
         )
 
+    if body.name.startswith("self_"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="API key name prefix 'self_' is reserved",
+        )
+
     existing = await db.execute(
         select(ApiKeyAccess).where(ApiKeyAccess.consumer_name == body.name)
     )
@@ -189,8 +229,14 @@ async def create_api_key(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"API key '{body.name}' already exists")
 
     consumer_body: dict = {"username": body.name}
+    plugins: dict = {}
     if body.api_key:
-        consumer_body["plugins"] = {"key-auth": {"key": body.api_key}}
+        plugins["key-auth"] = {"key": body.api_key}
+    limit_cfg = _build_limit_count_plugin(body.rate_limit_per_minute)
+    if limit_cfg is not None:
+        plugins["limit-count"] = limit_cfg
+    if plugins:
+        consumer_body["plugins"] = plugins
 
     try:
         await apisix_client.put_resource("consumers", body.name, consumer_body)
@@ -215,6 +261,7 @@ async def create_api_key(
         description=body.description,
         allowed_databases=json.dumps(body.allowed_databases) if body.allowed_databases else None,
         allowed_routes=json.dumps(body.allowed_routes) if body.allowed_routes else None,
+        rate_limit_per_minute=body.rate_limit_per_minute,
     )
     db.add(access)
     await db.commit()
@@ -222,6 +269,142 @@ async def create_api_key(
 
     # Use the key we sent, not the PUT response (APISIX 3.x encrypts it in PUT responses)
     return _to_response(access, api_key=body.api_key, key_created=True)
+
+
+@router.get("/me", response_model=ApiKeyResponse | None)
+async def get_my_api_key(
+    user: CurrentUser = Depends(require_permission("apikeys.self")),
+    db: AsyncSession = Depends(get_db),
+) -> ApiKeyResponse | None:
+    result = await db.execute(select(ApiKeyAccess).where(ApiKeyAccess.owner == user.sub))
+    access = result.scalar_one_or_none()
+    if access is None:
+        return None
+    masked = None
+    try:
+        consumer = await apisix_client.get_resource("consumers", access.consumer_name)
+        masked = _extract_api_key(consumer, mask=True)
+    except Exception:
+        pass
+    return _to_response(access, api_key=masked)
+
+
+@router.post("/me", response_model=ApiKeyResponse, status_code=status.HTTP_201_CREATED)
+async def create_my_api_key(
+    user: CurrentUser = Depends(require_permission("apikeys.self")),
+    db: AsyncSession = Depends(get_db),
+) -> ApiKeyResponse:
+    if not user.sub:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No subject in token")
+
+    # Fast-path friendly 409 (the unique consumer_name constraint below is the real guard).
+    existing = await db.execute(select(ApiKeyAccess).where(ApiKeyAccess.owner == user.sub))
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You already have an API key")
+
+    consumer_name = _self_consumer_name(user.sub)
+    new_key = _generate_api_key()
+
+    # 1) Claim ownership in the DB FIRST. The unique consumer_name constraint
+    #    serializes concurrent creates for the same sub — the loser fails here
+    #    BEFORE any APISIX mutation, so it can never clobber the winner's consumer.
+    access = ApiKeyAccess(
+        consumer_name=consumer_name,
+        description=f"Self-service key for {user.username}",
+        owner=user.sub,
+        allowed_databases=json.dumps(SELF_ALLOWED_DATABASES),
+        allowed_routes=json.dumps(SELF_ALLOWED_ROUTES),
+        rate_limit_per_minute=SELF_RATE_LIMIT,
+    )
+    db.add(access)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You already have an API key")
+
+    # 2) Provision APISIX. On any failure, roll back the DB claim AND remove the
+    #    consumer so we don't leave a row pointing at a half-provisioned consumer.
+    consumer_body = {
+        "username": consumer_name,
+        "plugins": {
+            "key-auth": {"key": new_key},
+            "limit-count": _build_limit_count_plugin(SELF_RATE_LIMIT),
+        },
+    }
+    try:
+        await apisix_client.put_resource("consumers", consumer_name, consumer_body)
+        await _sync_consumer_restriction(SELF_ALLOWED_ROUTES, consumer_name)
+    except Exception as exc:
+        await db.delete(access)
+        await db.commit()
+        try:
+            await apisix_client.delete_resource("consumers", consumer_name)
+        except Exception:
+            logger.error("Failed to clean up consumer '%s' after provisioning failure", consumer_name)
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to provision API key: {exc}")
+
+    await db.refresh(access)
+    return _to_response(access, api_key=new_key, key_created=True)
+
+
+@router.post("/me/regenerate", response_model=ApiKeyResponse)
+async def regenerate_my_api_key(
+    user: CurrentUser = Depends(require_permission("apikeys.self")),
+    db: AsyncSession = Depends(get_db),
+) -> ApiKeyResponse:
+    result = await db.execute(select(ApiKeyAccess).where(ApiKeyAccess.owner == user.sub))
+    access = result.scalar_one_or_none()
+    if access is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No API key to regenerate")
+    new_key = _generate_api_key()
+    try:
+        existing_consumer = await apisix_client.get_resource("consumers", access.consumer_name)
+        plugins = dict(existing_consumer.get("plugins", {}))
+    except HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            plugins = {"limit-count": _build_limit_count_plugin(SELF_RATE_LIMIT)}
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to fetch consumer: {exc.response.text}",
+            )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to fetch consumer: {exc}",
+        )
+    plugins["key-auth"] = {"key": new_key}
+    try:
+        await apisix_client.put_resource("consumers", access.consumer_name, {
+            "username": access.consumer_name, "plugins": plugins,
+        })
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to rotate key: {exc}")
+    return _to_response(access, api_key=new_key, key_created=True)
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
+async def delete_my_api_key(
+    user: CurrentUser = Depends(require_permission("apikeys.self")),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    result = await db.execute(select(ApiKeyAccess).where(ApiKeyAccess.owner == user.sub))
+    access = result.scalar_one_or_none()
+    if access is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No API key to delete")
+    await _sync_consumer_restriction([], access.consumer_name)
+    try:
+        await apisix_client.delete_resource("consumers", access.consumer_name)
+    except HTTPStatusError as exc:
+        if exc.response.status_code != 404:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"APISIX error: {exc.response.text}")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to delete consumer: {exc}")
+    await db.delete(access)
+    await db.commit()
 
 
 @router.put("/{name}", response_model=ApiKeyResponse)
@@ -241,20 +424,40 @@ async def update_api_key(
     key_created = False
     api_key_display: str | None = None
     old_consumer_plugins: dict | None = None
-    if body.api_key:
+    # Distinguish "field omitted" from "field explicitly set to null" for the
+    # rate limit: an explicit null means "clear the limit" (unlimited), while an
+    # omitted field means "no change". model_fields_set holds the field names
+    # that were actually present in the request payload.
+    rate_limit_provided = "rate_limit_per_minute" in body.model_fields_set
+    if body.api_key or rate_limit_provided:
         try:
             existing_consumer = await apisix_client.get_resource("consumers", name)
-            existing_plugins = existing_consumer.get("plugins", {})
+            existing_plugins = dict(existing_consumer.get("plugins", {}))
             old_consumer_plugins = dict(existing_plugins)  # snapshot for rollback
-        except Exception:
-            existing_plugins = {}
-        existing_plugins["key-auth"] = {"key": body.api_key}
+        except Exception as exc:
+            # Preservation-sensitive update: without the real existing plugins we
+            # would PUT a consumer that drops the other plugin (e.g. a rate-limit
+            # update would wipe key-auth, a key rotation would wipe limit-count).
+            # Fail hard instead of silently destroying consumer config.
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Cannot update API key '{name}': failed to read existing APISIX consumer ({exc})",
+            )
+        if body.api_key:
+            existing_plugins["key-auth"] = {"key": body.api_key}
+        if rate_limit_provided:
+            limit_cfg = _build_limit_count_plugin(body.rate_limit_per_minute)
+            if limit_cfg is None:
+                existing_plugins.pop("limit-count", None)
+            else:
+                existing_plugins["limit-count"] = limit_cfg
         try:
-            consumer = await apisix_client.put_resource("consumers", name, {
+            await apisix_client.put_resource("consumers", name, {
                 "username": name, "plugins": existing_plugins,
             })
-            api_key_display = body.api_key  # Use the key we sent, not PUT response (APISIX 3.x encrypts it)
-            key_created = True
+            if body.api_key:
+                api_key_display = body.api_key  # Use the key we sent, not PUT response (APISIX 3.x encrypts it)
+                key_created = True
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to update APISIX consumer: {exc}")
 
@@ -264,7 +467,7 @@ async def update_api_key(
         try:
             await _sync_consumer_restriction(body.allowed_routes, name)
         except HTTPException:
-            if key_created and old_consumer_plugins is not None:
+            if old_consumer_plugins is not None:
                 try:
                     await apisix_client.put_resource("consumers", name, {
                         "username": name, "plugins": old_consumer_plugins,
@@ -279,6 +482,8 @@ async def update_api_key(
         access.allowed_databases = json.dumps(body.allowed_databases) if body.allowed_databases else None
     if body.allowed_routes is not None:
         access.allowed_routes = json.dumps(body.allowed_routes) if body.allowed_routes else None
+    if rate_limit_provided:
+        access.rate_limit_per_minute = body.rate_limit_per_minute
 
     await db.commit()
     await db.refresh(access)

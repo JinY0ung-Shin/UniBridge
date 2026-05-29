@@ -47,9 +47,9 @@ const mocks = {
 describe('Users page flows', () => {
   beforeEach(() => {
     Object.values(mocks).forEach((m) => m.mockReset());
-    mocks.getRoles.mockResolvedValue(['admin', 'developer', 'viewer']);
+    mocks.getRoles.mockResolvedValue(['admin', 'user']);
     mocks.getUsers.mockResolvedValue({
-      users: [makeUser({ id: 'u-1', username: 'alice', enabled: true, role: 'developer' })],
+      users: [makeUser({ id: 'u-1', username: 'alice', enabled: true, role: 'user' })],
       total: 1,
     });
   });

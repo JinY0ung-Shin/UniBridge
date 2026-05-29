@@ -22,6 +22,7 @@ const navItems = [
   { to: '/gateway/monitoring', labelKey: 'nav.gatewayMonitoring', icon: 'Gateway Monitoring', section: 'gateway', permission: 'gateway.monitoring.read' },
   { to: '/llm/monitoring', labelKey: 'nav.llmMonitoring', icon: 'LLM Monitoring', section: 'llm', permission: 'gateway.monitoring.read' },
   { to: '/api-keys', labelKey: 'nav.apiKeys', icon: 'API Keys', section: 'access', permission: 'apikeys.read' },
+  { to: '/my-api-key', labelKey: 'nav.myApiKey', icon: 'API Keys', section: 'access', permission: 'apikeys.self' },
   { to: '/roles', labelKey: 'nav.roles', icon: 'Roles', section: 'admin', permission: 'admin.roles.read' },
   { to: '/users', labelKey: 'nav.users', icon: 'Users', section: 'admin', permission: 'admin.users.read' },
   { to: '/alerts/status', labelKey: 'nav.alertStatus', icon: 'Alert Status', section: 'alerts', permission: 'alerts.read' },

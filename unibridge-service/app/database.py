@@ -13,7 +13,7 @@ from app.config import settings
 from app.models import Base
 
 ALEMBIC_BASELINE_REVISION = "0001_initial"
-ALEMBIC_HEAD_REVISION = "0006_query_templates"
+ALEMBIC_HEAD_REVISION = "0007_apikey_owner_ratelimit"
 _SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
 # Ensure the data directory exists for SQLite
@@ -221,29 +221,30 @@ async def _seed_roles() -> None:
             "description": "Full access to all features",
             "permissions": ALL_PERMISSIONS,
         },
-        "developer": {
-            "description": "Read access to queries and gateway, can execute queries",
+        "user": {
+            "description": "Monitoring/alerts read-only, manages own API key",
             "permissions": [
-                "query.databases.read", "query.permissions.read", "query.audit.read",
-                "query.execute",
-                "gateway.routes.read", "gateway.upstreams.read",
                 "gateway.monitoring.read",
-                "apikeys.read",
                 "alerts.read",
-                "s3.connections.read", "s3.browse",
-            ],
-        },
-        "viewer": {
-            "description": "Read-only access to monitoring and audit logs",
-            "permissions": [
-                "gateway.monitoring.read", "query.audit.read",
-                "alerts.read",
+                "apikeys.self",
             ],
         },
     }
 
     async with async_session() as db:
         from sqlalchemy import delete as sa_delete, select as sa_select
+
+        # Prune obsolete system roles (e.g. developer/viewer) no longer seeded.
+        # Cascades via FK ondelete=CASCADE: role_permissions.role_id AND
+        # permissions.role (per-DB grants) both drop their dependent rows.
+        await db.execute(
+            sa_delete(Role).where(
+                Role.is_system.is_(True),
+                Role.name.notin_(list(SEED_ROLES.keys())),
+            )
+        )
+        await db.commit()
+
         for role_name, config in SEED_ROLES.items():
             result = await db.execute(
                 sa_select(Role).where(Role.name == role_name)

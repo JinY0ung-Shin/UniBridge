@@ -146,6 +146,8 @@ export function makeApiKey(overrides = {}) {
     key_created: true,
     allowed_databases: ['test-db'],
     allowed_routes: ['route-1'],
+    rate_limit_per_minute: null,
+    owner: null,
     created_at: '2026-04-10T12:00:00Z',
     ...overrides,
   };
@@ -168,7 +170,7 @@ export function makeUser(overrides = {}) {
     username: 'testuser',
     email: 'test@example.com',
     enabled: true,
-    role: 'developer',
+    role: 'user',
     createdTimestamp: Date.now(),
     ...overrides,
   };

@@ -34,7 +34,7 @@ class TestAlertChannelsAPI:
 
     @pytest.mark.asyncio
     async def test_list_channels_masks_webhook_and_headers_for_non_writers(
-        self, client, admin_token, viewer_token
+        self, client, admin_token, user_token
     ):
         secret_path = "/services/T123/B456/SECRETTOKEN"
         await client.post("/admin/alerts/channels", json={
@@ -44,16 +44,16 @@ class TestAlertChannelsAPI:
             "headers": {"Authorization": "Bearer super-secret"},
         }, headers=auth_header(admin_token))
 
-        # viewer: alerts.read but not alerts.write — must see masked URL and no headers
-        resp = await client.get("/admin/alerts/channels", headers=auth_header(viewer_token))
+        # user: alerts.read but not alerts.write — must see masked URL and no headers
+        resp = await client.get("/admin/alerts/channels", headers=auth_header(user_token))
         assert resp.status_code == 200
-        viewer_rows = [c for c in resp.json() if c["name"] == "secret-ch"]
-        assert len(viewer_rows) == 1
-        viewer_ch = viewer_rows[0]
-        assert "SECRETTOKEN" not in viewer_ch["webhook_url"]
-        assert secret_path not in viewer_ch["webhook_url"]
-        assert viewer_ch["webhook_url"] == "https://hooks.example.com/***"
-        assert viewer_ch["headers"] is None
+        user_rows = [c for c in resp.json() if c["name"] == "secret-ch"]
+        assert len(user_rows) == 1
+        user_ch = user_rows[0]
+        assert "SECRETTOKEN" not in user_ch["webhook_url"]
+        assert secret_path not in user_ch["webhook_url"]
+        assert user_ch["webhook_url"] == "https://hooks.example.com/***"
+        assert user_ch["headers"] is None
 
         # admin: alerts.write — full URL and headers preserved
         resp = await client.get("/admin/alerts/channels", headers=auth_header(admin_token))
@@ -177,10 +177,10 @@ class TestAlertChannelsAPI:
         assert resp.status_code == 204
 
     @pytest.mark.asyncio
-    async def test_viewer_cannot_create_channel(self, client, viewer_token):
+    async def test_user_cannot_create_channel(self, client, user_token):
         resp = await client.post("/admin/alerts/channels", json={
             "name": "nope",
             "webhook_url": "http://example.com",
             "payload_template": "{}",
-        }, headers=auth_header(viewer_token))
+        }, headers=auth_header(user_token))
         assert resp.status_code == 403

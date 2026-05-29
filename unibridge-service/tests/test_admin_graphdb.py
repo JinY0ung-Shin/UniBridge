@@ -119,7 +119,7 @@ async def test_upsert_permission_rejects_allowed_tables_for_graphdb(client, admi
         resp = await client.put(
             "/admin/query/permissions",
             json={
-                "role": "developer",
+                "role": "user",
                 "db_alias": "kg-perm-reject",
                 "allow_select": True,
                 "allowed_tables": ["foo"],
@@ -141,7 +141,7 @@ async def test_upsert_permission_accepts_no_allowed_tables_for_graphdb(client, a
         resp = await client.put(
             "/admin/query/permissions",
             json={
-                "role": "developer",
+                "role": "user",
                 "db_alias": "kg-perm-accept",
                 "allow_select": True,
             },
@@ -150,7 +150,7 @@ async def test_upsert_permission_accepts_no_allowed_tables_for_graphdb(client, a
     # Existing successful upsert returns 200 or 201 depending on update vs create — accept either.
     assert resp.status_code in (200, 201), resp.text
     data = resp.json()
-    assert data["role"] == "developer"
+    assert data["role"] == "user"
     assert data["db_alias"] == "kg-perm-accept"
 
 
@@ -166,7 +166,7 @@ async def test_upsert_permission_rejects_empty_list_for_graphdb(client, admin_to
         resp = await client.put(
             "/admin/query/permissions",
             json={
-                "role": "developer",
+                "role": "user",
                 "db_alias": "kg-perm-empty",
                 "allow_select": True,
                 "allowed_tables": [],

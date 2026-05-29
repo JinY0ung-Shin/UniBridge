@@ -8,8 +8,7 @@
   "roles": {
     "realm": [
       { "name": "admin", "description": "Full access to all features" },
-      { "name": "developer", "description": "Developer access" },
-      { "name": "viewer", "description": "Read-only access" }
+      { "name": "user", "description": "Monitoring and self-service API key" }
     ]
   },
   "scopeMappings": [

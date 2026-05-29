@@ -42,15 +42,14 @@ def _make_kc_mock() -> AsyncMock:
     }
     # Default: user realm roles
     kc.get_user_realm_roles.return_value = [
-        {"id": "role-id-dev", "name": "developer"},
+        {"id": "role-id-user", "name": "user"},
     ]
     # Default: create_user returns a new user ID
     kc.create_user.return_value = NEW_USER_ID
     # Default: realm roles available
     kc.get_realm_roles.return_value = [
         {"id": "role-id-admin", "name": "admin"},
-        {"id": "role-id-dev", "name": "developer"},
-        {"id": "role-id-viewer", "name": "viewer"},
+        {"id": "role-id-user", "name": "user"},
     ]
     return kc
 
@@ -81,10 +80,10 @@ class TestListUsers:
         assert data["total"] == 1
         assert len(data["users"]) == 1
         assert data["users"][0]["username"] == "alice"
-        assert data["users"][0]["role"] == "developer"
+        assert data["users"][0]["role"] == "user"
 
-    async def test_list_users_forbidden_for_viewer(self, client, viewer_token, kc_mock):
-        resp = await client.get("/admin/users", headers=auth_header(viewer_token))
+    async def test_list_users_forbidden_for_user(self, client, user_token, kc_mock):
+        resp = await client.get("/admin/users", headers=auth_header(user_token))
         assert resp.status_code == 403
 
     async def test_list_users_requires_user_read_not_role_read(
@@ -138,7 +137,7 @@ class TestCreateUser:
             "username": "newuser",
             "email": "new@example.com",
             "password": "securepass123",
-            "role": "viewer",
+            "role": "user",
         }
         resp = await client.post(
             "/admin/users", json=body, headers=auth_header(admin_token)
@@ -147,7 +146,7 @@ class TestCreateUser:
         data = resp.json()
         assert data["id"] == NEW_USER_ID
         assert data["username"] == "newuser"
-        assert data["role"] == "viewer"
+        assert data["role"] == "user"
 
         kc_mock.create_user.assert_awaited_once_with(
             username="newuser",
@@ -155,7 +154,7 @@ class TestCreateUser:
             password="securepass123",
             enabled=True,
         )
-        kc_mock.assign_realm_role.assert_awaited_once_with(NEW_USER_ID, "viewer")
+        kc_mock.assign_realm_role.assert_awaited_once_with(NEW_USER_ID, "user")
 
     async def test_create_user_rollback_on_role_assign_failure(
         self, client, admin_token, kc_mock
@@ -171,7 +170,7 @@ class TestCreateUser:
             "username": "rollbackuser",
             "email": "rollback@example.com",
             "password": "securepass123",
-            "role": "viewer",
+            "role": "user",
         }
         resp = await client.post(
             "/admin/users", json=body, headers=auth_header(admin_token)
@@ -188,7 +187,7 @@ class TestCreateUser:
             "username": "newuser",
             "email": "new@example.com",
             "password": "short",
-            "role": "viewer",
+            "role": "user",
         }
         resp = await client.post(
             "/admin/users", json=body, headers=auth_header(admin_token)
@@ -206,7 +205,7 @@ class TestChangeRole:
         # After role change, get_user_realm_roles returns the new role (admin)
         # The first call is for removing old roles, the second is for _enrich_user
         kc_mock.get_user_realm_roles.side_effect = [
-            [{"id": "role-id-dev", "name": "developer"}],  # current roles check
+            [{"id": "role-id-user", "name": "user"}],  # current roles check
             [{"id": "role-id-admin", "name": "admin"}],     # _enrich_user call
         ]
         resp = await client.put(
@@ -220,8 +219,8 @@ class TestChangeRole:
 
         # Should have assigned new "admin" role FIRST
         kc_mock.assign_realm_role.assert_awaited_once_with(USER_1_ID, "admin")
-        # Should have removed old "developer" role
-        kc_mock.remove_realm_role.assert_awaited_once_with(USER_1_ID, "developer")
+        # Should have removed old "user" role
+        kc_mock.remove_realm_role.assert_awaited_once_with(USER_1_ID, "user")
 
     async def test_change_role_invalid_uuid_422(self, client, admin_token, kc_mock):
         resp = await client.put(

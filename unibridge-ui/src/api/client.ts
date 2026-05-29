@@ -641,6 +641,8 @@ export interface ApiKey {
   key_created: boolean;
   allowed_databases: string[];
   allowed_routes: string[];
+  rate_limit_per_minute: number | null;
+  owner: string | null;
   created_at: string | null;
 }
 
@@ -650,6 +652,8 @@ export interface ApiKeyCreate {
   api_key?: string;
   allowed_databases: string[];
   allowed_routes: string[];
+  rate_limit_per_minute?: number | null;
+  owner?: string | null;
 }
 
 export interface ApiKeyUpdate {
@@ -657,6 +661,8 @@ export interface ApiKeyUpdate {
   api_key?: string;
   allowed_databases?: string[];
   allowed_routes?: string[];
+  rate_limit_per_minute?: number | null;
+  owner?: string | null;
 }
 
 export async function getApiKeys(): Promise<ApiKey[]> {
@@ -676,6 +682,27 @@ export async function updateApiKey(name: string, body: ApiKeyUpdate): Promise<Ap
 
 export async function deleteApiKey(name: string): Promise<void> {
   await client.delete(`/admin/api-keys/${name}`);
+}
+
+/* ── API Keys: Self-service ── */
+
+export async function getMyApiKey(): Promise<ApiKey | null> {
+  const { data } = await client.get('/admin/api-keys/me');
+  return data;
+}
+
+export async function createMyApiKey(): Promise<ApiKey> {
+  const { data } = await client.post('/admin/api-keys/me');
+  return data;
+}
+
+export async function regenerateMyApiKey(): Promise<ApiKey> {
+  const { data } = await client.post('/admin/api-keys/me/regenerate');
+  return data;
+}
+
+export async function deleteMyApiKey(): Promise<void> {
+  await client.delete('/admin/api-keys/me');
 }
 
 /* ── Roles (RBAC) ── */

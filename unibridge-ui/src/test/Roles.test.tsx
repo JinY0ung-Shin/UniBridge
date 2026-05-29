@@ -26,7 +26,7 @@ describe('Roles', () => {
   it('renders roles table', async () => {
     mockedGetRoles.mockResolvedValue([
       makeRole(),
-      makeRole({ id: 2, name: 'developer', description: 'Dev', is_system: false, permissions: ['query.execute'] }),
+      makeRole({ id: 2, name: 'custom', description: 'Custom', is_system: false, permissions: ['query.execute'] }),
     ]);
 
     renderWithProviders(<Roles />);
@@ -35,7 +35,7 @@ describe('Roles', () => {
       expect(screen.getByText('admin')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('developer')).toBeInTheDocument();
+    expect(screen.getByText('custom')).toBeInTheDocument();
   });
 
   it('renders empty state when loading', () => {
@@ -61,13 +61,13 @@ describe('Roles', () => {
 
   it('non-system roles have delete button', async () => {
     mockedGetRoles.mockResolvedValue([
-      makeRole({ id: 2, name: 'developer', description: 'Dev', is_system: false, permissions: ['query.execute'] }),
+      makeRole({ id: 2, name: 'custom', description: 'Custom', is_system: false, permissions: ['query.execute'] }),
     ]);
 
     renderWithProviders(<Roles />);
 
     await waitFor(() => {
-      expect(screen.getByText('developer')).toBeInTheDocument();
+      expect(screen.getByText('custom')).toBeInTheDocument();
     });
 
     expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
@@ -76,7 +76,7 @@ describe('Roles', () => {
 
   it('hides write actions for users with read-only role permission', async () => {
     mockedGetRoles.mockResolvedValue([
-      makeRole({ id: 2, name: 'developer', description: 'Dev', is_system: false, permissions: ['query.execute'] }),
+      makeRole({ id: 2, name: 'custom', description: 'Custom', is_system: false, permissions: ['query.execute'] }),
     ]);
 
     renderWithProviders(<Roles />, {
@@ -84,7 +84,7 @@ describe('Roles', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('developer')).toBeInTheDocument();
+      expect(screen.getByText('custom')).toBeInTheDocument();
     });
 
     expect(screen.queryByRole('button', { name: '+ Add Role' })).not.toBeInTheDocument();

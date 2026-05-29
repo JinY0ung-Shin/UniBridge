@@ -146,8 +146,8 @@ async def test_list_api_keys_empty(client, admin_token):
 
 
 @pytest.mark.asyncio
-async def test_list_api_keys_requires_permission(client, viewer_token):
-    resp = await client.get("/admin/api-keys", headers=auth_header(viewer_token))
+async def test_list_api_keys_requires_permission(client, user_token):
+    resp = await client.get("/admin/api-keys", headers=auth_header(user_token))
     assert resp.status_code == 403
 
 

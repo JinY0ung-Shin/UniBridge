@@ -18,7 +18,7 @@ vi.mock('../api/client', () => ({
     { alias: 'mydb', db_type: 'postgres', host: 'localhost', port: 5432, database: 'test', username: 'u', pool_size: 5, max_overflow: 10, query_timeout: 30 },
   ]),
   getDatabases: vi.fn().mockResolvedValue([]),
-  getAuthRoles: vi.fn().mockResolvedValue(['admin', 'developer', 'viewer']),
+  getAuthRoles: vi.fn().mockResolvedValue(['admin', 'user']),
   getCurrentUser: vi.fn().mockResolvedValue({
     username: 'test',
     role: 'admin',
@@ -160,11 +160,11 @@ describe('App', () => {
   });
 
   it('hides menu items when user lacks permissions', async () => {
-    // Override getCurrentUser to return a viewer with limited permissions
+    // Override getCurrentUser to return a user with limited permissions
     const { getCurrentUser } = await import('../api/client');
     vi.mocked(getCurrentUser).mockResolvedValueOnce({
       username: 'viewer',
-      role: 'viewer',
+      role: 'user',
       permissions: ['query.databases.read', 'query.execute'],
     });
 
@@ -209,7 +209,7 @@ describe('App', () => {
     const { getCurrentUser } = await import('../api/client');
     vi.mocked(getCurrentUser).mockResolvedValueOnce({
       username: 'viewer',
-      role: 'viewer',
+      role: 'user',
       permissions: ['query.databases.read'],
     });
 
