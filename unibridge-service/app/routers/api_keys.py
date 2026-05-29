@@ -22,6 +22,22 @@ MASK_KEEP = 4
 DENY_ALL_CONSUMER = "__deny_all__"
 
 
+def _build_limit_count_plugin(rate_limit_per_minute: int | None) -> dict | None:
+    """Build APISIX limit-count plugin config for a per-consumer rate limit.
+
+    Returns None when unlimited (caller omits the plugin / removes it).
+    """
+    if rate_limit_per_minute is None:
+        return None
+    return {
+        "count": rate_limit_per_minute,
+        "time_window": 60,
+        "rejected_code": 429,
+        "key_type": "var",
+        "key": "consumer_name",
+    }
+
+
 def _mask_key(value: str) -> str:
     if len(value) <= MASK_KEEP:
         return "***"
@@ -48,6 +64,8 @@ def _to_response(
         key_created=key_created,
         allowed_databases=json.loads(access.allowed_databases) if access.allowed_databases else [],
         allowed_routes=json.loads(access.allowed_routes) if access.allowed_routes else [],
+        rate_limit_per_minute=access.rate_limit_per_minute,
+        owner=access.owner,
         created_at=access.created_at,
     )
 
@@ -189,8 +207,14 @@ async def create_api_key(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"API key '{body.name}' already exists")
 
     consumer_body: dict = {"username": body.name}
+    plugins: dict = {}
     if body.api_key:
-        consumer_body["plugins"] = {"key-auth": {"key": body.api_key}}
+        plugins["key-auth"] = {"key": body.api_key}
+    limit_cfg = _build_limit_count_plugin(body.rate_limit_per_minute)
+    if limit_cfg is not None:
+        plugins["limit-count"] = limit_cfg
+    if plugins:
+        consumer_body["plugins"] = plugins
 
     try:
         await apisix_client.put_resource("consumers", body.name, consumer_body)
@@ -215,6 +239,7 @@ async def create_api_key(
         description=body.description,
         allowed_databases=json.dumps(body.allowed_databases) if body.allowed_databases else None,
         allowed_routes=json.dumps(body.allowed_routes) if body.allowed_routes else None,
+        rate_limit_per_minute=body.rate_limit_per_minute,
     )
     db.add(access)
     await db.commit()
@@ -241,20 +266,28 @@ async def update_api_key(
     key_created = False
     api_key_display: str | None = None
     old_consumer_plugins: dict | None = None
-    if body.api_key:
+    if body.api_key or body.rate_limit_per_minute is not None:
         try:
             existing_consumer = await apisix_client.get_resource("consumers", name)
-            existing_plugins = existing_consumer.get("plugins", {})
+            existing_plugins = dict(existing_consumer.get("plugins", {}))
             old_consumer_plugins = dict(existing_plugins)  # snapshot for rollback
         except Exception:
             existing_plugins = {}
-        existing_plugins["key-auth"] = {"key": body.api_key}
+        if body.api_key:
+            existing_plugins["key-auth"] = {"key": body.api_key}
+        if body.rate_limit_per_minute is not None:
+            limit_cfg = _build_limit_count_plugin(body.rate_limit_per_minute)
+            if limit_cfg is None:
+                existing_plugins.pop("limit-count", None)
+            else:
+                existing_plugins["limit-count"] = limit_cfg
         try:
-            consumer = await apisix_client.put_resource("consumers", name, {
+            await apisix_client.put_resource("consumers", name, {
                 "username": name, "plugins": existing_plugins,
             })
-            api_key_display = body.api_key  # Use the key we sent, not PUT response (APISIX 3.x encrypts it)
-            key_created = True
+            if body.api_key:
+                api_key_display = body.api_key  # Use the key we sent, not PUT response (APISIX 3.x encrypts it)
+                key_created = True
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to update APISIX consumer: {exc}")
 
@@ -264,7 +297,7 @@ async def update_api_key(
         try:
             await _sync_consumer_restriction(body.allowed_routes, name)
         except HTTPException:
-            if key_created and old_consumer_plugins is not None:
+            if old_consumer_plugins is not None:
                 try:
                     await apisix_client.put_resource("consumers", name, {
                         "username": name, "plugins": old_consumer_plugins,
@@ -279,6 +312,8 @@ async def update_api_key(
         access.allowed_databases = json.dumps(body.allowed_databases) if body.allowed_databases else None
     if body.allowed_routes is not None:
         access.allowed_routes = json.dumps(body.allowed_routes) if body.allowed_routes else None
+    if body.rate_limit_per_minute is not None:
+        access.rate_limit_per_minute = body.rate_limit_per_minute
 
     await db.commit()
     await db.refresh(access)

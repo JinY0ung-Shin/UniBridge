@@ -290,6 +290,7 @@ class ApiKeyCreate(BaseModel):
     api_key: str | None = Field(None, description="Custom API key value; auto-generated if omitted")
     allowed_databases: list[str] = Field(default_factory=list, description="Database aliases this key can query")
     allowed_routes: list[str] = Field(default_factory=list, description="Gateway route IDs this key can access")
+    rate_limit_per_minute: int | None = Field(None, ge=1, le=100000, description="Per-minute request cap; null = unlimited")
 
 
 class ApiKeyUpdate(BaseModel):
@@ -297,6 +298,7 @@ class ApiKeyUpdate(BaseModel):
     api_key: str | None = Field(None, description="New API key; omit to keep current")
     allowed_databases: list[str] | None = None
     allowed_routes: list[str] | None = None
+    rate_limit_per_minute: int | None = Field(None, ge=1, le=100000)
 
 
 class ApiKeyResponse(BaseModel):
@@ -306,6 +308,8 @@ class ApiKeyResponse(BaseModel):
     key_created: bool = False
     allowed_databases: list[str]
     allowed_routes: list[str]
+    rate_limit_per_minute: int | None = None
+    owner: str | None = None
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
