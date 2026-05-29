@@ -30,5 +30,6 @@ plugin_attr:
 plugins:
   - key-auth
   - consumer-restriction
+  - limit-count
   - proxy-rewrite
   - prometheus
