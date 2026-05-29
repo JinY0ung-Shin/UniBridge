@@ -684,6 +684,27 @@ export async function deleteApiKey(name: string): Promise<void> {
   await client.delete(`/admin/api-keys/${name}`);
 }
 
+/* ── API Keys: Self-service ── */
+
+export async function getMyApiKey(): Promise<ApiKey | null> {
+  const { data } = await client.get('/admin/api-keys/me');
+  return data;
+}
+
+export async function createMyApiKey(): Promise<ApiKey> {
+  const { data } = await client.post('/admin/api-keys/me');
+  return data;
+}
+
+export async function regenerateMyApiKey(): Promise<ApiKey> {
+  const { data } = await client.post('/admin/api-keys/me/regenerate');
+  return data;
+}
+
+export async function deleteMyApiKey(): Promise<void> {
+  await client.delete('/admin/api-keys/me');
+}
+
 /* ── Roles (RBAC) ── */
 
 export interface RoleInfo {

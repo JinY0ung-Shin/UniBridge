@@ -16,6 +16,7 @@ const GatewayUpstreams = lazy(() => import('./pages/GatewayUpstreams'));
 const GatewayMonitoring = lazy(() => import('./pages/GatewayMonitoring'));
 const LlmMonitoring = lazy(() => import('./pages/LlmMonitoring'));
 const ApiKeys = lazy(() => import('./pages/ApiKeys'));
+const MyApiKey = lazy(() => import('./pages/MyApiKey'));
 const QuerySettings = lazy(() => import('./pages/QuerySettings'));
 const Roles = lazy(() => import('./pages/Roles'));
 const Users = lazy(() => import('./pages/Users'));
@@ -66,6 +67,7 @@ function App() {
           <Route path="/gateway/monitoring" element={<ProtectedRoute permission="gateway.monitoring.read"><GatewayMonitoring /></ProtectedRoute>} />
           <Route path="/llm/monitoring" element={<ProtectedRoute permission="gateway.monitoring.read"><LlmMonitoring /></ProtectedRoute>} />
           <Route path="/api-keys" element={<ProtectedRoute permission="apikeys.read"><ApiKeys /></ProtectedRoute>} />
+          <Route path="/my-api-key" element={<ProtectedRoute permission="apikeys.self"><MyApiKey /></ProtectedRoute>} />
           <Route path="/roles" element={<ProtectedRoute permission="admin.roles.read"><Roles /></ProtectedRoute>} />
           <Route path="/users" element={<ProtectedRoute permission="admin.users.read"><Users /></ProtectedRoute>} />
           <Route path="/alerts/status" element={<ProtectedRoute permission="alerts.read"><AlertStatus /></ProtectedRoute>} />
