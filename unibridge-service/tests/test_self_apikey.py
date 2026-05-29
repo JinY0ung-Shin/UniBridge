@@ -1,13 +1,21 @@
 """Tests for self-service API key endpoints (/admin/api-keys/me)."""
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth import CurrentUser, get_current_user
-from app.routers.api_keys import _self_consumer_name
+from app.models import ApiKeyAccess
+from app.routers.api_keys import (
+    SELF_ALLOWED_DATABASES,
+    SELF_ALLOWED_ROUTES,
+    SELF_RATE_LIMIT,
+    _self_consumer_name,
+)
 
 
 def _http_status_error(status_code: int) -> httpx.HTTPStatusError:
@@ -290,3 +298,81 @@ async def test_self_wildcard_allows_arbitrary_s3_alias(app, client):
     assert resp.status_code == 200
     assert resp.json() == [{"name": "anything"}]
     mock_s3_manager.list_buckets.assert_awaited_once_with("some-arbitrary-unlisted-alias")
+
+
+@pytest.mark.asyncio
+async def test_post_me_integrity_error_returns_409_without_apisix_clobber(
+    app, client, seeded_db
+):
+    """Simulate the race: another request already claimed the same
+    deterministic consumer_name (with a DIFFERENT owner) between our owner
+    pre-check and our INSERT. The owner pre-check returns None (no row for
+    OUR sub), but the INSERT collides on the unique consumer_name constraint,
+    raising IntegrityError. We must return 409 and NEVER call put_resource —
+    proving we cannot clobber the winner's APISIX consumer when we lose."""
+    sub = "alice-sub-1"
+    consumer_name = _self_consumer_name(sub)
+
+    # Pre-seed a row that already owns this consumer_name but for a different
+    # owner. seeded_db is the same engine the app uses (shared fixture), so the
+    # endpoint's INSERT will collide on the unique consumer_name.
+    session_factory = async_sessionmaker(
+        seeded_db, class_=AsyncSession, expire_on_commit=False
+    )
+    async with session_factory() as db:
+        db.add(
+            ApiKeyAccess(
+                consumer_name=consumer_name,
+                description="owned by someone else",
+                owner="someone-else-sub",
+                allowed_databases=json.dumps(SELF_ALLOWED_DATABASES),
+                allowed_routes=json.dumps(SELF_ALLOWED_ROUTES),
+                rate_limit_per_minute=SELF_RATE_LIMIT,
+            )
+        )
+        await db.commit()
+
+    _override_user(app, sub=sub, username="alice")
+    with _patch_apisix() as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        mock_apisix.delete_resource = AsyncMock()
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+
+        resp = await client.post("/admin/api-keys/me")
+
+        assert resp.status_code == 409
+        # We must NOT have provisioned/clobbered the consumer in APISIX.
+        consumer_puts = [
+            call.args
+            for call in mock_apisix.put_resource.await_args_list
+            if call.args[0] == "consumers"
+        ]
+        assert consumer_puts == []
+
+
+@pytest.mark.asyncio
+async def test_post_me_rolls_back_db_on_apisix_failure(app, client):
+    """If APISIX provisioning fails AFTER the DB claim, we must roll back the
+    DB row (so GET /me returns null) and attempt to delete the consumer."""
+    _override_user(app, sub="alice-sub-1", username="alice")
+    consumer_name = _self_consumer_name("alice-sub-1")
+    with _patch_apisix() as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(side_effect=Exception("APISIX down"))
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        mock_apisix.delete_resource = AsyncMock()
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+
+        resp = await client.post("/admin/api-keys/me")
+        assert resp.status_code >= 500
+        # Cleanup of the half-provisioned consumer was attempted.
+        mock_apisix.delete_resource.assert_awaited_once()
+        assert mock_apisix.delete_resource.await_args.args[0] == "consumers"
+        assert mock_apisix.delete_resource.await_args.args[1] == consumer_name
+
+    # DB row rolled back → GET /me returns null.
+    with _patch_apisix() as mock_apisix:
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        get = await client.get("/admin/api-keys/me")
+    assert get.status_code == 200
+    assert get.json() is None

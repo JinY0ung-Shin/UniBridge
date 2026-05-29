@@ -296,33 +296,18 @@ async def create_my_api_key(
 ) -> ApiKeyResponse:
     if not user.sub:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No subject in token")
+
+    # Fast-path friendly 409 (the unique consumer_name constraint below is the real guard).
     existing = await db.execute(select(ApiKeyAccess).where(ApiKeyAccess.owner == user.sub))
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You already have an API key")
 
     consumer_name = _self_consumer_name(user.sub)
     new_key = _generate_api_key()
-    consumer_body = {
-        "username": consumer_name,
-        "plugins": {
-            "key-auth": {"key": new_key},
-            "limit-count": _build_limit_count_plugin(SELF_RATE_LIMIT),
-        },
-    }
-    try:
-        await apisix_client.put_resource("consumers", consumer_name, consumer_body)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to create APISIX consumer: {exc}")
 
-    try:
-        await _sync_consumer_restriction(SELF_ALLOWED_ROUTES, consumer_name)
-    except HTTPException:
-        try:
-            await apisix_client.delete_resource("consumers", consumer_name)
-        except Exception:
-            logger.error("Failed to clean up consumer '%s' after sync failure", consumer_name)
-        raise
-
+    # 1) Claim ownership in the DB FIRST. The unique consumer_name constraint
+    #    serializes concurrent creates for the same sub — the loser fails here
+    #    BEFORE any APISIX mutation, so it can never clobber the winner's consumer.
     access = ApiKeyAccess(
         consumer_name=consumer_name,
         description=f"Self-service key for {user.username}",
@@ -337,6 +322,30 @@ async def create_my_api_key(
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You already have an API key")
+
+    # 2) Provision APISIX. On any failure, roll back the DB claim AND remove the
+    #    consumer so we don't leave a row pointing at a half-provisioned consumer.
+    consumer_body = {
+        "username": consumer_name,
+        "plugins": {
+            "key-auth": {"key": new_key},
+            "limit-count": _build_limit_count_plugin(SELF_RATE_LIMIT),
+        },
+    }
+    try:
+        await apisix_client.put_resource("consumers", consumer_name, consumer_body)
+        await _sync_consumer_restriction(SELF_ALLOWED_ROUTES, consumer_name)
+    except Exception as exc:
+        await db.delete(access)
+        await db.commit()
+        try:
+            await apisix_client.delete_resource("consumers", consumer_name)
+        except Exception:
+            logger.error("Failed to clean up consumer '%s' after provisioning failure", consumer_name)
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to provision API key: {exc}")
+
     await db.refresh(access)
     return _to_response(access, api_key=new_key, key_created=True)
 
@@ -415,7 +424,12 @@ async def update_api_key(
     key_created = False
     api_key_display: str | None = None
     old_consumer_plugins: dict | None = None
-    if body.api_key or body.rate_limit_per_minute is not None:
+    # Distinguish "field omitted" from "field explicitly set to null" for the
+    # rate limit: an explicit null means "clear the limit" (unlimited), while an
+    # omitted field means "no change". model_fields_set holds the field names
+    # that were actually present in the request payload.
+    rate_limit_provided = "rate_limit_per_minute" in body.model_fields_set
+    if body.api_key or rate_limit_provided:
         try:
             existing_consumer = await apisix_client.get_resource("consumers", name)
             existing_plugins = dict(existing_consumer.get("plugins", {}))
@@ -424,7 +438,7 @@ async def update_api_key(
             existing_plugins = {}
         if body.api_key:
             existing_plugins["key-auth"] = {"key": body.api_key}
-        if body.rate_limit_per_minute is not None:
+        if rate_limit_provided:
             limit_cfg = _build_limit_count_plugin(body.rate_limit_per_minute)
             if limit_cfg is None:
                 existing_plugins.pop("limit-count", None)
@@ -461,7 +475,7 @@ async def update_api_key(
         access.allowed_databases = json.dumps(body.allowed_databases) if body.allowed_databases else None
     if body.allowed_routes is not None:
         access.allowed_routes = json.dumps(body.allowed_routes) if body.allowed_routes else None
-    if body.rate_limit_per_minute is not None:
+    if rate_limit_provided:
         access.rate_limit_per_minute = body.rate_limit_per_minute
 
     await db.commit()
