@@ -102,6 +102,8 @@ class ApiKeyAccess(Base):
     description = Column(String(255), default="")
     allowed_databases = Column(Text, nullable=True)  # JSON array: ["mydb", "analytics"], null = none
     allowed_routes = Column(Text, nullable=True)  # JSON array: ["route-id-1", "route-id-2"], null = none
+    owner = Column(String(255), nullable=True, index=True)  # Keycloak sub; NULL = admin/shared key
+    rate_limit_per_minute = Column(Integer, nullable=True)  # NULL = unlimited
     created_at = Column(UtcDateTime, default=utcnow)
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)
 
