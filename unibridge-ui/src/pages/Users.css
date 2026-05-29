@@ -50,6 +50,12 @@
   color: var(--role-viewer);
 }
 
+.role-badge--pending {
+  background: transparent;
+  color: var(--text-tertiary);
+  border: 1px dashed var(--border-hover);
+}
+
 /* ── Status ── */
 
 .status-active {

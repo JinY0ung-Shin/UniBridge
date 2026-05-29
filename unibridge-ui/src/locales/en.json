@@ -438,7 +438,8 @@
     "deleteFailed": "Failed to delete user",
     "enableConfirm": "Enable user \"{{name}}\"?",
     "disableConfirm": "Disable user \"{{name}}\"?",
-    "deleteConfirm": "Delete user \"{{name}}\"?"
+    "deleteConfirm": "Delete user \"{{name}}\"?",
+    "pending": "Pending"
   },
   "querySettings": {
     "title": "Query Settings",
@@ -612,5 +613,11 @@
     "varDesc_rate": "Current error rate (used in error-rate-based alerts)",
     "varDesc_threshold": "Threshold value configured in the rule",
     "varDesc_rule_name": "Alert rule name"
+  },
+  "pending": {
+    "title": "Awaiting approval",
+    "message": "Your registration was received. An administrator must approve your account before you can use the service.",
+    "account": "Signed in as {{username}}",
+    "recheck": "Check again"
   }
 }

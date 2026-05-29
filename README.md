@@ -106,7 +106,32 @@ First boot takes ~2 minutes (Keycloak initialization).
 | LiteLLM | `https://<HOST_IP>:<LITELLM_PORT>` |
 | Prometheus | `http://<HOST_IP>:9090` (localhost only) |
 
-Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`). No human users are seeded into the `apihub` realm by default. After first boot, sign in to the admin console and create the users you want in the `apihub` realm, then assign the roles and/or groups required for your deployment.
+Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`). No human users are seeded into the `apihub` realm by default. After first boot, sign in to the admin console and create the first `admin` user in the `apihub` realm (assign the `admin` realm role), then manage further users from the UI **Users** page.
+
+### Self-service registration (approval-gated)
+
+The `apihub` realm has registration enabled (`registrationAllowed: true`), but registration is **approval-gated**: a new person can click **Register** on the Keycloak login page, but the new account receives **no application role** and cannot use the service. They see a "pending approval" screen; the backend rejects role-less tokens with 401. An **admin approves** the account by assigning the `user` role from the UI **Users** page (pending accounts show a *Pending* badge there).
+
+Flow: `register → pending (no role) → admin assigns a role → access`.
+
+> **Security note:** registration is open, so anyone who can reach the Keycloak login page can create a *pending* account. Pending accounts have no access and cannot mint API keys, so the blast radius of mass/bot registration is limited to Keycloak user-row growth (admins simply never approve them). `bruteForceProtected` is enabled (login lockout). For a fully public surface you may still want reCAPTCHA on the registration flow or network-restricting Keycloak, but neither is required for access control here — approval is the gate.
+
+How it works (two realm settings, both applied by the helper):
+
+1. `registrationAllowed = true` — shows the **Register** link.
+2. The `user` role is **not** in the `default-roles-apihub` composite — so new users are role-less (pending) until an admin assigns a role. (Default roles only apply at user-creation time; existing users are unaffected.)
+
+`registrationAllowed` ships in `keycloak/realm-export.json`, but that template is only read when Keycloak **first creates** the realm. Run the idempotent helper once on the Docker host to apply it to a running deployment (it also removes `user` from the default roles if present, guaranteeing the approval gate):
+
+```bash
+./keycloak/enable-self-registration.sh
+# override container/realm if needed:
+# KC_CONTAINER=unibridge-keycloak-1 KC_REALM=apihub ./keycloak/enable-self-registration.sh
+```
+
+The helper authenticates as the Keycloak master admin (the service account lacks `manage-realm`), errors out clearly on zero/multiple container matches or auth failure (printing an admin-console fallback), and is safe to re-run.
+
+**To disable registration entirely:** set `registrationAllowed=false` (admin console → Realm settings → Login → *User registration*, or `kcadm.sh update realms/apihub -s registrationAllowed=false` inside the Keycloak container as master admin).
 
 ## Service Ports (default)
 

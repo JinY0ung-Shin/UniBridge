@@ -2,7 +2,8 @@
   "realm": "apihub",
   "enabled": true,
   "sslRequired": "external",
-  "registrationAllowed": false,
+  "registrationAllowed": true,
+  "bruteForceProtected": true,
   "loginWithEmailAllowed": false,
   "duplicateEmailsAllowed": true,
   "roles": {

@@ -18,7 +18,7 @@ import ResourceModal from '../components/ResourceModal';
 import './Users.css';
 
 function roleBadgeClass(role: string | null): string {
-  if (!role) return 'role-badge role-badge--default';
+  if (!role) return 'role-badge role-badge--pending';
   const r = role.toLowerCase();
   if (r === 'admin') return 'role-badge role-badge--admin';
   if (r === 'developer') return 'role-badge role-badge--developer';
@@ -128,6 +128,9 @@ function Users() {
 
   const users = usersQuery.data?.users ?? [];
   const roles = rolesQuery.data ?? [];
+  // Prefer 'user' as the default when assigning a role (approving), so an admin
+  // never accidentally grants 'admin' from the default selection.
+  const defaultAssignRole = roles.includes('user') ? 'user' : (roles[0] ?? '');
 
   function openCreate() {
     setModalMode('create');
@@ -135,14 +138,14 @@ function Users() {
     setNewUsername('');
     setNewEmail('');
     setNewPassword('');
-    setNewRole(roles[0] ?? '');
+    setNewRole(defaultAssignRole);
     setError('');
   }
 
   function openRoleChange(user: KeycloakUser) {
     setModalMode('role');
     setSelectedUser(user);
-    setChangeRoleValue(user.role ?? roles[0] ?? '');
+    setChangeRoleValue(user.role ?? defaultAssignRole);
     setError('');
   }
 
@@ -250,7 +253,7 @@ function Users() {
                   <td>{user.email || '—'}</td>
                   <td>
                     <span className={roleBadgeClass(user.role)}>
-                      {user.role || '—'}
+                      {user.role || t('users.pending')}
                     </span>
                   </td>
                   <td>

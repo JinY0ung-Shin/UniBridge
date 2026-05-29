@@ -188,14 +188,16 @@ describe('Users page flows', () => {
     );
   });
 
-  it('renders user with no role and no email', async () => {
+  it('renders user with no role (pending) and no email', async () => {
     mocks.getUsers.mockResolvedValue({
       users: [makeUser({ id: 'u-2', username: 'no-role', enabled: false, role: null, email: null })],
       total: 1,
     });
     renderWithProviders(<Users />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('no-role')).toBeInTheDocument());
-    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(2);
+    // email is null -> em dash; role is null -> "pending" badge (approval-gated)
+    expect(screen.getByText('—')).toBeInTheDocument();
+    expect(screen.getByText(/Pending|대기/)).toBeInTheDocument();
   });
 
   it('admin role badge applied for admin user', async () => {

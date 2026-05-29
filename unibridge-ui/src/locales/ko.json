@@ -438,7 +438,8 @@
     "deleteFailed": "사용자 삭제에 실패했습니다",
     "enableConfirm": "사용자 \"{{name}}\"을 활성화하시겠습니까?",
     "disableConfirm": "사용자 \"{{name}}\"을 비활성화하시겠습니까?",
-    "deleteConfirm": "사용자 \"{{name}}\"을 삭제하시겠습니까?"
+    "deleteConfirm": "사용자 \"{{name}}\"을 삭제하시겠습니까?",
+    "pending": "대기"
   },
   "querySettings": {
     "title": "쿼리 설정",
@@ -612,5 +613,11 @@
     "varDesc_rate": "현재 에러율 (에러율 기반 알림에서 사용)",
     "varDesc_threshold": "임계값 (규칙에 설정된 기준값)",
     "varDesc_rule_name": "알림 규칙 이름"
+  },
+  "pending": {
+    "title": "가입 승인 대기 중",
+    "message": "가입 신청이 접수되었습니다. 관리자가 계정을 승인해야 서비스를 이용할 수 있습니다.",
+    "account": "{{username}} 계정으로 로그인됨",
+    "recheck": "다시 확인"
   }
 }
