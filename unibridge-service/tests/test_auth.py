@@ -683,16 +683,15 @@ class TestTokenEndpoint:
         )
         assert payload["role"] == "user"
 
-    async def test_issue_token_default_role_no_longer_seeded(self, client):
-        """The schema default for role is still 'viewer', which is no longer a
-        seeded role, so issuing a token with the default role is rejected.
-
-        NOTE: TokenRequest.role still defaults to 'viewer' in app/schemas.py —
-        a stale default left over from the admin/user role simplification.
-        """
+    async def test_issue_token_default_role_is_user(self, client):
+        """The schema default for role is 'user', a seeded role, so issuing a
+        token with no explicit role succeeds and yields the 'user' role."""
         resp = await client.post("/auth/token", json={"username": "someone"})
-        assert resp.status_code == 400
-        assert "does not exist" in resp.json()["detail"]
+        assert resp.status_code == 200
+        payload = jwt.decode(
+            resp.json()["access_token"], settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM]
+        )
+        assert payload["role"] == "user"
 
     async def test_issue_token_nonexistent_role_returns_400(self, client):
         resp = await client.post("/auth/token", json={"username": "test", "role": "superadmin"})

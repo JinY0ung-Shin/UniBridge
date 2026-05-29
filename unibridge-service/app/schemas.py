@@ -274,7 +274,7 @@ class UserInfoResponse(BaseModel):
 
 class TokenRequest(BaseModel):
     username: str
-    role: str = "viewer"
+    role: str = "user"
 
 
 class TokenResponse(BaseModel):

@@ -645,12 +645,12 @@ class TestPermissionChecks:
         assert resp.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_list_connections_admin_allowed(self, client, admin_token):
-        """Admin has query.databases.read -> 200."""
+    async def test_list_connections_read_permission_allowed(self, client, querier_token):
+        """query.databases.read alone (without .write) is sufficient -> 200."""
         with _cm_patch():
             resp = await client.get(
                 "/admin/query/databases",
-                headers=auth_header(admin_token),
+                headers=auth_header(querier_token),
             )
         assert resp.status_code == 200
 
@@ -700,10 +700,10 @@ class TestPermissionChecks:
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_get_single_connection_admin_allowed(
-        self, client, admin_token
+    async def test_get_single_connection_read_permission_allowed(
+        self, client, admin_token, querier_token
     ):
-        """Admin has query.databases.read -> 200 on GET single."""
+        """query.databases.read alone (without .write) is sufficient -> 200 on GET single."""
         with _cm_patch():
             await client.post(
                 "/admin/query/databases",
@@ -712,7 +712,7 @@ class TestPermissionChecks:
             )
             resp = await client.get(
                 "/admin/query/databases/testdb",
-                headers=auth_header(admin_token),
+                headers=auth_header(querier_token),
             )
         assert resp.status_code == 200
 
