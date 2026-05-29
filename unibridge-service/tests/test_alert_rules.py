@@ -325,9 +325,9 @@ class TestAlertRuleTestAPI:
         assert resp.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_rule_test_requires_write_permission(self, client, viewer_token):
+    async def test_rule_test_requires_write_permission(self, client, user_token):
         resp = await client.post("/admin/alerts/rules/1/test",
-                                 headers=auth_header(viewer_token))
+                                 headers=auth_header(user_token))
         assert resp.status_code == 403
 
     @pytest.mark.asyncio

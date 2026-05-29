@@ -220,10 +220,10 @@ class TestQueryExecute:
         assert resp.status_code == 200
         assert resp.json()["row_count"] == 1
 
-    async def test_developer_with_permission_entry_can_execute(
-        self, client, admin_token, developer_token
+    async def test_querier_with_permission_entry_can_execute(
+        self, client, admin_token, querier_token
     ):
-        """Developer with a Permission row allowing SELECT can run a SELECT."""
+        """Non-admin querier role with a Permission row allowing SELECT can run a SELECT."""
         # First, create a DB connection via admin API (mocking engine creation)
         with patch(
             "app.routers.admin.connection_manager.add_connection",
@@ -247,11 +247,11 @@ class TestQueryExecute:
             )
             assert resp.status_code == 201
 
-        # Create a Permission entry for the developer role on devdb
+        # Create a Permission entry for the querier role on devdb
         resp = await client.put(
             "/admin/query/permissions",
             json={
-                "role": "developer",
+                "role": "querier",
                 "db_alias": "devdb",
                 "allow_select": True,
                 "allow_insert": False,
@@ -281,14 +281,14 @@ class TestQueryExecute:
             resp = await client.post(
                 "/query/execute",
                 json={"database": "devdb", "sql": "SELECT * FROM users"},
-                headers=auth_header(developer_token),
+                headers=auth_header(querier_token),
             )
 
         assert resp.status_code == 200
         assert resp.json()["row_count"] == 1
 
-    async def test_developer_can_execute_neo4j_match_with_permission_entry(
-        self, client, admin_token, developer_token
+    async def test_querier_can_execute_neo4j_match_with_permission_entry(
+        self, client, admin_token, querier_token
     ):
         with patch(
             "app.routers.admin.connection_manager.add_connection",
@@ -316,7 +316,7 @@ class TestQueryExecute:
         resp = await client.put(
             "/admin/query/permissions",
             json={
-                "role": "developer",
+                "role": "querier",
                 "db_alias": "graph",
                 "allow_select": True,
                 "allow_insert": False,
@@ -348,7 +348,7 @@ class TestQueryExecute:
             resp = await client.post(
                 "/query/execute",
                 json={"database": "graph", "sql": "MATCH (n) RETURN n"},
-                headers=auth_header(developer_token),
+                headers=auth_header(querier_token),
             )
 
         assert resp.status_code == 200
@@ -370,8 +370,8 @@ class TestQueryExecute:
             "CREATE (:User {name: 'x'})",
         ],
     )
-    async def test_developer_select_only_cannot_execute_mutating_neo4j_query(
-        self, client, admin_token, developer_token, cypher
+    async def test_querier_select_only_cannot_execute_mutating_neo4j_query(
+        self, client, admin_token, querier_token, cypher
     ):
         with patch(
             "app.routers.admin.connection_manager.add_connection",
@@ -399,7 +399,7 @@ class TestQueryExecute:
         resp = await client.put(
             "/admin/query/permissions",
             json={
-                "role": "developer",
+                "role": "querier",
                 "db_alias": "graph",
                 "allow_select": True,
                 "allow_insert": False,
@@ -424,7 +424,7 @@ class TestQueryExecute:
             resp = await client.post(
                 "/query/execute",
                 json={"database": "graph", "sql": cypher},
-                headers=auth_header(developer_token),
+                headers=auth_header(querier_token),
             )
 
         assert resp.status_code == 403
@@ -488,10 +488,10 @@ class TestQueryExecute:
         assert resp.json()["detail"] == "Neo4j queries are read-only"
         mock_exec.assert_not_awaited()
 
-    async def test_developer_without_permission_entry_gets_403(
-        self, client, developer_token
+    async def test_querier_without_permission_entry_gets_403(
+        self, client, querier_token
     ):
-        """Developer with no Permission row for the database gets 403."""
+        """Querier with no Permission row for the database gets 403."""
         mock_engine = MagicMock()
         with patch(
             "app.routers.query.connection_manager.get_engine",
@@ -503,16 +503,16 @@ class TestQueryExecute:
             resp = await client.post(
                 "/query/execute",
                 json={"database": "nopermdb", "sql": "SELECT 1"},
-                headers=auth_header(developer_token),
+                headers=auth_header(querier_token),
             )
 
         assert resp.status_code == 403
         assert "No permissions configured" in resp.json()["detail"]
 
-    async def test_developer_wrong_statement_type_gets_403(
-        self, client, admin_token, developer_token
+    async def test_querier_wrong_statement_type_gets_403(
+        self, client, admin_token, querier_token
     ):
-        """Developer allowed only SELECT cannot run INSERT."""
+        """Querier allowed only SELECT cannot run INSERT."""
         # Create DB connection
         with patch(
             "app.routers.admin.connection_manager.add_connection",
@@ -540,7 +540,7 @@ class TestQueryExecute:
         resp = await client.put(
             "/admin/query/permissions",
             json={
-                "role": "developer",
+                "role": "querier",
                 "db_alias": "insertdb",
                 "allow_select": True,
                 "allow_insert": False,
@@ -566,7 +566,7 @@ class TestQueryExecute:
                     "database": "insertdb",
                     "sql": "INSERT INTO users (name) VALUES ('bob')",
                 },
-                headers=auth_header(developer_token),
+                headers=auth_header(querier_token),
             )
 
         assert resp.status_code == 403
@@ -587,12 +587,12 @@ class TestQueryExecute:
         assert resp.status_code == 404
         assert "not registered" in resp.json()["detail"]
 
-    async def test_viewer_cannot_execute_query(self, client, viewer_token):
-        """Viewer role lacks query.execute permission entirely."""
+    async def test_user_cannot_execute_query(self, client, user_token):
+        """User role lacks query.execute permission entirely."""
         resp = await client.post(
             "/query/execute",
             json={"database": "anydb", "sql": "SELECT 1"},
-            headers=auth_header(viewer_token),
+            headers=auth_header(user_token),
         )
         assert resp.status_code == 403
 
@@ -656,18 +656,18 @@ class TestListDatabases:
         assert "admindb1" in aliases
         assert "admindb2" in aliases
 
-    async def test_developer_sees_only_permitted_databases(
-        self, client, admin_token, developer_token
+    async def test_querier_sees_only_permitted_databases(
+        self, client, admin_token, querier_token
     ):
-        """Developer without query.databases.write sees only DBs with Permission rows."""
+        """Querier without query.databases.write sees only DBs with Permission rows."""
         await self._create_db_connection(client, admin_token, "visibledb")
         await self._create_db_connection(client, admin_token, "hiddendb")
 
-        # Grant developer permission on visibledb only
+        # Grant querier permission on visibledb only
         resp = await client.put(
             "/admin/query/permissions",
             json={
-                "role": "developer",
+                "role": "querier",
                 "db_alias": "visibledb",
                 "allow_select": True,
             },
@@ -681,7 +681,7 @@ class TestListDatabases:
         ):
             resp = await client.get(
                 "/query/databases",
-                headers=auth_header(developer_token),
+                headers=auth_header(querier_token),
             )
 
         assert resp.status_code == 200
@@ -689,23 +689,23 @@ class TestListDatabases:
         assert "visibledb" in aliases
         assert "hiddendb" not in aliases
 
-    async def test_developer_with_no_permissions_gets_empty_list(
-        self, client, developer_token
+    async def test_querier_with_no_permissions_gets_empty_list(
+        self, client, querier_token
     ):
-        """Developer with zero Permission entries gets an empty list."""
-        # No Permission rows exist for developer on any DB in a fresh test
+        """Querier with zero Permission entries gets an empty list."""
+        # No Permission rows exist for querier on any DB in a fresh test
         resp = await client.get(
             "/query/databases",
-            headers=auth_header(developer_token),
+            headers=auth_header(querier_token),
         )
         assert resp.status_code == 200
         assert resp.json() == []
 
-    async def test_viewer_cannot_list_databases(self, client, viewer_token):
-        """Viewer lacks query.databases.read permission."""
+    async def test_user_cannot_list_databases(self, client, user_token):
+        """User lacks query.databases.read permission."""
         resp = await client.get(
             "/query/databases",
-            headers=auth_header(viewer_token),
+            headers=auth_header(user_token),
         )
         assert resp.status_code == 403
 
@@ -723,8 +723,8 @@ class TestAuthRolesPublic:
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
-        # Seeded roles are admin, developer, viewer -- returned sorted by name
-        assert data == ["admin", "developer", "viewer"]
+        # Seeded roles are admin, user -- returned sorted by name
+        assert data == ["admin", "user"]
 
 
 # ============================================================================
@@ -744,17 +744,17 @@ class TestAuthMe:
         assert len(data["permissions"]) == len(ALL_PERMISSIONS)
         assert set(data["permissions"]) == set(ALL_PERMISSIONS)
 
-    async def test_viewer_me_returns_limited_permissions(self, client, viewer_token):
-        resp = await client.get("/auth/me", headers=auth_header(viewer_token))
+    async def test_user_me_returns_limited_permissions(self, client, user_token):
+        resp = await client.get("/auth/me", headers=auth_header(user_token))
         assert resp.status_code == 200
         data = resp.json()
-        assert data["username"] == "testviewer"
-        assert data["role"] == "viewer"
+        assert data["username"] == "testuser"
+        assert data["role"] == "user"
         assert len(data["permissions"]) == 3
         assert set(data["permissions"]) == {
             "gateway.monitoring.read",
-            "query.audit.read",
             "alerts.read",
+            "apikeys.self",
         }
 
     async def test_me_without_token_returns_401(self, client):
@@ -780,9 +780,9 @@ class TestAdminPermissions:
         assert len(data) == len(ALL_PERMISSIONS)
         assert data == ALL_PERMISSIONS
 
-    async def test_viewer_cannot_list_permissions(self, client, viewer_token):
+    async def test_user_cannot_list_permissions(self, client, user_token):
         resp = await client.get(
-            "/admin/permissions", headers=auth_header(viewer_token)
+            "/admin/permissions", headers=auth_header(user_token)
         )
         assert resp.status_code == 403
 
@@ -799,11 +799,10 @@ class TestRoleList:
         resp = await client.get("/admin/roles", headers=auth_header(admin_token))
         assert resp.status_code == 200
         roles = resp.json()
-        assert len(roles) >= 3
+        assert len(roles) >= 2
         names = [r["name"] for r in roles]
         assert "admin" in names
-        assert "developer" in names
-        assert "viewer" in names
+        assert "user" in names
 
     async def test_seeded_roles_have_correct_permissions(self, client, admin_token):
         resp = await client.get("/admin/roles", headers=auth_header(admin_token))
@@ -813,13 +812,14 @@ class TestRoleList:
         assert set(admin_role["permissions"]) == set(ALL_PERMISSIONS)
         assert admin_role["is_system"] is True
 
-        dev_role = roles_by_name["developer"]
-        assert "query.execute" in dev_role["permissions"]
-        assert "query.databases.read" in dev_role["permissions"]
-        assert "query.databases.write" not in dev_role["permissions"]
-
-        viewer_role = roles_by_name["viewer"]
-        assert len(viewer_role["permissions"]) == 3
+        user_role = roles_by_name["user"]
+        assert set(user_role["permissions"]) == {
+            "gateway.monitoring.read",
+            "alerts.read",
+            "apikeys.self",
+        }
+        assert "query.execute" not in user_role["permissions"]
+        assert "query.databases.write" not in user_role["permissions"]
 
 
 class TestRoleGetById:
@@ -1003,7 +1003,7 @@ class TestRoleDelete:
         assert resp.status_code == 404
 
     async def test_delete_system_role_returns_400(self, client, admin_token):
-        """System roles (admin, developer, viewer) cannot be deleted."""
+        """System roles (admin, user) cannot be deleted."""
         # Find the admin role ID
         resp = await client.get("/admin/roles", headers=auth_header(admin_token))
         admin_role = next(r for r in resp.json() if r["name"] == "admin")
@@ -1054,75 +1054,46 @@ class TestSecurityHeaders:
 
 
 class TestRolePermissionEnforcement:
-    """Developer and viewer cannot access admin role management endpoints."""
+    """The non-admin user role cannot access admin role management endpoints."""
 
-    async def test_developer_cannot_create_role(self, client, developer_token):
+    async def test_user_cannot_create_role(self, client, user_token):
         resp = await client.post(
             "/admin/roles",
             json={"name": "sneaky", "permissions": []},
-            headers=auth_header(developer_token),
+            headers=auth_header(user_token),
         )
         assert resp.status_code == 403
 
-    async def test_developer_cannot_update_role(self, client, developer_token):
+    async def test_user_cannot_update_role(self, client, user_token):
         resp = await client.put(
             "/admin/roles/1",
             json={"description": "hacked"},
-            headers=auth_header(developer_token),
+            headers=auth_header(user_token),
         )
         assert resp.status_code == 403
 
-    async def test_developer_cannot_delete_role(self, client, developer_token):
+    async def test_user_cannot_delete_role(self, client, user_token):
         resp = await client.delete(
             "/admin/roles/1",
-            headers=auth_header(developer_token),
+            headers=auth_header(user_token),
         )
         assert resp.status_code == 403
 
-    async def test_developer_cannot_list_admin_roles(self, client, developer_token):
-        """Developer lacks admin.roles.read."""
+    async def test_user_cannot_list_admin_roles(self, client, user_token):
+        """User lacks admin.roles.read."""
         resp = await client.get(
-            "/admin/roles", headers=auth_header(developer_token)
+            "/admin/roles", headers=auth_header(user_token)
         )
         assert resp.status_code == 403
 
-    async def test_developer_cannot_get_role_by_id(self, client, developer_token):
+    async def test_user_cannot_get_role_by_id(self, client, user_token):
         resp = await client.get(
-            "/admin/roles/1", headers=auth_header(developer_token)
+            "/admin/roles/1", headers=auth_header(user_token)
         )
         assert resp.status_code == 403
 
-    async def test_viewer_cannot_list_admin_roles(self, client, viewer_token):
+    async def test_user_cannot_list_permissions(self, client, user_token):
         resp = await client.get(
-            "/admin/roles", headers=auth_header(viewer_token)
-        )
-        assert resp.status_code == 403
-
-    async def test_viewer_cannot_create_role(self, client, viewer_token):
-        resp = await client.post(
-            "/admin/roles",
-            json={"name": "nope", "permissions": []},
-            headers=auth_header(viewer_token),
-        )
-        assert resp.status_code == 403
-
-    async def test_viewer_cannot_update_role(self, client, viewer_token):
-        resp = await client.put(
-            "/admin/roles/1",
-            json={"description": "nope"},
-            headers=auth_header(viewer_token),
-        )
-        assert resp.status_code == 403
-
-    async def test_viewer_cannot_delete_role(self, client, viewer_token):
-        resp = await client.delete(
-            "/admin/roles/1",
-            headers=auth_header(viewer_token),
-        )
-        assert resp.status_code == 403
-
-    async def test_viewer_cannot_list_permissions(self, client, viewer_token):
-        resp = await client.get(
-            "/admin/permissions", headers=auth_header(viewer_token)
+            "/admin/permissions", headers=auth_header(user_token)
         )
         assert resp.status_code == 403

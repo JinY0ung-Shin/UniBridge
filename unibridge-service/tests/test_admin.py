@@ -53,7 +53,7 @@ def _make_db_payload(**overrides) -> dict:
 
 
 PERMISSION_PAYLOAD = {
-    "role": "developer",
+    "role": "user",
     "db_alias": "testdb",
     "allow_select": True,
     "allow_insert": False,
@@ -634,31 +634,41 @@ class TestPermissionChecks:
     """Verify that role-based permission enforcement works correctly."""
 
     @pytest.mark.asyncio
-    async def test_create_connection_viewer_forbidden(self, client, viewer_token):
-        """Viewer role lacks query.databases.write -> 403."""
+    async def test_create_connection_user_forbidden(self, client, user_token):
+        """User role lacks query.databases.write -> 403."""
         with _cm_patch():
             resp = await client.post(
                 "/admin/query/databases",
                 json=_make_db_payload(),
-                headers=auth_header(viewer_token),
+                headers=auth_header(user_token),
             )
         assert resp.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_list_connections_developer_allowed(self, client, developer_token):
-        """Developer has query.databases.read -> 200."""
+    async def test_list_connections_admin_allowed(self, client, admin_token):
+        """Admin has query.databases.read -> 200."""
         with _cm_patch():
             resp = await client.get(
                 "/admin/query/databases",
-                headers=auth_header(developer_token),
+                headers=auth_header(admin_token),
             )
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_delete_connection_developer_forbidden(
-        self, client, admin_token, developer_token
+    async def test_list_connections_user_forbidden(self, client, user_token):
+        """User lacks query.databases.read -> 403."""
+        with _cm_patch():
+            resp = await client.get(
+                "/admin/query/databases",
+                headers=auth_header(user_token),
+            )
+        assert resp.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_delete_connection_user_forbidden(
+        self, client, admin_token, user_token
     ):
-        """Developer lacks query.databases.write -> 403 on DELETE."""
+        """User lacks query.databases.write -> 403 on DELETE."""
         with _cm_patch():
             await client.post(
                 "/admin/query/databases",
@@ -667,18 +677,18 @@ class TestPermissionChecks:
             )
             resp = await client.delete(
                 "/admin/query/databases/testdb",
-                headers=auth_header(developer_token),
+                headers=auth_header(user_token),
             )
         assert resp.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_update_connection_developer_forbidden(self, client, developer_token):
-        """Developer lacks query.databases.write -> 403 on PUT."""
+    async def test_update_connection_user_forbidden(self, client, user_token):
+        """User lacks query.databases.write -> 403 on PUT."""
         with _cm_patch():
             resp = await client.put(
                 "/admin/query/databases/testdb",
                 json={"host": "newhost"},
-                headers=auth_header(developer_token),
+                headers=auth_header(user_token),
             )
         assert resp.status_code == 403
 
@@ -690,10 +700,10 @@ class TestPermissionChecks:
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_get_single_connection_developer_allowed(
-        self, client, admin_token, developer_token
+    async def test_get_single_connection_admin_allowed(
+        self, client, admin_token
     ):
-        """Developer has query.databases.read -> 200 on GET single."""
+        """Admin has query.databases.read -> 200 on GET single."""
         with _cm_patch():
             await client.post(
                 "/admin/query/databases",
@@ -702,27 +712,17 @@ class TestPermissionChecks:
             )
             resp = await client.get(
                 "/admin/query/databases/testdb",
-                headers=auth_header(developer_token),
+                headers=auth_header(admin_token),
             )
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_test_connection_developer_allowed(self, client, developer_token):
-        """Developer has query.databases.read -> 200 on test endpoint."""
+    async def test_test_connection_user_forbidden(self, client, user_token):
+        """User lacks query.databases.read -> 403 on test endpoint."""
         with _cm_patch():
             resp = await client.post(
                 "/admin/query/databases/anydb/test",
-                headers=auth_header(developer_token),
-            )
-        assert resp.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_test_connection_viewer_forbidden(self, client, viewer_token):
-        """Viewer lacks query.databases.read -> 403 on test endpoint."""
-        with _cm_patch():
-            resp = await client.post(
-                "/admin/query/databases/anydb/test",
-                headers=auth_header(viewer_token),
+                headers=auth_header(user_token),
             )
         assert resp.status_code == 403
 
@@ -758,7 +758,7 @@ class TestListPermissions:
         assert resp.status_code == 200
         perms = resp.json()
         assert len(perms) == 1
-        assert perms[0]["role"] == "developer"
+        assert perms[0]["role"] == "user"
         assert perms[0]["db_alias"] == "testdb"
 
 
@@ -774,7 +774,7 @@ class TestUpsertPermission:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["role"] == "developer"
+        assert data["role"] == "user"
         assert data["db_alias"] == "testdb"
         assert data["allow_select"] is True
         assert data["allow_insert"] is False
@@ -820,11 +820,11 @@ class TestUpsertPermission:
         )
         resp = await client.put(
             "/admin/query/permissions",
-            json={**PERMISSION_PAYLOAD, "role": "viewer"},
+            json={**PERMISSION_PAYLOAD, "role": "admin"},
             headers=auth_header(admin_token),
         )
         assert resp.status_code == 200
-        assert resp.json()["role"] == "viewer"
+        assert resp.json()["role"] == "admin"
 
         list_resp = await client.get(
             "/admin/query/permissions",
@@ -903,48 +903,39 @@ class TestPermissionsRBAC:
     """Permission endpoint RBAC checks."""
 
     @pytest.mark.asyncio
-    async def test_viewer_cannot_list_permissions(self, client, viewer_token):
-        """Viewer lacks query.permissions.read -> 403."""
+    async def test_user_cannot_list_permissions(self, client, user_token):
+        """User lacks query.permissions.read -> 403."""
         resp = await client.get(
             "/admin/query/permissions",
-            headers=auth_header(viewer_token),
+            headers=auth_header(user_token),
         )
         assert resp.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_developer_can_list_permissions(self, client, developer_token):
-        """Developer has query.permissions.read -> 200."""
+    async def test_admin_can_list_permissions(self, client, admin_token):
+        """Admin has query.permissions.read -> 200."""
         resp = await client.get(
             "/admin/query/permissions",
-            headers=auth_header(developer_token),
+            headers=auth_header(admin_token),
         )
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_developer_cannot_upsert_permissions(self, client, developer_token):
-        """Developer lacks query.permissions.write -> 403."""
+    async def test_user_cannot_upsert_permissions(self, client, user_token):
+        """User lacks query.permissions.write -> 403."""
         resp = await client.put(
             "/admin/query/permissions",
             json=PERMISSION_PAYLOAD,
-            headers=auth_header(developer_token),
+            headers=auth_header(user_token),
         )
         assert resp.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_developer_cannot_delete_permissions(self, client, developer_token):
-        """Developer lacks query.permissions.write -> 403."""
+    async def test_user_cannot_delete_permissions(self, client, user_token):
+        """User lacks query.permissions.write -> 403."""
         resp = await client.delete(
             "/admin/query/permissions/1",
-            headers=auth_header(developer_token),
-        )
-        assert resp.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_viewer_cannot_upsert_permissions(self, client, viewer_token):
-        resp = await client.put(
-            "/admin/query/permissions",
-            json=PERMISSION_PAYLOAD,
-            headers=auth_header(viewer_token),
+            headers=auth_header(user_token),
         )
         assert resp.status_code == 403
 
@@ -972,20 +963,20 @@ class TestAuditLogs:
         assert resp.json() == []
 
     @pytest.mark.asyncio
-    async def test_viewer_can_read_audit_logs(self, client, viewer_token):
-        """Viewer has query.audit.read -> 200."""
+    async def test_user_cannot_read_audit_logs(self, client, user_token):
+        """User lacks query.audit.read -> 403."""
         resp = await client.get(
             "/admin/query/audit-logs",
-            headers=auth_header(viewer_token),
+            headers=auth_header(user_token),
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_developer_can_read_audit_logs(self, client, developer_token):
-        """Developer has query.audit.read -> 200."""
+    async def test_admin_can_read_audit_logs(self, client, admin_token):
+        """Admin has query.audit.read -> 200."""
         resp = await client.get(
             "/admin/query/audit-logs",
-            headers=auth_header(developer_token),
+            headers=auth_header(admin_token),
         )
         assert resp.status_code == 200
 

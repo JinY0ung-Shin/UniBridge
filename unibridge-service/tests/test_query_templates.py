@@ -101,7 +101,7 @@ async def test_admin_can_create_and_execute_query_template(client, admin_token):
     )
 
 
-async def test_template_execution_uses_database_permissions(client, admin_token, developer_token):
+async def test_template_execution_uses_database_permissions(client, admin_token, querier_token):
     await _create_database(client, admin_token)
     await _create_template(client, admin_token)
 
@@ -115,7 +115,7 @@ async def test_template_execution_uses_database_permissions(client, admin_token,
         resp = await client.post(
             "/query/templates/reports/users",
             json={"params": {"id": 1}},
-            headers=auth_header(developer_token),
+            headers=auth_header(querier_token),
         )
 
     assert resp.status_code == 403

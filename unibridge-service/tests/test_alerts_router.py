@@ -576,7 +576,7 @@ async def test_owner_group_duplicate_name_returns_409(client, admin_token):
 
 
 @pytest.mark.asyncio
-async def test_owner_group_permissions_use_alert_read_and_write(client, admin_token, viewer_token):
+async def test_owner_group_permissions_use_alert_read_and_write(client, admin_token, user_token):
     create = await client.post(
         "/admin/alerts/owner-groups",
         json={"name": "permission-team", "emails": ["owner@example.com"]},
@@ -587,27 +587,27 @@ async def test_owner_group_permissions_use_alert_read_and_write(client, admin_to
 
     list_resp = await client.get(
         "/admin/alerts/owner-groups",
-        headers=auth_header(viewer_token),
+        headers=auth_header(user_token),
     )
     assert list_resp.status_code == 200
 
     create_denied = await client.post(
         "/admin/alerts/owner-groups",
-        json={"name": "viewer-team", "emails": ["viewer@example.com"]},
-        headers=auth_header(viewer_token),
+        json={"name": "user-team", "emails": ["user@example.com"]},
+        headers=auth_header(user_token),
     )
     assert create_denied.status_code == 403
 
     update_denied = await client.put(
         f"/admin/alerts/owner-groups/{group_id}",
         json={"enabled": False},
-        headers=auth_header(viewer_token),
+        headers=auth_header(user_token),
     )
     assert update_denied.status_code == 403
 
     delete_denied = await client.delete(
         f"/admin/alerts/owner-groups/{group_id}",
-        headers=auth_header(viewer_token),
+        headers=auth_header(user_token),
     )
     assert delete_denied.status_code == 403
 

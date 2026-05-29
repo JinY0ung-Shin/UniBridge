@@ -112,13 +112,31 @@ def admin_token():
 
 
 @pytest.fixture
-def developer_token():
-    return create_token("testdev", "developer")
+def user_token():
+    return create_token("testuser", "user")
 
 
 @pytest.fixture
-def viewer_token():
-    return create_token("testviewer", "viewer")
+async def querier_token(seeded_db):
+    """Token for a custom non-admin role that has query.execute but not
+    query.databases.write.
+
+    The two-system-role model (admin/user) intentionally gives no seeded
+    non-admin role direct-query rights, but admins can still create arbitrary
+    roles. This fixture seeds such a role so the per-database Permission
+    enforcement logic (SELECT-only grants, missing-grant 403, etc.) stays under
+    test. The role is created directly in the seeded test engine.
+    """
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        role = Role(name="querier", description="Test querier", is_system=False)
+        db.add(role)
+        await db.flush()
+        for perm in ("query.execute", "query.databases.read"):
+            db.add(RolePermission(role_id=role.id, permission=perm))
+        await db.commit()
+    await invalidate_permission_cache()
+    return create_token("testquerier", "querier")
 
 
 def auth_header(token: str) -> dict[str, str]:

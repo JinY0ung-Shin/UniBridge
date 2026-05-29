@@ -1811,53 +1811,33 @@ class TestLongRanges:
 class TestPermissions:
     """Verify role-based access control on gateway endpoints."""
 
-    # -- Developer role: has gateway.routes.read but NOT gateway.routes.write --
+    # -- Admin role: has gateway.routes.read and gateway.routes.write --
 
-    async def test_developer_can_read_routes(self, client, developer_token):
+    async def test_admin_can_read_routes(self, client, admin_token):
         with patch(
             "app.routers.gateway.apisix_client.list_resources",
             new_callable=AsyncMock,
             return_value={"items": [], "total": 0},
         ):
             resp = await client.get(
-                "/admin/gateway/routes", headers=auth_header(developer_token)
+                "/admin/gateway/routes", headers=auth_header(admin_token)
             )
         assert resp.status_code == 200
 
-    async def test_developer_cannot_write_routes(self, client, developer_token):
-        resp = await client.put(
-            "/admin/gateway/routes/r1",
-            json={"uri": "/test", "upstream_id": "u1"},
-            headers=auth_header(developer_token),
-        )
-        assert resp.status_code == 403
-
-    async def test_developer_cannot_delete_routes(self, client, developer_token):
-        resp = await client.delete(
-            "/admin/gateway/routes/r1", headers=auth_header(developer_token)
-        )
-        assert resp.status_code == 403
-
-    async def test_developer_can_read_upstreams(self, client, developer_token):
+    async def test_admin_can_read_upstreams(self, client, admin_token):
         with patch(
             "app.routers.gateway.apisix_client.list_resources",
             new_callable=AsyncMock,
             return_value={"items": [], "total": 0},
         ):
             resp = await client.get(
-                "/admin/gateway/upstreams", headers=auth_header(developer_token)
+                "/admin/gateway/upstreams", headers=auth_header(admin_token)
             )
         assert resp.status_code == 200
 
-    async def test_developer_cannot_write_upstreams(self, client, developer_token):
-        resp = await client.put(
-            "/admin/gateway/upstreams/u1",
-            json={"nodes": {}},
-            headers=auth_header(developer_token),
-        )
-        assert resp.status_code == 403
+    # -- User role: only has gateway.monitoring.read --
 
-    async def test_developer_can_read_monitoring(self, client, developer_token):
+    async def test_user_can_read_monitoring(self, client, user_token):
         empty = [{"value": [0, "0"]}]
         with patch(
             "app.routers.gateway.prometheus_client.instant_query",
@@ -1866,42 +1846,41 @@ class TestPermissions:
         ):
             resp = await client.get(
                 "/admin/gateway/metrics/summary?range=1h",
-                headers=auth_header(developer_token),
+                headers=auth_header(user_token),
             )
         assert resp.status_code == 200
 
-    # -- Viewer role: only has gateway.monitoring.read --
-
-    async def test_viewer_can_read_monitoring(self, client, viewer_token):
-        empty = [{"value": [0, "0"]}]
-        with patch(
-            "app.routers.gateway.prometheus_client.instant_query",
-            new_callable=AsyncMock,
-            side_effect=[empty, empty, empty],
-        ):
-            resp = await client.get(
-                "/admin/gateway/metrics/summary?range=1h",
-                headers=auth_header(viewer_token),
-            )
-        assert resp.status_code == 200
-
-    async def test_viewer_cannot_read_routes(self, client, viewer_token):
+    async def test_user_cannot_read_routes(self, client, user_token):
         resp = await client.get(
-            "/admin/gateway/routes", headers=auth_header(viewer_token)
+            "/admin/gateway/routes", headers=auth_header(user_token)
         )
         assert resp.status_code == 403
 
-    async def test_viewer_cannot_read_upstreams(self, client, viewer_token):
+    async def test_user_cannot_read_upstreams(self, client, user_token):
         resp = await client.get(
-            "/admin/gateway/upstreams", headers=auth_header(viewer_token)
+            "/admin/gateway/upstreams", headers=auth_header(user_token)
         )
         assert resp.status_code == 403
 
-    async def test_viewer_cannot_write_routes(self, client, viewer_token):
+    async def test_user_cannot_write_routes(self, client, user_token):
         resp = await client.put(
             "/admin/gateway/routes/r1",
             json={"uri": "/test"},
-            headers=auth_header(viewer_token),
+            headers=auth_header(user_token),
+        )
+        assert resp.status_code == 403
+
+    async def test_user_cannot_delete_routes(self, client, user_token):
+        resp = await client.delete(
+            "/admin/gateway/routes/r1", headers=auth_header(user_token)
+        )
+        assert resp.status_code == 403
+
+    async def test_user_cannot_write_upstreams(self, client, user_token):
+        resp = await client.put(
+            "/admin/gateway/upstreams/u1",
+            json={"nodes": {}},
+            headers=auth_header(user_token),
         )
         assert resp.status_code == 403
 

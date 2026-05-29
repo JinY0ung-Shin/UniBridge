@@ -33,7 +33,7 @@ from tests.conftest import auth_header
 
 class TestAllPermissions:
     def test_all_permissions_has_expected_entries(self):
-        assert len(ALL_PERMISSIONS) == 24
+        assert len(ALL_PERMISSIONS) == 25
 
     def test_all_permissions_are_unique(self):
         assert len(ALL_PERMISSIONS) == len(set(ALL_PERMISSIONS))
@@ -108,7 +108,7 @@ class TestCreateToken:
 
     def test_different_roles_get_different_tokens(self):
         t1 = create_token("alice", "admin")
-        t2 = create_token("alice", "viewer")
+        t2 = create_token("alice", "user")
         assert t1 != t2
 
     def test_token_uses_hs256_algorithm(self):
@@ -132,10 +132,10 @@ class TestGetCurrentUser:
         assert user.role == "admin"
 
     async def test_returns_correct_role(self):
-        token = create_token("bob", "developer")
+        token = create_token("bob", "user")
         creds = _make_credentials(token)
         user = await get_current_user(credentials=creds)
-        assert user.role == "developer"
+        assert user.role == "user"
 
     async def test_raises_401_on_invalid_token(self):
         from fastapi import HTTPException
@@ -209,22 +209,15 @@ class TestGetRolePermissions:
             assert isinstance(perms, set)
             assert perms == set(ALL_PERMISSIONS)
 
-    async def test_returns_developer_permissions(self, seeded_db):
+    async def test_returns_user_permissions(self, seeded_db):
         await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
-            perms = await get_role_permissions(db, "developer")
-            assert "query.execute" in perms
-            assert "query.databases.read" in perms
+            perms = await get_role_permissions(db, "user")
+            assert perms == {"gateway.monitoring.read", "alerts.read", "apikeys.self"}
+            assert "query.execute" not in perms
             assert "query.databases.write" not in perms
             assert "admin.roles.write" not in perms
-
-    async def test_returns_viewer_permissions(self, seeded_db):
-        await invalidate_permission_cache()
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-        async with session_factory() as db:
-            perms = await get_role_permissions(db, "viewer")
-            assert perms == {"gateway.monitoring.read", "query.audit.read", "alerts.read"}
 
     async def test_returns_empty_set_for_unknown_role(self, seeded_db):
         await invalidate_permission_cache()
@@ -387,7 +380,7 @@ class TestRequirePermission:
         await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
-            token = create_token("testviewer", "viewer")
+            token = create_token("testuser", "user")
             creds = _make_credentials(token)
             user = await get_current_user(credentials=creds)
 
@@ -401,14 +394,14 @@ class TestRequirePermission:
         await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
-            token = create_token("testviewer", "viewer")
+            token = create_token("testuser", "user")
             creds = _make_credentials(token)
             user = await get_current_user(credentials=creds)
 
-            # viewer has "query.audit.read" but not "admin.roles.write"
-            checker = require_permission("admin.roles.write", "query.audit.read")
+            # user has "alerts.read" but not "admin.roles.write"
+            checker = require_permission("admin.roles.write", "alerts.read")
             result = await checker(user=user, db=db)
-            assert result.username == "testviewer"
+            assert result.username == "testuser"
 
     async def test_raises_403_when_none_of_multiple_perms_match(self, seeded_db):
         from fastapi import HTTPException
@@ -416,32 +409,34 @@ class TestRequirePermission:
         await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
-            token = create_token("testviewer", "viewer")
+            token = create_token("testuser", "user")
             creds = _make_credentials(token)
             user = await get_current_user(credentials=creds)
 
-            # viewer has neither of these
+            # user has neither of these
             checker = require_permission("admin.roles.write", "query.databases.write")
             with pytest.raises(HTTPException) as exc_info:
                 await checker(user=user, db=db)
             assert exc_info.value.status_code == 403
             assert "Required permission" in exc_info.value.detail
 
-    async def test_developer_has_execute_but_not_write(self, seeded_db):
+    async def test_user_lacks_execute_and_write(self, seeded_db):
         await invalidate_permission_cache()
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
-            token = create_token("testdev", "developer")
+            token = create_token("testuser", "user")
             creds = _make_credentials(token)
             user = await get_current_user(credentials=creds)
 
-            # developer has query.execute
-            checker_exec = require_permission("query.execute")
-            result = await checker_exec(user=user, db=db)
-            assert result.role == "developer"
-
-            # developer does NOT have query.databases.write
             from fastapi import HTTPException
+
+            # user does NOT have query.execute
+            checker_exec = require_permission("query.execute")
+            with pytest.raises(HTTPException) as exc_info:
+                await checker_exec(user=user, db=db)
+            assert exc_info.value.status_code == 403
+
+            # user does NOT have query.databases.write
             checker_write = require_permission("query.databases.write")
             with pytest.raises(HTTPException) as exc_info:
                 await checker_write(user=user, db=db)
@@ -454,8 +449,8 @@ class TestRequirePermission:
 
 
 class TestSeedRoles:
-    async def test_seed_creates_three_roles(self, engine):
-        """_seed_roles should create admin, developer, viewer roles."""
+    async def test_seed_creates_two_roles(self, engine):
+        """_seed_roles should create admin and user roles."""
         # We need to point the database module's session factory at our test engine
         from app.database import _seed_roles
 
@@ -468,9 +463,8 @@ class TestSeedRoles:
             roles = result.scalars().all()
             role_names = [r.name for r in roles]
             assert "admin" in role_names
-            assert "developer" in role_names
-            assert "viewer" in role_names
-            assert len(role_names) == 3
+            assert "user" in role_names
+            assert len(role_names) == 2
 
     async def test_seed_admin_has_all_permissions(self, engine):
         from app.database import _seed_roles
@@ -488,7 +482,7 @@ class TestSeedRoles:
             perms = {row[0] for row in perm_result.all()}
             assert perms == set(ALL_PERMISSIONS)
 
-    async def test_seed_developer_permissions(self, engine):
+    async def test_seed_user_permissions(self, engine):
         from app.database import _seed_roles
 
         session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -496,38 +490,13 @@ class TestSeedRoles:
             await _seed_roles()
 
         async with session_factory() as db:
-            result = await db.execute(select(Role).where(Role.name == "developer"))
-            dev_role = result.scalar_one()
+            result = await db.execute(select(Role).where(Role.name == "user"))
+            user_role = result.scalar_one()
             perm_result = await db.execute(
-                select(RolePermission.permission).where(RolePermission.role_id == dev_role.id)
+                select(RolePermission.permission).where(RolePermission.role_id == user_role.id)
             )
             perms = {row[0] for row in perm_result.all()}
-            expected = {
-                "query.databases.read", "query.permissions.read", "query.audit.read",
-                "query.execute",
-                "gateway.routes.read", "gateway.upstreams.read",
-                "gateway.monitoring.read",
-                "apikeys.read",
-                "alerts.read",
-                "s3.connections.read", "s3.browse",
-            }
-            assert perms == expected
-
-    async def test_seed_viewer_permissions(self, engine):
-        from app.database import _seed_roles
-
-        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        with patch("app.database.async_session", session_factory):
-            await _seed_roles()
-
-        async with session_factory() as db:
-            result = await db.execute(select(Role).where(Role.name == "viewer"))
-            viewer_role = result.scalar_one()
-            perm_result = await db.execute(
-                select(RolePermission.permission).where(RolePermission.role_id == viewer_role.id)
-            )
-            perms = {row[0] for row in perm_result.all()}
-            assert perms == {"gateway.monitoring.read", "query.audit.read", "alerts.read"}
+            assert perms == {"gateway.monitoring.read", "alerts.read", "apikeys.self"}
 
     async def test_seed_roles_are_marked_as_system(self, engine):
         from app.database import _seed_roles
@@ -553,7 +522,7 @@ class TestSeedRoles:
         async with session_factory() as db:
             result = await db.execute(select(Role))
             roles = result.scalars().all()
-            assert len(roles) == 3
+            assert len(roles) == 2
 
             # Verify no duplicate permissions
             for role in roles:
@@ -576,21 +545,21 @@ class TestSeedRoles:
         with patch("app.database.async_session", session_factory):
             await _seed_roles()
 
-        # Manually remove some permissions from the viewer role
+        # Manually remove some permissions from the user role
         async with session_factory() as db:
-            result = await db.execute(select(Role).where(Role.name == "viewer"))
-            viewer = result.scalar_one()
+            result = await db.execute(select(Role).where(Role.name == "user"))
+            user = result.scalar_one()
             await db.execute(
-                delete(RolePermission).where(RolePermission.role_id == viewer.id)
+                delete(RolePermission).where(RolePermission.role_id == user.id)
             )
             await db.commit()
 
         # Verify permissions are gone
         async with session_factory() as db:
-            result = await db.execute(select(Role).where(Role.name == "viewer"))
-            viewer = result.scalar_one()
+            result = await db.execute(select(Role).where(Role.name == "user"))
+            user = result.scalar_one()
             perm_result = await db.execute(
-                select(RolePermission.permission).where(RolePermission.role_id == viewer.id)
+                select(RolePermission.permission).where(RolePermission.role_id == user.id)
             )
             assert len(perm_result.all()) == 0
 
@@ -600,13 +569,13 @@ class TestSeedRoles:
 
         # Verify permissions are restored
         async with session_factory() as db:
-            result = await db.execute(select(Role).where(Role.name == "viewer"))
-            viewer = result.scalar_one()
+            result = await db.execute(select(Role).where(Role.name == "user"))
+            user = result.scalar_one()
             perm_result = await db.execute(
-                select(RolePermission.permission).where(RolePermission.role_id == viewer.id)
+                select(RolePermission.permission).where(RolePermission.role_id == user.id)
             )
             perms = {row[0] for row in perm_result.all()}
-            assert perms == {"gateway.monitoring.read", "query.audit.read", "alerts.read"}
+            assert perms == {"gateway.monitoring.read", "alerts.read", "apikeys.self"}
 
     async def test_seed_upsert_restores_description(self, engine):
         """Re-seeding should restore the description to the seed value."""
@@ -682,7 +651,7 @@ class TestInitDb:
             result = await db.execute(select(Role))
             roles = result.scalars().all()
             role_names = sorted([r.name for r in roles])
-            assert role_names == ["admin", "developer", "viewer"]
+            assert role_names == ["admin", "user"]
 
         await test_engine.dispose()
 
@@ -706,26 +675,24 @@ class TestTokenEndpoint:
         assert payload["sub"] == "testuser"
         assert payload["role"] == "admin"
 
-    async def test_issue_token_with_developer_role(self, client):
-        resp = await client.post("/auth/token", json={"username": "dev", "role": "developer"})
+    async def test_issue_token_with_user_role(self, client):
+        resp = await client.post("/auth/token", json={"username": "regular", "role": "user"})
         assert resp.status_code == 200
         payload = jwt.decode(
             resp.json()["access_token"], settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM]
         )
-        assert payload["role"] == "developer"
+        assert payload["role"] == "user"
 
-    async def test_issue_token_with_viewer_role(self, client):
-        resp = await client.post("/auth/token", json={"username": "viewer", "role": "viewer"})
-        assert resp.status_code == 200
+    async def test_issue_token_default_role_no_longer_seeded(self, client):
+        """The schema default for role is still 'viewer', which is no longer a
+        seeded role, so issuing a token with the default role is rejected.
 
-    async def test_issue_token_default_role_is_viewer(self, client):
-        """The schema default for role is 'viewer'."""
+        NOTE: TokenRequest.role still defaults to 'viewer' in app/schemas.py —
+        a stale default left over from the admin/user role simplification.
+        """
         resp = await client.post("/auth/token", json={"username": "someone"})
-        assert resp.status_code == 200
-        payload = jwt.decode(
-            resp.json()["access_token"], settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM]
-        )
-        assert payload["role"] == "viewer"
+        assert resp.status_code == 400
+        assert "does not exist" in resp.json()["detail"]
 
     async def test_issue_token_nonexistent_role_returns_400(self, client):
         resp = await client.post("/auth/token", json={"username": "test", "role": "superadmin"})
@@ -753,22 +720,15 @@ class TestAuthMeEndpoint:
         # admin should have all permissions
         assert set(data["permissions"]) == set(ALL_PERMISSIONS)
 
-    async def test_get_me_with_developer_token(self, client, developer_token):
-        resp = await client.get("/auth/me", headers=auth_header(developer_token))
+    async def test_get_me_with_user_token(self, client, user_token):
+        resp = await client.get("/auth/me", headers=auth_header(user_token))
         assert resp.status_code == 200
         data = resp.json()
-        assert data["username"] == "testdev"
-        assert data["role"] == "developer"
-        assert "query.execute" in data["permissions"]
+        assert data["username"] == "testuser"
+        assert data["role"] == "user"
+        assert set(data["permissions"]) == {"gateway.monitoring.read", "alerts.read", "apikeys.self"}
+        assert "query.execute" not in data["permissions"]
         assert "admin.roles.write" not in data["permissions"]
-
-    async def test_get_me_with_viewer_token(self, client, viewer_token):
-        resp = await client.get("/auth/me", headers=auth_header(viewer_token))
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["username"] == "testviewer"
-        assert data["role"] == "viewer"
-        assert set(data["permissions"]) == {"gateway.monitoring.read", "query.audit.read", "alerts.read"}
 
     async def test_get_me_without_token_returns_401(self, client):
         resp = await client.get("/auth/me")
@@ -801,17 +761,16 @@ class TestAuthRolesEndpoint:
         data = resp.json()
         assert isinstance(data, list)
         assert "admin" in data
-        assert "developer" in data
-        assert "viewer" in data
+        assert "user" in data
 
     async def test_list_roles_returns_sorted(self, client, admin_token):
         resp = await client.get("/auth/roles", headers=auth_header(admin_token))
         data = resp.json()
         assert data == sorted(data)
 
-    async def test_list_roles_returns_strings(self, client, viewer_token):
+    async def test_list_roles_returns_strings(self, client, user_token):
         """Any authenticated user can list roles."""
-        resp = await client.get("/auth/roles", headers=auth_header(viewer_token))
+        resp = await client.get("/auth/roles", headers=auth_header(user_token))
         assert resp.status_code == 200
         data = resp.json()
         assert all(isinstance(name, str) for name in data)
@@ -831,13 +790,9 @@ class TestAdminPermissionsEndpoint:
         assert set(data) == set(ALL_PERMISSIONS)
         assert len(data) == len(ALL_PERMISSIONS)
 
-    async def test_list_permissions_as_developer_forbidden(self, client, developer_token):
-        """developer role does not have admin.roles.read."""
-        resp = await client.get("/admin/permissions", headers=auth_header(developer_token))
-        assert resp.status_code == 403
-
-    async def test_list_permissions_as_viewer_forbidden(self, client, viewer_token):
-        resp = await client.get("/admin/permissions", headers=auth_header(viewer_token))
+    async def test_list_permissions_as_user_forbidden(self, client, user_token):
+        """user role does not have admin.roles.read."""
+        resp = await client.get("/admin/permissions", headers=auth_header(user_token))
         assert resp.status_code == 403
 
     async def test_list_permissions_without_auth_returns_401(self, client):

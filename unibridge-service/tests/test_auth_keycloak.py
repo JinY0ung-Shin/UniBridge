@@ -61,7 +61,7 @@ def make_token(rsa_keypair):
             "exp": datetime.now(timezone.utc) + expires_delta,
         }
         if roles is None:
-            payload["realm_access"] = {"roles": ["developer"]}
+            payload["realm_access"] = {"roles": ["user"]}
         else:
             payload["roles"] = roles
 
@@ -100,10 +100,11 @@ async def test_rs256_token_with_matching_kid_is_accepted(
 ):
     httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
 
-    user = await _verify_keycloak_token(make_token(kid="kid-1", roles=["viewer", "developer"]))
+    user = await _verify_keycloak_token(make_token(kid="kid-1", roles=["user", "admin"]))
 
     assert user.username == "alice"
-    assert user.role == "developer"
+    # admin has higher ROLE_PRIORITY than user, so it wins
+    assert user.role == "admin"
 
 
 @pytest.mark.asyncio
@@ -118,7 +119,7 @@ async def test_missing_kid_forces_jwks_refresh_and_accepts_rotated_key(
     user = await _verify_keycloak_token(make_token(kid="new-kid"))
 
     assert user.username == "alice"
-    assert user.role == "developer"
+    assert user.role == "user"
     assert len(httpx_mock.get_requests(url=JWKS_URL)) == 2
 
 
@@ -191,7 +192,7 @@ async def test_none_algorithm_token_is_rejected_in_keycloak_mode(
         "iss": ISSUER,
         "aud": AUDIENCE,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
-        "realm_access": {"roles": ["developer"]},
+        "realm_access": {"roles": ["user"]},
     }
     token = jwt.encode(payload, key="", algorithm="none", headers={"kid": "kid-1"})
     httpx_mock.add_response(url=JWKS_URL, json={"keys": [make_jwks_key("kid-1")]})
@@ -251,7 +252,7 @@ async def test_concurrent_verification_fetches_jwks_once(
     users = await asyncio.gather(*(_verify_keycloak_token(token) for _ in range(50)))
 
     assert {user.username for user in users} == {"alice"}
-    assert {user.role for user in users} == {"developer"}
+    assert {user.role for user in users} == {"user"}
     assert len(httpx_mock.get_requests(url=JWKS_URL)) == 1
 
 
@@ -266,4 +267,4 @@ async def test_get_current_user_uses_keycloak_when_issuer_configured(
     user = await get_current_user(credentials=_credentials(make_token(kid="kid-1")))
 
     assert user.username == "alice"
-    assert user.role == "developer"
+    assert user.role == "user"

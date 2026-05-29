@@ -356,10 +356,10 @@ async def test_get_realm_roles_success(kc_client, httpx_mock: HTTPXMock):
     httpx_mock.add_response(
         method="GET",
         url=f"{ADMIN_URL}/roles",
-        json=[{"id": "r1", "name": "admin"}, {"id": "r2", "name": "viewer"}],
+        json=[{"id": "r1", "name": "admin"}, {"id": "r2", "name": "user"}],
     )
     roles = await kc_client.get_realm_roles()
-    assert {r["name"] for r in roles} == {"admin", "viewer"}
+    assert {r["name"] for r in roles} == {"admin", "user"}
     await kc_client.close()
 
 
