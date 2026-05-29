@@ -58,20 +58,12 @@ async def db_session(engine):
 
 @pytest.fixture
 async def seeded_db(engine):
-    """Engine with seeded admin/developer/viewer roles."""
+    """Engine with seeded admin/user roles."""
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         SEED_ROLES = {
             "admin": ALL_PERMISSIONS,
-            "developer": [
-                "query.databases.read", "query.permissions.read", "query.audit.read",
-                "query.execute",
-                "gateway.routes.read", "gateway.upstreams.read",
-                "gateway.monitoring.read",
-                "apikeys.read",
-                "alerts.read",
-            ],
-            "viewer": ["gateway.monitoring.read", "query.audit.read", "alerts.read"],
+            "user": ["gateway.monitoring.read", "alerts.read", "apikeys.self"],
         }
         for role_name, perms in SEED_ROLES.items():
             role = Role(name=role_name, description=f"Test {role_name}", is_system=True)
