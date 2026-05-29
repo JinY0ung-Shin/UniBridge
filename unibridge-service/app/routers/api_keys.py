@@ -434,8 +434,15 @@ async def update_api_key(
             existing_consumer = await apisix_client.get_resource("consumers", name)
             existing_plugins = dict(existing_consumer.get("plugins", {}))
             old_consumer_plugins = dict(existing_plugins)  # snapshot for rollback
-        except Exception:
-            existing_plugins = {}
+        except Exception as exc:
+            # Preservation-sensitive update: without the real existing plugins we
+            # would PUT a consumer that drops the other plugin (e.g. a rate-limit
+            # update would wipe key-auth, a key rotation would wipe limit-count).
+            # Fail hard instead of silently destroying consumer config.
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Cannot update API key '{name}': failed to read existing APISIX consumer ({exc})",
+            )
         if body.api_key:
             existing_plugins["key-auth"] = {"key": body.api_key}
         if rate_limit_provided:

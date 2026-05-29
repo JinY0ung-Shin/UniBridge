@@ -291,17 +291,15 @@ async def test_update_api_key_404(client, admin_token):
 
 
 @pytest.mark.asyncio
-async def test_update_api_key_existing_consumer_get_fails_uses_empty_plugins(
+async def test_update_api_key_fails_when_existing_consumer_unreadable(
     client, admin_token,
 ):
-    """When fetching the existing consumer fails, we still update with new key."""
+    """If the existing consumer can't be read during a key/rate-limit update, the
+    endpoint must fail 502 and NOT PUT the consumer (a lossy PUT would drop the
+    plugins we couldn't read, e.g. wiping limit-count when rotating the key)."""
     await _create_key(client, admin_token, "upd-misfetch", "k0")
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
-        # First put_resource (during update) succeeds
-        mock_apisix.put_resource = AsyncMock(return_value={
-            "username": "upd-misfetch",
-            "plugins": {"key-auth": {"key": "newk"}},
-        })
+        mock_apisix.put_resource = AsyncMock(return_value={})
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("nope"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
         resp = await client.put(
@@ -309,9 +307,39 @@ async def test_update_api_key_existing_consumer_get_fails_uses_empty_plugins(
             json={"api_key": "newk"},
             headers=auth_header(admin_token),
         )
-    assert resp.status_code == 200
-    assert resp.json()["api_key"] == "newk"
-    assert resp.json()["key_created"] is True
+    assert resp.status_code == 502
+    assert "failed to read existing APISIX consumer" in resp.json()["detail"]
+    # No lossy PUT: we never wrote the consumer without the real existing plugins.
+    consumer_puts = [
+        c for c in mock_apisix.put_resource.await_args_list if c.args[0] == "consumers"
+    ]
+    assert consumer_puts == []
+
+
+@pytest.mark.asyncio
+async def test_update_rate_limit_only_fails_when_consumer_unreadable(
+    client, admin_token,
+):
+    """A rate-limit-only update where the existing consumer can't be read must
+    fail 502 and NOT PUT the consumer — otherwise the existing key-auth plugin
+    would be dropped (consumer carrying only limit-count)."""
+    await _create_key(client, admin_token, "rl-misfetch", "k0")
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.get_resource = AsyncMock(side_effect=RuntimeError("apisix down"))
+        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+        resp = await client.put(
+            "/admin/api-keys/rl-misfetch",
+            json={"rate_limit_per_minute": 50},
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 502
+    assert "failed to read existing APISIX consumer" in resp.json()["detail"]
+    # The existing key-auth is never dropped: no consumer PUT happened at all.
+    consumer_puts = [
+        c for c in mock_apisix.put_resource.await_args_list if c.args[0] == "consumers"
+    ]
+    assert consumer_puts == []
 
 
 @pytest.mark.asyncio
