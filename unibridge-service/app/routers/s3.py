@@ -201,7 +201,7 @@ async def _require_s3_browse(
     """Allow access via API key (APISIX consumer-restriction enforces route access)
     or JWT with s3.browse permission."""
     if isinstance(user, ApiKeyUser):
-        if alias not in user.allowed_databases:
+        if "*" not in user.allowed_databases and alias not in user.allowed_databases:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"API key '{user.consumer_name}' is not allowed to access S3 alias '{alias}'",

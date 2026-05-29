@@ -211,7 +211,7 @@ async def execute(
 
     # API Key user: check allowed databases
     if isinstance(user, ApiKeyUser):
-        if req.database not in user.allowed_databases:
+        if "*" not in user.allowed_databases and req.database not in user.allowed_databases:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"API key '{user.consumer_name}' is not allowed to access database '{req.database}'",
