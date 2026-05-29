@@ -750,10 +750,9 @@ class TestAuthMe:
         data = resp.json()
         assert data["username"] == "testuser"
         assert data["role"] == "user"
-        assert len(data["permissions"]) == 3
+        assert len(data["permissions"]) == 2
         assert set(data["permissions"]) == {
-            "gateway.monitoring.read",
-            "alerts.read",
+            "gateway.monitoring.self",
             "apikeys.self",
         }
 
@@ -814,8 +813,7 @@ class TestRoleList:
 
         user_role = roles_by_name["user"]
         assert set(user_role["permissions"]) == {
-            "gateway.monitoring.read",
-            "alerts.read",
+            "gateway.monitoring.self",
             "apikeys.self",
         }
         assert "query.execute" not in user_role["permissions"]

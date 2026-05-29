@@ -194,6 +194,19 @@ async def test_create_api_key(client, admin_token):
 
 
 @pytest.mark.asyncio
+async def test_create_api_key_rejects_reserved_dunder_name(client, admin_token):
+    """Names wrapped in '__' are reserved for internal sentinels (e.g. the
+    gateway-monitoring no-key sentinel '__no_self_api_key__'); a real key with
+    such a name would leak its traffic to keyless self-scoped users."""
+    resp = await client.post(
+        "/admin/api-keys",
+        json={"name": "__no_self_api_key__", "api_key": "key-x"},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_create_api_key_partial_routes_excludes_consumer_from_other_routes(client, admin_token):
     """Regression: a key with allowed_routes=["query-api"] must NOT appear
     in the llm-proxy whitelist.  Before the fix, the consumer-restriction

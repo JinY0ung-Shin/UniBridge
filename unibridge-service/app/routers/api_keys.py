@@ -216,6 +216,16 @@ async def create_api_key(
             detail=f"API key name '{DENY_ALL_CONSUMER}' is reserved",
         )
 
+    # Names wrapped in double underscores are reserved for internal sentinels
+    # (e.g. __deny_all__, and the gateway-monitoring "no self key" sentinel that
+    # self-scoped users fall back to — a real key with that name would leak its
+    # traffic to every keyless self-scoped user).
+    if body.name.startswith("__") and body.name.endswith("__"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="API key names wrapped in '__' are reserved",
+        )
+
     if body.name.startswith("self_"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

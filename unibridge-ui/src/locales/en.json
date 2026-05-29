@@ -48,7 +48,8 @@
     "name": "Name",
     "type": "Type",
     "status": "Status",
-    "errorOccurred": "An error occurred"
+    "errorOccurred": "An error occurred",
+    "noAccess": "No accessible pages. Contact an administrator."
   },
   "settings": {
     "title": "Settings",

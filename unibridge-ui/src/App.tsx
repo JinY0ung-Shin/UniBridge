@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import Layout from './components/Layout';
 import { usePermissions } from './components/usePermissions';
+import { hasNavPermission, firstAccessiblePath } from './components/navItems';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Connections = lazy(() => import('./pages/Connections'));
@@ -26,12 +27,12 @@ const AlertStatus = lazy(() => import('./pages/AlertStatus'));
 const S3Connections = lazy(() => import('./pages/S3Connections'));
 const S3Browser = lazy(() => import('./pages/S3Browser'));
 
-export function ProtectedRoute({ permission, children }: { permission: string; children: React.ReactNode }) {
+export function ProtectedRoute({ permission, children }: { permission: string | string[]; children: React.ReactNode }) {
   const { permissions: perms, loaded } = usePermissions();
   if (!loaded) {
     return null;
   }
-  if (!perms.includes(permission)) {
+  if (!hasNavPermission(permission, perms)) {
     return <Navigate to="/" replace />;
   }
   return <>{children}</>;
@@ -46,12 +47,28 @@ function RouteFallback() {
   );
 }
 
+// Landing page: dashboard for users who can see it, otherwise their first
+// accessible page (e.g. self-service users go to gateway monitoring / my key).
+function Home() {
+  const { t } = useTranslation();
+  const { permissions, loaded } = usePermissions();
+  if (!loaded) return null;
+  if (permissions.includes('dashboard.read')) return <Dashboard />;
+  const target = firstAccessiblePath(permissions);
+  if (target) return <Navigate to={target} replace />;
+  return (
+    <div style={{ padding: 24, color: 'var(--text-secondary)', fontSize: 14 }}>
+      {t('common.noAccess')}
+    </div>
+  );
+}
+
 function App() {
   return (
     <Layout>
       <Suspense fallback={<RouteFallback />}>
         <Routes>
-          <Route path="/" element={<Dashboard />} />
+          <Route path="/" element={<Home />} />
           <Route path="/connections" element={<ProtectedRoute permission="query.databases.read"><Connections /></ProtectedRoute>} />
           <Route path="/permissions" element={<ProtectedRoute permission="query.permissions.read"><Permissions /></ProtectedRoute>} />
           <Route path="/audit-logs" element={<ProtectedRoute permission="query.audit.read"><AuditLogs /></ProtectedRoute>} />
@@ -64,7 +81,7 @@ function App() {
           <Route path="/gateway/routes/new" element={<ProtectedRoute permission="gateway.routes.write"><GatewayRouteForm /></ProtectedRoute>} />
           <Route path="/gateway/routes/:id/edit" element={<ProtectedRoute permission="gateway.routes.write"><GatewayRouteForm /></ProtectedRoute>} />
           <Route path="/gateway/upstreams" element={<ProtectedRoute permission="gateway.upstreams.read"><GatewayUpstreams /></ProtectedRoute>} />
-          <Route path="/gateway/monitoring" element={<ProtectedRoute permission="gateway.monitoring.read"><GatewayMonitoring /></ProtectedRoute>} />
+          <Route path="/gateway/monitoring" element={<ProtectedRoute permission={['gateway.monitoring.read', 'gateway.monitoring.self']}><GatewayMonitoring /></ProtectedRoute>} />
           <Route path="/llm/monitoring" element={<ProtectedRoute permission="gateway.monitoring.read"><LlmMonitoring /></ProtectedRoute>} />
           <Route path="/api-keys" element={<ProtectedRoute permission="apikeys.read"><ApiKeys /></ProtectedRoute>} />
           <Route path="/my-api-key" element={<ProtectedRoute permission="apikeys.self"><MyApiKey /></ProtectedRoute>} />

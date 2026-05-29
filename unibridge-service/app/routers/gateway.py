@@ -11,11 +11,13 @@ from typing import Any, NoReturn
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 import httpx
 from httpx import HTTPStatusError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import CurrentUser, require_permission
+from app.auth import CurrentUser, get_current_user, get_role_permissions, require_permission
 from app.config import settings
 from app.database import get_db
+from app.models import ApiKeyAccess
 from app.services import apisix_client
 from app.services import prometheus_client
 from app.services.alert_state import delete_alert_state
@@ -729,6 +731,66 @@ def _validate_consumer(consumer: str | None) -> None:
         )
 
 
+@dataclass
+class _MonitoringScope:
+    """Result of gateway-monitoring authorization + consumer scoping."""
+
+    forced_consumer: str | None  # when restricted, the consumer to force-filter on
+    restricted: bool             # True when the caller may only see their own traffic
+
+
+# Sentinel consumer that matches no Prometheus series — used when a self-scoped
+# caller has no API key yet, so they see zero data instead of everyone's. Wrapped
+# in "__" so api_keys.create_api_key rejects any real key with this name (a real
+# key named this would otherwise leak its traffic to every keyless self caller).
+_SELF_NO_KEY = "__no_self_api_key__"
+
+
+async def _gateway_monitoring_scope(
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> _MonitoringScope:
+    """Authorize gateway monitoring and decide consumer scoping.
+
+    - ``gateway.monitoring.read`` → full access (no forced consumer filter).
+    - only ``gateway.monitoring.self`` → force-scope to the caller's own API-key
+      consumer (or a no-match sentinel if they have none).
+    - neither → 403.
+    """
+    perms = await get_role_permissions(db, user.role)
+    if "gateway.monitoring.read" in perms:
+        return _MonitoringScope(forced_consumer=None, restricted=False)
+    if "gateway.monitoring.self" in perms:
+        owned = (
+            await db.execute(
+                select(ApiKeyAccess.consumer_name).where(ApiKeyAccess.owner == user.sub)
+            )
+        ).scalars().first()
+        return _MonitoringScope(forced_consumer=owned or _SELF_NO_KEY, restricted=True)
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Required permission: gateway.monitoring.read or gateway.monitoring.self",
+    )
+
+
+def _scope_consumer(scope: _MonitoringScope, route: str | None, consumer: str | None) -> str | None:
+    """Validate the requested consumer, or override it for self-scoped callers.
+
+    Self-scoped callers cannot widen their view: their consumer filter is forced
+    to their own key regardless of any ``consumer`` query param they send, and
+    LLM-proxy traffic is hidden from them entirely (LLM monitoring is admin-only).
+    """
+    if scope.restricted:
+        if route == "llm-proxy":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="LLM metrics are not available",
+            )
+        return scope.forced_consumer
+    _validate_consumer(consumer)
+    return consumer
+
+
 def _labels(route: str | None, consumer: str | None, *extra: str) -> str:
     """Build PromQL label selector.
 
@@ -791,10 +853,10 @@ async def metrics_summary(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
-    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+    scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> dict[str, Any]:
     _validate_route(route)
-    _validate_consumer(consumer)
+    consumer = _scope_consumer(scope, route, consumer)
     hs = _labels(route, consumer)
     hs5 = _labels(route, consumer, 'code=~"5.."')
     try:
@@ -829,10 +891,10 @@ async def metrics_requests(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
-    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+    scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> list[dict[str, Any]]:
     _validate_route(route)
-    _validate_consumer(consumer)
+    consumer = _scope_consumer(scope, route, consumer)
     hs = _labels(route, consumer)
     try:
         results = await prometheus_client.range_query(
@@ -854,10 +916,10 @@ async def metrics_status_codes(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
-    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+    scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> list[dict[str, Any]]:
     _validate_route(route)
-    _validate_consumer(consumer)
+    consumer = _scope_consumer(scope, route, consumer)
     hs = _labels(route, consumer)
     try:
         results = await prometheus_client.instant_query(
@@ -888,10 +950,10 @@ async def metrics_latency(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
-    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+    scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> dict[str, list[dict[str, Any]]]:
     _validate_route(route)
-    _validate_consumer(consumer)
+    consumer = _scope_consumer(scope, route, consumer)
     hs = _labels(route, consumer)
     step = tw.step
     try:
@@ -925,9 +987,10 @@ async def metrics_latency(
 async def metrics_top_routes(
     tw: TimeWindow = Depends(resolve_time_window),
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
-    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+    scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> list[dict[str, Any]]:
-    _validate_consumer(consumer)
+    # No per-route filter here (aggregates across routes; llm-proxy excluded by _labels default).
+    consumer = _scope_consumer(scope, None, consumer)
     hs = _labels(None, consumer)
     try:
         results = await prometheus_client.instant_query(
@@ -956,10 +1019,10 @@ async def metrics_top_routes(
 async def metrics_routes_comparison(
     tw: TimeWindow = Depends(resolve_time_window),
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
-    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+    scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> dict[str, Any]:
     """Per-route comparison: requests, share, error_rate, p50/p95 latency in one payload."""
-    _validate_consumer(consumer)
+    consumer = _scope_consumer(scope, None, consumer)
     # Routes-comparison never targets a single route — it groups by route.
     # Default selector hides llm-proxy (LLM monitoring page covers that).
     hs = _labels(None, consumer)
@@ -1051,11 +1114,11 @@ async def metrics_requests_total(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
-    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+    scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> list[dict[str, Any]]:
     """Request volume per time bucket (total count, not rate)."""
     _validate_route(route)
-    _validate_consumer(consumer)
+    consumer = _scope_consumer(scope, route, consumer)
     hs = _labels(route, consumer)
     try:
         results = await prometheus_client.range_query(

@@ -5,30 +5,9 @@ import { useQuery } from '@tanstack/react-query';
 import { getCurrentUser } from '../api/client';
 import { useAuth } from './useAuth';
 import { PermissionProvider } from './PermissionContext';
+import { navItems, hasNavPermission } from './navItems';
 import SettingsModal from './SettingsModal';
 import './Layout.css';
-
-const navItems = [
-  { to: '/', labelKey: 'nav.dashboard', icon: 'Dashboard', section: 'data', permission: null },
-  { to: '/connections', labelKey: 'nav.connections', icon: 'Connections', section: 'data', permission: 'query.databases.read' },
-  { to: '/permissions', labelKey: 'nav.permissions', icon: 'Permissions', section: 'data', permission: 'query.permissions.read' },
-  { to: '/audit-logs', labelKey: 'nav.auditLogs', icon: 'Audit Logs', section: 'data', permission: 'query.audit.read' },
-  { to: '/query', labelKey: 'nav.queryPlayground', icon: 'Query Playground', section: 'data', permission: 'query.execute' },
-  { to: '/query-templates', labelKey: 'nav.queryTemplates', icon: 'Query Templates', section: 'data', permission: 'query.settings.read' },
-  { to: '/query-settings', labelKey: 'nav.querySettings', icon: 'Query Settings', section: 'data', permission: 'query.settings.read' },
-  { to: '/s3', labelKey: 'nav.s3Connections', icon: 'S3', section: 's3', permission: 's3.connections.read' },
-  { to: '/gateway/routes', labelKey: 'nav.gatewayRoutes', icon: 'Gateway Routes', section: 'gateway', permission: 'gateway.routes.read' },
-  { to: '/gateway/upstreams', labelKey: 'nav.gatewayUpstreams', icon: 'Gateway Upstreams', section: 'gateway', permission: 'gateway.upstreams.read' },
-  { to: '/gateway/monitoring', labelKey: 'nav.gatewayMonitoring', icon: 'Gateway Monitoring', section: 'gateway', permission: 'gateway.monitoring.read' },
-  { to: '/llm/monitoring', labelKey: 'nav.llmMonitoring', icon: 'LLM Monitoring', section: 'llm', permission: 'gateway.monitoring.read' },
-  { to: '/api-keys', labelKey: 'nav.apiKeys', icon: 'API Keys', section: 'access', permission: 'apikeys.read' },
-  { to: '/my-api-key', labelKey: 'nav.myApiKey', icon: 'API Keys', section: 'access', permission: 'apikeys.self' },
-  { to: '/roles', labelKey: 'nav.roles', icon: 'Roles', section: 'admin', permission: 'admin.roles.read' },
-  { to: '/users', labelKey: 'nav.users', icon: 'Users', section: 'admin', permission: 'admin.users.read' },
-  { to: '/alerts/status', labelKey: 'nav.alertStatus', icon: 'Alert Status', section: 'alerts', permission: 'alerts.read' },
-  { to: '/alerts/settings', labelKey: 'nav.alertSettings', icon: 'Alert Settings', section: 'alerts', permission: 'alerts.read' },
-  { to: '/alerts/history', labelKey: 'nav.alertHistory', icon: 'Alert History', section: 'alerts', permission: 'alerts.read' },
-];
 
 interface LayoutProps {
   children: ReactNode;
@@ -48,10 +27,8 @@ function Layout({ children }: LayoutProps) {
   const userPermissions = permissionsQuery.data?.permissions ?? [];
   const permissionsLoaded = permissionsQuery.isSuccess;
 
-  function hasPermission(perm: string | null): boolean {
-    if (perm === null) return true;
-    return userPermissions.includes(perm);
-  }
+  const hasPermission = (perm: Parameters<typeof hasNavPermission>[0]) =>
+    hasNavPermission(perm, userPermissions);
 
   return (
     <div className="layout">

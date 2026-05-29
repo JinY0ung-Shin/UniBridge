@@ -39,6 +39,8 @@ ALL_PERMISSIONS = [
     "gateway.upstreams.read",
     "gateway.upstreams.write",
     "gateway.monitoring.read",
+    "gateway.monitoring.self",
+    "dashboard.read",
     "apikeys.read",
     "apikeys.write",
     "apikeys.self",

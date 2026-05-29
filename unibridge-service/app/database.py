@@ -222,10 +222,9 @@ async def _seed_roles() -> None:
             "permissions": ALL_PERMISSIONS,
         },
         "user": {
-            "description": "Monitoring/alerts read-only, manages own API key",
+            "description": "Own gateway monitoring + self-service API key",
             "permissions": [
-                "gateway.monitoring.read",
-                "alerts.read",
+                "gateway.monitoring.self",
                 "apikeys.self",
             ],
         },

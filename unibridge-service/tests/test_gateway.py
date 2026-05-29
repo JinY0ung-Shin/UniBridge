@@ -21,6 +21,9 @@ from app.routers.gateway import (
     _service_headers_for_route,
     _validate_consumer,
 )
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.models import ApiKeyAccess
 from tests.conftest import auth_header
 
 
@@ -1835,7 +1838,7 @@ class TestPermissions:
             )
         assert resp.status_code == 200
 
-    # -- User role: only has gateway.monitoring.read --
+    # -- User role: only has gateway.monitoring.self (own traffic) --
 
     async def test_user_can_read_monitoring(self, client, user_token):
         empty = [{"value": [0, "0"]}]
@@ -1849,6 +1852,61 @@ class TestPermissions:
                 headers=auth_header(user_token),
             )
         assert resp.status_code == 200
+
+    async def test_user_monitoring_forced_to_own_consumer(self, client, user_token, seeded_db):
+        """A self-scoped user's PromQL is locked to their own consumer; a
+        ?consumer= naming someone else is ignored (no cross-tenant leak)."""
+        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        async with session_factory() as db:
+            db.add(ApiKeyAccess(consumer_name="self_testuser", owner="testuser"))
+            await db.commit()
+        empty = [{"value": [0, "0"]}]
+        with patch(
+            "app.routers.gateway.prometheus_client.instant_query",
+            new_callable=AsyncMock,
+            side_effect=[empty, empty, empty],
+        ) as mock_q:
+            resp = await client.get(
+                "/admin/gateway/metrics/summary?range=1h&consumer=attacker-key",
+                headers=auth_header(user_token),
+            )
+        assert resp.status_code == 200
+        queries = " ".join(str(c.args[0]) for c in mock_q.call_args_list)
+        assert 'consumer="self_testuser"' in queries
+        assert "attacker-key" not in queries
+
+    async def test_user_with_no_key_is_scoped_to_no_match_sentinel(self, client, user_token):
+        """A self-scoped user with no API key is force-scoped to the no-match
+        sentinel, never to all traffic."""
+        empty = [{"value": [0, "0"]}]
+        with patch(
+            "app.routers.gateway.prometheus_client.instant_query",
+            new_callable=AsyncMock,
+            side_effect=[empty, empty, empty],
+        ) as mock_q:
+            resp = await client.get(
+                "/admin/gateway/metrics/summary?range=1h",
+                headers=auth_header(user_token),
+            )
+        assert resp.status_code == 200
+        queries = " ".join(str(c.args[0]) for c in mock_q.call_args_list)
+        assert 'consumer="__no_self_api_key__"' in queries
+
+    async def test_user_cannot_read_llm_monitoring(self, client, user_token):
+        # LLM monitoring stays admin-only (gateway.monitoring.read).
+        resp = await client.get(
+            "/admin/gateway/metrics/llm/summary?range=1h",
+            headers=auth_header(user_token),
+        )
+        assert resp.status_code == 403
+
+    async def test_user_cannot_read_llm_proxy_route(self, client, user_token):
+        # A self-scoped user cannot pull their own llm-proxy gateway metrics either.
+        resp = await client.get(
+            "/admin/gateway/metrics/summary?range=1h&route=llm-proxy",
+            headers=auth_header(user_token),
+        )
+        assert resp.status_code == 403
 
     async def test_user_cannot_read_routes(self, client, user_token):
         resp = await client.get(

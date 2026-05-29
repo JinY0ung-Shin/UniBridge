@@ -35,6 +35,7 @@ vi.mock('../api/client', () => ({
       'gateway.upstreams.read',
       'apikeys.read',
       'gateway.monitoring.read',
+      'dashboard.read',
     ],
   }),
   getToken: vi.fn().mockResolvedValue({ access_token: 'fake-token' }),
@@ -75,6 +76,20 @@ vi.mock('../api/client', () => ({
 /* ── Import App after mocking ── */
 
 import App from '../App';
+import { getCurrentUser } from '../api/client';
+
+// Default current-user the app starts each test with. Reset in beforeEach so a
+// per-test override (reject / limited perms) never leaks into the next test.
+const DEFAULT_USER = {
+  username: 'test',
+  role: 'admin',
+  permissions: [
+    'query.databases.read', 'query.execute', 'query.permissions.read', 'query.audit.read',
+    'query.settings.read', 'query.settings.write', 'admin.roles.read', 'admin.users.read',
+    'gateway.routes.read', 'gateway.upstreams.read', 'apikeys.read', 'gateway.monitoring.read',
+    'dashboard.read',
+  ],
+};
 
 /* ── Helper: render with required providers ── */
 
@@ -98,6 +113,10 @@ describe('App', () => {
     localStorage.setItem('auth_token', 'fake-token');
     // Reset URL to root before each test
     window.history.pushState({}, '', '/');
+    // Reset to a clean default so a prior test's reject/limited-perms override
+    // (persistent mocks) cannot leak into this test.
+    vi.mocked(getCurrentUser).mockReset();
+    vi.mocked(getCurrentUser).mockResolvedValue(DEFAULT_USER);
   });
 
   afterEach(() => {
@@ -199,8 +218,10 @@ describe('App', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
 
+    // After retry, a user without dashboard.read lands on their first accessible
+    // page (Connections), so "Connections" appears as both nav link and page title.
     await waitFor(() => {
-      expect(screen.getByText('Connections')).toBeInTheDocument();
+      expect(screen.getAllByText('Connections').length).toBeGreaterThan(0);
     });
   });
 
@@ -210,7 +231,7 @@ describe('App', () => {
     vi.mocked(getCurrentUser).mockResolvedValueOnce({
       username: 'viewer',
       role: 'user',
-      permissions: ['query.databases.read'],
+      permissions: ['query.databases.read', 'dashboard.read'],
     });
 
     window.history.pushState({}, '', '/gateway/routes');
@@ -227,6 +248,13 @@ describe('App', () => {
   });
 
   it('Dashboard renders loading state then summary cards', async () => {
+    // dashboard.read (so we land on the Dashboard) but no monitoring perm, so
+    // only the 3 DB-health summary cards render (no gateway/LLM sections).
+    vi.mocked(getCurrentUser).mockResolvedValue({
+      username: 'test',
+      role: 'admin',
+      permissions: ['dashboard.read'],
+    });
     renderWithProviders(<App />);
 
     // After data loads, summary cards should appear

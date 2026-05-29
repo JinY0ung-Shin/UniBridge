@@ -14,14 +14,14 @@ async def test_seed_creates_admin_and_user_only(seeded_db):
 
 
 @pytest.mark.asyncio
-async def test_user_role_has_exactly_three_permissions(seeded_db):
+async def test_user_role_has_exactly_two_permissions(seeded_db):
     Session = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with Session() as s:
         role = (await s.execute(select(Role).where(Role.name == "user"))).scalar_one()
         perms = (await s.execute(
             select(RolePermission.permission).where(RolePermission.role_id == role.id)
         )).scalars().all()
-    assert set(perms) == {"gateway.monitoring.read", "alerts.read", "apikeys.self"}
+    assert set(perms) == {"gateway.monitoring.self", "apikeys.self"}
 
 
 @pytest.mark.asyncio

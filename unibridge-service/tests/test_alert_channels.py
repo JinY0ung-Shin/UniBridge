@@ -34,7 +34,7 @@ class TestAlertChannelsAPI:
 
     @pytest.mark.asyncio
     async def test_list_channels_masks_webhook_and_headers_for_non_writers(
-        self, client, admin_token, user_token
+        self, client, admin_token, alerts_reader_token
     ):
         secret_path = "/services/T123/B456/SECRETTOKEN"
         await client.post("/admin/alerts/channels", json={
@@ -44,8 +44,8 @@ class TestAlertChannelsAPI:
             "headers": {"Authorization": "Bearer super-secret"},
         }, headers=auth_header(admin_token))
 
-        # user: alerts.read but not alerts.write — must see masked URL and no headers
-        resp = await client.get("/admin/alerts/channels", headers=auth_header(user_token))
+        # reader: alerts.read but not alerts.write — must see masked URL and no headers
+        resp = await client.get("/admin/alerts/channels", headers=auth_header(alerts_reader_token))
         assert resp.status_code == 200
         user_rows = [c for c in resp.json() if c["name"] == "secret-ch"]
         assert len(user_rows) == 1

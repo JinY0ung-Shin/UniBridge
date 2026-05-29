@@ -63,7 +63,7 @@ async def seeded_db(engine):
     async with session_factory() as db:
         SEED_ROLES = {
             "admin": ALL_PERMISSIONS,
-            "user": ["gateway.monitoring.read", "alerts.read", "apikeys.self"],
+            "user": ["gateway.monitoring.self", "apikeys.self"],
         }
         for role_name, perms in SEED_ROLES.items():
             role = Role(name=role_name, description=f"Test {role_name}", is_system=True)
@@ -137,6 +137,25 @@ async def querier_token(seeded_db):
         await db.commit()
     await invalidate_permission_cache()
     return create_token("testquerier", "querier")
+
+
+@pytest.fixture
+async def alerts_reader_token(seeded_db):
+    """Token for a custom role with ``alerts.read`` but not ``alerts.write``.
+
+    The seeded ``user`` role no longer carries alerts permissions, but admins
+    can still create roles that do. Used to exercise reader-vs-writer behaviour
+    (e.g. webhook/header masking for non-writers).
+    """
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        role = Role(name="alertsreader", description="Test alerts reader", is_system=False)
+        db.add(role)
+        await db.flush()
+        db.add(RolePermission(role_id=role.id, permission="alerts.read"))
+        await db.commit()
+    await invalidate_permission_cache()
+    return create_token("testalertsreader", "alertsreader")
 
 
 def auth_header(token: str) -> dict[str, str]:

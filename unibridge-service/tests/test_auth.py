@@ -33,7 +33,7 @@ from tests.conftest import auth_header
 
 class TestAllPermissions:
     def test_all_permissions_has_expected_entries(self):
-        assert len(ALL_PERMISSIONS) == 25
+        assert len(ALL_PERMISSIONS) == 27
 
     def test_all_permissions_are_unique(self):
         assert len(ALL_PERMISSIONS) == len(set(ALL_PERMISSIONS))
@@ -214,7 +214,7 @@ class TestGetRolePermissions:
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         async with session_factory() as db:
             perms = await get_role_permissions(db, "user")
-            assert perms == {"gateway.monitoring.read", "alerts.read", "apikeys.self"}
+            assert perms == {"gateway.monitoring.self", "apikeys.self"}
             assert "query.execute" not in perms
             assert "query.databases.write" not in perms
             assert "admin.roles.write" not in perms
@@ -398,8 +398,8 @@ class TestRequirePermission:
             creds = _make_credentials(token)
             user = await get_current_user(credentials=creds)
 
-            # user has "alerts.read" but not "admin.roles.write"
-            checker = require_permission("admin.roles.write", "alerts.read")
+            # user has "apikeys.self" but not "admin.roles.write"
+            checker = require_permission("admin.roles.write", "apikeys.self")
             result = await checker(user=user, db=db)
             assert result.username == "testuser"
 
@@ -496,7 +496,7 @@ class TestSeedRoles:
                 select(RolePermission.permission).where(RolePermission.role_id == user_role.id)
             )
             perms = {row[0] for row in perm_result.all()}
-            assert perms == {"gateway.monitoring.read", "alerts.read", "apikeys.self"}
+            assert perms == {"gateway.monitoring.self", "apikeys.self"}
 
     async def test_seed_roles_are_marked_as_system(self, engine):
         from app.database import _seed_roles
@@ -575,7 +575,7 @@ class TestSeedRoles:
                 select(RolePermission.permission).where(RolePermission.role_id == user.id)
             )
             perms = {row[0] for row in perm_result.all()}
-            assert perms == {"gateway.monitoring.read", "alerts.read", "apikeys.self"}
+            assert perms == {"gateway.monitoring.self", "apikeys.self"}
 
     async def test_seed_upsert_restores_description(self, engine):
         """Re-seeding should restore the description to the seed value."""
@@ -725,7 +725,7 @@ class TestAuthMeEndpoint:
         data = resp.json()
         assert data["username"] == "testuser"
         assert data["role"] == "user"
-        assert set(data["permissions"]) == {"gateway.monitoring.read", "alerts.read", "apikeys.self"}
+        assert set(data["permissions"]) == {"gateway.monitoring.self", "apikeys.self"}
         assert "query.execute" not in data["permissions"]
         assert "admin.roles.write" not in data["permissions"]
 
