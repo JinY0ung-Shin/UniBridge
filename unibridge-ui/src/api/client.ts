@@ -641,6 +641,8 @@ export interface ApiKey {
   key_created: boolean;
   allowed_databases: string[];
   allowed_routes: string[];
+  rate_limit_per_minute: number | null;
+  owner: string | null;
   created_at: string | null;
 }
 
@@ -650,6 +652,8 @@ export interface ApiKeyCreate {
   api_key?: string;
   allowed_databases: string[];
   allowed_routes: string[];
+  rate_limit_per_minute?: number | null;
+  owner?: string | null;
 }
 
 export interface ApiKeyUpdate {
@@ -657,6 +661,8 @@ export interface ApiKeyUpdate {
   api_key?: string;
   allowed_databases?: string[];
   allowed_routes?: string[];
+  rate_limit_per_minute?: number | null;
+  owner?: string | null;
 }
 
 export async function getApiKeys(): Promise<ApiKey[]> {

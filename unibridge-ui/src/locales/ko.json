@@ -271,6 +271,8 @@
     "apiKey": "API 키",
     "allowedDatabases": "허용 데이터베이스",
     "allowedRoutes": "허용 라우트",
+    "rateLimit": "분당 요청 제한",
+    "rateLimitHint": "비워두면 무제한",
     "editTitle": "API 키 편집",
     "addTitle": "API 키 추가",
     "descriptionPlaceholder": "이 키의 용도를 입력하세요",

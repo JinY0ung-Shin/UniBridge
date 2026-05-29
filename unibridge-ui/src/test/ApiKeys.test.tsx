@@ -188,6 +188,8 @@ describe('ApiKeys', () => {
       key_created: true,
       allowed_databases: ['postgres', 'lakes3'],
       allowed_routes: [],
+      rate_limit_per_minute: null,
+      owner: null,
       created_at: '2026-04-11T00:00:00Z',
     });
 
@@ -220,6 +222,8 @@ describe('ApiKeys', () => {
       key_created: true,
       allowed_databases: [],
       allowed_routes: [],
+      rate_limit_per_minute: null,
+      owner: null,
       created_at: '2026-04-11T00:00:00Z',
     });
 

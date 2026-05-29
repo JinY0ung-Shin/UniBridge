@@ -26,6 +26,7 @@ interface FormState {
   apiKey: string;
   allowedDatabases: string[];
   allowedRoutes: string[];
+  rateLimit: string;
 }
 
 const emptyForm: FormState = {
@@ -34,6 +35,7 @@ const emptyForm: FormState = {
   apiKey: '',
   allowedDatabases: [],
   allowedRoutes: [],
+  rateLimit: '',
 };
 
 function ApiKeys() {
@@ -105,6 +107,7 @@ function ApiKeys() {
       apiKey: '',
       allowedDatabases: k.allowed_databases,
       allowedRoutes: k.allowed_routes,
+      rateLimit: k.rate_limit_per_minute == null ? '' : String(k.rate_limit_per_minute),
     });
     setEditingName(k.name);
     setCreatedKey(null);
@@ -119,13 +122,22 @@ function ApiKeys() {
     setCopied(false);
   }
 
+  function parseRateLimit(value: string): number | null {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    const rateLimit = parseRateLimit(form.rateLimit);
     if (editingName) {
       const body: Record<string, unknown> = {
         description: form.description,
         allowed_databases: form.allowedDatabases,
         allowed_routes: form.allowedRoutes,
+        rate_limit_per_minute: rateLimit,
       };
       if (form.apiKey.trim()) body.api_key = form.apiKey.trim();
       updateMut.mutate({ name: editingName, body });
@@ -136,6 +148,7 @@ function ApiKeys() {
         api_key: form.apiKey.trim() || undefined,
         allowed_databases: form.allowedDatabases,
         allowed_routes: form.allowedRoutes,
+        rate_limit_per_minute: rateLimit,
       });
     }
   }
@@ -343,6 +356,18 @@ function ApiKeys() {
                       </label>
                     ))}
                   </div>
+                </div>
+                <div className="form-group">
+                  <label>{t('apiKeys.rateLimit')}</label>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={form.rateLimit}
+                    onChange={(e) => setForm((p) => ({ ...p, rateLimit: e.target.value }))}
+                    placeholder={t('apiKeys.rateLimitHint')}
+                  />
+                  <small className="form-hint">{t('apiKeys.rateLimitHint')}</small>
                 </div>
               </div>
 

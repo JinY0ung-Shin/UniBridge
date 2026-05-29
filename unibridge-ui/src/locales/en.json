@@ -271,6 +271,8 @@
     "apiKey": "API Key",
     "allowedDatabases": "Allowed Databases",
     "allowedRoutes": "Allowed Routes",
+    "rateLimit": "Rate limit (per min)",
+    "rateLimitHint": "Leave empty for unlimited",
     "editTitle": "Edit API Key",
     "addTitle": "Add API Key",
     "descriptionPlaceholder": "Describe what this key is for",
