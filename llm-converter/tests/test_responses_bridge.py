@@ -262,6 +262,66 @@ async def test_stream_reasoning_precedes_text():
     assert any(e["type"] == "response.reasoning_text.delta" for e in events)
 
 
+async def test_stream_reasoning_wrapped_in_content_part_events():
+    # The reasoning item must be bracketed by content_part.added/.done (part
+    # type reasoning_text), mirroring the message item, so a consumer that
+    # reconstructs content parts from those events sees the reasoning text.
+    chunks = [
+        {"choices": [{"delta": {"reasoning_content": "thinking"}}]},
+        {"choices": [{"delta": {"content": "answer"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    events, _ = await _run_stream(chunks)
+
+    reasoning_added = [e for e in events
+                       if e["type"] == "response.content_part.added"
+                       and e["part"]["type"] == "reasoning_text"]
+    reasoning_done = [e for e in events
+                      if e["type"] == "response.content_part.done"
+                      and e["part"]["type"] == "reasoning_text"]
+    assert len(reasoning_added) == 1
+    assert len(reasoning_done) == 1
+    assert reasoning_done[0]["part"]["text"] == "thinking"
+
+    # content_part.added precedes the first reasoning_text.delta; content_part.done
+    # precedes the reasoning item's output_item.done.
+    rt_delta = next(e["sequence_number"] for e in events
+                    if e["type"] == "response.reasoning_text.delta")
+    assert reasoning_added[0]["sequence_number"] < rt_delta
+    reasoning_oi = reasoning_added[0]["output_index"]
+    item_done = next(e["sequence_number"] for e in events
+                     if e["type"] == "response.output_item.done"
+                     and e["output_index"] == reasoning_oi)
+    assert reasoning_done[0]["sequence_number"] < item_done
+
+    # sequence_number stays strictly increasing from 0 with the added events.
+    assert [e["sequence_number"] for e in events] == list(range(len(events)))
+
+
+async def test_stream_text_after_tool_call_does_not_nest_item_lifecycles():
+    # tool call opens first, then a trailing text note. The tool item must be
+    # fully closed (output_item.done) before the message item is opened
+    # (output_item.added) — item lifecycles must not nest/interleave.
+    chunks = [
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_x", "type": "function", "function": {"name": "f", "arguments": "{}"}}]}}]},
+        {"choices": [{"delta": {"content": "trailing text"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    events, _ = await _run_stream(chunks)
+
+    def seq_of(etype, oi):
+        return next(e["sequence_number"] for e in events
+                    if e["type"] == etype and e["output_index"] == oi)
+
+    tool_done = seq_of("response.output_item.done", 0)   # function_call at oi 0
+    msg_added = seq_of("response.output_item.added", 1)  # message at oi 1
+    assert tool_done < msg_added
+    # terminal output[] order is still index-sorted: function_call then message.
+    final = events[-1]["response"]
+    assert [it["type"] for it in final["output"]] == ["function_call", "message"]
+
+
 async def test_stream_length_finish_is_incomplete():
     chunks = [
         {"choices": [{"delta": {"content": "partial"}}]},

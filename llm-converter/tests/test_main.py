@@ -178,6 +178,38 @@ def test_upstream_error_forwarded_verbatim():
     assert resp.json() == err
 
 
+def test_streaming_bridge_error_emits_terminal_error_event():
+    # A malformed chunk arriving mid-stream — after message_start has already
+    # reached the client — must terminate with an Anthropic ``error`` event,
+    # not propagate and leave the client hanging on a truncated message.
+    chunks = [
+        {"choices": [{"delta": {"content": "Hello"}}]},
+        {"choices": {"0": {}}},  # choices as a dict → bridge raises on choices[0]
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=_openai_sse(chunks)
+        )
+
+    client = TestClient(_make_app(handler))
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "m",
+            "stream": True,
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    types = [e["type"] for e in events]
+    assert types[0] == "message_start"
+    assert types[-1] == "error"
+    assert events[-1]["error"]["type"] == "api_error"
+
+
 def test_invalid_json_body_returns_400():
     client = TestClient(_make_app(lambda r: httpx.Response(200)))
     resp = client.post(

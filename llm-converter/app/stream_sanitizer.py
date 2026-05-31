@@ -110,7 +110,11 @@ async def sanitize_events(
                 yield _close_current()
                 current_block_type = None
             current_index += 1
-            current_block_type = evt.get("content_block", {}).get("type")
+            # A start whose content_block carries no ``type`` still opens a
+            # block; track it with an empty-string sentinel (not None, which
+            # means "no block open") so the split/close paths below recognise
+            # it as open and emit its content_block_stop before the next start.
+            current_block_type = evt.get("content_block", {}).get("type") or ""
             new_evt = dict(evt)
             new_evt["index"] = current_index
             yield new_evt
@@ -142,6 +146,15 @@ async def sanitize_events(
                     "index": current_index,
                     "content_block": _synthetic_block(primary),
                 }
+            if current_block_type is None:
+                # An unmapped delta type (e.g. ``citations_delta``) arriving with
+                # no open block: the split path above only synthesizes a block
+                # for the known delta types, so there is nothing to attach this
+                # to. Emitting it with ``current_index`` (which is -1 before any
+                # block, or a closed block's index) would violate the
+                # "every delta matches an open block" / "indices start at 0"
+                # guarantees, so drop it.
+                continue
             new_evt = dict(evt)
             new_evt["index"] = current_index
             yield new_evt

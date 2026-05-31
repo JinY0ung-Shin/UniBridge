@@ -541,6 +541,9 @@ async def chat_stream_to_responses_events(
         evs = [
             bump({"type": "response.reasoning_text.done", "item_id": s.reasoning["id"],
                   "output_index": s.reasoning["oi"], "content_index": 0, "text": full}),
+            bump({"type": "response.content_part.done", "item_id": s.reasoning["id"],
+                  "output_index": s.reasoning["oi"], "content_index": 0,
+                  "part": {"type": "reasoning_text", "text": full}}),
             bump({"type": "response.output_item.done", "output_index": s.reasoning["oi"], "item": item}),
         ]
         s.output.append((s.reasoning["oi"], item))
@@ -604,6 +607,13 @@ async def chat_stream_to_responses_events(
         del s.tools[idx]
         return evs
 
+    def close_all_tools() -> list[dict]:
+        """Close every still-open tool item (in open order)."""
+        evs: list[dict] = []
+        for idx in list(s.tool_order):
+            evs.extend(close_tool(idx))
+        return evs
+
     def finalize_holder(items: list[dict], status: str) -> None:
         """Populate ``holder`` with the chat-format assistant message for persistence.
 
@@ -656,6 +666,9 @@ async def chat_stream_to_responses_events(
                     yield bump({"type": "response.output_item.added", "output_index": s.reasoning["oi"],
                                 "item": {"id": s.reasoning["id"], "type": "reasoning", "status": "in_progress",
                                          "summary": [], "content": []}})
+                    yield bump({"type": "response.content_part.added", "item_id": s.reasoning["id"],
+                                "output_index": s.reasoning["oi"], "content_index": 0,
+                                "part": {"type": "reasoning_text", "text": ""}})
                 if s.reasoning is not None:
                     s.reasoning["buf"].append(rc)
                     yield bump({"type": "response.reasoning_text.delta", "item_id": s.reasoning["id"],
@@ -665,6 +678,13 @@ async def chat_stream_to_responses_events(
             content = delta.get("content")
             if isinstance(content, str) and content:
                 for e in close_reasoning():
+                    yield e
+                # Close any open tool item first so item lifecycles never nest
+                # (a model that emits a trailing text note after a tool call
+                # must not have the message item's added→done sequence wrap an
+                # already-open function_call item). Tool args stream
+                # contiguously, so an open tool here is already complete.
+                for e in close_all_tools():
                     yield e
                 if s.text is None:
                     for e in open_message("text"):
@@ -682,6 +702,8 @@ async def chat_stream_to_responses_events(
             refusal = delta.get("refusal")
             if isinstance(refusal, str) and refusal:
                 for e in close_reasoning():
+                    yield e
+                for e in close_all_tools():
                     yield e
                 if s.text is None:
                     for e in open_message("refusal"):

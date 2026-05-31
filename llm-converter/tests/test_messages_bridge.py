@@ -255,6 +255,36 @@ class TestRequestConversion:
         assert out["stop"] == ["\n\n", "END"]
         assert "stop_sequences" not in out
 
+    def test_user_turn_mixing_text_and_tool_result_keeps_tool_adjacent(self):
+        # A single user turn carrying BOTH a text block and a tool_result must
+        # convert to [tool, user] — the tool message has to immediately follow
+        # the assistant tool_calls it answers, with no intervening user message
+        # (OpenAI/vLLM reject that). claude_agent_sdk batches a follow-up prompt
+        # together with tool_result blocks in one turn routinely.
+        body = {
+            "model": "m",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "also, hurry"},
+                        {"type": "tool_result", "tool_use_id": "tu_1", "content": "done"},
+                    ],
+                },
+            ],
+        }
+        out = anthropic_request_to_openai_body(body)
+        assert [m["role"] for m in out["messages"]] == ["assistant", "tool", "user"]
+        # tool message sits immediately after the assistant tool_calls.
+        assert out["messages"][1] == {"role": "tool", "tool_call_id": "tu_1", "content": "done"}
+        assert out["messages"][2] == {"role": "user", "content": "also, hurry"}
+
 
 # ---------------------------------------------------------------------------
 # Streaming response: OpenAI SSE → Anthropic SSE
@@ -350,6 +380,10 @@ class TestStreamConversion:
         msg_delta = next(e for e in out if e["type"] == "message_delta")
         assert msg_delta["delta"]["stop_reason"] == "tool_use"
         assert msg_delta["usage"]["output_tokens"] == 30
+        # Usage arrives on the final (empty-choices) chunk, after message_start
+        # already went out with input_tokens=0 — the terminal message_delta must
+        # restate the real prompt count so accounting isn't stuck at zero.
+        assert msg_delta["usage"]["input_tokens"] == 100
 
     async def test_finish_reason_stop_maps_to_end_turn(self):
         chunks = [
@@ -368,6 +402,31 @@ class TestStreamConversion:
         out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
         md = next(e for e in out if e["type"] == "message_delta")
         assert md["delta"]["stop_reason"] == "max_tokens"
+
+    async def test_finish_reason_content_filter_maps_to_end_turn(self):
+        # content_filter has no Anthropic analogue; mapping it to 'stop_sequence'
+        # (with a null stop_sequence field) would be self-contradictory, so it
+        # maps to the always-valid 'end_turn'.
+        chunks = [
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "content_filter"}]},
+        ]
+        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        md = next(e for e in out if e["type"] == "message_delta")
+        assert md["delta"]["stop_reason"] == "end_turn"
+        assert md["delta"]["stop_sequence"] is None
+
+    async def test_streaming_message_delta_restates_input_tokens(self):
+        chunks = [
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            # include_usage delivers token counts only on the terminal chunk.
+            {"choices": [], "usage": {"prompt_tokens": 42, "completion_tokens": 7}},
+        ]
+        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        md = next(e for e in out if e["type"] == "message_delta")
+        assert md["usage"]["input_tokens"] == 42
+        assert md["usage"]["output_tokens"] == 7
 
     async def test_empty_content_chunks_do_not_split(self):
         """An empty ``delta.content`` arriving mid-reasoning must not open a
@@ -574,6 +633,15 @@ class TestNonStreamingResponseConversion:
         assert tu["id"] == "call_1"
         assert tu["name"] == "Bash"
         assert tu["input"] == {"command": "ls"}
+
+    def test_content_filter_finish_maps_to_end_turn(self):
+        body = {
+            "model": "m",
+            "choices": [{"message": {"content": "redacted"}, "finish_reason": "content_filter"}],
+        }
+        out = openai_response_to_anthropic_body(body)
+        assert out["stop_reason"] == "end_turn"
+        assert out["stop_sequence"] is None
 
     def test_malformed_tool_arguments_fall_back_to_empty_input(self):
         body = {

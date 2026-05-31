@@ -211,6 +211,21 @@ async def messages(request: Request) -> Response:
             # drop, monotonic indices, dangling-block close).
             async for sanitized in sanitize_events(anthropic_events):
                 yield format_sse(sanitized)
+        except Exception:
+            # The bridge/upstream raised mid-stream (connection reset, malformed
+            # chunk, etc.). ``message_start`` — and possibly an open content
+            # block — has already reached the client, so emit a terminal
+            # Anthropic ``error`` event (the spec's stream terminus) instead of
+            # letting the exception propagate and leave the client hanging on a
+            # truncated message with no terminator. Mirrors the /v1/responses
+            # route's ``response.failed`` fallback.
+            logger.exception("converter messages: bridge error mid-stream")
+            yield format_sse(
+                {
+                    "type": "error",
+                    "error": {"type": "api_error", "message": "converter stream error"},
+                }
+            )
         finally:
             await upstream.aclose()
             await client.aclose()

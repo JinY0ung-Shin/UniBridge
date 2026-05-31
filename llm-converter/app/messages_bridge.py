@@ -50,7 +50,13 @@ _FINISH_REASON_TO_STOP_REASON: Dict[str, str] = {
     "tool_calls": "tool_use",
     "function_call": "tool_use",
     "length": "max_tokens",
-    "content_filter": "stop_sequence",
+    # ``content_filter`` has no exact Anthropic analogue. ``stop_sequence`` is
+    # wrong: it specifically means a request stop_sequence matched and the
+    # ``stop_sequence`` field then names it — but we always emit that field as
+    # null, so a client branching on it would mis-read a filtered completion as
+    # a natural stop-sequence stop. ``end_turn`` is the closest non-misleading,
+    # always-valid value.
+    "content_filter": "end_turn",
 }
 
 
@@ -167,12 +173,14 @@ def _convert_user_message(content: Any) -> List[Dict[str, Any]]:
             out.append(tool_msg)
 
     if text_parts:
-        # Place user text *before* tool results so the assistant sees the
-        # human prompt in the natural conversational order. In practice
-        # tool_result-only turns never carry user text, so the order rarely
-        # matters — but keeping text first matches Anthropic's own ordering
-        # when it round-trips history.
-        out.insert(0, {"role": "user", "content": "".join(text_parts)})
+        # Place the user text *after* the tool messages. OpenAI/vLLM require a
+        # ``tool`` message to immediately follow the assistant message bearing
+        # the matching ``tool_calls`` — a ``user`` message wedged in between is
+        # rejected ("tool message must be a response to a preceding message with
+        # tool_calls"). The claude_agent_sdk routinely batches a follow-up user
+        # prompt together with tool_result blocks in one turn, so this ordering
+        # matters; appending keeps the tool results adjacent to their call.
+        out.append({"role": "user", "content": "".join(text_parts)})
 
     return out
 
@@ -544,10 +552,18 @@ async def openai_stream_to_anthropic_events(
     stop_reason = _FINISH_REASON_TO_STOP_REASON.get(
         state.finish_reason or "stop", "end_turn"
     )
+    # ``include_usage`` delivers OpenAI's prompt_tokens only on the terminal
+    # chunk, long after ``message_start`` went out with input_tokens=0. Restate
+    # the real input count here so a consumer accumulating usage from
+    # ``message_delta`` (the authoritative final tally) gets accurate
+    # cost/quota accounting instead of zero.
     yield {
         "type": "message_delta",
         "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-        "usage": {"output_tokens": state.output_tokens},
+        "usage": {
+            "input_tokens": state.input_tokens,
+            "output_tokens": state.output_tokens,
+        },
     }
     yield {"type": "message_stop"}
 

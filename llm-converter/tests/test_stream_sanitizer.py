@@ -356,6 +356,62 @@ class TestSanitizerSpecCompliance:
         assert len(text_deltas) == 2
         assert [d["delta"]["text"] for d in text_deltas] == ["Hello", " world"]
 
+    async def test_untyped_content_block_start_is_closed_before_next_start(self):
+        """A content_block_start whose content_block lacks a ``type`` still opens
+        a block; a following typed delta must close it (content_block_stop)
+        before the synthetic start, not leave index 0 dangling."""
+        events = [
+            {"type": "message_start", "message": {"id": "msg_1"}},
+            {"type": "content_block_start", "index": 0, "content_block": {}},  # no type
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}},
+            {"type": "message_stop"},
+        ]
+        out = await _collect(sanitize_events(_as_async(events)))
+        types = [e["type"] for e in out]
+        assert types == [
+            "message_start",
+            "content_block_start",  # untyped, idx 0
+            "content_block_stop",   # idx 0 closed before the split
+            "content_block_start",  # synthetic text, idx 1
+            "content_block_delta",
+            "content_block_stop",   # auto-closed at message_stop
+            "message_stop",
+        ]
+        starts = [e for e in out if e["type"] == "content_block_start"]
+        assert [s["index"] for s in starts] == [0, 1]
+
+    async def test_unmapped_delta_with_no_open_block_is_dropped(self):
+        """An unmapped delta type (citations_delta) arriving before any block is
+        opened can't be attached anywhere; it must be dropped, never emitted
+        with index -1."""
+        events = [
+            {"type": "message_start", "message": {"id": "msg_1"}},
+            {"type": "content_block_delta", "index": 0,
+             "delta": {"type": "citations_delta", "citation": {"x": 1}}},
+            {"type": "message_stop"},
+        ]
+        out = await _collect(sanitize_events(_as_async(events)))
+        assert_spec_conforming(out)
+        assert [e["type"] for e in out] == ["message_start", "message_stop"]
+
+    async def test_unmapped_delta_inside_open_block_passes_through(self):
+        """An unmapped delta type while a block IS open is emitted against that
+        open block's index (not dropped)."""
+        events = [
+            {"type": "message_start", "message": {"id": "msg_1"}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}},
+            {"type": "content_block_delta", "index": 0,
+             "delta": {"type": "citations_delta", "citation": {"x": 1}}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "message_stop"},
+        ]
+        out = await _collect(sanitize_events(_as_async(events)))
+        assert_spec_conforming(out)
+        citation_deltas = [e for e in out if e.get("delta", {}).get("type") == "citations_delta"]
+        assert len(citation_deltas) == 1
+        assert citation_deltas[0]["index"] == 0
+
     async def test_explicit_block_start_after_synthetic_split_remains_consistent(self):
         """Upstream emits content_block_start mid-stream after we've already split."""
         events = [
