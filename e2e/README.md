@@ -32,6 +32,9 @@ unless `LLM_API_KEY` is set).
 | `LLM_TLS_VERIFY` | `false` | `true` / `false` / path to CA bundle (UI uses a self-signed cert). |
 | `LLM_TIMEOUT` | `60` | Per-request timeout (seconds). |
 
+Config can come from real environment variables **or** an `e2e/.env` file
+(loaded automatically; gitignored). Real env vars override `.env` entries.
+
 ## Run
 
 ```bash
@@ -39,6 +42,11 @@ cd e2e
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 
+# Option A — use a .env file
+cp .env.example .env
+# edit .env: set LLM_API_KEY (and LLM_BASE_URL / LLM_MODEL as needed)
+
+# Option B — export inline (overrides .env)
 export LLM_BASE_URL="https://your-host:3000/api/llm"
 export LLM_API_KEY="<apisix-consumer-key>"
 export LLM_MODEL="<model-id>"        # optional; auto-discovered otherwise

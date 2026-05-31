@@ -12,15 +12,30 @@ Configure via environment:
   LLM_MODEL          Model id to target. If unset, discovered from /v1/models.
   LLM_TLS_VERIFY     true | false | <ca-path>. Default: false (self-signed UI cert).
   LLM_TIMEOUT        Per-request timeout seconds. Default: 60.
+
+These may also be set in an ``e2e/.env`` file (see ``.env.example``); it is
+loaded automatically at collection time. Real environment variables always take
+precedence over values in ``.env``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import httpx
 import pytest
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - dotenv is optional
+    load_dotenv = None
+
+# Load e2e/.env (next to this file) before reading any config below. Existing
+# environment variables win over .env entries (override=False).
+if load_dotenv is not None:
+    load_dotenv(Path(__file__).with_name(".env"), override=False)
 
 BASE_URL = os.getenv("LLM_BASE_URL", "https://localhost:3000/api/llm").rstrip("/")
 API_KEY = os.getenv("LLM_API_KEY", "")
