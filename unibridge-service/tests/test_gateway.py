@@ -2078,21 +2078,23 @@ class TestLabelsHelper:
     """_labels() builds PromQL label selectors with llm-proxy exclusion default."""
 
     def test_no_args_excludes_llm_proxy(self):
-        assert _labels(None, None) == '{route!="llm-proxy"}'
+        assert _labels(None, None) == '{route!="llm-proxy",route!="llm-messages"}'
 
     def test_route_replaces_llm_proxy_exclusion(self):
-        # Explicit route filter should not include the llm-proxy exclusion
+        # Explicit route filter should not include the LLM exclusions
         assert _labels("query-api", None) == '{route="query-api"}'
 
     def test_consumer_adds_label(self):
-        assert _labels(None, "alice") == '{route!="llm-proxy",consumer="alice"}'
+        assert _labels(None, "alice") == \
+            '{route!="llm-proxy",route!="llm-messages",consumer="alice"}'
 
     def test_route_and_consumer(self):
         assert _labels("query-api", "alice") == '{route="query-api",consumer="alice"}'
 
     def test_extra_labels_prepended(self):
         # Existing usage: _labels(route, None, 'code=~"5.."')
-        assert _labels(None, None, 'code=~"5.."') == '{code=~"5..",route!="llm-proxy"}'
+        assert _labels(None, None, 'code=~"5.."') == \
+            '{code=~"5..",route!="llm-proxy",route!="llm-messages"}'
         assert _labels("query-api", "alice", 'code=~"5.."') == \
             '{code=~"5..",route="query-api",consumer="alice"}'
 

@@ -101,6 +101,13 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
         )
 
     allowed_route_ids = set(allowed_routes)
+    # ``llm-messages`` is the Anthropic-shape sibling of ``llm-proxy`` served by
+    # the converter. Granting ``llm-proxy`` implicitly grants ``llm-messages`` so
+    # existing stored keys keep working after the converter is rolled out without
+    # a data migration or UI change. One-directional: granting only
+    # ``llm-messages`` does NOT widen access to the raw ``/api/llm/*`` proxy.
+    if "llm-proxy" in allowed_route_ids:
+        allowed_route_ids.add("llm-messages")
 
     # Collect changes needed: [(route_id, old_body, new_body)]
     changes: list[tuple[str, dict, dict]] = []
