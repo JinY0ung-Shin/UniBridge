@@ -210,6 +210,38 @@ def test_streaming_bridge_error_emits_terminal_error_event():
     assert events[-1]["error"]["type"] == "api_error"
 
 
+def test_streaming_upstream_error_chunk_becomes_error_event():
+    # Upstream streams a normal chunk then an error object; the client must see
+    # a terminal Anthropic ``error`` event, not an empty successful stream.
+    body = _openai_sse(
+        [
+            {"choices": [{"delta": {"content": "Hello"}}]},
+            {"error": {"type": "rate_limit_error", "message": "slow down"}},
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=body
+        )
+
+    client = TestClient(_make_app(handler))
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "m",
+            "stream": True,
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    assert events[-1]["type"] == "error"
+    assert events[-1]["error"]["type"] == "rate_limit_error"
+    assert not any(e["type"] == "message_stop" for e in events)
+
+
 def test_invalid_json_body_returns_400():
     client = TestClient(_make_app(lambda r: httpx.Response(200)))
     resp = client.post(

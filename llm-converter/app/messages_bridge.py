@@ -431,6 +431,18 @@ def _flush_tool_calls(state: _StreamState) -> List[Dict[str, Any]]:
     return events
 
 
+def _upstream_error_to_anthropic(err: Any) -> Dict[str, Any]:
+    """Map an upstream OpenAI-style error object to an Anthropic error payload."""
+    if isinstance(err, dict):
+        etype = err.get("type")
+        message = err.get("message")
+        return {
+            "type": etype if isinstance(etype, str) and etype else "api_error",
+            "message": message if isinstance(message, str) and message else "upstream error",
+        }
+    return {"type": "api_error", "message": "upstream error"}
+
+
 async def openai_stream_to_anthropic_events(
     chunks: AsyncIterator[Dict[str, Any]],
     model: str,
@@ -447,6 +459,16 @@ async def openai_stream_to_anthropic_events(
     state = _StreamState(model=model)
 
     async for chunk in chunks:
+        # An upstream error object (``data: {"error": {...}}``) carries no
+        # choices. Surface it as a terminal Anthropic ``error`` event rather than
+        # ``continue``-ing past it and finishing with an empty, successful-looking
+        # message_delta/message_stop.
+        # Truthy check (not ``is not None``): some OpenAI-compatible providers
+        # set ``"error": null`` / ``{}`` on otherwise-normal chunks.
+        err = chunk.get("error")
+        if err:
+            yield {"type": "error", "error": _upstream_error_to_anthropic(err)}
+            return
         # ``usage`` may arrive on its own terminal chunk (with an empty
         # ``choices`` array, when ``stream_options.include_usage=true``) or
         # alongside a regular delta — handle both.

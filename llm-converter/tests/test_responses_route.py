@@ -158,3 +158,49 @@ def test_streaming_emits_responses_events():
     assert "response.output_text.delta" in types
     final = events[-1]["response"]
     assert final["output"][0]["content"][0]["text"] == "Hello"
+
+
+def test_streaming_upstream_error_chunk_emits_failed_and_is_not_persisted():
+    sse = (
+        "data: " + json.dumps({"choices": [{"delta": {"content": "Hello"}}]}) + "\n\n"
+        "data: " + json.dumps({"error": {"code": "rate_limit_exceeded", "message": "slow"}}) + "\n\n"
+        "data: [DONE]\n\n"
+    ).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+
+    client = TestClient(_make_app(handler))
+    resp = client.post("/v1/responses", json={"model": "m", "stream": True, "input": "hi"})
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    assert events[-1]["type"] == "response.failed"
+    assert events[-1]["response"]["error"]["code"] == "rate_limit_exceeded"
+    # Every event (including the failure) carries a monotonic sequence_number.
+    assert [e["sequence_number"] for e in events] == list(range(len(events)))
+    # The failed turn was not stored: chaining off its id must 400.
+    rid = events[-1]["response"]["id"]
+    r2 = client.post("/v1/responses",
+                     json={"model": "m", "input": "q2", "previous_response_id": rid})
+    assert r2.status_code == 400
+
+
+def test_streaming_bridge_crash_failed_event_has_sequence_number():
+    # A malformed chunk (choices as a dict) makes the bridge raise; the route's
+    # synthesized response.failed must continue the monotonic sequence series.
+    sse = (
+        "data: " + json.dumps({"choices": [{"delta": {"content": "Hello"}}]}) + "\n\n"
+        "data: " + json.dumps({"choices": {"0": {}}}) + "\n\n"
+        "data: [DONE]\n\n"
+    ).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+
+    client = TestClient(_make_app(handler))
+    resp = client.post("/v1/responses", json={"model": "m", "stream": True, "input": "hi"})
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    assert events[-1]["type"] == "response.failed"
+    assert "sequence_number" in events[-1]
+    assert [e["sequence_number"] for e in events] == list(range(len(events)))

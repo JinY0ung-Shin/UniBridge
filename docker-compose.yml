@@ -362,11 +362,21 @@ services:
     environment:
       - LITELLM_URL=${LITELLM_CONVERTER_UPSTREAM:-https://litellm:4000}
       # Pin the LiteLLM self-signed cert as a CA (chain validated, hostname
-      # check off since the cert is bound to HOST_IP). Set to "" to fall back to
-      # CONVERTER_TLS_VERIFY (default off).
-      - CONVERTER_TLS_CA=${CONVERTER_TLS_CA:-/etc/ssl/litellm-ca.crt}
+      # check off since the cert is bound to HOST_IP). Set CONVERTER_TLS_CA="" in
+      # .env to fall back to CONVERTER_TLS_VERIFY — the ``-`` (not ``:-``) keeps
+      # an explicit empty value instead of re-applying the default.
+      - CONVERTER_TLS_CA=${CONVERTER_TLS_CA-/etc/ssl/litellm-ca.crt}
       - CONVERTER_TLS_VERIFY=${CONVERTER_TLS_VERIFY:-false}
+      # Upstream httpx timeouts (seconds; read 0 = unbounded for long streams).
       - CONVERTER_REQUEST_TIMEOUT=${CONVERTER_REQUEST_TIMEOUT:-0}
+      - CONVERTER_CONNECT_TIMEOUT=${CONVERTER_CONNECT_TIMEOUT:-10}
+      - CONVERTER_WRITE_TIMEOUT=${CONVERTER_WRITE_TIMEOUT:-30}
+      - CONVERTER_POOL_TIMEOUT=${CONVERTER_POOL_TIMEOUT:-10}
+      # In-memory previous_response_id store (TTL seconds / max conversations).
+      - CONVERTER_RESPONSE_STORE_TTL=${CONVERTER_RESPONSE_STORE_TTL:-3600}
+      - CONVERTER_RESPONSE_STORE_MAX=${CONVERTER_RESPONSE_STORE_MAX:-10000}
+      # Surface upstream reasoning_content as Responses reasoning items.
+      - CONVERTER_EMIT_REASONING=${CONVERTER_EMIT_REASONING:-true}
     expose:
       - "4001"
     volumes:

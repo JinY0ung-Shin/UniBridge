@@ -360,6 +360,23 @@ async def test_stream_empty_produces_no_assistant_message():
     assert "assistant_message" not in holder
 
 
+async def test_stream_upstream_error_chunk_emits_failed_and_skips_persist():
+    chunks = [
+        {"choices": [{"delta": {"content": "partial"}}]},
+        {"error": {"code": "rate_limit_exceeded", "message": "slow down"}},
+    ]
+    events, holder = await _run_stream(chunks)
+    assert events[-1]["type"] == "response.failed"
+    assert events[-1]["response"]["status"] == "failed"
+    assert events[-1]["response"]["error"] == {"code": "rate_limit_exceeded", "message": "slow down"}
+    # sequence_number stays strictly increasing from 0 through the failure event.
+    assert [e["sequence_number"] for e in events] == list(range(len(events)))
+    # No assistant_message is left for the route to persist (a failed turn must
+    # not poison a future previous_response_id chain).
+    assert holder.get("assistant_message") is None
+    assert holder["status"] == "failed"
+
+
 async def test_stream_text_after_tool_call_terminal_output_ordered_by_index():
     # Pathological ordering: tool call first, then text. Terminal output[] must
     # still be ordered by output_index (tool=0, text=1).

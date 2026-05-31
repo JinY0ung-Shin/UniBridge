@@ -416,6 +416,21 @@ class TestStreamConversion:
         assert md["delta"]["stop_reason"] == "end_turn"
         assert md["delta"]["stop_sequence"] is None
 
+    async def test_upstream_error_chunk_becomes_terminal_error_event(self):
+        # An upstream ``data: {"error": {...}}`` chunk must terminate with an
+        # Anthropic error event, not be dropped and finish as an empty success.
+        chunks = [
+            {"choices": [{"delta": {"content": "partial"}}]},
+            {"error": {"type": "rate_limit_error", "message": "slow down"}},
+        ]
+        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        assert out[-1] == {
+            "type": "error",
+            "error": {"type": "rate_limit_error", "message": "slow down"},
+        }
+        # No successful terminus was emitted after the error.
+        assert not any(e["type"] in ("message_delta", "message_stop") for e in out)
+
     async def test_streaming_message_delta_restates_input_tokens(self):
         chunks = [
             {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},

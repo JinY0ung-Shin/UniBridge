@@ -472,6 +472,18 @@ def chat_response_to_responses_body(
 # ---------------------------------------------------------------------------
 
 
+def _upstream_error_to_responses(err: Any) -> dict:
+    """Map an upstream OpenAI-style error object to a Responses error payload."""
+    if isinstance(err, dict):
+        code = err.get("code") or err.get("type") or "server_error"
+        message = err.get("message")
+        return {
+            "code": str(code),
+            "message": message if isinstance(message, str) and message else "upstream error",
+        }
+    return {"code": "server_error", "message": "upstream error"}
+
+
 class _StreamState:
     __slots__ = (
         "seq", "next_oi", "output", "usage", "finish",
@@ -643,6 +655,29 @@ async def chat_stream_to_responses_events(
 
     try:
         async for chunk in chunks:
+            # Truthy check (not ``is not None``): some OpenAI-compatible providers
+            # set ``"error": null`` / ``{}`` on otherwise-normal chunks.
+            err = chunk.get("error")
+            if err:
+                # Upstream streamed an error object instead of choices. Emit a
+                # sequence-numbered terminal response.failed (every other event
+                # carries sequence_number too) and block the route from
+                # persisting a partial turn for this id.
+                holder["status"] = "failed"
+                holder["assistant_message"] = None
+                yield bump(
+                    {
+                        "type": "response.failed",
+                        "response": _build_response_object(
+                            request_body=request_body, model=model, created_at=created_at,
+                            response_id=response_id, status="failed",
+                            output=[it for _, it in sorted(s.output, key=lambda x: x[0])],
+                            usage=s.usage, error=_upstream_error_to_responses(err),
+                        ),
+                    }
+                )
+                return
+
             usage = chunk.get("usage")
             if isinstance(usage, dict):
                 s.usage = _usage_to_responses(usage)

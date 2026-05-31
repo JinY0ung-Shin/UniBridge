@@ -375,6 +375,7 @@ async def responses(request: Request) -> Response:
     async def body_iter() -> AsyncIterator[bytes]:
         persisted = False
         failed = False
+        last_seq = -1
         try:
             events = chat_stream_to_responses_events(
                 iter_openai_sse_chunks(upstream),
@@ -384,6 +385,9 @@ async def responses(request: Request) -> Response:
                 emit_reasoning=settings.emit_reasoning,
             )
             async for payload in events:
+                sn = payload.get("sequence_number")
+                if isinstance(sn, int):
+                    last_seq = sn
                 # Persist the transcript just BEFORE the client sees the terminal
                 # event (which carries the response id), closing the race where a
                 # fast follow-up chains off an id not yet stored.
@@ -401,12 +405,15 @@ async def responses(request: Request) -> Response:
         except Exception:
             # The bridge raised mid-stream (malformed upstream chunk, etc.). Emit a
             # best-effort terminal failure so the client isn't left hanging on a
-            # truncated stream, and do not persist a partial transcript.
+            # truncated stream, and do not persist a partial transcript. The
+            # synthesized event must continue the monotonic sequence_number series
+            # the normal path emits.
             failed = True
             logger.exception("converter responses: bridge error mid-stream")
             yield format_sse(
                 {
                     "type": "response.failed",
+                    "sequence_number": last_seq + 1,
                     "response": {
                         "id": response_id, "object": "response", "status": "failed",
                         "error": {"code": "server_error", "message": "converter stream error"},
