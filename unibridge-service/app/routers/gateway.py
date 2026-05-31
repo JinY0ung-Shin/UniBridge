@@ -29,8 +29,8 @@ router = APIRouter(prefix="/admin/gateway", tags=["Gateway"])
 MASK_KEEP = 4
 
 # System-managed resources — cannot be deleted or edited via API
-PROTECTED_ROUTE_IDS = {"query-api", "llm-proxy", "llm-admin", "s3-api"}
-PROTECTED_UPSTREAM_IDS = {"unibridge-service", "litellm"}
+PROTECTED_ROUTE_IDS = {"query-api", "llm-proxy", "llm-admin", "s3-api", "llm-messages", "llm-responses"}
+PROTECTED_UPSTREAM_IDS = {"unibridge-service", "litellm", "llm-converter"}
 
 
 def _mask_value(value: str) -> str:
@@ -781,7 +781,7 @@ def _scope_consumer(scope: _MonitoringScope, route: str | None, consumer: str | 
     LLM-proxy traffic is hidden from them entirely (LLM monitoring is admin-only).
     """
     if scope.restricted:
-        if route == "llm-proxy":
+        if route in {"llm-proxy", "llm-messages", "llm-responses"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="LLM metrics are not available",
@@ -794,15 +794,18 @@ def _scope_consumer(scope: _MonitoringScope, route: str | None, consumer: str | 
 def _labels(route: str | None, consumer: str | None, *extra: str) -> str:
     """Build PromQL label selector.
 
-    Defaults exclude the ``llm-proxy`` route so the gateway monitoring page
-    omits LLM traffic (shown separately on the LLM monitoring page). When
-    ``route`` is explicitly set, that filter replaces the default exclusion.
+    Defaults exclude the ``llm-proxy`` and ``llm-messages`` routes so the
+    gateway monitoring page omits LLM traffic (shown separately on the LLM
+    monitoring page). When ``route`` is explicitly set, that filter replaces
+    the default exclusion.
     """
     parts = list(extra)
     if route:
         parts.append(f'route="{route}"')
     else:
         parts.append('route!="llm-proxy"')
+        parts.append('route!="llm-messages"')
+        parts.append('route!="llm-responses"')
     if consumer:
         parts.append(f'consumer="{consumer}"')
     return "{" + ",".join(parts) + "}" if parts else ""

@@ -40,7 +40,7 @@ def _is_missing_route_error(exc: Exception) -> bool:
 async def _preserve_consumer_restriction(
     route_id: str, body: dict[str, object]
 ) -> dict[str, object]:
-    if route_id not in {"query-api", "llm-proxy", "s3-api"}:
+    if route_id not in {"query-api", "llm-proxy", "s3-api", "llm-messages", "llm-responses"}:
         return body
 
     from app.services import apisix_client
@@ -236,6 +236,69 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
 
                 logger.info("APISIX LiteLLM routes provisioned successfully")
+
+                # ── LLM endpoint converter ──
+                # Translates Anthropic Messages and OpenAI Responses into the
+                # OpenAI chat-completions shape that sglang/vLLM-backed models
+                # serve reliably, then forwards to LiteLLM. The converter speaks
+                # plain HTTP on the internal network (it forwards to LiteLLM over
+                # HTTPS itself).
+                await apisix_client.put_resource(
+                    "upstreams",
+                    "llm-converter",
+                    {
+                        "name": "llm-converter",
+                        "type": "roundrobin",
+                        "scheme": "http",
+                        "nodes": {"llm-converter:4001": 1},
+                    },
+                )
+
+                # Specific converter routes. Higher priority than the llm-proxy
+                # /api/llm/* catch-all so these exact paths win; the same key-auth
+                # / master-key injection as llm-proxy applies. Each ships deny-all
+                # by default so that between this PUT and the consumer-restriction
+                # replay below the route is never callable by an arbitrary key;
+                # the replay (sync_all_consumer_route_restrictions) installs the
+                # real whitelist, and on later boots _preserve_consumer_restriction
+                # keeps it.
+                for _conv_route_id, _conv_uri in (
+                    ("llm-messages", "/api/llm/v1/messages"),
+                    ("llm-responses", "/api/llm/v1/responses"),
+                ):
+                    await apisix_client.put_resource(
+                        "routes",
+                        _conv_route_id,
+                        await _preserve_consumer_restriction(
+                            _conv_route_id,
+                            {
+                                "name": _conv_route_id,
+                                "uri": _conv_uri,
+                                "methods": ["POST", "OPTIONS"],
+                                "priority": 10,
+                                "upstream_id": "llm-converter",
+                                "plugins": {
+                                    "key-auth": {},
+                                    "consumer-restriction": {
+                                        "whitelist": [api_keys.DENY_ALL_CONSUMER]
+                                    },
+                                    "proxy-rewrite": {
+                                        "regex_uri": ["^/api/llm(.*)", "$1"],
+                                        "use_real_request_uri_unsafe": True,
+                                        "headers": {
+                                            "set": {
+                                                "Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}",
+                                                "x-litellm-end-user-id": "$consumer_name",
+                                            },
+                                        },
+                                    },
+                                },
+                                "status": 1,
+                            },
+                        ),
+                    )
+
+                logger.info("APISIX LLM converter routes provisioned successfully")
             else:
                 logger.info(
                     "LITELLM_MASTER_KEY not set — skipping LiteLLM route provisioning"

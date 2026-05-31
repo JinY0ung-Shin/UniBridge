@@ -340,6 +340,59 @@ services:
     networks:
       - apihub-net
 
+  llm-converter:
+    build:
+      context: ./llm-converter
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+    restart: unless-stopped
+    init: true
+    logging: *default-logging
+    mem_limit: 256m
+    cpus: "0.50"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.50"
+    environment:
+      - LITELLM_URL=${LITELLM_CONVERTER_UPSTREAM:-https://litellm:4000}
+      # Pin the LiteLLM self-signed cert as a CA (chain validated, hostname
+      # check off since the cert is bound to HOST_IP). Set CONVERTER_TLS_CA="" in
+      # .env to fall back to CONVERTER_TLS_VERIFY — the ``-`` (not ``:-``) keeps
+      # an explicit empty value instead of re-applying the default.
+      - CONVERTER_TLS_CA=${CONVERTER_TLS_CA-/etc/ssl/litellm-ca.crt}
+      - CONVERTER_TLS_VERIFY=${CONVERTER_TLS_VERIFY:-false}
+      # Upstream httpx timeouts (seconds; read 0 = unbounded for long streams).
+      - CONVERTER_REQUEST_TIMEOUT=${CONVERTER_REQUEST_TIMEOUT:-0}
+      - CONVERTER_CONNECT_TIMEOUT=${CONVERTER_CONNECT_TIMEOUT:-10}
+      - CONVERTER_WRITE_TIMEOUT=${CONVERTER_WRITE_TIMEOUT:-30}
+      - CONVERTER_POOL_TIMEOUT=${CONVERTER_POOL_TIMEOUT:-10}
+      # In-memory previous_response_id store (TTL seconds / max conversations).
+      - CONVERTER_RESPONSE_STORE_TTL=${CONVERTER_RESPONSE_STORE_TTL:-3600}
+      - CONVERTER_RESPONSE_STORE_MAX=${CONVERTER_RESPONSE_STORE_MAX:-10000}
+      # Surface upstream reasoning_content as Responses reasoning items.
+      - CONVERTER_EMIT_REASONING=${CONVERTER_EMIT_REASONING:-true}
+    expose:
+      - "4001"
+    volumes:
+      - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/ssl/litellm-ca.crt:ro
+    depends_on:
+      litellm:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - apihub-net
+
   unibridge-ui:
     build:
       context: ./unibridge-ui

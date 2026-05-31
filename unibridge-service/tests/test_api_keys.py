@@ -76,6 +76,68 @@ async def test_sync_all_consumer_route_restrictions_replays_stored_allowed_route
 
 
 @pytest.mark.asyncio
+async def test_sync_consumer_restriction_grants_llm_messages_alongside_llm_proxy():
+    """Granting ``llm-proxy`` implicitly grants the converter route ``llm-messages``.
+
+    Existing stored keys list ``llm-proxy`` (the only LLM route that existed when
+    they were created) — without the alias they would be denied on the new
+    ``/api/llm/v1/messages`` route after the converter rolls out.
+    """
+    from app.routers.api_keys import _sync_consumer_restriction
+
+    route_state = {
+        "query-api": {
+            "id": "query-api",
+            "uri": "/query/*",
+            "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}},
+        },
+        "llm-proxy": {
+            "id": "llm-proxy",
+            "uri": "/llm/*",
+            "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}},
+        },
+        "llm-messages": {
+            "id": "llm-messages",
+            "uri": "/api/llm/v1/messages",
+            "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}},
+        },
+        "llm-responses": {
+            "id": "llm-responses",
+            "uri": "/api/llm/v1/responses",
+            "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}},
+        },
+    }
+
+    async def list_resources(resource_type):
+        return {"items": list(route_state.values())}
+
+    async def put_resource(resource_type, resource_id, body):
+        route_state[resource_id] = {"id": resource_id, **body}
+
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
+        mock_apisix.put_resource = AsyncMock(side_effect=put_resource)
+
+        await _sync_consumer_restriction(["llm-proxy"], "llm-user")
+
+    # Granting llm-proxy whitelists the consumer on the proxy AND both converter
+    # routes (llm-messages, llm-responses).
+    assert route_state["llm-proxy"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["llm-user"]
+    }
+    assert route_state["llm-messages"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["llm-user"]
+    }
+    assert route_state["llm-responses"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["llm-user"]
+    }
+    # ...but a route the key was not granted stays deny-all.
+    assert route_state["query-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": [DENY_ALL_CONSUMER]
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "malformed_allowed_routes",
     [

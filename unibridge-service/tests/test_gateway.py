@@ -1908,6 +1908,15 @@ class TestPermissions:
         )
         assert resp.status_code == 403
 
+    @pytest.mark.parametrize("llm_route", ["llm-messages", "llm-responses"])
+    async def test_user_cannot_read_llm_converter_routes(self, client, user_token, llm_route):
+        # The converter routes are admin-scope only, same as llm-proxy.
+        resp = await client.get(
+            f"/admin/gateway/metrics/summary?range=1h&route={llm_route}",
+            headers=auth_header(user_token),
+        )
+        assert resp.status_code == 403
+
     async def test_user_cannot_read_routes(self, client, user_token):
         resp = await client.get(
             "/admin/gateway/routes", headers=auth_header(user_token)
@@ -2078,21 +2087,24 @@ class TestLabelsHelper:
     """_labels() builds PromQL label selectors with llm-proxy exclusion default."""
 
     def test_no_args_excludes_llm_proxy(self):
-        assert _labels(None, None) == '{route!="llm-proxy"}'
+        assert _labels(None, None) == \
+            '{route!="llm-proxy",route!="llm-messages",route!="llm-responses"}'
 
     def test_route_replaces_llm_proxy_exclusion(self):
-        # Explicit route filter should not include the llm-proxy exclusion
+        # Explicit route filter should not include the LLM exclusions
         assert _labels("query-api", None) == '{route="query-api"}'
 
     def test_consumer_adds_label(self):
-        assert _labels(None, "alice") == '{route!="llm-proxy",consumer="alice"}'
+        assert _labels(None, "alice") == \
+            '{route!="llm-proxy",route!="llm-messages",route!="llm-responses",consumer="alice"}'
 
     def test_route_and_consumer(self):
         assert _labels("query-api", "alice") == '{route="query-api",consumer="alice"}'
 
     def test_extra_labels_prepended(self):
         # Existing usage: _labels(route, None, 'code=~"5.."')
-        assert _labels(None, None, 'code=~"5.."') == '{code=~"5..",route!="llm-proxy"}'
+        assert _labels(None, None, 'code=~"5.."') == \
+            '{code=~"5..",route!="llm-proxy",route!="llm-messages",route!="llm-responses"}'
         assert _labels("query-api", "alice", 'code=~"5.."') == \
             '{code=~"5..",route="query-api",consumer="alice"}'
 
