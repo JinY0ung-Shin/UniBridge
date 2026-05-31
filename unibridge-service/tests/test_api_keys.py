@@ -101,6 +101,11 @@ async def test_sync_consumer_restriction_grants_llm_messages_alongside_llm_proxy
             "uri": "/api/llm/v1/messages",
             "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}},
         },
+        "llm-responses": {
+            "id": "llm-responses",
+            "uri": "/api/llm/v1/responses",
+            "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}},
+        },
     }
 
     async def list_resources(resource_type):
@@ -115,11 +120,15 @@ async def test_sync_consumer_restriction_grants_llm_messages_alongside_llm_proxy
 
         await _sync_consumer_restriction(["llm-proxy"], "llm-user")
 
-    # Granting llm-proxy whitelists the consumer on BOTH the proxy and converter.
+    # Granting llm-proxy whitelists the consumer on the proxy AND both converter
+    # routes (llm-messages, llm-responses).
     assert route_state["llm-proxy"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["llm-user"]
     }
     assert route_state["llm-messages"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["llm-user"]
+    }
+    assert route_state["llm-responses"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["llm-user"]
     }
     # ...but a route the key was not granted stays deny-all.

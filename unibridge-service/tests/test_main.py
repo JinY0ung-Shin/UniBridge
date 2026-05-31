@@ -181,6 +181,19 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 },
                 "status": 1,
             },
+            {
+                "id": "llm-responses",
+                "name": "llm-responses",
+                "uri": "/api/llm/v1/responses",
+                "methods": ["POST", "OPTIONS"],
+                "priority": 10,
+                "upstream_id": "llm-converter",
+                "plugins": {
+                    "key-auth": {},
+                    "consumer-restriction": {"whitelist": ["resp-consumer"]},
+                },
+                "status": 1,
+            },
         ]
     )
 
@@ -224,15 +237,16 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     assert llm_headers["Authorization"] == "Bearer sk-test"
     assert llm_headers["x-litellm-end-user-id"] == "$consumer_name"
 
-    # The converter route preserves its consumer-restriction and injects the
+    # The converter routes preserve their consumer-restriction and inject the
     # same master-key / end-user headers as llm-proxy.
-    assert route_calls["llm-messages"]["plugins"]["consumer-restriction"] == {
-        "whitelist": ["msgs-consumer"]
-    }
-    msgs_headers = route_calls["llm-messages"]["plugins"]["proxy-rewrite"]["headers"]["set"]
-    assert msgs_headers["Authorization"] == "Bearer sk-test"
-    assert msgs_headers["x-litellm-end-user-id"] == "$consumer_name"
-    assert route_calls["llm-messages"]["upstream_id"] == "llm-converter"
+    for _route_id, _consumer in (("llm-messages", "msgs-consumer"), ("llm-responses", "resp-consumer")):
+        assert route_calls[_route_id]["plugins"]["consumer-restriction"] == {
+            "whitelist": [_consumer]
+        }
+        _headers = route_calls[_route_id]["plugins"]["proxy-rewrite"]["headers"]["set"]
+        assert _headers["Authorization"] == "Bearer sk-test"
+        assert _headers["x-litellm-end-user-id"] == "$consumer_name"
+        assert route_calls[_route_id]["upstream_id"] == "llm-converter"
 
 
 @pytest.mark.asyncio
@@ -245,6 +259,7 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
             RuntimeError("404 s3 route missing"),
             RuntimeError("404 route missing"),
             RuntimeError("404 messages route missing"),
+            RuntimeError("404 responses route missing"),
         ]
     )
 
@@ -281,9 +296,12 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
     assert "consumer-restriction" not in route_calls["query-api"]["plugins"]
     assert "consumer-restriction" not in route_calls["s3-api"]["plugins"]
     assert "consumer-restriction" not in route_calls["llm-proxy"]["plugins"]
-    # The converter route ships deny-all by default so it is never callable by an
-    # arbitrary key in the window before the consumer-restriction replay runs.
+    # The converter routes ship deny-all by default so they are never callable by
+    # an arbitrary key in the window before the consumer-restriction replay runs.
     assert route_calls["llm-messages"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["__deny_all__"]
+    }
+    assert route_calls["llm-responses"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["__deny_all__"]
     }
 

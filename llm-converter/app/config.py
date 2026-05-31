@@ -69,6 +69,13 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in {"true", "1", "yes", "on"}
+
+
 def _get_timeout() -> httpx.Timeout:
     """httpx timeout for the upstream client.
 
@@ -102,6 +109,21 @@ class _Settings:
     @property
     def request_timeout(self) -> httpx.Timeout:
         return _get_timeout()
+
+    @property
+    def response_store_ttl(self) -> float:
+        """TTL (seconds) for the in-memory previous_response_id conversation store."""
+        return float(_int_env("CONVERTER_RESPONSE_STORE_TTL", 3600))
+
+    @property
+    def response_store_max(self) -> int:
+        """Max stored conversations before LRU eviction."""
+        return _int_env("CONVERTER_RESPONSE_STORE_MAX", 10000)
+
+    @property
+    def emit_reasoning(self) -> bool:
+        """Whether to surface upstream ``reasoning_content`` as Responses reasoning items."""
+        return _bool_env("CONVERTER_EMIT_REASONING", True)
 
 
 settings = _Settings()
