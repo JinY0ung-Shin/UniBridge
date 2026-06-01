@@ -7,7 +7,7 @@ Anthropic shape.
 
 from __future__ import annotations
 
-from conftest import read_sse, requires_deployment
+from conftest import MAX_TOKENS, read_sse, requires_deployment
 
 pytestmark = requires_deployment
 
@@ -18,7 +18,7 @@ def test_messages_non_streaming(client, auth_headers, model):
         headers=auth_headers,
         json={
             "model": model,
-            "max_tokens": 64,
+            "max_tokens": MAX_TOKENS,
             "messages": [{"role": "user", "content": "Reply with exactly the word: pong"}],
         },
     )
@@ -41,7 +41,7 @@ def test_messages_streaming(client, auth_headers, model):
         auth_headers,
         {
             "model": model,
-            "max_tokens": 64,
+            "max_tokens": MAX_TOKENS,
             "stream": True,
             "messages": [{"role": "user", "content": "Count to three."}],
         },

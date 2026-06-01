@@ -42,6 +42,11 @@ API_KEY = os.getenv("LLM_API_KEY", "")
 API_KEY_HEADER = os.getenv("LLM_API_KEY_HEADER", "apikey")
 MODEL = os.getenv("LLM_MODEL", "")
 TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
+# Anthropic Messages requires max_tokens. Reasoning models spend tokens on a
+# ``thinking`` block before any answer text, so a tight cap can truncate the
+# whole budget into reasoning and leave no text. Default generously; override
+# with LLM_MAX_TOKENS for slow/expensive models.
+MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))
 
 
 def _tls_verify():
