@@ -204,7 +204,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      # Cold start: this service only begins after keycloak is healthy, then
+      # does its own boot work (incl. retrying outbound connections), which can
+      # push /health past a tight window and trip the dependent ui's
+      # service_healthy gate. Give the first boot room.
+      start_period: 60s
     networks:
       - apihub-net
 
