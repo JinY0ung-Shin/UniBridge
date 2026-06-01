@@ -45,7 +45,16 @@ DROP_FROM_REQUEST = _HOP_BY_HOP | frozenset({"accept-encoding"})
 #   ``.aread()``/``.aiter_lines()``, and the SSE branch re-serializes events as
 #   plain UTF-8. Forwarding the original encoding would mislead the client into
 #   decompressing already-decoded data.
-DROP_FROM_RESPONSE = _HOP_BY_HOP | frozenset({"content-encoding"})
+# - ``cache-control`` / ``x-accel-buffering``: the streaming branches set these
+#   explicitly (no-cache / no) to defeat intermediary buffering of the SSE
+#   stream. dict keys are case-sensitive, so an upstream copy in a different case
+#   would survive as a DUPLICATE header (emitted first on the wire) and let an
+#   nginx in front honor the upstream value — re-enabling the very buffering
+#   these headers exist to prevent. Strip any upstream copy so the route's value
+#   is authoritative.
+DROP_FROM_RESPONSE = _HOP_BY_HOP | frozenset(
+    {"content-encoding", "cache-control", "x-accel-buffering"}
+)
 
 
 def filter_headers(items, drop: frozenset) -> Dict[str, str]:

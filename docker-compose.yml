@@ -376,9 +376,11 @@ services:
       - CONVERTER_CONNECT_TIMEOUT=${CONVERTER_CONNECT_TIMEOUT:-10}
       - CONVERTER_WRITE_TIMEOUT=${CONVERTER_WRITE_TIMEOUT:-30}
       - CONVERTER_POOL_TIMEOUT=${CONVERTER_POOL_TIMEOUT:-10}
-      # In-memory previous_response_id store (TTL seconds / max conversations).
+      # In-memory previous_response_id store (TTL seconds / max conversations /
+      # total byte budget; 0 disables the byte budget).
       - CONVERTER_RESPONSE_STORE_TTL=${CONVERTER_RESPONSE_STORE_TTL:-3600}
       - CONVERTER_RESPONSE_STORE_MAX=${CONVERTER_RESPONSE_STORE_MAX:-10000}
+      - CONVERTER_RESPONSE_STORE_MAX_BYTES=${CONVERTER_RESPONSE_STORE_MAX_BYTES:-268435456}
       # Surface upstream reasoning_content as Responses reasoning items.
       - CONVERTER_EMIT_REASONING=${CONVERTER_EMIT_REASONING:-true}
     expose:

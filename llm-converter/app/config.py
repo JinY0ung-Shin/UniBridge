@@ -121,6 +121,13 @@ class _Settings:
         return _int_env("CONVERTER_RESPONSE_STORE_MAX", 10000)
 
     @property
+    def response_store_max_bytes(self) -> int:
+        """Total approx-serialized byte budget for stored transcripts before LRU
+        eviction (0 disables). Safety net for image-heavy / many concurrent
+        chains, which the entry-count cap alone does not bound. Default 256 MiB."""
+        return _int_env("CONVERTER_RESPONSE_STORE_MAX_BYTES", 256 * 1024 * 1024)
+
+    @property
     def emit_reasoning(self) -> bool:
         """Whether to surface upstream ``reasoning_content`` as Responses reasoning items."""
         return _bool_env("CONVERTER_EMIT_REASONING", True)

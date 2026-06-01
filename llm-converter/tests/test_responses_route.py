@@ -204,3 +204,82 @@ def test_streaming_bridge_crash_failed_event_has_sequence_number():
     assert events[-1]["type"] == "response.failed"
     assert "sequence_number" in events[-1]
     assert [e["sequence_number"] for e in events] == list(range(len(events)))
+
+
+def test_non_streaming_malformed_2xx_body_is_forwarded_not_500():
+    # A 2xx JSON body that parses but is structurally unexpected (choices is a
+    # dict, not a list) makes translation raise. The route must forward the raw
+    # upstream body unchanged, not return a bare 500.
+    raw = {"choices": {"0": {"message": {"content": "x"}}}, "id": "weird"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "application/json"},
+                              content=json.dumps(raw).encode())
+
+    client = TestClient(_make_app(handler))
+    resp = client.post("/v1/responses", json={"model": "m", "input": "hi"})
+    assert resp.status_code == 200
+    assert resp.json() == raw  # forwarded verbatim, not translated, not 500
+
+
+def test_empty_assistant_turn_is_not_persisted():
+    # An empty assistant turn (no content, no tool_calls) must not be stored —
+    # matching the streaming path — so chaining off its id 400s.
+    client = TestClient(_make_app(
+        lambda r: httpx.Response(200, headers={"content-type": "application/json"},
+                                 content=json.dumps(_chat_json(content="")).encode())))
+    r1 = client.post("/v1/responses", json={"model": "m", "input": "hi"})
+    rid = r1.json()["id"]
+    r2 = client.post("/v1/responses",
+                     json={"model": "m", "input": "q2", "previous_response_id": rid})
+    assert r2.status_code == 400
+
+
+def test_chaining_supersedes_parent_so_reuse_400s():
+    # Option C: a successful chain deletes the parent prev_id (linear chain keeps
+    # only the latest transcript). Reusing the parent id then 400s; chaining off
+    # the latest still works.
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        n = len(bodies)
+        return httpx.Response(200, headers={"content-type": "application/json"},
+                              content=json.dumps(_chat_json(content=f"a{n}")).encode())
+
+    client = TestClient(_make_app(handler))
+    rid1 = client.post("/v1/responses", json={"model": "m", "input": "q1"}).json()["id"]
+    r2 = client.post("/v1/responses",
+                     json={"model": "m", "input": "q2", "previous_response_id": rid1})
+    rid2 = r2.json()["id"]
+    assert r2.status_code == 200
+    # parent rid1 superseded → reuse 400s (branching deliberately traded away)
+    r3 = client.post("/v1/responses",
+                     json={"model": "m", "input": "q3", "previous_response_id": rid1})
+    assert r3.status_code == 400
+    # chaining off the latest still works
+    r4 = client.post("/v1/responses",
+                     json={"model": "m", "input": "q4", "previous_response_id": rid2})
+    assert r4.status_code == 200
+
+
+def test_streaming_strips_upstream_cache_headers_so_route_values_win():
+    sse = (
+        "data: " + json.dumps({"choices": [{"delta": {"content": "hi"}}]}) + "\n\n"
+        "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]}) + "\n\n"
+        "data: [DONE]\n\n"
+    ).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Upstream sets case-variant copies that previously survived as duplicates.
+        return httpx.Response(200, headers={
+            "content-type": "text/event-stream",
+            "cache-control": "public, max-age=60",
+            "x-accel-buffering": "yes",
+        }, content=sse)
+
+    client = TestClient(_make_app(handler))
+    resp = client.post("/v1/responses", json={"model": "m", "stream": True, "input": "hi"})
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-cache"
+    assert resp.headers["x-accel-buffering"] == "no"

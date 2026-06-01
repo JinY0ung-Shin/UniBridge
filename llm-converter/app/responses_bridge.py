@@ -109,38 +109,61 @@ def _content_to_chat(content: Any, role: str) -> Any:
 
 
 def _input_to_messages(input_data: Any) -> list[dict]:
-    """Translate the Responses ``input`` (string or item array) to chat messages."""
+    """Translate the Responses ``input`` (string or item array) to chat messages.
+
+    Consecutive ``function_call`` items (and an immediately-preceding toolless
+    assistant ``message``) are coalesced into ONE assistant message carrying all
+    their ``tool_calls``. The Chat Completions contract requires every
+    ``role:"tool"`` result to sit adjacent to the single assistant-with-tool_calls
+    block that issued it; emitting one assistant message per *parallel* call would
+    interleave an extra assistant message between a call and its result and get
+    the whole follow-up turn rejected (400) upstream.
+    """
     if isinstance(input_data, str):
         return [{"role": "user", "content": input_data}]
     if not isinstance(input_data, list):
         return []
 
     messages: list[dict] = []
+    # The assistant message currently accumulating tool_calls, or None. Reset
+    # ("flushed") by any item that ends a tool-call run (a message or a tool
+    # result), so a later function_call starts a fresh assistant block.
+    pending: Optional[dict] = None
+
     for item in input_data:
         if not isinstance(item, dict):
             continue
         itype = item.get("type")
         if itype in (None, "message") and "role" in item:
+            pending = None
             role = _map_role(item.get("role"))
             messages.append({"role": role, "content": _content_to_chat(item.get("content"), role)})
         elif itype == "function_call":
             args = item.get("arguments")
             if not isinstance(args, str):
                 args = json.dumps(args or {}, ensure_ascii=False)
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": item.get("call_id") or item.get("id") or f"call_{uuid.uuid4().hex[:16]}",
-                            "type": "function",
-                            "function": {"name": item.get("name") or "", "arguments": args},
-                        }
-                    ],
-                }
-            )
+            tool_call = {
+                "id": item.get("call_id") or item.get("id") or f"call_{uuid.uuid4().hex[:16]}",
+                "type": "function",
+                "function": {"name": item.get("name") or "", "arguments": args},
+            }
+            if pending is None:
+                # Fold into an immediately-preceding toolless assistant message
+                # (same-turn text + tool calls) when present; else open a new one.
+                if (
+                    messages
+                    and messages[-1].get("role") == "assistant"
+                    and "tool_calls" not in messages[-1]
+                ):
+                    pending = messages[-1]
+                    pending["tool_calls"] = [tool_call]
+                else:
+                    pending = {"role": "assistant", "content": "", "tool_calls": [tool_call]}
+                    messages.append(pending)
+            else:
+                pending["tool_calls"].append(tool_call)
         elif itype == "function_call_output":
+            pending = None
             out = item.get("output", "")
             if isinstance(out, list):
                 # Responses allows output as an array of content parts; collapse
@@ -363,7 +386,13 @@ def _build_response_object(
 
 def assistant_message_from_chat(message: dict) -> dict:
     """Build the chat-format assistant message to persist for chaining."""
-    msg: dict[str, Any] = {"role": "assistant", "content": message.get("content") or ""}
+    content = message.get("content")
+    if not content:
+        # Fall back to the refusal text so a refusal turn is preserved in the
+        # chain (matches the streaming finalize_holder path) instead of storing
+        # an empty assistant turn that diverges from what the client received.
+        content = message.get("refusal") or ""
+    msg: dict[str, Any] = {"role": "assistant", "content": content}
     tool_calls = message.get("tool_calls")
     if tool_calls:
         msg["tool_calls"] = tool_calls
@@ -406,24 +435,23 @@ def chat_response_to_responses_body(
 
     content = message.get("content")
     refusal = message.get("refusal")
+    # Keep both as distinct content parts within a SINGLE message item when the
+    # upstream returns both (the if/elif here previously dropped the refusal, and
+    # diverged from the streaming path). OpenAI permits a refusal part alongside
+    # an output_text part in one message item.
+    parts: list[dict] = []
     if isinstance(content, str) and content:
+        parts.append({"type": "output_text", "text": content, "annotations": []})
+    if isinstance(refusal, str) and refusal:
+        parts.append({"type": "refusal", "refusal": refusal})
+    if parts:
         output.append(
             {
                 "id": _new_message_id(),
                 "type": "message",
                 "status": item_status,
                 "role": "assistant",
-                "content": [{"type": "output_text", "text": content, "annotations": []}],
-            }
-        )
-    elif isinstance(refusal, str) and refusal:
-        output.append(
-            {
-                "id": _new_message_id(),
-                "type": "message",
-                "status": item_status,
-                "role": "assistant",
-                "content": [{"type": "refusal", "refusal": refusal}],
+                "content": parts,
             }
         )
 
@@ -633,10 +661,19 @@ async def chat_stream_to_responses_events(
         persisting an empty assistant turn.
         """
         text_full = "".join(
-            (p.get("text") or p.get("refusal") or "")
+            (p.get("text") or "")
             for it in items if it.get("type") == "message"
             for p in it.get("content", [])
         )
+        if not text_full:
+            # Pure-refusal turn: persist the refusal text so the chain reflects
+            # it. When real output_text exists we do NOT blend the refusal into
+            # it (which previously produced e.g. "hello"+"nope" -> "hellonope").
+            text_full = "".join(
+                (p.get("refusal") or "")
+                for it in items if it.get("type") == "message"
+                for p in it.get("content", [])
+            )
         tool_calls = [
             {"id": it["call_id"], "type": "function",
              "function": {"name": it["name"], "arguments": it["arguments"]}}
@@ -760,14 +797,31 @@ async def chat_stream_to_responses_events(
                 if not isinstance(tci, int):
                     continue
                 fn = tc.get("function") or {}
-                if tci not in s.tools:
+                incoming_id = tc.get("id")
+                existing = s.tools.get(tci)
+                # Some non-conformant upstreams reuse a single index for distinct
+                # sequential tool calls. A delta carrying a NON-EMPTY id that
+                # differs from the open item's call_id is a new call, not a
+                # continuation — close the current item and open a fresh one so the
+                # second call's id/name/arguments are not merged into the first
+                # (which would corrupt args into e.g. {"a":1}{"b":2}).
+                is_new_call = (
+                    existing is not None
+                    and isinstance(incoming_id, str)
+                    and bool(incoming_id)
+                    and incoming_id != existing["call_id"]
+                )
+                if existing is None or is_new_call:
+                    if is_new_call:
+                        for e in close_tool(tci):
+                            yield e
                     # reasoning/text precede tool calls — close them first.
                     for e in close_reasoning():
                         yield e
                     for e in close_text():
                         yield e
                     t = {"id": _new_fc_id(), "oi": s.next_oi,
-                         "call_id": tc.get("id") or f"call_{uuid.uuid4().hex[:16]}",
+                         "call_id": incoming_id or f"call_{uuid.uuid4().hex[:16]}",
                          "name": fn.get("name") or "", "buf": []}
                     s.next_oi += 1
                     s.tools[tci] = t
@@ -808,11 +862,40 @@ async def chat_stream_to_responses_events(
         terminal_type = "response.incomplete" if status == "incomplete" else "response.completed"
         yield lifecycle(terminal_type, status, final_output, s.usage, incomplete)
     finally:
-        # On client cancellation (GeneratorExit) the block above may not finish;
-        # leave the holder reflecting best-effort partial state so the route can
-        # still persist a coherent transcript.
+        # On client cancellation (GeneratorExit) the try-block above may not run
+        # its close_* pass, so still-open items never reach s.output. Synthesize
+        # them from their buffers — their *.delta content already reached the
+        # client — so the persisted transcript reflects what was actually sent,
+        # honoring the best-effort partial-state promise.
         if "assistant_message" not in holder:
-            partial = [it for _, it in sorted(s.output, key=lambda x: x[0])]
+            pairs = list(s.output)
+            if s.text is not None:
+                txt = "".join(s.text["buf"])
+                part = (
+                    {"type": "refusal", "refusal": txt}
+                    if s.text["kind"] == "refusal"
+                    else {"type": "output_text", "text": txt, "annotations": []}
+                )
+                pairs.append((s.text["oi"], {"type": "message", "content": [part]}))
+            # dict.fromkeys dedupes: an index reused for a new call (close_tool +
+            # reopen) leaves it twice in tool_order, and unlike the close_* loop
+            # this path has no idempotency guard — without dedup a still-open
+            # reused call would be appended (and persisted) twice.
+            for idx in dict.fromkeys(s.tool_order):
+                t = s.tools.get(idx)
+                if t is not None:
+                    pairs.append(
+                        (
+                            t["oi"],
+                            {
+                                "type": "function_call",
+                                "call_id": t["call_id"],
+                                "name": t["name"],
+                                "arguments": "".join(t["buf"]),
+                            },
+                        )
+                    )
+            partial = [it for _, it in sorted(pairs, key=lambda x: x[0])]
             finalize_holder(partial, holder.get("status") or "incomplete")
 
 

@@ -139,6 +139,18 @@ async def messages(request: Request) -> Response:
                         resp_headers.pop("content-length", None)
                 except json.JSONDecodeError:
                     pass
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    # 2xx JSON that is structurally unexpected makes translation
+                    # raise; forward the raw upstream body unchanged rather than
+                    # returning a bare 500.
+                    logger.warning(
+                        "converter messages: upstream 2xx body could not be translated; "
+                        "forwarding raw body unchanged",
+                        exc_info=True,
+                    )
+                    content = upstream.content
+                    media_type = upstream.headers.get("content-type")
+                    resp_headers = filter_headers(upstream.headers.items(), DROP_FROM_RESPONSE)
             return Response(
                 content=content,
                 status_code=upstream.status_code,
@@ -319,14 +331,38 @@ async def responses(request: Request) -> Response:
                         resp_headers.pop("content-length", None)
                         if store_flag:
                             message = (chat.get("choices") or [{}])[0].get("message") or {}
-                            conversation_store.put(
-                                response_id, base_messages + [assistant_message_from_chat(message)]
-                            )
+                            assistant = assistant_message_from_chat(message)
+                            # Skip persisting an empty assistant turn (no content,
+                            # no tool_calls) — matches the streaming path, which
+                            # only persists when there is real output.
+                            if assistant.get("content") or assistant.get("tool_calls"):
+                                conversation_store.put(
+                                    response_id, base_messages + [assistant]
+                                )
+                                # Supersede the chained-from response: a linear
+                                # chain only needs the latest transcript, so drop
+                                # the parent to keep total memory O(N) not O(N^2).
+                                # (Trades away branching off a shared prev id.)
+                                if prev_id is not None:
+                                    conversation_store.delete(prev_id)
                 except json.JSONDecodeError:
                     logger.warning(
                         "converter responses: upstream 2xx returned unparseable JSON; "
                         "forwarding raw body unchanged"
                     )
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    # A 2xx body that parses as JSON but is structurally unexpected
+                    # (e.g. choices is a dict) makes translation raise. Forward the
+                    # raw upstream body unchanged rather than turning it into a bare
+                    # 500 — mirrors the streaming response.failed fallback.
+                    logger.warning(
+                        "converter responses: upstream 2xx body could not be translated; "
+                        "forwarding raw body unchanged",
+                        exc_info=True,
+                    )
+                    content = upstream.content
+                    media_type = upstream.headers.get("content-type")
+                    resp_headers = filter_headers(upstream.headers.items(), DROP_FROM_RESPONSE)
             return Response(
                 content=content,
                 status_code=upstream.status_code,
@@ -400,6 +436,10 @@ async def responses(request: Request) -> Response:
                     conversation_store.put(
                         response_id, base_messages + [holder["assistant_message"]]
                     )
+                    # Supersede the parent (see non-stream branch) — linear chain
+                    # retains only the latest transcript.
+                    if prev_id is not None:
+                        conversation_store.delete(prev_id)
                     persisted = True
                 yield format_sse(payload)
         except Exception:
@@ -428,6 +468,8 @@ async def responses(request: Request) -> Response:
             # complete transcript is available; never persist after a bridge error.
             if not persisted and not failed and store_flag and holder.get("assistant_message"):
                 conversation_store.put(response_id, base_messages + [holder["assistant_message"]])
+                if prev_id is not None:
+                    conversation_store.delete(prev_id)
 
     resp_headers = filter_headers(upstream.headers.items(), DROP_FROM_RESPONSE)
     resp_headers["Cache-Control"] = "no-cache"

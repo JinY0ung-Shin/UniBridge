@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import AsyncIterator, Iterable, List
 
 from app.responses_bridge import (
@@ -390,3 +389,156 @@ async def test_stream_text_after_tool_call_terminal_output_ordered_by_index():
     final = events[-1]["response"]
     types_in_order = [it["type"] for it in final["output"]]
     assert types_in_order == ["function_call", "message"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: defects found in the 2026-06 adversarial review
+# ---------------------------------------------------------------------------
+
+
+def test_request_parallel_function_calls_coalesce_into_single_assistant_message():
+    # Parallel tool calls replayed via input[] must become ONE assistant message
+    # carrying all tool_calls, so each tool result stays adjacent to it (else the
+    # Chat Completions upstream rejects the interleaved sequence with a 400).
+    body = {"model": "m", "input": [
+        {"type": "message", "role": "user", "content": "weather in SF and NY?"},
+        {"type": "function_call", "call_id": "call_1", "name": "wx", "arguments": '{"city":"SF"}'},
+        {"type": "function_call", "call_id": "call_2", "name": "wx", "arguments": '{"city":"NY"}'},
+        {"type": "function_call_output", "call_id": "call_1", "output": "60F"},
+        {"type": "function_call_output", "call_id": "call_2", "output": "50F"},
+    ]}
+    msgs = responses_request_to_chat_body(body)["messages"]
+    assert msgs[0] == {"role": "user", "content": "weather in SF and NY?"}
+    assert msgs[1]["role"] == "assistant"
+    assert [tc["id"] for tc in msgs[1]["tool_calls"]] == ["call_1", "call_2"]
+    assert msgs[2] == {"role": "tool", "tool_call_id": "call_1", "content": "60F"}
+    assert msgs[3] == {"role": "tool", "tool_call_id": "call_2", "content": "50F"}
+    assert len(msgs) == 4
+    # adjacency invariant: every tool result's id was issued by the preceding block
+    issued = {tc["id"] for tc in msgs[1]["tool_calls"]}
+    assert all(m["tool_call_id"] in issued for m in msgs if m["role"] == "tool")
+
+
+def test_request_sequential_tool_calls_across_results_are_separate_blocks():
+    # fc, fco, fc, fco are two distinct turns — a tool result flushes the run, so
+    # the second call must NOT be coalesced into the first assistant block.
+    body = {"model": "m", "input": [
+        {"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "c1", "output": "r1"},
+        {"type": "function_call", "call_id": "c2", "name": "f", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "c2", "output": "r2"},
+    ]}
+    msgs = responses_request_to_chat_body(body)["messages"]
+    assert [m["role"] for m in msgs] == ["assistant", "tool", "assistant", "tool"]
+    assert [tc["id"] for tc in msgs[0]["tool_calls"]] == ["c1"]
+    assert [tc["id"] for tc in msgs[2]["tool_calls"]] == ["c2"]
+
+
+def test_request_assistant_text_then_tool_calls_merge_into_one_message():
+    # An assistant text message immediately followed by function_calls is a single
+    # turn (content + tool_calls), matching the streaming finalize_holder shape.
+    body = {"model": "m", "input": [
+        {"type": "message", "role": "assistant", "content": "let me check"},
+        {"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"},
+    ]}
+    msgs = responses_request_to_chat_body(body)["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["role"] == "assistant"
+    assert msgs[0]["content"] == "let me check"
+    assert [tc["id"] for tc in msgs[0]["tool_calls"]] == ["c1"]
+
+
+def test_assistant_message_from_chat_falls_back_to_refusal():
+    msg = {"role": "assistant", "content": None, "refusal": "I can't help with that"}
+    assert assistant_message_from_chat(msg) == {
+        "role": "assistant", "content": "I can't help with that"
+    }
+
+
+def test_response_content_and_refusal_both_kept_as_parts():
+    chat = {"model": "m", "choices": [
+        {"message": {"role": "assistant", "content": "hello", "refusal": "nope"},
+         "finish_reason": "stop"}]}
+    out = chat_response_to_responses_body(chat, {"model": "m"}, "resp_1")
+    parts = out["output"][0]["content"]
+    assert {"type": "output_text", "text": "hello", "annotations": []} in parts
+    assert {"type": "refusal", "refusal": "nope"} in parts
+
+
+async def test_stream_tool_index_reuse_with_distinct_ids_splits_calls():
+    # A non-conformant upstream that reuses index 0 for two DISTINCT calls must
+    # yield two separate function_call items, not one with concatenated args.
+    chunks = [
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_a", "type": "function",
+             "function": {"name": "f1", "arguments": '{"x":1}'}}]}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_b", "type": "function",
+             "function": {"name": "f2", "arguments": '{"y":2}'}}]}}]},
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+    events, holder = await _run_stream(chunks)
+    fcs = [it for it in events[-1]["response"]["output"] if it["type"] == "function_call"]
+    assert [fc["call_id"] for fc in fcs] == ["call_a", "call_b"]
+    assert [fc["arguments"] for fc in fcs] == ['{"x":1}', '{"y":2}']
+    assert [fc["name"] for fc in fcs] == ["f1", "f2"]
+    # both calls survive into the persisted chaining transcript
+    assert len(holder["assistant_message"]["tool_calls"]) == 2
+
+
+async def test_stream_tool_index_reuse_continuation_fragment_still_appends():
+    # The fix must not regress the normal case: a same-index delta with NO id is
+    # an argument continuation and keeps appending to the open call.
+    chunks = [
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_a", "type": "function",
+             "function": {"name": "f", "arguments": '{"x":'}}]}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"arguments": "1}"}}]}}]},
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+    events, _ = await _run_stream(chunks)
+    fcs = [it for it in events[-1]["response"]["output"] if it["type"] == "function_call"]
+    assert len(fcs) == 1
+    assert fcs[0]["arguments"] == '{"x":1}'
+
+
+async def test_stream_text_then_refusal_not_blended_in_persisted_content():
+    chunks = [
+        {"choices": [{"delta": {"content": "hello"}}]},
+        {"choices": [{"delta": {"refusal": "nope"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    events, holder = await _run_stream(chunks)
+    msg_items = [it for it in events[-1]["response"]["output"] if it["type"] == "message"]
+    assert len(msg_items) == 2  # both delivered, as distinct items
+    # persisted chain content is the real text only, never "hellonope"
+    assert holder["assistant_message"]["content"] == "hello"
+
+
+async def test_stream_index_reuse_then_disconnect_persists_each_call_once():
+    # Disconnect (GeneratorExit) after an index-0 reuse must not persist the
+    # still-open second call twice (index reuse leaves it twice in tool_order).
+    async def gen():
+        yield {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_a", "type": "function",
+             "function": {"name": "f1", "arguments": '{"x":1}'}}]}}]}
+        yield {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_b", "type": "function",
+             "function": {"name": "f2", "arguments": '{"y":2}'}}]}}]}
+        yield {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+
+    holder: dict = {}
+    agen = chat_stream_to_responses_events(
+        gen(), response_id="resp_D", request_body={"model": "m"}, holder=holder
+    )
+    added = 0
+    async for e in agen:
+        if e["type"] == "response.output_item.added":
+            added += 1
+        if added == 2:  # both tool items open → simulate client disconnect now
+            break
+    await agen.aclose()
+
+    ids = [tc["id"] for tc in holder.get("assistant_message", {}).get("tool_calls", [])]
+    assert ids == ["call_a", "call_b"]  # no duplicate call_b
