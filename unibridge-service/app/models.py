@@ -53,6 +53,20 @@ class S3Connection(Base):
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)
 
 
+class NASConnection(Base):
+    __tablename__ = "nas_connections"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    alias = Column(String, unique=True, nullable=False, index=True)
+    base_path = Column(String, nullable=False)
+    read_only = Column(Boolean, default=True)
+    max_download_bytes = Column(Integer, nullable=True)   # per-connection cap; may only LOWER the global ceiling
+    show_hidden = Column(Boolean, default=False)
+    follow_symlinks = Column(Boolean, default=False)      # per-connection, NOT a global
+    created_at = Column(UtcDateTime, default=utcnow)
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)
+
+
 class Permission(Base):
     __tablename__ = "permissions"
 

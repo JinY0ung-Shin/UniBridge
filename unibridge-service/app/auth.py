@@ -53,6 +53,9 @@ ALL_PERMISSIONS = [
     "s3.connections.read",
     "s3.connections.write",
     "s3.browse",
+    "nas.connections.read",
+    "nas.connections.write",
+    "nas.browse",
 ]
 
 # ── Permission cache ────────────────────────────────────────────────────────

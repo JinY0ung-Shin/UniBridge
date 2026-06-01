@@ -23,6 +23,7 @@ export const navItems: NavItem[] = [
   { to: '/query-templates', labelKey: 'nav.queryTemplates', icon: 'Query Templates', section: 'data', permission: 'query.settings.read' },
   { to: '/query-settings', labelKey: 'nav.querySettings', icon: 'Query Settings', section: 'data', permission: 'query.settings.read' },
   { to: '/s3', labelKey: 'nav.s3Connections', icon: 'S3', section: 's3', permission: 's3.connections.read' },
+  { to: '/nas', labelKey: 'nav.nasConnections', icon: 'S3', section: 'nas', permission: 'nas.connections.read' },
   { to: '/gateway/routes', labelKey: 'nav.gatewayRoutes', icon: 'Gateway Routes', section: 'gateway', permission: 'gateway.routes.read' },
   { to: '/gateway/upstreams', labelKey: 'nav.gatewayUpstreams', icon: 'Gateway Upstreams', section: 'gateway', permission: 'gateway.upstreams.read' },
   { to: '/gateway/monitoring', labelKey: 'nav.gatewayMonitoring', icon: 'Gateway Monitoring', section: 'gateway', permission: ['gateway.monitoring.read', 'gateway.monitoring.self'] },

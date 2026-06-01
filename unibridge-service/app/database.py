@@ -13,7 +13,7 @@ from app.config import settings
 from app.models import Base
 
 ALEMBIC_BASELINE_REVISION = "0001_initial"
-ALEMBIC_HEAD_REVISION = "0007_apikey_owner_ratelimit"
+ALEMBIC_HEAD_REVISION = "0008_nas_connections"
 _SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
 # Ensure the data directory exists for SQLite

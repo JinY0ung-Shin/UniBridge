@@ -48,6 +48,16 @@ class Settings(BaseSettings):
 
     GRAPHDB_DEFAULT_PORT: int = 7200
     GRAPHDB_MAX_RESPONSE_BYTES: int = 10 * 1024 * 1024  # 10 MiB
+
+    # NAS / local-filesystem read-only provider
+    NAS_ALLOWED_ROOTS: str = "/mnt"                  # comma-separated absolute prefixes a base_path MUST sit under
+    NAS_MAX_DOWNLOAD_BYTES: int = 500 * 1024 * 1024  # 500 MiB hard ceiling for proxy streaming
+    NAS_MAX_LIST_ENTRIES: int = 5000                 # hard cap on entries scanned per listing
+    NAS_LIST_DEFAULT_LIMIT: int = 500
+    NAS_STREAM_CHUNK_BYTES: int = 1024 * 1024
+    NAS_MAX_PATH_BYTES: int = 4096
+    NAS_FS_OP_TIMEOUT_SECONDS: float = 10.0          # per-op timeout so a hung NFS/FIFO syscall cannot wedge the service
+
     APP_VERSION: str = "unknown"
 
     model_config = {"env_file": ".env"}

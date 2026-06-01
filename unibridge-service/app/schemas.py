@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import PurePosixPath
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -366,6 +367,42 @@ def _validate_s3_endpoint_url(url: str) -> str:
     return url
 
 
+def _validate_nas_base_path(path: str) -> str:
+    """Pure-string validation for a NAS base_path (NO filesystem I/O).
+
+    Reachability/existence is checked later at /test. This only enforces the
+    static, injection-resistant invariants: absolute POSIX path under one of
+    the configured allow-list roots, with no traversal segments.
+    """
+    # Lazy import to avoid a circular import (config imports nothing from here,
+    # but schemas is imported very early in app startup).
+    from app.config import settings
+
+    if not path:
+        raise ValueError("base_path must not be empty")
+    if "\x00" in path:
+        raise ValueError("base_path must not contain a NUL byte")
+    if "\\" in path:
+        raise ValueError("base_path must not contain a backslash")
+
+    pure = PurePosixPath(path)
+    if not pure.is_absolute():
+        raise ValueError("base_path must be an absolute POSIX path")
+    if any(part == ".." for part in pure.parts):
+        raise ValueError("base_path must not contain '..' segments")
+
+    # Normalize away '.' and redundant separators without touching the fs.
+    normalized = PurePosixPath(*[p for p in pure.parts if p != "."])
+
+    allowed_roots = [r.strip() for r in settings.NAS_ALLOWED_ROOTS.split(",") if r.strip()]
+    for root in allowed_roots:
+        root_path = PurePosixPath(root)
+        if normalized == root_path or root_path in normalized.parents:
+            return str(normalized)
+
+    raise ValueError("base_path is not under an allowed NAS root")
+
+
 class AlertChannelCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     webhook_url: str = Field(..., min_length=1)
@@ -633,6 +670,54 @@ class S3ConnectionResponse(BaseModel):
     access_key_id_masked: str = ""
     default_bucket: str | None = None
     use_ssl: bool
+    status: str = "unknown"
+
+    model_config = {"from_attributes": True}
+
+
+# ── NAS Connections ─────────────────────────────────────────────────────────
+
+class NasConnectionCreate(BaseModel):
+    alias: str = Field(..., min_length=1, max_length=100)
+    base_path: str = Field(..., min_length=1)
+    read_only: bool = True
+    max_download_bytes: int | None = Field(None, ge=1)
+    show_hidden: bool = False
+    follow_symlinks: bool = False
+
+    @field_validator("base_path")
+    @classmethod
+    def check_base_path(cls, v: str) -> str:
+        return _validate_nas_base_path(v)
+
+    @field_validator("read_only")
+    @classmethod
+    def enforce_read_only(cls, v: bool) -> bool:
+        if v is not True:
+            raise ValueError("NAS connections are read-only; read_only must be true")
+        return True
+
+
+class NasConnectionUpdate(BaseModel):
+    base_path: str | None = Field(None, min_length=1)
+    max_download_bytes: int | None = Field(None, ge=1)
+    show_hidden: bool | None = None
+    follow_symlinks: bool | None = None
+    # read_only is intentionally NOT updatable (always True)
+
+    @field_validator("base_path")
+    @classmethod
+    def check_base_path(cls, v: str | None) -> str | None:
+        return _validate_nas_base_path(v) if v is not None else None
+
+
+class NasConnectionResponse(BaseModel):
+    alias: str
+    base_path: str
+    read_only: bool
+    max_download_bytes: int | None = None
+    show_hidden: bool
+    follow_symlinks: bool
     status: str = "unknown"
 
     model_config = {"from_attributes": True}

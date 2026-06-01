@@ -16,10 +16,11 @@ from app import metrics
 from app.config import settings, validate_settings
 from app.database import get_db, init_db
 from app.models import DBConnection
-from app.routers import admin, alerts, api_keys, gateway, query, roles, s3, users
+from app.routers import admin, alerts, api_keys, gateway, nas, query, roles, s3, users
 from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
 from app.services.connection_manager import connection_manager
 from app.services.s3_manager import s3_manager
+from app.services.nas_manager import nas_manager
 from app.services.settings_manager import settings_manager
 
 logging.basicConfig(
@@ -40,7 +41,7 @@ def _is_missing_route_error(exc: Exception) -> bool:
 async def _preserve_consumer_restriction(
     route_id: str, body: dict[str, object]
 ) -> dict[str, object]:
-    if route_id not in {"query-api", "llm-proxy", "s3-api", "llm-messages", "llm-responses"}:
+    if route_id not in {"query-api", "llm-proxy", "s3-api", "llm-messages", "llm-responses", "nas-api"}:
         return body
 
     from app.services import apisix_client
@@ -87,6 +88,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         s3_connections = result.scalars().all()
         await s3_manager.initialize(list(s3_connections))
         logger.info("Loaded %d S3 connection(s)", len(s3_connections))
+        break
+
+    logger.info("Loading saved NAS connections...")
+    async for db in get_db():
+        from app.models import NASConnection as NASConn
+        result = await db.execute(select(NASConn))
+        nas_connections = result.scalars().all()
+        await nas_manager.initialize(list(nas_connections))
+        logger.info("Loaded %d NAS connection(s)", len(nas_connections))
         break
 
     logger.info("Loading system settings...")
@@ -172,6 +182,37 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 ),
             )
             logger.info("APISIX S3 route provisioned successfully")
+
+            # Ensure /api/nas/* route exists with key-auth. Ships inline
+            # deny-all (consumer-restriction whitelist = DENY_ALL_CONSUMER) so
+            # the route is never callable by an arbitrary key between this PUT
+            # and the consumer-restriction replay below; the replay
+            # (sync_all_consumer_route_restrictions) installs the real
+            # whitelist, and on later boots _preserve_consumer_restriction
+            # keeps it.
+            await apisix_client.put_resource(
+                "routes",
+                "nas-api",
+                await _preserve_consumer_restriction(
+                    "nas-api",
+                    {
+                        "name": "nas-api",
+                        "uri": "/api/nas/*",
+                        "methods": ["GET"],
+                        "upstream_id": "unibridge-service",
+                        "plugins": {
+                            "key-auth": {},
+                            "consumer-restriction": {"whitelist": [api_keys.DENY_ALL_CONSUMER]},
+                            "proxy-rewrite": {
+                                "regex_uri": ["^/api/nas(.*)", "/nas$1"],
+                                "use_real_request_uri_unsafe": True,
+                            },
+                        },
+                        "status": 1,
+                    },
+                ),
+            )
+            logger.info("APISIX NAS route provisioned successfully")
 
             # ── LiteLLM upstream and routes ──
             if settings.LITELLM_MASTER_KEY:
@@ -416,6 +457,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Disposing all S3 clients...")
     await s3_manager.dispose_all()
 
+    logger.info("Disposing all NAS resources...")
+    await nas_manager.dispose_all()
+
     # Close Keycloak admin client if initialized
     from app.routers.users import _kc_admin
 
@@ -477,6 +521,7 @@ app.include_router(alerts.router)
 app.include_router(api_keys.router)
 app.include_router(gateway.router)
 app.include_router(s3.router)
+app.include_router(nas.router)
 app.include_router(roles.router)
 app.include_router(users.router)
 

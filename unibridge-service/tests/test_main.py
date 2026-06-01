@@ -157,6 +157,18 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 "status": 1,
             },
             {
+                "id": "nas-api",
+                "name": "nas-api",
+                "uri": "/api/nas/*",
+                "methods": ["GET"],
+                "upstream_id": "unibridge-service",
+                "plugins": {
+                    "key-auth": {},
+                    "consumer-restriction": {"whitelist": ["nas-consumer"]},
+                },
+                "status": 1,
+            },
+            {
                 "id": "llm-proxy",
                 "name": "llm-proxy",
                 "uri": "/api/llm/*",
@@ -230,6 +242,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     assert route_calls["s3-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["s3-consumer"]
     }
+    assert route_calls["nas-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["nas-consumer"]
+    }
     assert route_calls["llm-proxy"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["llm-consumer"]
     }
@@ -257,6 +272,7 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
         side_effect=[
             RuntimeError("route not found"),
             RuntimeError("404 s3 route missing"),
+            RuntimeError("404 nas route missing"),
             RuntimeError("404 route missing"),
             RuntimeError("404 messages route missing"),
             RuntimeError("404 responses route missing"),
@@ -296,6 +312,11 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
     assert "consumer-restriction" not in route_calls["query-api"]["plugins"]
     assert "consumer-restriction" not in route_calls["s3-api"]["plugins"]
     assert "consumer-restriction" not in route_calls["llm-proxy"]["plugins"]
+    # nas-api ships deny-all by default so it is never callable by an arbitrary
+    # key in the window before the consumer-restriction replay runs.
+    assert route_calls["nas-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["__deny_all__"]
+    }
     # The converter routes ship deny-all by default so they are never callable by
     # an arbitrary key in the window before the consumer-restriction replay runs.
     assert route_calls["llm-messages"]["plugins"]["consumer-restriction"] == {
@@ -403,6 +424,12 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
                 scalars=lambda: SimpleNamespace(all=lambda: []),
             )
 
+    class _NasDb:
+        async def execute(self, _query):
+            return SimpleNamespace(
+                scalars=lambda: SimpleNamespace(all=lambda: []),
+            )
+
     class _SettingsDb:
         pass
 
@@ -425,7 +452,7 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     replay_route_restrictions = AsyncMock(
         side_effect=lambda db: events.append(("replay", db.__class__.__name__))
     )
-    db_iter = iter([_ConnectionsDb(), _S3Db(), _SettingsDb(), _ReplayDb(), _AlertStateDb()])
+    db_iter = iter([_ConnectionsDb(), _S3Db(), _NasDb(), _SettingsDb(), _ReplayDb(), _AlertStateDb()])
 
     with (
         patch("app.main.validate_settings"),

@@ -1196,4 +1196,108 @@ export async function getS3PresignedUrl(
   return data;
 }
 
+/* ── NAS Types ── */
+
+export interface NasConnectionConfig {
+  alias: string;
+  base_path: string;
+  read_only: boolean;
+  max_download_bytes?: number | null;
+  show_hidden: boolean;
+  follow_symlinks: boolean;
+  status?: string;
+}
+
+export interface NasEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number | null;
+  modified_time: string | null;
+}
+
+export interface NasListResponse {
+  path: string;
+  folders: NasEntry[];
+  files: NasEntry[];
+  total_count: number;
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export interface NasEntryMetadata {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size: number | null;
+  modified_time: string | null;
+  content_type: string | null;
+}
+
+/* ── NAS: Connections ── */
+
+export async function getNasConnections(): Promise<NasConnectionConfig[]> {
+  const { data } = await client.get('/admin/nas/connections');
+  return data;
+}
+
+export async function createNasConnection(body: NasConnectionConfig): Promise<NasConnectionConfig> {
+  const { data } = await client.post('/admin/nas/connections', body);
+  return data;
+}
+
+export async function updateNasConnection(alias: string, body: Partial<NasConnectionConfig>): Promise<NasConnectionConfig> {
+  const { data } = await client.put(`/admin/nas/connections/${alias}`, body);
+  return data;
+}
+
+export async function deleteNasConnection(alias: string): Promise<void> {
+  await client.delete(`/admin/nas/connections/${alias}`);
+}
+
+export async function testNasConnection(alias: string): Promise<{ status: string; message: string }> {
+  const { data } = await client.post(`/admin/nas/connections/${alias}/test`);
+  return data;
+}
+
+/* ── NAS: Browse ── */
+
+export async function getNasEntries(
+  alias: string,
+  params: { path?: string; offset?: number; limit?: number },
+): Promise<NasListResponse> {
+  const { data } = await client.get(`/nas/${alias}/entries`, { params });
+  return data;
+}
+
+export async function getNasEntryMetadata(
+  alias: string,
+  path: string,
+): Promise<NasEntryMetadata> {
+  const { data } = await client.get(`/nas/${alias}/metadata`, { params: { path } });
+  return data;
+}
+
+export async function downloadNasEntry(
+  alias: string,
+  path: string,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await client.get(`/nas/${alias}/download`, {
+    params: { path },
+    responseType: 'blob',
+    onDownloadProgress: (e) => {
+      if (onProgress && e.total) onProgress(e.loaded, e.total);
+    },
+  });
+  const disposition = response.headers['content-disposition'] || '';
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;\s]+)/i);
+  const plainMatch = disposition.match(/filename="([^"]+)"/i);
+  const raw = utf8Match?.[1] ?? plainMatch?.[1];
+  const filename = raw
+    ? decodeURIComponent(raw)
+    : path.split('/').pop() || 'download';
+  return { blob: response.data as Blob, filename };
+}
+
 export default client;

@@ -6,6 +6,25 @@ import importlib
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _restore_app_config():
+    """Keep ``app.config.settings`` consistent across the process.
+
+    Each test here calls ``importlib.reload(app.config)``, which rebinds
+    ``app.config.settings`` to a brand-new ``Settings()`` object. Modules that
+    captured the singleton at import time via ``from app.config import settings``
+    (connection_manager, s3_manager, nas_manager, ...) keep the ORIGINAL object,
+    so without a restore a later test that monkeypatches ``app.config.settings``
+    would desync from what those managers actually read. Rebind the original
+    settings object after each test so the singleton stays shared.
+    """
+    import app.config as cfg
+
+    original_settings = cfg.settings
+    yield
+    cfg.settings = original_settings
+
+
 def _fresh_settings(env: dict[str, str], monkeypatch):
     for key in (
         "HOST_IP",
