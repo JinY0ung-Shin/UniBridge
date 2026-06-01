@@ -46,7 +46,7 @@ TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
 # ``thinking`` block before any answer text, so a tight cap can truncate the
 # whole budget into reasoning and leave no text. Default generously; override
 # with LLM_MAX_TOKENS for slow/expensive models.
-MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))
+MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096"))
 
 
 def _tls_verify():

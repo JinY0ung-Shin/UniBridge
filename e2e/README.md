@@ -31,7 +31,7 @@ unless `LLM_API_KEY` is set).
 | `LLM_MODEL` | (auto) | Model id. If unset, discovered from `GET /v1/models`. |
 | `LLM_TLS_VERIFY` | `false` | `true` / `false` / path to CA bundle (UI uses a self-signed cert). |
 | `LLM_TIMEOUT` | `60` | Per-request timeout (seconds). |
-| `LLM_MAX_TOKENS` | `1024` | `max_tokens` for `/v1/messages`. Keep generous — reasoning models spend budget on a `thinking` block before any answer text. |
+| `LLM_MAX_TOKENS` | `4096` | `max_tokens` for `/v1/messages`. Keep generous — reasoning models spend budget on a `thinking` block before any answer text. |
 
 Config can come from real environment variables **or** an `e2e/.env` file
 (loaded automatically; gitignored). Real env vars override `.env` entries.
