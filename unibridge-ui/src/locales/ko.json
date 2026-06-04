@@ -50,7 +50,9 @@
     "type": "유형",
     "status": "상태",
     "errorOccurred": "오류가 발생했습니다",
-    "noAccess": "접근 가능한 페이지가 없습니다. 관리자에게 문의하세요."
+    "noAccess": "접근 가능한 페이지가 없습니다. 관리자에게 문의하세요.",
+    "openNavigation": "내비게이션 열기",
+    "closeNavigation": "내비게이션 닫기"
   },
   "settings": {
     "title": "설정",

@@ -96,7 +96,7 @@
 
 .nas-metadata-table td {
   padding: 6px 8px;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-default);
   font-size: 13px;
 }
 

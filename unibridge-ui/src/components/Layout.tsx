@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from 'react';
-import { NavLink, Link } from 'react-router-dom';
+import { useEffect, useState, type ReactNode } from 'react';
+import { NavLink, Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { getCurrentUser } from '../api/client';
@@ -16,7 +16,9 @@ interface LayoutProps {
 function Layout({ children }: LayoutProps) {
   const { t } = useTranslation();
   const { username, logout } = useAuth();
+  const location = useLocation();
   const [showSettings, setShowSettings] = useState(false);
+  const [navOpenPath, setNavOpenPath] = useState<string | null>(null);
 
   const permissionsQuery = useQuery({
     queryKey: ['current-user'],
@@ -29,10 +31,44 @@ function Layout({ children }: LayoutProps) {
 
   const hasPermission = (perm: Parameters<typeof hasNavPermission>[0]) =>
     hasNavPermission(perm, userPermissions);
+  const isNavOpen = navOpenPath === location.pathname;
+
+  useEffect(() => {
+    if (!isNavOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isNavOpen]);
 
   return (
-    <div className="layout">
-      <aside className="sidebar">
+    <div className={`layout ${isNavOpen ? 'layout--nav-open' : ''}`}>
+      <header className="mobile-topbar">
+        <button
+          type="button"
+          className="mobile-nav-toggle"
+          aria-label={t('common.openNavigation')}
+          aria-controls="app-sidebar"
+          aria-expanded={isNavOpen}
+          onClick={() => setNavOpenPath(location.pathname)}
+        >
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          </svg>
+        </button>
+        <Link to="/" className="mobile-brand" aria-label="UniBridge">
+          <span className="sidebar-logo-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M3 5h10M3 8h10M3 11h7" stroke="var(--text-inverse)" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </span>
+        </Link>
+        {username && <span className="mobile-username">{username}</span>}
+      </header>
+      <aside className="sidebar" id="app-sidebar">
         <div className="sidebar-header">
           <Link to="/" className="sidebar-logo">
             <div className="sidebar-logo-icon">
@@ -53,6 +89,7 @@ function Layout({ children }: LayoutProps) {
                 <NavLink
                   to={item.to}
                   end={item.to === '/'}
+                  onClick={() => setNavOpenPath(null)}
                   className={({ isActive }) =>
                     `nav-link ${isActive ? 'nav-link--active' : ''}`
                   }
@@ -201,6 +238,12 @@ function Layout({ children }: LayoutProps) {
           <span className="sidebar-version">Query Service v1.0</span>
         </div>
       </aside>
+      <button
+        type="button"
+        className="nav-scrim"
+        aria-label={t('common.closeNavigation')}
+        onClick={() => setNavOpenPath(null)}
+      />
       <main className="main-content">
         <PermissionProvider permissions={userPermissions} loaded={permissionsLoaded}>
           {permissionsQuery.isError && (

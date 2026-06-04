@@ -50,7 +50,9 @@
     "type": "Type",
     "status": "Status",
     "errorOccurred": "An error occurred",
-    "noAccess": "No accessible pages. Contact an administrator."
+    "noAccess": "No accessible pages. Contact an administrator.",
+    "openNavigation": "Open navigation",
+    "closeNavigation": "Close navigation"
   },
   "settings": {
     "title": "Settings",

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { BrowserRouter } from 'react-router-dom';
@@ -144,6 +144,30 @@ describe('App', () => {
 
     // Sidebar title
     expect(screen.getByText('UniBridge')).toBeInTheDocument();
+  });
+
+  it('opens and closes the mobile navigation drawer', async () => {
+    renderWithProviders(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Connections')).toBeInTheDocument();
+    });
+
+    const toggle = screen.getByRole('button', { name: 'Open navigation', hidden: true });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(document.querySelector('.layout')).not.toHaveClass('layout--nav-open');
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(document.querySelector('.layout')).toHaveClass('layout--nav-open');
+
+    const scrim = document.querySelector<HTMLButtonElement>('.nav-scrim');
+    expect(scrim).toHaveAttribute('aria-label', 'Close navigation');
+    fireEvent.click(scrim!);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(document.querySelector('.layout')).not.toHaveClass('layout--nav-open');
   });
 
   it('renders the sidebar title "UniBridge"', async () => {

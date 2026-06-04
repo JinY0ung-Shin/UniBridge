@@ -30,9 +30,10 @@ const NasConnections = lazy(() => import('./pages/NasConnections'));
 const NasBrowser = lazy(() => import('./pages/NasBrowser'));
 
 export function ProtectedRoute({ permission, children }: { permission: string | string[]; children: React.ReactNode }) {
+  const { t } = useTranslation();
   const { permissions: perms, loaded } = usePermissions();
   if (!loaded) {
-    return null;
+    return <PageStatus>{t('common.loading')}</PageStatus>;
   }
   if (!hasNavPermission(permission, perms)) {
     return <Navigate to="/" replace />;
@@ -40,13 +41,18 @@ export function ProtectedRoute({ permission, children }: { permission: string | 
   return <>{children}</>;
 }
 
-function RouteFallback() {
-  const { t } = useTranslation();
+function PageStatus({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ padding: 24, color: 'var(--text-secondary)', fontSize: 14 }}>
-      {t('common.loading')}
+    <div className="page-status" role="status" aria-live="polite">
+      <span className="page-status__spinner" aria-hidden="true" />
+      <span>{children}</span>
     </div>
   );
+}
+
+function RouteFallback() {
+  const { t } = useTranslation();
+  return <PageStatus>{t('common.loading')}</PageStatus>;
 }
 
 // Landing page: dashboard for users who can see it, otherwise their first
@@ -54,12 +60,12 @@ function RouteFallback() {
 function Home() {
   const { t } = useTranslation();
   const { permissions, loaded } = usePermissions();
-  if (!loaded) return null;
+  if (!loaded) return <PageStatus>{t('common.loading')}</PageStatus>;
   if (permissions.includes('dashboard.read')) return <Dashboard />;
   const target = firstAccessiblePath(permissions);
   if (target) return <Navigate to={target} replace />;
   return (
-    <div style={{ padding: 24, color: 'var(--text-secondary)', fontSize: 14 }}>
+    <div className="page-status page-status--empty">
       {t('common.noAccess')}
     </div>
   );
