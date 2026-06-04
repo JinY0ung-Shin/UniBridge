@@ -11,6 +11,10 @@ Browser ──HTTPS──> unibridge-ui (nginx)
                        └── /api/*  ──> apisix (API Gateway)
                                           │
                                           ├── /api/query/*     → Registered databases (Postgres, MSSQL, ClickHouse)
+                                          ├── /api/llm/v1/messages
+                                          │                  → llm-converter → LiteLLM
+                                          ├── /api/llm/v1/responses
+                                          │                  → llm-converter → LiteLLM
                                           ├── /api/llm/*       → LiteLLM (LLM proxy)
                                           ├── /api/llm-admin/* → LiteLLM Admin UI/API
                                           ├── /api/s3/*        → S3 connections
@@ -111,6 +115,38 @@ First boot takes ~2 minutes (Keycloak initialization).
 | Prometheus | `http://<HOST_IP>:9090` (localhost only) |
 
 Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`). No human users are seeded into the `apihub` realm by default. After first boot, sign in to the admin console and create the first `admin` user in the `apihub` realm (assign the `admin` realm role), then manage further users from the UI **Users** page.
+
+### Codex through UniBridge
+
+Codex can use UniBridge through the OpenAI-compatible Responses endpoint exposed at `/api/llm/v1/responses`. The gateway authenticates the caller with APISIX `key-auth`, injects the LiteLLM master key internally, and sends the request through `llm-converter`, which translates Responses API traffic to LiteLLM's `/v1/chat/completions` shape and translates the result back.
+
+Configure Codex in your user-level `~/.codex/config.toml`:
+
+```toml
+model_provider = "unibridge"
+model = "<LiteLLM model id>"
+
+[model_providers.unibridge]
+name = "UniBridge"
+base_url = "https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/llm/v1"
+wire_api = "responses"
+env_http_headers = { "apikey" = "UNIBRIDGE_API_KEY" }
+stream_idle_timeout_ms = 300000
+```
+
+Then export an API key that has LLM access:
+
+```bash
+export UNIBRIDGE_API_KEY="<UniBridge API key>"
+```
+
+Requirements and behavior:
+
+- Put provider/auth settings in user config (`~/.codex/config.toml`), not project `.codex/config.toml`; Codex ignores provider and auth redirects from project config.
+- Grant the API key LLM access. Granting the `llm-proxy` route also whitelists the converter routes `llm-messages` and `llm-responses`.
+- Use a certificate Codex trusts. For self-signed dev certificates, install the CA locally or use a trusted certificate for the UniBridge UI endpoint.
+- Codex reasoning effort is forwarded as Responses `reasoning.effort`; `llm-converter` maps it to upstream Chat Completions `reasoning_effort`.
+- Streaming Responses events include `response.created`, `response.output_text.delta`, function-call argument deltas, terminal `response.completed` / `response.failed`, and monotonic `sequence_number` values.
 
 ### NAS mount
 

@@ -38,6 +38,13 @@ def test_request_instructions_and_string_input():
     assert "max_tokens" not in out
 
 
+def test_request_reasoning_effort_forwarded():
+    body = {"model": "m", "input": "hello", "reasoning": {"effort": "high", "summary": "auto"}}
+    out = responses_request_to_chat_body(body)
+    assert out["reasoning_effort"] == "high"
+    assert "reasoning" not in out
+
+
 def test_request_input_items_function_call_roundtrip():
     body = {
         "model": "m",
