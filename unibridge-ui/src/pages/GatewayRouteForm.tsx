@@ -6,12 +6,23 @@ import {
   getGatewayRoute,
   saveGatewayRoute,
   getGatewayUpstreams,
+  getAlertResourceOwners,
+  setAlertResourceOwner,
   type GatewayRoute,
   type GatewayUpstream,
 } from '../api/client';
+import { useToast } from '../components/useToast';
+import { useCanWrite } from '../components/useCanWrite';
 import './GatewayRouteForm.css';
 
 const ALL_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
+
+function parseEmails(value: string): string[] {
+  return value
+    .split(/[,\n]/)
+    .map((email) => email.trim())
+    .filter(Boolean);
+}
 
 interface ServiceKeyRow {
   rowKey: string;
@@ -64,16 +75,25 @@ function GatewayRouteEditor({
   id,
   isEdit,
   initialRoute,
+  initialAssignees,
+  assigneesReady,
+  canReadAlerts,
+  canManageAlerts,
   upstreams,
 }: {
   id: string | undefined;
   isEdit: boolean;
   initialRoute: GatewayRoute | undefined;
+  initialAssignees: string;
+  assigneesReady: boolean;
+  canReadAlerts: boolean;
+  canManageAlerts: boolean;
   upstreams: GatewayUpstream[];
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { addToast } = useToast();
 
   const [name, setName] = useState(initialRoute?.name || '');
   const [uriSuffix, setUriSuffix] = useState((initialRoute?.uri || '').replace(/^\/api\//, ''));
@@ -83,14 +103,28 @@ function GatewayRouteEditor({
   const [requireAuth, setRequireAuth] = useState(!!initialRoute?.require_auth);
   const [stripPrefix, setStripPrefix] = useState(initialRoute ? !!initialRoute.strip_prefix : true);
   const [serviceKeys, setServiceKeys] = useState<ServiceKeyRow[]>(() => initialServiceKeys(initialRoute));
+  const [assignees, setAssignees] = useState(initialAssignees);
   const [error, setError] = useState('');
 
   const saveMutation = useMutation({
     mutationFn: (data: { routeId: string; body: Record<string, unknown> }) =>
       saveGatewayRoute(data.routeId, data.body),
-    onSuccess: (savedRoute, data) => {
+    onSuccess: async (savedRoute, data) => {
       queryClient.setQueryData(['gateway-route', data.routeId], savedRoute);
       queryClient.invalidateQueries({ queryKey: ['gateway-routes'] });
+      // Only touch assignees when allowed and the baseline is known, and only
+      // when actually changed — never overwrite assignees we couldn't load.
+      if (canManageAlerts && assigneesReady) {
+        const next = parseEmails(assignees);
+        if (JSON.stringify(next) !== JSON.stringify(parseEmails(initialAssignees))) {
+          try {
+            await setAlertResourceOwner('route', data.routeId, { emails: next });
+            queryClient.invalidateQueries({ queryKey: ['alert-resource-owners'] });
+          } catch {
+            addToast({ type: 'error', title: t('gatewayRouteForm.assignees'), message: t('common.errorOccurred') });
+          }
+        }
+      }
       navigate('/gateway/routes');
     },
     onError: (err: unknown) => {
@@ -321,6 +355,25 @@ function GatewayRouteEditor({
           </button>
         </div>
 
+        {canReadAlerts && (
+          <div className="form-section">
+            <div className="form-section-title">{t('gatewayRouteForm.assigneesSection')}</div>
+            <div className="form-row form-row--full">
+              <div className="field">
+                <label>{t('gatewayRouteForm.assignees')}</label>
+                <textarea
+                  value={assignees}
+                  onChange={(e) => setAssignees(e.target.value)}
+                  rows={2}
+                  disabled={!canManageAlerts || !assigneesReady}
+                  placeholder="alice@example.com, bob@example.com"
+                />
+                <span className="field-hint">{t('gatewayRouteForm.assigneesHint')}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {error && <div className="error-banner">{error}</div>}
 
         <div className="form-actions">
@@ -340,6 +393,8 @@ function GatewayRouteForm() {
   const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const isEdit = !!id;
+  const canReadAlerts = useCanWrite('alerts.read');
+  const canManageAlerts = useCanWrite('alerts.write');
 
   const routeQuery = useQuery({
     queryKey: ['gateway-route', id],
@@ -352,9 +407,29 @@ function GatewayRouteForm() {
     queryFn: getGatewayUpstreams,
   });
 
+  const ownersQuery = useQuery({
+    queryKey: ['alert-resource-owners'],
+    queryFn: getAlertResourceOwners,
+    enabled: canReadAlerts,
+  });
+
   if (isEdit && routeQuery.isLoading) {
     return <div className="loading-message">{t('gatewayRouteForm.loadingRoute')}</div>;
   }
+  // For edits, wait until existing assignees are loaded before mounting the
+  // editor so its initial value is correct AND stable (no late remount that
+  // would discard in-progress edits, no '' baseline that would wipe assignees).
+  if (isEdit && canReadAlerts && ownersQuery.isLoading) {
+    return <div className="loading-message">{t('gatewayRouteForm.loadingRoute')}</div>;
+  }
+
+  // Known baseline only when create (no existing owner) or owners loaded ok.
+  const assigneesReady = isEdit ? ownersQuery.isSuccess : true;
+  const initialAssignees = isEdit
+    ? ((ownersQuery.data ?? []).find(
+        (o) => o.resource_type === 'route' && o.resource_id === id,
+      )?.emails.join(', ') ?? '')
+    : '';
 
   return (
     <GatewayRouteEditor
@@ -362,6 +437,10 @@ function GatewayRouteForm() {
       id={id}
       isEdit={isEdit}
       initialRoute={routeQuery.data}
+      initialAssignees={initialAssignees}
+      assigneesReady={assigneesReady}
+      canReadAlerts={canReadAlerts}
+      canManageAlerts={canManageAlerts}
       upstreams={upstreamsQuery.data?.items ?? []}
     />
   );

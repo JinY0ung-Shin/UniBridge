@@ -14,31 +14,33 @@ from app.models import (
     AlertChannel,
     AlertHistory,
     AlertSettings,
-    OwnerGroup,
     ResourceOwner,
 )
 from app.services.alert_sender import render_recipient_items, render_template, send_webhook
 
 logger = logging.getLogger(__name__)
 
-async def dispatch_owner_alert(
+
+async def dispatch_alert(
     *,
     resource_type: str,
     resource_id: str,
     alert_type: str,
     target: str,
     message: str,
-    rule_id: int | None = None,
     display_target: str | None = None,
     rate: float | None = None,
     threshold: float | None = None,
-    rule_name: str = "",
+    monitor_label: str = "",
 ) -> None:
-    """Dispatch an alert to the resource owner group or configured fallback."""
+    """Send an alert to the resource's assignees (담당자) plus the global admins (관리자).
+
+    Recipients are the union of the resource's assignee emails and the global
+    admin emails. Admins receive every alert; a resource with no assignees still
+    notifies the admins. With no recipients at all, nothing is sent.
+    """
     history = AlertHistory(
-        rule_id=rule_id,
         channel_id=None,
-        owner_group_id=None,
         resource_type=resource_type,
         alert_type=alert_type,
         target=target,
@@ -62,28 +64,23 @@ async def dispatch_owner_alert(
                 history.error_detail = "Mail channel missing or disabled"
                 return
 
-            group = await _resolve_owner_group(
-                db,
-                settings=settings,
-                resource_type=resource_type,
-                resource_id=resource_id,
-            )
-            if group is None:
-                history.error_detail = "No owner group configured for resource"
-                return
-
-            history.owner_group_id = group.id
             channel_template = channel.payload_template
             channel_recipient_item_template = channel.recipient_item_template
             channel_headers = channel.headers
             channel_webhook_url = channel.webhook_url
             if channel_recipient_item_template is None or not channel_recipient_item_template.strip():
-                history.error_detail = "recipient_item_template is required for owner mail channel"
+                history.error_detail = "recipient_item_template is required for mail channel"
                 return
-            emails = _parse_owner_emails(group.emails)
+
+            emails = await _resolve_recipients(
+                db,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                admin_emails_json=settings.admin_emails,
+            )
             history.recipients = json.dumps(emails, ensure_ascii=False)
             if not emails:
-                history.error_detail = "Owner group has no recipient emails"
+                history.error_detail = "No assignees or admins configured for resource"
                 return
 
         try:
@@ -100,7 +97,7 @@ async def dispatch_owner_alert(
                 recipients_json=recipients_json,
                 rate=rate,
                 threshold=threshold,
-                rule_name=rule_name,
+                monitor_label=monitor_label,
             )
             send_args = {
                 "url": channel_webhook_url,
@@ -116,22 +113,22 @@ async def dispatch_owner_alert(
             history.success = ok
             history.error_detail = err
         except Exception as exc:
-            logger.warning("Owner alert webhook dispatch failed: %s", exc)
+            logger.warning("Alert webhook dispatch failed: %s", exc)
             history.success = False
             history.error_detail = str(exc)
     except Exception as exc:
-        logger.warning("Owner alert dispatch failed before webhook send: %s", exc)
+        logger.warning("Alert dispatch failed before webhook send: %s", exc)
         history.success = False
         history.error_detail = str(exc)
     finally:
         try:
             metrics.record_alert_dispatch(
-                rule_id=history.rule_id if history.rule_id is not None else "owner",
+                rule_id=resource_type or "alert",
                 channel_type="webhook",
                 status="success" if history.success else "failure",
             )
         except Exception as exc:
-            logger.warning("Owner alert metric recording failed: %s", exc)
+            logger.warning("Alert metric recording failed: %s", exc)
         await _record_history(history)
 
 
@@ -141,7 +138,7 @@ async def _record_history(history: AlertHistory) -> None:
             db.add(history)
             await db.commit()
     except Exception as exc:
-        logger.warning("Owner alert history recording failed: %s", exc)
+        logger.warning("Alert history recording failed: %s", exc)
 
 
 async def _load_settings(db: AsyncSession) -> AlertSettings | None:
@@ -162,47 +159,53 @@ async def _load_enabled_mail_channel(
     return result.scalar_one_or_none()
 
 
-async def _resolve_owner_group(
+async def _resolve_recipients(
     db: AsyncSession,
     *,
-    settings: AlertSettings,
     resource_type: str,
     resource_id: str,
-) -> OwnerGroup | None:
-    resource_owner_result = await db.execute(
-        select(ResourceOwner).where(
+    admin_emails_json: str | None,
+) -> list[str]:
+    """Union of the resource's assignee emails and the global admin emails.
+
+    Assignees come first, then admins, with duplicates removed (case-preserving,
+    first occurrence wins).
+    """
+    assignees: list[str] = []
+    result = await db.execute(
+        select(ResourceOwner.emails).where(
             ResourceOwner.resource_type == resource_type,
             ResourceOwner.resource_id == resource_id,
         )
     )
-    resource_owner = resource_owner_result.scalar_one_or_none()
-    if resource_owner is not None:
-        group = await _load_group(db, resource_owner.owner_group_id)
-        if group is not None and group.enabled:
-            return group
+    owner_emails_json = result.scalar_one_or_none()
+    if owner_emails_json is not None:
+        assignees = _parse_emails(owner_emails_json)
 
-    if settings.fallback_owner_group_id is not None:
-        group = await _load_group(db, settings.fallback_owner_group_id)
-        if group is not None and group.enabled:
-            return group
+    admins = _parse_emails(admin_emails_json)
 
-    return None
-
-
-async def _load_group(db: AsyncSession, group_id: int) -> OwnerGroup | None:
-    result = await db.execute(select(OwnerGroup).where(OwnerGroup.id == group_id))
-    return result.scalar_one_or_none()
+    seen: set[str] = set()
+    recipients: list[str] = []
+    for email in [*assignees, *admins]:
+        key = email.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        recipients.append(email)
+    return recipients
 
 
-def _parse_owner_emails(emails_json: str) -> list[str]:
+def _parse_emails(emails_json: str | None) -> list[str]:
+    if not emails_json:
+        return []
     try:
         parsed: Any = json.loads(emails_json)
     except json.JSONDecodeError as exc:
-        raise ValueError("Owner group emails must be valid JSON") from exc
+        raise ValueError("emails must be valid JSON") from exc
 
     if not isinstance(parsed, list) or not all(isinstance(email, str) for email in parsed):
-        raise ValueError("Owner group emails must be a JSON array of strings")
-    return parsed
+        raise ValueError("emails must be a JSON array of strings")
+    return [email for email in (e.strip() for e in parsed) if email]
 
 
 def _parse_headers(headers_json: str | None) -> dict[str, str] | None:
@@ -224,7 +227,7 @@ def _render_payload(
     recipients_json: str,
     rate: float | None,
     threshold: float | None,
-    rule_name: str,
+    monitor_label: str,
 ) -> str:
     status_label = "장애 발생" if alert_type == "triggered" else "정상 복구"
     return render_template(
@@ -238,5 +241,5 @@ def _render_payload(
         recipients_json=recipients_json,
         rate=f"{rate:.1f}" if rate is not None else "",
         threshold=f"{threshold:.1f}" if threshold is not None else "",
-        rule_name=rule_name,
+        rule_name=monitor_label,
     )

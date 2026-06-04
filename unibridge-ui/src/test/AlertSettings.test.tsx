@@ -5,24 +5,12 @@ vi.mock('../api/client', () => ({
   updateAlertChannel: vi.fn(),
   deleteAlertChannel: vi.fn(),
   testAlertChannel: vi.fn(),
-  testFallbackOwnerGroup: vi.fn(),
   getAlertSettings: vi.fn(),
   updateAlertSettings: vi.fn(),
-  getAlertOwnerGroups: vi.fn(),
-  createAlertOwnerGroup: vi.fn(),
-  updateAlertOwnerGroup: vi.fn(),
-  deleteAlertOwnerGroup: vi.fn(),
+  testRecipientDelivery: vi.fn(),
   getAlertResourceOwners: vi.fn(),
   setAlertResourceOwner: vi.fn(),
   deleteAlertResourceOwner: vi.fn(),
-  getAlertRules: vi.fn(),
-  createAlertRule: vi.fn(),
-  updateAlertRule: vi.fn(),
-  deleteAlertRule: vi.fn(),
-  testAlertRule: vi.fn(),
-  getAdminDatabases: vi.fn(),
-  getGatewayUpstreams: vi.fn(),
-  getGatewayRoutes: vi.fn(),
 }));
 
 import { screen, waitFor, fireEvent } from '@testing-library/react';
@@ -34,24 +22,12 @@ import {
   updateAlertChannel,
   deleteAlertChannel,
   testAlertChannel,
-  testFallbackOwnerGroup,
   getAlertSettings,
   updateAlertSettings,
-  getAlertOwnerGroups,
-  createAlertOwnerGroup,
-  updateAlertOwnerGroup,
-  deleteAlertOwnerGroup,
+  testRecipientDelivery,
   getAlertResourceOwners,
   setAlertResourceOwner,
   deleteAlertResourceOwner,
-  getAlertRules,
-  createAlertRule,
-  updateAlertRule,
-  deleteAlertRule,
-  testAlertRule,
-  getAdminDatabases,
-  getGatewayUpstreams,
-  getGatewayRoutes,
 } from '../api/client';
 import AlertSettings from '../pages/AlertSettings';
 import { renderWithProviders } from './helpers';
@@ -62,24 +38,12 @@ const mocks = {
   updateChannel: vi.mocked(updateAlertChannel),
   deleteChannel: vi.mocked(deleteAlertChannel),
   testChannel: vi.mocked(testAlertChannel),
-  testFallbackOwnerGroup: vi.mocked(testFallbackOwnerGroup),
   getSettings: vi.mocked(getAlertSettings),
   updateSettings: vi.mocked(updateAlertSettings),
-  getOwnerGroups: vi.mocked(getAlertOwnerGroups),
-  createOwnerGroup: vi.mocked(createAlertOwnerGroup),
-  updateOwnerGroup: vi.mocked(updateAlertOwnerGroup),
-  deleteOwnerGroup: vi.mocked(deleteAlertOwnerGroup),
+  testRecipientDelivery: vi.mocked(testRecipientDelivery),
   getResourceOwners: vi.mocked(getAlertResourceOwners),
   setResourceOwner: vi.mocked(setAlertResourceOwner),
   deleteResourceOwner: vi.mocked(deleteAlertResourceOwner),
-  getRules: vi.mocked(getAlertRules),
-  createRule: vi.mocked(createAlertRule),
-  updateRule: vi.mocked(updateAlertRule),
-  deleteRule: vi.mocked(deleteAlertRule),
-  testRule: vi.mocked(testAlertRule),
-  getDatabases: vi.mocked(getAdminDatabases),
-  getUpstreams: vi.mocked(getGatewayUpstreams),
-  getRoutes: vi.mocked(getGatewayRoutes),
 };
 
 const channelFixture = {
@@ -87,68 +51,160 @@ const channelFixture = {
   name: 'ops-slack',
   webhook_url: 'https://hooks.example.com/abc',
   payload_template: '{"text":"{{message}}"}',
+  recipient_item_template: null,
   headers: { 'X-Token': 'tok' },
   enabled: true,
 };
 
-const ruleFixture = {
-  id: 10,
-  name: 'db-down',
-  type: 'db_health' as const,
-  target: 'main-db',
-  threshold: null,
-  enabled: true,
-  channels: [{ channel_id: 1, channel_name: 'ops-slack', recipients: ['ops@example.com'] }],
+const settingsFixture = {
+  mail_channel_id: null as number | null,
+  admin_emails: [] as string[],
+  route_error_threshold_pct: 10,
+  check_interval_seconds: 60,
+  trigger_after_failures: 2,
 };
+
+const dbResourceFixture = {
+  resource_type: 'db',
+  resource_id: 'orders-db',
+  display_name: 'orders-db',
+  emails: [] as string[],
+};
+
+/* ── delivery tab helper: clicks the Delivery tab button ── */
+function goToDeliveryTab() {
+  fireEvent.click(
+    screen.getByRole('button', { name: /^Delivery$|^발송 설정$/ }),
+  );
+}
 
 describe('AlertSettings page', () => {
   beforeEach(() => {
     Object.values(mocks).forEach((m) => m.mockReset());
-    mocks.getSettings.mockResolvedValue({
-      mail_channel_id: null,
-      fallback_owner_group_id: null,
-      route_error_threshold_pct: 10,
-      check_interval_seconds: 60,
-      trigger_after_failures: 2,
-    });
-    mocks.updateSettings.mockResolvedValue({
+    mocks.getSettings.mockResolvedValue({ ...settingsFixture });
+    mocks.updateSettings.mockImplementation(async (body) => ({
+      ...settingsFixture,
       mail_channel_id: 1,
-      fallback_owner_group_id: null,
-      route_error_threshold_pct: 10,
-      check_interval_seconds: 60,
-      trigger_after_failures: 2,
-    });
-    mocks.getOwnerGroups.mockResolvedValue([]);
-    mocks.createOwnerGroup.mockResolvedValue({
-      id: 2,
-      name: 'orders',
-      emails: ['primary@example.com', 'backup@example.com'],
-      enabled: true,
-    });
+      ...body,
+    }));
+    mocks.testRecipientDelivery.mockResolvedValue({ success: true, error: null });
     mocks.getResourceOwners.mockResolvedValue([]);
+    mocks.setResourceOwner.mockImplementation(async (type, id, body) => ({
+      resource_type: type,
+      resource_id: id,
+      display_name: id,
+      emails: body.emails,
+    }));
     mocks.getChannels.mockResolvedValue([]);
-    mocks.getRules.mockResolvedValue([]);
-    mocks.updateRule.mockResolvedValue(ruleFixture);
-    mocks.getDatabases.mockResolvedValue([]);
-    mocks.getUpstreams.mockResolvedValue({ items: [], total: 0 });
-    mocks.getRoutes.mockResolvedValue({ items: [], total: 0 });
   });
 
-  it('shows empty channels state and switches to rules tab', async () => {
+  it('renders the two tabs and shows the recipients tab by default', async () => {
     renderWithProviders(<AlertSettings />);
-    await waitFor(() => {
-      expect(screen.getByText(/No channels|채널이 없/i)).toBeInTheDocument();
-    });
-    const rulesTab = screen.getByRole('button', { name: /^Rules$|^규칙$/ });
-    fireEvent.click(rulesTab);
-    await waitFor(() => {
-      expect(screen.getByText(/No rules|규칙이 없/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Assignees \/ Admins$|^담당자 \/ 관리자$/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Delivery$|^발송 설정$/ })).toBeInTheDocument();
+    // Admins section visible on the default tab
+    await waitFor(() => expect(screen.getByText(/^Admins$|^관리자$/)).toBeInTheDocument());
+  });
+
+  it('shows empty resources state on the recipients tab', async () => {
+    renderWithProviders(<AlertSettings />);
+    await waitFor(() =>
+      expect(screen.getByText(/No resources available|사용 가능한 리소스가 없/i)).toBeInTheDocument(),
+    );
+  });
+
+  it('saves admin emails parsed from the textarea', async () => {
+    renderWithProviders(<AlertSettings />);
+    const adminEmails = await screen.findByLabelText(/Admin emails|관리자 이메일/i);
+    // textarea is disabled until settings have loaded; wait before typing
+    await waitFor(() => expect(adminEmails).toBeEnabled());
+    await userEvent.type(adminEmails, 'ops@example.com, oncall@example.com');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Admin emails saved$|^관리자 이메일 저장$/i }));
+
+    await waitFor(() => expect(mocks.updateSettings).toHaveBeenCalled());
+    expect(mocks.updateSettings.mock.calls[0][0]).toEqual({
+      admin_emails: ['ops@example.com', 'oncall@example.com'],
     });
   });
 
-  it('mail channel tab saves selected channel', async () => {
+  it('prefills admin emails from loaded settings', async () => {
+    mocks.getSettings.mockResolvedValue({
+      ...settingsFixture,
+      admin_emails: ['admin@example.com'],
+    });
+    renderWithProviders(<AlertSettings />);
+    const adminEmails = await screen.findByLabelText(/Admin emails|관리자 이메일/i);
+    await waitFor(() => expect(adminEmails).toHaveValue('admin@example.com'));
+  });
+
+  it('test admins button is disabled without a mail channel and enabled once configured', async () => {
+    mocks.getSettings.mockResolvedValue({
+      ...settingsFixture,
+      mail_channel_id: null,
+      admin_emails: ['admin@example.com'],
+    });
+    renderWithProviders(<AlertSettings />);
+    const testButton = await screen.findByRole('button', {
+      name: /^Send test to admins$|^관리자에게 테스트 발송$/i,
+    });
+    expect(testButton).toBeDisabled();
+  });
+
+  it('tests admin recipient delivery with the configured mail channel', async () => {
+    mocks.getSettings.mockResolvedValue({
+      ...settingsFixture,
+      mail_channel_id: 5,
+      admin_emails: ['admin@example.com'],
+    });
+    renderWithProviders(<AlertSettings />);
+    const testButton = await screen.findByRole('button', {
+      name: /^Send test to admins$|^관리자에게 테스트 발송$/i,
+    });
+    await waitFor(() => expect(testButton).toBeEnabled());
+    fireEvent.click(testButton);
+
+    await waitFor(() => expect(mocks.testRecipientDelivery).toHaveBeenCalled());
+    expect(mocks.testRecipientDelivery).toHaveBeenCalledWith(5, ['admin@example.com']);
+  });
+
+  it('saves resource-owner assignees via setAlertResourceOwner(type, id, { emails })', async () => {
+    mocks.getResourceOwners.mockResolvedValue([{ ...dbResourceFixture }]);
+    renderWithProviders(<AlertSettings />);
+    await waitFor(() => expect(screen.getByText('orders-db')).toBeInTheDocument());
+
+    const assigneeInput = screen.getByLabelText(/Assignees - orders-db|담당자 - orders-db/i);
+    await userEvent.type(assigneeInput, 'owner@example.com, second@example.com');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$|^저장$/ }));
+
+    await waitFor(() => expect(mocks.setResourceOwner).toHaveBeenCalled());
+    expect(mocks.setResourceOwner).toHaveBeenCalledWith('db', 'orders-db', {
+      emails: ['owner@example.com', 'second@example.com'],
+    });
+  });
+
+  it('clears assignees when the textarea is emptied', async () => {
+    mocks.getResourceOwners.mockResolvedValue([
+      { ...dbResourceFixture, emails: ['owner@example.com'] },
+    ]);
+    renderWithProviders(<AlertSettings />);
+    await waitFor(() => expect(screen.getByText('orders-db')).toBeInTheDocument());
+
+    const assigneeInput = screen.getByLabelText(/Assignees - orders-db|담당자 - orders-db/i);
+    await waitFor(() => expect(assigneeInput).toHaveValue('owner@example.com'));
+    await userEvent.clear(assigneeInput);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save$|^저장$/ }));
+
+    await waitFor(() => expect(mocks.setResourceOwner).toHaveBeenCalled());
+    expect(mocks.setResourceOwner).toHaveBeenCalledWith('db', 'orders-db', { emails: [] });
+  });
+
+  it('delivery tab saves selected mail channel via settings form', async () => {
     mocks.getChannels.mockResolvedValue([channelFixture]);
     renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
 
     const mailSelect = screen.getByLabelText(/Mail Channel|메일 채널/i);
@@ -159,8 +215,9 @@ describe('AlertSettings page', () => {
     expect(mocks.updateSettings.mock.calls[0][0]).toMatchObject({ mail_channel_id: 1 });
   });
 
-  it('saves updated trigger_after_failures via settings form', async () => {
+  it('delivery tab saves updated trigger_after_failures', async () => {
     renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
     const failuresInput = await screen.findByLabelText(
       /연속 실패 횟수|Consecutive failures/i,
     );
@@ -177,139 +234,39 @@ describe('AlertSettings page', () => {
     );
   });
 
-  it('disables alert settings save before settings have loaded', async () => {
+  it('delivery tab disables settings save before settings have loaded', async () => {
     mocks.getSettings.mockReturnValue(new Promise(() => undefined));
     renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
 
-    expect(screen.getByRole('button', { name: /^Save Settings$|^설정 저장$/i })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: /^Save Settings$|^설정 저장$/i }),
+    ).toBeDisabled();
   });
 
-  it('tests the selected fallback owner group with the selected mail channel', async () => {
-    mocks.getChannels.mockResolvedValue([channelFixture]);
-    mocks.getOwnerGroups.mockResolvedValue([
-      { id: 2, name: 'orders-team', emails: ['orders@example.com'], enabled: true },
-    ]);
-    mocks.testFallbackOwnerGroup.mockResolvedValue({ success: true, error: null });
+  it('delivery tab shows empty channels state', async () => {
     renderWithProviders(<AlertSettings />);
-    await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
-
-    const testButton = screen.getByRole('button', {
-      name: /^Test Fallback Group$|^대체 그룹 테스트$/,
-    });
-    expect(testButton).toBeDisabled();
-
-    await userEvent.selectOptions(screen.getByLabelText(/Mail Channel|메일 채널/i), '1');
-    expect(testButton).toBeDisabled();
-
-    await userEvent.selectOptions(screen.getByLabelText(/Fallback Owner Group|대체 소유자 그룹/i), '2');
-    expect(testButton).toBeEnabled();
-    fireEvent.click(testButton);
-
-    await waitFor(() => expect(mocks.testFallbackOwnerGroup).toHaveBeenCalledWith(1, 2));
-  });
-
-  it('owner group tab creates group from comma-separated emails', async () => {
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Owner Groups$|^소유자 그룹$/i }));
-    await waitFor(() => expect(screen.getByText(/No owner groups|소유자 그룹이 없/i)).toBeInTheDocument());
-
-    fireEvent.click(screen.getByRole('button', { name: /\+\s*Add Owner Group|\+\s*소유자 그룹 추가/i }));
-    const dialog = await screen.findByRole('dialog', { name: /^Add Owner Group$|^소유자 그룹 추가$/i });
-    expect(dialog).toHaveAttribute('aria-modal', 'true');
-    await userEvent.type(screen.getByLabelText(/Owner Group Name|소유자 그룹 이름/i), 'orders');
-    await userEvent.type(
-      screen.getByLabelText(/Emails|이메일/i),
-      'primary@example.com, backup@example.com',
-    );
-    fireEvent.submit(screen.getByLabelText(/Owner Group Name|소유자 그룹 이름/i).closest('form')!);
-
-    await waitFor(() => expect(mocks.createOwnerGroup).toHaveBeenCalled());
-    expect(mocks.createOwnerGroup.mock.calls[0][0]).toMatchObject({
-      name: 'orders',
-      emails: ['primary@example.com', 'backup@example.com'],
-      enabled: true,
-    });
-  });
-
-  it('resource owners tab assigns owner group', async () => {
-    mocks.getOwnerGroups.mockResolvedValue([
-      { id: 2, name: 'orders-team', emails: ['orders@example.com'], enabled: true },
-    ]);
-    mocks.getResourceOwners.mockResolvedValue([
-      {
-        resource_type: 'db',
-        resource_id: 'orders-db',
-        display_name: 'orders-db',
-        owner_group_id: null,
-        owner_group_name: null,
-      },
-    ]);
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Resource Owners$|^리소스 소유자$/i }));
-    await waitFor(() => expect(screen.getByText('orders-db')).toBeInTheDocument());
-
-    await userEvent.selectOptions(screen.getByLabelText(/Owner group for orders-db/i), '2');
-
+    goToDeliveryTab();
     await waitFor(() =>
-      expect(mocks.setResourceOwner).toHaveBeenCalledWith('db', 'orders-db', { owner_group_id: 2 }),
+      expect(screen.getByText(/No channels|채널이 없/i)).toBeInTheDocument(),
     );
   });
 
-  it('renders channels table with truncated webhook url', async () => {
+  it('delivery tab renders channels table with truncated webhook url', async () => {
     mocks.getChannels.mockResolvedValue([channelFixture]);
     renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
     expect(screen.getByText(/hooks.example.com/)).toBeInTheDocument();
-  });
-
-  it('renders rules table with channel chips', async () => {
-    mocks.getRules.mockResolvedValue([ruleFixture]);
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
-    expect(screen.getByText('main-db')).toBeInTheDocument();
-    expect(screen.getByText('ops-slack: ops@example.com')).toBeInTheDocument();
-    expect(screen.getByText(/DB, upstream, and route error rules now use resource owner routing/i)).toBeInTheDocument();
-  });
-
-  it('shows owner-routing warning for route error rules with legacy recipients', async () => {
-    mocks.getRules.mockResolvedValue([
-      {
-        ...ruleFixture,
-        id: 13,
-        name: 'route-errors',
-        type: 'route_error_rate',
-        target: 'orders-route',
-        threshold: 7,
-      },
-    ]);
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText('route-errors')).toBeInTheDocument());
-    expect(screen.getByText(/DB, upstream, and route error rules now use resource owner routing/i)).toBeInTheDocument();
-  });
-
-  it('rule with no channels shows em-dash placeholder', async () => {
-    mocks.getRules.mockResolvedValue([{ ...ruleFixture, id: 11, name: 'no-ch', channels: [] }]);
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText('no-ch')).toBeInTheDocument());
-  });
-
-  it('rule with empty target renders asterisk', async () => {
-    mocks.getRules.mockResolvedValue([{ ...ruleFixture, target: '', id: 12, name: 'star' }]);
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText('star')).toBeInTheDocument());
-    expect(screen.getByText('*')).toBeInTheDocument();
   });
 
   it('opens add channel modal and submits new channel', async () => {
     mocks.createChannel.mockResolvedValue({ ...channelFixture, id: 99, name: 'new' });
     renderWithProviders(<AlertSettings />);
-    await waitFor(() => expect(screen.getByText(/No channels/i)).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /\+\s*Add Channel/i }));
-    const dialog = await screen.findByRole('dialog', { name: /^Add Channel$/ });
+    goToDeliveryTab();
+    await waitFor(() => expect(screen.getByText(/No channels|채널이 없/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /\+\s*Add Channel|\+\s*채널 추가/i }));
+    const dialog = await screen.findByRole('dialog', { name: /^Add Channel$|^채널 추가$/ });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
 
     await userEvent.type(screen.getByLabelText(/Channel Name|채널 이름/i), 'new-ch');
@@ -330,9 +287,12 @@ describe('AlertSettings page', () => {
     mocks.getChannels.mockResolvedValue([channelFixture]);
     mocks.updateChannel.mockResolvedValue({ ...channelFixture });
     renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /^Edit$|^편집$/ }));
-    await waitFor(() => expect(screen.getByText(/^Edit Channel$/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$|^편집$|^수정$/ }));
+    await waitFor(() =>
+      expect(screen.getByText(/^Edit Channel$|^채널 수정$/)).toBeInTheDocument(),
+    );
     expect(screen.getByLabelText(/Channel Name|채널 이름/i)).toHaveValue('ops-slack');
     fireEvent.submit(screen.getByLabelText(/Channel Name|채널 이름/i).closest('form')!);
     await waitFor(() => expect(mocks.updateChannel).toHaveBeenCalled());
@@ -343,6 +303,7 @@ describe('AlertSettings page', () => {
     mocks.getChannels.mockResolvedValue([channelFixture]);
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /^Delete$|^삭제$/ }));
     expect(confirmSpy).toHaveBeenCalled();
@@ -355,187 +316,31 @@ describe('AlertSettings page', () => {
     mocks.deleteChannel.mockResolvedValue();
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /^Delete$|^삭제$/ }));
     await waitFor(() => expect(mocks.deleteChannel).toHaveBeenCalledWith(1));
     confirmSpy.mockRestore();
   });
 
-  it('test channel success shows toast', async () => {
+  it('test channel success calls testAlertChannel', async () => {
     mocks.getChannels.mockResolvedValue([channelFixture]);
     mocks.testChannel.mockResolvedValue({ success: true, error: null });
     renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Test Send|테스트/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Test Send$|^테스트 발송$/i }));
     await waitFor(() => expect(mocks.testChannel).toHaveBeenCalledWith(1));
   });
 
-  it('test channel failure shows error toast', async () => {
+  it('test channel failure calls testAlertChannel', async () => {
     mocks.getChannels.mockResolvedValue([channelFixture]);
     mocks.testChannel.mockResolvedValue({ success: false, error: 'timeout' });
     renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Test Send|테스트/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Test Send$|^테스트 발송$/i }));
     await waitFor(() => expect(mocks.testChannel).toHaveBeenCalled());
-  });
-
-  it('test rule with no channels short-circuits with toast', async () => {
-    mocks.getRules.mockResolvedValue([{ ...ruleFixture, channels: [] }]);
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Test Send|테스트/i }));
-    expect(mocks.testRule).not.toHaveBeenCalled();
-  });
-
-  it('test rule all-ok shows success toast', async () => {
-    mocks.getRules.mockResolvedValue([ruleFixture]);
-    mocks.testRule.mockResolvedValue({
-      results: [
-        { channel_id: 1, channel_name: 'ops-slack', recipients: [], skipped: false, success: true, error: null },
-      ],
-    });
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Test Send|테스트/i }));
-    await waitFor(() => expect(mocks.testRule).toHaveBeenCalledWith(10));
-  });
-
-  it('test rule partial skipped shows info toast', async () => {
-    mocks.getRules.mockResolvedValue([ruleFixture]);
-    mocks.testRule.mockResolvedValue({
-      results: [
-        { channel_id: 1, channel_name: 'ops-slack', recipients: [], skipped: false, success: true, error: null },
-        { channel_id: 2, channel_name: 'pager', recipients: [], skipped: true, success: null, error: 'channel disabled' },
-      ],
-    });
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Test Send|테스트/i }));
-    await waitFor(() => expect(mocks.testRule).toHaveBeenCalled());
-  });
-
-  it('test rule failure path', async () => {
-    mocks.getRules.mockResolvedValue([ruleFixture]);
-    mocks.testRule.mockResolvedValue({
-      results: [
-        { channel_id: 1, channel_name: 'ops-slack', recipients: [], skipped: false, success: false, error: 'boom' },
-      ],
-    });
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Test Send|테스트/i }));
-    await waitFor(() => expect(mocks.testRule).toHaveBeenCalled());
-  });
-
-  it('test rule with thrown error shows error toast', async () => {
-    mocks.getRules.mockResolvedValue([ruleFixture]);
-    mocks.testRule.mockRejectedValue(new Error('net'));
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Test Send|테스트/i }));
-    await waitFor(() => expect(mocks.testRule).toHaveBeenCalled());
-  });
-
-  it('delete rule asks for confirmation', async () => {
-    mocks.getRules.mockResolvedValue([ruleFixture]);
-    mocks.deleteRule.mockResolvedValue();
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /^Delete$|^삭제$/ }));
-    await waitFor(() => expect(mocks.deleteRule).toHaveBeenCalledWith(10));
-    confirmSpy.mockRestore();
-  });
-
-  it('opens add rule modal and shows DB target options', async () => {
-    mocks.getDatabases.mockResolvedValue([
-      {
-        alias: 'main-db',
-        db_type: 'postgres',
-        host: 'localhost',
-        port: 5432,
-        database: 'main',
-        username: 'u',
-        pool_size: 5,
-        max_overflow: 3,
-        query_timeout: 30,
-      },
-    ]);
-    mocks.getChannels.mockResolvedValue([channelFixture]);
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText(/No rules|규칙이 없/i)).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /\+\s*Add Rule/i }));
-    const dialog = await screen.findByRole('dialog', { name: /^Add Rule$/ });
-    expect(dialog).toHaveAttribute('aria-modal', 'true');
-    expect(screen.queryByPlaceholderText(/Recipients|수신자/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole('option', { name: /^Error Rate$|^에러율$/ })).not.toBeInTheDocument();
-  });
-
-  it('edit rule shows legacy recipients read-only and preserves mappings on save', async () => {
-    mocks.getRules.mockResolvedValue([ruleFixture]);
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
-
-    fireEvent.click(screen.getByRole('button', { name: /^Edit$|^편집$/ }));
-    await waitFor(() => expect(screen.getByText(/^Edit Rule$|^규칙 수정$/)).toBeInTheDocument());
-    expect(screen.getAllByText(/Legacy recipients|기존 수신자 설정/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText('ops-slack: ops@example.com').length).toBeGreaterThan(0);
-    expect(screen.queryByPlaceholderText(/Recipients|수신자/i)).not.toBeInTheDocument();
-
-    fireEvent.submit(screen.getByPlaceholderText(/DB Down Alert/i).closest('form')!);
-
-    await waitFor(() => expect(mocks.updateRule).toHaveBeenCalled());
-    expect(mocks.updateRule.mock.calls[0][1]).not.toHaveProperty('channels');
-  });
-
-  it('submits upstream alert target using upstream id when a display name exists', async () => {
-    mocks.getChannels.mockResolvedValue([channelFixture]);
-    mocks.getUpstreams.mockResolvedValue({
-      items: [
-        {
-          id: 'upstream-1',
-          name: 'payments-api',
-          type: 'roundrobin',
-          nodes: { 'payments:8080': 1 },
-        },
-      ],
-      total: 1,
-    });
-    mocks.createRule.mockResolvedValue({
-      ...ruleFixture,
-      id: 99,
-      name: 'payments-upstream-down',
-      type: 'upstream_health',
-      target: 'upstream-1',
-    });
-
-    renderWithProviders(<AlertSettings />);
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText(/No rules|규칙이 없/i)).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /\+\s*Add Rule/i }));
-    await waitFor(() => expect(screen.getByText(/^Add Rule$/)).toBeInTheDocument());
-
-    await userEvent.type(screen.getByPlaceholderText(/DB Down Alert/i), 'payments-upstream-down');
-    const typeSelect = screen.getAllByRole('combobox')[0];
-    await userEvent.selectOptions(typeSelect, 'upstream_health');
-
-    const upstreamOption = await screen.findByRole('option', { name: 'payments-api' });
-    const targetSelect = screen.getAllByRole('combobox')[1];
-    await userEvent.selectOptions(targetSelect, upstreamOption);
-
-    fireEvent.submit(screen.getByPlaceholderText(/DB Down Alert/i).closest('form')!);
-
-    await waitFor(() => expect(mocks.createRule).toHaveBeenCalled());
-    expect(mocks.createRule.mock.calls[0][0].target).toBe('upstream-1');
-    expect(mocks.createRule.mock.calls[0][0].channels).toEqual([]);
   });
 });
 
@@ -543,51 +348,56 @@ describe('AlertSettings page (alerts.read only)', () => {
   beforeEach(() => {
     Object.values(mocks).forEach((m) => m.mockReset());
     mocks.getSettings.mockResolvedValue({
+      ...settingsFixture,
       mail_channel_id: 1,
-      fallback_owner_group_id: 2,
-      route_error_threshold_pct: 10,
-      check_interval_seconds: 60,
-      trigger_after_failures: 2,
+      admin_emails: ['admin@example.com'],
     });
-    mocks.getOwnerGroups.mockResolvedValue([
-      { id: 2, name: 'orders-team', emails: ['orders@example.com'], enabled: true },
-    ]);
     mocks.getResourceOwners.mockResolvedValue([
-      {
-        resource_type: 'db',
-        resource_id: 'orders-db',
-        display_name: 'orders-db',
-        owner_group_id: null,
-        owner_group_name: null,
-      },
+      { ...dbResourceFixture, emails: ['owner@example.com'] },
     ]);
     mocks.getChannels.mockResolvedValue([channelFixture]);
-    mocks.getRules.mockResolvedValue([ruleFixture]);
-    mocks.getDatabases.mockResolvedValue([]);
-    mocks.getUpstreams.mockResolvedValue({ items: [], total: 0 });
-    mocks.getRoutes.mockResolvedValue({ items: [], total: 0 });
   });
 
-  it('mail channel tab: hides write buttons and disables form for viewer', async () => {
+  it('recipients tab: hides admin save/test buttons and disables inputs for viewer', async () => {
     renderWithProviders(<AlertSettings />, { permissions: ['alerts.read'] });
+    await waitFor(() => expect(screen.getByText('orders-db')).toBeInTheDocument());
+
+    expect(
+      screen.queryByRole('button', { name: /^Admin emails saved$|^관리자 이메일 저장$/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /^Send test to admins$|^관리자에게 테스트 발송$/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Save$|^저장$/ })).not.toBeInTheDocument();
+
+    expect(screen.getByLabelText(/Admin emails|관리자 이메일/i)).toBeDisabled();
+    expect(screen.getByLabelText(/Assignees - orders-db|담당자 - orders-db/i)).toBeDisabled();
+  });
+
+  it('delivery tab: hides write buttons and disables settings form for viewer', async () => {
+    renderWithProviders(<AlertSettings />, { permissions: ['alerts.read'] });
+    goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
 
-    expect(screen.queryByRole('button', { name: /\+\s*Add Channel|\+\s*채널 추가/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Save Settings$|^설정 저장$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Test Fallback Group$|^대체 그룹 테스트$/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /\+\s*Add Channel|\+\s*채널 추가/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /^Save Settings$|^설정 저장$/i }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Test Send$|^테스트 발송$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Edit$|^편집$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Edit$|^편집$|^수정$/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Delete$|^삭제$/ })).not.toBeInTheDocument();
 
     expect(screen.getByLabelText(/Mail Channel|메일 채널/i)).toBeDisabled();
-    expect(screen.getByLabelText(/Fallback Owner Group|대체 소유자 그룹/i)).toBeDisabled();
   });
 
-  it('mail channel tab: masks webhook URL path for viewer', async () => {
+  it('delivery tab: masks webhook URL path for viewer', async () => {
     mocks.getChannels.mockResolvedValue([
       { ...channelFixture, webhook_url: 'https://hooks.example.com/services/T1/B2/SECRETXYZ' },
     ]);
     renderWithProviders(<AlertSettings />, { permissions: ['alerts.read'] });
+    goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
 
     expect(screen.queryByText(/SECRETXYZ/)).not.toBeInTheDocument();
@@ -595,63 +405,15 @@ describe('AlertSettings page (alerts.read only)', () => {
     expect(screen.getByText(/hooks\.example\.com\/\*\*\*/)).toBeInTheDocument();
   });
 
-  it('mail channel tab: viewer mask strips userinfo even if backend leaks it', async () => {
-    mocks.getChannels.mockResolvedValue([
-      { ...channelFixture, webhook_url: 'https://token:secret@hooks.example.com/path' },
-    ]);
-    renderWithProviders(<AlertSettings />, { permissions: ['alerts.read'] });
-    await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
-
-    expect(screen.queryByText(/token/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/secret/)).not.toBeInTheDocument();
-    expect(screen.getByText('https://hooks.example.com/***')).toBeInTheDocument();
-  });
-
-  it('mail channel tab: writer can see full webhook URL and Test Send buttons', async () => {
+  it('delivery tab: writer sees full webhook URL and Test Send button', async () => {
     mocks.getChannels.mockResolvedValue([
       { ...channelFixture, webhook_url: 'https://hooks.example.com/services/T1/B2/SECRETXYZ' },
     ]);
     renderWithProviders(<AlertSettings />, { permissions: ['alerts.read', 'alerts.write'] });
+    goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
 
     expect(screen.getByText(/services\/T1\/B2\/SECRETXYZ/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Test Send$|^테스트 발송$/i })).toBeInTheDocument();
-  });
-
-  it('owner groups tab: hides add/edit/delete for viewer but shows data', async () => {
-    renderWithProviders(<AlertSettings />, { permissions: ['alerts.read'] });
-    fireEvent.click(screen.getByRole('button', { name: /^Owner Groups$|^소유자 그룹$/i }));
-    await waitFor(() => expect(screen.getByText('orders-team')).toBeInTheDocument());
-
-    expect(screen.queryByRole('button', { name: /\+\s*Add Owner Group|\+\s*소유자 그룹 추가/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Edit$|^편집$/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Delete$|^삭제$/ })).not.toBeInTheDocument();
-  });
-
-  it('resource owners tab: disables owner-group select for viewer', async () => {
-    renderWithProviders(<AlertSettings />, { permissions: ['alerts.read'] });
-    fireEvent.click(screen.getByRole('button', { name: /^Resource Owners$|^리소스 소유자$/i }));
-    await waitFor(() => expect(screen.getByText('orders-db')).toBeInTheDocument());
-
-    expect(screen.getByLabelText(/Owner group for orders-db/i)).toBeDisabled();
-  });
-
-  it('rules tab: hides add/test/edit/delete for viewer but shows rule data', async () => {
-    renderWithProviders(<AlertSettings />, { permissions: ['alerts.read'] });
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
-
-    expect(screen.queryByRole('button', { name: /\+\s*Add Rule|\+\s*규칙 추가/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Test Send$|^테스트 발송$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Edit$|^편집$/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Delete$|^삭제$/ })).not.toBeInTheDocument();
-  });
-
-  it('rules tab: writer sees Test Send button on each rule row', async () => {
-    renderWithProviders(<AlertSettings />, { permissions: ['alerts.read', 'alerts.write'] });
-    fireEvent.click(screen.getByRole('button', { name: /^Rules$|^규칙$/ }));
-    await waitFor(() => expect(screen.getByText('db-down')).toBeInTheDocument());
-
     expect(screen.getByRole('button', { name: /^Test Send$|^테스트 발송$/i })).toBeInTheDocument();
   });
 });

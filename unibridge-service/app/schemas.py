@@ -449,21 +449,25 @@ class AlertChannelResponse(BaseModel):
 
 class AlertSettingsResponse(BaseModel):
     mail_channel_id: int | None = None
-    fallback_owner_group_id: int | None = None
+    admin_emails: list[str] = []
     route_error_threshold_pct: float
     check_interval_seconds: int
     trigger_after_failures: int
     updated_at: datetime | None = None
 
-    model_config = {"from_attributes": True}
-
 
 class AlertSettingsUpdate(BaseModel):
     mail_channel_id: int | None = None
-    fallback_owner_group_id: int | None = None
+    admin_emails: list[str] | None = None
     route_error_threshold_pct: float | None = Field(None, ge=0, le=100)
     check_interval_seconds: int | None = Field(None, ge=30, le=3600)
     trigger_after_failures: int | None = Field(None, ge=1, le=10)
+
+    @field_validator("admin_emails")
+    @classmethod
+    def validate_admin_emails(cls, v: list[str] | None) -> list[str] | None:
+        # Admins are optional (empty list is valid: no global admins configured).
+        return _dedupe_emails(v) if v is not None else None
 
     @model_validator(mode="after")
     def reject_explicit_numeric_nulls(self) -> "AlertSettingsUpdate":
@@ -477,9 +481,19 @@ class AlertSettingsUpdate(BaseModel):
         return self
 
 
-class FallbackOwnerGroupTestRequest(BaseModel):
+class RecipientTestRequest(BaseModel):
+    """Send a test alert to an arbitrary set of emails via a mail channel."""
+
     mail_channel_id: int
-    fallback_owner_group_id: int
+    emails: list[str]
+
+    @field_validator("emails")
+    @classmethod
+    def validate_emails(cls, v: list[str]) -> list[str]:
+        emails = _dedupe_emails(v)
+        if not emails:
+            raise ValueError("emails must include at least one address")
+        return emails
 
 
 class AlertDeliveryTestResponse(BaseModel):
@@ -499,103 +513,26 @@ def _dedupe_emails(values: list[str]) -> list[str]:
     return emails
 
 
-class OwnerGroupCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    emails: list[str]
-    enabled: bool = True
+class ResourceOwnerUpsert(BaseModel):
+    """Assign 담당자 emails to a resource. An empty list clears the assignees."""
+
+    emails: list[str] = Field(default_factory=list)
 
     @field_validator("emails")
     @classmethod
     def validate_emails(cls, v: list[str]) -> list[str]:
-        emails = _dedupe_emails(v)
-        if not emails:
-            raise ValueError("emails must include at least one address")
-        return emails
-
-
-class OwnerGroupUpdate(BaseModel):
-    name: str | None = Field(None, min_length=1, max_length=100)
-    emails: list[str] | None = None
-    enabled: bool | None = None
-
-    @field_validator("emails")
-    @classmethod
-    def validate_emails(cls, v: list[str] | None) -> list[str] | None:
-        if v is None:
-            return None
-        emails = _dedupe_emails(v)
-        if not emails:
-            raise ValueError("emails must include at least one address")
-        return emails
-
-
-class OwnerGroupResponse(BaseModel):
-    id: int
-    name: str
-    emails: list[str]
-    enabled: bool
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-
-class ResourceOwnerUpsert(BaseModel):
-    owner_group_id: int
+        return _dedupe_emails(v)
 
 
 class ResourceOwnerResponse(BaseModel):
     resource_type: str
     resource_id: str
     display_name: str
-    owner_group_id: int | None = None
-    owner_group_name: str | None = None
-
-
-class RuleChannelMapping(BaseModel):
-    channel_id: int
-    recipients: list[str]
-
-
-class AlertRuleCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    type: str = Field(..., pattern=r"^(db_health|upstream_health|error_rate|route_error_rate)$")
-    target: str = Field(..., min_length=1, max_length=100)
-    threshold: float | None = Field(None, ge=0, le=100)
-    enabled: bool = True
-    channels: list[RuleChannelMapping] = Field(default_factory=list)
-
-
-class AlertRuleUpdate(BaseModel):
-    name: str | None = Field(None, min_length=1, max_length=100)
-    type: str | None = Field(None, pattern=r"^(db_health|upstream_health|error_rate|route_error_rate)$")
-    target: str | None = Field(None, min_length=1, max_length=100)
-    threshold: float | None = None
-    enabled: bool | None = None
-    channels: list[RuleChannelMapping] | None = None
-
-
-class RuleChannelDetail(BaseModel):
-    channel_id: int
-    channel_name: str
-    recipients: list[str]
-
-
-class AlertRuleResponse(BaseModel):
-    id: int
-    name: str
-    type: str
-    target: str
-    threshold: float | None = None
-    enabled: bool
-    channels: list[RuleChannelDetail] = []
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-    model_config = {"from_attributes": True}
+    emails: list[str] = []
 
 
 class AlertHistoryResponse(BaseModel):
     id: int
-    rule_id: int | None = None
     channel_id: int | None = None
     alert_type: str
     target: str
@@ -613,19 +550,6 @@ class AlertStatusResponse(BaseModel):
     type: str
     status: str  # "ok" | "alert"
     since: str | None = None
-
-
-class AlertRuleTestChannelResult(BaseModel):
-    channel_id: int
-    channel_name: str
-    recipients: list[str]
-    skipped: bool = False
-    success: bool | None = None
-    error: str | None = None
-
-
-class AlertRuleTestResponse(BaseModel):
-    results: list[AlertRuleTestChannelResult]
 
 
 # ── S3 Connections ──────────────────────────────────────────────────────────

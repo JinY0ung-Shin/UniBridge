@@ -22,72 +22,6 @@ class _FakeResult:
         return self.rows[0] if self.rows else None
 
 
-class _FailingCommitDb:
-    def __init__(self):
-        self._results = [
-            _FakeResult([SimpleNamespace(id=7, name="critical rule")]),
-            _FakeResult([SimpleNamespace(channel_id=3, recipients='["ops@example.com"]')]),
-            _FakeResult([
-                SimpleNamespace(
-                    id=3,
-                    enabled=True,
-                    webhook_url="http://hook.example.com/alerts",
-                    payload_template='{"text":"{{message}}"}',
-                    headers=None,
-                )
-            ]),
-        ]
-
-    async def execute(self, _query):
-        return self._results.pop(0)
-
-    def add(self, _entry):
-        return None
-
-    async def commit(self):
-        raise RuntimeError("history commit failed")
-
-
-class _CommitCountingDb:
-    def __init__(self):
-        self.commit_count = 0
-        self._results = [
-            _FakeResult([
-                SimpleNamespace(id=7, name="critical rule"),
-                SimpleNamespace(id=8, name="secondary rule"),
-            ]),
-            _FakeResult([SimpleNamespace(channel_id=3, recipients='["ops@example.com"]')]),
-            _FakeResult([
-                SimpleNamespace(
-                    id=3,
-                    enabled=True,
-                    webhook_url="http://hook.example.com/alerts-a",
-                    payload_template='{"text":"{{message}}"}',
-                    headers=None,
-                )
-            ]),
-            _FakeResult([SimpleNamespace(channel_id=4, recipients='["dev@example.com"]')]),
-            _FakeResult([
-                SimpleNamespace(
-                    id=4,
-                    enabled=True,
-                    webhook_url="http://hook.example.com/alerts-b",
-                    payload_template='{"text":"{{message}}"}',
-                    headers=None,
-                )
-            ]),
-        ]
-
-    async def execute(self, _query):
-        return self._results.pop(0)
-
-    def add(self, _entry):
-        return None
-
-    async def commit(self):
-        self.commit_count += 1
-
-
 class _FakeSessionContext:
     def __init__(self, db):
         self.db = db
@@ -99,6 +33,11 @@ class _FakeSessionContext:
         return False
 
 
+def _threshold_db(threshold: float = 10.0):
+    """A fake session whose only query (route_error_threshold_pct) returns ``threshold``."""
+    return SimpleNamespace(execute=AsyncMock(return_value=_FakeResult([threshold])))
+
+
 class TestAlertChecker:
     @pytest.mark.asyncio
     async def test_db_health_triggered(self):
@@ -108,12 +47,10 @@ class TestAlertChecker:
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
-             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
-             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = [("mydb", False)]
             mock_up.return_value = []
-            mock_err.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
 
@@ -135,12 +72,10 @@ class TestAlertChecker:
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
-             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
-             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = [("mydb", True)]
             mock_up.return_value = []
-            mock_err.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
 
@@ -160,12 +95,10 @@ class TestAlertChecker:
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
-             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
-             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = [("mydb", True)]
             mock_up.return_value = []
-            mock_err.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
 
@@ -179,12 +112,10 @@ class TestAlertChecker:
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
-             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
-             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = []
             mock_up.return_value = [("order-svc", False)]
-            mock_err.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
 
@@ -199,7 +130,7 @@ class TestAlertChecker:
             assert kwargs["display_target"] == "order-svc"
 
     @pytest.mark.asyncio
-    async def test_upstream_health_dispatch_matches_existing_name_based_rules(self):
+    async def test_upstream_health_dispatch_includes_name_in_display(self):
         from app.services import alert_checker
 
         state = AlertStateManager()
@@ -210,12 +141,10 @@ class TestAlertChecker:
         try:
             with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
                  patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
-                 patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
                  patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
-                 patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
+                 patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
                 mock_db.return_value = []
                 mock_up.return_value = [("upstream-1", False)]
-                mock_err.return_value = []
 
                 await run_single_check(state, trigger_after_failures=2)
 
@@ -234,12 +163,10 @@ class TestAlertChecker:
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
-             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
-             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = [("boot-db", False)]
             mock_up.return_value = []
-            mock_err.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
             mock_dispatch.assert_not_called()
@@ -257,12 +184,10 @@ class TestAlertChecker:
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
-             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
-             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.side_effect = [[("boot-db", False)], [("boot-db", True)]]
             mock_up.return_value = []
-            mock_err.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
             await run_single_check(state, trigger_after_failures=2)
@@ -271,38 +196,26 @@ class TestAlertChecker:
         assert state.get_status("db_health", "boot-db") == "ok"
 
     @pytest.mark.asyncio
-    async def test_route_error_rate_dispatches_owner_alert_with_rule_context(self):
+    async def test_route_error_rate_dispatches_alert_with_route_context(self):
         state = AlertStateManager()
-        # Seed fail_count=1 so the next unhealthy observation crosses N=2.
+        # Seed fail_count=1 (state keyed by the plain route_id) so the next
+        # unhealthy observation crosses N=2.
         state.update(
             "route_error_rate",
-            "route-a:rule_42",
+            "route-a",
             is_healthy=False,
             display_target="checkout (route-a)",
             trigger_after_failures=2,
         )
 
-        fake_db = SimpleNamespace(
-            execute=AsyncMock(return_value=_FakeResult([
-                SimpleNamespace(
-                    id=42,
-                    target="route-a",
-                    threshold=5.0,
-                    name="checkout errors",
-                )
-            ]))
-        )
-
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
-             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
-             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 7.5)])), \
-             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)), \
+             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 12.5)])), \
+             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(10.0))), \
              patch("app.services.alert_checker._get_route_label", new=AsyncMock(return_value="checkout")), \
-             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = []
             mock_up.return_value = []
-            mock_err.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
 
@@ -312,47 +225,34 @@ class TestAlertChecker:
         assert kwargs["resource_id"] == "route-a"
         assert kwargs["alert_type"] == "triggered"
         assert kwargs["target"] == "route-a"
-        assert kwargs["message"] == "Route 'checkout (route-a)' 5xx error rate is 7.5% (threshold: 5.0%)."
-        assert kwargs["rule_id"] == 42
-        assert kwargs["rule_name"] == "checkout errors"
+        assert kwargs["message"] == (
+            "Route 'checkout (route-a)' 5xx error rate is 12.5% (threshold: 10.0%)."
+        )
         assert kwargs["display_target"] == "checkout (route-a)"
-        assert kwargs["rate"] == 7.5
-        assert kwargs["threshold"] == 5.0
+        assert kwargs["rate"] == 12.5
+        assert kwargs["threshold"] == 10.0
+        assert kwargs["monitor_label"] == "라우트 에러율"
 
     @pytest.mark.asyncio
-    async def test_route_error_rate_uses_settings_threshold_when_rule_threshold_missing(self):
+    async def test_route_error_rate_uses_settings_threshold(self):
         state = AlertStateManager()
         # Seed fail_count=1 so the next unhealthy observation crosses N=2.
         state.update(
             "route_error_rate",
-            "route-a:rule_42",
+            "route-a",
             is_healthy=False,
             display_target="checkout (route-a)",
             trigger_after_failures=2,
         )
-        rule = SimpleNamespace(
-            id=42,
-            target="route-a",
-            threshold=None,
-            name="checkout errors",
-        )
-        fake_db = SimpleNamespace(
-            execute=AsyncMock(side_effect=[
-                _FakeResult([rule]),
-                _FakeResult([3.0]),
-            ])
-        )
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
-             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 4.0)])), \
-             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)), \
+             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(3.0))), \
              patch("app.services.alert_checker._get_route_label", new=AsyncMock(return_value="checkout")), \
-             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = []
             mock_up.return_value = []
-            mock_err.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
 
@@ -362,35 +262,30 @@ class TestAlertChecker:
         assert "threshold: 3.0%" in kwargs["message"]
 
     @pytest.mark.asyncio
-    async def test_global_error_rate_preserves_legacy_rule_dispatch(self):
+    async def test_route_error_rate_below_threshold_does_not_dispatch(self):
         state = AlertStateManager()
-        # Seed fail_count=1 so the next unhealthy observation crosses N=2.
-        state.update("error_rate", "global:rule_9", is_healthy=False, display_target="global", trigger_after_failures=2)
-        rule = SimpleNamespace(id=9, target="global", threshold=10.0, name="global 5xx")
-        fake_db = SimpleNamespace(execute=AsyncMock(return_value=_FakeResult([rule])))
+        # Seed fail_count=1; but a healthy (below-threshold) reading resets it.
+        state.update(
+            "route_error_rate",
+            "route-a",
+            is_healthy=False,
+            display_target="checkout (route-a)",
+            trigger_after_failures=2,
+        )
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
-             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
-             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[])), \
-             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)), \
-             patch("app.services.alert_checker._dispatch_alert", new_callable=AsyncMock) as legacy_dispatch, \
-             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as owner_dispatch:
+             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 4.0)])), \
+             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(10.0))), \
+             patch("app.services.alert_checker._get_route_label", new=AsyncMock(return_value="checkout")), \
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = []
             mock_up.return_value = []
-            mock_err.return_value = [("global", 12.5)]
 
             await run_single_check(state, trigger_after_failures=2)
 
-        legacy_dispatch.assert_called_once()
-        owner_dispatch.assert_not_called()
-        kwargs = legacy_dispatch.call_args.kwargs
-        assert kwargs["rule_type"] == "error_rate"
-        assert kwargs["alert_type"] == "triggered"
-        assert kwargs["target"] == "global"
-        assert kwargs["rule_id"] == 9
-        assert kwargs["rate"] == 12.5
-        assert kwargs["threshold"] == 10.0
+        mock_dispatch.assert_not_called()
+        assert state.get_status("route_error_rate", "route-a") == "ok"
 
     @pytest.mark.asyncio
     async def test_start_checker_schedules_from_cycle_start_to_avoid_drift(self):
@@ -405,6 +300,7 @@ class TestAlertChecker:
 
         with patch("app.services.alert_checker.run_single_check", new_callable=AsyncMock), \
              patch("app.services.alert_checker._get_check_interval_seconds", new=AsyncMock(return_value=60)), \
+             patch("app.services.alert_checker._get_trigger_after_failures", new=AsyncMock(return_value=2)), \
              patch("app.services.alert_checker._monotonic", side_effect=[100.0, 115.0]), \
              patch("app.services.alert_checker.asyncio.sleep", new=AsyncMock(side_effect=stop_after_sleep)):
             task = await alert_checker.start_checker(state)
@@ -426,6 +322,7 @@ class TestAlertChecker:
 
         with patch("app.services.alert_checker.run_single_check", new_callable=AsyncMock), \
              patch("app.services.alert_checker._get_check_interval_seconds", new=AsyncMock(return_value=90)), \
+             patch("app.services.alert_checker._get_trigger_after_failures", new=AsyncMock(return_value=2)), \
              patch("app.services.alert_checker._monotonic", side_effect=[100.0, 115.0]), \
              patch("app.services.alert_checker.asyncio.sleep", new=AsyncMock(side_effect=stop_after_sleep)):
             task = await alert_checker.start_checker(state)
@@ -442,45 +339,6 @@ class TestAlertChecker:
 
         with patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)):
             assert await alert_checker._get_check_interval_seconds() == 90
-
-
-class TestDispatchAlertMetrics:
-    @pytest.mark.asyncio
-    async def test_dispatch_metric_not_recorded_when_history_commit_fails(self):
-        from app.services.alert_checker import _dispatch_alert
-
-        fake_db = _FailingCommitDb()
-
-        with patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)), \
-             patch("app.services.alert_checker.send_webhook", new=AsyncMock(return_value=(True, None))), \
-             patch("app.services.alert_checker.metrics.record_alert_dispatch") as record_metric:
-            with pytest.raises(RuntimeError, match="history commit failed"):
-                await _dispatch_alert(
-                    rule_type="db_health",
-                    alert_type="triggered",
-                    target="meta",
-                    message="metadata db down",
-                )
-
-        record_metric.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_dispatch_commits_once_after_all_matching_rules(self):
-        from app.services.alert_checker import _dispatch_alert
-
-        fake_db = _CommitCountingDb()
-
-        with patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)), \
-             patch("app.services.alert_checker.send_webhook", new=AsyncMock(return_value=(True, None))), \
-             patch("app.services.alert_checker.metrics.record_alert_dispatch"):
-            await _dispatch_alert(
-                rule_type="db_health",
-                alert_type="triggered",
-                target="meta",
-                message="metadata db down",
-            )
-
-        assert fake_db.commit_count == 1
 
 
 class TestCheckRouteErrorRate:
@@ -534,46 +392,39 @@ class TestCheckRouteErrorRate:
     @pytest.mark.asyncio
     async def test_route_error_rate_resolves_active_alert_when_route_has_no_traffic(self):
         state = AlertStateManager()
+        # Drive the route (keyed by plain route_id) into an active alert.
         state.update(
             "route_error_rate",
-            "route-a:rule_42",
+            "route-a",
             is_healthy=True,
             display_target="checkout (route-a)",
             trigger_after_failures=2,
         )
         state.update(
             "route_error_rate",
-            "route-a:rule_42",
+            "route-a",
             is_healthy=False,
             display_target="checkout (route-a)",
             trigger_after_failures=2,
         )
         # With N=2, one unhealthy isn't enough — push a second so the entry
-        # is actually in 'alert' status, which is the precondition for
-        # resolution dispatch on the next healthy observation.
+        # is actually in 'alert' status, the precondition for a resolution
+        # dispatch on the next healthy observation.
         state.update(
             "route_error_rate",
-            "route-a:rule_42",
+            "route-a",
             is_healthy=False,
             display_target="checkout (route-a)",
             trigger_after_failures=2,
         )
 
-        fake_db = SimpleNamespace(
-            execute=AsyncMock(return_value=_FakeResult([
-                SimpleNamespace(id=42, target="route-a", threshold=5.0, name="checkout errors")
-            ]))
-        )
-
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
-             patch("app.services.alert_checker._check_error_rate", new_callable=AsyncMock) as mock_err, \
              patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[])), \
-             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(fake_db)), \
-             patch("app.services.alert_checker.dispatch_owner_alert", new_callable=AsyncMock) as mock_dispatch:
+             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(5.0))), \
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = []
             mock_up.return_value = []
-            mock_err.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
 
@@ -645,7 +496,7 @@ class TestRouteLabelCache:
     @pytest.mark.asyncio
     async def test_get_route_label_skips_refresh_within_ttl_after_failure(self):
         """After a failed refresh, subsequent calls within TTL must NOT
-        re-fetch — otherwise N routes × M rules = N*M APISIX calls/cycle."""
+        re-fetch — otherwise N routes = N APISIX calls/cycle."""
         from app.services import alert_checker
         alert_checker._ROUTE_LABEL_CACHE = {}
         # Force the cache to look expired. Setting TS to 0 only works when the
@@ -692,19 +543,16 @@ async def test_run_single_check_respects_trigger_after_failures(monkeypatch, see
         alert_checker, "_check_upstream_health", lambda: _async_return([]),
     )
     monkeypatch.setattr(
-        alert_checker, "_check_error_rate", lambda: _async_return([]),
-    )
-    monkeypatch.setattr(
         alert_checker, "_check_route_error_rate", lambda: _async_return([]),
     )
 
     dispatched: list[str] = []
 
-    async def fake_dispatch_owner_alert(**kwargs):
+    async def fake_dispatch_alert(**kwargs):
         dispatched.append(kwargs["alert_type"])
 
     monkeypatch.setattr(
-        alert_checker, "dispatch_owner_alert", fake_dispatch_owner_alert,
+        alert_checker, "dispatch_alert", fake_dispatch_alert,
     )
 
     state = AlertStateManager()

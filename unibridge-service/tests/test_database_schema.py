@@ -6,7 +6,6 @@ from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.database import (
-    ensure_alert_rule_channels_no_unique,
     ensure_db_connection_columns,
     set_sqlite_foreign_keys,
 )
@@ -46,95 +45,6 @@ async def test_ensure_db_connection_columns_adds_clickhouse_fields():
         )
 
     assert {"protocol", "secure"}.issubset(column_names)
-
-    await engine.dispose()
-
-
-def _legacy_alert_rule_channels_ddl() -> str:
-    return """
-        CREATE TABLE alert_rule_channels (
-            id INTEGER NOT NULL,
-            rule_id INTEGER NOT NULL,
-            channel_id INTEGER NOT NULL,
-            recipients TEXT NOT NULL,
-            PRIMARY KEY (id),
-            CONSTRAINT uq_rule_channel UNIQUE (rule_id, channel_id)
-        )
-    """
-
-
-@pytest.mark.asyncio
-async def test_ensure_alert_rule_channels_no_unique_drops_legacy_constraint():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-
-    async with engine.begin() as conn:
-        await conn.execute(text(_legacy_alert_rule_channels_ddl()))
-        await conn.execute(text(
-            "INSERT INTO alert_rule_channels (id, rule_id, channel_id, recipients) "
-            "VALUES (1, 10, 20, '[\"a@x.com\"]')"
-        ))
-
-    await ensure_alert_rule_channels_no_unique(engine)
-
-    async with engine.begin() as conn:
-        ddl_row = (await conn.execute(text(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='alert_rule_channels'"
-        ))).fetchone()
-        assert ddl_row is not None
-        assert "uq_rule_channel" not in (ddl_row[0] or "")
-
-        # Data preserved
-        data_row = (await conn.execute(text(
-            "SELECT rule_id, channel_id, recipients FROM alert_rule_channels WHERE id=1"
-        ))).fetchone()
-        assert data_row == (10, 20, '["a@x.com"]')
-
-        # Duplicate (rule_id, channel_id) now allowed
-        await conn.execute(text(
-            "INSERT INTO alert_rule_channels (id, rule_id, channel_id, recipients) "
-            "VALUES (2, 10, 20, '[\"b@x.com\"]')"
-        ))
-        count = (await conn.execute(text(
-            "SELECT COUNT(*) FROM alert_rule_channels WHERE rule_id=10 AND channel_id=20"
-        ))).scalar_one()
-        assert count == 2
-
-    await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_ensure_alert_rule_channels_no_unique_is_idempotent():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-
-    async with engine.begin() as conn:
-        await conn.execute(text("""
-            CREATE TABLE alert_rule_channels (
-                id INTEGER NOT NULL,
-                rule_id INTEGER NOT NULL,
-                channel_id INTEGER NOT NULL,
-                recipients TEXT NOT NULL,
-                PRIMARY KEY (id)
-            )
-        """))
-
-    await ensure_alert_rule_channels_no_unique(engine)
-    await ensure_alert_rule_channels_no_unique(engine)
-
-    async with engine.begin() as conn:
-        ddl_row = (await conn.execute(text(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='alert_rule_channels'"
-        ))).fetchone()
-        assert "uq_rule_channel" not in (ddl_row[0] or "")
-
-    await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_ensure_alert_rule_channels_no_unique_noop_when_table_absent():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-
-    # Should not raise
-    await ensure_alert_rule_channels_no_unique(engine)
 
     await engine.dispose()
 
@@ -258,9 +168,19 @@ async def test_alert_owner_routing_schema_is_created_by_metadata():
             lambda sync_conn: inspect(sync_conn).get_check_constraints("alert_settings")
         )
 
-    assert {"owner_groups", "resource_owners", "alert_settings"} <= table_names
+    assert {"resource_owners", "alert_settings"} <= table_names
+    # Owner-group / rule tables are gone in the simplified model.
+    assert "owner_groups" not in table_names
+    assert "alert_rules" not in table_names
+    assert "alert_rule_channels" not in table_names
     assert "recipient_item_template" in alert_channel_cols
-    assert {"resource_type", "owner_group_id"} <= alert_history_cols
+    # AlertHistory keeps resource_type but drops rule_id / owner_group_id.
+    assert "resource_type" in alert_history_cols
+    assert "rule_id" not in alert_history_cols
+    assert "owner_group_id" not in alert_history_cols
+    # AlertSettings now stores admin_emails directly, no fallback group FK.
+    assert "admin_emails" in alert_settings_cols
+    assert "fallback_owner_group_id" not in alert_settings_cols
     assert alert_settings_cols["route_error_threshold_pct"]["default"] is not None
     assert alert_settings_cols["check_interval_seconds"]["default"] is not None
     assert any(check["name"] == "ck_alert_settings_singleton" for check in alert_settings_checks)

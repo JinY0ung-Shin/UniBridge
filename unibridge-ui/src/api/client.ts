@@ -841,71 +841,22 @@ export interface AlertChannelCreate {
 
 export interface AlertSettings {
   mail_channel_id: number | null;
-  fallback_owner_group_id: number | null;
+  admin_emails: string[];
   route_error_threshold_pct: number;
   check_interval_seconds: number;
   trigger_after_failures: number;
   updated_at?: string | null;
 }
 
-export interface AlertOwnerGroup {
-  id: number;
-  name: string;
-  emails: string[];
-  enabled: boolean;
-  created_at?: string | null;
-  updated_at?: string | null;
-}
-
-export interface AlertOwnerGroupCreate {
-  name: string;
-  emails: string[];
-  enabled?: boolean;
-}
-
 export interface AlertResourceOwner {
   resource_type: string;
   resource_id: string;
   display_name: string;
-  owner_group_id: number | null;
-  owner_group_name: string | null;
-}
-
-export interface RuleChannelMapping {
-  channel_id: number;
-  recipients: string[];
-}
-
-export interface RuleChannelDetail {
-  channel_id: number;
-  channel_name: string;
-  recipients: string[];
-}
-
-export interface AlertRule {
-  id: number;
-  name: string;
-  type: 'db_health' | 'upstream_health' | 'error_rate' | 'route_error_rate';
-  target: string;
-  threshold: number | null;
-  enabled: boolean;
-  channels: RuleChannelDetail[];
-  created_at?: string;
-  updated_at?: string;
-}
-
-export interface AlertRuleCreate {
-  name: string;
-  type: 'db_health' | 'upstream_health' | 'error_rate' | 'route_error_rate';
-  target: string;
-  threshold?: number;
-  enabled?: boolean;
-  channels: RuleChannelMapping[];
+  emails: string[];
 }
 
 export interface AlertHistoryEntry {
   id: number;
-  rule_id: number | null;
   channel_id: number | null;
   alert_type: 'triggered' | 'resolved';
   target: string;
@@ -934,13 +885,13 @@ export async function updateAlertSettings(body: Partial<AlertSettings>): Promise
   return data;
 }
 
-export async function testFallbackOwnerGroup(
+export async function testRecipientDelivery(
   mailChannelId: number,
-  fallbackOwnerGroupId: number,
+  emails: string[],
 ): Promise<{ success: boolean; error: string | null }> {
-  const { data } = await client.post('/admin/alerts/settings/fallback-owner-group/test', {
+  const { data } = await client.post('/admin/alerts/settings/recipients/test', {
     mail_channel_id: mailChannelId,
-    fallback_owner_group_id: fallbackOwnerGroupId,
+    emails,
   });
   return data;
 }
@@ -969,28 +920,6 @@ export async function testAlertChannel(id: number): Promise<{ success: boolean; 
   return data;
 }
 
-export async function getAlertOwnerGroups(): Promise<AlertOwnerGroup[]> {
-  const { data } = await client.get('/admin/alerts/owner-groups');
-  return data;
-}
-
-export async function createAlertOwnerGroup(body: AlertOwnerGroupCreate): Promise<AlertOwnerGroup> {
-  const { data } = await client.post('/admin/alerts/owner-groups', body);
-  return data;
-}
-
-export async function updateAlertOwnerGroup(
-  id: number,
-  body: Partial<AlertOwnerGroupCreate>,
-): Promise<AlertOwnerGroup> {
-  const { data } = await client.put(`/admin/alerts/owner-groups/${id}`, body);
-  return data;
-}
-
-export async function deleteAlertOwnerGroup(id: number): Promise<void> {
-  await client.delete(`/admin/alerts/owner-groups/${id}`);
-}
-
 export async function getAlertResourceOwners(): Promise<AlertResourceOwner[]> {
   const { data } = await client.get('/admin/alerts/resource-owners');
   return data;
@@ -999,7 +928,7 @@ export async function getAlertResourceOwners(): Promise<AlertResourceOwner[]> {
 export async function setAlertResourceOwner(
   resourceType: string,
   resourceId: string,
-  body: { owner_group_id: number },
+  body: { emails: string[] },
 ): Promise<AlertResourceOwner> {
   const type = encodeURIComponent(resourceType);
   const id = encodeURIComponent(resourceId);
@@ -1011,44 +940,6 @@ export async function deleteAlertResourceOwner(resourceType: string, resourceId:
   const type = encodeURIComponent(resourceType);
   const id = encodeURIComponent(resourceId);
   await client.delete(`/admin/alerts/resource-owners/${type}/${id}`);
-}
-
-// Rules
-export async function getAlertRules(): Promise<AlertRule[]> {
-  const { data } = await client.get('/admin/alerts/rules');
-  return data;
-}
-
-export async function createAlertRule(body: AlertRuleCreate): Promise<AlertRule> {
-  const { data } = await client.post('/admin/alerts/rules', body);
-  return data;
-}
-
-export async function updateAlertRule(id: number, body: Partial<AlertRuleCreate>): Promise<AlertRule> {
-  const { data } = await client.put(`/admin/alerts/rules/${id}`, body);
-  return data;
-}
-
-export async function deleteAlertRule(id: number): Promise<void> {
-  await client.delete(`/admin/alerts/rules/${id}`);
-}
-
-export interface AlertRuleTestChannelResult {
-  channel_id: number;
-  channel_name: string;
-  recipients: string[];
-  skipped: boolean;
-  success: boolean | null;
-  error: string | null;
-}
-
-export interface AlertRuleTestResponse {
-  results: AlertRuleTestChannelResult[];
-}
-
-export async function testAlertRule(id: number): Promise<AlertRuleTestResponse> {
-  const { data } = await client.post(`/admin/alerts/rules/${id}/test`);
-  return data;
 }
 
 // History & Status

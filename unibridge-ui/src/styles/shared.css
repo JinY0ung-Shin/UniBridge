@@ -440,7 +440,8 @@
 }
 
 .form-group input,
-.form-group select {
+.form-group select,
+.form-group textarea {
   padding: 8px 10px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
@@ -452,12 +453,18 @@
   transition: border-color 0.15s;
 }
 
+.form-group textarea {
+  resize: vertical;
+}
+
 .form-group input:focus,
-.form-group select:focus {
+.form-group select:focus,
+.form-group textarea:focus {
   border-color: var(--text-tertiary);
 }
 
-.form-group input::placeholder {
+.form-group input::placeholder,
+.form-group textarea::placeholder {
   color: var(--text-tertiary);
 }
 

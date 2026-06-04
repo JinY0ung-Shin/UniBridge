@@ -71,6 +71,25 @@ vi.mock('../api/client', () => ({
   updateRole: vi.fn(),
   deleteRole: vi.fn(),
   getAllPermissions: vi.fn().mockResolvedValue([]),
+  getAlertResourceOwners: vi.fn().mockResolvedValue([]),
+  setAlertResourceOwner: vi.fn(),
+  deleteAlertResourceOwner: vi.fn(),
+  getAlertSettings: vi.fn().mockResolvedValue({
+    mail_channel_id: null,
+    admin_emails: [],
+    route_error_threshold_pct: 10,
+    check_interval_seconds: 60,
+    trigger_after_failures: 2,
+  }),
+  updateAlertSettings: vi.fn(),
+  testRecipientDelivery: vi.fn(),
+  getAlertChannels: vi.fn().mockResolvedValue([]),
+  createAlertChannel: vi.fn(),
+  updateAlertChannel: vi.fn(),
+  deleteAlertChannel: vi.fn(),
+  testAlertChannel: vi.fn(),
+  getAlertHistory: vi.fn().mockResolvedValue([]),
+  getAlertStatus: vi.fn().mockResolvedValue([]),
 }));
 
 /* ── Import App after mocking ── */

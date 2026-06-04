@@ -3,6 +3,8 @@ vi.mock('../api/client', () => ({
   getGatewayRoute: vi.fn(),
   saveGatewayRoute: vi.fn(),
   getGatewayUpstreams: vi.fn(),
+  getAlertResourceOwners: vi.fn(),
+  setAlertResourceOwner: vi.fn(),
 }));
 
 vi.mock('react-router-dom', async () => {
@@ -15,13 +17,21 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useParams } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getGatewayRoute, getGatewayUpstreams, saveGatewayRoute } from '../api/client';
+import {
+  getGatewayRoute,
+  getGatewayUpstreams,
+  saveGatewayRoute,
+  getAlertResourceOwners,
+  setAlertResourceOwner,
+} from '../api/client';
 import GatewayRouteForm from '../pages/GatewayRouteForm';
 import { renderWithProviders, makeGatewayRoute, makeGatewayUpstream } from './helpers';
 
 const mockedGetGatewayRoute = vi.mocked(getGatewayRoute);
 const mockedGetGatewayUpstreams = vi.mocked(getGatewayUpstreams);
 const mockedSaveGatewayRoute = vi.mocked(saveGatewayRoute);
+const mockedGetAlertResourceOwners = vi.mocked(getAlertResourceOwners);
+const mockedSetAlertResourceOwner = vi.mocked(setAlertResourceOwner);
 
 function renderWithQueryClient(queryClient: QueryClient) {
   return render(
@@ -38,6 +48,13 @@ describe('GatewayRouteForm', () => {
     vi.clearAllMocks();
     vi.mocked(useParams).mockReturnValue({});
     mockedGetGatewayUpstreams.mockResolvedValue({ items: [], total: 0 });
+    mockedGetAlertResourceOwners.mockResolvedValue([]);
+    mockedSetAlertResourceOwner.mockResolvedValue({
+      resource_type: 'route',
+      resource_id: 'r1',
+      display_name: 'r1',
+      emails: [],
+    });
   });
 
   it('renders new route form', async () => {
@@ -179,6 +196,43 @@ describe('GatewayRouteForm', () => {
     await waitFor(() => {
       expect(screen.getByPlaceholderText('My API Route')).toHaveValue('new-route');
     });
+  });
+
+  it('does not rewrite assignees on edit when they are unchanged', async () => {
+    vi.mocked(useParams).mockReturnValue({ id: 'route-1' });
+    const user = userEvent.setup();
+    const route = makeGatewayRoute({ name: 'old-route' });
+    mockedGetGatewayRoute.mockResolvedValue(route);
+    mockedSaveGatewayRoute.mockResolvedValue(route);
+    mockedGetAlertResourceOwners.mockResolvedValue([
+      { resource_type: 'route', resource_id: 'route-1', display_name: 'route-1', emails: ['a@b.com'] },
+    ]);
+
+    renderWithProviders(<GatewayRouteForm />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Edit Route' })).toBeInTheDocument());
+    // assignee field prefilled from loaded owners
+    expect(screen.getByPlaceholderText('alice@example.com, bob@example.com')).toHaveValue('a@b.com');
+
+    await user.clear(screen.getByPlaceholderText('My API Route'));
+    await user.type(screen.getByPlaceholderText('My API Route'), 'new-route');
+    await user.click(screen.getByRole('button', { name: 'Update Route' }));
+
+    await waitFor(() => expect(mockedSaveGatewayRoute).toHaveBeenCalledTimes(1));
+    // unchanged assignees must NOT trigger a (potentially destructive) PUT
+    expect(mockedSetAlertResourceOwner).not.toHaveBeenCalled();
+  });
+
+  it('hides the assignee field for users without alert permissions', async () => {
+    renderWithProviders(<GatewayRouteForm />, {
+      permissions: ['gateway.routes.read', 'gateway.routes.write'],
+    });
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'New Route' })).toBeInTheDocument());
+
+    expect(screen.getByPlaceholderText('My API Route')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('alice@example.com, bob@example.com')).not.toBeInTheDocument();
+    expect(mockedGetAlertResourceOwners).not.toHaveBeenCalled();
   });
 
   it('preserves existing service key values when editing without retyping secrets', async () => {
