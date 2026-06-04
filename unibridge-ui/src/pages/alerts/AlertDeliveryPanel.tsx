@@ -5,10 +5,8 @@ import {
   createAlertChannel,
   deleteAlertChannel,
   getAlertChannels,
-  getAlertOwnerGroups,
   getAlertSettings,
   testAlertChannel,
-  testFallbackOwnerGroup,
   updateAlertChannel,
   updateAlertSettings,
   type AlertChannel,
@@ -23,7 +21,7 @@ type HeaderPair = { key: string; value: string };
 
 const defaultSettings: AlertSettings = {
   mail_channel_id: null,
-  fallback_owner_group_id: null,
+  admin_emails: [],
   route_error_threshold_pct: 10,
   check_interval_seconds: 60,
   trigger_after_failures: 2,
@@ -64,7 +62,7 @@ function maskWebhookUrl(url: string): string {
   }
 }
 
-export default function AlertMailChannelPanel() {
+export default function AlertDeliveryPanel() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { addToast } = useToast();
@@ -77,10 +75,8 @@ export default function AlertMailChannelPanel() {
 
   const settingsQuery = useQuery({ queryKey: ['alert-settings'], queryFn: getAlertSettings });
   const channelsQuery = useQuery({ queryKey: ['alert-channels'], queryFn: getAlertChannels });
-  const ownerGroupsQuery = useQuery({ queryKey: ['alert-owner-groups'], queryFn: getAlertOwnerGroups });
 
   const channels = channelsQuery.data ?? [];
-  const ownerGroups = ownerGroupsQuery.data ?? [];
   const settingsForm: AlertSettings = { ...defaultSettings, ...settingsQuery.data, ...settingsDraft };
 
   const updateSettingsMutation = useMutation({
@@ -120,26 +116,6 @@ export default function AlertMailChannelPanel() {
     mutationFn: (id: number) => deleteAlertChannel(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['alert-channels'] }),
     onError: () => addToast({ type: 'error', title: t('common.delete'), message: t('common.errorOccurred') }),
-  });
-
-  const testFallbackOwnerGroupMutation = useMutation({
-    mutationFn: ({
-      mailChannelId,
-      fallbackOwnerGroupId,
-    }: {
-      mailChannelId: number;
-      fallbackOwnerGroupId: number;
-    }) => testFallbackOwnerGroup(mailChannelId, fallbackOwnerGroupId),
-    onSuccess: (result) => {
-      addToast({
-        type: result.success ? 'success' : 'error',
-        title: result.success ? t('alerts.testFallbackOwnerGroupSuccess') : t('alerts.testFallbackOwnerGroupFailed'),
-        message: result.error ?? undefined,
-      });
-    },
-    onError: () => {
-      addToast({ type: 'error', title: t('alerts.testFallbackOwnerGroupFailed') });
-    },
   });
 
   function openCreateChannel() {
@@ -227,31 +203,16 @@ export default function AlertMailChannelPanel() {
     e.preventDefault();
     updateSettingsMutation.mutate({
       mail_channel_id: settingsForm.mail_channel_id,
-      fallback_owner_group_id: settingsForm.fallback_owner_group_id,
       route_error_threshold_pct: settingsForm.route_error_threshold_pct,
       check_interval_seconds: settingsForm.check_interval_seconds,
       trigger_after_failures: settingsForm.trigger_after_failures,
     });
   }
 
-  function handleTestFallbackOwnerGroup() {
-    if (settingsForm.mail_channel_id === null || settingsForm.fallback_owner_group_id === null) return;
-    testFallbackOwnerGroupMutation.mutate({
-      mailChannelId: settingsForm.mail_channel_id,
-      fallbackOwnerGroupId: settingsForm.fallback_owner_group_id,
-    });
-  }
-
   const isSavingChannel = createChannelMutation.isPending || updateChannelMutation.isPending;
   const hasSettings = Boolean(settingsQuery.data);
-  const isLoading = channelsQuery.isLoading || settingsQuery.isLoading || ownerGroupsQuery.isLoading;
-  const isError = channelsQuery.isError || settingsQuery.isError || ownerGroupsQuery.isError;
-  const canTestFallbackOwnerGroup = Boolean(
-    hasSettings &&
-    settingsForm.mail_channel_id !== null &&
-    settingsForm.fallback_owner_group_id !== null &&
-    !testFallbackOwnerGroupMutation.isPending,
-  );
+  const isLoading = channelsQuery.isLoading || settingsQuery.isLoading;
+  const isError = channelsQuery.isError || settingsQuery.isError;
   const templateVars: [string, string][] = [
     ['alert_type', t('alerts.varDesc_alert_type')],
     ['target_name', t('alerts.varDesc_target_name')],
@@ -262,7 +223,6 @@ export default function AlertMailChannelPanel() {
     ['recipients_json', t('alerts.varDesc_recipients_json')],
     ['rate', t('alerts.varDesc_rate')],
     ['threshold', t('alerts.varDesc_threshold')],
-    ['rule_name', t('alerts.varDesc_rule_name')],
   ];
 
   return (
@@ -287,39 +247,6 @@ export default function AlertMailChannelPanel() {
                 <option key={ch.id} value={ch.id}>{t('alerts.channelOption', { name: ch.name })}</option>
               ))}
             </select>
-          </div>
-          <div className="form-group">
-            <label htmlFor="fallback-owner-group-select">{t('alerts.fallbackOwnerGroup')}</label>
-            <div className="setting-control-row">
-              <select
-                id="fallback-owner-group-select"
-                value={settingsForm.fallback_owner_group_id ?? ''}
-                disabled={!hasSettings || !canWrite}
-                onChange={(e) =>
-                  setSettingsDraft((prev) => ({
-                    ...prev,
-                    fallback_owner_group_id: e.target.value ? Number(e.target.value) : null,
-                  }))
-                }
-              >
-                <option value="">{t('alerts.unassigned')}</option>
-                {ownerGroups.map((group) => (
-                  <option key={group.id} value={group.id}>{group.name}</option>
-                ))}
-              </select>
-              {canWrite && (
-                <button
-                  type="button"
-                  className="btn btn-sm btn-outline"
-                  onClick={handleTestFallbackOwnerGroup}
-                  disabled={!canTestFallbackOwnerGroup}
-                >
-                  {testFallbackOwnerGroupMutation.isPending
-                    ? t('common.loading')
-                    : t('alerts.testFallbackOwnerGroup')}
-                </button>
-              )}
-            </div>
           </div>
           <div className="form-group">
             <label htmlFor="route-threshold">{t('alerts.routeErrorThreshold')}</label>
@@ -383,6 +310,8 @@ export default function AlertMailChannelPanel() {
           <button className="btn btn-primary" onClick={openCreateChannel}>+ {t('alerts.addChannel')}</button>
         )}
       </div>
+
+      <p className="alert-note">{t('alerts.recipientsDuplicateHint')}</p>
 
       {isLoading && <div className="loading-message">{t('common.loading')}</div>}
       {isError && <div className="error-banner">{t('common.errorOccurred')}</div>}

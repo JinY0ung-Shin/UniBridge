@@ -6,12 +6,22 @@ vi.mock('../api/client', () => ({
   deleteDatabase: vi.fn(),
   testDatabase: vi.fn(),
   getDbTables: vi.fn().mockResolvedValue([]),
+  getAlertResourceOwners: vi.fn(),
+  setAlertResourceOwner: vi.fn(),
 }));
 
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getAdminDatabases, createDatabase, testDatabase, deleteDatabase, getDbTables } from '../api/client';
+import {
+  getAdminDatabases,
+  createDatabase,
+  testDatabase,
+  deleteDatabase,
+  getDbTables,
+  getAlertResourceOwners,
+  setAlertResourceOwner,
+} from '../api/client';
 import Connections from '../pages/Connections';
 import { renderWithProviders, makeDatabase } from './helpers';
 
@@ -20,6 +30,8 @@ const mockedCreateDatabase = vi.mocked(createDatabase);
 const mockedTestDatabase = vi.mocked(testDatabase);
 const mockedDeleteDatabase = vi.mocked(deleteDatabase);
 const mockedGetDbTables = vi.mocked(getDbTables);
+const mockedGetAlertResourceOwners = vi.mocked(getAlertResourceOwners);
+const mockedSetAlertResourceOwner = vi.mocked(setAlertResourceOwner);
 const clipboardWriteText = vi.fn();
 
 beforeEach(() => {
@@ -34,6 +46,13 @@ describe('Connections', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockedGetAdminDatabases.mockResolvedValue([]);
+    mockedGetAlertResourceOwners.mockResolvedValue([]);
+    mockedSetAlertResourceOwner.mockResolvedValue({
+      resource_type: 'db',
+      resource_id: 'test-db',
+      display_name: 'test-db',
+      emails: [],
+    });
   });
 
   it('renders loading state', () => {
@@ -321,6 +340,13 @@ describe('Connections — graphdb', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockedGetAdminDatabases.mockResolvedValue([]);
+    mockedGetAlertResourceOwners.mockResolvedValue([]);
+    mockedSetAlertResourceOwner.mockResolvedValue({
+      resource_type: 'db',
+      resource_id: 'test-db',
+      display_name: 'test-db',
+      emails: [],
+    });
   });
 
   it('selecting graphdb sets port 7200 and shows Repository ID label', async () => {
@@ -453,6 +479,13 @@ describe('Connections (error case)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockedGetAdminDatabases.mockResolvedValue([]);
+    mockedGetAlertResourceOwners.mockResolvedValue([]);
+    mockedSetAlertResourceOwner.mockResolvedValue({
+      resource_type: 'db',
+      resource_id: 'test-db',
+      display_name: 'test-db',
+      emails: [],
+    });
   });
 
   it('shows error message when create fails', async () => {

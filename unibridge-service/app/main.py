@@ -382,7 +382,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     from app.services.alert_checker import start_checker
     from app.routers.alerts import set_alert_state
-    from app.models import AlertRule
 
     alert_state = AlertStateManager()
     async for db in get_db():
@@ -393,9 +392,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # outage does not wipe upstream/route alert state.
         db_aliases_result = await db.execute(select(DBConnection.alias))
         known_db_aliases = set(db_aliases_result.scalars().all())
-
-        rule_ids_result = await db.execute(select(AlertRule.id))
-        known_rule_ids = set(rule_ids_result.scalars().all())
 
         known_upstream_ids: set[str] | None
         known_route_ids: set[str] | None
@@ -427,7 +423,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             known_db_aliases=known_db_aliases,
             known_upstream_ids=known_upstream_ids,
             known_route_ids=known_route_ids,
-            known_rule_ids=known_rule_ids,
         )
         break
     set_alert_state(alert_state)

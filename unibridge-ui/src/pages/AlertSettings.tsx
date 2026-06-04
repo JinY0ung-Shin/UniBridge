@@ -1,23 +1,19 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import AlertMailChannelPanel from './alerts/AlertMailChannelPanel';
-import AlertOwnerGroupsPanel from './alerts/AlertOwnerGroupsPanel';
-import AlertResourceOwnersPanel from './alerts/AlertResourceOwnersPanel';
-import AlertRulesPanel from './alerts/AlertRulesPanel';
+import AlertRecipientsPanel from './alerts/AlertRecipientsPanel';
+import AlertDeliveryPanel from './alerts/AlertDeliveryPanel';
 import './AlertSettings.css';
 
-type AlertSettingsTab = 'mail' | 'owner-groups' | 'resource-owners' | 'rules';
+type AlertSettingsTab = 'recipients' | 'delivery';
 
 const tabs: Array<{ key: AlertSettingsTab; labelKey: string }> = [
-  { key: 'mail', labelKey: 'alerts.mailChannelTab' },
-  { key: 'owner-groups', labelKey: 'alerts.ownerGroupsTab' },
-  { key: 'resource-owners', labelKey: 'alerts.resourceOwnersTab' },
-  { key: 'rules', labelKey: 'alerts.rulesTab' },
+  { key: 'recipients', labelKey: 'alerts.recipientsTab' },
+  { key: 'delivery', labelKey: 'alerts.deliveryTab' },
 ];
 
 function AlertSettings() {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<AlertSettingsTab>('mail');
+  const [activeTab, setActiveTab] = useState<AlertSettingsTab>('recipients');
 
   return (
     <div className="alert-settings">
@@ -41,10 +37,8 @@ function AlertSettings() {
         ))}
       </div>
 
-      {activeTab === 'mail' && <AlertMailChannelPanel />}
-      {activeTab === 'owner-groups' && <AlertOwnerGroupsPanel />}
-      {activeTab === 'resource-owners' && <AlertResourceOwnersPanel />}
-      {activeTab === 'rules' && <AlertRulesPanel />}
+      {activeTab === 'recipients' && <AlertRecipientsPanel />}
+      {activeTab === 'delivery' && <AlertDeliveryPanel />}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-"""Tests for owner-based alert dispatch service."""
+"""Tests for the assignee/admin alert dispatch service."""
 from __future__ import annotations
 
 import json
@@ -12,10 +12,9 @@ from app.models import (
     AlertChannel,
     AlertHistory,
     AlertSettings,
-    OwnerGroup,
     ResourceOwner,
 )
-from app.services.alert_owner_dispatcher import dispatch_owner_alert
+from app.services.alert_owner_dispatcher import dispatch_alert
 
 
 PAYLOAD_TEMPLATE = '{"recipients":{{recipients_json}},"body":"{{message}}"}'
@@ -96,21 +95,21 @@ async def _seed_mail_channel(
     return channel
 
 
-async def _seed_owner_group(
+async def _seed_resource_owner(
     db: AsyncSession,
     *,
-    name: str = "payment-owners",
+    resource_type: str = "db",
+    resource_id: str = "payment-db",
     emails: list[str] | str = '["owner@example.com"]',
-    enabled: bool = True,
-) -> OwnerGroup:
-    group = OwnerGroup(
-        name=name,
+) -> ResourceOwner:
+    owner = ResourceOwner(
+        resource_type=resource_type,
+        resource_id=resource_id,
         emails=json.dumps(emails) if isinstance(emails, list) else emails,
-        enabled=enabled,
     )
-    db.add(group)
+    db.add(owner)
     await db.flush()
-    return group
+    return owner
 
 
 async def _history_rows(session_factory) -> list[AlertHistory]:
@@ -120,25 +119,23 @@ async def _history_rows(session_factory) -> list[AlertHistory]:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_owner_alert_uses_resource_owner_group(engine):
+async def test_dispatch_alert_sends_to_resource_assignees(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
-        group = await _seed_owner_group(db, emails=["owner@example.com"])
-        db.add(AlertSettings(id=1, mail_channel_id=channel.id))
-        db.add(ResourceOwner(resource_type="db", resource_id="payment-db", owner_group_id=group.id))
+        db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
+        await _seed_resource_owner(db, emails=["owner@example.com"])
         await db.commit()
 
     send = AsyncMock(return_value=(True, None))
     with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_owner_alert(
+        await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="triggered",
             target="payment-db",
             message="Database failed",
-            rule_id=None,
             display_target="payment-db",
         )
 
@@ -151,141 +148,128 @@ async def test_dispatch_owner_alert_uses_resource_owner_group(engine):
     assert len(histories) == 1
     history = histories[0]
     assert history.resource_type == "db"
-    assert history.owner_group_id == group.id
     assert history.channel_id == channel.id
     assert json.loads(history.recipients) == ["owner@example.com"]
     assert history.success is True
 
 
 @pytest.mark.asyncio
-async def test_dispatch_owner_alert_records_dispatch_metric(engine):
+async def test_dispatch_alert_unions_assignees_with_admins_and_dedupes(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
-        group = await _seed_owner_group(db, emails=["owner@example.com"])
-        db.add(AlertSettings(id=1, mail_channel_id=channel.id))
-        db.add(ResourceOwner(resource_type="route", resource_id="checkout", owner_group_id=group.id))
+        # admins overlap with one assignee (case-insensitive) and add a new one.
+        db.add(AlertSettings(
+            id=1,
+            mail_channel_id=channel.id,
+            admin_emails=json.dumps(["OWNER@example.com", "admin@example.com"]),
+        ))
+        await _seed_resource_owner(db, emails=["owner@example.com", "dba@example.com"])
+        await db.commit()
+
+    send = AsyncMock(return_value=(True, None))
+    with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
+         patch("app.services.alert_owner_dispatcher.send_webhook", send):
+        await dispatch_alert(
+            resource_type="db",
+            resource_id="payment-db",
+            alert_type="triggered",
+            target="payment-db",
+            message="Database failed",
+        )
+
+    send.assert_awaited_once()
+    histories = await _history_rows(session_factory)
+    # Assignees first, then admins, case-insensitive dedupe (first occurrence wins).
+    assert json.loads(histories[0].recipients) == [
+        "owner@example.com",
+        "dba@example.com",
+        "admin@example.com",
+    ]
+    assert histories[0].success is True
+
+
+@pytest.mark.asyncio
+async def test_dispatch_alert_sends_to_admins_when_no_assignees(engine):
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        channel = await _seed_mail_channel(db)
+        db.add(AlertSettings(
+            id=1,
+            mail_channel_id=channel.id,
+            admin_emails=json.dumps(["admin@example.com"]),
+        ))
+        await db.commit()
+
+    send = AsyncMock(return_value=(True, None))
+    with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
+         patch("app.services.alert_owner_dispatcher.send_webhook", send):
+        await dispatch_alert(
+            resource_type="db",
+            resource_id="payment-db",
+            alert_type="triggered",
+            target="payment-db",
+            message="Database failed",
+            display_target="payment-db",
+        )
+
+    send.assert_awaited_once()
+    sent_payload = json.loads(send.await_args.kwargs["payload"])
+    assert sent_payload["recipients"] == [
+        {"emailAddress": "admin@example.com", "recipientType": "TO"}
+    ]
+    histories = await _history_rows(session_factory)
+    assert json.loads(histories[0].recipients) == ["admin@example.com"]
+    assert histories[0].success is True
+
+
+@pytest.mark.asyncio
+async def test_dispatch_alert_records_dispatch_metric(engine):
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        channel = await _seed_mail_channel(db)
+        db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
+        await _seed_resource_owner(
+            db, resource_type="route", resource_id="checkout", emails=["owner@example.com"]
+        )
         await db.commit()
 
     send = AsyncMock(return_value=(True, None))
     with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send), \
          patch("app.metrics.record_alert_dispatch") as record_metric:
-        await dispatch_owner_alert(
+        await dispatch_alert(
             resource_type="route",
             resource_id="checkout",
             alert_type="triggered",
             target="checkout",
             message="Route error rate exceeded",
-            rule_id=42,
         )
 
     record_metric.assert_called_once_with(
-        rule_id=42,
+        rule_id="route",
         channel_type="webhook",
         status="success",
     )
 
 
 @pytest.mark.asyncio
-async def test_dispatch_owner_alert_uses_fallback_when_resource_owner_missing(engine):
+async def test_dispatch_alert_records_failure_without_assignees_or_admins(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
-        fallback = await _seed_owner_group(
-            db, name="fallback-owners", emails=["fallback@example.com"]
-        )
-        db.add(
-            AlertSettings(
-                id=1,
-                mail_channel_id=channel.id,
-                fallback_owner_group_id=fallback.id,
-            )
-        )
+        db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
         await db.commit()
 
     send = AsyncMock(return_value=(True, None))
     with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_owner_alert(
+        await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="triggered",
             target="payment-db",
             message="Database failed",
-            rule_id=None,
-            display_target="payment-db",
-        )
-
-    sent_payload = json.loads(send.await_args.kwargs["payload"])
-    assert sent_payload["recipients"] == [
-        {"emailAddress": "fallback@example.com", "recipientType": "TO"}
-    ]
-    histories = await _history_rows(session_factory)
-    assert histories[0].owner_group_id == fallback.id
-    assert json.loads(histories[0].recipients) == ["fallback@example.com"]
-
-
-@pytest.mark.asyncio
-async def test_dispatch_owner_alert_skips_disabled_resource_group_and_uses_fallback(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
-        channel = await _seed_mail_channel(db)
-        disabled = await _seed_owner_group(
-            db, name="disabled-owners", emails=["disabled@example.com"], enabled=False
-        )
-        fallback = await _seed_owner_group(
-            db, name="fallback-owners", emails=["fallback@example.com"]
-        )
-        db.add(
-            AlertSettings(
-                id=1,
-                mail_channel_id=channel.id,
-                fallback_owner_group_id=fallback.id,
-            )
-        )
-        db.add(ResourceOwner(resource_type="db", resource_id="payment-db", owner_group_id=disabled.id))
-        await db.commit()
-
-    send = AsyncMock(return_value=(True, None))
-    with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
-         patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_owner_alert(
-            resource_type="db",
-            resource_id="payment-db",
-            alert_type="triggered",
-            target="payment-db",
-            message="Database failed",
-            rule_id=None,
-            display_target="payment-db",
-        )
-
-    sent_payload = json.loads(send.await_args.kwargs["payload"])
-    assert sent_payload["recipients"] == [
-        {"emailAddress": "fallback@example.com", "recipientType": "TO"}
-    ]
-    histories = await _history_rows(session_factory)
-    assert histories[0].owner_group_id == fallback.id
-
-
-@pytest.mark.asyncio
-async def test_dispatch_owner_alert_records_failure_without_owner_or_fallback(engine):
-    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
-        channel = await _seed_mail_channel(db)
-        db.add(AlertSettings(id=1, mail_channel_id=channel.id))
-        await db.commit()
-
-    send = AsyncMock(return_value=(True, None))
-    with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
-         patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_owner_alert(
-            resource_type="db",
-            resource_id="payment-db",
-            alert_type="triggered",
-            target="payment-db",
-            message="Database failed",
-            rule_id=None,
             display_target="payment-db",
         )
 
@@ -293,27 +277,25 @@ async def test_dispatch_owner_alert_records_failure_without_owner_or_fallback(en
     histories = await _history_rows(session_factory)
     assert len(histories) == 1
     assert histories[0].success is False
-    assert "No owner group" in histories[0].error_detail
+    assert "No assignees or admins" in histories[0].error_detail
 
 
 @pytest.mark.asyncio
-async def test_dispatch_owner_alert_records_failure_without_mail_channel(engine):
+async def test_dispatch_alert_records_failure_without_mail_channel(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
-        group = await _seed_owner_group(db)
-        db.add(AlertSettings(id=1, fallback_owner_group_id=group.id))
+        db.add(AlertSettings(id=1, admin_emails=json.dumps(["admin@example.com"])))
         await db.commit()
 
     send = AsyncMock(return_value=(True, None))
     with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_owner_alert(
+        await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="triggered",
             target="payment-db",
             message="Database failed",
-            rule_id=None,
             display_target="payment-db",
         )
 
@@ -321,13 +303,12 @@ async def test_dispatch_owner_alert_records_failure_without_mail_channel(engine)
     histories = await _history_rows(session_factory)
     assert len(histories) == 1
     assert histories[0].channel_id is None
-    assert histories[0].owner_group_id is None
     assert histories[0].success is False
     assert "Mail channel not configured" in histories[0].error_detail
 
 
 @pytest.mark.asyncio
-async def test_dispatch_owner_alert_records_template_error(engine):
+async def test_dispatch_alert_records_template_error(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         channel = AlertChannel(
@@ -338,21 +319,19 @@ async def test_dispatch_owner_alert_records_template_error(engine):
         )
         db.add(channel)
         await db.flush()
-        group = await _seed_owner_group(db, emails=["owner@example.com"])
-        db.add(AlertSettings(id=1, mail_channel_id=channel.id))
-        db.add(ResourceOwner(resource_type="db", resource_id="payment-db", owner_group_id=group.id))
+        db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
+        await _seed_resource_owner(db, emails=["owner@example.com"])
         await db.commit()
 
     send = AsyncMock(return_value=(True, None))
     with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_owner_alert(
+        await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="triggered",
             target="payment-db",
             message="Database failed",
-            rule_id=None,
             display_target="payment-db",
         )
 
@@ -365,18 +344,21 @@ async def test_dispatch_owner_alert_records_template_error(engine):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_owner_alert_records_failure_for_disabled_mail_channel(engine):
+async def test_dispatch_alert_records_failure_for_disabled_mail_channel(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db, enabled=False)
-        group = await _seed_owner_group(db, emails=["owner@example.com"])
-        db.add(AlertSettings(id=1, mail_channel_id=channel.id, fallback_owner_group_id=group.id))
+        db.add(AlertSettings(
+            id=1,
+            mail_channel_id=channel.id,
+            admin_emails=json.dumps(["admin@example.com"]),
+        ))
         await db.commit()
 
     send = AsyncMock(return_value=(True, None))
     with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_owner_alert(
+        await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="triggered",
@@ -393,7 +375,7 @@ async def test_dispatch_owner_alert_records_failure_for_disabled_mail_channel(en
 
 
 @pytest.mark.asyncio
-async def test_dispatch_owner_alert_sends_headers_and_alert_placeholders(engine):
+async def test_dispatch_alert_sends_headers_and_alert_placeholders(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     payload_template = (
         '{"recipients":{{recipients_json}},"to":"{{recipients}}",'
@@ -406,25 +388,25 @@ async def test_dispatch_owner_alert_sends_headers_and_alert_placeholders(engine)
             payload_template=payload_template,
             headers='{"X-Token":"abc","Retry":2}',
         )
-        group = await _seed_owner_group(db, emails=["owner@example.com"])
-        db.add(AlertSettings(id=1, mail_channel_id=channel.id))
-        db.add(ResourceOwner(resource_type="route", resource_id="checkout", owner_group_id=group.id))
+        db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
+        await _seed_resource_owner(
+            db, resource_type="route", resource_id="checkout", emails=["owner@example.com"]
+        )
         await db.commit()
 
     send = AsyncMock(return_value=(True, None))
     with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_owner_alert(
+        await dispatch_alert(
             resource_type="route",
             resource_id="checkout",
             alert_type="resolved",
             target="checkout",
             message="Route recovered",
-            rule_id=42,
             display_target="Checkout API",
             rate=12.34,
             threshold=10.0,
-            rule_name="checkout 5xx",
+            monitor_label="라우트 에러율",
         )
 
     sent = send.await_args.kwargs
@@ -436,26 +418,24 @@ async def test_dispatch_owner_alert_sends_headers_and_alert_placeholders(engine)
     assert payload["target"] == "Checkout API"
     assert payload["rate"] == "12.3"
     assert payload["threshold"] == "10.0"
-    assert payload["rule"] == "checkout 5xx"
+    assert payload["rule"] == "라우트 에러율"
     histories = await _history_rows(session_factory)
-    assert histories[0].rule_id == 42
     assert histories[0].success is True
 
 
 @pytest.mark.asyncio
-async def test_dispatch_owner_alert_requires_recipient_item_template(engine):
+async def test_dispatch_alert_requires_recipient_item_template(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db, recipient_item_template=None)
-        group = await _seed_owner_group(db, emails=["owner@example.com"])
-        db.add(AlertSettings(id=1, mail_channel_id=channel.id))
-        db.add(ResourceOwner(resource_type="db", resource_id="payment-db", owner_group_id=group.id))
+        db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
+        await _seed_resource_owner(db, emails=["owner@example.com"])
         await db.commit()
 
     send = AsyncMock(return_value=(True, None))
     with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_owner_alert(
+        await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="triggered",
@@ -470,19 +450,18 @@ async def test_dispatch_owner_alert_requires_recipient_item_template(engine):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_owner_alert_records_invalid_owner_email_json(engine):
+async def test_dispatch_alert_records_invalid_assignee_email_json(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
-        group = await _seed_owner_group(db, emails='{"bad":"shape"}')
-        db.add(AlertSettings(id=1, mail_channel_id=channel.id))
-        db.add(ResourceOwner(resource_type="db", resource_id="payment-db", owner_group_id=group.id))
+        db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
+        await _seed_resource_owner(db, emails='{"bad":"shape"}')
         await db.commit()
 
     send = AsyncMock(return_value=(True, None))
     with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_owner_alert(
+        await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="triggered",
@@ -498,26 +477,25 @@ async def test_dispatch_owner_alert_records_invalid_owner_email_json(engine):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_owner_alert_records_webhook_failure_and_exception(engine):
+async def test_dispatch_alert_records_webhook_failure_and_exception(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
-        group = await _seed_owner_group(db, emails=["owner@example.com"])
-        db.add(AlertSettings(id=1, mail_channel_id=channel.id))
-        db.add(ResourceOwner(resource_type="db", resource_id="payment-db", owner_group_id=group.id))
+        db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
+        await _seed_resource_owner(db, emails=["owner@example.com"])
         await db.commit()
 
     send = AsyncMock(side_effect=[(False, "timeout"), RuntimeError("network down")])
     with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_owner_alert(
+        await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="triggered",
             target="payment-db",
             message="Database failed",
         )
-        await dispatch_owner_alert(
+        await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="resolved",
@@ -532,13 +510,12 @@ async def test_dispatch_owner_alert_records_webhook_failure_and_exception(engine
 
 
 @pytest.mark.asyncio
-async def test_dispatch_owner_alert_releases_read_session_before_webhook(engine):
+async def test_dispatch_alert_releases_read_session_before_webhook(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
-        group = await _seed_owner_group(db, emails=["owner@example.com"])
-        db.add(AlertSettings(id=1, mail_channel_id=channel.id))
-        db.add(ResourceOwner(resource_type="db", resource_id="payment-db", owner_group_id=group.id))
+        db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
+        await _seed_resource_owner(db, emails=["owner@example.com"])
         await db.commit()
 
     tracking_session_factory = _TrackingSessionFactory(session_factory)
@@ -549,7 +526,7 @@ async def test_dispatch_owner_alert_releases_read_session_before_webhook(engine)
 
     with patch("app.services.alert_owner_dispatcher.async_session", tracking_session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send_with_session_assertion):
-        await dispatch_owner_alert(
+        await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="triggered",
@@ -563,20 +540,19 @@ async def test_dispatch_owner_alert_releases_read_session_before_webhook(engine)
 
 
 @pytest.mark.asyncio
-async def test_dispatch_owner_alert_does_not_raise_when_history_record_fails(engine):
+async def test_dispatch_alert_does_not_raise_when_history_record_fails(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
-        group = await _seed_owner_group(db, emails=["owner@example.com"])
-        db.add(AlertSettings(id=1, mail_channel_id=channel.id))
-        db.add(ResourceOwner(resource_type="db", resource_id="payment-db", owner_group_id=group.id))
+        db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
+        await _seed_resource_owner(db, emails=["owner@example.com"])
         await db.commit()
 
     send = AsyncMock(return_value=(True, None))
     failing_session_factory = _FailingHistorySessionFactory(session_factory)
     with patch("app.services.alert_owner_dispatcher.async_session", failing_session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_owner_alert(
+        await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="triggered",

@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-from datetime import datetime, timezone
 from sqlalchemy import select
 
-from app import metrics
 from app.database import async_session
-from app.models import AlertChannel, AlertHistory, AlertRule, AlertRuleChannel, AlertSettings
-from app.services.alert_owner_dispatcher import dispatch_owner_alert
-from app.services.alert_sender import render_template, send_webhook
+from app.models import AlertSettings
+from app.services.alert_owner_dispatcher import dispatch_alert
 from app.services.alert_state import AlertStateManager, save_alert_state_to_db
 
 logger = logging.getLogger(__name__)
@@ -63,7 +59,7 @@ def _normalize_route_error_threshold_pct(value: float | int | None) -> float:
     return min(100.0, max(0.0, float(value)))
 
 
-async def _load_route_error_default_threshold(db) -> float:
+async def _load_route_error_threshold(db) -> float:
     result = await db.execute(
         select(AlertSettings.route_error_threshold_pct).where(AlertSettings.id == 1)
     )
@@ -149,23 +145,6 @@ async def _check_upstream_health() -> list[tuple[str, bool]]:
     return results
 
 
-async def _check_error_rate() -> list[tuple[str, float]]:
-    """Check 5xx error rate from Prometheus. Returns [("global", rate_pct)]."""
-    from app.services import prometheus_client
-    try:
-        result = await prometheus_client.instant_query(
-            'sum(rate(apisix_http_status{code=~"5.."}[5m])) / sum(rate(apisix_http_status[5m])) * 100'
-        )
-        if result:
-            val = float(result[0].get("value", [0, 0])[1])
-            if val != val:  # NaN check
-                val = 0.0
-            return [("global", val)]
-    except Exception as exc:
-        logger.warning("Error rate check failed: %s", exc)
-    return []
-
-
 async def _check_route_error_rate() -> list[tuple[str, float]] | None:
     """Check 5xx error rate per APISIX route.
 
@@ -219,133 +198,6 @@ async def _check_route_error_rate() -> list[tuple[str, float]] | None:
     return route_rates
 
 
-async def _dispatch_alert(
-    *,
-    rule_type: str,
-    alert_type: str,
-    target: str,
-    message: str,
-    rule_id: int | None = None,
-    display_target: str | None = None,
-    rate: float | None = None,
-    threshold: float | None = None,
-    match_targets: list[str] | None = None,
-) -> None:
-    """Find matching rules and send alerts through mapped channels.
-
-    If rule_id is given, only dispatch for that specific rule.
-    Otherwise, dispatch for all matching enabled rules.
-
-    display_target is what gets rendered into {{target_name}}; defaults
-    to target when omitted. rate/threshold are rendered into the
-    corresponding placeholders (empty string when None).
-    """
-    display = display_target if display_target is not None else target
-    rate_str = f"{rate:.1f}" if rate is not None else ""
-    threshold_str = f"{threshold:.1f}" if threshold is not None else ""
-    deliveries: list[dict] = []
-
-    async with async_session() as db:
-        if rule_id is not None:
-            q = select(AlertRule).where(
-                AlertRule.id == rule_id,
-                AlertRule.enabled.is_(True),
-            )
-        else:
-            targets = match_targets if match_targets is not None else [target, "*"]
-            q = select(AlertRule).where(
-                AlertRule.enabled.is_(True),
-                AlertRule.type == rule_type,
-                AlertRule.target.in_(targets),
-            )
-        result = await db.execute(q)
-        rules = result.scalars().all()
-
-        now = datetime.now(timezone.utc).isoformat()
-
-        for rule in rules:
-            rc_result = await db.execute(
-                select(AlertRuleChannel).where(AlertRuleChannel.rule_id == rule.id)
-            )
-            mappings = rc_result.scalars().all()
-
-            for mapping in mappings:
-                ch_result = await db.execute(
-                    select(AlertChannel).where(
-                        AlertChannel.id == mapping.channel_id,
-                        AlertChannel.enabled.is_(True),
-                    )
-                )
-                channel = ch_result.scalar_one_or_none()
-                if channel is None:
-                    continue
-
-                recipients_list = json.loads(mapping.recipients)
-                recipients_str = ", ".join(recipients_list)
-
-                status_label = "장애 발생" if alert_type == "triggered" else "정상 복구"
-                payload = render_template(
-                    channel.payload_template,
-                    alert_type=alert_type,
-                    target_name=display,
-                    status=status_label,
-                    message=message,
-                    timestamp=now,
-                    recipients=recipients_str,
-                    rate=rate_str,
-                    threshold=threshold_str,
-                    rule_name=rule.name,
-                )
-                headers = json.loads(channel.headers) if channel.headers else None
-                deliveries.append(
-                    {
-                        "rule_id": rule.id,
-                        "channel_id": channel.id,
-                        "webhook_url": channel.webhook_url,
-                        "payload": payload,
-                        "headers": headers,
-                        "recipients": mapping.recipients,
-                    }
-                )
-
-    histories: list[AlertHistory] = []
-    dispatch_metrics: list[dict[str, str | int]] = []
-    for delivery in deliveries:
-        ok, err = await send_webhook(
-            url=delivery["webhook_url"],
-            payload=delivery["payload"],
-            headers=delivery["headers"],
-        )
-        histories.append(
-            AlertHistory(
-                rule_id=delivery["rule_id"],
-                channel_id=delivery["channel_id"],
-                alert_type=alert_type,
-                target=target,
-                message=message,
-                recipients=delivery["recipients"],
-                success=ok,
-                error_detail=err,
-            )
-        )
-        dispatch_metrics.append(
-            {
-                "rule_id": delivery["rule_id"],
-                "channel_type": "webhook",
-                "status": "success" if ok else "failure",
-            }
-        )
-
-    if histories:
-        async with async_session() as db:
-            for history in histories:
-                db.add(history)
-            await db.commit()
-
-    for dispatch_metric in dispatch_metrics:
-        metrics.record_alert_dispatch(**dispatch_metric)
-
-
 async def _persist_state_safely(
     state: AlertStateManager,
     alert_type: str,
@@ -358,32 +210,14 @@ async def _persist_state_safely(
         logger.warning("Failed to persist alert state %s/%s: %s", alert_type, target, exc)
 
 
-def _route_state_target(route_id: str, rule_id: int) -> str:
-    return f"{route_id}:rule_{rule_id}"
-
-
-def _parse_route_state_target(value: str) -> tuple[str, int] | None:
-    marker = ":rule_"
-    if marker not in value:
-        return None
-    route_id, rule_id_text = value.rsplit(marker, 1)
-    if not route_id:
-        return None
-    try:
-        return route_id, int(rule_id_text)
-    except ValueError:
-        return None
-
-
 async def _evaluate_route_error_rule(
     state: AlertStateManager,
     *,
     route_id: str,
     rate: float,
-    rule: AlertRule,
+    threshold: float,
     trigger_after_failures: int,
     display_target: str | None = None,
-    default_threshold: float = 10.0,
 ) -> None:
     if display_target is None:
         label = await _get_route_label(route_id)
@@ -391,29 +225,26 @@ async def _evaluate_route_error_rule(
     else:
         display = display_target
 
-    threshold = rule.threshold if rule.threshold is not None else default_threshold
     is_healthy = rate < threshold
-    state_target = _route_state_target(route_id, rule.id)
     transition = state.update(
         "route_error_rate",
-        state_target,
+        route_id,
         is_healthy=is_healthy,
         display_target=display,
         trigger_after_failures=trigger_after_failures,
     )
-    await _persist_state_safely(state, "route_error_rate", state_target)
+    await _persist_state_safely(state, "route_error_rate", route_id)
     if transition:
         msg = (
             f"Route '{display}' 5xx error rate is "
             f"{rate:.1f}% (threshold: {threshold}%)."
         )
-        await dispatch_owner_alert(
+        await dispatch_alert(
             resource_type="route", resource_id=route_id,
             alert_type=transition, target=route_id, message=msg,
-            rule_id=rule.id,
             display_target=display,
             rate=rate, threshold=threshold,
-            rule_name=rule.name,
+            monitor_label="라우트 에러율",
         )
 
 
@@ -430,10 +261,10 @@ async def run_single_check(state: AlertStateManager, *, trigger_after_failures: 
         await _persist_state_safely(state, "db_health", alias)
         if transition:
             msg = f"Database '{alias}' connection {'restored' if transition == 'resolved' else 'failed'}."
-            await dispatch_owner_alert(
+            await dispatch_alert(
                 resource_type="db", resource_id=alias,
                 alert_type=transition, target=alias, message=msg,
-                display_target=alias,
+                display_target=alias, monitor_label="DB 헬스체크",
             )
 
     # 2. Upstream health
@@ -450,107 +281,49 @@ async def run_single_check(state: AlertStateManager, *, trigger_after_failures: 
         await _persist_state_safely(state, "upstream_health", uid)
         if transition:
             msg = f"Upstream '{display}' {'recovered' if transition == 'resolved' else 'is down'}."
-            await dispatch_owner_alert(
+            await dispatch_alert(
                 resource_type="upstream", resource_id=uid,
                 alert_type=transition, target=uid, message=msg,
-                display_target=display,
+                display_target=display, monitor_label="업스트림 헬스체크",
             )
 
-    # 3. Error rate (global)
-    error_results = await _check_error_rate()
-    for target_name, rate in error_results:
-        async with async_session() as db:
-            q = select(AlertRule).where(
-                AlertRule.enabled.is_(True),
-                AlertRule.type == "error_rate",
-                AlertRule.target.in_([target_name, "*"]),
-            )
-            result = await db.execute(q)
-            rules = result.scalars().all()
-
-        for rule in rules:
-            threshold = rule.threshold if rule.threshold is not None else 10.0
-            is_healthy = rate < threshold
-            state_target = f"{target_name}:rule_{rule.id}"
-            transition = state.update(
-                "error_rate", state_target,
-                is_healthy=is_healthy,
-                display_target=target_name,
-                trigger_after_failures=trigger_after_failures,
-            )
-            await _persist_state_safely(state, "error_rate", state_target)
-            if transition:
-                msg = f"5xx error rate is {rate:.1f}% (threshold: {threshold}%)."
-                await _dispatch_alert(
-                    rule_type="error_rate", alert_type=transition,
-                    target=target_name, message=msg,
-                    rule_id=rule.id,
-                    rate=rate, threshold=threshold,
-                )
-
-    # 4. Route-level error rate
+    # 3. Route-level error rate (automatic for every route; global threshold)
     route_results = await _check_route_error_rate()
-    if route_results is not None:
-        active_route_alerts = state.get_entries(alert_type="route_error_rate", status="alert")
-        if not route_results and not active_route_alerts:
-            return
+    if route_results is None:
+        return
 
-        async with async_session() as db:
-            rq = select(AlertRule).where(
-                AlertRule.enabled.is_(True),
-                AlertRule.type == "route_error_rate",
-            )
-            result = await db.execute(rq)
-            all_route_rules = result.scalars().all()
-            route_default_threshold = (
-                await _load_route_error_default_threshold(db)
-                if any(rule.threshold is None for rule in all_route_rules)
-                else 10.0
-            )
+    active_route_alerts = state.get_entries(alert_type="route_error_rate", status="alert")
+    if not route_results and not active_route_alerts:
+        return
 
-        rules_by_id = {rule.id: rule for rule in all_route_rules}
-        processed_state_targets: set[str] = set()
-        route_rate_by_id = dict(route_results)
+    async with async_session() as db:
+        route_threshold = await _load_route_error_threshold(db)
 
-        for route_id, rate in route_results:
-            matching_rules = [
-                r for r in all_route_rules
-                if r.target == route_id or r.target == "*"
-            ]
-            for rule in matching_rules:
-                state_target = _route_state_target(route_id, rule.id)
-                processed_state_targets.add(state_target)
-                await _evaluate_route_error_rule(
-                    state,
-                    route_id=route_id,
-                    rate=rate,
-                    rule=rule,
-                    trigger_after_failures=trigger_after_failures,
-                    default_threshold=route_default_threshold,
-                )
+    route_rate_by_id = dict(route_results)
+    processed: set[str] = set()
+    for route_id, rate in route_results:
+        processed.add(route_id)
+        await _evaluate_route_error_rule(
+            state,
+            route_id=route_id,
+            rate=rate,
+            threshold=route_threshold,
+            trigger_after_failures=trigger_after_failures,
+        )
 
-        for entry in active_route_alerts:
-            state_target = entry["target"]
-            if state_target in processed_state_targets:
-                continue
-            parsed = _parse_route_state_target(state_target)
-            if parsed is None:
-                continue
-            route_id, rule_id = parsed
-            if route_id in route_rate_by_id:
-                continue
-            rule = rules_by_id.get(rule_id)
-            if rule is None:
-                continue
-            await _evaluate_route_error_rule(
-                state,
-                route_id=route_id,
-                rate=0.0,
-                rule=rule,
-                trigger_after_failures=trigger_after_failures,
-                display_target=entry.get("display_target"),
-                default_threshold=route_default_threshold,
-            )
+    # Routes that were alerting but no longer report traffic → resolve at rate 0.
+    for entry in active_route_alerts:
+        route_id = entry["target"]
+        if route_id in processed or route_id in route_rate_by_id:
+            continue
+        await _evaluate_route_error_rule(
+            state,
+            route_id=route_id,
+            rate=0.0,
+            threshold=route_threshold,
+            trigger_after_failures=trigger_after_failures,
+            display_target=entry.get("display_target"),
+        )
 
 
 async def start_checker(state: AlertStateManager) -> asyncio.Task:

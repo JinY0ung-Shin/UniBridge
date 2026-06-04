@@ -336,42 +336,57 @@ describe('api client API helpers', () => {
     ]);
   });
 
-  it('alerts channels & rules', async () => {
+  it('alerts settings, channels, recipients & resource owners', async () => {
     const mod = await importClient(keycloak);
-    const calls: Array<{ method?: string; url?: string }> = [];
+    const calls: Array<{ method?: string; url?: string; data?: unknown }> = [];
     mod.default.defaults.adapter = makeAdapter((c) => {
-      calls.push({ method: c.method, url: c.url });
+      calls.push({ method: c.method, url: c.url, data: c.data ? JSON.parse(c.data) : undefined });
       return [];
     });
+
+    await mod.getAlertSettings();
+    await mod.updateAlertSettings({ admin_emails: ['ops@example.com'], mail_channel_id: 1 });
+
     await mod.getAlertChannels();
     await mod.createAlertChannel({ name: 'n', webhook_url: 'http://x', payload_template: '{}' });
     await mod.updateAlertChannel(2, { name: 'n2' });
     await mod.deleteAlertChannel(2);
     await mod.testAlertChannel(2);
 
-    await mod.getAlertRules();
-    await mod.createAlertRule({ name: 'r', type: 'db_health', target: 't', channels: [] });
-    await mod.updateAlertRule(3, { enabled: false });
-    await mod.deleteAlertRule(3);
-    await mod.testAlertRule(3);
+    await mod.testRecipientDelivery(1, ['admin@example.com', 'oncall@example.com']);
+
+    await mod.getAlertResourceOwners();
+    await mod.setAlertResourceOwner('db', 'orders-db', { emails: ['owner@example.com'] });
+    await mod.deleteAlertResourceOwner('db', 'orders-db');
 
     await mod.getAlertHistory({ alert_type: 'triggered' });
     await mod.getAlertStatus();
 
     expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      'get /admin/alerts/settings',
+      'put /admin/alerts/settings',
       'get /admin/alerts/channels',
       'post /admin/alerts/channels',
       'put /admin/alerts/channels/2',
       'delete /admin/alerts/channels/2',
       'post /admin/alerts/channels/2/test',
-      'get /admin/alerts/rules',
-      'post /admin/alerts/rules',
-      'put /admin/alerts/rules/3',
-      'delete /admin/alerts/rules/3',
-      'post /admin/alerts/rules/3/test',
+      'post /admin/alerts/settings/recipients/test',
+      'get /admin/alerts/resource-owners',
+      'put /admin/alerts/resource-owners/db/orders-db',
+      'delete /admin/alerts/resource-owners/db/orders-db',
       'get /admin/alerts/history',
       'get /admin/alerts/status',
     ]);
+
+    // settings PUT carries admin_emails
+    expect(calls[1].data).toEqual({ admin_emails: ['ops@example.com'], mail_channel_id: 1 });
+    // recipients test body shape
+    expect(calls[7].data).toEqual({
+      mail_channel_id: 1,
+      emails: ['admin@example.com', 'oncall@example.com'],
+    });
+    // resource-owner PUT body carries emails only
+    expect(calls[9].data).toEqual({ emails: ['owner@example.com'] });
   });
 
   it('s3 connections CRUD + browse', async () => {

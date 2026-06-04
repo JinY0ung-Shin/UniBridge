@@ -7,9 +7,13 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth import ALL_PERMISSIONS
-from app.models import AlertChannel, AlertRule, AlertRuleChannel, AlertHistory
+from app.models import AlertChannel, AlertHistory, AlertSettings, ResourceOwner
 from app.schemas import (
-    AlertChannelCreate, AlertRuleCreate, AlertStatusResponse,
+    AlertChannelCreate,
+    AlertSettingsUpdate,
+    AlertStatusResponse,
+    RecipientTestRequest,
+    ResourceOwnerUpsert,
 )
 from app.services.alert_state import AlertStateManager
 
@@ -21,19 +25,32 @@ class TestAlertModels:
         assert ch.webhook_url == "http://example.com/hook"
         assert ch.enabled is True
 
-    def test_alert_rule_columns(self):
-        rule = AlertRule(name="db-check", type="db_health", target="mydb")
-        assert rule.type == "db_health"
-        assert rule.enabled is True
+    def test_alert_settings_columns(self):
+        settings = AlertSettings(
+            id=1,
+            admin_emails='["admin@example.com"]',
+            route_error_threshold_pct=10.0,
+            check_interval_seconds=60,
+        )
+        assert settings.admin_emails == '["admin@example.com"]'
+        assert settings.route_error_threshold_pct == 10.0
+        # No fallback owner group on the simplified settings model.
+        assert not hasattr(AlertSettings, "fallback_owner_group_id")
 
-    def test_alert_rule_channel_columns(self):
-        arc = AlertRuleChannel(rule_id=1, channel_id=1, recipients='["a@b.com"]')
-        assert arc.recipients == '["a@b.com"]'
+    def test_resource_owner_columns(self):
+        owner = ResourceOwner(
+            resource_type="db", resource_id="mydb", emails='["owner@example.com"]'
+        )
+        assert owner.resource_type == "db"
+        assert owner.resource_id == "mydb"
+        assert owner.emails == '["owner@example.com"]'
 
     def test_alert_history_columns(self):
-        h = AlertHistory(rule_id=1, channel_id=1, alert_type="triggered", target="mydb", message="down")
+        h = AlertHistory(channel_id=1, alert_type="triggered", target="mydb", message="down")
         assert h.alert_type == "triggered"
         assert h.success is None
+        # History no longer carries a rule_id column.
+        assert not hasattr(AlertHistory, "rule_id")
 
 
 class TestAlertSchemas:
@@ -47,43 +64,29 @@ class TestAlertSchemas:
         assert ch.headers is None
         assert ch.enabled is True
 
-    def test_rule_create_db_health(self):
-        rule = AlertRuleCreate(
-            name="order-db-check",
-            type="db_health",
-            target="order-db",
-            channels=[{"channel_id": 1, "recipients": ["team@co.com"]}],
+    def test_settings_update_dedupes_admin_emails(self):
+        body = AlertSettingsUpdate(
+            admin_emails=[" a@x.com ", "a@x.com", "b@x.com", "", " b@x.com "],
         )
-        assert rule.threshold is None
-        assert len(rule.channels) == 1
+        assert body.admin_emails == ["a@x.com", "b@x.com"]
 
-    def test_rule_create_error_rate_requires_threshold(self):
-        rule = AlertRuleCreate(
-            name="error-check",
-            type="error_rate",
-            target="*",
-            threshold=10.0,
-            channels=[{"channel_id": 1, "recipients": ["ops@co.com"]}],
+    def test_settings_update_allows_empty_admin_emails(self):
+        body = AlertSettingsUpdate(admin_emails=[])
+        assert body.admin_emails == []
+
+    def test_resource_owner_upsert_dedupes_emails(self):
+        body = ResourceOwnerUpsert(
+            emails=[" owner@x.com ", "owner@x.com", "ops@x.com", " "],
         )
-        assert rule.threshold == 10.0
+        assert body.emails == ["owner@x.com", "ops@x.com"]
 
-    def test_rule_create_route_error_rate(self):
-        rule = AlertRuleCreate(
-            name="route-err-check",
-            type="route_error_rate",
-            target="*",
-            threshold=5.0,
-            channels=[{"channel_id": 1, "recipients": ["ops@co.com"]}],
-        )
-        assert rule.type == "route_error_rate"
-        assert rule.threshold == 5.0
+    def test_resource_owner_upsert_allows_empty(self):
+        body = ResourceOwnerUpsert(emails=[])
+        assert body.emails == []
 
-    def test_rule_create_rejects_unknown_type(self):
+    def test_recipient_test_request_requires_at_least_one_email(self):
         with pytest.raises(Exception):
-            AlertRuleCreate(
-                name="bogus", type="does_not_exist", target="*",
-                channels=[],
-            )
+            RecipientTestRequest(mail_channel_id=1, emails=[" ", ""])
 
     def test_channel_create_rejects_userinfo_in_webhook_url(self):
         with pytest.raises(Exception):
@@ -273,15 +276,6 @@ class TestAlertState:
         mgr.discard("db_health", "never-existed")
         assert mgr.get_all_alerts() == []
 
-    def test_parse_rule_scoped_target(self):
-        from app.services.alert_state import _parse_rule_scoped_target
-        assert _parse_rule_scoped_target("global:rule_7") == ("global", 7)
-        assert _parse_rule_scoped_target("route-abc:rule_42") == ("route-abc", 42)
-        assert _parse_rule_scoped_target("no-suffix") is None
-        assert _parse_rule_scoped_target(":rule_1") is None  # empty prefix
-        assert _parse_rule_scoped_target("foo:rule_") is None  # empty suffix
-        assert _parse_rule_scoped_target("foo:rule_NaN") is None
-
     @pytest.mark.asyncio
     async def test_purge_stale_states(self, seeded_db):
         from app.services.alert_state import (
@@ -295,12 +289,13 @@ class TestAlertState:
         mgr.update("db_health", "ghost-db", is_healthy=False, trigger_after_failures=1)
         mgr.update("upstream_health", "live-up", is_healthy=False, trigger_after_failures=1)
         mgr.update("upstream_health", "ghost-up", is_healthy=False, trigger_after_failures=1)
+        # Route states are now keyed by the plain route_id.
+        mgr.update("route_error_rate", "live-route", is_healthy=False, trigger_after_failures=1)
+        mgr.update("route_error_rate", "ghost-route", is_healthy=False, trigger_after_failures=1)
+        # Legacy leftovers: global error_rate (monitoring removed) and a
+        # rule-scoped route target from the old model — both must be purged.
         mgr.update("error_rate", "global:rule_1", is_healthy=False, trigger_after_failures=1)
-        mgr.update("error_rate", "global:rule_99", is_healthy=False, trigger_after_failures=1)
-        mgr.update("route_error_rate", "live-route:rule_1", is_healthy=False, trigger_after_failures=1)
-        mgr.update("route_error_rate", "ghost-route:rule_1", is_healthy=False, trigger_after_failures=1)
         mgr.update("route_error_rate", "live-route:rule_99", is_healthy=False, trigger_after_failures=1)
-        mgr.update("route_error_rate", "malformed-target", is_healthy=False, trigger_after_failures=1)
 
         async with session_factory() as db:
             for atype, target in [
@@ -308,12 +303,10 @@ class TestAlertState:
                 ("db_health", "ghost-db"),
                 ("upstream_health", "live-up"),
                 ("upstream_health", "ghost-up"),
+                ("route_error_rate", "live-route"),
+                ("route_error_rate", "ghost-route"),
                 ("error_rate", "global:rule_1"),
-                ("error_rate", "global:rule_99"),
-                ("route_error_rate", "live-route:rule_1"),
-                ("route_error_rate", "ghost-route:rule_1"),
                 ("route_error_rate", "live-route:rule_99"),
-                ("route_error_rate", "malformed-target"),
             ]:
                 await save_alert_state_to_db(db, mgr, atype, target)
 
@@ -324,25 +317,24 @@ class TestAlertState:
                 known_db_aliases={"live-db"},
                 known_upstream_ids={"live-up"},
                 known_route_ids={"live-route"},
-                known_rule_ids={1},
             )
 
         removed_set = set(removed)
         assert ("db_health", "ghost-db") in removed_set
         assert ("upstream_health", "ghost-up") in removed_set
-        assert ("error_rate", "global:rule_99") in removed_set
-        assert ("route_error_rate", "ghost-route:rule_1") in removed_set
+        assert ("route_error_rate", "ghost-route") in removed_set
+        assert ("error_rate", "global:rule_1") in removed_set
         assert ("route_error_rate", "live-route:rule_99") in removed_set
-        assert ("route_error_rate", "malformed-target") in removed_set
-        assert len(removed) == 6
+        assert len(removed) == 5
 
         assert mgr.get_status("db_health", "live-db") == "alert"
         assert mgr.get_status("db_health", "ghost-db") == "ok"
         assert mgr.get_status("upstream_health", "live-up") == "alert"
         assert mgr.get_status("upstream_health", "ghost-up") == "ok"
-        assert mgr.get_status("error_rate", "global:rule_1") == "alert"
-        assert mgr.get_status("error_rate", "global:rule_99") == "ok"
-        assert mgr.get_status("route_error_rate", "live-route:rule_1") == "alert"
+        assert mgr.get_status("route_error_rate", "live-route") == "alert"
+        assert mgr.get_status("route_error_rate", "ghost-route") == "ok"
+        assert mgr.get_status("error_rate", "global:rule_1") == "ok"
+        assert mgr.get_status("route_error_rate", "live-route:rule_99") == "ok"
 
     @pytest.mark.asyncio
     async def test_purge_stale_states_skips_when_apisix_unknown(self, seeded_db):
@@ -354,10 +346,10 @@ class TestAlertState:
         session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
         mgr = AlertStateManager()
         mgr.update("upstream_health", "any-up", is_healthy=False, trigger_after_failures=1)
-        mgr.update("route_error_rate", "any-route:rule_1", is_healthy=False, trigger_after_failures=1)
+        mgr.update("route_error_rate", "any-route", is_healthy=False, trigger_after_failures=1)
         async with session_factory() as db:
             await save_alert_state_to_db(db, mgr, "upstream_health", "any-up")
-            await save_alert_state_to_db(db, mgr, "route_error_rate", "any-route:rule_1")
+            await save_alert_state_to_db(db, mgr, "route_error_rate", "any-route")
 
         async with session_factory() as db:
             removed = await purge_stale_states(
@@ -366,11 +358,10 @@ class TestAlertState:
                 known_db_aliases=set(),
                 known_upstream_ids=None,
                 known_route_ids=None,
-                known_rule_ids={1},
             )
         assert removed == []
         assert mgr.get_status("upstream_health", "any-up") == "alert"
-        assert mgr.get_status("route_error_rate", "any-route:rule_1") == "alert"
+        assert mgr.get_status("route_error_rate", "any-route") == "alert"
 
     @pytest.mark.asyncio
     async def test_delete_alert_state_removes_persisted_row(self, seeded_db):

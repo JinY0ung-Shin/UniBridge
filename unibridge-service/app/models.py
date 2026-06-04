@@ -189,54 +189,19 @@ class AlertChannel(Base):
         super().__init__(**kwargs)
 
 
-class AlertRule(Base):
-    __tablename__ = "alert_rules"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(100), nullable=False)
-    type = Column(String(30), nullable=False)  # "db_health", "upstream_health", "error_rate"
-    target = Column(String(100), nullable=False)  # DB alias, upstream ID, or "*"
-    threshold = Column(Float, nullable=True)  # error rate % (error_rate type only)
-    enabled = Column(Boolean, default=True, nullable=False, server_default="true")
-    created_at = Column(UtcDateTime, default=utcnow)
-    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)
-
-    def __init__(self, **kwargs):
-        kwargs.setdefault("enabled", True)
-        super().__init__(**kwargs)
-
-
-class AlertRuleChannel(Base):
-    __tablename__ = "alert_rule_channels"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    rule_id = Column(Integer, ForeignKey("alert_rules.id", ondelete="CASCADE"), nullable=False)
-    channel_id = Column(Integer, ForeignKey("alert_channels.id", ondelete="CASCADE"), nullable=False)
-    recipients = Column(Text, nullable=False)  # JSON array: ["user@example.com"]
-
-
-class OwnerGroup(Base):
-    __tablename__ = "owner_groups"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(100), unique=True, nullable=False)
-    emails = Column(Text, nullable=False)  # JSON array of strings
-    enabled = Column(Boolean, default=True, nullable=False, server_default="true")
-    created_at = Column(UtcDateTime, default=utcnow, nullable=False)
-    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
-
-    def __init__(self, **kwargs):
-        kwargs.setdefault("enabled", True)
-        super().__init__(**kwargs)
-
-
 class ResourceOwner(Base):
+    """Per-resource assignees (담당자).
+
+    Holds the alert-recipient emails for a single resource directly — no
+    intermediary owner-group. ``emails`` is a JSON array of strings.
+    """
+
     __tablename__ = "resource_owners"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     resource_type = Column(String(20), nullable=False)
     resource_id = Column(String(200), nullable=False)
-    owner_group_id = Column(Integer, ForeignKey("owner_groups.id", ondelete="RESTRICT"), nullable=False)
+    emails = Column(Text, nullable=False)  # JSON array of assignee emails
     created_at = Column(UtcDateTime, default=utcnow, nullable=False)
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -250,7 +215,8 @@ class AlertSettings(Base):
 
     id = Column(Integer, primary_key=True)
     mail_channel_id = Column(Integer, ForeignKey("alert_channels.id", ondelete="RESTRICT"), nullable=True)
-    fallback_owner_group_id = Column(Integer, ForeignKey("owner_groups.id", ondelete="RESTRICT"), nullable=True)
+    # Global admins (관리자) — receive every alert. JSON array of emails.
+    admin_emails = Column(Text, default="[]", server_default="[]", nullable=False)
     route_error_threshold_pct = Column(Float, default=10.0, nullable=False, server_default="10.0")
     check_interval_seconds = Column(Integer, default=60, nullable=False, server_default="60")
     trigger_after_failures = Column(
@@ -274,9 +240,7 @@ class AlertHistory(Base):
     __tablename__ = "alert_history"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    rule_id = Column(Integer, ForeignKey("alert_rules.id", ondelete="SET NULL"), nullable=True)
     channel_id = Column(Integer, ForeignKey("alert_channels.id", ondelete="SET NULL"), nullable=True)
-    owner_group_id = Column(Integer, ForeignKey("owner_groups.id", ondelete="SET NULL"), nullable=True)
     resource_type = Column(String(20), nullable=True)
     alert_type = Column(String(20), nullable=False)  # "triggered" / "resolved"
     target = Column(String(100), nullable=False)

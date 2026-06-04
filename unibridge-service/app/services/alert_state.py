@@ -12,12 +12,6 @@ from app.models import AlertState
 
 logger = logging.getLogger(__name__)
 
-_RULE_SCOPED_ALERT_TYPES = {"error_rate", "route_error_rate"}
-
-
-def _rule_state_suffix(rule_id: int) -> str:
-    return f":rule_{rule_id}"
-
 
 class AlertStateManager:
     """In-memory alert state tracker.
@@ -187,13 +181,6 @@ class AlertStateManager:
             })
         return rows
 
-    def clear_rule_states(self, rule_id: int) -> None:
-        suffix = _rule_state_suffix(rule_id)
-        for key in list(self._states):
-            alert_type, target = key
-            if alert_type in _RULE_SCOPED_ALERT_TYPES and target.endswith(suffix):
-                del self._states[key]
-
     def discard(self, alert_type: str, target: str) -> None:
         self._states.pop((alert_type, target), None)
 
@@ -282,33 +269,6 @@ async def delete_alert_state(
         await db.delete(row)
 
 
-async def delete_alert_states_for_rule(db: AsyncSession, rule_id: int) -> None:
-    """Delete persisted states whose key is scoped to an alert rule."""
-    suffix = _rule_state_suffix(rule_id)
-    result = await db.execute(
-        select(AlertState).where(AlertState.alert_type.in_(_RULE_SCOPED_ALERT_TYPES))
-    )
-    for row in result.scalars().all():
-        if row.target.endswith(suffix):
-            await db.delete(row)
-
-
-def _parse_rule_scoped_target(value: str) -> tuple[str, int] | None:
-    """Split a rule-scoped target `{prefix}:rule_{rule_id}` into its parts."""
-    marker = ":rule_"
-    idx = value.rfind(marker)
-    if idx <= 0:
-        return None
-    prefix = value[:idx]
-    suffix = value[idx + len(marker):]
-    if not suffix:
-        return None
-    try:
-        return prefix, int(suffix)
-    except ValueError:
-        return None
-
-
 async def purge_stale_states(
     db: AsyncSession,
     state: AlertStateManager,
@@ -316,7 +276,6 @@ async def purge_stale_states(
     known_db_aliases: set[str],
     known_upstream_ids: set[str] | None,
     known_route_ids: set[str] | None,
-    known_rule_ids: set[int],
 ) -> list[tuple[str, str]]:
     """Drop alert states whose targets no longer exist.
 
@@ -324,6 +283,10 @@ async def purge_stale_states(
     corresponding alert types when APISIX is unreachable — better to
     leave state alone than to wipe it because of a transient outage.
     Returns the (alert_type, target) pairs that were removed.
+
+    Route states are keyed by plain ``route_id``. Any legacy rule-scoped
+    states (``error_rate`` and ``{route}:rule_{id}`` targets from the old
+    rule-based model) are treated as stale and purged.
     """
     result = await db.execute(select(AlertState))
     removed: list[tuple[str, str]] = []
@@ -338,19 +301,14 @@ async def purge_stale_states(
             if known_upstream_ids is not None:
                 should_remove = target not in known_upstream_ids
         elif atype == "route_error_rate":
-            parsed = _parse_rule_scoped_target(target)
-            if parsed is None:
+            if ":rule_" in target:
+                # Legacy rule-scoped target; the new model keys by route_id.
                 should_remove = True
-            else:
-                route_id, rule_id = parsed
-                if rule_id not in known_rule_ids:
-                    should_remove = True
-                elif known_route_ids is not None and route_id not in known_route_ids:
-                    should_remove = True
+            elif known_route_ids is not None:
+                should_remove = target not in known_route_ids
         elif atype == "error_rate":
-            parsed = _parse_rule_scoped_target(target)
-            if parsed is None or parsed[1] not in known_rule_ids:
-                should_remove = True
+            # Global error-rate monitoring was removed; drop any leftover state.
+            should_remove = True
 
         if should_remove:
             state.discard(atype, target)

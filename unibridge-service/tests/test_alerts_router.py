@@ -11,12 +11,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from app.models import (
-    AlertChannel,
     AlertHistory,
     AlertSettings,
-    AlertState,
     DBConnection,
-    OwnerGroup,
     ResourceOwner,
     S3Connection,
 )
@@ -41,6 +38,7 @@ class _RacingSettingsDb:
     def __init__(self):
         self.existing = AlertSettings(
             id=1,
+            admin_emails="[]",
             route_error_threshold_pct=10.0,
             check_interval_seconds=60,
         )
@@ -271,28 +269,20 @@ async def test_test_channel_not_found(client, admin_token):
     assert resp.status_code == 404
 
 
+# ── Settings ──────────────────────────────────────────────────────────────────
+
 @pytest.mark.asyncio
-async def test_get_and_update_alert_settings(client, admin_token, seeded_db):
+async def test_get_and_update_alert_settings(client, admin_token):
     ch = await client.post(
         "/admin/alerts/channels",
         json={"name": "mail-settings", "webhook_url": WEBHOOK, "payload_template": TEMPLATE},
         headers=auth_header(admin_token),
     )
     assert ch.status_code == 201
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
-        group = OwnerGroup(
-            name="fallback-owners",
-            emails='["ops@company.com"]',
-        )
-        db.add(group)
-        await db.commit()
-        await db.refresh(group)
-        fallback_owner_group_id = group.id
 
     expected = {
         "mail_channel_id": ch.json()["id"],
-        "fallback_owner_group_id": fallback_owner_group_id,
+        "admin_emails": ["ops@company.com", "lead@company.com"],
         "route_error_threshold_pct": 12.5,
         "check_interval_seconds": 90,
     }
@@ -311,6 +301,28 @@ async def test_get_and_update_alert_settings(client, admin_token, seeded_db):
     body = get_resp.json()
     for key, value in expected.items():
         assert body[key] == value
+
+
+@pytest.mark.asyncio
+async def test_update_alert_settings_dedupes_admin_emails(client, admin_token):
+    resp = await client.put(
+        "/admin/alerts/settings",
+        json={"admin_emails": [" a@x.com ", "a@x.com", "b@x.com", "", " b@x.com "]},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["admin_emails"] == ["a@x.com", "b@x.com"]
+
+
+@pytest.mark.asyncio
+async def test_update_alert_settings_accepts_empty_admin_emails(client, admin_token):
+    resp = await client.put(
+        "/admin/alerts/settings",
+        json={"admin_emails": []},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["admin_emails"] == []
 
 
 @pytest.mark.asyncio
@@ -388,11 +400,57 @@ async def test_update_alert_settings_rejects_explicit_numeric_nulls(client, admi
 
 
 @pytest.mark.asyncio
-async def test_fallback_owner_group_test_sends_to_selected_group(client, admin_token):
+async def test_update_alert_settings_trigger_after_failures(client, admin_token):
+    resp = await client.put(
+        "/admin/alerts/settings",
+        json={"trigger_after_failures": 5},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["trigger_after_failures"] == 5
+
+    resp_get = await client.get(
+        "/admin/alerts/settings",
+        headers=auth_header(admin_token),
+    )
+    assert resp_get.status_code == 200
+    assert resp_get.json()["trigger_after_failures"] == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_value", [0, -1, 11, 100])
+async def test_update_alert_settings_trigger_after_failures_out_of_range(
+    client, admin_token, invalid_value,
+):
+    resp = await client.put(
+        "/admin/alerts/settings",
+        json={"trigger_after_failures": invalid_value},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_update_alert_settings_trigger_after_failures_rejects_null(
+    client, admin_token,
+):
+    resp = await client.put(
+        "/admin/alerts/settings",
+        json={"trigger_after_failures": None},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 422
+
+
+# ── Recipients test ───────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_recipients_test_sends_to_explicit_emails(client, admin_token):
     ch = await client.post(
         "/admin/alerts/channels",
         json={
-            "name": "mail-fallback-test",
+            "name": "mail-recipients-test",
             "webhook_url": WEBHOOK,
             "payload_template": '{"to":{{recipients_json}},"text":"{{message}}"}',
             "recipient_item_template": '{"email":"{{email}}"}',
@@ -401,19 +459,13 @@ async def test_fallback_owner_group_test_sends_to_selected_group(client, admin_t
         headers=auth_header(admin_token),
     )
     assert ch.status_code == 201
-    group = await client.post(
-        "/admin/alerts/owner-groups",
-        json={"name": "fallback-test-owners", "emails": ["ops@example.com"]},
-        headers=auth_header(admin_token),
-    )
-    assert group.status_code == 201
 
     with patch("app.routers.alerts.send_webhook", AsyncMock(return_value=(True, None))) as send:
         resp = await client.post(
-            "/admin/alerts/settings/fallback-owner-group/test",
+            "/admin/alerts/settings/recipients/test",
             json={
                 "mail_channel_id": ch.json()["id"],
-                "fallback_owner_group_id": group.json()["id"],
+                "emails": ["ops@example.com", "lead@example.com"],
             },
             headers=auth_header(admin_token),
         )
@@ -425,10 +477,11 @@ async def test_fallback_owner_group_test_sends_to_selected_group(client, admin_t
     assert call["url"] == WEBHOOK
     assert call["headers"] == {"X-Test": "yes"}
     assert "ops@example.com" in call["payload"]
+    assert "lead@example.com" in call["payload"]
 
 
 @pytest.mark.asyncio
-async def test_fallback_owner_group_test_requires_recipient_item_template(client, admin_token):
+async def test_recipients_test_requires_recipient_item_template(client, admin_token):
     ch = await client.post(
         "/admin/alerts/channels",
         json={
@@ -439,19 +492,13 @@ async def test_fallback_owner_group_test_requires_recipient_item_template(client
         headers=auth_header(admin_token),
     )
     assert ch.status_code == 201
-    group = await client.post(
-        "/admin/alerts/owner-groups",
-        json={"name": "fallback-no-template-owners", "emails": ["ops@example.com"]},
-        headers=auth_header(admin_token),
-    )
-    assert group.status_code == 201
 
     with patch("app.routers.alerts.send_webhook", AsyncMock(return_value=(True, None))) as send:
         resp = await client.post(
-            "/admin/alerts/settings/fallback-owner-group/test",
+            "/admin/alerts/settings/recipients/test",
             json={
                 "mail_channel_id": ch.json()["id"],
-                "fallback_owner_group_id": group.json()["id"],
+                "emails": ["ops@example.com"],
             },
             headers=auth_header(admin_token),
         )
@@ -462,221 +509,40 @@ async def test_fallback_owner_group_test_requires_recipient_item_template(client
     send.assert_not_awaited()
 
 
-# ── Owner Groups ────────────────────────────────────────────────────────────
-
 @pytest.mark.asyncio
-async def test_owner_group_crud_deduplicates_emails(client, admin_token):
-    create = await client.post(
-        "/admin/alerts/owner-groups",
-        json={
-            "name": "database-team",
-            "emails": [
-                " dba@example.com ",
-                "ops@example.com",
-                "dba@example.com",
-                "",
-                " ops@example.com ",
-            ],
-            "enabled": True,
-        },
-        headers=auth_header(admin_token),
-    )
-    assert create.status_code == 201, create.text
-    body = create.json()
-    assert body["name"] == "database-team"
-    assert body["emails"] == ["dba@example.com", "ops@example.com"]
-    assert body["enabled"] is True
-    group_id = body["id"]
-
-    update = await client.put(
-        f"/admin/alerts/owner-groups/{group_id}",
-        json={
-            "name": "primary-database-team",
-            "emails": [
-                "primary@example.com",
-                "primary@example.com",
-                " secondary@example.com ",
-            ],
-            "enabled": False,
-        },
-        headers=auth_header(admin_token),
-    )
-    assert update.status_code == 200, update.text
-    body = update.json()
-    assert body["name"] == "primary-database-team"
-    assert body["emails"] == ["primary@example.com", "secondary@example.com"]
-    assert body["enabled"] is False
-
-    list_resp = await client.get(
-        "/admin/alerts/owner-groups",
-        headers=auth_header(admin_token),
-    )
-    assert list_resp.status_code == 200
-    assert any(
-        group["id"] == group_id
-        and group["name"] == "primary-database-team"
-        and group["emails"] == ["primary@example.com", "secondary@example.com"]
-        and group["enabled"] is False
-        for group in list_resp.json()
-    )
-
-    delete = await client.delete(
-        f"/admin/alerts/owner-groups/{group_id}",
-        headers=auth_header(admin_token),
-    )
-    assert delete.status_code == 204
-
-
-@pytest.mark.asyncio
-async def test_owner_group_rejects_empty_email_list(client, admin_token):
+async def test_recipients_test_channel_not_found(client, admin_token):
     resp = await client.post(
-        "/admin/alerts/owner-groups",
-        json={"name": "empty-team", "emails": []},
+        "/admin/alerts/settings/recipients/test",
+        json={"mail_channel_id": 9999, "emails": ["ops@example.com"]},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["success"] is False
+    assert "not found" in resp.json()["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_recipients_test_rejects_empty_emails(client, admin_token):
+    ch = await client.post(
+        "/admin/alerts/channels",
+        json={"name": "mail-empty-recipients", "webhook_url": WEBHOOK,
+              "payload_template": TEMPLATE},
+        headers=auth_header(admin_token),
+    )
+    resp = await client.post(
+        "/admin/alerts/settings/recipients/test",
+        json={"mail_channel_id": ch.json()["id"], "emails": []},
         headers=auth_header(admin_token),
     )
     assert resp.status_code == 422
 
-    blank_resp = await client.post(
-        "/admin/alerts/owner-groups",
-        json={"name": "blank-team", "emails": [" ", ""]},
-        headers=auth_header(admin_token),
-    )
-    assert blank_resp.status_code == 422
 
-
-@pytest.mark.asyncio
-async def test_owner_group_duplicate_name_returns_409(client, admin_token):
-    first = await client.post(
-        "/admin/alerts/owner-groups",
-        json={"name": "duplicate-team", "emails": ["one@example.com"]},
-        headers=auth_header(admin_token),
-    )
-    assert first.status_code == 201
-
-    duplicate_create = await client.post(
-        "/admin/alerts/owner-groups",
-        json={"name": "duplicate-team", "emails": ["two@example.com"]},
-        headers=auth_header(admin_token),
-    )
-    assert duplicate_create.status_code == 409
-
-    second = await client.post(
-        "/admin/alerts/owner-groups",
-        json={"name": "rename-target-team", "emails": ["two@example.com"]},
-        headers=auth_header(admin_token),
-    )
-    assert second.status_code == 201
-
-    duplicate_update = await client.put(
-        f"/admin/alerts/owner-groups/{second.json()['id']}",
-        json={"name": "duplicate-team"},
-        headers=auth_header(admin_token),
-    )
-    assert duplicate_update.status_code == 409
-
-
-@pytest.mark.asyncio
-async def test_owner_group_permissions_use_alert_read_and_write(client, admin_token, alerts_reader_token):
-    create = await client.post(
-        "/admin/alerts/owner-groups",
-        json={"name": "permission-team", "emails": ["owner@example.com"]},
-        headers=auth_header(admin_token),
-    )
-    assert create.status_code == 201
-    group_id = create.json()["id"]
-
-    list_resp = await client.get(
-        "/admin/alerts/owner-groups",
-        headers=auth_header(alerts_reader_token),
-    )
-    assert list_resp.status_code == 200
-
-    create_denied = await client.post(
-        "/admin/alerts/owner-groups",
-        json={"name": "user-team", "emails": ["user@example.com"]},
-        headers=auth_header(alerts_reader_token),
-    )
-    assert create_denied.status_code == 403
-
-    update_denied = await client.put(
-        f"/admin/alerts/owner-groups/{group_id}",
-        json={"enabled": False},
-        headers=auth_header(alerts_reader_token),
-    )
-    assert update_denied.status_code == 403
-
-    delete_denied = await client.delete(
-        f"/admin/alerts/owner-groups/{group_id}",
-        headers=auth_header(alerts_reader_token),
-    )
-    assert delete_denied.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_delete_fallback_owner_group_returns_409(client, admin_token, seeded_db):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
-        group = OwnerGroup(name="fallback-team", emails='["fallback@example.com"]')
-        db.add(group)
-        await db.flush()
-        settings = await db.get(AlertSettings, 1)
-        if settings is None:
-            settings = AlertSettings(
-                id=1,
-                route_error_threshold_pct=10.0,
-                check_interval_seconds=60,
-            )
-            db.add(settings)
-        settings.fallback_owner_group_id = group.id
-        await db.commit()
-        group_id = group.id
-
-    resp = await client.delete(
-        f"/admin/alerts/owner-groups/{group_id}",
-        headers=auth_header(admin_token),
-    )
-
-    assert resp.status_code == 409
-    assert "fallback owner group" in resp.json()["detail"]
-
-
-@pytest.mark.asyncio
-async def test_delete_resource_owner_group_returns_409(client, admin_token, seeded_db):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
-        group = OwnerGroup(name="resource-team", emails='["owner@example.com"]')
-        db.add(group)
-        await db.flush()
-        db.add(ResourceOwner(
-            resource_type="database",
-            resource_id="analytics",
-            owner_group_id=group.id,
-        ))
-        db.add(ResourceOwner(
-            resource_type="database",
-            resource_id="reporting",
-            owner_group_id=group.id,
-        ))
-        await db.commit()
-        group_id = group.id
-
-    resp = await client.delete(
-        f"/admin/alerts/owner-groups/{group_id}",
-        headers=auth_header(admin_token),
-    )
-
-    assert resp.status_code == 409
-    assert "resource owner" in resp.json()["detail"]
-
-
-# ── Resource Owners ─────────────────────────────────────────────────────────
+# ── Resource Owners (담당자) ───────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_resource_owner_upsert_and_delete_for_db(client, admin_token, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
-        group = OwnerGroup(name="orders-team", emails='["orders@example.com"]')
-        db.add(group)
         db.add(DBConnection(
             alias="orders-db",
             db_type="postgres",
@@ -687,14 +553,12 @@ async def test_resource_owner_upsert_and_delete_for_db(client, admin_token, seed
             password_encrypted="encrypted",
         ))
         await db.commit()
-        await db.refresh(group)
-        group_id = group.id
 
     with patch("app.routers.alerts.apisix_client") as mock_apisix:
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
         put_resp = await client.put(
             "/admin/alerts/resource-owners/db/orders-db",
-            json={"owner_group_id": group_id},
+            json={"emails": [" orders@example.com ", "orders@example.com", "ops@example.com"]},
             headers=auth_header(admin_token),
         )
 
@@ -703,8 +567,7 @@ async def test_resource_owner_upsert_and_delete_for_db(client, admin_token, seed
         assert body["resource_type"] == "db"
         assert body["resource_id"] == "orders-db"
         assert body["display_name"] == "orders-db"
-        assert body["owner_group_id"] == group_id
-        assert body["owner_group_name"] == "orders-team"
+        assert body["emails"] == ["orders@example.com", "ops@example.com"]
 
         list_resp = await client.get(
             "/admin/alerts/resource-owners",
@@ -717,8 +580,7 @@ async def test_resource_owner_upsert_and_delete_for_db(client, admin_token, seed
             row["resource_type"] == "db"
             and row["resource_id"] == "orders-db"
             and row["display_name"] == "orders-db"
-            and row["owner_group_id"] == group_id
-            and row["owner_group_name"] == "orders-team"
+            and row["emails"] == ["orders@example.com", "ops@example.com"]
             for row in rows
         )
 
@@ -735,18 +597,45 @@ async def test_resource_owner_upsert_and_delete_for_db(client, admin_token, seed
 
 
 @pytest.mark.asyncio
-async def test_resource_owner_rejects_unknown_resource(client, admin_token, seeded_db):
+async def test_resource_owner_empty_emails_clears_assignees(client, admin_token, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
-        group = OwnerGroup(name="missing-resource-team", emails='["missing@example.com"]')
-        db.add(group)
+        db.add(DBConnection(
+            alias="clear-db",
+            db_type="postgres",
+            host="localhost",
+            port=5432,
+            database="clear",
+            username="clear",
+            password_encrypted="encrypted",
+        ))
+        db.add(ResourceOwner(
+            resource_type="db",
+            resource_id="clear-db",
+            emails='["owner@example.com"]',
+        ))
         await db.commit()
-        await db.refresh(group)
-        group_id = group.id
 
+    with patch("app.routers.alerts.apisix_client") as mock_apisix:
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+        resp = await client.put(
+            "/admin/alerts/resource-owners/db/clear-db",
+            json={"emails": []},
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["emails"] == []
+    async with session_factory() as db:
+        owner = (await db.execute(select(ResourceOwner))).scalar_one_or_none()
+    assert owner is None
+
+
+@pytest.mark.asyncio
+async def test_resource_owner_rejects_unknown_resource(client, admin_token, seeded_db):
     resp = await client.put(
         "/admin/alerts/resource-owners/db/missing-db",
-        json={"owner_group_id": group_id},
+        json={"emails": ["missing@example.com"]},
         headers=auth_header(admin_token),
     )
 
@@ -757,8 +646,6 @@ async def test_resource_owner_rejects_unknown_resource(client, admin_token, seed
 async def test_resource_owner_upsert_handles_concurrent_insert_conflict(client, admin_token, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
-        group = OwnerGroup(name="race-team", emails='["race@example.com"]')
-        db.add(group)
         db.add(DBConnection(
             alias="race-db",
             db_type="postgres",
@@ -769,8 +656,6 @@ async def test_resource_owner_upsert_handles_concurrent_insert_conflict(client, 
             password_encrypted="encrypted",
         ))
         await db.commit()
-        await db.refresh(group)
-        group_id = group.id
 
     original_commit = AsyncSession.commit
     injected = False
@@ -783,28 +668,32 @@ async def test_resource_owner_upsert_handles_concurrent_insert_conflict(client, 
                 await conn.execute(sa_insert(ResourceOwner).values(
                     resource_type="db",
                     resource_id="race-db",
-                    owner_group_id=group_id,
+                    emails='["pre@example.com"]',
                 ))
             raise IntegrityError("insert resource owner", {}, Exception("unique constraint"))
         await original_commit(session)
 
-    with patch("app.routers.alerts.AsyncSession.commit", new=commit_with_concurrent_insert):
-        resp = await client.put(
-            "/admin/alerts/resource-owners/db/race-db",
-            json={"owner_group_id": group_id},
-            headers=auth_header(admin_token),
-        )
+    with patch("app.routers.alerts.apisix_client") as mock_apisix:
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+        with patch("app.routers.alerts.AsyncSession.commit", new=commit_with_concurrent_insert):
+            resp = await client.put(
+                "/admin/alerts/resource-owners/db/race-db",
+                json={"emails": ["race@example.com"]},
+                headers=auth_header(admin_token),
+            )
 
     assert resp.status_code == 200, resp.text
-    assert resp.json()["owner_group_id"] == group_id
-    assert resp.json()["owner_group_name"] == "race-team"
+    assert resp.json()["emails"] == ["race@example.com"]
+    async with session_factory() as db:
+        owner = (await db.execute(select(ResourceOwner))).scalar_one()
+    assert json.loads(owner.emails) == ["race@example.com"]
 
 
 @pytest.mark.asyncio
 async def test_resource_owner_rejects_unsupported_resource_type(client, admin_token):
     resp = await client.put(
         "/admin/alerts/resource-owners/cache/redis",
-        json={"owner_group_id": 1},
+        json={"emails": ["x@example.com"]},
         headers=auth_header(admin_token),
     )
 
@@ -819,37 +708,7 @@ async def test_resource_owner_rejects_unsupported_resource_type(client, admin_to
 
 
 @pytest.mark.asyncio
-async def test_resource_owner_rejects_missing_owner_group(client, admin_token, seeded_db):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
-        db.add(S3Connection(
-            alias="reports-bucket",
-            endpoint_url="https://s3.example.com",
-            region="us-east-1",
-            access_key_id_encrypted="encrypted",
-            secret_access_key_encrypted="encrypted",
-        ))
-        await db.commit()
-
-    resp = await client.put(
-        "/admin/alerts/resource-owners/s3/reports-bucket",
-        json={"owner_group_id": 9999},
-        headers=auth_header(admin_token),
-    )
-
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
 async def test_resource_owner_validates_apisix_route_and_upstream(client, admin_token, seeded_db):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
-        group = OwnerGroup(name="gateway-team", emails='["gateway@example.com"]')
-        db.add(group)
-        await db.commit()
-        await db.refresh(group)
-        group_id = group.id
-
     async def list_resources(resource: str) -> dict[str, object]:
         if resource == "routes":
             return {"items": [{"id": "orders-route", "name": "Orders Route"}]}
@@ -862,43 +721,38 @@ async def test_resource_owner_validates_apisix_route_and_upstream(client, admin_
 
         route_resp = await client.put(
             "/admin/alerts/resource-owners/route/orders-route",
-            json={"owner_group_id": group_id},
+            json={"emails": ["gateway@example.com"]},
             headers=auth_header(admin_token),
         )
         upstream_resp = await client.put(
             "/admin/alerts/resource-owners/upstream/orders-upstream",
-            json={"owner_group_id": group_id},
+            json={"emails": ["gateway@example.com"]},
             headers=auth_header(admin_token),
         )
         missing_resp = await client.put(
             "/admin/alerts/resource-owners/route/missing-route",
-            json={"owner_group_id": group_id},
+            json={"emails": ["gateway@example.com"]},
             headers=auth_header(admin_token),
         )
 
     assert route_resp.status_code == 200, route_resp.text
     assert route_resp.json()["display_name"] == "Orders Route"
-    assert route_resp.json()["owner_group_name"] == "gateway-team"
+    assert route_resp.json()["emails"] == ["gateway@example.com"]
     assert upstream_resp.status_code == 200, upstream_resp.text
     assert upstream_resp.json()["display_name"] == "Orders Upstream"
-    assert upstream_resp.json()["owner_group_name"] == "gateway-team"
     assert missing_resp.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_resource_owner_lists_apisix_resources_with_owner_mapping(client, admin_token, seeded_db):
+async def test_resource_owner_lists_apisix_resources_with_email_mapping(client, admin_token, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
-        group = OwnerGroup(name="route-team", emails='["route@example.com"]')
-        db.add(group)
-        await db.flush()
         db.add(ResourceOwner(
             resource_type="route",
             resource_id="orders-route",
-            owner_group_id=group.id,
+            emails='["route@example.com"]',
         ))
         await db.commit()
-        group_id = group.id
 
     async def list_resources(resource: str) -> dict[str, object]:
         if resource == "routes":
@@ -920,15 +774,14 @@ async def test_resource_owner_lists_apisix_resources_with_owner_mapping(client, 
         row["resource_type"] == "route"
         and row["resource_id"] == "orders-route"
         and row["display_name"] == "Orders Route"
-        and row["owner_group_id"] == group_id
-        and row["owner_group_name"] == "route-team"
+        and row["emails"] == ["route@example.com"]
         for row in rows
     )
     assert any(
         row["resource_type"] == "upstream"
         and row["resource_id"] == "orders-upstream"
         and row["display_name"] == "/orders"
-        and row["owner_group_id"] is None
+        and row["emails"] == []
         for row in rows
     )
 
@@ -945,324 +798,42 @@ async def test_resource_owner_list_returns_503_when_apisix_fails(client, admin_t
     assert resp.status_code == 503
 
 
-# ── Rules ───────────────────────────────────────────────────────────────────
-
-async def _create_channel(client, admin_token, name="ch") -> int:
-    resp = await client.post(
-        "/admin/alerts/channels",
-        json={"name": name, "webhook_url": WEBHOOK, "payload_template": TEMPLATE},
-        headers=auth_header(admin_token),
-    )
-    return resp.json()["id"]
-
-
 @pytest.mark.asyncio
-async def test_create_rule_with_channels(client, admin_token):
-    cid = await _create_channel(client, admin_token, "rule-ch")
-    resp = await client.post(
-        "/admin/alerts/rules",
-        json={
-            "name": "db1-down",
-            "type": "db_health",
-            "target": "db1",
-            "channels": [{"channel_id": cid, "recipients": ["a@b.com"]}],
-        },
-        headers=auth_header(admin_token),
-    )
-    assert resp.status_code == 201
-    body = resp.json()
-    assert body["channels"][0]["channel_name"] == "rule-ch"
-    assert body["channels"][0]["recipients"] == ["a@b.com"]
-
-
-@pytest.mark.asyncio
-async def test_list_rules(client, admin_token):
-    cid = await _create_channel(client, admin_token, "lst-ch")
-    await client.post(
-        "/admin/alerts/rules",
-        json={"name": "r1", "type": "db_health", "target": "db1",
-              "channels": [{"channel_id": cid, "recipients": []}]},
-        headers=auth_header(admin_token),
-    )
-    resp = await client.get("/admin/alerts/rules", headers=auth_header(admin_token))
-    assert resp.status_code == 200
-    rules = resp.json()
-    assert len(rules) == 1
-    assert rules[0]["name"] == "r1"
-
-
-@pytest.mark.asyncio
-async def test_update_rule_replaces_channels(client, admin_token):
-    cid1 = await _create_channel(client, admin_token, "old-ch")
-    cid2 = await _create_channel(client, admin_token, "new-ch")
-    create = await client.post(
-        "/admin/alerts/rules",
-        json={"name": "r-upd", "type": "db_health", "target": "old-db",
-              "channels": [{"channel_id": cid1, "recipients": ["x@y"]}]},
-        headers=auth_header(admin_token),
-    )
-    rid = create.json()["id"]
-
-    resp = await client.put(
-        f"/admin/alerts/rules/{rid}",
-        json={
-            "name": "r-upd2",
-            "type": "error_rate",
-            "target": "new-db",
-            "threshold": 12.5,
-            "enabled": False,
-            "channels": [{"channel_id": cid2, "recipients": ["z@y"]}],
-        },
-        headers=auth_header(admin_token),
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["name"] == "r-upd2"
-    assert body["threshold"] == 12.5
-    assert body["enabled"] is False
-    assert len(body["channels"]) == 1
-    assert body["channels"][0]["channel_id"] == cid2
-
-
-@pytest.mark.asyncio
-async def test_update_rule_partial_no_channels(client, admin_token):
-    cid = await _create_channel(client, admin_token, "part-ch")
-    create = await client.post(
-        "/admin/alerts/rules",
-        json={"name": "r-part", "type": "db_health", "target": "x",
-              "channels": [{"channel_id": cid, "recipients": []}]},
-        headers=auth_header(admin_token),
-    )
-    rid = create.json()["id"]
-    resp = await client.put(
-        f"/admin/alerts/rules/{rid}",
-        json={"enabled": False},
-        headers=auth_header(admin_token),
-    )
-    assert resp.status_code == 200
-    assert resp.json()["enabled"] is False
-    # channels untouched
-    assert len(resp.json()["channels"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_update_rule_retarget_clears_old_rule_scoped_alert_state(
-    client, admin_token, seeded_db,
+async def test_resource_owner_permissions_use_alert_read_and_write(
+    client, admin_token, alerts_reader_token, seeded_db,
 ):
-    cid = await _create_channel(client, admin_token, "state-upd-ch")
-    create = await client.post(
-        "/admin/alerts/rules",
-        json={
-            "name": "route-state",
-            "type": "route_error_rate",
-            "target": "route-a",
-            "threshold": 5.0,
-            "channels": [{"channel_id": cid, "recipients": []}],
-        },
-        headers=auth_header(admin_token),
-    )
-    rid = create.json()["id"]
-    state_target = f"route-a:rule_{rid}"
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
-        db.add(AlertState(
-            alert_type="route_error_rate",
-            target=state_target,
-            status="alert",
-            display_target="checkout (route-a)",
-            fail_count=2,
+        db.add(S3Connection(
+            alias="reports-bucket",
+            endpoint_url="https://s3.example.com",
+            region="us-east-1",
+            access_key_id_encrypted="encrypted",
+            secret_access_key_encrypted="encrypted",
         ))
         await db.commit()
 
-    resp = await client.put(
-        f"/admin/alerts/rules/{rid}",
-        json={"target": "route-b"},
-        headers=auth_header(admin_token),
-    )
+    with patch("app.routers.alerts.apisix_client") as mock_apisix:
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
 
-    assert resp.status_code == 200, resp.text
-    async with session_factory() as db:
-        rows = (await db.execute(
-            select(AlertState).where(AlertState.target == state_target)
-        )).scalars().all()
-    assert rows == []
-
-
-@pytest.mark.asyncio
-async def test_update_rule_404(client, admin_token):
-    resp = await client.put(
-        "/admin/alerts/rules/9999",
-        json={"name": "x"},
-        headers=auth_header(admin_token),
-    )
-    assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_delete_rule_success(client, admin_token):
-    cid = await _create_channel(client, admin_token, "del-ch")
-    create = await client.post(
-        "/admin/alerts/rules",
-        json={"name": "r-del", "type": "db_health", "target": "x",
-              "channels": [{"channel_id": cid, "recipients": []}]},
-        headers=auth_header(admin_token),
-    )
-    rid = create.json()["id"]
-    resp = await client.delete(
-        f"/admin/alerts/rules/{rid}",
-        headers=auth_header(admin_token),
-    )
-    assert resp.status_code == 204
-
-
-@pytest.mark.asyncio
-async def test_delete_rule_clears_rule_scoped_alert_state(client, admin_token, seeded_db):
-    cid = await _create_channel(client, admin_token, "state-del-ch")
-    create = await client.post(
-        "/admin/alerts/rules",
-        json={
-            "name": "route-state-delete",
-            "type": "route_error_rate",
-            "target": "route-a",
-            "threshold": 5.0,
-            "channels": [{"channel_id": cid, "recipients": []}],
-        },
-        headers=auth_header(admin_token),
-    )
-    rid = create.json()["id"]
-    state_target = f"route-a:rule_{rid}"
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
-        db.add(AlertState(
-            alert_type="route_error_rate",
-            target=state_target,
-            status="alert",
-            display_target="checkout (route-a)",
-            fail_count=2,
-        ))
-        await db.commit()
-
-    state = AlertStateManager()
-    state.set_entry(
-        "route_error_rate",
-        state_target,
-        status="alert",
-        since="2026-05-07T00:00:00+00:00",
-        display_target="checkout (route-a)",
-        fail_count=2,
-    )
-    alerts_router.set_alert_state(state)
-
-    try:
-        resp = await client.delete(
-            f"/admin/alerts/rules/{rid}",
-            headers=auth_header(admin_token),
+        list_resp = await client.get(
+            "/admin/alerts/resource-owners",
+            headers=auth_header(alerts_reader_token),
         )
+        assert list_resp.status_code == 200
 
-        assert resp.status_code == 204
-        assert state.get_entries(alert_type="route_error_rate") == []
-        async with session_factory() as db:
-            rows = (await db.execute(
-                select(AlertState).where(AlertState.target == state_target)
-            )).scalars().all()
-        assert rows == []
-    finally:
-        alerts_router.set_alert_state(None)
-
-
-@pytest.mark.asyncio
-async def test_delete_rule_404(client, admin_token):
-    resp = await client.delete(
-        "/admin/alerts/rules/9999",
-        headers=auth_header(admin_token),
-    )
-    assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_rule_with_deleted_channel_shows_deleted(client, admin_token, app, seeded_db):
-    """If a channel is deleted directly in DB, rule response shows 'deleted'."""
-    cid = await _create_channel(client, admin_token, "doomed")
-    create = await client.post(
-        "/admin/alerts/rules",
-        json={"name": "ghost", "type": "db_health", "target": "x",
-              "channels": [{"channel_id": cid, "recipients": ["a@b"]}]},
-        headers=auth_header(admin_token),
-    )
-    assert create.status_code == 201
-    # Remove channel directly via DB
-    SessionLocal = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with SessionLocal() as db:
-        from sqlalchemy import select
-        ch = (await db.execute(select(AlertChannel).where(AlertChannel.id == cid))).scalar_one()
-        await db.delete(ch)
-        await db.commit()
-
-    resp = await client.get("/admin/alerts/rules", headers=auth_header(admin_token))
-    body = resp.json()
-    assert body[0]["channels"][0]["channel_name"] == "deleted"
-
-
-@pytest.mark.asyncio
-async def test_test_rule_404(client, admin_token):
-    resp = await client.post(
-        "/admin/alerts/rules/9999/test",
-        headers=auth_header(admin_token),
-    )
-    assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_test_rule_with_enabled_disabled_deleted_channels(client, admin_token, seeded_db):
-    """Mixed channel scenario: enabled / disabled / deleted."""
-    cid_ok = await _create_channel(client, admin_token, "ok-ch")
-    cid_off = await _create_channel(client, admin_token, "off-ch")
-    cid_del = await _create_channel(client, admin_token, "del-ch")
-
-    # Disable one channel
-    await client.put(
-        f"/admin/alerts/channels/{cid_off}",
-        json={"enabled": False},
-        headers=auth_header(admin_token),
-    )
-
-    create = await client.post(
-        "/admin/alerts/rules",
-        json={
-            "name": "mixed", "type": "error_rate", "target": "*", "threshold": 5.0,
-            "channels": [
-                {"channel_id": cid_ok, "recipients": ["ops@example.com"]},
-                {"channel_id": cid_off, "recipients": ["off@example.com"]},
-                {"channel_id": cid_del, "recipients": ["del@example.com"]},
-            ],
-        },
-        headers=auth_header(admin_token),
-    )
-    rid = create.json()["id"]
-
-    # Hard-delete the third channel
-    SessionLocal = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with SessionLocal() as db:
-        from sqlalchemy import select
-        ch = (await db.execute(select(AlertChannel).where(AlertChannel.id == cid_del))).scalar_one()
-        await db.delete(ch)
-        await db.commit()
-
-    with patch("app.routers.alerts.send_webhook", AsyncMock(return_value=(True, None))) as send:
-        resp = await client.post(
-            f"/admin/alerts/rules/{rid}/test",
-            headers=auth_header(admin_token),
+        write_denied = await client.put(
+            "/admin/alerts/resource-owners/s3/reports-bucket",
+            json={"emails": ["user@example.com"]},
+            headers=auth_header(alerts_reader_token),
         )
-    assert resp.status_code == 200
-    results = {r["channel_name"]: r for r in resp.json()["results"]}
-    assert results["ok-ch"]["success"] is True
-    assert results["ok-ch"]["skipped"] is False
-    assert results["off-ch"]["skipped"] is True
-    assert results["off-ch"]["error"] == "channel disabled"
-    assert results["deleted"]["skipped"] is True
-    assert results["deleted"]["error"] == "channel deleted"
-    # only one webhook actually sent
-    assert send.await_count == 1
+        assert write_denied.status_code == 403
+
+        delete_denied = await client.delete(
+            "/admin/alerts/resource-owners/s3/reports-bucket",
+            headers=auth_header(alerts_reader_token),
+        )
+        assert delete_denied.status_code == 403
 
 
 # ── History ─────────────────────────────────────────────────────────────────
@@ -1292,6 +863,8 @@ async def test_history_filters(client, admin_token, seeded_db):
     rows = resp.json()
     assert all(r["alert_type"] == "triggered" for r in rows)
     assert len(rows) == 2
+    # History entries no longer carry a rule_id.
+    assert all("rule_id" not in r for r in rows)
 
     resp_t = await client.get(
         "/admin/alerts/history?target=db1",
@@ -1340,47 +913,3 @@ async def test_alert_status_with_state(client, admin_token):
         assert rows[0]["status"] == "alert"
     finally:
         alerts_router.set_alert_state(None)
-
-
-@pytest.mark.asyncio
-async def test_update_alert_settings_trigger_after_failures(client, admin_token):
-    resp = await client.put(
-        "/admin/alerts/settings",
-        json={"trigger_after_failures": 5},
-        headers=auth_header(admin_token),
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["trigger_after_failures"] == 5
-
-    resp_get = await client.get(
-        "/admin/alerts/settings",
-        headers=auth_header(admin_token),
-    )
-    assert resp_get.status_code == 200
-    assert resp_get.json()["trigger_after_failures"] == 5
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("invalid_value", [0, -1, 11, 100])
-async def test_update_alert_settings_trigger_after_failures_out_of_range(
-    client, admin_token, invalid_value,
-):
-    resp = await client.put(
-        "/admin/alerts/settings",
-        json={"trigger_after_failures": invalid_value},
-        headers=auth_header(admin_token),
-    )
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_update_alert_settings_trigger_after_failures_rejects_null(
-    client, admin_token,
-):
-    resp = await client.put(
-        "/admin/alerts/settings",
-        json={"trigger_after_failures": None},
-        headers=auth_header(admin_token),
-    )
-    assert resp.status_code == 422

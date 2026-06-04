@@ -8,12 +8,21 @@ import {
   deleteDatabase,
   testDatabase,
   getDbTables,
+  getAlertResourceOwners,
+  setAlertResourceOwner,
   type DatabaseConfig,
 } from '../api/client';
 import ResourceModal from '../components/ResourceModal';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
 import './Connections.css';
+
+function parseEmails(value: string): string[] {
+  return value
+    .split(/[,\n]/)
+    .map((email) => email.trim())
+    .filter(Boolean);
+}
 
 const DEFAULT_PORTS: Record<string, number> = {
   postgres: 5432,
@@ -46,6 +55,7 @@ function Connections() {
   const [showModal, setShowModal] = useState(false);
   const [editingAlias, setEditingAlias] = useState<string | null>(null);
   const [form, setForm] = useState<DatabaseConfig>({ ...emptyForm });
+  const [assignees, setAssignees] = useState('');
   const { addToast } = useToast();
   const [testResults, setTestResults] = useState<Record<string, { status: string }>>({});
 
@@ -54,9 +64,24 @@ function Connections() {
     queryFn: getAdminDatabases,
   });
 
+  const ownersQuery = useQuery({
+    queryKey: ['alert-resource-owners'],
+    queryFn: getAlertResourceOwners,
+  });
+
+  async function saveAssignees(alias: string) {
+    try {
+      await setAlertResourceOwner('db', alias, { emails: parseEmails(assignees) });
+      queryClient.invalidateQueries({ queryKey: ['alert-resource-owners'] });
+    } catch {
+      addToast({ type: 'error', title: `${alias} — ${t('connections.assignees')}`, message: t('common.errorOccurred') });
+    }
+  }
+
   const createMutation = useMutation({
     mutationFn: (data: DatabaseConfig) => createDatabase(data),
-    onSuccess: () => {
+    onSuccess: async (_data, variables) => {
+      await saveAssignees(variables.alias);
       queryClient.invalidateQueries({ queryKey: ['admin-databases'] });
       closeModal();
     },
@@ -65,7 +90,8 @@ function Connections() {
   const updateMutation = useMutation({
     mutationFn: ({ alias, data }: { alias: string; data: Partial<DatabaseConfig> }) =>
       updateDatabase(alias, data),
-    onSuccess: () => {
+    onSuccess: async (_data, variables) => {
+      await saveAssignees(variables.alias);
       queryClient.invalidateQueries({ queryKey: ['admin-databases'] });
       closeModal();
     },
@@ -112,12 +138,17 @@ function Connections() {
 
   function openCreate() {
     setForm({ ...emptyForm });
+    setAssignees('');
     setEditingAlias(null);
     setShowModal(true);
   }
 
   function openEdit(db: DatabaseConfig) {
     setForm({ ...db, password: '' });
+    const owner = (ownersQuery.data ?? []).find(
+      (o) => o.resource_type === 'db' && o.resource_id === db.alias,
+    );
+    setAssignees(owner?.emails.join(', ') ?? '');
     setEditingAlias(db.alias);
     setShowModal(true);
   }
@@ -126,6 +157,7 @@ function Connections() {
     setShowModal(false);
     setEditingAlias(null);
     setForm({ ...emptyForm });
+    setAssignees('');
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -493,6 +525,16 @@ function Connections() {
                   </div>
                 </>
               )}
+              <div className="form-group form-group--full">
+                <label>{t('connections.assignees')}</label>
+                <textarea
+                  value={assignees}
+                  onChange={(e) => setAssignees(e.target.value)}
+                  rows={2}
+                  placeholder="alice@example.com, bob@example.com"
+                />
+                <span className="hint">{t('connections.assigneesHint')}</span>
+              </div>
             </div>
 
             {(createMutation.isError || updateMutation.isError) && (

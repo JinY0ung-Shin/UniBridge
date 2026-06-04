@@ -3,6 +3,8 @@ vi.mock('../api/client', () => ({
   getGatewayRoute: vi.fn(),
   saveGatewayRoute: vi.fn(),
   getGatewayUpstreams: vi.fn(),
+  getAlertResourceOwners: vi.fn(),
+  setAlertResourceOwner: vi.fn(),
 }));
 
 vi.mock('react-router-dom', async () => {
@@ -15,13 +17,21 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useParams } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getGatewayRoute, getGatewayUpstreams, saveGatewayRoute } from '../api/client';
+import {
+  getGatewayRoute,
+  getGatewayUpstreams,
+  saveGatewayRoute,
+  getAlertResourceOwners,
+  setAlertResourceOwner,
+} from '../api/client';
 import GatewayRouteForm from '../pages/GatewayRouteForm';
 import { renderWithProviders, makeGatewayRoute, makeGatewayUpstream } from './helpers';
 
 const mockedGetGatewayRoute = vi.mocked(getGatewayRoute);
 const mockedGetGatewayUpstreams = vi.mocked(getGatewayUpstreams);
 const mockedSaveGatewayRoute = vi.mocked(saveGatewayRoute);
+const mockedGetAlertResourceOwners = vi.mocked(getAlertResourceOwners);
+const mockedSetAlertResourceOwner = vi.mocked(setAlertResourceOwner);
 
 function renderWithQueryClient(queryClient: QueryClient) {
   return render(
@@ -38,6 +48,13 @@ describe('GatewayRouteForm', () => {
     vi.clearAllMocks();
     vi.mocked(useParams).mockReturnValue({});
     mockedGetGatewayUpstreams.mockResolvedValue({ items: [], total: 0 });
+    mockedGetAlertResourceOwners.mockResolvedValue([]);
+    mockedSetAlertResourceOwner.mockResolvedValue({
+      resource_type: 'route',
+      resource_id: 'r1',
+      display_name: 'r1',
+      emails: [],
+    });
   });
 
   it('renders new route form', async () => {

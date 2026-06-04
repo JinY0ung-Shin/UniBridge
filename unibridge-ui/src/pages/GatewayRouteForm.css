@@ -49,7 +49,8 @@
 }
 
 .field input,
-.field select {
+.field select,
+.field textarea {
   padding: 8px 10px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
@@ -61,12 +62,18 @@
   transition: border-color 0.15s;
 }
 
+.field textarea {
+  resize: vertical;
+}
+
 .field input:focus,
-.field select:focus {
+.field select:focus,
+.field textarea:focus {
   border-color: var(--text-tertiary);
 }
 
-.field input::placeholder {
+.field input::placeholder,
+.field textarea::placeholder {
   color: var(--text-tertiary);
 }
 
