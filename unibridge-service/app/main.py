@@ -112,7 +112,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     import asyncio as _asyncio
     from app.services import apisix_client
 
-    _max_retries = 5
+    # APISIX's admin API returns 503 for a while after the container starts
+    # (it is still syncing config from etcd), and 400/502 transients can occur
+    # mid-sync. Give it a generous window — up to ~100s of backoff — so a cold
+    # `compose up` does not fail startup before APISIX is actually reachable.
+    _max_retries = 10
     for _attempt in range(1, _max_retries + 1):
         try:
             # Ensure prometheus global rule exists so HTTP metrics are collected
@@ -353,7 +357,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             break
         except Exception as exc:
             if _attempt < _max_retries:
-                _delay = 2**_attempt  # 2s, 4s, 8s, 16s
+                _delay = min(2**_attempt, 15)  # 2,4,8,15,15,… capped
                 logger.warning(
                     "APISIX provisioning attempt %d/%d failed: %s — retrying in %ds",
                     _attempt,

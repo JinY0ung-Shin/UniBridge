@@ -205,10 +205,10 @@ services:
       timeout: 5s
       retries: 5
       # Cold start: this service only begins after keycloak is healthy, then
-      # does its own boot work (incl. retrying outbound connections), which can
-      # push /health past a tight window and trip the dependent ui's
-      # service_healthy gate. Give the first boot room.
-      start_period: 60s
+      # does its own boot work (incl. retrying APISIX provisioning for up to
+      # ~100s while APISIX finishes its etcd sync), which can push /health past
+      # a tight window. Give the first boot generous room.
+      start_period: 180s
     networks:
       - apihub-net
 
@@ -432,8 +432,12 @@ services:
       - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/nginx/ssl/tls.crt:ro
       - ${TLS_KEY_PATH:-./certs/tls.key}:/etc/nginx/ssl/tls.key:ro
     depends_on:
+      # nginx resolves the backend lazily at request time (see nginx.conf
+      # `resolver` + variable proxy_pass), so the UI does not need the backend
+      # healthy — only created — to start. Gating on service_healthy left the UI
+      # stuck in `Created` whenever unibridge-service flapped during first boot.
       unibridge-service:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget --no-check-certificate -q -O- https://localhost/healthz | grep -q '^ok$'"]
       interval: 10s
