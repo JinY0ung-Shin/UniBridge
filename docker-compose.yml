@@ -182,6 +182,13 @@ services:
       - MSSQL_TRUST_SERVER_CERT=${MSSQL_TRUST_SERVER_CERT:-no}
       - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-60}
       - MAX_CONCURRENT_QUERIES=${MAX_CONCURRENT_QUERIES:-5}
+      - NAS_ALLOWED_ROOTS=${NAS_ALLOWED_ROOTS:-${NAS_CONTAINER_PATH:-/mnt/nas}}
+      - NAS_MAX_DOWNLOAD_BYTES=${NAS_MAX_DOWNLOAD_BYTES:-524288000}
+      - NAS_MAX_LIST_ENTRIES=${NAS_MAX_LIST_ENTRIES:-5000}
+      - NAS_LIST_DEFAULT_LIMIT=${NAS_LIST_DEFAULT_LIMIT:-500}
+      - NAS_STREAM_CHUNK_BYTES=${NAS_STREAM_CHUNK_BYTES:-1048576}
+      - NAS_MAX_PATH_BYTES=${NAS_MAX_PATH_BYTES:-4096}
+      - NAS_FS_OP_TIMEOUT_SECONDS=${NAS_FS_OP_TIMEOUT_SECONDS:-10.0}
       - KEYCLOAK_URL=${KEYCLOAK_URL:-}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-apihub}
       - KEYCLOAK_SERVICE_CLIENT_ID=${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}
@@ -198,6 +205,12 @@ services:
         condition: service_started
     volumes:
       - unibridge-data:/app/data
+      - type: bind
+        source: ${NAS_HOST_PATH:-/mnt/nas}
+        target: ${NAS_CONTAINER_PATH:-/mnt/nas}
+        read_only: true
+        bind:
+          create_host_path: true
       - ${HOST_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}:${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]

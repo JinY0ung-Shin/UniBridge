@@ -14,6 +14,7 @@ Browser ──HTTPS──> unibridge-ui (nginx)
                                           ├── /api/llm/*       → LiteLLM (LLM proxy)
                                           ├── /api/llm-admin/* → LiteLLM Admin UI/API
                                           ├── /api/s3/*        → S3 connections
+                                          ├── /api/nas/*       → Mounted NAS/local files
                                           └── Custom upstream services
 
 Keycloak   ── OIDC auth
@@ -69,6 +70,9 @@ cp .env.example .env
 | `SSL_VERIFY` | true | Set `false` if using self-signed certs |
 | `RATE_LIMIT_PER_MINUTE` | 60 | Per-user query rate limit |
 | `MAX_CONCURRENT_QUERIES` | 5 | Per-user concurrent query limit |
+| `NAS_HOST_PATH` | `/mnt/nas` | Host path bind-mounted read-only into `unibridge-service` for NAS browsing |
+| `NAS_CONTAINER_PATH` | `/mnt/nas` | Container path where the NAS host path appears |
+| `NAS_ALLOWED_ROOTS` | `NAS_CONTAINER_PATH` | Comma-separated container paths allowed as NAS connection `base_path` roots |
 
 ### 3. TLS certificates
 
@@ -107,6 +111,24 @@ First boot takes ~2 minutes (Keycloak initialization).
 | Prometheus | `http://<HOST_IP>:9090` (localhost only) |
 
 Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`). No human users are seeded into the `apihub` realm by default. After first boot, sign in to the admin console and create the first `admin` user in the `apihub` realm (assign the `admin` realm role), then manage further users from the UI **Users** page.
+
+### NAS mount
+
+UniBridge does not mount SMB/NFS itself. Mount the NAS on the Docker host first, then point `NAS_HOST_PATH` at that mounted directory. Docker Compose exposes it read-only inside `unibridge-service` at `NAS_CONTAINER_PATH`.
+
+```env
+NAS_HOST_PATH=/srv/company-nas
+NAS_CONTAINER_PATH=/mnt/nas
+NAS_ALLOWED_ROOTS=/mnt/nas
+```
+
+After changing these values, recreate the service so Docker applies the bind mount:
+
+```bash
+docker compose up -d --force-recreate unibridge-service
+```
+
+In the UI, add a NAS connection with `base_path` set to `/mnt/nas` or a child directory such as `/mnt/nas/reports`. External API-key access then uses alias-relative paths, for example `GET /api/nas/company-nas/download?path=reports/2026/a.csv`.
 
 ### Self-service registration (approval-gated)
 
