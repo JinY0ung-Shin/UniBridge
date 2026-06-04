@@ -1178,11 +1178,11 @@ async def llm_metrics_summary(
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                "sum(rate(litellm_request_total_latency_metric_sum[5m]))",
+                f"sum(increase(litellm_request_total_latency_metric_sum[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                "sum(rate(litellm_request_total_latency_metric_count[5m]))",
+                f"sum(increase(litellm_request_total_latency_metric_count[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
         )
@@ -1191,9 +1191,9 @@ async def llm_metrics_summary(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
 
-    latency_rate = _extract_scalar(latency_sum)
+    latency_total = _extract_scalar(latency_sum)
     latency_cnt = _extract_scalar(latency_count)
-    avg_latency = (latency_rate / latency_cnt * 1000) if latency_cnt > 0 else 0.0
+    avg_latency = (latency_total / latency_cnt * 1000) if latency_cnt > 0 else 0.0
 
     return {
         "total_tokens": round(_extract_scalar(tokens)),
