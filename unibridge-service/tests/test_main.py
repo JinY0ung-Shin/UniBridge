@@ -363,8 +363,13 @@ async def test_lifespan_retries_when_protected_route_state_lookup_fails():
         if call.args[0] == "routes"
     ]
 
-    assert get_resource.await_count == 5
-    assert sleep.await_args_list == [((2,),), ((4,),), ((8,),), ((16,),)]
+    # Provisioning retries up to _max_retries (10) times, sleeping
+    # min(2**attempt, 15) between attempts: 2, 4, 8, then capped at 15.
+    assert get_resource.await_count == 10
+    assert sleep.await_args_list == [
+        ((2,),), ((4,),), ((8,),), ((15,),), ((15,),),
+        ((15,),), ((15,),), ((15,),), ((15,),),
+    ]
     assert "query-api" not in route_ids
     assert "llm-proxy" not in route_ids
     assert "llm-admin" not in route_ids
