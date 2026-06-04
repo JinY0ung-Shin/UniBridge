@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   getAdminDatabases,
   createDatabase,
+  updateDatabase,
   testDatabase,
   deleteDatabase,
   getDbTables,
@@ -27,6 +28,7 @@ import { renderWithProviders, makeDatabase } from './helpers';
 
 const mockedGetAdminDatabases = vi.mocked(getAdminDatabases);
 const mockedCreateDatabase = vi.mocked(createDatabase);
+const mockedUpdateDatabase = vi.mocked(updateDatabase);
 const mockedTestDatabase = vi.mocked(testDatabase);
 const mockedDeleteDatabase = vi.mocked(deleteDatabase);
 const mockedGetDbTables = vi.mocked(getDbTables);
@@ -170,6 +172,67 @@ describe('Connections', () => {
     expect(mockedCreateDatabase).toHaveBeenCalledWith(
       expect.objectContaining({ alias: 'new-db', host: 'db.example.com' }),
     );
+  });
+
+  it('sets assignees on create when emails are entered', async () => {
+    mockedCreateDatabase.mockResolvedValue(makeDatabase({ alias: 'new-db' }));
+
+    renderWithProviders(<Connections />);
+    await waitFor(() => expect(screen.getByText('No connections yet')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add Connection' }));
+    await userEvent.type(screen.getByPlaceholderText('e.g., main-db'), 'new-db');
+    await userEvent.type(screen.getByPlaceholderText('localhost'), 'db.example.com');
+    await userEvent.type(screen.getByPlaceholderText('mydb'), 'proddb');
+    await userEvent.type(screen.getByPlaceholderText('dbuser'), 'admin');
+    await userEvent.type(
+      screen.getByPlaceholderText('alice@example.com, bob@example.com'),
+      'alice@example.com',
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(mockedSetAlertResourceOwner).toHaveBeenCalledTimes(1));
+    expect(mockedSetAlertResourceOwner).toHaveBeenCalledWith('db', 'new-db', {
+      emails: ['alice@example.com'],
+    });
+  });
+
+  it('does not rewrite assignees on edit when they are unchanged', async () => {
+    const db = makeDatabase({ alias: 'test-db' });
+    mockedGetAdminDatabases.mockResolvedValue([db]);
+    mockedUpdateDatabase.mockResolvedValue(db);
+    mockedGetAlertResourceOwners.mockResolvedValue([
+      { resource_type: 'db', resource_id: 'test-db', display_name: 'test-db', emails: ['x@y.com'] },
+    ]);
+
+    renderWithProviders(<Connections />);
+    await waitFor(() => expect(screen.getByText('test-db')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    // assignee field prefilled from the loaded owners
+    await waitFor(() =>
+      expect((screen.getByPlaceholderText('alice@example.com, bob@example.com') as HTMLTextAreaElement).value)
+        .toBe('x@y.com'),
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+    await waitFor(() => expect(mockedUpdateDatabase).toHaveBeenCalledTimes(1));
+    // unchanged assignees must NOT trigger a (potentially destructive) PUT
+    expect(mockedSetAlertResourceOwner).not.toHaveBeenCalled();
+  });
+
+  it('hides the assignee field for users without alert permissions', async () => {
+    renderWithProviders(<Connections />, {
+      permissions: ['query.databases.read', 'query.databases.write'],
+    });
+    await waitFor(() => expect(screen.getByText('No connections yet')).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add Connection' }));
+
+    expect(screen.getByPlaceholderText('e.g., main-db')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('alice@example.com, bob@example.com')).not.toBeInTheDocument();
+    expect(mockedGetAlertResourceOwners).not.toHaveBeenCalled();
   });
 
   it('calls testDatabase and shows success toast', async () => {

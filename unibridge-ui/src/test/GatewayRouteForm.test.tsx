@@ -198,6 +198,43 @@ describe('GatewayRouteForm', () => {
     });
   });
 
+  it('does not rewrite assignees on edit when they are unchanged', async () => {
+    vi.mocked(useParams).mockReturnValue({ id: 'route-1' });
+    const user = userEvent.setup();
+    const route = makeGatewayRoute({ name: 'old-route' });
+    mockedGetGatewayRoute.mockResolvedValue(route);
+    mockedSaveGatewayRoute.mockResolvedValue(route);
+    mockedGetAlertResourceOwners.mockResolvedValue([
+      { resource_type: 'route', resource_id: 'route-1', display_name: 'route-1', emails: ['a@b.com'] },
+    ]);
+
+    renderWithProviders(<GatewayRouteForm />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Edit Route' })).toBeInTheDocument());
+    // assignee field prefilled from loaded owners
+    expect(screen.getByPlaceholderText('alice@example.com, bob@example.com')).toHaveValue('a@b.com');
+
+    await user.clear(screen.getByPlaceholderText('My API Route'));
+    await user.type(screen.getByPlaceholderText('My API Route'), 'new-route');
+    await user.click(screen.getByRole('button', { name: 'Update Route' }));
+
+    await waitFor(() => expect(mockedSaveGatewayRoute).toHaveBeenCalledTimes(1));
+    // unchanged assignees must NOT trigger a (potentially destructive) PUT
+    expect(mockedSetAlertResourceOwner).not.toHaveBeenCalled();
+  });
+
+  it('hides the assignee field for users without alert permissions', async () => {
+    renderWithProviders(<GatewayRouteForm />, {
+      permissions: ['gateway.routes.read', 'gateway.routes.write'],
+    });
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'New Route' })).toBeInTheDocument());
+
+    expect(screen.getByPlaceholderText('My API Route')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('alice@example.com, bob@example.com')).not.toBeInTheDocument();
+    expect(mockedGetAlertResourceOwners).not.toHaveBeenCalled();
+  });
+
   it('preserves existing service key values when editing without retyping secrets', async () => {
     vi.mocked(useParams).mockReturnValue({ id: 'route-1' });
     const user = userEvent.setup();

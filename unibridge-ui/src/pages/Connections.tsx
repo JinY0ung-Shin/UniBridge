@@ -51,11 +51,16 @@ function Connections() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const canWrite = useCanWrite('query.databases.write');
+  // Assignee editing is an alert-config concern, gated on the alert permissions
+  // (separate from query.databases.write), so a DB-only writer never hits a 403.
+  const canReadAlerts = useCanWrite('alerts.read');
+  const canManageAlerts = useCanWrite('alerts.write');
 
   const [showModal, setShowModal] = useState(false);
   const [editingAlias, setEditingAlias] = useState<string | null>(null);
   const [form, setForm] = useState<DatabaseConfig>({ ...emptyForm });
-  const [assignees, setAssignees] = useState('');
+  // null = field untouched (follow the loaded value); string = user-edited draft.
+  const [assigneesDraft, setAssigneesDraft] = useState<string | null>(null);
   const { addToast } = useToast();
   const [testResults, setTestResults] = useState<Record<string, { status: string }>>({});
 
@@ -67,11 +72,33 @@ function Connections() {
   const ownersQuery = useQuery({
     queryKey: ['alert-resource-owners'],
     queryFn: getAlertResourceOwners,
+    enabled: canReadAlerts,
   });
 
-  async function saveAssignees(alias: string) {
+  function ownerEmailsFor(alias: string): string[] {
+    return (ownersQuery.data ?? []).find(
+      (o) => o.resource_type === 'db' && o.resource_id === alias,
+    )?.emails ?? [];
+  }
+
+  // Owners must be loaded before we can safely edit/save assignees for an
+  // existing DB; a fresh DB (create) has no existing owner, so '' is correct.
+  const assigneesReady = editingAlias === null ? true : ownersQuery.isSuccess;
+  // Loaded assignee text for the DB currently in the modal; the field follows
+  // this until the user edits (derive-during-render — no setState-in-effect).
+  const loadedAssigneeText = editingAlias === null ? '' : ownerEmailsFor(editingAlias).join(', ');
+  const assigneesValue = assigneesDraft ?? loadedAssigneeText;
+
+  async function saveAssignees(alias: string, isCreate: boolean) {
+    if (!canManageAlerts || !(isCreate || ownersQuery.isSuccess)) return;
+    if (assigneesDraft === null) return; // untouched → nothing to persist
+    const next = parseEmails(assigneesDraft);
+    const baseline = isCreate ? [] : ownerEmailsFor(alias);
+    // Only write when the value actually changed — never clobber assignees we
+    // failed to load (would otherwise send [] and delete them server-side).
+    if (JSON.stringify(next) === JSON.stringify(baseline)) return;
     try {
-      await setAlertResourceOwner('db', alias, { emails: parseEmails(assignees) });
+      await setAlertResourceOwner('db', alias, { emails: next });
       queryClient.invalidateQueries({ queryKey: ['alert-resource-owners'] });
     } catch {
       addToast({ type: 'error', title: `${alias} — ${t('connections.assignees')}`, message: t('common.errorOccurred') });
@@ -81,7 +108,7 @@ function Connections() {
   const createMutation = useMutation({
     mutationFn: (data: DatabaseConfig) => createDatabase(data),
     onSuccess: async (_data, variables) => {
-      await saveAssignees(variables.alias);
+      await saveAssignees(variables.alias, true);
       queryClient.invalidateQueries({ queryKey: ['admin-databases'] });
       closeModal();
     },
@@ -91,7 +118,7 @@ function Connections() {
     mutationFn: ({ alias, data }: { alias: string; data: Partial<DatabaseConfig> }) =>
       updateDatabase(alias, data),
     onSuccess: async (_data, variables) => {
-      await saveAssignees(variables.alias);
+      await saveAssignees(variables.alias, false);
       queryClient.invalidateQueries({ queryKey: ['admin-databases'] });
       closeModal();
     },
@@ -138,17 +165,14 @@ function Connections() {
 
   function openCreate() {
     setForm({ ...emptyForm });
-    setAssignees('');
+    setAssigneesDraft(null);
     setEditingAlias(null);
     setShowModal(true);
   }
 
   function openEdit(db: DatabaseConfig) {
     setForm({ ...db, password: '' });
-    const owner = (ownersQuery.data ?? []).find(
-      (o) => o.resource_type === 'db' && o.resource_id === db.alias,
-    );
-    setAssignees(owner?.emails.join(', ') ?? '');
+    setAssigneesDraft(null); // field follows the loaded value via assigneesValue
     setEditingAlias(db.alias);
     setShowModal(true);
   }
@@ -157,7 +181,7 @@ function Connections() {
     setShowModal(false);
     setEditingAlias(null);
     setForm({ ...emptyForm });
-    setAssignees('');
+    setAssigneesDraft(null);
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -525,16 +549,23 @@ function Connections() {
                   </div>
                 </>
               )}
-              <div className="form-group form-group--full">
-                <label>{t('connections.assignees')}</label>
-                <textarea
-                  value={assignees}
-                  onChange={(e) => setAssignees(e.target.value)}
-                  rows={2}
-                  placeholder="alice@example.com, bob@example.com"
-                />
-                <span className="hint">{t('connections.assigneesHint')}</span>
-              </div>
+              {canReadAlerts && (
+                <div className="form-group form-group--full">
+                  <label>{t('connections.assignees')}</label>
+                  <textarea
+                    value={assigneesValue}
+                    onChange={(e) => setAssigneesDraft(e.target.value)}
+                    rows={2}
+                    disabled={!canManageAlerts || !assigneesReady}
+                    placeholder={
+                      editingAlias !== null && !assigneesReady
+                        ? t('common.loading')
+                        : 'alice@example.com, bob@example.com'
+                    }
+                  />
+                  <span className="hint">{t('connections.assigneesHint')}</span>
+                </div>
+              )}
             </div>
 
             {(createMutation.isError || updateMutation.isError) && (

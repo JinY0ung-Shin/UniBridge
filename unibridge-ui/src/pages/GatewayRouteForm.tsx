@@ -12,6 +12,7 @@ import {
   type GatewayUpstream,
 } from '../api/client';
 import { useToast } from '../components/useToast';
+import { useCanWrite } from '../components/useCanWrite';
 import './GatewayRouteForm.css';
 
 const ALL_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
@@ -75,12 +76,18 @@ function GatewayRouteEditor({
   isEdit,
   initialRoute,
   initialAssignees,
+  assigneesReady,
+  canReadAlerts,
+  canManageAlerts,
   upstreams,
 }: {
   id: string | undefined;
   isEdit: boolean;
   initialRoute: GatewayRoute | undefined;
   initialAssignees: string;
+  assigneesReady: boolean;
+  canReadAlerts: boolean;
+  canManageAlerts: boolean;
   upstreams: GatewayUpstream[];
 }) {
   const { t } = useTranslation();
@@ -105,11 +112,18 @@ function GatewayRouteEditor({
     onSuccess: async (savedRoute, data) => {
       queryClient.setQueryData(['gateway-route', data.routeId], savedRoute);
       queryClient.invalidateQueries({ queryKey: ['gateway-routes'] });
-      try {
-        await setAlertResourceOwner('route', data.routeId, { emails: parseEmails(assignees) });
-        queryClient.invalidateQueries({ queryKey: ['alert-resource-owners'] });
-      } catch {
-        addToast({ type: 'error', title: t('gatewayRouteForm.assignees'), message: t('common.errorOccurred') });
+      // Only touch assignees when allowed and the baseline is known, and only
+      // when actually changed — never overwrite assignees we couldn't load.
+      if (canManageAlerts && assigneesReady) {
+        const next = parseEmails(assignees);
+        if (JSON.stringify(next) !== JSON.stringify(parseEmails(initialAssignees))) {
+          try {
+            await setAlertResourceOwner('route', data.routeId, { emails: next });
+            queryClient.invalidateQueries({ queryKey: ['alert-resource-owners'] });
+          } catch {
+            addToast({ type: 'error', title: t('gatewayRouteForm.assignees'), message: t('common.errorOccurred') });
+          }
+        }
       }
       navigate('/gateway/routes');
     },
@@ -341,21 +355,24 @@ function GatewayRouteEditor({
           </button>
         </div>
 
-        <div className="form-section">
-          <div className="form-section-title">{t('gatewayRouteForm.assigneesSection')}</div>
-          <div className="form-row form-row--full">
-            <div className="field">
-              <label>{t('gatewayRouteForm.assignees')}</label>
-              <textarea
-                value={assignees}
-                onChange={(e) => setAssignees(e.target.value)}
-                rows={2}
-                placeholder="alice@example.com, bob@example.com"
-              />
-              <span className="field-hint">{t('gatewayRouteForm.assigneesHint')}</span>
+        {canReadAlerts && (
+          <div className="form-section">
+            <div className="form-section-title">{t('gatewayRouteForm.assigneesSection')}</div>
+            <div className="form-row form-row--full">
+              <div className="field">
+                <label>{t('gatewayRouteForm.assignees')}</label>
+                <textarea
+                  value={assignees}
+                  onChange={(e) => setAssignees(e.target.value)}
+                  rows={2}
+                  disabled={!canManageAlerts || !assigneesReady}
+                  placeholder="alice@example.com, bob@example.com"
+                />
+                <span className="field-hint">{t('gatewayRouteForm.assigneesHint')}</span>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {error && <div className="error-banner">{error}</div>}
 
@@ -376,6 +393,8 @@ function GatewayRouteForm() {
   const { t } = useTranslation();
   const { id } = useParams<{ id: string }>();
   const isEdit = !!id;
+  const canReadAlerts = useCanWrite('alerts.read');
+  const canManageAlerts = useCanWrite('alerts.write');
 
   const routeQuery = useQuery({
     queryKey: ['gateway-route', id],
@@ -391,12 +410,21 @@ function GatewayRouteForm() {
   const ownersQuery = useQuery({
     queryKey: ['alert-resource-owners'],
     queryFn: getAlertResourceOwners,
+    enabled: canReadAlerts,
   });
 
   if (isEdit && routeQuery.isLoading) {
     return <div className="loading-message">{t('gatewayRouteForm.loadingRoute')}</div>;
   }
+  // For edits, wait until existing assignees are loaded before mounting the
+  // editor so its initial value is correct AND stable (no late remount that
+  // would discard in-progress edits, no '' baseline that would wipe assignees).
+  if (isEdit && canReadAlerts && ownersQuery.isLoading) {
+    return <div className="loading-message">{t('gatewayRouteForm.loadingRoute')}</div>;
+  }
 
+  // Known baseline only when create (no existing owner) or owners loaded ok.
+  const assigneesReady = isEdit ? ownersQuery.isSuccess : true;
   const initialAssignees = isEdit
     ? ((ownersQuery.data ?? []).find(
         (o) => o.resource_type === 'route' && o.resource_id === id,
@@ -405,11 +433,14 @@ function GatewayRouteForm() {
 
   return (
     <GatewayRouteEditor
-      key={`${routeFormKey(routeQuery.data, isEdit)}|${initialAssignees}`}
+      key={routeFormKey(routeQuery.data, isEdit)}
       id={id}
       isEdit={isEdit}
       initialRoute={routeQuery.data}
       initialAssignees={initialAssignees}
+      assigneesReady={assigneesReady}
+      canReadAlerts={canReadAlerts}
+      canManageAlerts={canManageAlerts}
       upstreams={upstreamsQuery.data?.items ?? []}
     />
   );
