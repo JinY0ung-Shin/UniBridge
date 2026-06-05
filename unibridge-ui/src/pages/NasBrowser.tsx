@@ -379,6 +379,7 @@ function NasBrowser() {
   const shownCount = folders.length + files.length;
   const searching = search.length > 0;
   const isEmpty = shownCount === 0 && !loading && !errored;
+  const countHasMore = hasMore || truncated;
   const apiExamples = alias ? buildNasApiExamples(alias, path, files) : [];
 
   return (
@@ -441,7 +442,7 @@ function NasBrowser() {
         </div>
         {!loading && !errored && shownCount > 0 && (
           <span className="nas-count">
-            {hasMore
+            {countHasMore
               ? t('nas.entryCountMore', { count: shownCount })
               : t('nas.entryCount', { count: shownCount })}
           </span>

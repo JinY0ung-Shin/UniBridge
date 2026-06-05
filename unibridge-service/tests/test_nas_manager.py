@@ -54,6 +54,28 @@ def _make_conn(
     )
 
 
+def _force_scandir_name_order(monkeypatch) -> None:
+    """Make os.scandir deterministic for cap/search tests."""
+    from app.services import nas_manager as manager_mod
+
+    real_scandir = os.scandir
+
+    class OrderedScandir:
+        def __init__(self, path):
+            self.path = path
+            self._ctx = None
+
+        def __enter__(self):
+            self._ctx = real_scandir(self.path)
+            iterator = self._ctx.__enter__()
+            return iter(sorted(list(iterator), key=lambda entry: entry.name))
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._ctx.__exit__(exc_type, exc, tb)
+
+    monkeypatch.setattr(manager_mod.os, "scandir", OrderedScandir)
+
+
 # ── singleton + lifecycle ─────────────────────────────────────────────────────
 
 
@@ -309,23 +331,46 @@ async def test_list_entries_entry_cap_sets_truncated_and_terminates(
 async def test_list_entries_query_in_capped_dir_does_not_loop(
     fresh_manager, tmp_path, monkeypatch
 ):
-    """Regression: a query matching few entries in a scan-capped directory must
-    NOT report has_more (which previously OR'd in cap_hit and produced an
-    endless 'Load More' that served empty pages)."""
+    """A query must find matches beyond the unfiltered scan cap and still
+    terminate when the matching window fits in one page."""
     from app.config import settings
 
     base = tmp_path / "share"
     base.mkdir()
     for i in range(8):
-        (base / f"f{i}.txt").write_text("x")
-    (base / "needle.txt").write_text("x")
+        (base / f"a{i}.txt").write_text("x")
+    (base / "z-needle.txt").write_text("x")
     _allow_root(monkeypatch, tmp_path)
-    # Cap below the entry count so cap_hit triggers during the scan.
+    _force_scandir_name_order(monkeypatch)
+    # The match sorts after the unfiltered cap window.
     monkeypatch.setattr(settings, "NAS_MAX_LIST_ENTRIES", 5)
     await fresh_manager.add_connection(_make_conn("s", str(base)))
 
     res = await fresh_manager.list_entries("s", "", query="needle", offset=0, limit=100)
-    # Whatever the scan captured, the filtered window fits one page → terminate.
+    assert [f["name"] for f in res["files"]] == ["z-needle.txt"]
+    assert res["truncated"] is False
+    assert res["has_more"] is False
+    assert res["next_cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_entries_query_sets_truncated_when_matching_cap_is_hit(
+    fresh_manager, tmp_path, monkeypatch
+):
+    from app.config import settings
+
+    base = tmp_path / "share"
+    base.mkdir()
+    for i in range(4):
+        (base / f"needle-{i}.txt").write_text("x")
+    _allow_root(monkeypatch, tmp_path)
+    _force_scandir_name_order(monkeypatch)
+    monkeypatch.setattr(settings, "NAS_MAX_LIST_ENTRIES", 2)
+    await fresh_manager.add_connection(_make_conn("s", str(base)))
+
+    res = await fresh_manager.list_entries("s", "", query="needle", offset=0, limit=100)
+    assert [f["name"] for f in res["files"]] == ["needle-0.txt", "needle-1.txt"]
+    assert res["truncated"] is True
     assert res["has_more"] is False
     assert res["next_cursor"] is None
 

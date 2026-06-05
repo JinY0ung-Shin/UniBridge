@@ -176,7 +176,7 @@ describe('AlertSettings page', () => {
     const assigneeInput = screen.getByLabelText(/Assignees - orders-db|담당자 - orders-db/i);
     await userEvent.type(assigneeInput, 'owner@example.com, second@example.com');
 
-    fireEvent.click(screen.getByRole('button', { name: /^Save$|^저장$/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Save changes$|^변경사항 저장$/ }));
 
     await waitFor(() => expect(mocks.setResourceOwner).toHaveBeenCalled());
     expect(mocks.setResourceOwner).toHaveBeenCalledWith('db', 'orders-db', {
@@ -195,7 +195,7 @@ describe('AlertSettings page', () => {
     await waitFor(() => expect(assigneeInput).toHaveValue('owner@example.com'));
     await userEvent.clear(assigneeInput);
 
-    fireEvent.click(screen.getByRole('button', { name: /^Save$|^저장$/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Save changes$|^변경사항 저장$/ }));
 
     await waitFor(() => expect(mocks.setResourceOwner).toHaveBeenCalled());
     expect(mocks.setResourceOwner).toHaveBeenCalledWith('db', 'orders-db', { emails: [] });

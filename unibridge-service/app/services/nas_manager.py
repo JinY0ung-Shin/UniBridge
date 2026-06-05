@@ -217,8 +217,9 @@ class NASConnectionManager:
         if limit is None:
             limit = settings.NAS_LIST_DEFAULT_LIMIT
         # Case-insensitive substring filter on the leaf name, scoped to the
-        # current directory (non-recursive). Applied after the scan/sort so
-        # pagination operates on the filtered set.
+        # current directory (non-recursive). With a query, scan the full
+        # directory and cap matching results so search can find entries beyond
+        # the unfiltered listing cap.
         needle = query.strip().casefold()
 
         def _list() -> dict[str, Any]:
@@ -241,10 +242,15 @@ class NASConnectionManager:
 
             with os.scandir(target) as it:
                 for entry in it:
-                    if scanned >= max_scan:
-                        cap_hit = True
-                        break
-                    scanned += 1
+                    name = entry.name
+                    if needle:
+                        if needle not in name.casefold():
+                            continue
+                    else:
+                        if scanned >= max_scan:
+                            cap_hit = True
+                            break
+                        scanned += 1
                     if not classify_dirent(
                         entry, show_hidden=show_hidden, follow_symlinks=follow_symlinks
                     ):
@@ -255,7 +261,11 @@ class NASConnectionManager:
                     except OSError:
                         # Race: entry vanished or became unreadable mid-scan.
                         continue
-                    name = entry.name
+                    if needle:
+                        if scanned >= max_scan:
+                            cap_hit = True
+                            break
+                        scanned += 1
                     child_path = f"{rel_prefix}/{name}" if rel_prefix else name
                     obj = {
                         "name": name,
@@ -271,10 +281,6 @@ class NASConnectionManager:
 
             folders.sort(key=lambda e: e["name"].casefold())
             files.sort(key=lambda e: e["name"].casefold())
-
-            if needle:
-                folders = [e for e in folders if needle in e["name"].casefold()]
-                files = [e for e in files if needle in e["name"].casefold()]
 
             combined = folders + files
 

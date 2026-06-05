@@ -69,6 +69,7 @@ interface NasListShape {
   total_count: number;
   has_more: boolean;
   next_cursor: string | null;
+  truncated?: boolean;
 }
 
 function escapeRegExp(s: string) {
@@ -400,6 +401,7 @@ describe('NasBrowser page', () => {
     });
     renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+    expect(screen.getByText(i18n.t('nas.entryCountMore', { count: 1 }))).toBeInTheDocument();
     expect(screen.getByText(i18n.t('nas.truncatedNotice'))).toBeInTheDocument();
   });
 });
