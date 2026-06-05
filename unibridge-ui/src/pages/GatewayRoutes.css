@@ -1,5 +1,5 @@
 .gateway-routes {
-  max-width: 1200px;
+  max-width: none;
 }
 
 .gateway-routes .page-header {
@@ -54,12 +54,18 @@
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-primary);
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cell-service-key {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-tertiary);
+  max-width: 260px;
+  white-space: normal;
 }
 
 .service-key-cell {
@@ -72,14 +78,66 @@
   display: flex;
   gap: 4px;
   align-items: baseline;
+  min-width: 0;
 }
 
 .service-key-cell-name {
+  flex-shrink: 0;
   color: var(--text-secondary);
 }
 
 .service-key-cell-value {
   color: var(--text-tertiary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gateway-routes .data-table {
+  table-layout: fixed;
+}
+
+.gateway-routes .data-table th,
+.gateway-routes .data-table td {
+  white-space: normal;
+}
+
+.gateway-routes .data-table th:nth-child(1) {
+  width: 15%;
+}
+
+.gateway-routes .data-table th:nth-child(2) {
+  width: 24%;
+}
+
+.gateway-routes .data-table th:nth-child(3) {
+  width: 11%;
+}
+
+.gateway-routes .data-table th:nth-child(4) {
+  width: 16%;
+}
+
+.gateway-routes .data-table th:nth-child(5) {
+  width: 14%;
+}
+
+.gateway-routes .data-table th:nth-child(6) {
+  width: 9%;
+}
+
+.gateway-routes .data-table th:nth-child(7) {
+  width: 11%;
+}
+
+.gateway-routes .data-table td:nth-child(4) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gateway-routes .action-buttons {
+  flex-wrap: wrap;
 }
 
 .status-cell {
