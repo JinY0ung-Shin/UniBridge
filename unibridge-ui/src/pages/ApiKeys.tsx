@@ -9,10 +9,12 @@ import {
   getAdminDatabases,
   getGatewayRoutes,
   getS3Connections,
+  getNasConnections,
   type ApiKey,
 } from '../api/client';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
+import { usePermissions } from '../components/usePermissions';
 import ResourceModal from '../components/ResourceModal';
 import './ApiKeys.css';
 
@@ -43,6 +45,8 @@ function ApiKeys() {
   const queryClient = useQueryClient();
   const { addToast } = useToast();
   const canWrite = useCanWrite('apikeys.write');
+  const { permissions } = usePermissions();
+  const canReadNasConnections = permissions.includes('nas.connections.read');
 
   const [showModal, setShowModal] = useState(false);
   const [editingName, setEditingName] = useState<string | null>(null);
@@ -54,6 +58,11 @@ function ApiKeys() {
   const dbsQuery = useQuery({ queryKey: ['admin-databases'], queryFn: getAdminDatabases });
   const routesQuery = useQuery({ queryKey: ['gateway-routes'], queryFn: getGatewayRoutes });
   const s3ConnectionsQuery = useQuery({ queryKey: ['s3-connections'], queryFn: getS3Connections });
+  const nasConnectionsQuery = useQuery({
+    queryKey: ['nas-connections'],
+    queryFn: getNasConnections,
+    enabled: canReadNasConnections,
+  });
 
   const createMut = useMutation({
     mutationFn: createApiKey,
@@ -91,6 +100,7 @@ function ApiKeys() {
   const databases = dbsQuery.data ?? [];
   const routes = routesQuery.data?.items ?? [];
   const s3Connections = s3ConnectionsQuery.data ?? [];
+  const nasConnections = canReadNasConnections ? nasConnectionsQuery.data ?? [] : [];
 
   function openCreate() {
     setForm({ ...emptyForm, apiKey: generateKey() });
@@ -315,7 +325,9 @@ function ApiKeys() {
                 <div className="form-group form-group--full">
                   <label>{t('apiKeys.allowedDatabases')}</label>
                   <div className="checkbox-list">
-                    {databases.length === 0 && s3Connections.length === 0 && <div className="checkbox-list-empty">{t('apiKeys.noneSelected')}</div>}
+                    {databases.length === 0 && s3Connections.length === 0 && nasConnections.length === 0 && (
+                      <div className="checkbox-list-empty">{t('apiKeys.noneSelected')}</div>
+                    )}
                     {databases.map((db) => (
                       <label key={`db-${db.alias}`} className="checkbox-list-item">
                         <input
@@ -336,6 +348,17 @@ function ApiKeys() {
                         />
                         <span className="checkbox-list-label">{conn.alias}</span>
                         <span className="tag">S3</span>
+                      </label>
+                    ))}
+                    {nasConnections.map((conn) => (
+                      <label key={`nas-${conn.alias}`} className="checkbox-list-item">
+                        <input
+                          type="checkbox"
+                          checked={form.allowedDatabases.includes(conn.alias)}
+                          onChange={() => toggleDb(conn.alias)}
+                        />
+                        <span className="checkbox-list-label">{conn.alias}</span>
+                        <span className="tag">NAS</span>
                       </label>
                     ))}
                   </div>

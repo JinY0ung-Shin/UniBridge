@@ -7,19 +7,36 @@ vi.mock('../api/client', () => ({
   getAdminDatabases: vi.fn(),
   getGatewayRoutes: vi.fn(),
   getS3Connections: vi.fn(),
+  getNasConnections: vi.fn(),
 }));
 
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getApiKeys, getAdminDatabases, getGatewayRoutes, getS3Connections, createApiKey, deleteApiKey } from '../api/client';
+import {
+  getApiKeys,
+  getAdminDatabases,
+  getGatewayRoutes,
+  getS3Connections,
+  getNasConnections,
+  createApiKey,
+  deleteApiKey,
+} from '../api/client';
 import ApiKeys from '../pages/ApiKeys';
-import { renderWithProviders, makeApiKey, makeDatabase, makeGatewayRoute, makeS3Connection } from './helpers';
+import {
+  renderWithProviders,
+  makeApiKey,
+  makeDatabase,
+  makeGatewayRoute,
+  makeS3Connection,
+  makeNasConnection,
+} from './helpers';
 
 const mockedGetApiKeys = vi.mocked(getApiKeys);
 const mockedGetAdminDatabases = vi.mocked(getAdminDatabases);
 const mockedGetGatewayRoutes = vi.mocked(getGatewayRoutes);
 const mockedGetS3Connections = vi.mocked(getS3Connections);
+const mockedGetNasConnections = vi.mocked(getNasConnections);
 const mockedCreateApiKey = vi.mocked(createApiKey);
 const mockedDeleteApiKey = vi.mocked(deleteApiKey);
 
@@ -30,6 +47,7 @@ describe('ApiKeys', () => {
     mockedGetAdminDatabases.mockResolvedValue([]);
     mockedGetGatewayRoutes.mockResolvedValue({ items: [], total: 0 });
     mockedGetS3Connections.mockResolvedValue([]);
+    mockedGetNasConnections.mockResolvedValue([]);
   });
 
   it('renders loading state', () => {
@@ -208,6 +226,49 @@ describe('ApiKeys', () => {
       expect(mockedCreateApiKey).toHaveBeenCalledWith(
         expect.objectContaining({
           allowed_databases: ['lakes3'],
+        }),
+        expect.anything(),
+      );
+    });
+  });
+
+  it('includes NAS connection aliases in allowed databases when creating a key', async () => {
+    mockedGetNasConnections.mockResolvedValue([
+      makeNasConnection({ alias: 'company-nas' }),
+    ]);
+    mockedGetGatewayRoutes.mockResolvedValue({
+      items: [makeGatewayRoute({ id: 'nas-api', name: 'nas-api', uri: '/api/nas/*' })],
+      total: 1,
+    });
+    mockedCreateApiKey.mockResolvedValue({
+      name: 'nas-client',
+      description: '',
+      api_key: 'key-secret-12345',
+      key_created: true,
+      allowed_databases: ['company-nas'],
+      allowed_routes: ['nas-api'],
+      rate_limit_per_minute: null,
+      owner: null,
+      created_at: '2026-04-11T00:00:00Z',
+    });
+
+    renderWithProviders(<ApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No API keys')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
+    await userEvent.type(screen.getByPlaceholderText('my-app'), 'nas-client');
+    await userEvent.click(screen.getByRole('checkbox', { name: /company-nas/i }));
+    await userEvent.click(screen.getByRole('checkbox', { name: /nas-api/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(mockedCreateApiKey).toHaveBeenCalledWith(
+        expect.objectContaining({
+          allowed_databases: ['company-nas'],
+          allowed_routes: ['nas-api'],
         }),
         expect.anything(),
       );

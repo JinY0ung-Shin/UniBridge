@@ -32,6 +32,9 @@ export const ADMIN_PERMISSIONS = [
   's3.connections.read',
   's3.connections.write',
   's3.browse',
+  'nas.connections.read',
+  'nas.connections.write',
+  'nas.browse',
 ];
 
 export const VIEWER_PERMISSIONS = [
@@ -212,6 +215,19 @@ export function makeS3Connection(overrides = {}) {
     secret_access_key: '',
     default_bucket: 'default-bucket',
     use_ssl: true,
+    ...overrides,
+  };
+}
+
+export function makeNasConnection(overrides = {}) {
+  return {
+    alias: 'nas-main',
+    base_path: '/mnt/share',
+    read_only: true,
+    max_download_bytes: null as number | null,
+    show_hidden: false,
+    follow_symlinks: false,
+    status: 'registered',
     ...overrides,
   };
 }
