@@ -296,4 +296,110 @@ describe('NasBrowser page', () => {
     // The only mutating verb in S3-land — presigned URL — must not exist here.
     expect(screen.queryByRole('button', { name: /presigned/i })).not.toBeInTheDocument();
   });
+
+  it('downloads a non-previewable file when its name is clicked', async () => {
+    const blob = new Blob(['hi']);
+    mockEntries.mockResolvedValue(
+      makeListResponse({
+        files: [makeEntry({ name: 'data.bin', path: 'data.bin', size: 9 })],
+        total_count: 1,
+      }),
+    );
+    mockDownload.mockResolvedValue({ blob, filename: 'data.bin' });
+    Object.defineProperty(window.URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:mock') });
+    Object.defineProperty(window.URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('data.bin')).toBeInTheDocument());
+
+    // Clicking the file name itself triggers the download — no separate button needed.
+    fireEvent.click(screen.getByText('data.bin'));
+    await waitFor(() => expect(mockDownload).toHaveBeenCalledWith('nas-main', 'data.bin'));
+    expect(clickSpy).toHaveBeenCalled();
+    clickSpy.mockRestore();
+  });
+
+  it('opens an inline image preview when an image name is clicked', async () => {
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' });
+    mockEntries.mockResolvedValue(
+      makeListResponse({
+        files: [makeEntry({ name: 'photo.png', path: 'photo.png', size: 3 })],
+        total_count: 1,
+      }),
+    );
+    mockDownload.mockResolvedValue({ blob, filename: 'photo.png' });
+    Object.defineProperty(window.URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:preview') });
+    Object.defineProperty(window.URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('photo.png')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('photo.png'));
+
+    // The image is fetched and shown inline in a dialog — NOT pushed to disk.
+    const img = await screen.findByAltText('photo.png');
+    expect(img).toHaveAttribute('src', 'blob:preview');
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(clickSpy).not.toHaveBeenCalled();
+    clickSpy.mockRestore();
+  });
+
+  it('filters the listing through the server-side q parameter', async () => {
+    mockEntries.mockResolvedValue(
+      makeListResponse({
+        files: [makeEntry({ name: 'report.csv', path: 'report.csv', size: 5 })],
+        total_count: 1,
+      }),
+    );
+    renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('report.csv')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText(i18n.t('nas.searchPlaceholder')), {
+      target: { value: 'rep' },
+    });
+
+    // The debounced search re-queries the backend with the q term.
+    await waitFor(() =>
+      expect(mockEntries).toHaveBeenLastCalledWith(
+        'nas-main',
+        expect.objectContaining({ q: 'rep' }),
+      ),
+    );
+  });
+
+  it('shows a distinct empty state when a search yields no matches', async () => {
+    mockEntries
+      .mockResolvedValueOnce(
+        makeListResponse({
+          files: [makeEntry({ name: 'a.txt', path: 'a.txt', size: 1 })],
+          total_count: 1,
+        }),
+      )
+      .mockResolvedValue(makeListResponse());
+    renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText(i18n.t('nas.searchPlaceholder')), {
+      target: { value: 'zzz' },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(i18n.t('nas.noResults'))).toBeInTheDocument(),
+    );
+  });
+
+  it('surfaces a notice when the directory scan is truncated', async () => {
+    mockEntries.mockResolvedValue({
+      ...makeListResponse({
+        files: [makeEntry({ name: 'a.txt', path: 'a.txt', size: 1 })],
+        total_count: 1,
+      }),
+      truncated: true,
+    });
+    renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+    expect(screen.getByText(i18n.t('nas.truncatedNotice'))).toBeInTheDocument();
+  });
 });

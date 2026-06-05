@@ -209,12 +209,17 @@ class NASConnectionManager:
         *,
         offset: int = 0,
         limit: int | None = None,
+        query: str = "",
     ) -> dict[str, Any]:
         base, config = self._require(alias)
         show_hidden: bool = config["show_hidden"]
         follow_symlinks: bool = config["follow_symlinks"]
         if limit is None:
             limit = settings.NAS_LIST_DEFAULT_LIMIT
+        # Case-insensitive substring filter on the leaf name, scoped to the
+        # current directory (non-recursive). Applied after the scan/sort so
+        # pagination operates on the filtered set.
+        needle = query.strip().casefold()
 
         def _list() -> dict[str, Any]:
             self._probe_base(base)
@@ -266,13 +271,23 @@ class NASConnectionManager:
 
             folders.sort(key=lambda e: e["name"].casefold())
             files.sort(key=lambda e: e["name"].casefold())
+
+            if needle:
+                folders = [e for e in folders if needle in e["name"].casefold()]
+                files = [e for e in files if needle in e["name"].casefold()]
+
             combined = folders + files
 
             window = combined[offset : offset + limit]
             page_folders = [e for e in window if e["is_dir"]]
             page_files = [e for e in window if not e["is_dir"]]
 
-            has_more = cap_hit or (offset + limit) < len(combined)
+            # Paging is purely window-based over the (filtered) scanned set, so
+            # it always terminates. cap_hit is reported separately as `truncated`
+            # — offset paging re-scans from the start each call and can never
+            # reach entries beyond the scan cap, so it must NOT extend has_more
+            # (doing so produced an endless "Load More" yielding empty pages).
+            has_more = (offset + limit) < len(combined)
             next_cursor = str(offset + limit) if has_more else None
 
             return {
@@ -282,6 +297,7 @@ class NASConnectionManager:
                 "total_count": len(window),
                 "has_more": has_more,
                 "next_cursor": next_cursor,
+                "truncated": cap_hit,
             }
 
         return await self._run_blocking(_list)
