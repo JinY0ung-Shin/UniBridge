@@ -137,6 +137,43 @@
   color: var(--text-primary);
 }
 
+/* ── Resource owner groups ─────────────────────────────────────────────────── */
+
+.resource-owner-groups {
+  display: grid;
+  gap: 20px;
+}
+
+.resource-owner-group {
+  border-top: 1px solid var(--border-default);
+  padding-top: 14px;
+}
+
+.resource-owner-group:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.resource-owner-group-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.resource-owner-group-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.resource-owner-group-header span {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* ── Rule type badges ──────────────────────────────────────────────────────── */
 
 .rule-type-badge {
