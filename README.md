@@ -164,7 +164,16 @@ After changing these values, recreate the service so Docker applies the bind mou
 docker compose up -d --force-recreate unibridge-service
 ```
 
-In the UI, add a NAS connection with `base_path` set to `/mnt/nas` or a child directory such as `/mnt/nas/reports`. External API-key access then uses alias-relative paths, for example `GET /api/nas/company-nas/download?path=reports/2026/a.csv`.
+In the UI, add a NAS connection with `base_path` set to `/mnt/nas` or a child directory such as `/mnt/nas/reports`. External API-key access then uses alias-relative paths. The browse APIs are read-only:
+
+```http
+GET /api/nas/company-nas/entries?path=reports&limit=100
+GET /api/nas/company-nas/entries?path=reports&q=invoice&limit=100
+GET /api/nas/company-nas/metadata?path=reports/2026/a.csv
+GET /api/nas/company-nas/download?path=reports/2026/a.csv
+```
+
+The `q` parameter searches only the immediate `path` directory by case-insensitive file or folder name substring. It is not recursive.
 
 ### Self-service registration (approval-gated)
 

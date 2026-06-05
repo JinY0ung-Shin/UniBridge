@@ -160,6 +160,7 @@ describe('NasBrowser page', () => {
     const dialog = await screen.findByRole('dialog');
 
     expect(dialog).toHaveTextContent('/api/nas/nas-main/entries?path=&limit=100');
+    expect(dialog).toHaveTextContent('/api/nas/nas-main/entries?path=&q=report&limit=100');
     expect(dialog).toHaveTextContent('/api/nas/nas-main/metadata?path=file.txt');
     expect(dialog).toHaveTextContent('/api/nas/nas-main/download?path=file.txt');
     expect(dialog).toHaveTextContent("-H 'apikey: <YOUR_API_KEY>'");

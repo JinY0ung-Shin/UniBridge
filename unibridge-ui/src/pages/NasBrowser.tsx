@@ -133,12 +133,22 @@ function buildNasCurl(url: string): string {
   return `curl -k \\\n  -H 'apikey: <YOUR_API_KEY>' \\\n  '${url}'`;
 }
 
-function buildNasApiExamples(alias: string, currentPath: string, files: NasEntry[]): NasApiExample[] {
+function buildNasApiExamples(
+  alias: string,
+  currentPath: string,
+  files: NasEntry[],
+  currentSearch: string,
+): NasApiExample[] {
   const filePath = getExampleFilePath(currentPath, files);
+  const searchTerm = currentSearch || 'report';
   return [
     {
       labelKey: 'nas.listEntriesExample',
       curl: buildNasCurl(buildNasApiUrl(alias, 'entries', { path: currentPath, limit: 100 })),
+    },
+    {
+      labelKey: 'nas.searchEntriesExample',
+      curl: buildNasCurl(buildNasApiUrl(alias, 'entries', { path: currentPath, q: searchTerm, limit: 100 })),
     },
     {
       labelKey: 'nas.metadataExample',
@@ -348,7 +358,7 @@ function NasBrowser() {
 
   async function handleCopyApiExamples() {
     if (!alias) return;
-    const examples = buildNasApiExamples(alias, path, files);
+    const examples = buildNasApiExamples(alias, path, files, search);
     try {
       await navigator.clipboard.writeText(
         examples.map((example) => `${t(example.labelKey)}\n${example.curl}`).join('\n\n'),
@@ -380,7 +390,7 @@ function NasBrowser() {
   const searching = search.length > 0;
   const isEmpty = shownCount === 0 && !loading && !errored;
   const countHasMore = hasMore || truncated;
-  const apiExamples = alias ? buildNasApiExamples(alias, path, files) : [];
+  const apiExamples = alias ? buildNasApiExamples(alias, path, files, search) : [];
 
   return (
     <div className="nas-browser">

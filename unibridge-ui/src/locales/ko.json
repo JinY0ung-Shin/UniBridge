@@ -561,6 +561,7 @@
     "apiExamplesCopy": "전체 복사",
     "apiExamplesCopied": "복사됨",
     "listEntriesExample": "목록 조회",
+    "searchEntriesExample": "현재 폴더 검색",
     "metadataExample": "메타데이터 조회",
     "downloadExample": "파일 다운로드",
     "copyFailed": "요청 예시 복사 실패",

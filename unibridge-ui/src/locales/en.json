@@ -561,6 +561,7 @@
     "apiExamplesCopy": "Copy all",
     "apiExamplesCopied": "Copied",
     "listEntriesExample": "List entries",
+    "searchEntriesExample": "Search entries in current folder",
     "metadataExample": "Metadata",
     "downloadExample": "File download",
     "copyFailed": "Failed to copy request examples",
