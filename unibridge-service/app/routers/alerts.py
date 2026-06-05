@@ -32,6 +32,7 @@ from app.schemas import (
     AlertSettingsResponse, AlertSettingsUpdate,
 )
 from app.services import apisix_client
+from app.services.apisix_system_resources import PROTECTED_ROUTE_IDS, PROTECTED_UPSTREAM_IDS
 from app.services.alert_sender import render_recipient_items, render_template, send_webhook
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,10 @@ RESOURCE_TYPES = {"db", "s3", "route", "upstream"}
 APISIX_RESOURCE_TYPES = {
     "route": "routes",
     "upstream": "upstreams",
+}
+HIDDEN_APISIX_RESOURCE_IDS = {
+    "route": PROTECTED_ROUTE_IDS,
+    "upstream": PROTECTED_UPSTREAM_IDS,
 }
 
 
@@ -187,6 +192,8 @@ async def _list_resources_for_owners(db: AsyncSession) -> list[ResourceOwnerResp
             if raw_id is None:
                 continue
             resource_id = str(raw_id)
+            if resource_id in HIDDEN_APISIX_RESOURCE_IDS[resource_type]:
+                continue
             display_name = _apisix_resource_display_name(item, resource_id)
             rows.append(ResourceOwnerResponse(
                 resource_type=resource_type,

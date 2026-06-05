@@ -21,17 +21,13 @@ from app.models import ApiKeyAccess
 from app.services import apisix_client
 from app.services import prometheus_client
 from app.services.alert_state import delete_alert_state
+from app.services.apisix_system_resources import PROTECTED_ROUTE_IDS, PROTECTED_UPSTREAM_IDS
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/gateway", tags=["Gateway"])
 
 MASK_KEEP = 4
-
-# System-managed resources — cannot be deleted or edited via API
-PROTECTED_ROUTE_IDS = {"query-api", "llm-proxy", "llm-admin", "s3-api", "llm-messages", "llm-responses", "nas-api"}
-PROTECTED_UPSTREAM_IDS = {"unibridge-service", "litellm", "llm-converter"}
-
 
 def _mask_value(value: str) -> str:
     if len(value) <= MASK_KEEP:

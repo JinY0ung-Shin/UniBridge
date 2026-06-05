@@ -756,9 +756,17 @@ async def test_resource_owner_lists_apisix_resources_with_email_mapping(client, 
 
     async def list_resources(resource: str) -> dict[str, object]:
         if resource == "routes":
-            return {"items": [{"id": "orders-route", "name": "Orders Route"}]}
+            return {"items": [
+                {"id": "orders-route", "name": "Orders Route"},
+                {"id": "llm-proxy", "name": "LLM Proxy"},
+            ]}
         if resource == "upstreams":
-            return {"items": [{"id": "orders-upstream", "uri": "/orders"}]}
+            return {"items": [
+                {"id": "orders-upstream", "uri": "/orders"},
+                {"id": "litellm"},
+                {"id": "llm-converter"},
+                {"id": "unibridge-service"},
+            ]}
         return {"items": []}
 
     with patch("app.routers.alerts.apisix_client") as mock_apisix:
@@ -782,6 +790,15 @@ async def test_resource_owner_lists_apisix_resources_with_email_mapping(client, 
         and row["resource_id"] == "orders-upstream"
         and row["display_name"] == "/orders"
         and row["emails"] == []
+        for row in rows
+    )
+    assert not any(
+        row["resource_type"] == "route" and row["resource_id"] == "llm-proxy"
+        for row in rows
+    )
+    assert not any(
+        row["resource_type"] == "upstream"
+        and row["resource_id"] in {"litellm", "llm-converter", "unibridge-service"}
         for row in rows
     )
 
