@@ -145,6 +145,25 @@ describe('NasBrowser page', () => {
     );
   });
 
+  it('shows API request examples for the current NAS alias and file path', async () => {
+    mockEntries.mockResolvedValue(
+      makeListResponse({
+        files: [makeEntry({ name: 'file.txt', path: 'file.txt', size: 5 })],
+        total_count: 1,
+      }),
+    );
+    renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('file.txt')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: labelRe('nas.apiExamples') }));
+    const dialog = await screen.findByRole('dialog');
+
+    expect(dialog).toHaveTextContent('/api/nas/nas-main/entries?path=&limit=100');
+    expect(dialog).toHaveTextContent('/api/nas/nas-main/metadata?path=file.txt');
+    expect(dialog).toHaveTextContent('/api/nas/nas-main/download?path=file.txt');
+    expect(dialog).toHaveTextContent("-H 'apikey: <YOUR_API_KEY>'");
+  });
+
   it('shows an error banner when the listing fails', async () => {
     mockEntries.mockRejectedValue(new Error('mount gone'));
     renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });

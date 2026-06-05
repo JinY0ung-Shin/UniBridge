@@ -26,6 +26,49 @@ function entryLabel(entry: NasEntry): string {
   return entry.name;
 }
 
+interface NasApiExample {
+  labelKey: string;
+  curl: string;
+}
+
+function getExampleFilePath(currentPath: string, files: NasEntry[]): string {
+  if (files.length > 0) {
+    return files[0].path;
+  }
+  const normalizedPath = currentPath.replace(/^\/+|\/+$/g, '');
+  return normalizedPath ? `${normalizedPath}/example.csv` : 'example.csv';
+}
+
+function buildNasApiUrl(alias: string, endpoint: string, params: Record<string, string | number>): string {
+  const url = new URL(`/api/nas/${encodeURIComponent(alias)}/${endpoint}`, window.location.origin);
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.set(key, String(value));
+  });
+  return url.toString();
+}
+
+function buildNasCurl(url: string): string {
+  return `curl -k \\\n  -H 'apikey: <YOUR_API_KEY>' \\\n  '${url}'`;
+}
+
+function buildNasApiExamples(alias: string, currentPath: string, files: NasEntry[]): NasApiExample[] {
+  const filePath = getExampleFilePath(currentPath, files);
+  return [
+    {
+      labelKey: 'nas.listEntriesExample',
+      curl: buildNasCurl(buildNasApiUrl(alias, 'entries', { path: currentPath, limit: 100 })),
+    },
+    {
+      labelKey: 'nas.metadataExample',
+      curl: buildNasCurl(buildNasApiUrl(alias, 'metadata', { path: filePath })),
+    },
+    {
+      labelKey: 'nas.downloadExample',
+      curl: buildNasCurl(buildNasApiUrl(alias, 'download', { path: filePath })),
+    },
+  ];
+}
+
 function NasBrowser() {
   const { t } = useTranslation();
   const { alias } = useParams<{ alias: string }>();
@@ -40,6 +83,8 @@ function NasBrowser() {
   const [loading, setLoading] = useState(false);
   const [errored, setErrored] = useState(false);
   const [metadataModal, setMetadataModal] = useState<NasEntryMetadata | null>(null);
+  const [apiExamplesOpen, setApiExamplesOpen] = useState(false);
+  const [apiExamplesCopied, setApiExamplesCopied] = useState(false);
 
   const fetchEntries = useCallback(
     async (pth: string, cursor?: string | null) => {
@@ -127,6 +172,24 @@ function NasBrowser() {
     }
   }
 
+  function openApiExamples() {
+    setApiExamplesCopied(false);
+    setApiExamplesOpen(true);
+  }
+
+  async function handleCopyApiExamples() {
+    if (!alias) return;
+    const examples = buildNasApiExamples(alias, path, files);
+    try {
+      await navigator.clipboard.writeText(
+        examples.map((example) => `${t(example.labelKey)}\n${example.curl}`).join('\n\n'),
+      );
+      setApiExamplesCopied(true);
+    } catch {
+      addToast({ type: 'error', title: t('nas.copyFailed') });
+    }
+  }
+
   function loadMore() {
     if (nextCursor) {
       fetchEntries(path, nextCursor);
@@ -145,17 +208,23 @@ function NasBrowser() {
   }
 
   const isEmpty = folders.length === 0 && files.length === 0 && !loading && !errored;
+  const apiExamples = alias ? buildNasApiExamples(alias, path, files) : [];
 
   return (
     <div className="nas-browser">
-      <div className="page-header">
+      <div className="page-header page-header--with-actions">
         <div>
           <h1>{t('nas.browserTitle')} — {alias}</h1>
           <p className="page-subtitle">{t('nas.browserSubtitle')}</p>
         </div>
-        <button className="btn btn-secondary" onClick={() => navigate('/nas')}>
-          {t('nas.backToConnections')}
-        </button>
+        <div className="page-header__actions">
+          <button className="btn btn-secondary" onClick={openApiExamples}>
+            {t('nas.apiExamples')}
+          </button>
+          <button className="btn btn-secondary" onClick={() => navigate('/nas')}>
+            {t('nas.backToConnections')}
+          </button>
+        </div>
       </div>
 
       {errored && <div className="error-banner">{t('nas.loadFailed')}</div>}
@@ -278,6 +347,29 @@ function NasBrowser() {
                 <tr><td>{t('nas.lastModified')}</td><td>{formatKST(metadataModal.modified_time)}</td></tr>
               </tbody>
             </table>
+          </div>
+        </ResourceModal>
+      )}
+
+      {apiExamplesOpen && (
+        <ResourceModal
+          title={t('nas.apiExamplesTitle')}
+          onClose={() => setApiExamplesOpen(false)}
+          closeLabel={t('common.close')}
+          className="nas-api-modal"
+        >
+          <div className="nas-api-examples">
+            {apiExamples.map((example) => (
+              <section key={example.labelKey} className="nas-api-example">
+                <h3>{t(example.labelKey)}</h3>
+                <pre>{example.curl}</pre>
+              </section>
+            ))}
+            <div className="nas-api-example-actions">
+              <button className="btn btn-sm btn-secondary" onClick={handleCopyApiExamples}>
+                {apiExamplesCopied ? t('nas.apiExamplesCopied') : t('nas.apiExamplesCopy')}
+              </button>
+            </div>
           </div>
         </ResourceModal>
       )}

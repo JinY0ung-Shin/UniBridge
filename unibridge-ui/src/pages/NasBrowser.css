@@ -85,6 +85,50 @@
   margin-top: 16px;
 }
 
+.nas-api-modal {
+  width: 720px;
+  max-width: 92vw;
+}
+
+.nas-api-examples {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 24px 20px;
+}
+
+.nas-api-example {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nas-api-example h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.nas-api-example pre {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.nas-api-example-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .nas-metadata-body {
   padding: 16px;
 }
@@ -109,4 +153,14 @@
 
 .nas-metadata-table td:last-child {
   word-break: break-all;
+}
+
+@media (max-width: 720px) {
+  .nas-api-examples {
+    padding: 14px 16px 18px;
+  }
+
+  .nas-api-example-actions .btn {
+    width: 100%;
+  }
 }
