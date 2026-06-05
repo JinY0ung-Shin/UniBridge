@@ -35,6 +35,11 @@
   color: var(--text-tertiary);
 }
 
+.tag-master {
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+  color: var(--accent-blue);
+}
+
 .key-created-banner {
   background: color-mix(in srgb, var(--accent-green) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent-green) 20%, transparent);
@@ -112,6 +117,19 @@
 
 .checkbox-list-item:hover {
   color: var(--text-primary);
+}
+
+.checkbox-list-item.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.checkbox-list-item.is-disabled:hover {
+  color: var(--text-secondary);
+}
+
+.master-key-toggle {
+  width: fit-content;
 }
 
 .checkbox-list-item .checkbox-list-label {

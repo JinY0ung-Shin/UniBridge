@@ -26,6 +26,7 @@ interface FormState {
   name: string;
   description: string;
   apiKey: string;
+  isMaster: boolean;
   allowedDatabases: string[];
   allowedRoutes: string[];
   rateLimit: string;
@@ -35,10 +36,18 @@ const emptyForm: FormState = {
   name: '',
   description: '',
   apiKey: '',
+  isMaster: false,
   allowedDatabases: [],
   allowedRoutes: [],
   rateLimit: '',
 };
+
+function isMasterAccess(key: ApiKey): boolean {
+  return Boolean(
+    key.is_master
+      || (key.allowed_databases.includes('*') && key.allowed_routes.includes('*')),
+  );
+}
 
 function ApiKeys() {
   const { t } = useTranslation();
@@ -111,12 +120,14 @@ function ApiKeys() {
   }
 
   function openEdit(k: ApiKey) {
+    const isMaster = isMasterAccess(k);
     setForm({
       name: k.name,
       description: k.description,
       apiKey: '',
-      allowedDatabases: k.allowed_databases,
-      allowedRoutes: k.allowed_routes,
+      isMaster,
+      allowedDatabases: isMaster ? [] : k.allowed_databases,
+      allowedRoutes: isMaster ? [] : k.allowed_routes,
       rateLimit: k.rate_limit_per_minute == null ? '' : String(k.rate_limit_per_minute),
     });
     setEditingName(k.name);
@@ -142,11 +153,14 @@ function ApiKeys() {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const rateLimit = parseRateLimit(form.rateLimit);
+    const allowedDatabases = form.isMaster ? ['*'] : form.allowedDatabases;
+    const allowedRoutes = form.isMaster ? ['*'] : form.allowedRoutes;
     if (editingName) {
       const body: Record<string, unknown> = {
         description: form.description,
-        allowed_databases: form.allowedDatabases,
-        allowed_routes: form.allowedRoutes,
+        is_master: form.isMaster,
+        allowed_databases: allowedDatabases,
+        allowed_routes: allowedRoutes,
         rate_limit_per_minute: rateLimit,
       };
       if (form.apiKey.trim()) body.api_key = form.apiKey.trim();
@@ -156,8 +170,9 @@ function ApiKeys() {
         name: form.name.trim(),
         description: form.description,
         api_key: form.apiKey.trim() || undefined,
-        allowed_databases: form.allowedDatabases,
-        allowed_routes: form.allowedRoutes,
+        is_master: form.isMaster,
+        allowed_databases: allowedDatabases,
+        allowed_routes: allowedRoutes,
         rate_limit_per_minute: rateLimit,
       });
     }
@@ -196,6 +211,7 @@ function ApiKeys() {
   }
 
   function renderTags(items: string[], max = 3) {
+    if (items.includes('*')) return <span className="tag tag-master">{t('apiKeys.allAccess')}</span>;
     if (items.length === 0) return <span className="tag tag-more">{t('apiKeys.noneSelected')}</span>;
     const visible = items.slice(0, max);
     const rest = items.length - max;
@@ -208,6 +224,9 @@ function ApiKeys() {
   }
 
   const isSaving = createMut.isPending || updateMut.isPending;
+  const accessItemClass = form.isMaster
+    ? 'checkbox-list-item is-disabled'
+    : 'checkbox-list-item';
 
   return (
     <div className="api-keys">
@@ -323,16 +342,28 @@ function ApiKeys() {
                   </button>
                 </div>
                 <div className="form-group form-group--full">
+                  <label className="checkbox-list-item master-key-toggle">
+                    <input
+                      type="checkbox"
+                      checked={form.isMaster}
+                      onChange={() => setForm((p) => ({ ...p, isMaster: !p.isMaster }))}
+                    />
+                    <span className="checkbox-list-label">{t('apiKeys.masterKey')}</span>
+                    <span className="tag tag-master">{t('apiKeys.allAccess')}</span>
+                  </label>
+                </div>
+                <div className="form-group form-group--full">
                   <label>{t('apiKeys.allowedDatabases')}</label>
                   <div className="checkbox-list">
                     {databases.length === 0 && s3Connections.length === 0 && nasConnections.length === 0 && (
                       <div className="checkbox-list-empty">{t('apiKeys.noneSelected')}</div>
                     )}
                     {databases.map((db) => (
-                      <label key={`db-${db.alias}`} className="checkbox-list-item">
+                      <label key={`db-${db.alias}`} className={accessItemClass}>
                         <input
                           type="checkbox"
                           checked={form.allowedDatabases.includes(db.alias)}
+                          disabled={form.isMaster}
                           onChange={() => toggleDb(db.alias)}
                         />
                         <span className="checkbox-list-label">{db.alias}</span>
@@ -340,10 +371,11 @@ function ApiKeys() {
                       </label>
                     ))}
                     {s3Connections.map((conn) => (
-                      <label key={`s3-${conn.alias}`} className="checkbox-list-item">
+                      <label key={`s3-${conn.alias}`} className={accessItemClass}>
                         <input
                           type="checkbox"
                           checked={form.allowedDatabases.includes(conn.alias)}
+                          disabled={form.isMaster}
                           onChange={() => toggleDb(conn.alias)}
                         />
                         <span className="checkbox-list-label">{conn.alias}</span>
@@ -351,10 +383,11 @@ function ApiKeys() {
                       </label>
                     ))}
                     {nasConnections.map((conn) => (
-                      <label key={`nas-${conn.alias}`} className="checkbox-list-item">
+                      <label key={`nas-${conn.alias}`} className={accessItemClass}>
                         <input
                           type="checkbox"
                           checked={form.allowedDatabases.includes(conn.alias)}
+                          disabled={form.isMaster}
                           onChange={() => toggleDb(conn.alias)}
                         />
                         <span className="checkbox-list-label">{conn.alias}</span>
@@ -368,10 +401,11 @@ function ApiKeys() {
                   <div className="checkbox-list">
                     {routes.length === 0 && <div className="checkbox-list-empty">{t('apiKeys.noneSelected')}</div>}
                     {routes.map((r) => (
-                      <label key={r.id} className="checkbox-list-item">
+                      <label key={r.id} className={accessItemClass}>
                         <input
                           type="checkbox"
                           checked={form.allowedRoutes.includes(r.id)}
+                          disabled={form.isMaster}
                           onChange={() => toggleRoute(r.id)}
                         />
                         <span className="checkbox-list-label">{r.name || r.id}</span>

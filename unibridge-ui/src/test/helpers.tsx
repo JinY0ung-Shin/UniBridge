@@ -147,6 +147,7 @@ export function makeApiKey(overrides = {}) {
     description: 'Test API key',
     api_key: 'key-abc***',
     key_created: true,
+    is_master: false,
     allowed_databases: ['test-db'],
     allowed_routes: ['route-1'],
     rate_limit_per_minute: null,

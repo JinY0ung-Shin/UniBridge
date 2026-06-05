@@ -298,6 +298,8 @@
     "saveFailed": "API 키 저장에 실패했습니다",
     "deleteFailed": "API 키 삭제에 실패했습니다",
     "noneSelected": "선택 없음",
+    "masterKey": "마스터 키",
+    "allAccess": "전체 권한",
     "selectDatabases": "데이터베이스를 선택하세요",
     "selectRoutes": "라우트를 선택하세요",
     "allSelected": "{{count}}개 선택"

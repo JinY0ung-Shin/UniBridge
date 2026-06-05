@@ -298,6 +298,8 @@
     "saveFailed": "Failed to save API key",
     "deleteFailed": "Failed to delete API key",
     "noneSelected": "None selected",
+    "masterKey": "Master key",
+    "allAccess": "All access",
     "selectDatabases": "Select databases",
     "selectRoutes": "Select routes",
     "allSelected": "{{count}} selected"

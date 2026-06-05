@@ -639,6 +639,7 @@ export interface ApiKey {
   description: string;
   api_key: string | null;
   key_created: boolean;
+  is_master?: boolean;
   allowed_databases: string[];
   allowed_routes: string[];
   rate_limit_per_minute: number | null;
@@ -650,6 +651,7 @@ export interface ApiKeyCreate {
   name: string;
   description?: string;
   api_key?: string;
+  is_master?: boolean;
   allowed_databases: string[];
   allowed_routes: string[];
   rate_limit_per_minute?: number | null;
@@ -659,6 +661,7 @@ export interface ApiKeyCreate {
 export interface ApiKeyUpdate {
   description?: string;
   api_key?: string;
+  is_master?: boolean;
   allowed_databases?: string[];
   allowed_routes?: string[];
   rate_limit_per_minute?: number | null;

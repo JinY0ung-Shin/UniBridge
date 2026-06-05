@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from app.routers.api_keys import DENY_ALL_CONSUMER
 from app.routers.gateway import (
     PROTECTED_ROUTE_IDS,
     PROTECTED_UPSTREAM_IDS,
@@ -223,6 +224,63 @@ async def test_save_route_success(client, admin_token):
     assert isinstance(data["service_keys"], list)
     assert "require_auth" in data
     assert "strip_prefix" in data
+
+
+@pytest.mark.asyncio
+async def test_save_keyauth_route_defaults_to_deny_all_when_no_master(client, admin_token):
+    captured_body: dict = {}
+
+    async def put_resource(_resource_type, _resource_id, body):
+        captured_body.update(body)
+        return dict(body)
+
+    with patch("app.routers.gateway.apisix_client") as mock:
+        mock.get_resource = AsyncMock(side_effect=_http_status(404, "missing"))
+        mock.put_resource = AsyncMock(side_effect=put_resource)
+        resp = await client.put(
+            "/admin/gateway/routes/secure",
+            json={"uri": "/api/secure/*", "upstream_id": "u1", "require_auth": True},
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 200
+    assert captured_body["plugins"]["consumer-restriction"] == {
+        "whitelist": [DENY_ALL_CONSUMER]
+    }
+
+
+@pytest.mark.asyncio
+async def test_save_keyauth_route_whitelists_master_consumers(client, admin_token):
+    with patch("app.routers.api_keys.apisix_client") as api_keys_apisix:
+        api_keys_apisix.put_resource = AsyncMock(return_value={"username": "master-app"})
+        api_keys_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        api_keys_apisix.list_resources = AsyncMock(return_value={"items": []})
+        create_resp = await client.post(
+            "/admin/api-keys",
+            json={"name": "master-app", "api_key": "mk", "is_master": True},
+            headers=auth_header(admin_token),
+        )
+    assert create_resp.status_code == 201
+
+    captured_body: dict = {}
+
+    async def put_resource(_resource_type, _resource_id, body):
+        captured_body.update(body)
+        return dict(body)
+
+    with patch("app.routers.gateway.apisix_client") as gateway_apisix:
+        gateway_apisix.get_resource = AsyncMock(side_effect=_http_status(404, "missing"))
+        gateway_apisix.put_resource = AsyncMock(side_effect=put_resource)
+        resp = await client.put(
+            "/admin/gateway/routes/secure",
+            json={"uri": "/api/secure/*", "upstream_id": "u1", "require_auth": True},
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 200
+    assert captured_body["plugins"]["consumer-restriction"] == {
+        "whitelist": ["master-app"]
+    }
 
 
 @pytest.mark.asyncio

@@ -289,6 +289,7 @@ class ApiKeyCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="Unique key name (becomes APISIX consumer username)")
     description: str = ""
     api_key: str | None = Field(None, description="Custom API key value; auto-generated if omitted")
+    is_master: bool = Field(False, description="Grant all current and future data sources and routes")
     allowed_databases: list[str] = Field(default_factory=list, description="Database aliases this key can query")
     allowed_routes: list[str] = Field(default_factory=list, description="Gateway route IDs this key can access")
     rate_limit_per_minute: int | None = Field(None, ge=1, le=100000, description="Per-minute request cap; null = unlimited")
@@ -297,6 +298,7 @@ class ApiKeyCreate(BaseModel):
 class ApiKeyUpdate(BaseModel):
     description: str | None = None
     api_key: str | None = Field(None, description="New API key; omit to keep current")
+    is_master: bool | None = None
     allowed_databases: list[str] | None = None
     allowed_routes: list[str] | None = None
     rate_limit_per_minute: int | None = Field(None, ge=1, le=100000)
@@ -307,6 +309,7 @@ class ApiKeyResponse(BaseModel):
     description: str
     api_key: str | None = None
     key_created: bool = False
+    is_master: bool = False
     allowed_databases: list[str]
     allowed_routes: list[str]
     rate_limit_per_minute: int | None = None

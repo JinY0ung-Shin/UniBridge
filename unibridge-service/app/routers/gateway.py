@@ -18,6 +18,7 @@ from app.auth import CurrentUser, get_current_user, get_role_permissions, requir
 from app.config import settings
 from app.database import get_db
 from app.models import ApiKeyAccess
+from app.routers.api_keys import apply_master_consumer_restriction, list_master_consumer_names
 from app.services import apisix_client
 from app.services import prometheus_client
 from app.services.alert_state import delete_alert_state
@@ -291,6 +292,7 @@ async def save_route(
     route_id: str,
     body: dict[str, Any],
     _admin: CurrentUser = Depends(require_permission("gateway.routes.write")),
+    db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     # Reject inline upstream
     if "upstream" in body or "nodes" in body:
@@ -330,6 +332,12 @@ async def save_route(
         )
 
     body = _inject_plugins(body, existing_plugins)
+    plugins = body.get("plugins")
+    if isinstance(plugins, dict) and "key-auth" in plugins:
+        body = apply_master_consumer_restriction(
+            body,
+            await list_master_consumer_names(db),
+        )
 
     try:
         result = await apisix_client.put_resource("routes", route_id, body)

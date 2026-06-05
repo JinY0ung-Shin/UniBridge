@@ -22,6 +22,7 @@ router = APIRouter(prefix="/admin/api-keys", tags=["API Keys"])
 
 MASK_KEEP = 4
 DENY_ALL_CONSUMER = "__deny_all__"
+MASTER_ACCESS = "*"
 
 
 def _build_limit_count_plugin(rate_limit_per_minute: int | None) -> dict | None:
@@ -68,18 +69,95 @@ def _extract_api_key(consumer: dict, mask: bool = True) -> str | None:
     return _mask_key(key) if mask else key
 
 
+def _decode_json_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    decoded = json.loads(value)
+    if not isinstance(decoded, list) or any(
+        not isinstance(item, str) for item in decoded
+    ):
+        raise ValueError("Expected JSON string list")
+    return decoded
+
+
+def _is_master_access(allowed_databases: list[str], allowed_routes: list[str]) -> bool:
+    return MASTER_ACCESS in allowed_databases and MASTER_ACCESS in allowed_routes
+
+
+def _normalize_access_for_master(
+    allowed_databases: list[str],
+    allowed_routes: list[str],
+    is_master: bool,
+) -> tuple[list[str], list[str]]:
+    if is_master:
+        return [MASTER_ACCESS], [MASTER_ACCESS]
+    return allowed_databases, allowed_routes
+
+
+def apply_master_consumer_restriction(
+    route_body: dict,
+    master_consumers: list[str],
+) -> dict:
+    """Ensure a key-auth route is restricted to master keys by default."""
+    plugins = route_body.get("plugins")
+    if not isinstance(plugins, dict) or "key-auth" not in plugins:
+        return route_body
+
+    new_plugins = dict(plugins)
+    raw_cr = new_plugins.get("consumer-restriction")
+    cr = dict(raw_cr) if isinstance(raw_cr, dict) else {}
+    raw_whitelist = cr.get("whitelist", [])
+    whitelist_items = raw_whitelist if isinstance(raw_whitelist, list) else []
+    whitelist = {
+        item for item in whitelist_items
+        if isinstance(item, str) and item != DENY_ALL_CONSUMER
+    }
+    whitelist.update(master_consumers)
+
+    if not whitelist:
+        whitelist.add(DENY_ALL_CONSUMER)
+
+    new_plugins["consumer-restriction"] = {"whitelist": sorted(whitelist)}
+    new_body = dict(route_body)
+    new_body["plugins"] = new_plugins
+    return new_body
+
+
+async def list_master_consumer_names(db: AsyncSession) -> list[str]:
+    result = await db.execute(
+        select(ApiKeyAccess).order_by(ApiKeyAccess.consumer_name.asc())
+    )
+    masters: list[str] = []
+    for access in result.scalars().all():
+        try:
+            allowed_databases = _decode_json_list(access.allowed_databases)
+            allowed_routes = _decode_json_list(access.allowed_routes)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning(
+                "Skipping malformed API key access for consumer '%s' during master lookup",
+                access.consumer_name,
+            )
+            continue
+        if _is_master_access(allowed_databases, allowed_routes):
+            masters.append(access.consumer_name)
+    return masters
+
+
 def _to_response(
     access: ApiKeyAccess,
     api_key: str | None = None,
     key_created: bool = False,
 ) -> ApiKeyResponse:
+    allowed_databases = json.loads(access.allowed_databases) if access.allowed_databases else []
+    allowed_routes = json.loads(access.allowed_routes) if access.allowed_routes else []
     return ApiKeyResponse(
         name=access.consumer_name,
         description=access.description or "",
         api_key=api_key,
         key_created=key_created,
-        allowed_databases=json.loads(access.allowed_databases) if access.allowed_databases else [],
-        allowed_routes=json.loads(access.allowed_routes) if access.allowed_routes else [],
+        is_master=_is_master_access(allowed_databases, allowed_routes),
+        allowed_databases=allowed_databases,
+        allowed_routes=allowed_routes,
         rate_limit_per_minute=access.rate_limit_per_minute,
         owner=access.owner,
         created_at=access.created_at,
@@ -101,6 +179,7 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
         )
 
     allowed_route_ids = set(allowed_routes)
+    allow_all_routes = MASTER_ACCESS in allowed_route_ids
     # ``llm-messages`` / ``llm-responses`` are the Anthropic- and Responses-shape
     # siblings of ``llm-proxy`` served by the converter. Granting ``llm-proxy``
     # implicitly grants both so existing stored keys keep working after the
@@ -129,7 +208,7 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
         whitelist = set(cr.get("whitelist", []))
         whitelist.discard(DENY_ALL_CONSUMER)
 
-        if route_id in allowed_route_ids:
+        if allow_all_routes or route_id in allowed_route_ids:
             whitelist.add(consumer_name)
         else:
             whitelist.discard(consumer_name)
@@ -172,17 +251,8 @@ async def sync_all_consumer_route_restrictions(db: AsyncSession) -> None:
     )
     for access in result.scalars().all():
         try:
-            allowed_routes = json.loads(access.allowed_routes) if access.allowed_routes else []
-        except json.JSONDecodeError:
-            logger.warning(
-                "Skipping malformed allowed_routes for consumer '%s' during startup replay",
-                access.consumer_name,
-            )
-            continue
-
-        if not isinstance(allowed_routes, list) or any(
-            not isinstance(route_id, str) for route_id in allowed_routes
-        ):
+            allowed_routes = _decode_json_list(access.allowed_routes)
+        except (json.JSONDecodeError, ValueError):
             logger.warning(
                 "Skipping malformed allowed_routes for consumer '%s' during startup replay",
                 access.consumer_name,
@@ -263,10 +333,16 @@ async def create_api_key(
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to create APISIX consumer: {exc}")
 
+    allowed_databases, allowed_routes = _normalize_access_for_master(
+        body.allowed_databases,
+        body.allowed_routes,
+        body.is_master,
+    )
+
     # Sync consumer-restriction BEFORE committing DB — abort on failure
     # If sync fails, clean up the APISIX consumer we just created
     try:
-        await _sync_consumer_restriction(body.allowed_routes, body.name)
+        await _sync_consumer_restriction(allowed_routes, body.name)
     except HTTPException:
         try:
             await apisix_client.delete_resource("consumers", body.name)
@@ -277,8 +353,8 @@ async def create_api_key(
     access = ApiKeyAccess(
         consumer_name=body.name,
         description=body.description,
-        allowed_databases=json.dumps(body.allowed_databases) if body.allowed_databases else None,
-        allowed_routes=json.dumps(body.allowed_routes) if body.allowed_routes else None,
+        allowed_databases=json.dumps(allowed_databases) if allowed_databases else None,
+        allowed_routes=json.dumps(allowed_routes) if allowed_routes else None,
         rate_limit_per_minute=body.rate_limit_per_minute,
     )
     db.add(access)
@@ -447,6 +523,40 @@ async def update_api_key(
     # omitted field means "no change". model_fields_set holds the field names
     # that were actually present in the request payload.
     rate_limit_provided = "rate_limit_per_minute" in body.model_fields_set
+    current_allowed_databases = _decode_json_list(access.allowed_databases)
+    current_allowed_routes = _decode_json_list(access.allowed_routes)
+    current_is_master = _is_master_access(current_allowed_databases, current_allowed_routes)
+
+    next_allowed_databases = current_allowed_databases
+    next_allowed_routes = current_allowed_routes
+    access_changed = False
+
+    if body.is_master is True:
+        next_allowed_databases = [MASTER_ACCESS]
+        next_allowed_routes = [MASTER_ACCESS]
+        access_changed = True
+    elif body.is_master is False:
+        if body.allowed_databases is not None:
+            next_allowed_databases = body.allowed_databases
+        elif current_is_master:
+            next_allowed_databases = []
+        if body.allowed_routes is not None:
+            next_allowed_routes = body.allowed_routes
+        elif current_is_master:
+            next_allowed_routes = []
+        access_changed = (
+            current_is_master
+            or body.allowed_databases is not None
+            or body.allowed_routes is not None
+        )
+    else:
+        if body.allowed_databases is not None:
+            next_allowed_databases = body.allowed_databases
+            access_changed = True
+        if body.allowed_routes is not None:
+            next_allowed_routes = body.allowed_routes
+            access_changed = True
+
     if body.api_key or rate_limit_provided:
         try:
             existing_consumer = await apisix_client.get_resource("consumers", name)
@@ -481,9 +591,9 @@ async def update_api_key(
 
     # Sync consumer-restriction BEFORE committing DB — abort on failure
     # If sync fails and we already updated the consumer key, rollback the key change
-    if body.allowed_routes is not None:
+    if access_changed:
         try:
-            await _sync_consumer_restriction(body.allowed_routes, name)
+            await _sync_consumer_restriction(next_allowed_routes, name)
         except HTTPException:
             if old_consumer_plugins is not None:
                 try:
@@ -496,10 +606,11 @@ async def update_api_key(
 
     if body.description is not None:
         access.description = body.description
-    if body.allowed_databases is not None:
-        access.allowed_databases = json.dumps(body.allowed_databases) if body.allowed_databases else None
-    if body.allowed_routes is not None:
-        access.allowed_routes = json.dumps(body.allowed_routes) if body.allowed_routes else None
+    if access_changed:
+        access.allowed_databases = (
+            json.dumps(next_allowed_databases) if next_allowed_databases else None
+        )
+        access.allowed_routes = json.dumps(next_allowed_routes) if next_allowed_routes else None
     if rate_limit_provided:
         access.rate_limit_per_minute = body.rate_limit_per_minute
 

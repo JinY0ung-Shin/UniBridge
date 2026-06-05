@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from app.routers.api_keys import DENY_ALL_CONSUMER, sync_all_consumer_route_restrictions
+from app.routers.api_keys import DENY_ALL_CONSUMER, MASTER_ACCESS, sync_all_consumer_route_restrictions
 from app.schemas import QueryResponse
 from tests.conftest import auth_header
 
@@ -138,6 +138,49 @@ async def test_sync_consumer_restriction_grants_llm_messages_alongside_llm_proxy
 
 
 @pytest.mark.asyncio
+async def test_sync_consumer_restriction_wildcard_grants_all_keyauth_routes():
+    from app.routers.api_keys import _sync_consumer_restriction
+
+    route_state = {
+        "query-api": {
+            "id": "query-api",
+            "uri": "/query/*",
+            "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}},
+        },
+        "nas-api": {
+            "id": "nas-api",
+            "uri": "/api/nas/*",
+            "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": [DENY_ALL_CONSUMER]}},
+        },
+        "public": {
+            "id": "public",
+            "uri": "/public/*",
+            "plugins": {},
+        },
+    }
+
+    async def list_resources(resource_type):
+        return {"items": list(route_state.values())}
+
+    async def put_resource(resource_type, resource_id, body):
+        route_state[resource_id] = {"id": resource_id, **body}
+
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
+        mock_apisix.put_resource = AsyncMock(side_effect=put_resource)
+
+        await _sync_consumer_restriction([MASTER_ACCESS], "master-app")
+
+    assert route_state["query-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["master-app"]
+    }
+    assert route_state["nas-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["master-app"]
+    }
+    assert "consumer-restriction" not in route_state["public"]["plugins"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "malformed_allowed_routes",
     [
@@ -253,6 +296,47 @@ async def test_create_api_key(client, admin_token):
         assert route_calls["llm-proxy"]["plugins"]["consumer-restriction"] == {
             "whitelist": [DENY_ALL_CONSUMER]
         }
+
+
+@pytest.mark.asyncio
+async def test_create_master_api_key_stores_wildcards_and_grants_all_routes(client, admin_token):
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={
+            "username": "master-app",
+            "plugins": {"key-auth": {"key": "master-key"}},
+        })
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+
+        resp = await client.post(
+            "/admin/api-keys",
+            json={
+                "name": "master-app",
+                "api_key": "master-key",
+                "is_master": True,
+                "allowed_databases": ["ignored-db"],
+                "allowed_routes": ["query-api"],
+            },
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["is_master"] is True
+    assert data["allowed_databases"] == [MASTER_ACCESS]
+    assert data["allowed_routes"] == [MASTER_ACCESS]
+
+    route_calls = {
+        call.args[1]: call.args[2]
+        for call in mock_apisix.put_resource.await_args_list
+        if call.args[0] == "routes"
+    }
+    assert route_calls["query-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["master-app"]
+    }
+    assert route_calls["llm-proxy"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["master-app"]
+    }
 
 
 @pytest.mark.asyncio

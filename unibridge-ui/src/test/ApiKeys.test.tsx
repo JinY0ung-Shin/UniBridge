@@ -69,6 +69,24 @@ describe('ApiKeys', () => {
     expect(screen.getByText('Test API key')).toBeInTheDocument();
   });
 
+  it('renders master keys as all access in the table', async () => {
+    mockedGetApiKeys.mockResolvedValue([
+      makeApiKey({
+        is_master: true,
+        allowed_databases: ['*'],
+        allowed_routes: ['*'],
+      }),
+    ]);
+
+    renderWithProviders(<ApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText('my-app')).toBeInTheDocument();
+    });
+
+    expect(screen.getAllByText('All access')).toHaveLength(2);
+  });
+
   it('hides write actions for users with read-only API key permission', async () => {
     const key = makeApiKey();
     mockedGetApiKeys.mockResolvedValue([key]);
@@ -269,6 +287,52 @@ describe('ApiKeys', () => {
         expect.objectContaining({
           allowed_databases: ['company-nas'],
           allowed_routes: ['nas-api'],
+        }),
+        expect.anything(),
+      );
+    });
+  });
+
+  it('creates a master key with wildcard access', async () => {
+    mockedGetAdminDatabases.mockResolvedValue([
+      makeDatabase({ alias: 'postgres', db_type: 'postgres' }),
+    ]);
+    mockedGetGatewayRoutes.mockResolvedValue({
+      items: [makeGatewayRoute({ id: 'query-api', name: 'query-api', uri: '/api/query/*' })],
+      total: 1,
+    });
+    mockedCreateApiKey.mockResolvedValue({
+      name: 'master-client',
+      description: '',
+      api_key: 'key-secret-12345',
+      key_created: true,
+      is_master: true,
+      allowed_databases: ['*'],
+      allowed_routes: ['*'],
+      rate_limit_per_minute: null,
+      owner: null,
+      created_at: '2026-04-11T00:00:00Z',
+    });
+
+    renderWithProviders(<ApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No API keys')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
+    await userEvent.type(screen.getByPlaceholderText('my-app'), 'master-client');
+    await userEvent.click(screen.getByRole('checkbox', { name: /master key/i }));
+    expect(screen.getByRole('checkbox', { name: /postgres/i })).toBeDisabled();
+    expect(screen.getByRole('checkbox', { name: /query-api/i })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(mockedCreateApiKey).toHaveBeenCalledWith(
+        expect.objectContaining({
+          is_master: true,
+          allowed_databases: ['*'],
+          allowed_routes: ['*'],
         }),
         expect.anything(),
       );
