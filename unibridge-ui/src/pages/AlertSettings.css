@@ -144,6 +144,30 @@
   gap: 20px;
 }
 
+.resource-owner-save-bar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 10px 0;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.resource-owner-save-bar > span {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.resource-owner-save-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .resource-owner-group {
   border-top: 1px solid var(--border-default);
   padding-top: 14px;
@@ -172,6 +196,17 @@
   color: var(--text-tertiary);
   font-size: 12px;
   white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .resource-owner-save-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .resource-owner-save-actions {
+    justify-content: flex-end;
+  }
 }
 
 /* ── Rule type badges ──────────────────────────────────────────────────────── */

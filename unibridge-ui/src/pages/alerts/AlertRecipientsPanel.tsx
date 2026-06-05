@@ -23,6 +23,10 @@ function emailsToText(emails: string[]): string {
   return emails.join('\n');
 }
 
+function sameEmails(a: string[], b: string[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 function resourceLabel(row: AlertResourceOwner): string {
   return row.display_name || row.resource_id;
 }
@@ -44,6 +48,11 @@ function resourceTypeLabel(t: (key: string) => string, resourceType: string): st
   return key ? t(key) : resourceType;
 }
 
+interface AssigneeChange {
+  row: AlertResourceOwner;
+  emails: string[];
+}
+
 export default function AlertRecipientsPanel() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -54,9 +63,8 @@ export default function AlertRecipientsPanel() {
   const resourcesQuery = useQuery({ queryKey: ['alert-resource-owners'], queryFn: getAlertResourceOwners });
 
   const settings = settingsQuery.data;
-  const resources = resourcesQuery.data ?? [];
+  const resources = useMemo(() => resourcesQuery.data ?? [], [resourcesQuery.data]);
   const resourceGroups = useMemo(() => {
-    const resources = resourcesQuery.data ?? [];
     const grouped = new Map<string, AlertResourceOwner[]>();
     for (const row of resources) {
       const rows = grouped.get(row.resource_type) ?? [];
@@ -71,7 +79,7 @@ export default function AlertRecipientsPanel() {
       if (bIndex === -1) return -1;
       return aIndex - bIndex;
     });
-  }, [resourcesQuery.data]);
+  }, [resources]);
 
   const [adminEmailsDraft, setAdminEmailsDraft] = useState<string | null>(null);
   const [resourceDrafts, setResourceDrafts] = useState<Record<string, string>>({});
@@ -80,6 +88,14 @@ export default function AlertRecipientsPanel() {
   function resourceDraftValue(row: AlertResourceOwner): string {
     return resourceDrafts[resourceKey(row)] ?? emailsToText(row.emails);
   }
+
+  const pendingAssigneeChanges = useMemo<AssigneeChange[]>(
+    () =>
+      resources
+        .map((row) => ({ row, emails: parseEmails(resourceDrafts[resourceKey(row)] ?? emailsToText(row.emails)) }))
+        .filter(({ row, emails }) => !sameEmails(emails, row.emails)),
+    [resources, resourceDrafts],
+  );
 
   const updateAdminsMutation = useMutation({
     mutationFn: (admin_emails: string[]) => updateAlertSettings({ admin_emails }),
@@ -108,21 +124,28 @@ export default function AlertRecipientsPanel() {
     },
   });
 
-  const assignMutation = useMutation({
-    mutationFn: ({
-      resourceType,
-      resourceId,
-      emails,
-    }: {
-      resourceType: string;
-      resourceId: string;
-      emails: string[];
-    }) => setAlertResourceOwner(resourceType, resourceId, { emails }),
-    onSuccess: (updated) => {
+  const saveAssigneesMutation = useMutation({
+    mutationFn: async (changes: AssigneeChange[]) => {
+      const updated: AlertResourceOwner[] = [];
+      for (const change of changes) {
+        updated.push(
+          await setAlertResourceOwner(change.row.resource_type, change.row.resource_id, { emails: change.emails }),
+        );
+      }
+      return updated;
+    },
+    onSuccess: (updatedRows) => {
+      const updatedByKey = new Map(updatedRows.map((row) => [resourceKey(row), row]));
       queryClient.setQueryData<AlertResourceOwner[]>(['alert-resource-owners'], (rows) =>
-        rows?.map((row) => (resourceKey(row) === resourceKey(updated) ? updated : row)),
+        rows?.map((row) => updatedByKey.get(resourceKey(row)) ?? row),
       );
-      setResourceDrafts((prev) => ({ ...prev, [resourceKey(updated)]: emailsToText(updated.emails) }));
+      setResourceDrafts((prev) => {
+        const next = { ...prev };
+        for (const row of updatedRows) {
+          delete next[resourceKey(row)];
+        }
+        return next;
+      });
       addToast({ type: 'success', title: t('alerts.assigneeSaved'), message: t('common.ok') });
     },
     onError: () => {
@@ -144,12 +167,13 @@ export default function AlertRecipientsPanel() {
     testAdminsMutation.mutate({ mailChannelId: settings.mail_channel_id, emails });
   }
 
-  function handleAssigneeSave(row: AlertResourceOwner) {
-    assignMutation.mutate({
-      resourceType: row.resource_type,
-      resourceId: row.resource_id,
-      emails: parseEmails(resourceDraftValue(row)),
-    });
+  function handleAssigneesSave() {
+    if (pendingAssigneeChanges.length === 0) return;
+    saveAssigneesMutation.mutate(pendingAssigneeChanges);
+  }
+
+  function handleAssigneesDiscard() {
+    setResourceDrafts({});
   }
 
   const hasSettings = Boolean(settings);
@@ -161,6 +185,7 @@ export default function AlertRecipientsPanel() {
   );
   const isLoading = settingsQuery.isLoading || resourcesQuery.isLoading;
   const isError = settingsQuery.isError || resourcesQuery.isError;
+  const hasPendingAssigneeChanges = pendingAssigneeChanges.length > 0;
 
   return (
     <div className="alert-tab-content">
@@ -212,61 +237,78 @@ export default function AlertRecipientsPanel() {
         <div className="empty-state"><h3>{t('alerts.noResources')}</h3></div>
       )}
       {resourceGroups.length > 0 && (
-        <div className="resource-owner-groups">
-          {resourceGroups.map(([resourceType, rows]) => (
-            <section className="resource-owner-group" key={resourceType}>
-              <div className="resource-owner-group-header">
-                <h3>{resourceTypeLabel(t, resourceType)}</h3>
-                <span>{t('alerts.resourceCount', { count: rows.length })}</span>
+        <>
+          {canWrite && (
+            <div className="resource-owner-save-bar">
+              <span>
+                {hasPendingAssigneeChanges
+                  ? t('alerts.assigneeChangeCount', { count: pendingAssigneeChanges.length })
+                  : t('alerts.noAssigneeChanges')}
+              </span>
+              <div className="resource-owner-save-actions">
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={handleAssigneesDiscard}
+                  disabled={!hasPendingAssigneeChanges || saveAssigneesMutation.isPending}
+                >
+                  {t('alerts.discardAssigneeChanges')}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleAssigneesSave}
+                  disabled={!hasPendingAssigneeChanges || saveAssigneesMutation.isPending}
+                >
+                  {saveAssigneesMutation.isPending ? t('common.saving') : t('alerts.saveAssigneeChanges')}
+                </button>
               </div>
-              <div className="table-container">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>{t('alerts.resource')}</th>
-                      <th>{t('alerts.assignees')}</th>
-                      {canWrite && <th>{t('common.actions')}</th>}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((row) => {
-                      const key = resourceKey(row);
-                      return (
-                        <tr key={key}>
-                          <td className="cell-alias">{resourceLabel(row)}</td>
-                          <td>
-                            <textarea
-                              className="form-textarea email-list-textarea"
-                              rows={2}
-                              aria-label={`${t('alerts.assignees')} - ${resourceLabel(row)}`}
-                              value={resourceDraftValue(row)}
-                              disabled={!canWrite || assignMutation.isPending}
-                              onChange={(e) =>
-                                setResourceDrafts((prev) => ({ ...prev, [key]: e.target.value }))
-                              }
-                              placeholder={t('alerts.assigneesHint')}
-                            />
-                          </td>
-                          {canWrite && (
+            </div>
+          )}
+          <div className="resource-owner-groups">
+            {resourceGroups.map(([resourceType, rows]) => (
+              <section className="resource-owner-group" key={resourceType}>
+                <div className="resource-owner-group-header">
+                  <h3>{resourceTypeLabel(t, resourceType)}</h3>
+                  <span>{t('alerts.resourceCount', { count: rows.length })}</span>
+                </div>
+                <div className="table-container">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>{t('alerts.resource')}</th>
+                        <th>{t('alerts.assignees')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((row) => {
+                        const key = resourceKey(row);
+                        return (
+                          <tr key={key}>
+                            <td className="cell-alias">{resourceLabel(row)}</td>
                             <td>
-                              <button
-                                className="btn btn-sm btn-primary"
-                                onClick={() => handleAssigneeSave(row)}
-                                disabled={assignMutation.isPending}
-                              >
-                                {t('alerts.save')}
-                              </button>
+                              <textarea
+                                className="form-textarea email-list-textarea"
+                                rows={2}
+                                aria-label={`${t('alerts.assignees')} - ${resourceLabel(row)}`}
+                                value={resourceDraftValue(row)}
+                                disabled={!canWrite || saveAssigneesMutation.isPending}
+                                onChange={(e) =>
+                                  setResourceDrafts((prev) => ({ ...prev, [key]: e.target.value }))
+                                }
+                                placeholder={t('alerts.assigneesHint')}
+                              />
                             </td>
-                          )}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          ))}
-        </div>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
