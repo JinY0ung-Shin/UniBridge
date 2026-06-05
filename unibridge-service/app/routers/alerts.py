@@ -19,6 +19,7 @@ from app.models import (
     AlertHistory,
     AlertSettings,
     DBConnection,
+    NASConnection,
     ResourceOwner,
     S3Connection,
 )
@@ -32,7 +33,7 @@ from app.schemas import (
     AlertSettingsResponse, AlertSettingsUpdate,
 )
 from app.services import apisix_client
-from app.services.apisix_system_resources import PROTECTED_ROUTE_IDS, PROTECTED_UPSTREAM_IDS
+from app.services.apisix_system_resources import PROTECTED_ROUTE_IDS
 from app.services.alert_sender import render_recipient_items, render_template, send_webhook
 
 logger = logging.getLogger(__name__)
@@ -51,14 +52,12 @@ def _mask_webhook_url(url: str) -> str:
     return f"{parsed.scheme}://{host}/***"
 
 
-RESOURCE_TYPES = {"db", "s3", "route", "upstream"}
+RESOURCE_TYPES = {"db", "s3", "nas", "route"}
 APISIX_RESOURCE_TYPES = {
     "route": "routes",
-    "upstream": "upstreams",
 }
 HIDDEN_APISIX_RESOURCE_IDS = {
     "route": PROTECTED_ROUTE_IDS,
-    "upstream": PROTECTED_UPSTREAM_IDS,
 }
 
 
@@ -150,6 +149,9 @@ async def _resource_display_name(
     if resource_type == "s3":
         result = await db.execute(select(S3Connection.alias).where(S3Connection.alias == resource_id))
         return result.scalar_one_or_none()
+    if resource_type == "nas":
+        result = await db.execute(select(NASConnection.alias).where(NASConnection.alias == resource_id))
+        return result.scalar_one_or_none()
 
     items = await _load_apisix_resources(resource_type)
     for item in items:
@@ -186,7 +188,16 @@ async def _list_resources_for_owners(db: AsyncSession) -> list[ResourceOwnerResp
             emails=owners.get(("s3", alias), []),
         ))
 
-    for resource_type in ("route", "upstream"):
+    nas_result = await db.execute(select(NASConnection.alias).order_by(NASConnection.alias))
+    for alias in nas_result.scalars().all():
+        rows.append(ResourceOwnerResponse(
+            resource_type="nas",
+            resource_id=alias,
+            display_name=alias,
+            emails=owners.get(("nas", alias), []),
+        ))
+
+    for resource_type in ("route",):
         for item in await _load_apisix_resources(resource_type):
             raw_id = item.get("id")
             if raw_id is None:

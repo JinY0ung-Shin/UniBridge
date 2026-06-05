@@ -120,6 +120,20 @@ async def _check_db_health() -> list[tuple[str, bool]]:
     return results
 
 
+async def _check_nas_health() -> list[tuple[str, bool]]:
+    """Check registered NAS connections. Returns [(alias, is_healthy)]."""
+    from app.services.nas_manager import nas_manager
+    results = []
+    for alias in nas_manager.list_aliases():
+        try:
+            ok, _ = await nas_manager.test_connection(alias)
+            results.append((alias, ok))
+        except Exception as exc:
+            logger.warning("NAS health check failed for '%s': %s", alias, exc)
+            results.append((alias, False))
+    return results
+
+
 async def _check_upstream_health() -> list[tuple[str, bool]]:
     """Check APISIX upstream health. Returns [(upstream_id, is_healthy)]."""
     global _UPSTREAM_NAME_BY_ID
@@ -267,7 +281,24 @@ async def run_single_check(state: AlertStateManager, *, trigger_after_failures: 
                 display_target=alias, monitor_label="DB 헬스체크",
             )
 
-    # 2. Upstream health
+    # 2. NAS connection health
+    nas_results = await _check_nas_health()
+    for alias, is_healthy in nas_results:
+        transition = state.update(
+            "nas_health", alias,
+            is_healthy=is_healthy,
+            trigger_after_failures=trigger_after_failures,
+        )
+        await _persist_state_safely(state, "nas_health", alias)
+        if transition:
+            msg = f"NAS connection '{alias}' {'restored' if transition == 'resolved' else 'is unavailable'}."
+            await dispatch_alert(
+                resource_type="nas", resource_id=alias,
+                alert_type=transition, target=alias, message=msg,
+                display_target=alias, monitor_label="NAS 연결 상태",
+            )
+
+    # 3. Upstream health
     upstream_results = await _check_upstream_health()
     for uid, is_healthy in upstream_results:
         upstream_name = _UPSTREAM_NAME_BY_ID.get(uid)
@@ -287,7 +318,7 @@ async def run_single_check(state: AlertStateManager, *, trigger_after_failures: 
                 display_target=display, monitor_label="업스트림 헬스체크",
             )
 
-    # 3. Route-level error rate (automatic for every route; global threshold)
+    # 4. Route-level error rate (automatic for every route; global threshold)
     route_results = await _check_route_error_rate()
     if route_results is None:
         return

@@ -90,6 +90,33 @@ class TestAlertChecker:
             assert kwargs["display_target"] == "mydb"
 
     @pytest.mark.asyncio
+    async def test_nas_health_triggered(self):
+        state = AlertStateManager()
+        # Seed fail_count=1 so the next unhealthy observation crosses N=2.
+        state.update("nas_health", "reports-nas", is_healthy=False, trigger_after_failures=2)
+
+        with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+             patch("app.services.alert_checker._check_nas_health", new_callable=AsyncMock) as mock_nas, \
+             patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+             patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+            mock_db.return_value = []
+            mock_nas.return_value = [("reports-nas", False)]
+            mock_up.return_value = []
+
+            await run_single_check(state, trigger_after_failures=2)
+
+            assert state.get_status("nas_health", "reports-nas") == "alert"
+            mock_dispatch.assert_called_once()
+            kwargs = mock_dispatch.call_args.kwargs
+            assert kwargs["resource_type"] == "nas"
+            assert kwargs["resource_id"] == "reports-nas"
+            assert kwargs["alert_type"] == "triggered"
+            assert kwargs["target"] == "reports-nas"
+            assert kwargs["message"] == "NAS connection 'reports-nas' is unavailable."
+            assert kwargs["display_target"] == "reports-nas"
+
+    @pytest.mark.asyncio
     async def test_no_dispatch_when_no_transition(self):
         state = AlertStateManager()
 

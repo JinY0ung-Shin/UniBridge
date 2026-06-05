@@ -224,6 +224,41 @@ async def test_dispatch_alert_sends_to_admins_when_no_assignees(engine):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_alert_ignores_upstream_assignees_and_sends_to_admins(engine):
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        channel = await _seed_mail_channel(db)
+        db.add(AlertSettings(
+            id=1,
+            mail_channel_id=channel.id,
+            admin_emails=json.dumps(["admin@example.com"]),
+        ))
+        await _seed_resource_owner(
+            db,
+            resource_type="upstream",
+            resource_id="orders-upstream",
+            emails=["owner@example.com"],
+        )
+        await db.commit()
+
+    send = AsyncMock(return_value=(True, None))
+    with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
+         patch("app.services.alert_owner_dispatcher.send_webhook", send):
+        await dispatch_alert(
+            resource_type="upstream",
+            resource_id="orders-upstream",
+            alert_type="triggered",
+            target="orders-upstream",
+            message="Upstream failed",
+        )
+
+    send.assert_awaited_once()
+    histories = await _history_rows(session_factory)
+    assert json.loads(histories[0].recipients) == ["admin@example.com"]
+    assert histories[0].success is True
+
+
+@pytest.mark.asyncio
 async def test_dispatch_alert_records_dispatch_metric(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:

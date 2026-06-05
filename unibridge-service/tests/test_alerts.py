@@ -287,6 +287,8 @@ class TestAlertState:
         mgr = AlertStateManager()
         mgr.update("db_health", "live-db", is_healthy=False, trigger_after_failures=1)
         mgr.update("db_health", "ghost-db", is_healthy=False, trigger_after_failures=1)
+        mgr.update("nas_health", "live-nas", is_healthy=False, trigger_after_failures=1)
+        mgr.update("nas_health", "ghost-nas", is_healthy=False, trigger_after_failures=1)
         mgr.update("upstream_health", "live-up", is_healthy=False, trigger_after_failures=1)
         mgr.update("upstream_health", "ghost-up", is_healthy=False, trigger_after_failures=1)
         # Route states are now keyed by the plain route_id.
@@ -301,6 +303,8 @@ class TestAlertState:
             for atype, target in [
                 ("db_health", "live-db"),
                 ("db_health", "ghost-db"),
+                ("nas_health", "live-nas"),
+                ("nas_health", "ghost-nas"),
                 ("upstream_health", "live-up"),
                 ("upstream_health", "ghost-up"),
                 ("route_error_rate", "live-route"),
@@ -315,20 +319,24 @@ class TestAlertState:
                 db,
                 mgr,
                 known_db_aliases={"live-db"},
+                known_nas_aliases={"live-nas"},
                 known_upstream_ids={"live-up"},
                 known_route_ids={"live-route"},
             )
 
         removed_set = set(removed)
         assert ("db_health", "ghost-db") in removed_set
+        assert ("nas_health", "ghost-nas") in removed_set
         assert ("upstream_health", "ghost-up") in removed_set
         assert ("route_error_rate", "ghost-route") in removed_set
         assert ("error_rate", "global:rule_1") in removed_set
         assert ("route_error_rate", "live-route:rule_99") in removed_set
-        assert len(removed) == 5
+        assert len(removed) == 6
 
         assert mgr.get_status("db_health", "live-db") == "alert"
         assert mgr.get_status("db_health", "ghost-db") == "ok"
+        assert mgr.get_status("nas_health", "live-nas") == "alert"
+        assert mgr.get_status("nas_health", "ghost-nas") == "ok"
         assert mgr.get_status("upstream_health", "live-up") == "alert"
         assert mgr.get_status("upstream_health", "ghost-up") == "ok"
         assert mgr.get_status("route_error_rate", "live-route") == "alert"
@@ -356,6 +364,7 @@ class TestAlertState:
                 db,
                 mgr,
                 known_db_aliases=set(),
+                known_nas_aliases=set(),
                 known_upstream_ids=None,
                 known_route_ids=None,
             )

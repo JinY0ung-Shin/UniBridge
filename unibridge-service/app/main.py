@@ -15,7 +15,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app import metrics
 from app.config import settings, validate_settings
 from app.database import get_db, init_db
-from app.models import DBConnection
+from app.models import DBConnection, NASConnection
 from app.routers import admin, alerts, api_keys, gateway, nas, query, roles, s3, users
 from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
 from app.services.connection_manager import connection_manager
@@ -392,6 +392,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # outage does not wipe upstream/route alert state.
         db_aliases_result = await db.execute(select(DBConnection.alias))
         known_db_aliases = set(db_aliases_result.scalars().all())
+        nas_aliases_result = await db.execute(select(NASConnection.alias))
+        known_nas_aliases = set(nas_aliases_result.scalars().all())
 
         known_upstream_ids: set[str] | None
         known_route_ids: set[str] | None
@@ -421,6 +423,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             db,
             alert_state,
             known_db_aliases=known_db_aliases,
+            known_nas_aliases=known_nas_aliases,
             known_upstream_ids=known_upstream_ids,
             known_route_ids=known_route_ids,
         )

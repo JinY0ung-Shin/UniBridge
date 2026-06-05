@@ -20,6 +20,8 @@ from app.services.alert_sender import render_recipient_items, render_template, s
 
 logger = logging.getLogger(__name__)
 
+ASSIGNEE_RESOURCE_TYPES = {"db", "s3", "nas", "route"}
+
 
 async def dispatch_alert(
     *,
@@ -35,9 +37,11 @@ async def dispatch_alert(
 ) -> None:
     """Send an alert to the resource's assignees (담당자) plus the global admins (관리자).
 
-    Recipients are the union of the resource's assignee emails and the global
-    admin emails. Admins receive every alert; a resource with no assignees still
-    notifies the admins. With no recipients at all, nothing is sent.
+    Recipients are the union of supported resource assignee emails and the
+    global admin emails. Admins receive every alert; a resource with no
+    assignees still notifies the admins. With no recipients at all, nothing is
+    sent. Upstream alerts intentionally skip assignee routing and notify only
+    admins because upstreams are route internals in the UI.
     """
     history = AlertHistory(
         channel_id=None,
@@ -172,15 +176,16 @@ async def _resolve_recipients(
     first occurrence wins).
     """
     assignees: list[str] = []
-    result = await db.execute(
-        select(ResourceOwner.emails).where(
-            ResourceOwner.resource_type == resource_type,
-            ResourceOwner.resource_id == resource_id,
+    if resource_type in ASSIGNEE_RESOURCE_TYPES:
+        result = await db.execute(
+            select(ResourceOwner.emails).where(
+                ResourceOwner.resource_type == resource_type,
+                ResourceOwner.resource_id == resource_id,
+            )
         )
-    )
-    owner_emails_json = result.scalar_one_or_none()
-    if owner_emails_json is not None:
-        assignees = _parse_emails(owner_emails_json)
+        owner_emails_json = result.scalar_one_or_none()
+        if owner_emails_json is not None:
+            assignees = _parse_emails(owner_emails_json)
 
     admins = _parse_emails(admin_emails_json)
 

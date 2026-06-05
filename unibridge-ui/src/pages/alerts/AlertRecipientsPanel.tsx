@@ -35,14 +35,14 @@ function resourceKey(row: Pick<AlertResourceOwner, 'resource_type' | 'resource_i
   return `${row.resource_type}:${row.resource_id}`;
 }
 
-const RESOURCE_TYPE_ORDER = ['db', 's3', 'route', 'upstream'];
+const RESOURCE_TYPE_ORDER = ['db', 's3', 'nas', 'route'];
 
 function resourceTypeLabel(t: (key: string) => string, resourceType: string): string {
   const labelKeys: Record<string, string> = {
     db: 'alerts.resourceTypeDb',
     s3: 'alerts.resourceTypeS3',
+    nas: 'alerts.resourceTypeNas',
     route: 'alerts.resourceTypeRoute',
-    upstream: 'alerts.resourceTypeUpstream',
   };
   const key = labelKeys[resourceType];
   return key ? t(key) : resourceType;

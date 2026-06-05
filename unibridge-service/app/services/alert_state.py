@@ -274,6 +274,7 @@ async def purge_stale_states(
     state: AlertStateManager,
     *,
     known_db_aliases: set[str],
+    known_nas_aliases: set[str],
     known_upstream_ids: set[str] | None,
     known_route_ids: set[str] | None,
 ) -> list[tuple[str, str]]:
@@ -297,6 +298,8 @@ async def purge_stale_states(
 
         if atype == "db_health":
             should_remove = target not in known_db_aliases
+        elif atype == "nas_health":
+            should_remove = target not in known_nas_aliases
         elif atype == "upstream_health":
             if known_upstream_ids is not None:
                 should_remove = target not in known_upstream_ids

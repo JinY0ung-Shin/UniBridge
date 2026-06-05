@@ -226,6 +226,11 @@
   color: var(--accent-blue);
 }
 
+.rule-type-badge--nas_health {
+  background: color-mix(in srgb, #0d9488 12%, transparent);
+  color: #0d9488;
+}
+
 .rule-type-badge--upstream_health {
   background: color-mix(in srgb, var(--accent-green) 12%, transparent);
   color: var(--accent-green);

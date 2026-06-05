@@ -14,6 +14,7 @@ from app.models import (
     AlertHistory,
     AlertSettings,
     DBConnection,
+    NASConnection,
     ResourceOwner,
     S3Connection,
 )
@@ -708,12 +709,15 @@ async def test_resource_owner_rejects_unsupported_resource_type(client, admin_to
 
 
 @pytest.mark.asyncio
-async def test_resource_owner_validates_apisix_route_and_upstream(client, admin_token, seeded_db):
+async def test_resource_owner_validates_route_and_nas_but_rejects_upstream(client, admin_token, seeded_db):
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        db.add(NASConnection(alias="reports-nas", base_path="/mnt/nas/reports"))
+        await db.commit()
+
     async def list_resources(resource: str) -> dict[str, object]:
         if resource == "routes":
             return {"items": [{"id": "orders-route", "name": "Orders Route"}]}
-        if resource == "upstreams":
-            return {"items": [{"id": "orders-upstream", "name": "Orders Upstream"}]}
         return {"items": []}
 
     with patch("app.routers.alerts.apisix_client") as mock_apisix:
@@ -724,9 +728,9 @@ async def test_resource_owner_validates_apisix_route_and_upstream(client, admin_
             json={"emails": ["gateway@example.com"]},
             headers=auth_header(admin_token),
         )
-        upstream_resp = await client.put(
-            "/admin/alerts/resource-owners/upstream/orders-upstream",
-            json={"emails": ["gateway@example.com"]},
+        nas_resp = await client.put(
+            "/admin/alerts/resource-owners/nas/reports-nas",
+            json={"emails": ["nas@example.com"]},
             headers=auth_header(admin_token),
         )
         missing_resp = await client.put(
@@ -734,23 +738,36 @@ async def test_resource_owner_validates_apisix_route_and_upstream(client, admin_
             json={"emails": ["gateway@example.com"]},
             headers=auth_header(admin_token),
         )
+        upstream_resp = await client.put(
+            "/admin/alerts/resource-owners/upstream/orders-upstream",
+            json={"emails": ["gateway@example.com"]},
+            headers=auth_header(admin_token),
+        )
 
     assert route_resp.status_code == 200, route_resp.text
     assert route_resp.json()["display_name"] == "Orders Route"
     assert route_resp.json()["emails"] == ["gateway@example.com"]
-    assert upstream_resp.status_code == 200, upstream_resp.text
-    assert upstream_resp.json()["display_name"] == "Orders Upstream"
+    assert nas_resp.status_code == 200, nas_resp.text
+    assert nas_resp.json()["display_name"] == "reports-nas"
+    assert nas_resp.json()["emails"] == ["nas@example.com"]
     assert missing_resp.status_code == 422
+    assert upstream_resp.status_code == 422
 
 
 @pytest.mark.asyncio
 async def test_resource_owner_lists_apisix_resources_with_email_mapping(client, admin_token, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
+        db.add(NASConnection(alias="reports-nas", base_path="/mnt/nas/reports"))
         db.add(ResourceOwner(
             resource_type="route",
             resource_id="orders-route",
             emails='["route@example.com"]',
+        ))
+        db.add(ResourceOwner(
+            resource_type="nas",
+            resource_id="reports-nas",
+            emails='["nas@example.com"]',
         ))
         await db.commit()
 
@@ -759,13 +776,6 @@ async def test_resource_owner_lists_apisix_resources_with_email_mapping(client, 
             return {"items": [
                 {"id": "orders-route", "name": "Orders Route"},
                 {"id": "llm-proxy", "name": "LLM Proxy"},
-            ]}
-        if resource == "upstreams":
-            return {"items": [
-                {"id": "orders-upstream", "uri": "/orders"},
-                {"id": "litellm"},
-                {"id": "llm-converter"},
-                {"id": "unibridge-service"},
             ]}
         return {"items": []}
 
@@ -786,21 +796,17 @@ async def test_resource_owner_lists_apisix_resources_with_email_mapping(client, 
         for row in rows
     )
     assert any(
-        row["resource_type"] == "upstream"
-        and row["resource_id"] == "orders-upstream"
-        and row["display_name"] == "/orders"
-        and row["emails"] == []
+        row["resource_type"] == "nas"
+        and row["resource_id"] == "reports-nas"
+        and row["display_name"] == "reports-nas"
+        and row["emails"] == ["nas@example.com"]
         for row in rows
     )
     assert not any(
         row["resource_type"] == "route" and row["resource_id"] == "llm-proxy"
         for row in rows
     )
-    assert not any(
-        row["resource_type"] == "upstream"
-        and row["resource_id"] in {"litellm", "llm-converter", "unibridge-service"}
-        for row in rows
-    )
+    assert not any(row["resource_type"] == "upstream" for row in rows)
 
 
 @pytest.mark.asyncio

@@ -4,11 +4,12 @@ import { getAlertStatus, type AlertStatus as AlertStatusEntry } from '../api/cli
 import { formatKST } from '../utils/time';
 import './AlertStatus.css';
 
-type RuleType = 'db_health' | 'upstream_health' | 'error_rate' | 'route_error_rate';
+type RuleType = 'db_health' | 'nas_health' | 'upstream_health' | 'error_rate' | 'route_error_rate';
 
 function typeLabel(t: (k: string) => string, type: string): string {
   const map: Record<string, string> = {
     db_health: t('alerts.typeDbHealth'),
+    nas_health: t('alerts.typeNasHealth'),
     upstream_health: t('alerts.typeUpstreamHealth'),
     error_rate: t('alerts.typeErrorRate'),
     route_error_rate: t('alerts.typeRouteErrorRate'),
