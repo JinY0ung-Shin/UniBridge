@@ -1114,6 +1114,9 @@ export interface NasListResponse {
   total_count: number;
   has_more: boolean;
   next_cursor: string | null;
+  /** True when the directory scan hit the entry cap: more entries exist than
+   * can be listed, so the caller should narrow with a search term. */
+  truncated?: boolean;
 }
 
 export interface NasEntryMetadata {
@@ -1155,7 +1158,7 @@ export async function testNasConnection(alias: string): Promise<{ status: string
 
 export async function getNasEntries(
   alias: string,
-  params: { path?: string; offset?: number; limit?: number },
+  params: { path?: string; offset?: number; limit?: number; q?: string },
 ): Promise<NasListResponse> {
   const { data } = await client.get(`/nas/${alias}/entries`, { params });
   return data;

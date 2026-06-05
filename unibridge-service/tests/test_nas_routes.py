@@ -64,6 +64,7 @@ _LIST_PAYLOAD = {
     "total_count": 2,
     "has_more": False,
     "next_cursor": None,
+    "truncated": False,
 }
 
 
@@ -182,6 +183,7 @@ async def test_list_entries_success_shape(client, admin_token):
         "total_count",
         "has_more",
         "next_cursor",
+        "truncated",
     }
     entry = body["files"][0]
     assert set(entry.keys()) == {"name", "path", "is_dir", "size", "modified_time"}
@@ -203,6 +205,21 @@ async def test_list_entries_default_path_empty(client, admin_token):
     # path defaults to "" and offset to 0.
     call = mgr.list_entries.await_args
     assert call.args[0] == "x"
+
+
+@pytest.mark.asyncio
+async def test_list_entries_forwards_query(client, admin_token):
+    """The `q` search term is forwarded to the manager as the `query` kwarg."""
+    with patch("app.routers.nas.nas_manager") as mgr:
+        mgr.has_connection.return_value = True
+        mgr.list_entries = AsyncMock(return_value=_LIST_PAYLOAD)
+        resp = await client.get(
+            "/nas/x/entries?path=a&q=report",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 200
+    call = mgr.list_entries.await_args
+    assert call.kwargs["query"] == "report"
 
 
 @pytest.mark.asyncio

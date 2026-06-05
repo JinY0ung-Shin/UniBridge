@@ -54,6 +54,28 @@ def _make_conn(
     )
 
 
+def _force_scandir_name_order(monkeypatch) -> None:
+    """Make os.scandir deterministic for cap/search tests."""
+    from app.services import nas_manager as manager_mod
+
+    real_scandir = os.scandir
+
+    class OrderedScandir:
+        def __init__(self, path):
+            self.path = path
+            self._ctx = None
+
+        def __enter__(self):
+            self._ctx = real_scandir(self.path)
+            iterator = self._ctx.__enter__()
+            return iter(sorted(list(iterator), key=lambda entry: entry.name))
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._ctx.__exit__(exc_type, exc, tb)
+
+    monkeypatch.setattr(manager_mod.os, "scandir", OrderedScandir)
+
+
 # ── singleton + lifecycle ─────────────────────────────────────────────────────
 
 
@@ -181,8 +203,10 @@ async def test_list_entries_response_shape(fresh_manager, tmp_path, monkeypatch)
         "total_count",
         "has_more",
         "next_cursor",
+        "truncated",
     }
     assert res["path"] == ""
+    assert res["truncated"] is False
 
     # Folders sorted first, name-sorted case-insensitively.
     folder_names = [f["name"] for f in res["folders"]]
@@ -279,8 +303,12 @@ async def test_list_entries_pagination_offset_limit(fresh_manager, tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_list_entries_entry_cap_sets_has_more(fresh_manager, tmp_path, monkeypatch):
-    """When the scan hits NAS_MAX_LIST_ENTRIES, has_more must be True."""
+async def test_list_entries_entry_cap_sets_truncated_and_terminates(
+    fresh_manager, tmp_path, monkeypatch
+):
+    """When the scan hits NAS_MAX_LIST_ENTRIES, `truncated` is True. has_more
+    stays window-based so paging terminates (offset paging re-scans from the
+    start and can never reach entries beyond the cap)."""
     from app.config import settings
 
     base = tmp_path / "share"
@@ -292,7 +320,114 @@ async def test_list_entries_entry_cap_sets_has_more(fresh_manager, tmp_path, mon
     await fresh_manager.add_connection(_make_conn("s", str(base)))
 
     res = await fresh_manager.list_entries("s", "", offset=0, limit=100)
-    assert res["has_more"] is True
+    # The directory has more entries than were scanned.
+    assert res["truncated"] is True
+    # But the scanned window (3) fits in one page, so paging must terminate.
+    assert res["has_more"] is False
+    assert res["next_cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_entries_query_in_capped_dir_does_not_loop(
+    fresh_manager, tmp_path, monkeypatch
+):
+    """A query must find matches beyond the unfiltered scan cap and still
+    terminate when the matching window fits in one page."""
+    from app.config import settings
+
+    base = tmp_path / "share"
+    base.mkdir()
+    for i in range(8):
+        (base / f"a{i}.txt").write_text("x")
+    (base / "z-needle.txt").write_text("x")
+    _allow_root(monkeypatch, tmp_path)
+    _force_scandir_name_order(monkeypatch)
+    # The match sorts after the unfiltered cap window.
+    monkeypatch.setattr(settings, "NAS_MAX_LIST_ENTRIES", 5)
+    await fresh_manager.add_connection(_make_conn("s", str(base)))
+
+    res = await fresh_manager.list_entries("s", "", query="needle", offset=0, limit=100)
+    assert [f["name"] for f in res["files"]] == ["z-needle.txt"]
+    assert res["truncated"] is False
+    assert res["has_more"] is False
+    assert res["next_cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_entries_query_sets_truncated_when_matching_cap_is_hit(
+    fresh_manager, tmp_path, monkeypatch
+):
+    from app.config import settings
+
+    base = tmp_path / "share"
+    base.mkdir()
+    for i in range(4):
+        (base / f"needle-{i}.txt").write_text("x")
+    _allow_root(monkeypatch, tmp_path)
+    _force_scandir_name_order(monkeypatch)
+    monkeypatch.setattr(settings, "NAS_MAX_LIST_ENTRIES", 2)
+    await fresh_manager.add_connection(_make_conn("s", str(base)))
+
+    res = await fresh_manager.list_entries("s", "", query="needle", offset=0, limit=100)
+    assert [f["name"] for f in res["files"]] == ["needle-0.txt", "needle-1.txt"]
+    assert res["truncated"] is True
+    assert res["has_more"] is False
+    assert res["next_cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_entries_query_filters_by_name_case_insensitive(
+    fresh_manager, tmp_path, monkeypatch
+):
+    """A `query` does a case-insensitive substring filter on the leaf name,
+    across both folders and files, scoped to the current directory."""
+    base = tmp_path / "share"
+    base.mkdir()
+    (base / "Reports").mkdir()
+    (base / "images").mkdir()
+    (base / "report-2026.csv").write_text("x")
+    (base / "summary.txt").write_text("x")
+    _allow_root(monkeypatch, tmp_path)
+    await fresh_manager.add_connection(_make_conn("s", str(base)))
+
+    res = await fresh_manager.list_entries("s", "", query="report")
+    folder_names = [f["name"] for f in res["folders"]]
+    file_names = [f["name"] for f in res["files"]]
+    # Matches the "Reports" folder (case-insensitive) and the report csv only.
+    assert folder_names == ["Reports"]
+    assert file_names == ["report-2026.csv"]
+    assert "images" not in folder_names
+    assert "summary.txt" not in file_names
+
+
+@pytest.mark.asyncio
+async def test_list_entries_query_no_match_is_empty(fresh_manager, tmp_path, monkeypatch):
+    base = tmp_path / "share"
+    base.mkdir()
+    (base / "a.txt").write_text("x")
+    (base / "b.txt").write_text("x")
+    _allow_root(monkeypatch, tmp_path)
+    await fresh_manager.add_connection(_make_conn("s", str(base)))
+
+    res = await fresh_manager.list_entries("s", "", query="zzz-nope")
+    assert res["folders"] == []
+    assert res["files"] == []
+    assert res["has_more"] is False
+    assert res["next_cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_entries_blank_query_is_noop(fresh_manager, tmp_path, monkeypatch):
+    """Whitespace-only query must not filter anything out."""
+    base = tmp_path / "share"
+    base.mkdir()
+    (base / "a.txt").write_text("x")
+    (base / "b.txt").write_text("x")
+    _allow_root(monkeypatch, tmp_path)
+    await fresh_manager.add_connection(_make_conn("s", str(base)))
+
+    res = await fresh_manager.list_entries("s", "", query="   ")
+    assert [f["name"] for f in res["files"]] == ["a.txt", "b.txt"]
 
 
 @pytest.mark.asyncio

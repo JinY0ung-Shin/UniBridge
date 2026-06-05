@@ -228,12 +228,13 @@ async def list_nas_entries(
     path: str = Query(""),
     offset: int = Query(0, ge=0),
     limit: int = Query(settings.NAS_LIST_DEFAULT_LIMIT, ge=1, le=settings.NAS_MAX_LIST_ENTRIES),
+    q: str = Query("", max_length=settings.NAS_MAX_PATH_BYTES),
     _user: CurrentUser | ApiKeyUser = Depends(_require_nas_browse),
 ) -> dict[str, Any]:
     if not nas_manager.has_connection(alias):
         raise HTTPException(status_code=404, detail=f"NAS connection '{alias}' not found")
     try:
-        return await nas_manager.list_entries(alias, path, offset=offset, limit=limit)
+        return await nas_manager.list_entries(alias, path, offset=offset, limit=limit, query=q)
     except Exception as exc:
         _handle_nas_error(alias, exc)
 
@@ -270,6 +271,10 @@ async def download_nas_entry(
     filename = meta["filename"]
     headers: dict[str, str] = {
         "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        # Defense in depth: never let a browser MIME-sniff an untrusted NAS file
+        # (e.g. a .svg/.html) into active content if this response is ever opened
+        # as a top-level document.
+        "X-Content-Type-Options": "nosniff",
     }
     size = meta.get("size")
     if size is not None:
