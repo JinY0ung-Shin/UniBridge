@@ -21,20 +21,35 @@ interface NodeEntry {
   weight: string;
 }
 
-const emptyNode: NodeEntry = { host: '', port: '80', weight: '1' };
+type UpstreamScheme = 'http' | 'https';
 
-function nodesToEntries(nodes: Record<string, number>): NodeEntry[] {
+const defaultScheme: UpstreamScheme = 'http';
+const defaultPorts: Record<UpstreamScheme, string> = { http: '80', https: '443' };
+
+function defaultPortForScheme(scheme: UpstreamScheme): string {
+  return defaultPorts[scheme];
+}
+
+function emptyNodeForScheme(scheme: UpstreamScheme): NodeEntry {
+  return { host: '', port: defaultPortForScheme(scheme), weight: '1' };
+}
+
+function normalizeScheme(value: unknown): UpstreamScheme {
+  return value === 'https' ? 'https' : 'http';
+}
+
+function nodesToEntries(nodes: Record<string, number>, scheme: UpstreamScheme): NodeEntry[] {
   return Object.entries(nodes).map(([addr, weight]) => {
     const [host, port] = addr.split(':');
-    return { host, port: port || '80', weight: String(weight) };
+    return { host, port: port || defaultPortForScheme(scheme), weight: String(weight) };
   });
 }
 
-function entriesToNodes(entries: NodeEntry[]): Record<string, number> {
+function entriesToNodes(entries: NodeEntry[], scheme: UpstreamScheme): Record<string, number> {
   const nodes: Record<string, number> = {};
   for (const e of entries) {
     if (e.host.trim()) {
-      nodes[`${e.host.trim()}:${e.port || '80'}`] = Number(e.weight) || 1;
+      nodes[`${e.host.trim()}:${e.port || defaultPortForScheme(scheme)}`] = Number(e.weight) || 1;
     }
   }
   return nodes;
@@ -47,8 +62,9 @@ function GatewayUpstreams() {
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
+  const [scheme, setScheme] = useState<UpstreamScheme>(defaultScheme);
   const [type, setType] = useState('roundrobin');
-  const [nodes, setNodes] = useState<NodeEntry[]>([{ ...emptyNode }]);
+  const [nodes, setNodes] = useState<NodeEntry[]>([emptyNodeForScheme(defaultScheme)]);
   const [error, setError] = useState('');
 
   const upstreamsQuery = useQuery({
@@ -75,17 +91,21 @@ function GatewayUpstreams() {
   function openCreate() {
     setEditingId(null);
     setName('');
+    setScheme(defaultScheme);
     setType('roundrobin');
-    setNodes([{ ...emptyNode }]);
+    setNodes([emptyNodeForScheme(defaultScheme)]);
     setError('');
     setShowModal(true);
   }
 
   function openEdit(u: GatewayUpstream) {
+    const upstreamScheme = normalizeScheme(u.scheme);
+    const nodeEntries = nodesToEntries(u.nodes || {}, upstreamScheme);
     setEditingId(u.id);
     setName(u.name || '');
+    setScheme(upstreamScheme);
     setType(u.type || 'roundrobin');
-    setNodes(nodesToEntries(u.nodes || {}).length > 0 ? nodesToEntries(u.nodes) : [{ ...emptyNode }]);
+    setNodes(nodeEntries.length > 0 ? nodeEntries : [emptyNodeForScheme(upstreamScheme)]);
     setError('');
     setShowModal(true);
   }
@@ -101,8 +121,9 @@ function GatewayUpstreams() {
     const upstreamId = editingId || crypto.randomUUID();
     const body = {
       name: name.trim() || undefined,
+      scheme,
       type,
-      nodes: entriesToNodes(nodes),
+      nodes: entriesToNodes(nodes, scheme),
     };
     setError('');
     saveMutation.mutate({ id: upstreamId, body });
@@ -119,8 +140,22 @@ function GatewayUpstreams() {
     setNodes((prev) => prev.map((n, i) => (i === index ? { ...n, [field]: value } : n)));
   }
 
+  function handleSchemeChange(value: string) {
+    const nextScheme = normalizeScheme(value);
+    const currentDefaultPort = defaultPortForScheme(scheme);
+    const nextDefaultPort = defaultPortForScheme(nextScheme);
+    setScheme(nextScheme);
+    setNodes((prev) =>
+      prev.map((node) =>
+        !node.port || node.port === currentDefaultPort
+          ? { ...node, port: nextDefaultPort }
+          : node,
+      ),
+    );
+  }
+
   function addNode() {
-    setNodes((prev) => [...prev, { ...emptyNode }]);
+    setNodes((prev) => [...prev, emptyNodeForScheme(scheme)]);
   }
 
   function removeNode(index: number) {
@@ -152,6 +187,7 @@ function GatewayUpstreams() {
             <thead>
               <tr>
                 <th>{t('common.name')}</th>
+                <th>{t('gatewayUpstreams.scheme')}</th>
                 <th>{t('common.type')}</th>
                 <th>{t('gatewayUpstreams.nodes')}</th>
                 <th>{t('common.actions')}</th>
@@ -164,6 +200,7 @@ function GatewayUpstreams() {
                     {u.name || u.id}
                     {u.system && <span className="badge badge-system">System</span>}
                   </td>
+                  <td><span className="badge badge-type">{normalizeScheme(u.scheme).toUpperCase()}</span></td>
                   <td><span className="badge badge-type">{u.type}</span></td>
                   <td className="cell-nodes">{formatNodes(u.nodes || {})}</td>
                   <td>
@@ -202,6 +239,14 @@ function GatewayUpstreams() {
                 <label>{t('common.name')}</label>
                 <input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-backend" />
                 <span className="field-hint">{t('gatewayUpstreams.nameHint')}</span>
+              </div>
+              <div className="form-group">
+                <label>{t('gatewayUpstreams.scheme')}</label>
+                <select value={scheme} onChange={(e) => handleSchemeChange(e.target.value)}>
+                  <option value="http">HTTP</option>
+                  <option value="https">HTTPS</option>
+                </select>
+                <span className="field-hint">{t('gatewayUpstreams.schemeHint')}</span>
               </div>
               <div className="form-group">
                 <label>{t('common.type')}</label>

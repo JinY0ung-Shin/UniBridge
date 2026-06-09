@@ -8,15 +8,17 @@ vi.mock('../api/client', () => ({
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getGatewayUpstreams, deleteGatewayUpstream } from '../api/client';
+import { getGatewayUpstreams, saveGatewayUpstream, deleteGatewayUpstream } from '../api/client';
 import GatewayUpstreams from '../pages/GatewayUpstreams';
 import { renderWithProviders, makeGatewayUpstream } from './helpers';
 
 const mockedGetGatewayUpstreams = vi.mocked(getGatewayUpstreams);
+const mockedSaveGatewayUpstream = vi.mocked(saveGatewayUpstream);
 const mockedDeleteGatewayUpstream = vi.mocked(deleteGatewayUpstream);
 
 describe('GatewayUpstreams', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     mockedGetGatewayUpstreams.mockResolvedValue({ items: [], total: 0 });
   });
 
@@ -39,7 +41,32 @@ describe('GatewayUpstreams', () => {
     });
 
     expect(screen.getByText('roundrobin')).toBeInTheDocument();
+    expect(screen.getByText('HTTP')).toBeInTheDocument();
     expect(screen.getByText('localhost:3000 (w:1)')).toBeInTheDocument();
+  });
+
+  it('submits https upstreams with the selected scheme and default port', async () => {
+    const user = userEvent.setup();
+    mockedSaveGatewayUpstream.mockResolvedValue(makeGatewayUpstream({ scheme: 'https', nodes: { 'secure.example.com:443': 1 } }));
+
+    renderWithProviders(<GatewayUpstreams />);
+
+    await user.click(screen.getByRole('button', { name: '+ Add Upstream' }));
+    await user.type(screen.getByPlaceholderText('my-backend'), 'secure-api');
+    await user.selectOptions(screen.getAllByRole('combobox')[0], 'https');
+    await user.type(screen.getByPlaceholderText('e.g. 192.168.1.10 or api.example.com'), 'secure.example.com');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(mockedSaveGatewayUpstream).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          name: 'secure-api',
+          scheme: 'https',
+          nodes: { 'secure.example.com:443': 1 },
+        }),
+      );
+    });
   });
 
   it('hides write actions for users with read-only upstream permission', async () => {

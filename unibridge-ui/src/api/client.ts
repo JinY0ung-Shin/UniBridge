@@ -378,6 +378,7 @@ export interface GatewayRoute {
 export interface GatewayUpstream {
   id: string;
   name?: string;
+  scheme?: 'http' | 'https';
   type: string;
   nodes: Record<string, number>;
   system?: boolean;

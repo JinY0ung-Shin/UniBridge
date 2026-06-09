@@ -87,6 +87,11 @@ def _health_path_for_route(route: dict[str, Any]) -> str:
     return "/health"
 
 
+def _http_scheme_for_upstream(upstream: dict[str, Any]) -> str:
+    scheme = upstream.get("scheme")
+    return scheme if scheme in {"http", "https"} else "http"
+
+
 def _inject_plugins(
     body: dict[str, Any], existing_plugins: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -424,7 +429,7 @@ async def test_route(
         )
 
     first_addr = next(iter(nodes))
-    scheme = "https" if _health_path_for_route(route) == "/health/liveliness" else "http"
+    scheme = _http_scheme_for_upstream(upstream)
     url = f"{scheme}://{first_addr}{_health_path_for_route(route)}"
     start = time.monotonic()
     try:
