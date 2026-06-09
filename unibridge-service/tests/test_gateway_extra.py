@@ -381,7 +381,7 @@ async def test_route_test_uses_https_upstream_scheme(client, admin_token):
             patch("httpx.AsyncClient") as cls:
         apisix.get_resource = AsyncMock(side_effect=[
             {"uri": "/x", "upstream_id": "u1"},
-            {"scheme": "https", "nodes": {"secure.example.com:443": 1}},
+            {"scheme": "https", "pass_host": "node", "nodes": {"secure.example.com:443": 1}},
         ])
         instance = AsyncMock()
         instance.__aenter__.return_value = instance
@@ -397,6 +397,38 @@ async def test_route_test_uses_https_upstream_scheme(client, admin_token):
     assert resp.status_code == 200
     instance.get.assert_awaited_once()
     assert instance.get.await_args.args[0] == "https://secure.example.com:443/health"
+    assert instance.get.await_args.kwargs["headers"]["Host"] == "secure.example.com"
+
+
+@pytest.mark.asyncio
+async def test_route_test_uses_rewrite_upstream_host(client, admin_token):
+    fake_response = httpx.Response(200, json={"ok": True}, request=httpx.Request("GET", "https://x"))
+    with patch("app.routers.gateway.apisix_client") as apisix, \
+            patch("httpx.AsyncClient") as cls:
+        apisix.get_resource = AsyncMock(side_effect=[
+            {"uri": "/x", "upstream_id": "u1"},
+            {
+                "scheme": "https",
+                "pass_host": "rewrite",
+                "upstream_host": "api.example.com",
+                "nodes": {"10.0.0.10:443": 1},
+            },
+        ])
+        instance = AsyncMock()
+        instance.__aenter__.return_value = instance
+        instance.__aexit__.return_value = None
+        instance.get = AsyncMock(return_value=fake_response)
+        cls.return_value = instance
+
+        resp = await client.post(
+            "/admin/gateway/routes/r1/test",
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 200
+    instance.get.assert_awaited_once()
+    assert instance.get.await_args.args[0] == "https://10.0.0.10:443/health"
+    assert instance.get.await_args.kwargs["headers"]["Host"] == "api.example.com"
 
 
 @pytest.mark.asyncio

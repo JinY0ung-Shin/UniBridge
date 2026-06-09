@@ -63,6 +63,7 @@ describe('GatewayUpstreams', () => {
         expect.objectContaining({
           name: 'secure-api',
           scheme: 'https',
+          pass_host: 'node',
           nodes: { 'secure.example.com:443': 1 },
         }),
       );

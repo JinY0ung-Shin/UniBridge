@@ -92,6 +92,20 @@ def _http_scheme_for_upstream(upstream: dict[str, Any]) -> str:
     return scheme if scheme in {"http", "https"} else "http"
 
 
+def _node_host(node_addr: str) -> str:
+    host, _sep, _port = node_addr.rpartition(":")
+    return host.strip("[]") if host else node_addr.strip("[]")
+
+
+def _host_header_for_upstream(upstream: dict[str, Any], node_addr: str) -> str:
+    pass_host = upstream.get("pass_host", "pass")
+    if pass_host == "node":
+        return _node_host(node_addr)
+    if pass_host == "rewrite" and isinstance(upstream.get("upstream_host"), str):
+        return upstream["upstream_host"]
+    return settings.HOST_IP
+
+
 def _inject_plugins(
     body: dict[str, Any], existing_plugins: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -434,8 +448,10 @@ async def test_route(
     start = time.monotonic()
     try:
         ssl_verify: str | bool = settings.SSL_CA_CERT_PATH or settings.SSL_VERIFY
+        headers = _service_headers_for_route(route)
+        headers.setdefault("Host", _host_header_for_upstream(upstream, first_addr))
         async with httpx.AsyncClient(timeout=5.0, verify=ssl_verify) as client:
-            resp = await client.get(url, headers=_service_headers_for_route(route))
+            resp = await client.get(url, headers=headers)
         elapsed_ms = round((time.monotonic() - start) * 1000)
         body: Any = None
         try:

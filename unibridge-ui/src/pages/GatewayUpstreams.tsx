@@ -22,9 +22,11 @@ interface NodeEntry {
 }
 
 type UpstreamScheme = 'http' | 'https';
+type PassHostMode = 'pass' | 'node' | 'rewrite';
 
 const defaultScheme: UpstreamScheme = 'http';
 const defaultPorts: Record<UpstreamScheme, string> = { http: '80', https: '443' };
+const defaultPassHost: PassHostMode = 'node';
 
 function defaultPortForScheme(scheme: UpstreamScheme): string {
   return defaultPorts[scheme];
@@ -36,6 +38,10 @@ function emptyNodeForScheme(scheme: UpstreamScheme): NodeEntry {
 
 function normalizeScheme(value: unknown): UpstreamScheme {
   return value === 'https' ? 'https' : 'http';
+}
+
+function normalizePassHost(value: unknown, fallback: PassHostMode): PassHostMode {
+  return value === 'pass' || value === 'node' || value === 'rewrite' ? value : fallback;
 }
 
 function nodesToEntries(nodes: Record<string, number>, scheme: UpstreamScheme): NodeEntry[] {
@@ -63,6 +69,8 @@ function GatewayUpstreams() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [scheme, setScheme] = useState<UpstreamScheme>(defaultScheme);
+  const [passHost, setPassHost] = useState<PassHostMode>(defaultPassHost);
+  const [upstreamHost, setUpstreamHost] = useState('');
   const [type, setType] = useState('roundrobin');
   const [nodes, setNodes] = useState<NodeEntry[]>([emptyNodeForScheme(defaultScheme)]);
   const [error, setError] = useState('');
@@ -92,6 +100,8 @@ function GatewayUpstreams() {
     setEditingId(null);
     setName('');
     setScheme(defaultScheme);
+    setPassHost(defaultPassHost);
+    setUpstreamHost('');
     setType('roundrobin');
     setNodes([emptyNodeForScheme(defaultScheme)]);
     setError('');
@@ -104,6 +114,8 @@ function GatewayUpstreams() {
     setEditingId(u.id);
     setName(u.name || '');
     setScheme(upstreamScheme);
+    setPassHost(normalizePassHost(u.pass_host, 'pass'));
+    setUpstreamHost(u.upstream_host || '');
     setType(u.type || 'roundrobin');
     setNodes(nodeEntries.length > 0 ? nodeEntries : [emptyNodeForScheme(upstreamScheme)]);
     setError('');
@@ -122,6 +134,8 @@ function GatewayUpstreams() {
     const body = {
       name: name.trim() || undefined,
       scheme,
+      pass_host: passHost,
+      upstream_host: passHost === 'rewrite' ? upstreamHost.trim() : undefined,
       type,
       nodes: entriesToNodes(nodes, scheme),
     };
@@ -248,6 +262,26 @@ function GatewayUpstreams() {
                 </select>
                 <span className="field-hint">{t('gatewayUpstreams.schemeHint')}</span>
               </div>
+              <div className="form-group">
+                <label>{t('gatewayUpstreams.hostHeader')}</label>
+                <select value={passHost} onChange={(e) => setPassHost(normalizePassHost(e.target.value, defaultPassHost))}>
+                  <option value="node">{t('gatewayUpstreams.hostHeaderNode')}</option>
+                  <option value="pass">{t('gatewayUpstreams.hostHeaderPass')}</option>
+                  <option value="rewrite">{t('gatewayUpstreams.hostHeaderRewrite')}</option>
+                </select>
+                <span className="field-hint">{t('gatewayUpstreams.hostHeaderHint')}</span>
+              </div>
+              {passHost === 'rewrite' && (
+                <div className="form-group">
+                  <label>{t('gatewayUpstreams.upstreamHost')}</label>
+                  <input
+                    value={upstreamHost}
+                    onChange={(e) => setUpstreamHost(e.target.value)}
+                    placeholder="api.example.com"
+                    required
+                  />
+                </div>
+              )}
               <div className="form-group">
                 <label>{t('common.type')}</label>
                 <select value={type} onChange={(e) => setType(e.target.value)}>

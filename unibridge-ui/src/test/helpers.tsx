@@ -202,6 +202,7 @@ export function makeGatewayUpstream(overrides = {}) {
     id: 'upstream-1',
     name: 'test-upstream',
     scheme: 'http' as const,
+    pass_host: 'node' as const,
     type: 'roundrobin',
     nodes: { 'localhost:3000': 1 },
     ...overrides,

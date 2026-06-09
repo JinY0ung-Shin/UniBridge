@@ -379,6 +379,8 @@ export interface GatewayUpstream {
   id: string;
   name?: string;
   scheme?: 'http' | 'https';
+  pass_host?: 'pass' | 'node' | 'rewrite';
+  upstream_host?: string;
   type: string;
   nodes: Record<string, number>;
   system?: boolean;
