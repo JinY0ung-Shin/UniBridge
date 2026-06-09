@@ -207,6 +207,22 @@ class AuditLogQuery(BaseModel):
     offset: int = Field(0, ge=0)
 
 
+class AdminAuditLogResponse(BaseModel):
+    id: int
+    timestamp: datetime | None = None
+    actor: str
+    action: str
+    resource_type: str
+    resource_id: str
+    summary: str | None = None
+    before: str | None = None
+    after: str | None = None
+    status: str
+    error_message: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
 # ── Health ───────────────────────────────────────────────────────────────────
 
 class HealthResponse(BaseModel):

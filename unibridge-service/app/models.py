@@ -163,6 +163,30 @@ class AuditLog(Base):
     error_message = Column(Text, nullable=True)
 
 
+class AdminAuditLog(Base):
+    """Audit trail for administrative configuration changes.
+
+    Unlike :class:`AuditLog` (which records SQL/SPARQL query execution), this
+    records mutations to managed resources — gateway routes/upstreams and API
+    keys — capturing who changed what, and before/after snapshots (with secrets
+    redacted) so a change can be reviewed or reverted.
+    """
+
+    __tablename__ = "admin_audit_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(UtcDateTime, default=utcnow, index=True)
+    actor = Column(String, nullable=False, index=True)  # username that made the change
+    action = Column(String, nullable=False)  # "create" | "update" | "delete"
+    resource_type = Column(String, nullable=False, index=True)  # "route" | "upstream" | "api_key"
+    resource_id = Column(String, nullable=False)  # route_id / upstream_id / consumer name
+    summary = Column(String, nullable=True)  # quick-scan label, e.g. route uri
+    before = Column(Text, nullable=True)  # JSON snapshot before change (None for create)
+    after = Column(Text, nullable=True)  # JSON snapshot after change (None for delete)
+    status = Column(String, nullable=False)  # "success" or "error"
+    error_message = Column(Text, nullable=True)
+
+
 class SystemConfig(Base):
     __tablename__ = "system_config"
 

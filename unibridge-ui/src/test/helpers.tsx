@@ -141,6 +141,23 @@ export function makeAuditLog(overrides = {}) {
   };
 }
 
+export function makeAdminAuditLog(overrides = {}) {
+  return {
+    id: 1,
+    timestamp: '2026-04-10T12:00:00Z',
+    actor: 'admin',
+    action: 'update' as const,
+    resource_type: 'route' as const,
+    resource_id: 'route-1',
+    summary: 'Updated route route-1',
+    before: '{"name": "old"}',
+    after: '{"name": "new"}',
+    status: 'success',
+    error_message: null as string | null,
+    ...overrides,
+  };
+}
+
 export function makeApiKey(overrides = {}) {
   return {
     name: 'my-app',

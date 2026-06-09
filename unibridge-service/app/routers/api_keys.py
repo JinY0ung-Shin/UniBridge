@@ -15,6 +15,7 @@ from app.database import get_db
 from app.models import ApiKeyAccess
 from app.schemas import ApiKeyCreate, ApiKeyResponse, ApiKeyUpdate
 from app.services import apisix_client
+from app.services.audit import log_admin_action
 
 logger = logging.getLogger(__name__)
 
@@ -362,7 +363,18 @@ async def create_api_key(
     await db.refresh(access)
 
     # Use the key we sent, not the PUT response (APISIX 3.x encrypts it in PUT responses)
-    return _to_response(access, api_key=body.api_key, key_created=True)
+    response = _to_response(access, api_key=body.api_key, key_created=True)
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="create",
+        resource_type="api_key",
+        resource_id=body.name,
+        summary=body.description or None,
+        before=None,
+        after=response.model_dump(),
+    )
+    return response
 
 
 @router.get("/me", response_model=ApiKeyResponse | None)
@@ -515,6 +527,15 @@ async def update_api_key(
     if access is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"API key '{name}' not found")
 
+    # Snapshot the pre-change state for the audit trail before any mutation.
+    before_snapshot = {
+        "name": name,
+        "description": access.description,
+        "allowed_databases": _decode_json_list(access.allowed_databases),
+        "allowed_routes": _decode_json_list(access.allowed_routes),
+        "rate_limit_per_minute": access.rate_limit_per_minute,
+    }
+
     key_created = False
     api_key_display: str | None = None
     old_consumer_plugins: dict | None = None
@@ -624,7 +645,18 @@ async def update_api_key(
         except Exception:
             pass
 
-    return _to_response(access, api_key=api_key_display, key_created=key_created)
+    response = _to_response(access, api_key=api_key_display, key_created=key_created)
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="update",
+        resource_type="api_key",
+        resource_id=name,
+        summary=access.description or None,
+        before=before_snapshot,
+        after=response.model_dump(),
+    )
+    return response
 
 
 @router.delete("/{name}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
@@ -640,6 +672,14 @@ async def delete_api_key(
     if access is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"API key '{name}' not found")
 
+    before_snapshot = {
+        "name": name,
+        "description": access.description,
+        "allowed_databases": _decode_json_list(access.allowed_databases),
+        "allowed_routes": _decode_json_list(access.allowed_routes),
+        "rate_limit_per_minute": access.rate_limit_per_minute,
+    }
+
     old_routes = json.loads(access.allowed_routes) if access.allowed_routes else []
     if old_routes:
         await _sync_consumer_restriction([], name)
@@ -654,3 +694,14 @@ async def delete_api_key(
 
     await db.delete(access)
     await db.commit()
+
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="delete",
+        resource_type="api_key",
+        resource_id=name,
+        summary=before_snapshot["description"] or None,
+        before=before_snapshot,
+        after=None,
+    )

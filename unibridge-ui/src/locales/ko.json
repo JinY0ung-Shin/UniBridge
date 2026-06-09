@@ -13,6 +13,7 @@
     "gatewayMonitoring": "게이트웨이 모니터링",
     "roles": "역할",
     "users": "사용자",
+    "adminAuditLogs": "관리 변경 감사 로그",
     "querySettings": "쿼리 설정",
     "alertStatus": "알림 상태",
     "alertSettings": "알림 설정",
@@ -150,6 +151,25 @@
     "parameters": "파라미터",
     "noLogs": "감사 로그가 없습니다",
     "noLogsDesc": "필터를 조정하거나 쿼리가 실행될 때까지 기다려주세요."
+  },
+  "adminAuditLogs": {
+    "title": "관리 변경 감사 로그",
+    "subtitle": "라우트, 업스트림, API 키의 설정 변경 이력",
+    "actor": "작업자",
+    "resourceType": "리소스 유형",
+    "action": "작업",
+    "allResourceTypes": "모든 리소스 유형",
+    "allActions": "모든 작업",
+    "timestamp": "시간",
+    "resourceId": "리소스 ID",
+    "summary": "요약",
+    "before": "변경 전",
+    "after": "변경 후",
+    "errorMessage": "오류 메시지",
+    "loadingLogs": "감사 로그를 불러오는 중...",
+    "loadFailed": "감사 로그를 불러오지 못했습니다.",
+    "noLogs": "감사 로그가 없습니다",
+    "noLogsDesc": "필터를 조정하거나 설정 변경이 발생할 때까지 기다려주세요."
   },
   "queryPlayground": {
     "title": "쿼리 플레이그라운드",

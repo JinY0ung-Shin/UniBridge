@@ -10,9 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
 from app.database import get_db
-from app.models import AuditLog, DBConnection, Permission, QueryTemplate, Role
+from app.models import (
+    AdminAuditLog,
+    AuditLog,
+    DBConnection,
+    Permission,
+    QueryTemplate,
+    Role,
+)
 from app.routers.query import _detect_statement_type
 from app.schemas import (
+    AdminAuditLogResponse,
     AuditLogResponse,
     DBConnectionCreate,
     DBConnectionResponse,
@@ -759,6 +767,56 @@ async def list_audit_logs(
 
     result = await db.execute(stmt)
     return [AuditLogResponse.model_validate(log) for log in result.scalars().all()]
+
+
+@router.get("/admin/audit-logs", response_model=list[AdminAuditLogResponse])
+async def list_admin_audit_logs(
+    actor: str | None = Query(None, description="Filter by actor (username)"),
+    resource_type: str | None = Query(
+        None, description="Filter by resource type (route/upstream/api_key)"
+    ),
+    action: str | None = Query(None, description="Filter by action (create/update/delete)"),
+    from_date: str | None = Query(None, description="Filter from date (ISO format)"),
+    to_date: str | None = Query(None, description="Filter to date (ISO format)"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    _admin: CurrentUser = Depends(require_permission("admin.audit.read")),
+    db: AsyncSession = Depends(get_db),
+) -> list[AdminAuditLogResponse]:
+    """Query administrative change audit logs (gateway/API-key mutations)."""
+    from datetime import datetime
+
+    stmt = select(AdminAuditLog)
+
+    if actor:
+        stmt = stmt.where(AdminAuditLog.actor == actor)
+    if resource_type:
+        stmt = stmt.where(AdminAuditLog.resource_type == resource_type)
+    if action:
+        stmt = stmt.where(AdminAuditLog.action == action)
+    if from_date:
+        try:
+            dt = datetime.fromisoformat(from_date)
+            stmt = stmt.where(AdminAuditLog.timestamp >= dt)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid from_date format. Use ISO format.",
+            )
+    if to_date:
+        try:
+            dt = datetime.fromisoformat(to_date)
+            stmt = stmt.where(AdminAuditLog.timestamp <= dt)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid to_date format. Use ISO format.",
+            )
+
+    stmt = stmt.order_by(AdminAuditLog.id.desc()).offset(offset).limit(limit)
+
+    result = await db.execute(stmt)
+    return [AdminAuditLogResponse.model_validate(log) for log in result.scalars().all()]
 
 
 # ── System Settings ─────────────────────────────────────────────────────────

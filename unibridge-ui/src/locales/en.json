@@ -13,6 +13,7 @@
     "gatewayMonitoring": "Gateway Monitoring",
     "roles": "Roles",
     "users": "Users",
+    "adminAuditLogs": "Admin Audit Log",
     "querySettings": "Query Settings",
     "alertStatus": "Alert Status",
     "alertSettings": "Alert Settings",
@@ -150,6 +151,25 @@
     "parameters": "Parameters",
     "noLogs": "No audit logs found",
     "noLogsDesc": "Adjust your filters or wait for queries to be executed."
+  },
+  "adminAuditLogs": {
+    "title": "Admin Audit Log",
+    "subtitle": "Configuration change history for routes, upstreams, and API keys",
+    "actor": "Actor",
+    "resourceType": "Resource Type",
+    "action": "Action",
+    "allResourceTypes": "All resource types",
+    "allActions": "All actions",
+    "timestamp": "Timestamp",
+    "resourceId": "Resource ID",
+    "summary": "Summary",
+    "before": "Before",
+    "after": "After",
+    "errorMessage": "Error Message",
+    "loadingLogs": "Loading audit logs...",
+    "loadFailed": "Failed to load audit logs.",
+    "noLogs": "No audit logs found",
+    "noLogsDesc": "Adjust your filters or wait for configuration changes to occur."
   },
   "queryPlayground": {
     "title": "Query Playground",

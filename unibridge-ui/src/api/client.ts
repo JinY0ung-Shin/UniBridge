@@ -163,6 +163,30 @@ export interface AuditLogParams {
   offset?: number;
 }
 
+export interface AdminAuditLog {
+  id: number;
+  timestamp: string | null;
+  actor: string;
+  action: string;
+  resource_type: string;
+  resource_id: string;
+  summary: string | null;
+  before: string | null;
+  after: string | null;
+  status: string;
+  error_message: string | null;
+}
+
+export interface AdminAuditLogParams {
+  actor?: string;
+  resource_type?: string;
+  action?: string;
+  from_date?: string;
+  to_date?: string;
+  limit?: number;
+  offset?: number;
+}
+
 export interface QuerySettings {
   rate_limit_per_minute: number;
   max_concurrent_queries: number;
@@ -310,6 +334,13 @@ export async function getDbTables(alias: string): Promise<string[]> {
 
 export async function getAuditLogs(params: AuditLogParams): Promise<AuditLog[]> {
   const { data } = await client.get('/admin/query/audit-logs', { params });
+  return data;
+}
+
+/* ── Admin: Admin Audit Logs (config change audit trail) ── */
+
+export async function getAdminAuditLogs(params: AdminAuditLogParams): Promise<AdminAuditLog[]> {
+  const { data } = await client.get('/admin/audit-logs', { params });
   return data;
 }
 
