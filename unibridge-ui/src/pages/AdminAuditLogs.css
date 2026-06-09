@@ -1,0 +1,43 @@
+/* Admin audit log viewer — extends AuditLogs.css (imported alongside). */
+
+/* Summary column: keep rows compact, truncate long text. */
+.cell-summary {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+/* Side-by-side before/after diff in the expanded detail row. */
+.audit-diff {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.audit-diff .detail-section {
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .audit-diff {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Action badges (create / update / delete). */
+.badge-action-create {
+  background: color-mix(in srgb, var(--accent-green) 10%, transparent);
+  color: var(--accent-green);
+}
+
+.badge-action-update {
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+  color: var(--accent-blue);
+}
+
+.badge-action-delete {
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
+  color: var(--accent-red);
+}

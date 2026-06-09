@@ -20,6 +20,7 @@ export const ADMIN_PERMISSIONS = [
   'admin.roles.write',
   'admin.users.read',
   'admin.users.write',
+  'admin.audit.read',
   'gateway.routes.read',
   'gateway.routes.write',
   'gateway.upstreams.read',
@@ -137,6 +138,23 @@ export function makeAuditLog(overrides = {}) {
     elapsed_ms: 42,
     status: 'success' as const,
     error_message: undefined,
+    ...overrides,
+  };
+}
+
+export function makeAdminAuditLog(overrides = {}) {
+  return {
+    id: 1,
+    timestamp: '2026-04-10T12:00:00Z',
+    actor: 'admin',
+    action: 'update' as const,
+    resource_type: 'route' as const,
+    resource_id: 'route-1',
+    summary: 'Updated route route-1',
+    before: '{"name": "old"}',
+    after: '{"name": "new"}',
+    status: 'success',
+    error_message: null as string | null,
     ...overrides,
   };
 }

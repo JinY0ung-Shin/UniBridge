@@ -22,6 +22,7 @@ from app.routers.api_keys import apply_master_consumer_restriction, list_master_
 from app.services import apisix_client
 from app.services import prometheus_client
 from app.services.alert_state import delete_alert_state
+from app.services.audit import log_admin_action
 from app.services.apisix_system_resources import PROTECTED_ROUTE_IDS, PROTECTED_UPSTREAM_IDS
 
 logger = logging.getLogger(__name__)
@@ -338,9 +339,10 @@ async def save_route(
     # APISIX 404 means "new route, proceed"; any other failure is fatal to avoid
     # silently losing previously stored headers.
     existing_plugins: dict[str, Any] | None = None
+    existing_route: dict[str, Any] | None = None
     try:
-        existing = await apisix_client.get_resource("routes", route_id)
-        existing_plugins = existing.get("plugins")
+        existing_route = await apisix_client.get_resource("routes", route_id)
+        existing_plugins = existing_route.get("plugins")
     except HTTPStatusError as exc:
         if exc.response.status_code != 404:
             _handle_apisix_error(exc, "Route")
@@ -374,6 +376,16 @@ async def save_route(
         body.get("upstream_id"),
         _admin.username,
     )
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="update" if existing_route else "create",
+        resource_type="route",
+        resource_id=route_id,
+        summary=uri,
+        before=existing_route,
+        after=result,
+    )
     _attach_service_key_fields(result)
     result["require_auth"] = "key-auth" in result.get("plugins", {})
     result["strip_prefix"] = _extract_strip_prefix(result)
@@ -386,12 +398,19 @@ async def save_route(
 async def delete_route(
     route_id: str,
     _admin: CurrentUser = Depends(require_permission("gateway.routes.write")),
+    db: AsyncSession = Depends(get_db),
 ) -> None:
     if route_id in PROTECTED_ROUTE_IDS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="System-managed route cannot be deleted",
         )
+    # Best-effort snapshot of the route before it's gone, for the audit trail.
+    before_route: dict[str, Any] | None = None
+    try:
+        before_route = await apisix_client.get_resource("routes", route_id)
+    except Exception:
+        before_route = None
     try:
         await apisix_client.delete_resource("routes", route_id)
     except HTTPStatusError as exc:
@@ -402,6 +421,16 @@ async def delete_route(
             detail=f"Failed to connect to APISIX: {exc}",
         )
     logger.info("Route deleted: id=%s user=%s", route_id, _admin.username)
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="delete",
+        resource_type="route",
+        resource_id=route_id,
+        summary=(before_route or {}).get("uri"),
+        before=before_route,
+        after=None,
+    )
 
 
 @router.post("/routes/{route_id}/test")
@@ -568,7 +597,13 @@ async def save_upstream(
     upstream_id: str,
     body: dict[str, Any],
     _admin: CurrentUser = Depends(require_permission("gateway.upstreams.write")),
+    db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    existing_upstream: dict[str, Any] | None = None
+    try:
+        existing_upstream = await apisix_client.get_resource("upstreams", upstream_id)
+    except Exception:
+        existing_upstream = None
     try:
         result = await apisix_client.put_resource("upstreams", upstream_id, body)
     except HTTPStatusError as exc:
@@ -579,6 +614,16 @@ async def save_upstream(
             detail=f"Failed to connect to APISIX: {exc}",
         )
     logger.info("Upstream saved: id=%s user=%s", upstream_id, _admin.username)
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="update" if existing_upstream else "create",
+        resource_type="upstream",
+        resource_id=upstream_id,
+        summary=body.get("name") or (existing_upstream or {}).get("name"),
+        before=existing_upstream,
+        after=result,  # type: ignore[possibly-undefined]
+    )
     return result  # type: ignore[possibly-undefined]
 
 
@@ -597,6 +642,11 @@ async def delete_upstream(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="System-managed upstream cannot be deleted",
         )
+    before_upstream: dict[str, Any] | None = None
+    try:
+        before_upstream = await apisix_client.get_resource("upstreams", upstream_id)
+    except Exception:
+        before_upstream = None
     try:
         await apisix_client.delete_resource("upstreams", upstream_id)
     except HTTPStatusError as exc:
@@ -615,6 +665,16 @@ async def delete_upstream(
         alerts_router._alert_state.discard("upstream_health", upstream_id)
 
     logger.info("Upstream deleted: id=%s user=%s", upstream_id, _admin.username)
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="delete",
+        resource_type="upstream",
+        resource_id=upstream_id,
+        summary=(before_upstream or {}).get("name"),
+        before=before_upstream,
+        after=None,
+    )
 
 
 # ── Metrics ─────────────────────────────────────────────────────────────────

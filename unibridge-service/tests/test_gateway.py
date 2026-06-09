@@ -946,11 +946,12 @@ class TestRouteTest:
         assert capture["headers"] == {
             "X-Api-Key": "raw-secret",
             "Authorization": "Bearer token",
+            "Host": "localhost",
         }
 
     async def test_uses_litellm_liveliness_for_llm_proxy(self, client, admin_token):
         route = {"id": "llm-proxy", "upstream_id": "litellm"}
-        upstream = {"id": "litellm", "nodes": {"litellm:4000": 1}}
+        upstream = {"id": "litellm", "scheme": "https", "nodes": {"litellm:4000": 1}}
         response = SimpleNamespace(
             status_code=200, json=lambda: {"status": "ok"}, text="ok"
         )
@@ -977,7 +978,7 @@ class TestRouteTest:
 
     async def test_uses_litellm_liveliness_for_llm_admin(self, client, admin_token):
         route = {"id": "llm-admin", "upstream_id": "litellm"}
-        upstream = {"id": "litellm", "nodes": {"litellm:4000": 1}}
+        upstream = {"id": "litellm", "scheme": "https", "nodes": {"litellm:4000": 1}}
         response = SimpleNamespace(
             status_code=200, json=lambda: {"status": "ok"}, text="ok"
         )
