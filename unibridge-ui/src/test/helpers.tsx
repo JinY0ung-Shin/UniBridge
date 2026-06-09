@@ -20,6 +20,7 @@ export const ADMIN_PERMISSIONS = [
   'admin.roles.write',
   'admin.users.read',
   'admin.users.write',
+  'admin.audit.read',
   'gateway.routes.read',
   'gateway.routes.write',
   'gateway.upstreams.read',
