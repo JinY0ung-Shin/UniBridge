@@ -7,6 +7,7 @@ import {
   deleteGatewayRoute,
   testGatewayRoute,
   getGatewayRouteCurl,
+  getGatewayOpenApiSpec,
   type GatewayRoute,
 } from '../api/client';
 import { useToast } from '../components/useToast';
@@ -112,6 +113,21 @@ function GatewayRoutes() {
     }
   }
 
+  async function handleOpenApiDownload() {
+    try {
+      const spec = await getGatewayOpenApiSpec();
+      const blob = new Blob([JSON.stringify(spec, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'unibridge-gateway-openapi.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      addToast({ type: 'error', title: t('gatewayRoutes.openApiFailed') });
+    }
+  }
+
   function renderTestBadge(routeId: string) {
     if (testingIds.has(routeId)) {
       return <span className="test-result test-result--pending">{t('gatewayRoutes.testing')}</span>;
@@ -132,11 +148,16 @@ function GatewayRoutes() {
           <h1>{t('gatewayRoutes.title')}</h1>
           <p className="page-subtitle">{t('gatewayRoutes.subtitle')}</p>
         </div>
-        {canWrite && (
-          <button className="btn btn-primary" onClick={() => navigate('/gateway/routes/new')}>
-            {t('gatewayRoutes.addRoute')}
+        <div className="page-header-actions">
+          <button className="btn btn-secondary" onClick={handleOpenApiDownload}>
+            {t('gatewayRoutes.openApiDownload')}
           </button>
-        )}
+          {canWrite && (
+            <button className="btn btn-primary" onClick={() => navigate('/gateway/routes/new')}>
+              {t('gatewayRoutes.addRoute')}
+            </button>
+          )}
+        </div>
       </div>
 
       {routesQuery.isLoading && <div className="loading-message">{t('gatewayRoutes.loadingRoutes')}</div>}

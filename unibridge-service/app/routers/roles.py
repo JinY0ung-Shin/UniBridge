@@ -15,8 +15,21 @@ from app.auth import (
 from app.database import get_db
 from app.models import Role, RolePermission
 from app.schemas import RoleCreate, RoleResponse, RoleUpdate, UserInfoResponse
+from app.services.audit import log_admin_action
 
 router = APIRouter(tags=["Roles"])
+
+
+async def _role_audit_snapshot(db: AsyncSession, role: Role) -> dict:
+    result = await db.execute(
+        select(RolePermission.permission).where(RolePermission.role_id == role.id)
+    )
+    return {
+        "name": role.name,
+        "description": role.description or "",
+        "is_system": role.is_system,
+        "permissions": sorted(row[0] for row in result.all()),
+    }
 
 
 async def _role_to_response(db: AsyncSession, role: Role) -> RoleResponse:
@@ -122,6 +135,17 @@ async def create_role(
     await db.commit()
     await db.refresh(role)
     await invalidate_permission_cache()
+
+    await log_admin_action(
+        db,
+        actor=_user.username,
+        action="create",
+        resource_type="role",
+        resource_id=str(role.id),
+        summary=role.name,
+        before=None,
+        after=await _role_audit_snapshot(db, role),
+    )
     return await _role_to_response(db, role)
 
 
@@ -144,6 +168,8 @@ async def update_role(
             detail="Cannot modify permissions of your own role",
         )
 
+    before_snapshot = await _role_audit_snapshot(db, role)
+
     if body.description is not None:
         role.description = body.description
 
@@ -162,6 +188,17 @@ async def update_role(
     await db.commit()
     await db.refresh(role)
     await invalidate_permission_cache()
+
+    await log_admin_action(
+        db,
+        actor=_user.username,
+        action="update",
+        resource_type="role",
+        resource_id=str(role_id),
+        summary=role.name,
+        before=before_snapshot,
+        after=await _role_audit_snapshot(db, role),
+    )
     return await _role_to_response(db, role)
 
 
@@ -183,7 +220,20 @@ async def delete_role(
             detail="Cannot delete your own role",
         )
 
+    before_snapshot = await _role_audit_snapshot(db, role)
+
     await db.execute(delete(RolePermission).where(RolePermission.role_id == role.id))
     await db.delete(role)
     await db.commit()
     await invalidate_permission_cache()
+
+    await log_admin_action(
+        db,
+        actor=_user.username,
+        action="delete",
+        resource_type="role",
+        resource_id=str(role_id),
+        summary=before_snapshot["name"],
+        before=before_snapshot,
+        after=None,
+    )

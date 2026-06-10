@@ -13,7 +13,7 @@ from app.config import settings
 from app.models import Base
 
 ALEMBIC_BASELINE_REVISION = "0001_initial"
-ALEMBIC_HEAD_REVISION = "0010_admin_audit_log"
+ALEMBIC_HEAD_REVISION = "0012_saved_queries_history_idx"
 _SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
 # Ensure the data directory exists for SQLite

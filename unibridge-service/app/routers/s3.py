@@ -15,6 +15,7 @@ from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_ro
 from app.database import get_db
 from app.models import S3Connection
 from app.schemas import S3ConnectionCreate, S3ConnectionResponse, S3ConnectionUpdate
+from app.services.audit import log_admin_action
 from app.services.connection_manager import decrypt_password, encrypt_password
 from app.services.s3_manager import s3_manager
 
@@ -29,6 +30,25 @@ def _mask_access_key(key: str) -> str:
     if len(key) <= MASK_KEEP:
         return "***"
     return "***" + key[-MASK_KEEP:]
+
+
+def _audit_snapshot(conn: S3Connection) -> dict[str, Any]:
+    """Audit snapshot of an S3 connection. The secret access key is never
+    recorded; the access key id is reduced to the usual ``***`` + last-4
+    form (same masking the list/detail responses expose)."""
+    try:
+        access_key_masked = _mask_access_key(decrypt_password(conn.access_key_id_encrypted))
+    except Exception:
+        access_key_masked = "***"
+    return {
+        "alias": conn.alias,
+        "endpoint_url": conn.endpoint_url,
+        "region": conn.region,
+        "access_key_id": access_key_masked,
+        "secret_access_key": "***",
+        "default_bucket": conn.default_bucket,
+        "use_ssl": conn.use_ssl,
+    }
 
 
 def _to_response(conn: S3Connection) -> S3ConnectionResponse:
@@ -77,6 +97,16 @@ async def create_s3_connection(
     except Exception as exc:
         logger.warning("S3 client creation failed for '%s': %s", body.alias, exc)
 
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="create",
+        resource_type="s3_connection",
+        resource_id=conn.alias,
+        summary=conn.endpoint_url or conn.region,
+        before=None,
+        after=_audit_snapshot(conn),
+    )
     resp = _to_response(conn)
     resp.status = "registered" if s3_manager.has_connection(body.alias) else "error"
     return resp
@@ -128,6 +158,8 @@ async def update_s3_connection(
     if not conn:
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
 
+    before_snapshot = _audit_snapshot(conn)
+
     provided = body.model_fields_set
     if "endpoint_url" in provided:
         conn.endpoint_url = body.endpoint_url or None
@@ -150,6 +182,16 @@ async def update_s3_connection(
     except Exception as exc:
         logger.warning("S3 client re-creation failed for '%s': %s", alias, exc)
 
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="update",
+        resource_type="s3_connection",
+        resource_id=alias,
+        summary=conn.endpoint_url or conn.region,
+        before=before_snapshot,
+        after=_audit_snapshot(conn),
+    )
     resp = _to_response(conn)
     resp.status = "registered" if s3_manager.has_connection(alias) else "error"
     return resp
@@ -172,10 +214,22 @@ async def delete_s3_connection(
     if not conn:
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
 
+    before_snapshot = _audit_snapshot(conn)
+
     await s3_manager.remove_connection(alias)
     await db.delete(conn)
     await db.commit()
     logger.info("S3 connection deleted: alias=%s user=%s", alias, _admin.username)
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="delete",
+        resource_type="s3_connection",
+        resource_id=alias,
+        summary=before_snapshot["endpoint_url"] or before_snapshot["region"],
+        before=before_snapshot,
+        after=None,
+    )
 
 
 @router.post("/admin/s3/connections/{alias}/test")

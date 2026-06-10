@@ -16,7 +16,7 @@ from app import metrics
 from app.config import settings, validate_settings
 from app.database import get_db, init_db
 from app.models import DBConnection, NASConnection
-from app.routers import admin, alerts, api_keys, gateway, nas, query, roles, s3, users
+from app.routers import admin, alerts, api_keys, gateway, nas, query, query_history, roles, s3, users
 from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
 from app.services.connection_manager import connection_manager
 from app.services.s3_manager import s3_manager
@@ -518,6 +518,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(query.router)
+app.include_router(query_history.router)
 app.include_router(admin.router)
 app.include_router(alerts.router)
 app.include_router(api_keys.router)

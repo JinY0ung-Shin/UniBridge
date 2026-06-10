@@ -2,7 +2,12 @@ import { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { getDatabases, executeQuery, type QueryResult } from '../api/client';
+import QueryHistoryPanel from '../components/QueryHistoryPanel';
+import SavedQueriesPanel from '../components/SavedQueriesPanel';
+import SaveQueryModal from '../components/SaveQueryModal';
 import './QueryPlayground.css';
+
+type WorkspaceTab = 'history' | 'saved';
 
 function QueryPlayground() {
   const { t } = useTranslation();
@@ -10,6 +15,8 @@ function QueryPlayground() {
   const [sql, setSql] = useState('');
   const [result, setResult] = useState<QueryResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>('history');
+  const [saveModalOpen, setSaveModalOpen] = useState(false);
 
   const dbsQuery = useQuery({
     queryKey: ['databases'],
@@ -58,6 +65,15 @@ function QueryPlayground() {
     }
   }
 
+  function handleLoadQuery(loadedSql: string, databaseAlias: string | null) {
+    setSql(loadedSql);
+    if (databaseAlias && databases.some((db) => db.alias === databaseAlias)) {
+      setSelectedDb(databaseAlias);
+    }
+    setResult(null);
+    setError(null);
+  }
+
   return (
     <div className="query-playground">
       <div className="page-header">
@@ -84,6 +100,14 @@ function QueryPlayground() {
           disabled={!selectedDb || !sql.trim() || execMutation.isPending}
         >
           {execMutation.isPending ? t('queryPlayground.executing') : t('queryPlayground.execute')}
+        </button>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => setSaveModalOpen(true)}
+          disabled={!sql.trim()}
+        >
+          {t('queryPlayground.saveQuery')}
         </button>
         <span className="shortcut-hint">{t('queryPlayground.shortcutHint')}</span>
       </div>
@@ -164,6 +188,43 @@ function QueryPlayground() {
             <div className="no-rows">{t('queryPlayground.noRows')}</div>
           )}
         </div>
+      )}
+
+      {/* History & saved queries */}
+      <div className="playground-workspace">
+        <div className="workspace-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'history'}
+            className={`workspace-tab ${activeTab === 'history' ? 'workspace-tab--active' : ''}`}
+            onClick={() => setActiveTab('history')}
+          >
+            {t('queryPlayground.historyTab')}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'saved'}
+            className={`workspace-tab ${activeTab === 'saved' ? 'workspace-tab--active' : ''}`}
+            onClick={() => setActiveTab('saved')}
+          >
+            {t('queryPlayground.savedTab')}
+          </button>
+        </div>
+        {activeTab === 'history' ? (
+          <QueryHistoryPanel onLoad={handleLoadQuery} />
+        ) : (
+          <SavedQueriesPanel onLoad={handleLoadQuery} />
+        )}
+      </div>
+
+      {saveModalOpen && (
+        <SaveQueryModal
+          sql={sql}
+          databaseAlias={selectedDb || null}
+          onClose={() => setSaveModalOpen(false)}
+        />
       )}
     </div>
   );

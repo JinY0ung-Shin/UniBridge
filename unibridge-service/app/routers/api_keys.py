@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from httpx import HTTPStatusError
@@ -12,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
 from app.database import get_db
+from app.db_types import utcnow
 from app.models import ApiKeyAccess
 from app.schemas import ApiKeyCreate, ApiKeyResponse, ApiKeyUpdate
 from app.services import apisix_client
@@ -45,6 +47,7 @@ def _build_limit_count_plugin(rate_limit_per_minute: int | None) -> dict | None:
 SELF_RATE_LIMIT = 30
 SELF_ALLOWED_ROUTES = ["query-api", "s3-api"]
 SELF_ALLOWED_DATABASES = ["*"]
+SELF_KEY_TTL = timedelta(days=30)  # personal keys expire; admin keys never do
 
 
 def _self_consumer_name(sub: str) -> str:
@@ -160,7 +163,12 @@ def _to_response(
         allowed_databases=allowed_databases,
         allowed_routes=allowed_routes,
         rate_limit_per_minute=access.rate_limit_per_minute,
+        allow_insert=bool(access.allow_insert),
+        allow_update=bool(access.allow_update),
+        allow_delete=bool(access.allow_delete),
+        allowed_tables=json.loads(access.allowed_tables) if access.allowed_tables else None,
         owner=access.owner,
+        expires_at=access.expires_at,
         created_at=access.created_at,
     )
 
@@ -357,6 +365,10 @@ async def create_api_key(
         allowed_databases=json.dumps(allowed_databases) if allowed_databases else None,
         allowed_routes=json.dumps(allowed_routes) if allowed_routes else None,
         rate_limit_per_minute=body.rate_limit_per_minute,
+        allow_insert=body.allow_insert,
+        allow_update=body.allow_update,
+        allow_delete=body.allow_delete,
+        allowed_tables=json.dumps(body.allowed_tables) if body.allowed_tables is not None else None,
     )
     db.add(access)
     await db.commit()
@@ -421,6 +433,7 @@ async def create_my_api_key(
         allowed_databases=json.dumps(SELF_ALLOWED_DATABASES),
         allowed_routes=json.dumps(SELF_ALLOWED_ROUTES),
         rate_limit_per_minute=SELF_RATE_LIMIT,
+        expires_at=utcnow() + SELF_KEY_TTL,
     )
     db.add(access)
     try:
@@ -489,7 +502,58 @@ async def regenerate_my_api_key(
         })
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to rotate key: {exc}")
+    # A regenerated key is effectively a fresh issuance — restart the 30-day clock.
+    access.expires_at = utcnow() + SELF_KEY_TTL
+    await db.commit()
+    await db.refresh(access)
     return _to_response(access, api_key=new_key, key_created=True)
+
+
+@router.post("/me/renew", response_model=ApiKeyResponse)
+async def renew_my_api_key(
+    user: CurrentUser = Depends(require_permission("apikeys.self")),
+    db: AsyncSession = Depends(get_db),
+) -> ApiKeyResponse:
+    """Extend the expiry of the caller's self-service key by 30 days.
+
+    Unlike ``/me/regenerate``, the key VALUE is unchanged — only ``expires_at``
+    moves forward, so existing clients keep working without re-configuration.
+    """
+    result = await db.execute(select(ApiKeyAccess).where(ApiKeyAccess.owner == user.sub))
+    access = result.scalar_one_or_none()
+    if access is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No API key to renew")
+
+    before_expires_at = access.expires_at
+    access.expires_at = utcnow() + SELF_KEY_TTL
+    await db.commit()
+    await db.refresh(access)
+
+    masked = None
+    try:
+        consumer = await apisix_client.get_resource("consumers", access.consumer_name)
+        masked = _extract_api_key(consumer, mask=True)
+    except Exception:
+        pass
+
+    response = _to_response(access, api_key=masked)
+    await log_admin_action(
+        db,
+        actor=user.username,
+        action="update",
+        resource_type="api_key",
+        resource_id=access.consumer_name,
+        summary="Renewed self-service key expiry",
+        before={
+            "name": access.consumer_name,
+            "expires_at": before_expires_at.isoformat() if before_expires_at else None,
+        },
+        after={
+            "name": access.consumer_name,
+            "expires_at": access.expires_at.isoformat() if access.expires_at else None,
+        },
+    )
+    return response
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
@@ -534,6 +598,10 @@ async def update_api_key(
         "allowed_databases": _decode_json_list(access.allowed_databases),
         "allowed_routes": _decode_json_list(access.allowed_routes),
         "rate_limit_per_minute": access.rate_limit_per_minute,
+        "allow_insert": bool(access.allow_insert),
+        "allow_update": bool(access.allow_update),
+        "allow_delete": bool(access.allow_delete),
+        "allowed_tables": json.loads(access.allowed_tables) if access.allowed_tables else None,
     }
 
     key_created = False
@@ -634,6 +702,18 @@ async def update_api_key(
         access.allowed_routes = json.dumps(next_allowed_routes) if next_allowed_routes else None
     if rate_limit_provided:
         access.rate_limit_per_minute = body.rate_limit_per_minute
+    if body.allow_insert is not None:
+        access.allow_insert = body.allow_insert
+    if body.allow_update is not None:
+        access.allow_update = body.allow_update
+    if body.allow_delete is not None:
+        access.allow_delete = body.allow_delete
+    # Like the rate limit, distinguish "field omitted" (no change) from an
+    # explicit null (clear the table restriction → all tables allowed).
+    if "allowed_tables" in body.model_fields_set:
+        access.allowed_tables = (
+            json.dumps(body.allowed_tables) if body.allowed_tables is not None else None
+        )
 
     await db.commit()
     await db.refresh(access)
@@ -678,6 +758,10 @@ async def delete_api_key(
         "allowed_databases": _decode_json_list(access.allowed_databases),
         "allowed_routes": _decode_json_list(access.allowed_routes),
         "rate_limit_per_minute": access.rate_limit_per_minute,
+        "allow_insert": bool(access.allow_insert),
+        "allow_update": bool(access.allow_update),
+        "allow_delete": bool(access.allow_delete),
+        "allowed_tables": json.loads(access.allowed_tables) if access.allowed_tables else None,
     }
 
     old_routes = json.loads(access.allowed_routes) if access.allowed_routes else []

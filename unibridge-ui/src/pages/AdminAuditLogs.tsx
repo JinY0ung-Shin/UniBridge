@@ -8,7 +8,23 @@ import './AdminAuditLogs.css';
 
 const PAGE_SIZE = 20;
 
-const RESOURCE_TYPES = ['route', 'upstream', 'api_key'] as const;
+const RESOURCE_TYPES = [
+  'route',
+  'upstream',
+  'api_key',
+  'db_connection',
+  'permission',
+  'query_template',
+  'system_settings',
+  's3_connection',
+  'nas_connection',
+  'alert_settings',
+  'alert_channel',
+  'resource_owner',
+  'role',
+  'user',
+  'user_role',
+] as const;
 const ACTIONS = ['create', 'update', 'delete'] as const;
 
 function prettyJson(value: string): string {

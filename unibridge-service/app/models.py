@@ -118,6 +118,11 @@ class ApiKeyAccess(Base):
     allowed_routes = Column(Text, nullable=True)  # JSON array: ["route-id-1", "route-id-2"], null = none
     owner = Column(String(255), nullable=True, index=True)  # Keycloak sub; NULL = admin/shared key
     rate_limit_per_minute = Column(Integer, nullable=True)  # NULL = unlimited
+    expires_at = Column(UtcDateTime, nullable=True)  # NULL = never expires (admin keys)
+    allow_insert = Column(Boolean, default=False, nullable=False, server_default="false")
+    allow_update = Column(Boolean, default=False, nullable=False, server_default="false")
+    allow_delete = Column(Boolean, default=False, nullable=False, server_default="false")
+    allowed_tables = Column(Text, nullable=True)  # JSON array: ["users", "orders"], null = all
     created_at = Column(UtcDateTime, default=utcnow)
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)
 
@@ -152,15 +157,36 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(UtcDateTime, default=utcnow)
-    user = Column(String, nullable=False)
-    database_alias = Column(String, nullable=False)
+    timestamp = Column(UtcDateTime, default=utcnow, index=True)
+    user = Column(String, nullable=False, index=True)
+    database_alias = Column(String, nullable=False, index=True)
     sql = Column(Text, nullable=False)
     params = Column(Text, nullable=True)  # JSON string
     row_count = Column(Integer, nullable=True)
     elapsed_ms = Column(Integer, nullable=True)
     status = Column(String, nullable=False)  # "success" or "error"
     error_message = Column(Text, nullable=True)
+
+
+class SavedQuery(Base):
+    """A per-user saved query for the playground.
+
+    ``owner`` holds the Keycloak ``sub`` (matching :class:`ApiKeyAccess.owner`)
+    so renaming a user does not orphan their saved queries. Saved queries are
+    strictly user-owned: every read/write is filtered by owner, and there is no
+    admin-level access or audit logging for them.
+    """
+
+    __tablename__ = "saved_queries"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner = Column(String(255), nullable=False, index=True)  # Keycloak sub
+    name = Column(String(200), nullable=False)
+    database_alias = Column(String, nullable=True)
+    sql_text = Column(Text, nullable=False)
+    description = Column(String(255), default="")
+    created_at = Column(UtcDateTime, default=utcnow)
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)
 
 
 class AdminAuditLog(Base):

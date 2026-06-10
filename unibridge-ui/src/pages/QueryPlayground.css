@@ -219,6 +219,79 @@
   border-radius: var(--radius-lg);
 }
 
+/* ── Workspace: history & saved queries ── */
+
+.playground-workspace {
+  margin-top: 28px;
+}
+
+.workspace-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border-default);
+  margin-bottom: 12px;
+}
+
+.workspace-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.workspace-tab:hover {
+  color: var(--text-primary);
+}
+
+.workspace-tab--active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-blue);
+}
+
+.workspace-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.workspace-panel-hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.history-row {
+  cursor: pointer;
+}
+
+.history-table .cell-sql,
+.saved-table .cell-sql {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-table .cell-timestamp {
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.saved-name {
+  font-weight: 600;
+}
+
+.saved-actions {
+  display: flex;
+  gap: 6px;
+}
+
 /* ── RDF / Turtle graph result (CONSTRUCT / DESCRIBE) ── */
 
 .rdf-graph {

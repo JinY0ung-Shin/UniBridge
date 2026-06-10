@@ -207,6 +207,13 @@ class AuditLogQuery(BaseModel):
     offset: int = Field(0, ge=0)
 
 
+class QueryHistoryResponse(BaseModel):
+    """Page of the current user's own query executions, plus total for paging."""
+
+    items: list[AuditLogResponse]
+    total: int
+
+
 class AdminAuditLogResponse(BaseModel):
     id: int
     timestamp: datetime | None = None
@@ -219,6 +226,80 @@ class AdminAuditLogResponse(BaseModel):
     after: str | None = None
     status: str
     error_message: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+# ── Saved Queries ────────────────────────────────────────────────────────────
+
+# Generous ceiling for a hand-written playground query (~100 KB).
+MAX_SAVED_QUERY_SQL_LENGTH = 100_000
+
+
+class SavedQueryCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    database_alias: str | None = Field(None, max_length=100)
+    sql_text: str = Field(..., min_length=1, max_length=MAX_SAVED_QUERY_SQL_LENGTH)
+    description: str = Field("", max_length=255)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("name must not be empty")
+        return value
+
+    @field_validator("sql_text")
+    @classmethod
+    def require_sql_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("sql_text must not be empty")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def strip_description(cls, value: str) -> str:
+        return value.strip()
+
+
+class SavedQueryUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=200)
+    database_alias: str | None = Field(None, max_length=100)
+    sql_text: str | None = Field(None, min_length=1, max_length=MAX_SAVED_QUERY_SQL_LENGTH)
+    description: str | None = Field(None, max_length=255)
+
+    @field_validator("name")
+    @classmethod
+    def strip_optional_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("name must not be empty")
+        return value
+
+    @field_validator("sql_text")
+    @classmethod
+    def require_optional_sql_text(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("sql_text must not be empty")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def strip_optional_description(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class SavedQueryResponse(BaseModel):
+    id: int
+    name: str
+    database_alias: str | None = None
+    sql_text: str
+    description: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -309,6 +390,10 @@ class ApiKeyCreate(BaseModel):
     allowed_databases: list[str] = Field(default_factory=list, description="Database aliases this key can query")
     allowed_routes: list[str] = Field(default_factory=list, description="Gateway route IDs this key can access")
     rate_limit_per_minute: int | None = Field(None, ge=1, le=100000, description="Per-minute request cap; null = unlimited")
+    allow_insert: bool = Field(False, description="Allow INSERT statements via /query/execute")
+    allow_update: bool = Field(False, description="Allow UPDATE statements via /query/execute")
+    allow_delete: bool = Field(False, description="Allow DELETE statements via /query/execute")
+    allowed_tables: list[str] | None = Field(None, description="Table whitelist for queries; null = all tables")
 
 
 class ApiKeyUpdate(BaseModel):
@@ -318,6 +403,10 @@ class ApiKeyUpdate(BaseModel):
     allowed_databases: list[str] | None = None
     allowed_routes: list[str] | None = None
     rate_limit_per_minute: int | None = Field(None, ge=1, le=100000)
+    allow_insert: bool | None = None
+    allow_update: bool | None = None
+    allow_delete: bool | None = None
+    allowed_tables: list[str] | None = Field(None, description="Table whitelist; explicit null clears the restriction")
 
 
 class ApiKeyResponse(BaseModel):
@@ -329,7 +418,12 @@ class ApiKeyResponse(BaseModel):
     allowed_databases: list[str]
     allowed_routes: list[str]
     rate_limit_per_minute: int | None = None
+    allow_insert: bool = False
+    allow_update: bool = False
+    allow_delete: bool = False
+    allowed_tables: list[str] | None = None
     owner: str | None = None
+    expires_at: datetime | None = None
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}

@@ -17,9 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import CurrentUser, get_current_user, get_role_permissions, require_permission
 from app.config import settings
 from app.database import get_db
-from app.models import ApiKeyAccess
+from app.models import ApiKeyAccess, QueryTemplate
 from app.routers.api_keys import apply_master_consumer_restriction, list_master_consumer_names
 from app.services import apisix_client
+from app.services import openapi_export
 from app.services import prometheus_client
 from app.services.alert_state import delete_alert_state
 from app.services.audit import log_admin_action
@@ -555,6 +556,38 @@ async def route_curl(
     parts.append(f"'{base_url}'")
 
     return {"curl": " ".join(parts)}
+
+
+@router.get("/openapi.json")
+async def gateway_openapi(
+    format: str = Query("json", description="Output format (only 'json' is supported)"),
+    _admin: CurrentUser = Depends(require_permission("gateway.routes.read")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Publish an OpenAPI 3.0 spec of the gateway surface (routes + query templates)."""
+    if format != "json":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only format=json is supported",
+        )
+    try:
+        result = await apisix_client.list_resources("routes")
+    except HTTPStatusError as exc:
+        _handle_apisix_error(exc, "Routes")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to APISIX: {exc}",
+        )
+    templates_result = await db.execute(
+        select(QueryTemplate).order_by(QueryTemplate.path.asc())
+    )
+    return openapi_export.build_openapi_spec(
+        result.get("items", []),  # type: ignore[possibly-undefined]
+        list(templates_result.scalars().all()),
+        server_url=f"https://{settings.HOST_IP}:{settings.UNIBRIDGE_UI_PORT}",
+        version=settings.APP_VERSION,
+    )
 
 
 @router.get("/upstreams")

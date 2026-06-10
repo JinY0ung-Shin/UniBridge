@@ -264,11 +264,21 @@ async def execute(
     # 2. Check per-database permissions
     perm = None
     if isinstance(user, ApiKeyUser):
-        # API key users: only SELECT allowed
-        if statement_type != "select":
+        # API key users: SELECT always allowed; INSERT/UPDATE/DELETE only when
+        # the per-key flag grants it; everything else (DDL, EXECUTE, ...) is
+        # always forbidden — unlike roles, keys can never run DDL.
+        apikey_allowed = statement_type == "select" or (
+            (statement_type == "insert" and user.allow_insert)
+            or (statement_type == "update" and user.allow_update)
+            or (statement_type == "delete" and user.allow_delete)
+        )
+        if not apikey_allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="API key users can only execute SELECT queries",
+                detail=(
+                    f"API key '{user.consumer_name}' is not allowed to execute "
+                    f"{statement_type.upper()} queries"
+                ),
             )
     else:
         # JWT user: role-based per-DB permissions
@@ -318,20 +328,24 @@ async def execute(
                 detail=blocked_error,
             )
 
-    # 2c. Table-level access check (JWT non-admin users only)
-    if isinstance(user, CurrentUser):
+    # 2c. Table-level access check (API keys and JWT non-admin users), applied
+    # to every statement type — extract_tables covers FROM/JOIN/INTO/UPDATE.
+    allowed_tables: list[str] | None = None
+    if isinstance(user, ApiKeyUser):
+        allowed_tables = user.allowed_tables  # None = no table restriction
+    else:
         user_perms_for_tables = await get_role_permissions(db, user.role)
         if "query.databases.write" not in user_perms_for_tables and perm is not None:
             allowed_tables_raw = perm.allowed_tables
             allowed_tables = json.loads(allowed_tables_raw) if allowed_tables_raw else None
-            if allowed_tables is not None and db_type not in ("neo4j", "graphdb"):
-                referenced = extract_tables(req.sql, db_type=db_type)
-                table_error = check_table_access(referenced, allowed_tables)
-                if table_error:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail=table_error,
-                    )
+    if allowed_tables is not None and db_type not in ("neo4j", "graphdb"):
+        referenced = extract_tables(req.sql, db_type=db_type)
+        table_error = check_table_access(referenced, allowed_tables)
+        if table_error:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=table_error,
+            )
 
     # 3. Acquire concurrent query slot (post-auth to prevent forged-token DoS)
     if not rate_limiter.try_acquire(username):

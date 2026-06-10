@@ -395,4 +395,116 @@ describe('ApiKeys', () => {
 
     vi.restoreAllMocks();
   });
+
+  it('renders expiry column: dash for admin keys, date for expiring keys', async () => {
+    mockedGetApiKeys.mockResolvedValue([
+      makeApiKey(),
+      makeApiKey({ name: 'self-key', expires_at: '2026-07-10T00:00:00Z' }),
+    ]);
+
+    renderWithProviders(<ApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText('my-app')).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole('columnheader', { name: 'Expires' })).toBeInTheDocument();
+
+    const adminRow = screen.getByText('my-app').closest('tr');
+    expect(within(adminRow!).getByText('\u2014')).toBeInTheDocument();
+
+    const selfRow = screen.getByText('self-key').closest('tr');
+    // 2026-07-10T00:00:00Z formatted as KST (2026-07-10 09:00:00)
+    expect(within(selfRow!).getByText(/2026\. 07\. 10\./)).toBeInTheDocument();
+  });
+
+  it('sends write flags and allowed tables when creating a key', async () => {
+    mockedCreateApiKey.mockResolvedValue(
+      makeApiKey({ name: 'writer-app', api_key: 'key-secret-999', key_created: true }),
+    );
+
+    renderWithProviders(<ApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No API keys')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
+    await userEvent.type(screen.getByPlaceholderText('my-app'), 'writer-app');
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Allow INSERT' }));
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Allow DELETE' }));
+    await userEvent.type(
+      screen.getByPlaceholderText('users, orders'),
+      'orders, line_items',
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(mockedCreateApiKey).toHaveBeenCalledWith(
+        expect.objectContaining({
+          allow_insert: true,
+          allow_update: false,
+          allow_delete: true,
+          allowed_tables: ['orders', 'line_items'],
+        }),
+        expect.anything(),
+      );
+    });
+  });
+
+  it('omits table restriction (null) when allowed tables left empty', async () => {
+    mockedCreateApiKey.mockResolvedValue(
+      makeApiKey({ name: 'plain-app', api_key: 'key-secret-000', key_created: true }),
+    );
+
+    renderWithProviders(<ApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No API keys')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
+    await userEvent.type(screen.getByPlaceholderText('my-app'), 'plain-app');
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(mockedCreateApiKey).toHaveBeenCalledWith(
+        expect.objectContaining({
+          allow_insert: false,
+          allow_update: false,
+          allow_delete: false,
+          allowed_tables: null,
+        }),
+        expect.anything(),
+      );
+    });
+  });
+
+  it('prefills write flags and allowed tables in edit modal', async () => {
+    mockedGetApiKeys.mockResolvedValue([
+      makeApiKey({
+        allow_insert: true,
+        allow_update: false,
+        allow_delete: true,
+        allowed_tables: ['orders', 'users'],
+      }),
+    ]);
+
+    renderWithProviders(<ApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText('my-app')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Edit API Key' })).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole('checkbox', { name: 'Allow INSERT' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Allow UPDATE' })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Allow DELETE' })).toBeChecked();
+    expect(screen.getByPlaceholderText('users, orders')).toHaveValue('orders, users');
+  });
 });

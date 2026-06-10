@@ -837,6 +837,11 @@ async def test_apikey_user_from_apisix_header():
     mock_access.consumer_name = "my-app-key"
     mock_access.allowed_databases = '["mydb"]'
     mock_access.allowed_routes = '["route-1"]'
+    mock_access.expires_at = None
+    mock_access.allow_insert = False
+    mock_access.allow_update = False
+    mock_access.allow_delete = False
+    mock_access.allowed_tables = None
 
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = mock_access
@@ -849,6 +854,106 @@ async def test_apikey_user_from_apisix_header():
     assert isinstance(user, ApiKeyUser)
     assert user.consumer_name == "my-app-key"
     assert user.allowed_databases == ["mydb"]
+    assert user.allow_insert is False
+    assert user.allow_update is False
+    assert user.allow_delete is False
+    assert user.allowed_tables is None
+
+
+@pytest.mark.asyncio
+async def test_apikey_user_carries_write_flags_and_allowed_tables():
+    """Per-key write flags and the table whitelist surface on ApiKeyUser."""
+    from unittest.mock import AsyncMock, MagicMock
+    from app.auth import get_current_user_or_apikey, ApiKeyUser
+
+    mock_request = MagicMock()
+    mock_request.headers = {"x-consumer-username": "writer-key"}
+
+    mock_access = MagicMock()
+    mock_access.consumer_name = "writer-key"
+    mock_access.allowed_databases = '["mydb"]'
+    mock_access.allowed_routes = '["route-1"]'
+    mock_access.expires_at = None
+    mock_access.allow_insert = True
+    mock_access.allow_update = False
+    mock_access.allow_delete = True
+    mock_access.allowed_tables = '["orders", "users"]'
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_access
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    user = await get_current_user_or_apikey(
+        request=mock_request, credentials=None, db=mock_db
+    )
+    assert isinstance(user, ApiKeyUser)
+    assert user.allow_insert is True
+    assert user.allow_update is False
+    assert user.allow_delete is True
+    assert user.allowed_tables == ["orders", "users"]
+
+
+@pytest.mark.asyncio
+async def test_apikey_user_expired_returns_401():
+    """An expires_at in the past must be rejected with 401 'API key expired'."""
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import AsyncMock, MagicMock
+    from fastapi import HTTPException
+    from app.auth import get_current_user_or_apikey
+
+    mock_request = MagicMock()
+    mock_request.headers = {"x-consumer-username": "stale-key"}
+
+    mock_access = MagicMock()
+    mock_access.consumer_name = "stale-key"
+    mock_access.allowed_databases = '["mydb"]'
+    mock_access.allowed_routes = '["route-1"]'
+    mock_access.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_access
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user_or_apikey(
+            request=mock_request, credentials=None, db=mock_db
+        )
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "API key expired"
+
+
+@pytest.mark.asyncio
+async def test_apikey_user_future_expiry_allowed():
+    """A key whose expires_at is still in the future authenticates normally."""
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import AsyncMock, MagicMock
+    from app.auth import get_current_user_or_apikey, ApiKeyUser
+
+    mock_request = MagicMock()
+    mock_request.headers = {"x-consumer-username": "fresh-key"}
+
+    mock_access = MagicMock()
+    mock_access.consumer_name = "fresh-key"
+    mock_access.allowed_databases = '["mydb"]'
+    mock_access.allowed_routes = '["route-1"]'
+    mock_access.expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    mock_access.allow_insert = False
+    mock_access.allow_update = False
+    mock_access.allow_delete = False
+    mock_access.allowed_tables = None
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_access
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    user = await get_current_user_or_apikey(
+        request=mock_request, credentials=None, db=mock_db
+    )
+    assert isinstance(user, ApiKeyUser)
+    assert user.consumer_name == "fresh-key"
 
 
 @pytest.mark.asyncio

@@ -116,6 +116,10 @@ class ApiKeyUser:
     consumer_name: str
     allowed_databases: list[str]
     allowed_routes: list[str]
+    allow_insert: bool = False
+    allow_update: bool = False
+    allow_delete: bool = False
+    allowed_tables: list[str] | None = None  # None = all tables
 
 
 def create_token(username: str, role: str, expires_delta: timedelta | None = None) -> str:
@@ -303,11 +307,20 @@ async def get_current_user_or_apikey(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Unknown API key consumer: {consumer_name}",
             )
+        if access.expires_at is not None and access.expires_at < datetime.now(timezone.utc):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="API key expired",
+            )
         import json
         return ApiKeyUser(
             consumer_name=access.consumer_name,
             allowed_databases=json.loads(access.allowed_databases) if access.allowed_databases else [],
             allowed_routes=json.loads(access.allowed_routes) if access.allowed_routes else [],
+            allow_insert=bool(access.allow_insert),
+            allow_update=bool(access.allow_update),
+            allow_delete=bool(access.allow_delete),
+            allowed_tables=json.loads(access.allowed_tables) if access.allowed_tables else None,
         )
 
     # Fall back to JWT

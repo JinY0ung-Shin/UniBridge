@@ -6,10 +6,18 @@ import {
   getMyApiKey,
   createMyApiKey,
   regenerateMyApiKey,
+  renewMyApiKey,
   deleteMyApiKey,
 } from '../api/client';
 import { useToast } from '../components/useToast';
+import { formatKST } from '../utils/time';
 import './ApiKeys.css';
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function daysUntil(iso: string): number {
+  return Math.ceil((new Date(iso).getTime() - Date.now()) / MS_PER_DAY);
+}
 
 function MyApiKey() {
   const { t } = useTranslation();
@@ -46,6 +54,15 @@ function MyApiKey() {
     onError: () => addToast({ type: 'error', title: t('myApiKey.regenerateFailed') }),
   });
 
+  const renewMut = useMutation({
+    mutationFn: renewMyApiKey,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['my-api-key'] });
+      addToast({ type: 'success', title: t('myApiKey.renewSuccess') });
+    },
+    onError: () => addToast({ type: 'error', title: t('myApiKey.renewFailed') }),
+  });
+
   const deleteMut = useMutation({
     mutationFn: deleteMyApiKey,
     onSuccess: () => {
@@ -71,6 +88,10 @@ function MyApiKey() {
     }
   }
 
+  function handleRenew() {
+    renewMut.mutate();
+  }
+
   function handleDelete() {
     if (window.confirm(t('myApiKey.deleteConfirm'))) {
       deleteMut.mutate();
@@ -85,7 +106,11 @@ function MyApiKey() {
     }
   }
 
-  const isBusy = createMut.isPending || regenerateMut.isPending || deleteMut.isPending;
+  const isBusy =
+    createMut.isPending || regenerateMut.isPending || renewMut.isPending || deleteMut.isPending;
+
+  const daysLeft = apiKey?.expires_at ? daysUntil(apiKey.expires_at) : null;
+  const isExpired = daysLeft !== null && daysLeft <= 0;
 
   return (
     <div className="api-keys">
@@ -123,6 +148,7 @@ function MyApiKey() {
 
       {!keyQuery.isLoading && !keyQuery.isError && apiKey && (
         <div className="table-container">
+          {isExpired && <div className="error-banner">{t('myApiKey.expiredBanner')}</div>}
           <table className="data-table">
             <tbody>
               <tr>
@@ -137,9 +163,32 @@ function MyApiKey() {
                 <th>{t('myApiKey.scope')}</th>
                 <td>{t('myApiKey.scopeSummary')}</td>
               </tr>
+              <tr>
+                <th>{t('myApiKey.expiresAt')}</th>
+                <td>
+                  {apiKey.expires_at ? (
+                    <>
+                      {formatKST(apiKey.expires_at)}{' '}
+                      {isExpired ? (
+                        <span className="tag" style={{ color: 'var(--accent-red)' }}>
+                          {t('myApiKey.expired')}
+                        </span>
+                      ) : (
+                        <span className="tag">{t('myApiKey.daysLeft', { count: daysLeft })}</span>
+                      )}
+                    </>
+                  ) : (
+                    '—'
+                  )}
+                </td>
+              </tr>
             </tbody>
           </table>
-          <div className="action-buttons" style={{ marginTop: 16 }}>
+          <p className="form-hint" style={{ marginTop: 12 }}>{t('myApiKey.renewDesc')}</p>
+          <div className="action-buttons" style={{ marginTop: 8 }}>
+            <button className="btn btn-primary" onClick={handleRenew} disabled={isBusy}>
+              {renewMut.isPending ? t('common.saving') : t('myApiKey.renew')}
+            </button>
             <button className="btn btn-secondary" onClick={handleRegenerate} disabled={isBusy}>
               {regenerateMut.isPending ? t('common.saving') : t('myApiKey.regenerate')}
             </button>

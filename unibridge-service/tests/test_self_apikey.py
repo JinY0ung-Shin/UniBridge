@@ -376,3 +376,199 @@ async def test_post_me_rolls_back_db_on_apisix_failure(app, client):
         get = await client.get("/admin/api-keys/me")
     assert get.status_code == 200
     assert get.json() is None
+
+
+# ── Expiry (30-day TTL) + renewal ────────────────────────────────────────────
+
+def _days_from_now(iso_value: str) -> float:
+    from datetime import datetime, timezone
+
+    expires = datetime.fromisoformat(iso_value)
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return (expires - datetime.now(timezone.utc)).total_seconds() / 86400
+
+
+@pytest.mark.asyncio
+async def test_post_me_sets_30_day_expiry(app, client):
+    _override_user(app, sub="alice-sub-1", username="alice")
+    with _patch_apisix() as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        mock_apisix.delete_resource = AsyncMock()
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+
+        resp = await client.post("/admin/api-keys/me")
+
+    assert resp.status_code == 201
+    expires_at = resp.json()["expires_at"]
+    assert expires_at is not None
+    assert 29.9 < _days_from_now(expires_at) <= 30.0
+
+
+@pytest.mark.asyncio
+async def test_regenerate_resets_expiry(app, client, seeded_db):
+    """Regenerate issues a new key value AND restarts the 30-day clock."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+    from app.models import ApiKeyAccess
+
+    _override_user(app, sub="alice-sub-1")
+    with _patch_apisix() as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.get_resource = AsyncMock(side_effect=_http_status_error(404))
+        mock_apisix.delete_resource = AsyncMock()
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+
+        create = await client.post("/admin/api-keys/me")
+        assert create.status_code == 201
+
+        # Age the key so the reset is observable.
+        session_factory = async_sessionmaker(
+            seeded_db, class_=AsyncSession, expire_on_commit=False
+        )
+        async with session_factory() as db:
+            await db.execute(
+                update(ApiKeyAccess)
+                .where(ApiKeyAccess.owner == "alice-sub-1")
+                .values(expires_at=datetime.now(timezone.utc) + timedelta(days=1))
+            )
+            await db.commit()
+
+        regen = await client.post("/admin/api-keys/me/regenerate")
+
+    assert regen.status_code == 200
+    assert 29.9 < _days_from_now(regen.json()["expires_at"]) <= 30.0
+
+
+@pytest.mark.asyncio
+async def test_renew_keeps_key_value_and_extends_expiry(app, client, seeded_db):
+    """Renew moves expires_at forward 30 days without touching the key value."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+    from app.models import ApiKeyAccess
+
+    _override_user(app, sub="alice-sub-1", username="alice")
+    with _patch_apisix() as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        mock_apisix.delete_resource = AsyncMock()
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+
+        create = await client.post("/admin/api-keys/me")
+        assert create.status_code == 201
+
+        session_factory = async_sessionmaker(
+            seeded_db, class_=AsyncSession, expire_on_commit=False
+        )
+        async with session_factory() as db:
+            await db.execute(
+                update(ApiKeyAccess)
+                .where(ApiKeyAccess.owner == "alice-sub-1")
+                .values(expires_at=datetime.now(timezone.utc) + timedelta(days=1))
+            )
+            await db.commit()
+
+        # Renew never PUTs the consumer — record the call count to prove it.
+        puts_before = len(mock_apisix.put_resource.await_args_list)
+        mock_apisix.get_resource = AsyncMock(return_value={
+            "plugins": {"key-auth": {"key": "the-same-key-value"}},
+        })
+        renew = await client.post("/admin/api-keys/me/renew")
+        puts_after = len(mock_apisix.put_resource.await_args_list)
+
+    assert renew.status_code == 200
+    data = renew.json()
+    assert 29.9 < _days_from_now(data["expires_at"]) <= 30.0
+    # Same key value: nothing was rotated and only the masked key is returned.
+    assert puts_after == puts_before
+    assert data["key_created"] is False
+    assert data["api_key"] == "***alue"
+
+
+@pytest.mark.asyncio
+async def test_renew_without_key_returns_404(app, client):
+    _override_user(app, sub="nobody-sub-1")
+    resp = await client.post("/admin/api-keys/me/renew")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_renew_requires_apikeys_self(app, client):
+    _override_user(app, sub="bob-sub-1", role="noselfrole", username="bob")
+    resp = await client.post("/admin/api-keys/me/renew")
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_renew_writes_admin_audit_log(app, client, seeded_db):
+    from sqlalchemy import select as sa_select
+    from app.models import AdminAuditLog
+
+    _override_user(app, sub="alice-sub-1", username="alice")
+    with _patch_apisix() as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        mock_apisix.delete_resource = AsyncMock()
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+
+        create = await client.post("/admin/api-keys/me")
+        assert create.status_code == 201
+        renew = await client.post("/admin/api-keys/me/renew")
+        assert renew.status_code == 200
+
+    session_factory = async_sessionmaker(
+        seeded_db, class_=AsyncSession, expire_on_commit=False
+    )
+    async with session_factory() as db:
+        result = await db.execute(
+            sa_select(AdminAuditLog).where(AdminAuditLog.resource_type == "api_key")
+        )
+        entries = result.scalars().all()
+    renew_entries = [e for e in entries if e.action == "update"]
+    assert len(renew_entries) == 1
+    assert renew_entries[0].actor == "alice"
+    assert renew_entries[0].resource_id == _self_consumer_name("alice-sub-1")
+
+
+@pytest.mark.asyncio
+async def test_expired_self_key_rejected_on_query_api(app, client, seeded_db):
+    """An expired self key must get 401 on the APISIX-forwarded header path."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+    from app.auth import get_current_user
+    from app.models import ApiKeyAccess
+
+    _override_user(app, sub="alice-sub-1")
+    with _patch_apisix() as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        mock_apisix.delete_resource = AsyncMock()
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+
+        create = await client.post("/admin/api-keys/me")
+        assert create.status_code == 201
+        consumer_name = create.json()["name"]
+
+    session_factory = async_sessionmaker(
+        seeded_db, class_=AsyncSession, expire_on_commit=False
+    )
+    async with session_factory() as db:
+        await db.execute(
+            update(ApiKeyAccess)
+            .where(ApiKeyAccess.consumer_name == consumer_name)
+            .values(expires_at=datetime.now(timezone.utc) - timedelta(days=1))
+        )
+        await db.commit()
+
+    app.dependency_overrides.pop(get_current_user, None)
+    resp = await client.post(
+        "/query/execute",
+        json={"database": "anydb", "sql": "SELECT 1"},
+        headers={"X-Consumer-Username": consumer_name},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "API key expired"

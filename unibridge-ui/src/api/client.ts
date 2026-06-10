@@ -255,6 +255,41 @@ export interface QueryTemplateExecuteRequest {
   timeout?: number;
 }
 
+export interface QueryHistoryResponse {
+  items: AuditLog[];
+  total: number;
+}
+
+export interface QueryHistoryParams {
+  database_alias?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface SavedQuery {
+  id: number;
+  name: string;
+  database_alias: string | null;
+  sql_text: string;
+  description: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface SavedQueryCreate {
+  name: string;
+  database_alias?: string | null;
+  sql_text: string;
+  description?: string;
+}
+
+export interface SavedQueryUpdate {
+  name?: string;
+  database_alias?: string | null;
+  sql_text?: string;
+  description?: string;
+}
+
 function encodeTemplatePath(path: string): string {
   return path.split('/').map(encodeURIComponent).join('/');
 }
@@ -274,6 +309,32 @@ export async function executeQuery(req: QueryRequest): Promise<QueryResult> {
 export async function executeQueryTemplate(path: string, req: QueryTemplateExecuteRequest = {}): Promise<QueryResult> {
   const { data } = await client.post(`/query/templates/${encodeTemplatePath(path)}`, req);
   return data;
+}
+
+/* ── Query: My history & saved queries ── */
+
+export async function getQueryHistory(params: QueryHistoryParams = {}): Promise<QueryHistoryResponse> {
+  const { data } = await client.get('/query/history', { params });
+  return data;
+}
+
+export async function getSavedQueries(): Promise<SavedQuery[]> {
+  const { data } = await client.get('/query/saved');
+  return data;
+}
+
+export async function createSavedQuery(body: SavedQueryCreate): Promise<SavedQuery> {
+  const { data } = await client.post('/query/saved', body);
+  return data;
+}
+
+export async function updateSavedQuery(id: number, body: SavedQueryUpdate): Promise<SavedQuery> {
+  const { data } = await client.put(`/query/saved/${id}`, body);
+  return data;
+}
+
+export async function deleteSavedQuery(id: number): Promise<void> {
+  await client.delete(`/query/saved/${id}`);
 }
 
 /* ── Health ── */
@@ -459,6 +520,11 @@ export async function testGatewayRoute(id: string): Promise<RouteTestResult> {
 
 export async function getGatewayRouteCurl(id: string): Promise<{ curl: string }> {
   const { data } = await client.get(`/admin/gateway/routes/${id}/curl`);
+  return data;
+}
+
+export async function getGatewayOpenApiSpec(): Promise<Record<string, unknown>> {
+  const { data } = await client.get('/admin/gateway/openapi.json');
   return data;
 }
 
@@ -677,7 +743,12 @@ export interface ApiKey {
   allowed_databases: string[];
   allowed_routes: string[];
   rate_limit_per_minute: number | null;
+  allow_insert?: boolean;
+  allow_update?: boolean;
+  allow_delete?: boolean;
+  allowed_tables?: string[] | null;
   owner: string | null;
+  expires_at?: string | null;
   created_at: string | null;
 }
 
@@ -689,6 +760,10 @@ export interface ApiKeyCreate {
   allowed_databases: string[];
   allowed_routes: string[];
   rate_limit_per_minute?: number | null;
+  allow_insert?: boolean;
+  allow_update?: boolean;
+  allow_delete?: boolean;
+  allowed_tables?: string[] | null;
   owner?: string | null;
 }
 
@@ -699,6 +774,10 @@ export interface ApiKeyUpdate {
   allowed_databases?: string[];
   allowed_routes?: string[];
   rate_limit_per_minute?: number | null;
+  allow_insert?: boolean;
+  allow_update?: boolean;
+  allow_delete?: boolean;
+  allowed_tables?: string[] | null;
   owner?: string | null;
 }
 
@@ -735,6 +814,11 @@ export async function createMyApiKey(): Promise<ApiKey> {
 
 export async function regenerateMyApiKey(): Promise<ApiKey> {
   const { data } = await client.post('/admin/api-keys/me/regenerate');
+  return data;
+}
+
+export async function renewMyApiKey(): Promise<ApiKey> {
+  const { data } = await client.post('/admin/api-keys/me/renew');
   return data;
 }
 

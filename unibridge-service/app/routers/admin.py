@@ -35,6 +35,7 @@ from app.schemas import (
     normalize_query_template_path,
 )
 from app.services.alert_state import delete_alert_state
+from app.services.audit import log_admin_action
 from app.services.connection_manager import (
     connection_manager,
     encrypt_password,
@@ -135,6 +136,51 @@ def _to_connection_response(conn: DBConnection, status_value: str) -> DBConnecti
         query_timeout=conn.query_timeout if conn.query_timeout is not None else 30,
         status=status_value,
     )
+
+
+def _connection_audit_snapshot(conn: DBConnection) -> dict:
+    """Audit snapshot of a DB connection. Credentials are never recorded —
+    only the constant ``"***"`` marker, so plaintext/encrypted passwords can
+    never leak into the audit trail."""
+    return {
+        "alias": conn.alias,
+        "db_type": conn.db_type,
+        "host": conn.host,
+        "port": conn.port,
+        "database": conn.database,
+        "username": conn.username,
+        "password": "***",
+        "protocol": conn.protocol,
+        "secure": conn.secure,
+        "pool_size": conn.pool_size,
+        "max_overflow": conn.max_overflow,
+        "query_timeout": conn.query_timeout,
+    }
+
+
+def _permission_audit_snapshot(perm: Permission) -> dict:
+    return {
+        "role": perm.role,
+        "db_alias": perm.db_alias,
+        "allow_select": perm.allow_select,
+        "allow_insert": perm.allow_insert,
+        "allow_update": perm.allow_update,
+        "allow_delete": perm.allow_delete,
+        "allowed_tables": json.loads(perm.allowed_tables) if perm.allowed_tables else None,
+    }
+
+
+def _template_audit_snapshot(template: QueryTemplate) -> dict:
+    return {
+        "path": template.path,
+        "name": template.name,
+        "description": template.description or "",
+        "database": template.db_alias,
+        "sql": template.sql,
+        "default_limit": template.default_limit,
+        "timeout": template.timeout,
+        "enabled": template.enabled,
+    }
 
 
 def _to_permission_response(perm: Permission) -> PermissionResponse:
@@ -250,6 +296,16 @@ async def create_connection(
         logger.warning("Engine creation failed for '%s': %s", body.alias, exc)
         conn_status = "error"
 
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="create",
+        resource_type="db_connection",
+        resource_id=conn.alias,
+        summary=f"{conn.db_type} {conn.host}:{conn.port}/{conn.database}",
+        before=None,
+        after=_connection_audit_snapshot(conn),
+    )
     return _to_connection_response(conn, conn_status)
 
 
@@ -310,6 +366,8 @@ async def update_connection(
             detail=f"Database alias '{alias}' not found",
         )
 
+    before_snapshot = _connection_audit_snapshot(conn)
+
     # Apply updates
     update_data = body.model_dump(exclude_unset=True)
     if "password" in update_data:
@@ -344,6 +402,16 @@ async def update_connection(
         logger.warning("Engine recreation failed for '%s': %s", alias, exc)
         conn_status = "error"
 
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="update",
+        resource_type="db_connection",
+        resource_id=alias,
+        summary=f"{conn.db_type} {conn.host}:{conn.port}/{conn.database}",
+        before=before_snapshot,
+        after=_connection_audit_snapshot(conn),
+    )
     return _to_connection_response(conn, conn_status)
 
 
@@ -368,6 +436,9 @@ async def delete_connection(
             detail=f"Database alias '{alias}' not found",
         )
 
+    # Snapshot before the row is gone, for the audit trail.
+    before_snapshot = _connection_audit_snapshot(conn)
+
     # Remove engine
     await connection_manager.remove_connection(alias)
 
@@ -379,6 +450,17 @@ async def delete_connection(
     from app.routers import alerts as alerts_router
     if alerts_router._alert_state is not None:
         alerts_router._alert_state.discard("db_health", alias)
+
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="delete",
+        resource_type="db_connection",
+        resource_id=alias,
+        summary=f"{before_snapshot['db_type']} {before_snapshot['host']}:{before_snapshot['port']}/{before_snapshot['database']}",
+        before=before_snapshot,
+        after=None,
+    )
 
 
 @router.post("/admin/query/databases/{alias}/test")
@@ -540,6 +622,7 @@ async def upsert_permission(
         )
     )
     perm = result.scalar_one_or_none()
+    before_snapshot = _permission_audit_snapshot(perm) if perm is not None else None
 
     allowed_tables_json = json.dumps(body.allowed_tables) if body.allowed_tables is not None else None
 
@@ -564,6 +647,16 @@ async def upsert_permission(
     await db.commit()
     await db.refresh(perm)
 
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="update" if before_snapshot is not None else "create",
+        resource_type="permission",
+        resource_id=str(perm.id),
+        summary=f"{perm.role} @ {perm.db_alias}",
+        before=before_snapshot,
+        after=_permission_audit_snapshot(perm),
+    )
     return _to_permission_response(perm)
 
 
@@ -587,8 +680,20 @@ async def delete_permission(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Permission ID {permission_id} not found",
         )
+    before_snapshot = _permission_audit_snapshot(perm)
     await db.delete(perm)
     await db.commit()
+
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="delete",
+        resource_type="permission",
+        resource_id=str(permission_id),
+        summary=f"{before_snapshot['role']} @ {before_snapshot['db_alias']}",
+        before=before_snapshot,
+        after=None,
+    )
 
 
 # ── Query Templates ──────────────────────────────────────────────────────────
@@ -640,6 +745,17 @@ async def create_query_template(
     db.add(template)
     await db.commit()
     await db.refresh(template)
+
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="create",
+        resource_type="query_template",
+        resource_id=template.path,
+        summary=template.name,
+        before=None,
+        after=_template_audit_snapshot(template),
+    )
     return _to_template_response(template)
 
 
@@ -666,6 +782,8 @@ async def update_query_template(
             detail=f"Query template path '{normalized_path}' not found",
         )
 
+    before_snapshot = _template_audit_snapshot(template)
+
     new_database = body.database if body.database is not None else template.db_alias
     new_sql = body.sql if body.sql is not None else template.sql
     if body.database is not None or body.sql is not None:
@@ -689,6 +807,17 @@ async def update_query_template(
 
     await db.commit()
     await db.refresh(template)
+
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="update",
+        resource_type="query_template",
+        resource_id=normalized_path,
+        summary=template.name,
+        before=before_snapshot,
+        after=_template_audit_snapshot(template),
+    )
     return _to_template_response(template)
 
 
@@ -717,8 +846,20 @@ async def delete_query_template(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Query template path '{normalized_path}' not found",
         )
+    before_snapshot = _template_audit_snapshot(template)
     await db.delete(template)
     await db.commit()
+
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="delete",
+        resource_type="query_template",
+        resource_id=normalized_path,
+        summary=before_snapshot["name"],
+        before=before_snapshot,
+        after=None,
+    )
 
 
 # ── Audit Logs ───────────────────────────────────────────────────────────────
@@ -773,7 +914,13 @@ async def list_audit_logs(
 async def list_admin_audit_logs(
     actor: str | None = Query(None, description="Filter by actor (username)"),
     resource_type: str | None = Query(
-        None, description="Filter by resource type (route/upstream/api_key)"
+        None,
+        description=(
+            "Filter by resource type (route, upstream, api_key, db_connection, "
+            "permission, query_template, system_settings, s3_connection, "
+            "nas_connection, alert_settings, alert_channel, resource_owner, "
+            "role, user, user_role)"
+        ),
     ),
     action: str | None = Query(None, description="Filter by action (create/update/delete)"),
     from_date: str | None = Query(None, description="Filter from date (ISO format)"),
@@ -840,6 +987,8 @@ async def update_settings(
     """Update system settings."""
     from app.middleware.rate_limiter import rate_limiter
 
+    before_snapshot = settings_manager.get_all()
+
     await settings_manager.update(
         db,
         rate_limit_per_minute=body.rate_limit_per_minute,
@@ -854,4 +1003,15 @@ async def update_settings(
     )
 
     data = settings_manager.get_all()
+
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="update",
+        resource_type="system_settings",
+        resource_id="global",
+        summary=None,
+        before=before_snapshot,
+        after=data,
+    )
     return SystemConfigResponse(**data)

@@ -14,6 +14,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import NASConnection
 from app.schemas import NasConnectionCreate, NasConnectionResponse, NasConnectionUpdate
+from app.services.audit import log_admin_action
 from app.services.nas_manager import nas_manager
 from app.services.nas_security import NasSecurityError, NasTooLargeError, NasUnavailableError
 
@@ -24,6 +25,17 @@ router = APIRouter(tags=["NAS"])
 
 def _to_response(conn: NASConnection) -> NasConnectionResponse:
     return NasConnectionResponse.model_validate(conn)
+
+
+def _audit_snapshot(conn: NASConnection) -> dict[str, Any]:
+    return {
+        "alias": conn.alias,
+        "base_path": conn.base_path,
+        "read_only": conn.read_only,
+        "max_download_bytes": conn.max_download_bytes,
+        "show_hidden": conn.show_hidden,
+        "follow_symlinks": conn.follow_symlinks,
+    }
 
 
 # ── Admin: Connection CRUD ──────────────────────────────────────────────────
@@ -61,6 +73,16 @@ async def create_nas_connection(
     except Exception as exc:
         logger.warning("NAS connection registration failed for '%s': %s", body.alias, exc)
 
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="create",
+        resource_type="nas_connection",
+        resource_id=conn.alias,
+        summary=conn.base_path,
+        before=None,
+        after=_audit_snapshot(conn),
+    )
     resp = _to_response(conn)
     resp.status = "registered" if nas_manager.has_connection(body.alias) else "error"
     return resp
@@ -112,6 +134,8 @@ async def update_nas_connection(
     if not conn:
         raise HTTPException(status_code=404, detail=f"NAS connection '{alias}' not found")
 
+    before_snapshot = _audit_snapshot(conn)
+
     provided = body.model_fields_set
     if "base_path" in provided and body.base_path is not None:
         conn.base_path = body.base_path
@@ -130,6 +154,16 @@ async def update_nas_connection(
     except Exception as exc:
         logger.warning("NAS connection re-registration failed for '%s': %s", alias, exc)
 
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="update",
+        resource_type="nas_connection",
+        resource_id=alias,
+        summary=conn.base_path,
+        before=before_snapshot,
+        after=_audit_snapshot(conn),
+    )
     resp = _to_response(conn)
     resp.status = "registered" if nas_manager.has_connection(alias) else "error"
     return resp
@@ -152,10 +186,22 @@ async def delete_nas_connection(
     if not conn:
         raise HTTPException(status_code=404, detail=f"NAS connection '{alias}' not found")
 
+    before_snapshot = _audit_snapshot(conn)
+
     await nas_manager.remove_connection(alias)
     await db.delete(conn)
     await db.commit()
     logger.info("NAS connection deleted: alias=%s user=%s", alias, _admin.username)
+    await log_admin_action(
+        db,
+        actor=_admin.username,
+        action="delete",
+        resource_type="nas_connection",
+        resource_id=alias,
+        summary=before_snapshot["base_path"],
+        before=before_snapshot,
+        after=None,
+    )
 
 
 @router.post("/admin/nas/connections/{alias}/test")

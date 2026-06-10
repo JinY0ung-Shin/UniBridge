@@ -142,6 +142,19 @@ export function makeAuditLog(overrides = {}) {
   };
 }
 
+export function makeSavedQuery(overrides = {}) {
+  return {
+    id: 1,
+    name: 'My users',
+    database_alias: 'test-db' as string | null,
+    sql_text: 'SELECT * FROM users',
+    description: '',
+    created_at: '2026-06-10T12:00:00Z',
+    updated_at: '2026-06-10T12:00:00Z',
+    ...overrides,
+  };
+}
+
 export function makeAdminAuditLog(overrides = {}) {
   return {
     id: 1,
@@ -169,7 +182,12 @@ export function makeApiKey(overrides = {}) {
     allowed_databases: ['test-db'],
     allowed_routes: ['route-1'],
     rate_limit_per_minute: null,
+    allow_insert: false,
+    allow_update: false,
+    allow_delete: false,
+    allowed_tables: null,
     owner: null,
+    expires_at: null,
     created_at: '2026-04-10T12:00:00Z',
     ...overrides,
   };

@@ -710,7 +710,9 @@ async def test_query_execute_apikey_allowed_db_rejects_insert(client, admin_toke
             headers={"X-Consumer-Username": "readonly-app"},
         )
     assert resp.status_code == 403
-    assert resp.json()["detail"] == "API key users can only execute SELECT queries"
+    assert resp.json()["detail"] == (
+        "API key 'readonly-app' is not allowed to execute INSERT queries"
+    )
 
 
 @pytest.mark.asyncio
@@ -736,3 +738,307 @@ async def test_query_execute_apikey_db_not_allowed(client, admin_token):
     )
     assert resp.status_code == 403
     assert "not allowed" in resp.json()["detail"].lower()
+
+
+# ── Per-key write permissions + table ACL ────────────────────────────────────
+
+async def _create_key(client, admin_token, mock_apisix, body: dict):
+    mock_apisix.put_resource = AsyncMock(return_value={
+        "username": body["name"],
+        "plugins": {"key-auth": {"key": body.get("api_key", "k")}},
+    })
+    mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+    mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
+    resp = await client.post("/admin/api-keys", json=body, headers=auth_header(admin_token))
+    assert resp.status_code == 201
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_defaults_write_flags_off_and_no_expiry(client, admin_token):
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        resp = await _create_key(client, admin_token, mock_apisix, {
+            "name": "plain-app",
+            "api_key": "pk-1",
+            "allowed_databases": ["mydb"],
+        })
+    data = resp.json()
+    assert data["allow_insert"] is False
+    assert data["allow_update"] is False
+    assert data["allow_delete"] is False
+    assert data["allowed_tables"] is None
+    # Admin-created keys never expire.
+    assert data["expires_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_with_write_flags_and_allowed_tables(client, admin_token):
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        resp = await _create_key(client, admin_token, mock_apisix, {
+            "name": "writer-app",
+            "api_key": "wk-1",
+            "allowed_databases": ["mydb"],
+            "allow_insert": True,
+            "allow_delete": True,
+            "allowed_tables": ["orders", "users"],
+        })
+    data = resp.json()
+    assert data["allow_insert"] is True
+    assert data["allow_update"] is False
+    assert data["allow_delete"] is True
+    assert data["allowed_tables"] == ["orders", "users"]
+
+
+@pytest.mark.asyncio
+async def test_update_api_key_write_flags_and_clear_allowed_tables(client, admin_token):
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        await _create_key(client, admin_token, mock_apisix, {
+            "name": "flagged-app",
+            "api_key": "fk-1",
+            "allowed_tables": ["orders"],
+        })
+
+        resp = await client.put(
+            "/admin/api-keys/flagged-app",
+            json={"allow_update": True},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        # Omitted fields stay untouched.
+        assert data["allow_update"] is True
+        assert data["allow_insert"] is False
+        assert data["allowed_tables"] == ["orders"]
+
+        # Explicit null clears the table restriction (all tables allowed).
+        resp = await client.put(
+            "/admin/api-keys/flagged-app",
+            json={"allowed_tables": None},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["allowed_tables"] is None
+        assert resp.json()["allow_update"] is True
+
+
+@pytest.mark.asyncio
+async def test_query_execute_apikey_insert_allowed_with_flag(client, admin_token):
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        await _create_key(client, admin_token, mock_apisix, {
+            "name": "insert-app",
+            "api_key": "ik-1",
+            "allowed_databases": ["allowed-db"],
+            "allowed_routes": ["query-api"],
+            "allow_insert": True,
+        })
+
+    query_response = QueryResponse(
+        columns=[], rows=[], row_count=1, truncated=False, elapsed_ms=3,
+    )
+    with patch(
+        "app.routers.query.connection_manager.get_engine",
+        return_value=MagicMock(),
+    ), patch(
+        "app.routers.query.connection_manager.get_db_type",
+        return_value="postgres",
+    ), patch(
+        "app.routers.query.execute_query",
+        new_callable=AsyncMock,
+        return_value=query_response,
+    ) as mock_execute_query, patch(
+        "app.routers.query.log_query",
+        new_callable=AsyncMock,
+    ):
+        resp = await client.post(
+            "/query/execute",
+            json={"database": "allowed-db", "sql": "INSERT INTO orders (id) VALUES (1)"},
+            headers={"X-Consumer-Username": "insert-app"},
+        )
+
+    assert resp.status_code == 200
+    mock_execute_query.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_query_execute_apikey_update_delete_rejected_without_flags(client, admin_token):
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        await _create_key(client, admin_token, mock_apisix, {
+            "name": "insert-only-app",
+            "api_key": "io-1",
+            "allowed_databases": ["allowed-db"],
+            "allow_insert": True,
+        })
+
+    with patch(
+        "app.routers.query.connection_manager.get_engine",
+        return_value=MagicMock(),
+    ), patch(
+        "app.routers.query.connection_manager.get_db_type",
+        return_value="postgres",
+    ):
+        update_resp = await client.post(
+            "/query/execute",
+            json={"database": "allowed-db", "sql": "UPDATE orders SET id = 2"},
+            headers={"X-Consumer-Username": "insert-only-app"},
+        )
+        delete_resp = await client.post(
+            "/query/execute",
+            json={"database": "allowed-db", "sql": "DELETE FROM orders WHERE id = 1"},
+            headers={"X-Consumer-Username": "insert-only-app"},
+        )
+    assert update_resp.status_code == 403
+    assert "UPDATE" in update_resp.json()["detail"]
+    assert delete_resp.status_code == 403
+    assert "DELETE" in delete_resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_query_execute_apikey_ddl_rejected_even_with_all_flags(client, admin_token):
+    """DDL is never allowed for API keys, even when every write flag is set."""
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        await _create_key(client, admin_token, mock_apisix, {
+            "name": "full-write-app",
+            "api_key": "fw-1",
+            "allowed_databases": ["allowed-db"],
+            "allow_insert": True,
+            "allow_update": True,
+            "allow_delete": True,
+        })
+
+    with patch(
+        "app.routers.query.connection_manager.get_engine",
+        return_value=MagicMock(),
+    ), patch(
+        "app.routers.query.connection_manager.get_db_type",
+        return_value="postgres",
+    ):
+        resp = await client.post(
+            "/query/execute",
+            json={"database": "allowed-db", "sql": "DROP TABLE orders"},
+            headers={"X-Consumer-Username": "full-write-app"},
+        )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_query_execute_apikey_table_acl_blocks_unlisted_table(client, admin_token):
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        await _create_key(client, admin_token, mock_apisix, {
+            "name": "tabled-app",
+            "api_key": "tb-1",
+            "allowed_databases": ["allowed-db"],
+            "allowed_tables": ["orders"],
+        })
+
+    with patch(
+        "app.routers.query.connection_manager.get_engine",
+        return_value=MagicMock(),
+    ), patch(
+        "app.routers.query.connection_manager.get_db_type",
+        return_value="postgres",
+    ), patch(
+        "app.routers.query.log_query",
+        new_callable=AsyncMock,
+    ):
+        resp = await client.post(
+            "/query/execute",
+            json={"database": "allowed-db", "sql": "SELECT * FROM secrets"},
+            headers={"X-Consumer-Username": "tabled-app"},
+        )
+    assert resp.status_code == 403
+    assert "secrets" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_query_execute_apikey_table_acl_applies_to_writes(client, admin_token):
+    """The table whitelist gates INSERT/UPDATE/DELETE too, not only SELECT."""
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        await _create_key(client, admin_token, mock_apisix, {
+            "name": "tabled-writer-app",
+            "api_key": "tw-1",
+            "allowed_databases": ["allowed-db"],
+            "allow_insert": True,
+            "allowed_tables": ["orders"],
+        })
+
+    query_response = QueryResponse(
+        columns=[], rows=[], row_count=1, truncated=False, elapsed_ms=3,
+    )
+    with patch(
+        "app.routers.query.connection_manager.get_engine",
+        return_value=MagicMock(),
+    ), patch(
+        "app.routers.query.connection_manager.get_db_type",
+        return_value="postgres",
+    ), patch(
+        "app.routers.query.execute_query",
+        new_callable=AsyncMock,
+        return_value=query_response,
+    ), patch(
+        "app.routers.query.log_query",
+        new_callable=AsyncMock,
+    ):
+        blocked = await client.post(
+            "/query/execute",
+            json={"database": "allowed-db", "sql": "INSERT INTO secrets (id) VALUES (1)"},
+            headers={"X-Consumer-Username": "tabled-writer-app"},
+        )
+        allowed = await client.post(
+            "/query/execute",
+            json={"database": "allowed-db", "sql": "INSERT INTO orders (id) VALUES (1)"},
+            headers={"X-Consumer-Username": "tabled-writer-app"},
+        )
+    assert blocked.status_code == 403
+    assert "secrets" in blocked.json()["detail"]
+    assert allowed.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_query_execute_apikey_expired_key_returns_401(client, admin_token, seeded_db):
+    """A key past its expires_at must be rejected with 401 at the service."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from app.models import ApiKeyAccess
+
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        await _create_key(client, admin_token, mock_apisix, {
+            "name": "expired-app",
+            "api_key": "ex-1",
+            "allowed_databases": ["allowed-db"],
+        })
+
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        await db.execute(
+            update(ApiKeyAccess)
+            .where(ApiKeyAccess.consumer_name == "expired-app")
+            .values(expires_at=datetime.now(timezone.utc) - timedelta(days=1))
+        )
+        await db.commit()
+
+    resp = await client.post(
+        "/query/execute",
+        json={"database": "allowed-db", "sql": "SELECT 1"},
+        headers={"X-Consumer-Username": "expired-app"},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "API key expired"
+
+
+@pytest.mark.asyncio
+async def test_list_api_keys_includes_expires_at(client, admin_token):
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        await _create_key(client, admin_token, mock_apisix, {
+            "name": "listed-app",
+            "api_key": "ls-1",
+        })
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        resp = await client.get("/admin/api-keys", headers=auth_header(admin_token))
+
+    assert resp.status_code == 200
+    entry = next(k for k in resp.json() if k["name"] == "listed-app")
+    assert "expires_at" in entry
+    assert entry["expires_at"] is None

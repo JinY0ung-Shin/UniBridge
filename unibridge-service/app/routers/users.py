@@ -5,9 +5,11 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Path, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ROLE_PRIORITY, CurrentUser, require_permission
 from app.config import settings
+from app.database import get_db
 from app.keycloak_admin import KeycloakAdminClient
 from app.schemas import (
     ChangeRoleRequest,
@@ -17,6 +19,7 @@ from app.schemas import (
     ResetPasswordRequest,
     ToggleEnabledRequest,
 )
+from app.services.audit import log_admin_action
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +97,7 @@ async def list_users(
 async def create_user(
     body: CreateUserRequest,
     user: CurrentUser = Depends(require_permission("admin.users.write")),
+    db: AsyncSession = Depends(get_db),
 ) -> KeycloakUser:
     """Create a Keycloak user and assign a realm role."""
     kc = _get_kc_admin()
@@ -114,6 +118,22 @@ async def create_user(
             logger.error("Failed to rollback user creation for '%s' (id=%s)", body.username, user_id)
         raise
 
+    await log_admin_action(
+        db,
+        actor=user.username,
+        action="create",
+        resource_type="user",
+        resource_id=user_id,
+        summary=body.username,
+        before=None,
+        # The initial password is never recorded.
+        after={
+            "username": body.username,
+            "email": body.email,
+            "enabled": True,
+            "role": body.role,
+        },
+    )
     return KeycloakUser(
         id=user_id,
         username=body.username,
@@ -128,6 +148,7 @@ async def change_role(
     user_id: str = Path(..., pattern=_UUID_PATTERN),
     body: ChangeRoleRequest = ...,
     user: CurrentUser = Depends(require_permission("admin.users.write")),
+    db: AsyncSession = Depends(get_db),
 ) -> KeycloakUser:
     """Change a user's application role (assign new first, then remove old)."""
     kc = _get_kc_admin()
@@ -137,12 +158,24 @@ async def change_role(
 
     # Then remove old app roles (excluding the newly assigned one)
     current_roles = await kc.get_user_realm_roles(user_id)
+    removed_roles: list[str] = []
     for role_dict in current_roles:
         if role_dict["name"] in ROLE_PRIORITY and role_dict["name"] != body.role:
             await kc.remove_realm_role(user_id, role_dict["name"])
+            removed_roles.append(role_dict["name"])
 
     # Return updated user info via direct get_user lookup
     user_data = await kc.get_user(user_id)
+    await log_admin_action(
+        db,
+        actor=user.username,
+        action="update",
+        resource_type="user_role",
+        resource_id=user_id,
+        summary=user_data.get("username"),
+        before={"role": removed_roles[0] if removed_roles else None},
+        after={"role": body.role},
+    )
     return await _enrich_user(kc, user_data)
 
 
@@ -155,10 +188,22 @@ async def reset_password(
     user_id: str = Path(..., pattern=_UUID_PATTERN),
     body: ResetPasswordRequest = ...,
     user: CurrentUser = Depends(require_permission("admin.users.write")),
+    db: AsyncSession = Depends(get_db),
 ) -> None:
     """Reset a user's password."""
     kc = _get_kc_admin()
     await kc.reset_password(user_id, body.password, body.temporary)
+    # The new password is never recorded — only the fact that it was reset.
+    await log_admin_action(
+        db,
+        actor=user.username,
+        action="update",
+        resource_type="user",
+        resource_id=user_id,
+        summary="password reset",
+        before=None,
+        after={"password": "***", "temporary": body.temporary},
+    )
 
 
 @router.put("/admin/users/{user_id}/enabled", response_model=KeycloakUser)
@@ -166,6 +211,7 @@ async def toggle_enabled(
     user_id: str = Path(..., pattern=_UUID_PATTERN),
     body: ToggleEnabledRequest = ...,
     user: CurrentUser = Depends(require_permission("admin.users.write")),
+    db: AsyncSession = Depends(get_db),
 ) -> KeycloakUser:
     """Enable or disable a user. Prevents self-deactivation."""
     kc = _get_kc_admin()
@@ -180,6 +226,16 @@ async def toggle_enabled(
     await kc.update_user_enabled(user_id, body.enabled)
     # Refresh and return enriched user
     updated = await kc.get_user(user_id)
+    await log_admin_action(
+        db,
+        actor=user.username,
+        action="update",
+        resource_type="user",
+        resource_id=user_id,
+        summary=target.get("username"),
+        before={"enabled": target.get("enabled")},
+        after={"enabled": body.enabled},
+    )
     return await _enrich_user(kc, updated)
 
 
@@ -191,6 +247,7 @@ async def toggle_enabled(
 async def delete_user(
     user_id: str = Path(..., pattern=_UUID_PATTERN),
     user: CurrentUser = Depends(require_permission("admin.users.write")),
+    db: AsyncSession = Depends(get_db),
 ) -> None:
     """Delete a Keycloak user. Prevents self-deletion."""
     kc = _get_kc_admin()
@@ -204,3 +261,17 @@ async def delete_user(
         )
 
     await kc.delete_user(user_id)
+    await log_admin_action(
+        db,
+        actor=user.username,
+        action="delete",
+        resource_type="user",
+        resource_id=user_id,
+        summary=target.get("username"),
+        before={
+            "username": target.get("username"),
+            "email": target.get("email"),
+            "enabled": target.get("enabled"),
+        },
+        after=None,
+    )

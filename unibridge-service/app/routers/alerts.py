@@ -35,6 +35,7 @@ from app.schemas import (
 from app.services import apisix_client
 from app.services.apisix_system_resources import PROTECTED_ROUTE_IDS
 from app.services.alert_sender import render_recipient_items, render_template, send_webhook
+from app.services.audit import log_admin_action
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,34 @@ def _build_settings_response(settings: AlertSettings) -> AlertSettingsResponse:
         trigger_after_failures=settings.trigger_after_failures,
         updated_at=settings.updated_at,
     )
+
+
+def _settings_audit_snapshot(settings: AlertSettings) -> dict[str, Any]:
+    return {
+        "mail_channel_id": settings.mail_channel_id,
+        "admin_emails": _parse_emails(settings.admin_emails),
+        "route_error_threshold_pct": settings.route_error_threshold_pct,
+        "check_interval_seconds": settings.check_interval_seconds,
+        "trigger_after_failures": settings.trigger_after_failures,
+    }
+
+
+def _channel_audit_snapshot(ch: AlertChannel) -> dict[str, Any]:
+    """Audit snapshot of an alert channel. Webhook URLs can embed tokens in
+    their path (e.g. Slack/Teams hooks) and headers carry auth secrets, so the
+    URL is reduced to scheme://host and every header value is masked."""
+    try:
+        headers = json.loads(ch.headers) if ch.headers else None
+    except json.JSONDecodeError:
+        headers = None
+    return {
+        "name": ch.name,
+        "webhook_url": _mask_webhook_url(ch.webhook_url),
+        "payload_template": ch.payload_template,
+        "recipient_item_template": ch.recipient_item_template,
+        "headers": {k: "***" for k in headers} if isinstance(headers, dict) else None,
+        "enabled": ch.enabled,
+    }
 
 
 def _validate_resource_type(resource_type: str) -> None:
@@ -239,6 +268,7 @@ async def update_alert_settings(
             raise HTTPException(status_code=422, detail="Mail channel not found")
 
     settings = await _get_or_create_alert_settings(db, commit=False)
+    before_snapshot = _settings_audit_snapshot(settings)
     if "mail_channel_id" in body.model_fields_set:
         settings.mail_channel_id = body.mail_channel_id
     if body.admin_emails is not None:
@@ -251,6 +281,17 @@ async def update_alert_settings(
         settings.trigger_after_failures = body.trigger_after_failures
     await db.commit()
     await db.refresh(settings)
+
+    await log_admin_action(
+        db,
+        actor=_user.username,
+        action="update",
+        resource_type="alert_settings",
+        resource_id="global",
+        summary=None,
+        before=before_snapshot,
+        after=_settings_audit_snapshot(settings),
+    )
     return _build_settings_response(settings)
 
 
@@ -326,12 +367,23 @@ async def upsert_resource_owner(
         )
     )
     owner = result.scalar_one_or_none()
+    before_emails = _parse_emails(owner.emails) if owner is not None else None
 
     if not emails:
         # Empty assignee list clears the resource owner row entirely.
         if owner is not None:
             await db.delete(owner)
             await db.commit()
+            await log_admin_action(
+                db,
+                actor=_user.username,
+                action="delete",
+                resource_type="resource_owner",
+                resource_id=f"{resource_type}/{resource_id}",
+                summary=display_name,
+                before={"emails": before_emails},
+                after=None,
+            )
         return ResourceOwnerResponse(
             resource_type=resource_type,
             resource_id=resource_id,
@@ -365,6 +417,16 @@ async def upsert_resource_owner(
         owner.emails = emails_json
         await db.commit()
 
+    await log_admin_action(
+        db,
+        actor=_user.username,
+        action="update" if before_emails is not None else "create",
+        resource_type="resource_owner",
+        resource_id=f"{resource_type}/{resource_id}",
+        summary=display_name,
+        before={"emails": before_emails} if before_emails is not None else None,
+        after={"emails": emails},
+    )
     return ResourceOwnerResponse(
         resource_type=resource_type,
         resource_id=resource_id,
@@ -385,6 +447,14 @@ async def delete_resource_owner(
     db: AsyncSession = Depends(get_db),
 ) -> None:
     _validate_resource_type(resource_type)
+    result = await db.execute(
+        select(ResourceOwner).where(
+            ResourceOwner.resource_type == resource_type,
+            ResourceOwner.resource_id == resource_id,
+        )
+    )
+    owner = result.scalar_one_or_none()
+    before_emails = _parse_emails(owner.emails) if owner is not None else None
     await db.execute(
         sa_delete(ResourceOwner).where(
             ResourceOwner.resource_type == resource_type,
@@ -392,6 +462,18 @@ async def delete_resource_owner(
         )
     )
     await db.commit()
+
+    if owner is not None:
+        await log_admin_action(
+            db,
+            actor=_user.username,
+            action="delete",
+            resource_type="resource_owner",
+            resource_id=f"{resource_type}/{resource_id}",
+            summary=None,
+            before={"emails": before_emails},
+            after=None,
+        )
 
 
 # ── Channels ────────────────────────────────────────────────────────────────
@@ -440,6 +522,17 @@ async def create_channel(
         await db.rollback()
         raise HTTPException(status_code=409, detail=f"Channel name '{body.name}' already exists")
     await db.refresh(ch)
+
+    await log_admin_action(
+        db,
+        actor=_user.username,
+        action="create",
+        resource_type="alert_channel",
+        resource_id=str(ch.id),
+        summary=ch.name,
+        before=None,
+        after=_channel_audit_snapshot(ch),
+    )
     return AlertChannelResponse(
         id=ch.id, name=ch.name, webhook_url=ch.webhook_url,
         payload_template=ch.payload_template,
@@ -460,6 +553,7 @@ async def update_channel(
     ch = result.scalar_one_or_none()
     if ch is None:
         raise HTTPException(status_code=404, detail="Channel not found")
+    before_snapshot = _channel_audit_snapshot(ch)
     if body.name is not None:
         ch.name = body.name
     if body.webhook_url is not None:
@@ -478,6 +572,17 @@ async def update_channel(
         await db.rollback()
         raise HTTPException(status_code=409, detail=f"Channel name '{body.name}' already exists")
     await db.refresh(ch)
+
+    await log_admin_action(
+        db,
+        actor=_user.username,
+        action="update",
+        resource_type="alert_channel",
+        resource_id=str(ch.id),
+        summary=ch.name,
+        before=before_snapshot,
+        after=_channel_audit_snapshot(ch),
+    )
     return AlertChannelResponse(
         id=ch.id, name=ch.name, webhook_url=ch.webhook_url,
         payload_template=ch.payload_template,
@@ -505,12 +610,24 @@ async def delete_channel(
             status_code=409,
             detail="Channel is configured as the default mail channel",
         )
+    before_snapshot = _channel_audit_snapshot(ch)
     try:
         await db.delete(ch)
         await db.commit()
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=409, detail="Channel is still referenced")
+
+    await log_admin_action(
+        db,
+        actor=_user.username,
+        action="delete",
+        resource_type="alert_channel",
+        resource_id=str(channel_id),
+        summary=before_snapshot["name"],
+        before=before_snapshot,
+        after=None,
+    )
 
 
 @router.post("/channels/{channel_id}/test")

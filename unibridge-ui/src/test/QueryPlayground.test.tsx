@@ -8,17 +8,25 @@ vi.mock('../api/client', () => ({
   default: { interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } } },
   getDatabases: vi.fn(),
   executeQuery: vi.fn(),
+  getQueryHistory: vi.fn(),
+  getSavedQueries: vi.fn(),
+  createSavedQuery: vi.fn(),
+  deleteSavedQuery: vi.fn(),
 }));
 
 // Import after mock so we get the mocked versions
-import { getDatabases, executeQuery } from '../api/client';
+import { getDatabases, executeQuery, getQueryHistory, getSavedQueries } from '../api/client';
 
 const mockGetDatabases = getDatabases as ReturnType<typeof vi.fn>;
 const mockExecuteQuery = executeQuery as ReturnType<typeof vi.fn>;
+const mockGetQueryHistory = getQueryHistory as ReturnType<typeof vi.fn>;
+const mockGetSavedQueries = getSavedQueries as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetDatabases.mockResolvedValue([]);
+  mockGetQueryHistory.mockResolvedValue({ items: [], total: 0 });
+  mockGetSavedQueries.mockResolvedValue([]);
 });
 
 describe('QueryPlayground', () => {

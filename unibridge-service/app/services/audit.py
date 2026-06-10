@@ -28,6 +28,9 @@ _SENSITIVE_KEY_NAMES = frozenset(
         "credential",
         "credentials",
         "header_value",  # service_keys[].header_value holds an upstream secret
+        "access_key_id",  # S3 credentials
+        "secret_access_key",
+        "session_token",
     }
 )
 
@@ -88,9 +91,9 @@ def _redact(value: Any, *, mask_all: bool = False, parent_key: str | None = None
 
     A scalar is masked when it sits under a sensitive key name (see
     ``_SENSITIVE_KEY_NAMES``) or anywhere inside a proxy-rewrite ``headers.set``
-    map — APISIX stores injected service-key headers there with arbitrary
-    (non-sensitive-looking) header names, so the whole subtree is treated as
-    secret.
+    / ``headers.add`` map — APISIX stores injected service-key headers there
+    with arbitrary (non-sensitive-looking) header names, so the whole subtree
+    is treated as secret.
     """
     if isinstance(value, dict):
         redacted: dict[Any, Any] = {}
@@ -99,7 +102,7 @@ def _redact(value: Any, *, mask_all: bool = False, parent_key: str | None = None
             child_mask = (
                 mask_all
                 or (isinstance(key_l, str) and key_l in _SENSITIVE_KEY_NAMES)
-                or (key_l == "set" and parent_key == "headers")
+                or (key_l in ("set", "add") and parent_key == "headers")
             )
             redacted[k] = _redact(v, mask_all=child_mask, parent_key=key_l)
         return redacted

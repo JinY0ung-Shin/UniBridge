@@ -16,6 +16,7 @@ import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
 import { usePermissions } from '../components/usePermissions';
 import ResourceModal from '../components/ResourceModal';
+import { formatKST } from '../utils/time';
 import './ApiKeys.css';
 
 function generateKey(): string {
@@ -30,6 +31,10 @@ interface FormState {
   allowedDatabases: string[];
   allowedRoutes: string[];
   rateLimit: string;
+  allowInsert: boolean;
+  allowUpdate: boolean;
+  allowDelete: boolean;
+  allowedTables: string;
 }
 
 const emptyForm: FormState = {
@@ -40,6 +45,10 @@ const emptyForm: FormState = {
   allowedDatabases: [],
   allowedRoutes: [],
   rateLimit: '',
+  allowInsert: false,
+  allowUpdate: false,
+  allowDelete: false,
+  allowedTables: '',
 };
 
 function isMasterAccess(key: ApiKey): boolean {
@@ -129,6 +138,10 @@ function ApiKeys() {
       allowedDatabases: isMaster ? [] : k.allowed_databases,
       allowedRoutes: isMaster ? [] : k.allowed_routes,
       rateLimit: k.rate_limit_per_minute == null ? '' : String(k.rate_limit_per_minute),
+      allowInsert: Boolean(k.allow_insert),
+      allowUpdate: Boolean(k.allow_update),
+      allowDelete: Boolean(k.allow_delete),
+      allowedTables: (k.allowed_tables ?? []).join(', '),
     });
     setEditingName(k.name);
     setCreatedKey(null);
@@ -150,11 +163,20 @@ function ApiKeys() {
     return Number.isFinite(parsed) ? parsed : null;
   }
 
+  function parseAllowedTables(value: string): string[] | null {
+    const tables = value
+      .split(',')
+      .map((tbl) => tbl.trim())
+      .filter(Boolean);
+    return tables.length > 0 ? tables : null;
+  }
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const rateLimit = parseRateLimit(form.rateLimit);
     const allowedDatabases = form.isMaster ? ['*'] : form.allowedDatabases;
     const allowedRoutes = form.isMaster ? ['*'] : form.allowedRoutes;
+    const allowedTables = parseAllowedTables(form.allowedTables);
     if (editingName) {
       const body: Record<string, unknown> = {
         description: form.description,
@@ -162,6 +184,10 @@ function ApiKeys() {
         allowed_databases: allowedDatabases,
         allowed_routes: allowedRoutes,
         rate_limit_per_minute: rateLimit,
+        allow_insert: form.allowInsert,
+        allow_update: form.allowUpdate,
+        allow_delete: form.allowDelete,
+        allowed_tables: allowedTables,
       };
       if (form.apiKey.trim()) body.api_key = form.apiKey.trim();
       updateMut.mutate({ name: editingName, body });
@@ -174,6 +200,10 @@ function ApiKeys() {
         allowed_databases: allowedDatabases,
         allowed_routes: allowedRoutes,
         rate_limit_per_minute: rateLimit,
+        allow_insert: form.allowInsert,
+        allow_update: form.allowUpdate,
+        allow_delete: form.allowDelete,
+        allowed_tables: allowedTables,
       });
     }
   }
@@ -253,6 +283,7 @@ function ApiKeys() {
                 <th>{t('apiKeys.apiKey')}</th>
                 <th>{t('apiKeys.allowedDatabases')}</th>
                 <th>{t('apiKeys.allowedRoutes')}</th>
+                <th>{t('apiKeys.expiresAt')}</th>
                 <th>{t('common.actions')}</th>
               </tr>
             </thead>
@@ -264,6 +295,7 @@ function ApiKeys() {
                   <td className="cell-key">{k.api_key || '\u2014'}</td>
                   <td><div className="cell-tags">{renderTags(k.allowed_databases)}</div></td>
                   <td><div className="cell-tags">{renderTags(k.allowed_routes)}</div></td>
+                  <td>{k.expires_at ? formatKST(k.expires_at) : '—'}</td>
                   <td>
                     {canWrite && (
                       <div className="action-buttons">
@@ -413,6 +445,45 @@ function ApiKeys() {
                       </label>
                     ))}
                   </div>
+                </div>
+                <div className="form-group form-group--full">
+                  <label>{t('apiKeys.writePermissions')}</label>
+                  <div className="checkbox-list">
+                    <label className="checkbox-list-item">
+                      <input
+                        type="checkbox"
+                        checked={form.allowInsert}
+                        onChange={() => setForm((p) => ({ ...p, allowInsert: !p.allowInsert }))}
+                      />
+                      <span className="checkbox-list-label">{t('apiKeys.allowInsert')}</span>
+                    </label>
+                    <label className="checkbox-list-item">
+                      <input
+                        type="checkbox"
+                        checked={form.allowUpdate}
+                        onChange={() => setForm((p) => ({ ...p, allowUpdate: !p.allowUpdate }))}
+                      />
+                      <span className="checkbox-list-label">{t('apiKeys.allowUpdate')}</span>
+                    </label>
+                    <label className="checkbox-list-item">
+                      <input
+                        type="checkbox"
+                        checked={form.allowDelete}
+                        onChange={() => setForm((p) => ({ ...p, allowDelete: !p.allowDelete }))}
+                      />
+                      <span className="checkbox-list-label">{t('apiKeys.allowDelete')}</span>
+                    </label>
+                  </div>
+                  <small className="form-hint">{t('apiKeys.writePermissionsHint')}</small>
+                </div>
+                <div className="form-group form-group--full">
+                  <label>{t('apiKeys.allowedTables')}</label>
+                  <input
+                    value={form.allowedTables}
+                    onChange={(e) => setForm((p) => ({ ...p, allowedTables: e.target.value }))}
+                    placeholder={t('apiKeys.allowedTablesPlaceholder')}
+                  />
+                  <small className="form-hint">{t('apiKeys.allowedTablesHint')}</small>
                 </div>
                 <div className="form-group">
                   <label>{t('apiKeys.rateLimit')}</label>
