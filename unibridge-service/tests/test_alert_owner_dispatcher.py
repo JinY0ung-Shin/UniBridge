@@ -224,6 +224,40 @@ async def test_dispatch_alert_sends_to_admins_when_no_assignees(engine):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_alert_skips_resource_when_alerts_disabled(engine):
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        channel = await _seed_mail_channel(db)
+        db.add(AlertSettings(
+            id=1,
+            mail_channel_id=channel.id,
+            admin_emails=json.dumps(["admin@example.com"]),
+        ))
+        await _seed_resource_owner(db, emails=["owner@example.com"])
+        owner = (await db.execute(select(ResourceOwner))).scalar_one()
+        owner.alerts_enabled = False
+        await db.commit()
+
+    send = AsyncMock(return_value=(True, None))
+    with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
+         patch("app.services.alert_owner_dispatcher.send_webhook", send):
+        await dispatch_alert(
+            resource_type="db",
+            resource_id="payment-db",
+            alert_type="triggered",
+            target="payment-db",
+            message="Database failed",
+        )
+
+    send.assert_not_awaited()
+    histories = await _history_rows(session_factory)
+    assert len(histories) == 1
+    assert histories[0].success is None
+    assert histories[0].recipients is None
+    assert histories[0].error_detail == "Alerts disabled for resource"
+
+
+@pytest.mark.asyncio
 async def test_dispatch_alert_ignores_upstream_assignees_and_sends_to_admins(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:

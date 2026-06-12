@@ -244,6 +244,8 @@ class ResourceOwner(Base):
 
     Holds the alert-recipient emails for a single resource directly — no
     intermediary owner-group. ``emails`` is a JSON array of strings.
+    ``alerts_enabled`` suppresses all notifications for the resource when off,
+    including global admin notifications.
     """
 
     __tablename__ = "resource_owners"
@@ -252,12 +254,17 @@ class ResourceOwner(Base):
     resource_type = Column(String(20), nullable=False)
     resource_id = Column(String(200), nullable=False)
     emails = Column(Text, nullable=False)  # JSON array of assignee emails
+    alerts_enabled = Column(Boolean, default=True, nullable=False, server_default="true")
     created_at = Column(UtcDateTime, default=utcnow, nullable=False)
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("resource_type", "resource_id", name="uq_resource_owner_type_id"),
     )
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("alerts_enabled", True)
+        super().__init__(**kwargs)
 
 
 class AlertSettings(Base):

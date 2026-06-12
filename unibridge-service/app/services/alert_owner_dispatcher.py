@@ -76,12 +76,16 @@ async def dispatch_alert(
                 history.error_detail = "recipient_item_template is required for mail channel"
                 return
 
-            emails = await _resolve_recipients(
+            alerts_enabled, emails = await _resolve_recipients(
                 db,
                 resource_type=resource_type,
                 resource_id=resource_id,
                 admin_emails_json=settings.admin_emails,
             )
+            if not alerts_enabled:
+                history.success = None
+                history.error_detail = "Alerts disabled for resource"
+                return
             history.recipients = json.dumps(emails, ensure_ascii=False)
             if not emails:
                 history.error_detail = "No assignees or admins configured for resource"
@@ -129,7 +133,7 @@ async def dispatch_alert(
             metrics.record_alert_dispatch(
                 rule_id=resource_type or "alert",
                 channel_type="webhook",
-                status="success" if history.success else "failure",
+                status="success" if history.success else "skipped" if history.success is None else "failure",
             )
         except Exception as exc:
             logger.warning("Alert metric recording failed: %s", exc)
@@ -169,7 +173,7 @@ async def _resolve_recipients(
     resource_type: str,
     resource_id: str,
     admin_emails_json: str | None,
-) -> list[str]:
+) -> tuple[bool, list[str]]:
     """Union of the resource's assignee emails and the global admin emails.
 
     Assignees come first, then admins, with duplicates removed (case-preserving,
@@ -178,13 +182,16 @@ async def _resolve_recipients(
     assignees: list[str] = []
     if resource_type in ASSIGNEE_RESOURCE_TYPES:
         result = await db.execute(
-            select(ResourceOwner.emails).where(
+            select(ResourceOwner.emails, ResourceOwner.alerts_enabled).where(
                 ResourceOwner.resource_type == resource_type,
                 ResourceOwner.resource_id == resource_id,
             )
         )
-        owner_emails_json = result.scalar_one_or_none()
-        if owner_emails_json is not None:
+        owner_row = result.one_or_none()
+        if owner_row is not None:
+            owner_emails_json, alerts_enabled = owner_row
+            if not alerts_enabled:
+                return False, []
             assignees = _parse_emails(owner_emails_json)
 
     admins = _parse_emails(admin_emails_json)
@@ -197,7 +204,7 @@ async def _resolve_recipients(
             continue
         seen.add(key)
         recipients.append(email)
-    return recipients
+    return True, recipients
 
 
 def _parse_emails(emails_json: str | None) -> list[str]:

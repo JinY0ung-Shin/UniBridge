@@ -74,6 +74,15 @@ def _parse_emails(emails_json: str | None) -> list[str]:
     return [e for e in parsed if isinstance(e, str)]
 
 
+def _resource_owner_snapshot(owner: ResourceOwner | None) -> dict[str, Any] | None:
+    if owner is None:
+        return None
+    return {
+        "emails": _parse_emails(owner.emails),
+        "alerts_enabled": owner.alerts_enabled,
+    }
+
+
 async def _get_or_create_alert_settings(
     db: AsyncSession,
     *,
@@ -193,7 +202,7 @@ async def _resource_display_name(
 async def _list_resources_for_owners(db: AsyncSession) -> list[ResourceOwnerResponse]:
     owner_result = await db.execute(select(ResourceOwner))
     owners = {
-        (owner.resource_type, owner.resource_id): _parse_emails(owner.emails)
+        (owner.resource_type, owner.resource_id): owner
         for owner in owner_result.scalars().all()
     }
 
@@ -201,29 +210,35 @@ async def _list_resources_for_owners(db: AsyncSession) -> list[ResourceOwnerResp
 
     db_result = await db.execute(select(DBConnection.alias).order_by(DBConnection.alias))
     for alias in db_result.scalars().all():
+        owner = owners.get(("db", alias))
         rows.append(ResourceOwnerResponse(
             resource_type="db",
             resource_id=alias,
             display_name=alias,
-            emails=owners.get(("db", alias), []),
+            emails=_parse_emails(owner.emails) if owner is not None else [],
+            alerts_enabled=owner.alerts_enabled if owner is not None else True,
         ))
 
     s3_result = await db.execute(select(S3Connection.alias).order_by(S3Connection.alias))
     for alias in s3_result.scalars().all():
+        owner = owners.get(("s3", alias))
         rows.append(ResourceOwnerResponse(
             resource_type="s3",
             resource_id=alias,
             display_name=alias,
-            emails=owners.get(("s3", alias), []),
+            emails=_parse_emails(owner.emails) if owner is not None else [],
+            alerts_enabled=owner.alerts_enabled if owner is not None else True,
         ))
 
     nas_result = await db.execute(select(NASConnection.alias).order_by(NASConnection.alias))
     for alias in nas_result.scalars().all():
+        owner = owners.get(("nas", alias))
         rows.append(ResourceOwnerResponse(
             resource_type="nas",
             resource_id=alias,
             display_name=alias,
-            emails=owners.get(("nas", alias), []),
+            emails=_parse_emails(owner.emails) if owner is not None else [],
+            alerts_enabled=owner.alerts_enabled if owner is not None else True,
         ))
 
     for resource_type in ("route",):
@@ -235,11 +250,13 @@ async def _list_resources_for_owners(db: AsyncSession) -> list[ResourceOwnerResp
             if resource_id in HIDDEN_APISIX_RESOURCE_IDS[resource_type]:
                 continue
             display_name = _apisix_resource_display_name(item, resource_id)
+            owner = owners.get((resource_type, resource_id))
             rows.append(ResourceOwnerResponse(
                 resource_type=resource_type,
                 resource_id=resource_id,
                 display_name=display_name,
-                emails=owners.get((resource_type, resource_id), []),
+                emails=_parse_emails(owner.emails) if owner is not None else [],
+                alerts_enabled=owner.alerts_enabled if owner is not None else True,
             ))
 
     return rows
@@ -359,7 +376,6 @@ async def upsert_resource_owner(
     if display_name is None:
         raise HTTPException(status_code=422, detail="Resource not found")
 
-    emails = body.emails
     result = await db.execute(
         select(ResourceOwner).where(
             ResourceOwner.resource_type == resource_type,
@@ -367,10 +383,16 @@ async def upsert_resource_owner(
         )
     )
     owner = result.scalar_one_or_none()
-    before_emails = _parse_emails(owner.emails) if owner is not None else None
+    current_snapshot = _resource_owner_snapshot(owner)
+    before_emails = current_snapshot["emails"] if current_snapshot is not None else None
+    current_emails = before_emails if before_emails is not None else []
+    current_alerts_enabled = owner.alerts_enabled if owner is not None else True
+    emails = body.emails if body.emails is not None else current_emails
+    alerts_enabled = body.alerts_enabled if body.alerts_enabled is not None else current_alerts_enabled
 
-    if not emails:
-        # Empty assignee list clears the resource owner row entirely.
+    if not emails and alerts_enabled:
+        # Empty assignee list with notifications enabled is the default state,
+        # so there is no row to persist.
         if owner is not None:
             await db.delete(owner)
             await db.commit()
@@ -381,7 +403,7 @@ async def upsert_resource_owner(
                 resource_type="resource_owner",
                 resource_id=f"{resource_type}/{resource_id}",
                 summary=display_name,
-                before={"emails": before_emails},
+                before=current_snapshot,
                 after=None,
             )
         return ResourceOwnerResponse(
@@ -389,6 +411,7 @@ async def upsert_resource_owner(
             resource_id=resource_id,
             display_name=display_name,
             emails=[],
+            alerts_enabled=True,
         )
 
     emails_json = json.dumps(emails, ensure_ascii=False)
@@ -397,10 +420,12 @@ async def upsert_resource_owner(
             resource_type=resource_type,
             resource_id=resource_id,
             emails=emails_json,
+            alerts_enabled=alerts_enabled,
         )
         db.add(owner)
     else:
         owner.emails = emails_json
+        owner.alerts_enabled = alerts_enabled
     try:
         await db.commit()
     except IntegrityError:
@@ -415,23 +440,25 @@ async def upsert_resource_owner(
         if owner is None:
             raise HTTPException(status_code=409, detail="Resource owner conflict")
         owner.emails = emails_json
+        owner.alerts_enabled = alerts_enabled
         await db.commit()
 
     await log_admin_action(
         db,
         actor=_user.username,
-        action="update" if before_emails is not None else "create",
+        action="update" if current_snapshot is not None else "create",
         resource_type="resource_owner",
         resource_id=f"{resource_type}/{resource_id}",
         summary=display_name,
-        before={"emails": before_emails} if before_emails is not None else None,
-        after={"emails": emails},
+        before=current_snapshot,
+        after={"emails": emails, "alerts_enabled": alerts_enabled},
     )
     return ResourceOwnerResponse(
         resource_type=resource_type,
         resource_id=resource_id,
         display_name=display_name,
         emails=emails,
+        alerts_enabled=alerts_enabled,
     )
 
 
@@ -454,7 +481,7 @@ async def delete_resource_owner(
         )
     )
     owner = result.scalar_one_or_none()
-    before_emails = _parse_emails(owner.emails) if owner is not None else None
+    before_snapshot = _resource_owner_snapshot(owner)
     await db.execute(
         sa_delete(ResourceOwner).where(
             ResourceOwner.resource_type == resource_type,
@@ -471,7 +498,7 @@ async def delete_resource_owner(
             resource_type="resource_owner",
             resource_id=f"{resource_type}/{resource_id}",
             summary=None,
-            before={"emails": before_emails},
+            before=before_snapshot,
             after=None,
         )
 

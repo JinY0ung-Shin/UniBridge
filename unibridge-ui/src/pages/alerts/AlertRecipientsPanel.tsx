@@ -50,7 +50,8 @@ function resourceTypeLabel(t: (key: string) => string, resourceType: string): st
 
 interface AssigneeChange {
   row: AlertResourceOwner;
-  emails: string[];
+  emails?: string[];
+  alerts_enabled?: boolean;
 }
 
 export default function AlertRecipientsPanel() {
@@ -83,18 +84,32 @@ export default function AlertRecipientsPanel() {
 
   const [adminEmailsDraft, setAdminEmailsDraft] = useState<string | null>(null);
   const [resourceDrafts, setResourceDrafts] = useState<Record<string, string>>({});
+  const [resourceEnabledDrafts, setResourceEnabledDrafts] = useState<Record<string, boolean>>({});
   const adminEmailsValue = adminEmailsDraft ?? (settings ? emailsToText(settings.admin_emails) : '');
 
   function resourceDraftValue(row: AlertResourceOwner): string {
     return resourceDrafts[resourceKey(row)] ?? emailsToText(row.emails);
   }
 
+  function resourceAlertsEnabledValue(row: AlertResourceOwner): boolean {
+    return resourceEnabledDrafts[resourceKey(row)] ?? row.alerts_enabled;
+  }
+
   const pendingAssigneeChanges = useMemo<AssigneeChange[]>(
     () =>
       resources
-        .map((row) => ({ row, emails: parseEmails(resourceDrafts[resourceKey(row)] ?? emailsToText(row.emails)) }))
-        .filter(({ row, emails }) => !sameEmails(emails, row.emails)),
-    [resources, resourceDrafts],
+        .map((row) => {
+          const key = resourceKey(row);
+          const emails = parseEmails(resourceDrafts[key] ?? emailsToText(row.emails));
+          const alertsEnabled = resourceEnabledDrafts[key] ?? row.alerts_enabled;
+          return {
+            row,
+            emails: sameEmails(emails, row.emails) ? undefined : emails,
+            alerts_enabled: alertsEnabled === row.alerts_enabled ? undefined : alertsEnabled,
+          };
+        })
+        .filter(({ emails, alerts_enabled }) => emails !== undefined || alerts_enabled !== undefined),
+    [resources, resourceDrafts, resourceEnabledDrafts],
   );
 
   const updateAdminsMutation = useMutation({
@@ -128,8 +143,11 @@ export default function AlertRecipientsPanel() {
     mutationFn: async (changes: AssigneeChange[]) => {
       const updated: AlertResourceOwner[] = [];
       for (const change of changes) {
+        const body: { emails?: string[]; alerts_enabled?: boolean } = {};
+        if (change.emails !== undefined) body.emails = change.emails;
+        if (change.alerts_enabled !== undefined) body.alerts_enabled = change.alerts_enabled;
         updated.push(
-          await setAlertResourceOwner(change.row.resource_type, change.row.resource_id, { emails: change.emails }),
+          await setAlertResourceOwner(change.row.resource_type, change.row.resource_id, body),
         );
       }
       return updated;
@@ -140,6 +158,13 @@ export default function AlertRecipientsPanel() {
         rows?.map((row) => updatedByKey.get(resourceKey(row)) ?? row),
       );
       setResourceDrafts((prev) => {
+        const next = { ...prev };
+        for (const row of updatedRows) {
+          delete next[resourceKey(row)];
+        }
+        return next;
+      });
+      setResourceEnabledDrafts((prev) => {
         const next = { ...prev };
         for (const row of updatedRows) {
           delete next[resourceKey(row)];
@@ -174,6 +199,7 @@ export default function AlertRecipientsPanel() {
 
   function handleAssigneesDiscard() {
     setResourceDrafts({});
+    setResourceEnabledDrafts({});
   }
 
   const hasSettings = Boolean(settings);
@@ -277,20 +303,43 @@ export default function AlertRecipientsPanel() {
                     <thead>
                       <tr>
                         <th>{t('alerts.resource')}</th>
+                        <th>{t('alerts.resourceAlerts')}</th>
                         <th>{t('alerts.assignees')}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {rows.map((row) => {
                         const key = resourceKey(row);
+                        const label = resourceLabel(row);
+                        const alertsEnabled = resourceAlertsEnabledValue(row);
                         return (
                           <tr key={key}>
-                            <td className="cell-alias">{resourceLabel(row)}</td>
+                            <td className="cell-alias">{label}</td>
+                            <td className="cell-alert-toggle">
+                              <button
+                                type="button"
+                                role="switch"
+                                aria-checked={alertsEnabled}
+                                aria-label={`${t('alerts.resourceAlerts')} - ${label}`}
+                                className={`resource-alert-switch${alertsEnabled ? ' resource-alert-switch--on' : ''}`}
+                                disabled={!canWrite || saveAssigneesMutation.isPending}
+                                onClick={() =>
+                                  setResourceEnabledDrafts((prev) => ({ ...prev, [key]: !alertsEnabled }))
+                                }
+                              >
+                                <span className="resource-alert-switch-track" aria-hidden="true">
+                                  <span className="resource-alert-switch-thumb" />
+                                </span>
+                                <span className="resource-alert-switch-text">
+                                  {alertsEnabled ? t('alerts.resourceAlertsOn') : t('alerts.resourceAlertsOff')}
+                                </span>
+                              </button>
+                            </td>
                             <td>
                               <textarea
                                 className="form-textarea email-list-textarea"
                                 rows={2}
-                                aria-label={`${t('alerts.assignees')} - ${resourceLabel(row)}`}
+                                aria-label={`${t('alerts.assignees')} - ${label}`}
                                 value={resourceDraftValue(row)}
                                 disabled={!canWrite || saveAssigneesMutation.isPending}
                                 onChange={(e) =>

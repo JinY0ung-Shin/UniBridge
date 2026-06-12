@@ -54,6 +54,7 @@ describe('Connections', () => {
       resource_id: 'test-db',
       display_name: 'test-db',
       emails: [],
+      alerts_enabled: true,
     });
   });
 
@@ -202,7 +203,13 @@ describe('Connections', () => {
     mockedGetAdminDatabases.mockResolvedValue([db]);
     mockedUpdateDatabase.mockResolvedValue(db);
     mockedGetAlertResourceOwners.mockResolvedValue([
-      { resource_type: 'db', resource_id: 'test-db', display_name: 'test-db', emails: ['x@y.com'] },
+      {
+        resource_type: 'db',
+        resource_id: 'test-db',
+        display_name: 'test-db',
+        emails: ['x@y.com'],
+        alerts_enabled: true,
+      },
     ]);
 
     renderWithProviders(<Connections />);
@@ -409,6 +416,7 @@ describe('Connections — graphdb', () => {
       resource_id: 'test-db',
       display_name: 'test-db',
       emails: [],
+      alerts_enabled: true,
     });
   });
 
@@ -548,6 +556,7 @@ describe('Connections (error case)', () => {
       resource_id: 'test-db',
       display_name: 'test-db',
       emails: [],
+      alerts_enabled: true,
     });
   });
 

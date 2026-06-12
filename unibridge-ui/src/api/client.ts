@@ -974,6 +974,7 @@ export interface AlertResourceOwner {
   resource_id: string;
   display_name: string;
   emails: string[];
+  alerts_enabled: boolean;
 }
 
 export interface AlertHistoryEntry {
@@ -1049,7 +1050,7 @@ export async function getAlertResourceOwners(): Promise<AlertResourceOwner[]> {
 export async function setAlertResourceOwner(
   resourceType: string,
   resourceId: string,
-  body: { emails: string[] },
+  body: { emails?: string[]; alerts_enabled?: boolean },
 ): Promise<AlertResourceOwner> {
   const type = encodeURIComponent(resourceType);
   const id = encodeURIComponent(resourceId);

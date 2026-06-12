@@ -44,6 +44,7 @@ class TestAlertModels:
         assert owner.resource_type == "db"
         assert owner.resource_id == "mydb"
         assert owner.emails == '["owner@example.com"]'
+        assert owner.alerts_enabled is True
 
     def test_alert_history_columns(self):
         h = AlertHistory(channel_id=1, alert_type="triggered", target="mydb", message="down")
@@ -83,6 +84,11 @@ class TestAlertSchemas:
     def test_resource_owner_upsert_allows_empty(self):
         body = ResourceOwnerUpsert(emails=[])
         assert body.emails == []
+
+    def test_resource_owner_upsert_allows_alerts_toggle_only(self):
+        body = ResourceOwnerUpsert(alerts_enabled=False)
+        assert body.emails is None
+        assert body.alerts_enabled is False
 
     def test_recipient_test_request_requires_at_least_one_email(self):
         with pytest.raises(Exception):

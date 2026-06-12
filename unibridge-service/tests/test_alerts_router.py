@@ -569,6 +569,7 @@ async def test_resource_owner_upsert_and_delete_for_db(client, admin_token, seed
         assert body["resource_id"] == "orders-db"
         assert body["display_name"] == "orders-db"
         assert body["emails"] == ["orders@example.com", "ops@example.com"]
+        assert body["alerts_enabled"] is True
 
         list_resp = await client.get(
             "/admin/alerts/resource-owners",
@@ -582,6 +583,7 @@ async def test_resource_owner_upsert_and_delete_for_db(client, admin_token, seed
             and row["resource_id"] == "orders-db"
             and row["display_name"] == "orders-db"
             and row["emails"] == ["orders@example.com", "ops@example.com"]
+            and row["alerts_enabled"] is True
             for row in rows
         )
 
@@ -595,6 +597,50 @@ async def test_resource_owner_upsert_and_delete_for_db(client, admin_token, seed
     async with session_factory() as db:
         owner = (await db.execute(select(ResourceOwner))).scalar_one_or_none()
     assert owner is None
+
+
+@pytest.mark.asyncio
+async def test_resource_owner_can_disable_alerts_without_assignees(client, admin_token, seeded_db):
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        db.add(DBConnection(
+            alias="quiet-db",
+            db_type="postgres",
+            host="localhost",
+            port=5432,
+            database="quiet",
+            username="quiet",
+            password_encrypted="encrypted",
+        ))
+        await db.commit()
+
+    with patch("app.routers.alerts.apisix_client") as mock_apisix:
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+        resp = await client.put(
+            "/admin/alerts/resource-owners/db/quiet-db",
+            json={"alerts_enabled": False},
+            headers=auth_header(admin_token),
+        )
+        list_resp = await client.get(
+            "/admin/alerts/resource-owners",
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["emails"] == []
+    assert resp.json()["alerts_enabled"] is False
+    rows = list_resp.json()
+    assert any(
+        row["resource_type"] == "db"
+        and row["resource_id"] == "quiet-db"
+        and row["emails"] == []
+        and row["alerts_enabled"] is False
+        for row in rows
+    )
+    async with session_factory() as db:
+        owner = (await db.execute(select(ResourceOwner))).scalar_one_or_none()
+    assert owner is not None
+    assert owner.alerts_enabled is False
 
 
 @pytest.mark.asyncio
@@ -627,6 +673,7 @@ async def test_resource_owner_empty_emails_clears_assignees(client, admin_token,
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["emails"] == []
+    assert resp.json()["alerts_enabled"] is True
     async with session_factory() as db:
         owner = (await db.execute(select(ResourceOwner))).scalar_one_or_none()
     assert owner is None
@@ -747,9 +794,11 @@ async def test_resource_owner_validates_route_and_nas_but_rejects_upstream(clien
     assert route_resp.status_code == 200, route_resp.text
     assert route_resp.json()["display_name"] == "Orders Route"
     assert route_resp.json()["emails"] == ["gateway@example.com"]
+    assert route_resp.json()["alerts_enabled"] is True
     assert nas_resp.status_code == 200, nas_resp.text
     assert nas_resp.json()["display_name"] == "reports-nas"
     assert nas_resp.json()["emails"] == ["nas@example.com"]
+    assert nas_resp.json()["alerts_enabled"] is True
     assert missing_resp.status_code == 422
     assert upstream_resp.status_code == 422
 
@@ -793,6 +842,7 @@ async def test_resource_owner_lists_apisix_resources_with_email_mapping(client, 
         and row["resource_id"] == "orders-route"
         and row["display_name"] == "Orders Route"
         and row["emails"] == ["route@example.com"]
+        and row["alerts_enabled"] is True
         for row in rows
     )
     assert any(
@@ -800,6 +850,7 @@ async def test_resource_owner_lists_apisix_resources_with_email_mapping(client, 
         and row["resource_id"] == "reports-nas"
         and row["display_name"] == "reports-nas"
         and row["emails"] == ["nas@example.com"]
+        and row["alerts_enabled"] is True
         for row in rows
     )
     assert not any(

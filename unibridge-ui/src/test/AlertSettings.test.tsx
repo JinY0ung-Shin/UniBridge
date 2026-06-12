@@ -69,6 +69,7 @@ const dbResourceFixture = {
   resource_id: 'orders-db',
   display_name: 'orders-db',
   emails: [] as string[],
+  alerts_enabled: true,
 };
 
 /* ── delivery tab helper: clicks the Delivery tab button ── */
@@ -93,7 +94,8 @@ describe('AlertSettings page', () => {
       resource_type: type,
       resource_id: id,
       display_name: id,
-      emails: body.emails,
+      emails: body.emails ?? [],
+      alerts_enabled: body.alerts_enabled ?? true,
     }));
     mocks.getChannels.mockResolvedValue([]);
   });
@@ -199,6 +201,25 @@ describe('AlertSettings page', () => {
 
     await waitFor(() => expect(mocks.setResourceOwner).toHaveBeenCalled());
     expect(mocks.setResourceOwner).toHaveBeenCalledWith('db', 'orders-db', { emails: [] });
+  });
+
+  it('saves a resource alert toggle without clearing assignees', async () => {
+    mocks.getResourceOwners.mockResolvedValue([
+      { ...dbResourceFixture, emails: ['owner@example.com'], alerts_enabled: true },
+    ]);
+    renderWithProviders(<AlertSettings />);
+    await waitFor(() => expect(screen.getByText('orders-db')).toBeInTheDocument());
+
+    const toggle = screen.getByRole('switch', { name: /Alerts - orders-db|알림 - orders-db/i });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(toggle);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save changes$|^변경사항 저장$/ }));
+
+    await waitFor(() => expect(mocks.setResourceOwner).toHaveBeenCalled());
+    expect(mocks.setResourceOwner).toHaveBeenCalledWith('db', 'orders-db', {
+      alerts_enabled: false,
+    });
   });
 
   it('delivery tab saves selected mail channel via settings form', async () => {

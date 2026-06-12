@@ -627,14 +627,15 @@ def _dedupe_emails(values: list[str]) -> list[str]:
 
 
 class ResourceOwnerUpsert(BaseModel):
-    """Assign 담당자 emails to a resource. An empty list clears the assignees."""
+    """Assign 담당자 emails and notification state to a resource."""
 
-    emails: list[str] = Field(default_factory=list)
+    emails: list[str] | None = None
+    alerts_enabled: bool | None = None
 
     @field_validator("emails")
     @classmethod
-    def validate_emails(cls, v: list[str]) -> list[str]:
-        return _dedupe_emails(v)
+    def validate_emails(cls, v: list[str] | None) -> list[str] | None:
+        return _dedupe_emails(v) if v is not None else None
 
 
 class ResourceOwnerResponse(BaseModel):
@@ -642,6 +643,7 @@ class ResourceOwnerResponse(BaseModel):
     resource_id: str
     display_name: str
     emails: list[str] = []
+    alerts_enabled: bool = True
 
 
 class AlertHistoryResponse(BaseModel):

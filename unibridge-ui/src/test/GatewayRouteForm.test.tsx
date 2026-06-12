@@ -54,6 +54,7 @@ describe('GatewayRouteForm', () => {
       resource_id: 'r1',
       display_name: 'r1',
       emails: [],
+      alerts_enabled: true,
     });
   });
 
@@ -205,7 +206,13 @@ describe('GatewayRouteForm', () => {
     mockedGetGatewayRoute.mockResolvedValue(route);
     mockedSaveGatewayRoute.mockResolvedValue(route);
     mockedGetAlertResourceOwners.mockResolvedValue([
-      { resource_type: 'route', resource_id: 'route-1', display_name: 'route-1', emails: ['a@b.com'] },
+      {
+        resource_type: 'route',
+        resource_id: 'route-1',
+        display_name: 'route-1',
+        emails: ['a@b.com'],
+        alerts_enabled: true,
+      },
     ]);
 
     renderWithProviders(<GatewayRouteForm />);
