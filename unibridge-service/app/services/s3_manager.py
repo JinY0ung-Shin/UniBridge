@@ -1,18 +1,39 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 import logging
-from typing import Any
+from typing import Any, TypeVar
 
 import boto3
 from botocore.client import BaseClient
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+from app.config import settings
 from app.models import S3Connection
 from app.services.connection_manager import decrypt_password, validate_encryption_key
 
 logger = logging.getLogger(__name__)
+
+_S3_EXECUTOR: ThreadPoolExecutor | None = ThreadPoolExecutor(
+    max_workers=settings.S3_MAX_WORKERS,
+    thread_name_prefix="s3-io",
+)
+
+_T = TypeVar("_T")
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    global _S3_EXECUTOR
+    if _S3_EXECUTOR is None:
+        _S3_EXECUTOR = ThreadPoolExecutor(
+            max_workers=settings.S3_MAX_WORKERS,
+            thread_name_prefix="s3-io",
+        )
+    return _S3_EXECUTOR
 
 
 class S3ConnectionManager:
@@ -28,6 +49,26 @@ class S3ConnectionManager:
             cls._instance._clients = {}
             cls._instance._configs = {}
         return cls._instance
+
+    async def _run_blocking(
+        self,
+        fn: Callable[..., _T],
+        *args: Any,
+        **kwargs: Any,
+    ) -> _T:
+        loop = asyncio.get_running_loop()
+        call = partial(fn, *args, **kwargs)
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(_get_executor(), call),
+                timeout=settings.S3_OP_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "S3 operation timed out after %ss",
+                settings.S3_OP_TIMEOUT_SECONDS,
+            )
+            raise
 
     async def initialize(self, connections: list[S3Connection]) -> None:
         validate_encryption_key()
@@ -51,15 +92,15 @@ class S3ConnectionManager:
             "config": Config(
                 signature_version="s3v4",
                 retries={"max_attempts": 2, "mode": "standard"},
+                connect_timeout=settings.S3_CONNECT_TIMEOUT_SECONDS,
+                read_timeout=settings.S3_READ_TIMEOUT_SECONDS,
             ),
         }
         if conn.endpoint_url:
             kwargs["endpoint_url"] = conn.endpoint_url
         kwargs["use_ssl"] = conn.use_ssl
 
-        client = await asyncio.to_thread(
-            boto3.client, "s3", **kwargs
-        )
+        client = await self._run_blocking(boto3.client, "s3", **kwargs)
         self._clients[conn.alias] = client
         self._configs[conn.alias] = {
             "endpoint_url": conn.endpoint_url,
@@ -72,7 +113,7 @@ class S3ConnectionManager:
         client = self._clients.pop(alias, None)
         self._configs.pop(alias, None)
         if client is not None:
-            await asyncio.to_thread(client.close)
+            await self._run_blocking(client.close)
             logger.info("S3 client closed for alias '%s'", alias)
 
     def get_client(self, alias: str) -> BaseClient:
@@ -96,9 +137,9 @@ class S3ConnectionManager:
             config = self.get_config(alias)
             default_bucket = config.get("default_bucket")
             if default_bucket:
-                await asyncio.to_thread(client.head_bucket, Bucket=default_bucket)
+                await self._run_blocking(client.head_bucket, Bucket=default_bucket)
             else:
-                await asyncio.to_thread(client.list_buckets)
+                await self._run_blocking(client.list_buckets)
             return True, "Connection successful"
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
@@ -110,7 +151,7 @@ class S3ConnectionManager:
 
     async def list_buckets(self, alias: str) -> list[dict[str, Any]]:
         client = self.get_client(alias)
-        resp = await asyncio.to_thread(client.list_buckets)
+        resp = await self._run_blocking(client.list_buckets)
         return [
             {
                 "name": b["Name"],
@@ -138,7 +179,7 @@ class S3ConnectionManager:
         if continuation_token:
             kwargs["ContinuationToken"] = continuation_token
 
-        resp = await asyncio.to_thread(client.list_objects_v2, **kwargs)
+        resp = await self._run_blocking(client.list_objects_v2, **kwargs)
 
         folders = [
             {"prefix": cp["Prefix"]}
@@ -166,7 +207,7 @@ class S3ConnectionManager:
         self, alias: str, bucket: str, key: str
     ) -> dict[str, Any]:
         client = self.get_client(alias)
-        resp = await asyncio.to_thread(client.head_object, Bucket=bucket, Key=key)
+        resp = await self._run_blocking(client.head_object, Bucket=bucket, Key=key)
         return {
             "key": key,
             "size": resp.get("ContentLength"),
@@ -181,14 +222,14 @@ class S3ConnectionManager:
         self, alias: str, bucket: str, key: str
     ) -> dict[str, Any]:
         client = self.get_client(alias)
-        resp = await asyncio.to_thread(client.get_object, Bucket=bucket, Key=key)
+        resp = await self._run_blocking(client.get_object, Bucket=bucket, Key=key)
         return resp
 
     async def generate_presigned_url(
         self, alias: str, bucket: str, key: str, expires_in: int = 3600
     ) -> str:
         client = self.get_client(alias)
-        url = await asyncio.to_thread(
+        url = await self._run_blocking(
             client.generate_presigned_url,
             "get_object",
             Params={"Bucket": bucket, "Key": key},
@@ -197,8 +238,12 @@ class S3ConnectionManager:
         return url
 
     async def dispose_all(self) -> None:
+        global _S3_EXECUTOR
         for alias in list(self._clients.keys()):
             await self.remove_connection(alias)
+        if _S3_EXECUTOR is not None:
+            _S3_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+            _S3_EXECUTOR = None
 
 
 s3_manager = S3ConnectionManager()

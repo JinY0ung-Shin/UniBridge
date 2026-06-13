@@ -17,7 +17,7 @@ RUN npm config set strict-ssl false && \
     if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi && \
     if [ -n "$HTTP_PROXY" ]; then npm config set proxy $HTTP_PROXY; fi && \
     if [ -n "$HTTPS_PROXY" ]; then npm config set https-proxy $HTTPS_PROXY; fi && \
-    npm install
+    npm ci
 COPY . .
 RUN npm run build
 

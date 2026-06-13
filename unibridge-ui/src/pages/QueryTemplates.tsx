@@ -170,8 +170,8 @@ function QueryTemplates() {
     queryFn: getDatabases,
   });
 
-  const templates = templatesQuery.data ?? [];
-  const databases = databasesQuery.data ?? [];
+  const templates = useMemo(() => templatesQuery.data ?? [], [templatesQuery.data]);
+  const databases = useMemo(() => databasesQuery.data ?? [], [databasesQuery.data]);
   const selectedTemplate = useMemo(
     () => templates.find((template) => template.path === selectedPath) ?? templates[0],
     [selectedPath, templates],

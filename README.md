@@ -68,6 +68,7 @@ cp .env.example .env
 |----------|---------|-------------|
 | `UNIBRIDGE_UI_PORT` | 3000 | HTTPS port for the web UI |
 | `KEYCLOAK_PORT` | 8443 | Keycloak OIDC port |
+| `KEYCLOAK_EXTERNAL_URL` | derived | Browser-facing Keycloak base URL for UI runtime config |
 | `KEYCLOAK_DEV_MODE` | false | Set `true` to run Keycloak in dev mode (relaxed security) |
 | `ETCD_ALLOW_NONE_AUTH` | no | Set `yes` to disable etcd authentication (dev only) |
 | `ENABLE_DEV_TOKEN_ENDPOINT` | false | Set `true` only for local dev |
@@ -77,6 +78,7 @@ cp .env.example .env
 | `NAS_HOST_PATH` | `/mnt/nas` | Host path bind-mounted read-only into `unibridge-service` for NAS browsing |
 | `NAS_CONTAINER_PATH` | `/mnt/nas` | Container path where the NAS host path appears |
 | `NAS_ALLOWED_ROOTS` | `NAS_CONTAINER_PATH` | Comma-separated container paths allowed as NAS connection `base_path` roots |
+| `S3_OP_TIMEOUT_SECONDS` | 30 | Per-operation timeout for S3-compatible storage calls |
 
 ### 3. TLS certificates
 
@@ -235,7 +237,7 @@ uvicorn app.main:app --reload --port 8000
 
 ```bash
 cd unibridge-ui
-npm install
+npm ci
 npm run dev   # http://localhost:5173, proxies /_api to :8000
 ```
 

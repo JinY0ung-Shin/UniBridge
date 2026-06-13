@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     NAS_MAX_PATH_BYTES: int = 4096
     NAS_FS_OP_TIMEOUT_SECONDS: float = 10.0          # per-op timeout so a hung NFS/FIFO syscall cannot wedge the service
 
+    # S3 / S3-compatible object storage blocking-call isolation
+    S3_MAX_WORKERS: int = 8
+    S3_OP_TIMEOUT_SECONDS: float = 30.0
+    S3_CONNECT_TIMEOUT_SECONDS: float = 5.0
+    S3_READ_TIMEOUT_SECONDS: float = 30.0
+
     APP_VERSION: str = "unknown"
 
     model_config = {"env_file": ".env"}

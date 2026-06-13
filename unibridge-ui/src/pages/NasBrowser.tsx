@@ -199,6 +199,13 @@ function NasBrowser() {
       // a newer view (e.g. an unfiltered list landing after a search).
       const reqId = ++fetchReqId.current;
       setLoading(true);
+      if (!cursor) {
+        setFolders([]);
+        setFiles([]);
+        setNextCursor(null);
+        setHasMore(false);
+        setTruncated(false);
+      }
       try {
         const resp = await getNasEntries(alias, {
           path: pth,
@@ -229,12 +236,10 @@ function NasBrowser() {
   );
 
   useEffect(() => {
-    setFolders([]);
-    setFiles([]);
-    setNextCursor(null);
-    setHasMore(false);
-    setTruncated(false);
-    fetchEntries(path, search);
+    const handle = window.setTimeout(() => {
+      void fetchEntries(path, search);
+    }, 0);
+    return () => window.clearTimeout(handle);
   }, [path, search, fetchEntries]);
 
   // Changing directory clears any active filter — results were scoped to the

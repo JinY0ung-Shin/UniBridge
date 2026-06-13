@@ -6,6 +6,7 @@ from typing import Any
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
@@ -13,8 +14,19 @@ from app.config import settings
 from app.models import Base
 
 ALEMBIC_BASELINE_REVISION = "0001_initial"
-ALEMBIC_HEAD_REVISION = "0012_saved_queries_history_idx"
 _SERVICE_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _current_alembic_head() -> str:
+    config = Config(str(_SERVICE_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(_SERVICE_ROOT / "alembic"))
+    head = ScriptDirectory.from_config(config).get_current_head()
+    if head is None:
+        raise RuntimeError("Alembic has no current head revision")
+    return head
+
+
+ALEMBIC_HEAD_REVISION = _current_alembic_head()
 
 # Ensure the data directory exists for SQLite
 if settings.META_DB_URL.startswith("sqlite"):

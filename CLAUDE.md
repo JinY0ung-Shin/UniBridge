@@ -25,8 +25,9 @@ uvicorn app.main:app --reload                # run locally (listens on :8000 —
 ```
 Frontend (`cd unibridge-ui`):
 ```bash
-npm install && npm run dev                   # dev server
-npm run lint                                 # eslint .
+npm ci                                       # install from package-lock
+npm run dev                                  # dev server
+npm run lint                                 # eslint . -- CI treats warnings as failures
 npm run test                                 # vitest run
 npm run build                                # tsc -b && vite build
 ```
@@ -35,7 +36,8 @@ E2E (`cd e2e`): `pytest -v`   (needs `LLM_API_KEY`; see e2e/README.md)
 Full stack: `docker compose up -d`
 
 CI (`.github/workflows/ci.yml`): frontend = lint+test+build; backend = ruff + alembic
-upgrade/check + pytest. Python 3.12, Node lts.
+upgrade/check + pytest; converter = pytest; scripts = shell syntax; live e2e is
+deployment-gated with `RUN_LIVE_E2E=true`. Python 3.12, Node lts.
 
 ## Gotchas
 - **Migrations auto-apply at boot**: `app.main` lifespan → `init_db()` → `alembic upgrade head`.

@@ -31,7 +31,7 @@ function S3Browser() {
   const navigate = useNavigate();
   const { addToast } = useToast();
 
-  const [selectedBucket, setSelectedBucket] = useState<string>('');
+  const [selectedBucketChoice, setSelectedBucket] = useState<string>('');
   const [prefix, setPrefix] = useState('');
   const [folders, setFolders] = useState<S3Folder[]>([]);
   const [objects, setObjects] = useState<S3Object[]>([]);
@@ -47,17 +47,19 @@ function S3Browser() {
   });
 
   const buckets: S3Bucket[] = bucketsQuery.data ?? [];
-
-  // Auto-select first bucket when loaded
-  useEffect(() => {
-    if (bucketsQuery.data && bucketsQuery.data.length > 0 && !selectedBucket) {
-      setSelectedBucket(bucketsQuery.data[0].name);
-    }
-  }, [bucketsQuery.data, selectedBucket]);
+  const selectedBucket = buckets.some((bucket) => bucket.name === selectedBucketChoice)
+    ? selectedBucketChoice
+    : buckets[0]?.name ?? '';
 
   const fetchObjects = useCallback(async (bucket: string, pfx: string, token?: string | null) => {
     if (!alias || !bucket) return;
     setLoadingObjects(true);
+    if (!token) {
+      setFolders([]);
+      setObjects([]);
+      setContinuationToken(null);
+      setIsTruncated(false);
+    }
     try {
       const resp = await getS3Objects(alias, {
         bucket,
@@ -82,11 +84,12 @@ function S3Browser() {
 
   useEffect(() => {
     if (selectedBucket) {
-      setFolders([]);
-      setObjects([]);
-      setContinuationToken(null);
-      fetchObjects(selectedBucket, prefix);
+      const handle = window.setTimeout(() => {
+        void fetchObjects(selectedBucket, prefix);
+      }, 0);
+      return () => window.clearTimeout(handle);
     }
+    return undefined;
   }, [selectedBucket, prefix, fetchObjects]);
 
   function navigateToFolder(folderPrefix: string) {
