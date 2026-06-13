@@ -167,6 +167,20 @@ render_edge_config() {
   local color="$1"
   validate_color "$color"
   mkdir -p "$(dirname "$EDGE_CONFIG")"
+  # Guard the bind-mount directory trap: if the edge stack was ever started
+  # before this config was rendered (e.g. a direct `docker compose -f
+  # docker-compose.edge.yml up` instead of going through this script), Docker
+  # creates a *directory* at the bind-mount path. A later `sed > "$EDGE_CONFIG"`
+  # then fails with "Is a directory" and `set -e` aborts every subsequent deploy
+  # until it is removed. Fail loudly with the fix instead of a cryptic error.
+  if [[ -d "$EDGE_CONFIG" ]]; then
+    echo "ERROR: $EDGE_CONFIG is a directory, not a file." >&2
+    echo "       This usually means the edge stack was started before the config was" >&2
+    echo "       rendered. Remove it and re-run the deploy:" >&2
+    echo "         docker compose -p \"$EDGE_PROJECT\" -f \"$ROOT_DIR/docker-compose.edge.yml\" down" >&2
+    echo "         rm -rf \"$EDGE_CONFIG\"" >&2
+    exit 1
+  fi
   sed "s/__ACTIVE_COLOR__/$color/g" "$EDGE_TEMPLATE" > "$EDGE_CONFIG"
 }
 
@@ -396,9 +410,19 @@ rollback() {
     echo "No active color state found; cannot infer rollback target." >&2
     exit 1
   fi
+  # Reject a corrupted state file up front. Without this, a non-empty bad value
+  # (e.g. a truncated/hand-edited state file) makes other_color return "" and
+  # the compose_app call below runs with an empty APP_COLOR/port — a cryptic
+  # docker error instead of the clear "color must be 'blue' or 'green'".
+  validate_color "$current"
 
   local target
   target="$(other_color "$current")"
+
+  # rollback brings a color's app stack back up (compose_app ... up), so it must
+  # honour the same shared-SQLite guard as deploy_color — otherwise rollback is a
+  # second path that can start a color against an unsafe shared meta store.
+  require_shared_db_safe
 
   # Bring infra up first so the external apihub-net exists; otherwise the
   # compose_app call below fails attaching to a missing network.
