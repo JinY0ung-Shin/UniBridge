@@ -42,7 +42,11 @@ services:
       - ENABLE_DEV_TOKEN_ENDPOINT=${ENABLE_DEV_TOKEN_ENDPOINT:-false}
       - APISIX_ADMIN_URL=${APISIX_ADMIN_URL:-http://apisix:9180}
       - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:?APISIX_ADMIN_KEY is required}
-      - APISIX_PROVISION_ON_START=${APISIX_PROVISION_ON_START:-false}
+      # Default true so a manual `docker compose -f docker-compose.app.yml up`
+      # (outside deploy-bluegreen.sh) bootstraps routes instead of coming up with
+      # none (silent 404s — etcd/APISIX is shared, not per-color). The deploy
+      # script always sets this explicitly, passing false for inactive colors.
+      - APISIX_PROVISION_ON_START=${APISIX_PROVISION_ON_START:-true}
       - APISIX_UNIBRIDGE_SERVICE_NODE=${APISIX_UNIBRIDGE_SERVICE_NODE:-unibridge-service-${APP_COLOR}:8000}
       - APISIX_LLM_CONVERTER_NODE=${APISIX_LLM_CONVERTER_NODE:-llm-converter-${APP_COLOR}:4001}
       - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}

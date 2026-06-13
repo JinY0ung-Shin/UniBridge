@@ -166,7 +166,10 @@ def test_bluegreen_app_uses_color_specific_targets_and_deferred_apisix_promotion
     service_env = app_services["unibridge-service"]["environment"]
     ui_env = app_services["unibridge-ui"]["environment"]
 
-    assert "APISIX_PROVISION_ON_START=${APISIX_PROVISION_ON_START:-false}" in service_env
+    # Default true so a manual `compose up` bootstraps routes rather than coming
+    # up route-less; deploy-bluegreen.sh always passes the value explicitly and
+    # sets it false for inactive colors (it is overridable via the env var).
+    assert "APISIX_PROVISION_ON_START=${APISIX_PROVISION_ON_START:-true}" in service_env
     assert (
         "APISIX_UNIBRIDGE_SERVICE_NODE=${APISIX_UNIBRIDGE_SERVICE_NODE:-unibridge-service-${APP_COLOR}:8000}"
         in service_env

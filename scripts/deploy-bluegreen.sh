@@ -225,8 +225,14 @@ apisix_has_core_routes() {
     "$base_url/apisix/admin/routes/query-api" 2>/dev/null
 }
 
+# Switch both APISIX upstreams (unibridge-service + llm-converter) to $color as a
+# unit. The two PUTs are not transactional in APISIX, so if the second fails we
+# roll the first back to $prev_color (when known) — otherwise a single transient
+# admin error would leave service on the new color and the converter on the old
+# (half-switched routing). Returns non-zero on failure so the caller aborts.
 promote_apisix() {
   local color="$1"
+  local prev_color="${2:-}"
   validate_color "$color"
 
   if [[ -z "${APISIX_ADMIN_KEY:-}" ]]; then
@@ -239,17 +245,44 @@ promote_apisix() {
   service_body="$(printf '{"name":"unibridge-service","type":"roundrobin","nodes":{"unibridge-service-%s:8000":1}}' "$color")"
   converter_body="$(printf '{"name":"llm-converter","type":"roundrobin","scheme":"http","nodes":{"llm-converter-%s:4001":1}}' "$color")"
 
-  apisix_put "upstreams/unibridge-service" "$service_body"
-  apisix_put "upstreams/llm-converter" "$converter_body"
+  if ! apisix_put "upstreams/unibridge-service" "$service_body"; then
+    echo "APISIX promotion failed on unibridge-service upstream; no changes applied." >&2
+    return 1
+  fi
+
+  if ! apisix_put "upstreams/llm-converter" "$converter_body"; then
+    echo "APISIX promotion failed on llm-converter upstream." >&2
+    if [[ -n "$prev_color" ]]; then
+      echo "Rolling unibridge-service upstream back to $prev_color to avoid half-switched routing..." >&2
+      local revert_body
+      revert_body="$(printf '{"name":"unibridge-service","type":"roundrobin","nodes":{"unibridge-service-%s:8000":1}}' "$prev_color")"
+      if ! apisix_put "upstreams/unibridge-service" "$revert_body"; then
+        echo "WARNING: failed to roll unibridge-service back to $prev_color; APISIX upstreams may be half-switched. Re-run 'deploy-bluegreen.sh promote $prev_color' to restore." >&2
+      fi
+    else
+      echo "WARNING: unibridge-service now points at $color but llm-converter does not, and no previous color is known to revert to — APISIX upstreams are half-switched." >&2
+    fi
+    return 1
+  fi
 }
 
-promote_edge() {
+# Render and validate the edge config for $color WITHOUT switching live traffic.
+# Bringing the edge container up (or leaving it up) does not change which color
+# it serves — only reload_edge applies a new config — so running `nginx -t` here
+# lets a bad edge config abort the promotion BEFORE any APISIX upstream is
+# flipped, keeping the two layers from desyncing on a config error.
+prepare_edge() {
   local color="$1"
   validate_color "$color"
 
   render_edge_config "$color"
   compose_edge up -d --wait
   compose_edge exec -T edge nginx -t >/dev/null
+}
+
+# Apply the already-rendered, already-validated edge config. Call only after
+# prepare_edge and promote_apisix have both succeeded.
+reload_edge() {
   compose_edge exec -T edge nginx -s reload
 }
 
@@ -310,11 +343,19 @@ deploy_color() {
   compose_app "$target" "$port" "$provision_on_start" up -d --build --wait
   wait_color "$target"
 
-  echo "Promoting APISIX upstreams to $target..."
-  promote_apisix "$target"
+  # Validate the new edge config before touching APISIX, then flip APISIX
+  # upstreams (with rollback on partial failure), and only switch the edge once
+  # APISIX is on the new color. The active-color state file is written last, so
+  # an abort anywhere above leaves both layers and the recorded state on the old
+  # color (rollback stays consistent).
+  echo "Validating edge proxy config for $target..."
+  prepare_edge "$target"
 
-  echo "Promoting edge proxy to $target..."
-  promote_edge "$target"
+  echo "Promoting APISIX upstreams to $target..."
+  promote_apisix "$target" "$old"
+
+  echo "Switching edge proxy to $target..."
+  reload_edge
   write_active_color "$target"
 
   if [[ -n "$old" && "$old" != "$target" && "$STOP_OLD_AFTER_PROMOTE" == "true" ]]; then
@@ -330,9 +371,20 @@ promote_color() {
   local target="$1"
   validate_color "$target"
 
+  local old
+  old="$(active_color || true)"
+
+  # Ensure infra (and therefore the external apihub-net the app/edge stacks
+  # attach to) is up before touching the edge: a promote can run after infra was
+  # stopped or cleaned, and the edge stack would otherwise fail with
+  # "network unibridge-net not found".
+  echo "Ensuring infra stack is running..."
+  up_infra
+
   wait_color "$target"
-  promote_apisix "$target"
-  promote_edge "$target"
+  prepare_edge "$target"
+  promote_apisix "$target" "$old"
+  reload_edge
   write_active_color "$target"
   echo "Active color: $target"
 }
@@ -347,6 +399,11 @@ rollback() {
 
   local target
   target="$(other_color "$current")"
+
+  # Bring infra up first so the external apihub-net exists; otherwise the
+  # compose_app call below fails attaching to a missing network.
+  echo "Ensuring infra stack is running..."
+  up_infra
 
   # The old color may have been stopped after a previous promotion
   # (STOP_OLD_AFTER_PROMOTE=true). promote_color waits on its health endpoints,
