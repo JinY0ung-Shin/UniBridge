@@ -106,6 +106,18 @@ docker compose up -d
 
 First boot takes ~2 minutes (Keycloak initialization).
 
+For near-zero-downtime updates with Docker Compose, use the split blue/green
+stack instead of recreating the public UI container directly:
+
+```bash
+scripts/deploy-bluegreen.sh deploy blue   # first bootstrap
+scripts/deploy-bluegreen.sh deploy        # later updates
+```
+
+See [`docs/blue-green-deploy.md`](docs/blue-green-deploy.md) for the split
+Compose files, volume-name migration notes, rollback, and APISIX promotion
+details.
+
 ### 5. Access
 
 | Service | URL |

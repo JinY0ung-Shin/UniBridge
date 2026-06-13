@@ -1,0 +1,286 @@
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+name: ${UNIBRIDGE_INFRA_PROJECT:-unibridge-infra}
+
+services:
+  etcd:
+    image: bitnamilegacy/etcd:3.5.11
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 256m
+    cpus: "0.50"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.50"
+    environment:
+      - ALLOW_NONE_AUTHENTICATION=${ETCD_ALLOW_NONE_AUTH:-no}
+      - ETCD_ROOT_PASSWORD=${ETCD_ROOT_PASSWORD:-}
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+    expose:
+      - "2379"
+    volumes:
+      - etcd-data:/bitnami/etcd
+    healthcheck:
+      test: ["CMD-SHELL", "if [ -n \"$ETCD_ROOT_PASSWORD\" ]; then etcdctl --user root:\"$ETCD_ROOT_PASSWORD\" auth status 2>/dev/null | grep -q 'Authentication Status: true' && etcdctl endpoint health --user root --password \"$ETCD_ROOT_PASSWORD\"; else etcdctl endpoint health; fi"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    networks:
+      - apihub-net
+
+  apisix:
+    image: apache/apisix:3.15.0-debian
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "1.00"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.00"
+    entrypoint: /opt/apisix-config/docker-entrypoint.sh
+    expose:
+      - "9080"
+    ports:
+      - "127.0.0.1:${APISIX_ADMIN_PORT:-9180}:9180"
+    environment:
+      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:?APISIX_ADMIN_KEY is required}
+      - ETCD_USERNAME=root
+      - ETCD_PASSWORD=${ETCD_ROOT_PASSWORD:-}
+    volumes:
+      - ./apisix/config.yaml:/opt/apisix-config/config.yaml:ro
+      - ./apisix/docker-entrypoint.sh:/opt/apisix-config/docker-entrypoint.sh:ro
+    depends_on:
+      etcd:
+        condition: service_healthy
+    networks:
+      - apihub-net
+
+  keycloak-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "0.50"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.50"
+    environment:
+      - POSTGRES_DB=keycloak
+      - POSTGRES_USER=${KC_DB_USER:-keycloak}
+      - POSTGRES_PASSWORD=${KC_DB_PASSWORD:?KC_DB_PASSWORD is required}
+    volumes:
+      - keycloak-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${KC_DB_USER:-keycloak} -d keycloak"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - apihub-net
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 2g
+    cpus: "1.00"
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "1.00"
+    entrypoint: /opt/init/docker-entrypoint.sh
+    environment:
+      - KC_BOOTSTRAP_ADMIN_USERNAME=${KC_ADMIN_USER:-admin}
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=${KC_ADMIN_PASSWORD:?KC_ADMIN_PASSWORD is required}
+      - KC_HTTPS_PORT=8443
+      - KC_HTTPS_CERTIFICATE_FILE=/opt/keycloak/conf/tls.crt
+      - KC_HTTPS_CERTIFICATE_KEY_FILE=/opt/keycloak/conf/tls.key
+      - KC_DB=postgres
+      - KC_DB_URL=jdbc:postgresql://keycloak-db:5432/keycloak
+      - KC_DB_USERNAME=${KC_DB_USER:-keycloak}
+      - KC_DB_PASSWORD=${KC_DB_PASSWORD:?KC_DB_PASSWORD is required}
+      - KEYCLOAK_SERVICE_CLIENT_ID=${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}
+      - KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:?KEYCLOAK_SERVICE_CLIENT_SECRET is required}
+      - HOST_IP=${HOST_IP:-localhost}
+      - UNIBRIDGE_UI_PORT=${UNIBRIDGE_EDGE_PORT:-${UNIBRIDGE_UI_PORT:-3000}}
+      - KEYCLOAK_REDIRECT_URI=${KEYCLOAK_REDIRECT_URI:-}
+      - KEYCLOAK_WEB_ORIGIN=${KEYCLOAK_WEB_ORIGIN:-}
+      - KEYCLOAK_DEV_MODE=${KEYCLOAK_DEV_MODE:-false}
+    ports:
+      - "${KEYCLOAK_PORT:-8443}:8443"
+    volumes:
+      - ./keycloak/realm-export.json:/opt/init/realm-export.json.tpl:ro
+      - ./keycloak/docker-entrypoint.sh:/opt/init/docker-entrypoint.sh:ro
+      - ${TLS_CERT_PATH:-./certs/tls.crt}:/opt/keycloak/conf/tls.crt:ro
+      - ${TLS_KEY_PATH:-./certs/tls.key}:/opt/keycloak/conf/tls.key:ro
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8443"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
+    networks:
+      - apihub-net
+
+  prometheus:
+    image: prom/prometheus:v3.11.1
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "0.50"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.50"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=60d'
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      apisix:
+        condition: service_started
+      blackbox-exporter:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9090/-/ready >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - apihub-net
+
+  blackbox-exporter:
+    image: quay.io/prometheus/blackbox-exporter:v0.28.0
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 128m
+    cpus: "0.25"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.25"
+    command:
+      - '--config.file=/etc/blackbox_exporter/config.yml'
+    expose:
+      - "9115"
+    volumes:
+      - ./prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9115/-/healthy >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - apihub-net
+
+  litellm-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "0.50"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.50"
+    environment:
+      - POSTGRES_DB=litellm
+      - POSTGRES_USER=litellm
+      - POSTGRES_PASSWORD=${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}
+    volumes:
+      - litellm-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - apihub-net
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-v1.83.14-stable.patch.3
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 1g
+    cpus: "1.00"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.00"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        if [ -z "$$PROXY_BASE_URL" ]; then
+          export PROXY_BASE_URL="https://$$HOST_IP:$$LITELLM_PORT"
+        fi
+        exec litellm --config /app/config.yaml --port 4000 \
+          --ssl_certfile_path /etc/ssl/tls.crt --ssl_keyfile_path /etc/ssl/tls.key
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    environment:
+      - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}@litellm-db:5432/litellm
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
+      - LITELLM_LOG=ERROR
+      - STORE_MODEL_IN_DB=true
+      - FORWARDED_ALLOW_IPS=*
+      - SSL_VERIFY=${SSL_VERIFY:-true}
+      - HOST_IP=${HOST_IP:-localhost}
+      - LITELLM_PORT=${LITELLM_PORT:-4000}
+      - PROXY_BASE_URL=${PROXY_BASE_URL:-}
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+      - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/ssl/tls.crt:ro
+      - ${TLS_KEY_PATH:-./certs/tls.key}:/etc/ssl/tls.key:ro
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import ssl,urllib.request;urllib.request.urlopen('https://localhost:4000/health/liveliness', context=ssl._create_unverified_context())\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - apihub-net
+
+networks:
+  apihub-net:
+    name: ${UNIBRIDGE_NETWORK_NAME:-unibridge-net}
+    driver: bridge
+
+volumes:
+  etcd-data:
+    name: ${ETCD_DATA_VOLUME:-unibridge_etcd-data}
+  prometheus-data:
+    name: ${PROMETHEUS_DATA_VOLUME:-unibridge_prometheus-data}
+  keycloak-db-data:
+    name: ${KEYCLOAK_DB_DATA_VOLUME:-unibridge_keycloak-db-data}
+  litellm-db-data:
+    name: ${LITELLM_DB_DATA_VOLUME:-unibridge_litellm-db-data}

@@ -20,3 +20,6 @@ unibridge-ui/coverage/
 snapshots/
 # Local sqlite/meta store created when running unibridge-service outside docker.
 unibridge-service/data/
+# Blue/green deployment runtime state.
+.deploy/
+deploy/edge/generated/*.conf

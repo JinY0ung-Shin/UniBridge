@@ -108,225 +108,149 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         break
 
-    logger.info("Provisioning APISIX query route...")
-    import asyncio as _asyncio
-    from app.services import apisix_client
+    if getattr(settings, "APISIX_PROVISION_ON_START", True):
+        logger.info("Provisioning APISIX query route...")
+        import asyncio as _asyncio
+        from app.services import apisix_client
 
-    # APISIX's admin API returns 503 for a while after the container starts
-    # (it is still syncing config from etcd), and 400/502 transients can occur
-    # mid-sync. Give it a generous window — up to ~100s of backoff — so a cold
-    # `compose up` does not fail startup before APISIX is actually reachable.
-    _max_retries = 10
-    for _attempt in range(1, _max_retries + 1):
-        try:
-            # Ensure prometheus global rule exists so HTTP metrics are collected
-            await apisix_client.put_resource(
-                "global_rules",
-                "prometheus",
-                {
-                    "plugins": {"prometheus": {}},
-                },
-            )
-
-            # Ensure upstream for unibridge-service exists
-            await apisix_client.put_resource(
-                "upstreams",
-                "unibridge-service",
-                {
-                    "name": "unibridge-service",
-                    "type": "roundrobin",
-                    "nodes": {"unibridge-service:8000": 1},
-                },
-            )
-
-            # Ensure /api/query/* route exists with key-auth
-            await apisix_client.put_resource(
-                "routes",
-                "query-api",
-                await _preserve_consumer_restriction(
-                    "query-api",
-                    {
-                        "name": "query-api",
-                        "uri": "/api/query/*",
-                        "methods": ["POST", "GET"],
-                        "upstream_id": "unibridge-service",
-                        "plugins": {
-                            "key-auth": {},
-                            "proxy-rewrite": {
-                                "regex_uri": ["^/api/query(.*)", "/query$1"],
-                                "use_real_request_uri_unsafe": True,
-                            },
-                        },
-                        "status": 1,
-                    },
-                ),
-            )
-            logger.info("APISIX query route provisioned successfully")
-
-            # Ensure /api/s3/* route exists with key-auth
-            await apisix_client.put_resource(
-                "routes",
-                "s3-api",
-                await _preserve_consumer_restriction(
-                    "s3-api",
-                    {
-                        "name": "s3-api",
-                        "uri": "/api/s3/*",
-                        "methods": ["GET"],
-                        "upstream_id": "unibridge-service",
-                        "plugins": {
-                            "key-auth": {},
-                            "proxy-rewrite": {
-                                "regex_uri": ["^/api/s3(.*)", "/s3$1"],
-                                "use_real_request_uri_unsafe": True,
-                            },
-                        },
-                        "status": 1,
-                    },
-                ),
-            )
-            logger.info("APISIX S3 route provisioned successfully")
-
-            # Ensure /api/nas/* route exists with key-auth. Ships inline
-            # deny-all (consumer-restriction whitelist = DENY_ALL_CONSUMER) so
-            # the route is never callable by an arbitrary key between this PUT
-            # and the consumer-restriction replay below; the replay
-            # (sync_all_consumer_route_restrictions) installs the real
-            # whitelist, and on later boots _preserve_consumer_restriction
-            # keeps it.
-            await apisix_client.put_resource(
-                "routes",
-                "nas-api",
-                await _preserve_consumer_restriction(
-                    "nas-api",
-                    {
-                        "name": "nas-api",
-                        "uri": "/api/nas/*",
-                        "methods": ["GET"],
-                        "upstream_id": "unibridge-service",
-                        "plugins": {
-                            "key-auth": {},
-                            "consumer-restriction": {"whitelist": [api_keys.DENY_ALL_CONSUMER]},
-                            "proxy-rewrite": {
-                                "regex_uri": ["^/api/nas(.*)", "/nas$1"],
-                                "use_real_request_uri_unsafe": True,
-                            },
-                        },
-                        "status": 1,
-                    },
-                ),
-            )
-            logger.info("APISIX NAS route provisioned successfully")
-
-            # ── LiteLLM upstream and routes ──
-            if settings.LITELLM_MASTER_KEY:
+        # APISIX's admin API returns 503 for a while after the container starts
+        # (it is still syncing config from etcd), and 400/502 transients can occur
+        # mid-sync. Give it a generous window — up to ~100s of backoff — so a cold
+        # `compose up` does not fail startup before APISIX is actually reachable.
+        _max_retries = 10
+        for _attempt in range(1, _max_retries + 1):
+            try:
+                # Ensure prometheus global rule exists so HTTP metrics are collected
                 await apisix_client.put_resource(
-                    "upstreams",
-                    "litellm",
+                    "global_rules",
+                    "prometheus",
                     {
-                        "name": "litellm",
-                        "type": "roundrobin",
-                        "scheme": "https",
-                        "nodes": {"litellm:4000": 1},
+                        "plugins": {"prometheus": {}},
                     },
                 )
 
-                # /api/llm/* → LiteLLM proxy (APISIX injects LiteLLM key automatically)
+                # Ensure upstream for unibridge-service exists
+                await apisix_client.put_resource(
+                    "upstreams",
+                    "unibridge-service",
+                    {
+                        "name": "unibridge-service",
+                        "type": "roundrobin",
+                        "nodes": {
+                            getattr(
+                                settings,
+                                "APISIX_UNIBRIDGE_SERVICE_NODE",
+                                "unibridge-service:8000",
+                            ): 1
+                        },
+                    },
+                )
+
+                # Ensure /api/query/* route exists with key-auth
                 await apisix_client.put_resource(
                     "routes",
-                    "llm-proxy",
+                    "query-api",
                     await _preserve_consumer_restriction(
-                        "llm-proxy",
+                        "query-api",
                         {
-                            "name": "llm-proxy",
-                            "uri": "/api/llm/*",
-                            "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
-                            "upstream_id": "litellm",
+                            "name": "query-api",
+                            "uri": "/api/query/*",
+                            "methods": ["POST", "GET"],
+                            "upstream_id": "unibridge-service",
                             "plugins": {
                                 "key-auth": {},
                                 "proxy-rewrite": {
-                                    "regex_uri": ["^/api/llm(.*)", "$1"],
+                                    "regex_uri": ["^/api/query(.*)", "/query$1"],
                                     "use_real_request_uri_unsafe": True,
-                                    "headers": {
-                                        "set": {
-                                            "Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}",
-                                            "x-litellm-end-user-id": "$consumer_name",
-                                        },
-                                    },
                                 },
                             },
                             "status": 1,
                         },
                     ),
                 )
+                logger.info("APISIX query route provisioned successfully")
 
-                # /api/llm-admin/* → LiteLLM Admin UI/API (same-origin via gateway)
+                # Ensure /api/s3/* route exists with key-auth
                 await apisix_client.put_resource(
                     "routes",
-                    "llm-admin",
-                    {
-                        "name": "llm-admin",
-                        "uri": "/api/llm-admin/*",
-                        "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
-                        "upstream_id": "litellm",
-                        "plugins": {
-                            "key-auth": {},
-                            "proxy-rewrite": {
-                                "regex_uri": ["^/api/llm-admin(.*)", "$1"],
-                                "use_real_request_uri_unsafe": True,
+                    "s3-api",
+                    await _preserve_consumer_restriction(
+                        "s3-api",
+                        {
+                            "name": "s3-api",
+                            "uri": "/api/s3/*",
+                            "methods": ["GET"],
+                            "upstream_id": "unibridge-service",
+                            "plugins": {
+                                "key-auth": {},
+                                "proxy-rewrite": {
+                                    "regex_uri": ["^/api/s3(.*)", "/s3$1"],
+                                    "use_real_request_uri_unsafe": True,
+                                },
                             },
+                            "status": 1,
                         },
-                        "status": 1,
-                    },
+                    ),
                 )
+                logger.info("APISIX S3 route provisioned successfully")
 
-                logger.info("APISIX LiteLLM routes provisioned successfully")
-
-                # ── LLM endpoint converter ──
-                # Translates Anthropic Messages and OpenAI Responses into the
-                # OpenAI chat-completions shape that sglang/vLLM-backed models
-                # serve reliably, then forwards to LiteLLM. The converter speaks
-                # plain HTTP on the internal network (it forwards to LiteLLM over
-                # HTTPS itself).
-                await apisix_client.put_resource(
-                    "upstreams",
-                    "llm-converter",
-                    {
-                        "name": "llm-converter",
-                        "type": "roundrobin",
-                        "scheme": "http",
-                        "nodes": {"llm-converter:4001": 1},
-                    },
-                )
-
-                # Specific converter routes. Higher priority than the llm-proxy
-                # /api/llm/* catch-all so these exact paths win; the same key-auth
-                # / master-key injection as llm-proxy applies. Each ships deny-all
-                # by default so that between this PUT and the consumer-restriction
-                # replay below the route is never callable by an arbitrary key;
-                # the replay (sync_all_consumer_route_restrictions) installs the
-                # real whitelist, and on later boots _preserve_consumer_restriction
+                # Ensure /api/nas/* route exists with key-auth. Ships inline
+                # deny-all (consumer-restriction whitelist = DENY_ALL_CONSUMER) so
+                # the route is never callable by an arbitrary key between this PUT
+                # and the consumer-restriction replay below; the replay
+                # (sync_all_consumer_route_restrictions) installs the real
+                # whitelist, and on later boots _preserve_consumer_restriction
                 # keeps it.
-                for _conv_route_id, _conv_uri in (
-                    ("llm-messages", "/api/llm/v1/messages"),
-                    ("llm-responses", "/api/llm/v1/responses"),
-                ):
+                await apisix_client.put_resource(
+                    "routes",
+                    "nas-api",
+                    await _preserve_consumer_restriction(
+                        "nas-api",
+                        {
+                            "name": "nas-api",
+                            "uri": "/api/nas/*",
+                            "methods": ["GET"],
+                            "upstream_id": "unibridge-service",
+                            "plugins": {
+                                "key-auth": {},
+                                "consumer-restriction": {"whitelist": [api_keys.DENY_ALL_CONSUMER]},
+                                "proxy-rewrite": {
+                                    "regex_uri": ["^/api/nas(.*)", "/nas$1"],
+                                    "use_real_request_uri_unsafe": True,
+                                },
+                            },
+                            "status": 1,
+                        },
+                    ),
+                )
+                logger.info("APISIX NAS route provisioned successfully")
+
+                # ── LiteLLM upstream and routes ──
+                if settings.LITELLM_MASTER_KEY:
+                    await apisix_client.put_resource(
+                        "upstreams",
+                        "litellm",
+                        {
+                            "name": "litellm",
+                            "type": "roundrobin",
+                            "scheme": "https",
+                            "nodes": {"litellm:4000": 1},
+                        },
+                    )
+
+                    # /api/llm/* → LiteLLM proxy (APISIX injects LiteLLM key automatically)
                     await apisix_client.put_resource(
                         "routes",
-                        _conv_route_id,
+                        "llm-proxy",
                         await _preserve_consumer_restriction(
-                            _conv_route_id,
+                            "llm-proxy",
                             {
-                                "name": _conv_route_id,
-                                "uri": _conv_uri,
-                                "methods": ["POST", "OPTIONS"],
-                                "priority": 10,
-                                "upstream_id": "llm-converter",
+                                "name": "llm-proxy",
+                                "uri": "/api/llm/*",
+                                "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
+                                "upstream_id": "litellm",
                                 "plugins": {
                                     "key-auth": {},
-                                    "consumer-restriction": {
-                                        "whitelist": [api_keys.DENY_ALL_CONSUMER]
-                                    },
                                     "proxy-rewrite": {
                                         "regex_uri": ["^/api/llm(.*)", "$1"],
                                         "use_real_request_uri_unsafe": True,
@@ -343,37 +267,129 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         ),
                     )
 
-                logger.info("APISIX LLM converter routes provisioned successfully")
-            else:
-                logger.info(
-                    "LITELLM_MASTER_KEY not set — skipping LiteLLM route provisioning"
-                )
+                    # /api/llm-admin/* → LiteLLM Admin UI/API (same-origin via gateway)
+                    await apisix_client.put_resource(
+                        "routes",
+                        "llm-admin",
+                        {
+                            "name": "llm-admin",
+                            "uri": "/api/llm-admin/*",
+                            "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
+                            "upstream_id": "litellm",
+                            "plugins": {
+                                "key-auth": {},
+                                "proxy-rewrite": {
+                                    "regex_uri": ["^/api/llm-admin(.*)", "$1"],
+                                    "use_real_request_uri_unsafe": True,
+                                },
+                            },
+                            "status": 1,
+                        },
+                    )
 
-            async for db in get_db():
-                await api_keys.sync_all_consumer_route_restrictions(db)
-                logger.info("Replayed stored API key route restrictions")
+                    logger.info("APISIX LiteLLM routes provisioned successfully")
+
+                    # ── LLM endpoint converter ──
+                    # Translates Anthropic Messages and OpenAI Responses into the
+                    # OpenAI chat-completions shape that sglang/vLLM-backed models
+                    # serve reliably, then forwards to LiteLLM. The converter speaks
+                    # plain HTTP on the internal network (it forwards to LiteLLM over
+                    # HTTPS itself).
+                    await apisix_client.put_resource(
+                        "upstreams",
+                        "llm-converter",
+                        {
+                            "name": "llm-converter",
+                            "type": "roundrobin",
+                            "scheme": "http",
+                            "nodes": {
+                                getattr(
+                                    settings,
+                                    "APISIX_LLM_CONVERTER_NODE",
+                                    "llm-converter:4001",
+                                ): 1
+                            },
+                        },
+                    )
+
+                    # Specific converter routes. Higher priority than the llm-proxy
+                    # /api/llm/* catch-all so these exact paths win; the same key-auth
+                    # / master-key injection as llm-proxy applies. Each ships deny-all
+                    # by default so that between this PUT and the consumer-restriction
+                    # replay below the route is never callable by an arbitrary key;
+                    # the replay (sync_all_consumer_route_restrictions) installs the
+                    # real whitelist, and on later boots _preserve_consumer_restriction
+                    # keeps it.
+                    for _conv_route_id, _conv_uri in (
+                        ("llm-messages", "/api/llm/v1/messages"),
+                        ("llm-responses", "/api/llm/v1/responses"),
+                    ):
+                        await apisix_client.put_resource(
+                            "routes",
+                            _conv_route_id,
+                            await _preserve_consumer_restriction(
+                                _conv_route_id,
+                                {
+                                    "name": _conv_route_id,
+                                    "uri": _conv_uri,
+                                    "methods": ["POST", "OPTIONS"],
+                                    "priority": 10,
+                                    "upstream_id": "llm-converter",
+                                    "plugins": {
+                                        "key-auth": {},
+                                        "consumer-restriction": {
+                                            "whitelist": [api_keys.DENY_ALL_CONSUMER]
+                                        },
+                                        "proxy-rewrite": {
+                                            "regex_uri": ["^/api/llm(.*)", "$1"],
+                                            "use_real_request_uri_unsafe": True,
+                                            "headers": {
+                                                "set": {
+                                                    "Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}",
+                                                    "x-litellm-end-user-id": "$consumer_name",
+                                                },
+                                            },
+                                        },
+                                    },
+                                    "status": 1,
+                                },
+                            ),
+                        )
+
+                    logger.info("APISIX LLM converter routes provisioned successfully")
+                else:
+                    logger.info(
+                        "LITELLM_MASTER_KEY not set — skipping LiteLLM route provisioning"
+                    )
+
+                async for db in get_db():
+                    await api_keys.sync_all_consumer_route_restrictions(db)
+                    logger.info("Replayed stored API key route restrictions")
+                    break
+
                 break
+            except Exception as exc:
+                if _attempt < _max_retries:
+                    _delay = min(2**_attempt, 15)  # 2,4,8,15,15,… capped
+                    logger.warning(
+                        "APISIX provisioning attempt %d/%d failed: %s — retrying in %ds",
+                        _attempt,
+                        _max_retries,
+                        exc,
+                        _delay,
+                    )
+                    await _asyncio.sleep(_delay)
+                else:
+                    logger.error(
+                        "APISIX provisioning failed after %d attempts: %s — "
+                        "failing startup until APISIX is reachable",
+                        _max_retries,
+                        exc,
+                    )
+                    raise
 
-            break
-        except Exception as exc:
-            if _attempt < _max_retries:
-                _delay = min(2**_attempt, 15)  # 2,4,8,15,15,… capped
-                logger.warning(
-                    "APISIX provisioning attempt %d/%d failed: %s — retrying in %ds",
-                    _attempt,
-                    _max_retries,
-                    exc,
-                    _delay,
-                )
-                await _asyncio.sleep(_delay)
-            else:
-                logger.error(
-                    "APISIX provisioning failed after %d attempts: %s — "
-                    "failing startup until APISIX is reachable",
-                    _max_retries,
-                    exc,
-                )
-                raise
+    else:
+        logger.info("Skipping APISIX route provisioning because APISIX_PROVISION_ON_START=false")
 
     from app.services.alert_state import (
         AlertStateManager,

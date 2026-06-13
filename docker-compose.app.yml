@@ -1,0 +1,206 @@
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+name: unibridge-${APP_COLOR:?APP_COLOR is required}
+
+services:
+  unibridge-service:
+    container_name: unibridge-service-${APP_COLOR:?APP_COLOR is required}
+    image: ${UNIBRIDGE_SERVICE_IMAGE:-unibridge-service:${APP_COLOR}}
+    build:
+      context: ./unibridge-service
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+        APT_DEBIAN_MIRROR: ${APT_DEBIAN_MIRROR:-}
+        MS_PACKAGES_URL: ${MS_PACKAGES_URL:-https://packages.microsoft.com}
+        MS_SKIP_GPG: ${MS_SKIP_GPG:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+    restart: unless-stopped
+    init: true
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "1.00"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.00"
+    environment:
+      - TZ=UTC
+      - HOST_IP=${HOST_IP:-localhost}
+      - KEYCLOAK_PORT=${KEYCLOAK_PORT:-8443}
+      - UNIBRIDGE_UI_PORT=${UNIBRIDGE_EDGE_PORT:-${PUBLIC_UNIBRIDGE_UI_PORT:-3000}}
+      - META_DB_URL=${META_DB_URL}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      - JWT_SECRET=${JWT_SECRET}
+      - ENABLE_DEV_TOKEN_ENDPOINT=${ENABLE_DEV_TOKEN_ENDPOINT:-false}
+      - APISIX_ADMIN_URL=${APISIX_ADMIN_URL:-http://apisix:9180}
+      - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:?APISIX_ADMIN_KEY is required}
+      - APISIX_PROVISION_ON_START=${APISIX_PROVISION_ON_START:-false}
+      - APISIX_UNIBRIDGE_SERVICE_NODE=${APISIX_UNIBRIDGE_SERVICE_NODE:-unibridge-service-${APP_COLOR}:8000}
+      - APISIX_LLM_CONVERTER_NODE=${APISIX_LLM_CONVERTER_NODE:-llm-converter-${APP_COLOR}:4001}
+      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
+      - KEYCLOAK_ISSUER_URL=${KEYCLOAK_ISSUER_URL:-}
+      - KEYCLOAK_JWKS_URL=${KEYCLOAK_JWKS_URL:-}
+      - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
+      - SSL_VERIFY=${SSL_VERIFY:-true}
+      - SSL_CA_CERT_PATH=${SSL_CA_CERT_PATH:-}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
+      - MSSQL_TRUST_SERVER_CERT=${MSSQL_TRUST_SERVER_CERT:-no}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-60}
+      - MAX_CONCURRENT_QUERIES=${MAX_CONCURRENT_QUERIES:-5}
+      - NAS_ALLOWED_ROOTS=${NAS_ALLOWED_ROOTS:-${NAS_CONTAINER_PATH:-/mnt/nas}}
+      - NAS_MAX_DOWNLOAD_BYTES=${NAS_MAX_DOWNLOAD_BYTES:-524288000}
+      - NAS_MAX_LIST_ENTRIES=${NAS_MAX_LIST_ENTRIES:-5000}
+      - NAS_LIST_DEFAULT_LIMIT=${NAS_LIST_DEFAULT_LIMIT:-500}
+      - NAS_STREAM_CHUNK_BYTES=${NAS_STREAM_CHUNK_BYTES:-1048576}
+      - NAS_MAX_PATH_BYTES=${NAS_MAX_PATH_BYTES:-4096}
+      - NAS_FS_OP_TIMEOUT_SECONDS=${NAS_FS_OP_TIMEOUT_SECONDS:-10.0}
+      - S3_MAX_WORKERS=${S3_MAX_WORKERS:-8}
+      - S3_OP_TIMEOUT_SECONDS=${S3_OP_TIMEOUT_SECONDS:-30.0}
+      - S3_CONNECT_TIMEOUT_SECONDS=${S3_CONNECT_TIMEOUT_SECONDS:-5.0}
+      - S3_READ_TIMEOUT_SECONDS=${S3_READ_TIMEOUT_SECONDS:-30.0}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-apihub}
+      - KEYCLOAK_SERVICE_CLIENT_ID=${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}
+      - KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:?KEYCLOAK_SERVICE_CLIENT_SECRET is required}
+      - AWS_CA_BUNDLE=${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}
+      - REQUESTS_CA_BUNDLE=${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}
+      - SSL_CERT_FILE=${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}
+    volumes:
+      - unibridge-data:/app/data
+      - type: bind
+        source: ${NAS_HOST_PATH:-/mnt/nas}
+        target: ${NAS_CONTAINER_PATH:-/mnt/nas}
+        read_only: true
+        bind:
+          create_host_path: true
+      - ${HOST_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}:${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+    networks:
+      apihub-net:
+        aliases:
+          - unibridge-service-${APP_COLOR}
+
+  llm-converter:
+    container_name: llm-converter-${APP_COLOR:?APP_COLOR is required}
+    image: ${LLM_CONVERTER_IMAGE:-llm-converter:${APP_COLOR}}
+    build:
+      context: ./llm-converter
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+    restart: unless-stopped
+    init: true
+    logging: *default-logging
+    mem_limit: 256m
+    cpus: "0.50"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.50"
+    environment:
+      - LITELLM_URL=${LITELLM_CONVERTER_UPSTREAM:-https://litellm:4000}
+      - CONVERTER_TLS_CA=${CONVERTER_TLS_CA-/etc/ssl/litellm-ca.crt}
+      - CONVERTER_TLS_VERIFY=${CONVERTER_TLS_VERIFY:-false}
+      - CONVERTER_REQUEST_TIMEOUT=${CONVERTER_REQUEST_TIMEOUT:-0}
+      - CONVERTER_CONNECT_TIMEOUT=${CONVERTER_CONNECT_TIMEOUT:-10}
+      - CONVERTER_WRITE_TIMEOUT=${CONVERTER_WRITE_TIMEOUT:-30}
+      - CONVERTER_POOL_TIMEOUT=${CONVERTER_POOL_TIMEOUT:-10}
+      - CONVERTER_RESPONSE_STORE_TTL=${CONVERTER_RESPONSE_STORE_TTL:-3600}
+      - CONVERTER_RESPONSE_STORE_MAX=${CONVERTER_RESPONSE_STORE_MAX:-10000}
+      - CONVERTER_RESPONSE_STORE_MAX_BYTES=${CONVERTER_RESPONSE_STORE_MAX_BYTES:-268435456}
+      - CONVERTER_EMIT_REASONING=${CONVERTER_EMIT_REASONING:-true}
+    expose:
+      - "4001"
+    volumes:
+      - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/ssl/litellm-ca.crt:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      apihub-net:
+        aliases:
+          - llm-converter-${APP_COLOR}
+
+  unibridge-ui:
+    container_name: unibridge-ui-${APP_COLOR:?APP_COLOR is required}
+    image: ${UNIBRIDGE_UI_IMAGE:-unibridge-ui:${APP_COLOR}}
+    build:
+      context: ./unibridge-ui
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
+        VITE_KEYCLOAK_URL: ${KEYCLOAK_EXTERNAL_URL:-}
+        VITE_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-apihub}
+        VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
+        HOST_IP: ${HOST_IP:-localhost}
+        KEYCLOAK_PORT: ${KEYCLOAK_PORT:-8443}
+    restart: unless-stopped
+    init: true
+    logging: *default-logging
+    mem_limit: 128m
+    cpus: "0.25"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.25"
+    environment:
+      - SSL_VERIFY=${SSL_VERIFY:-true}
+      - HOST_IP=${HOST_IP:-localhost}
+      - KEYCLOAK_EXTERNAL_URL=${KEYCLOAK_EXTERNAL_URL:-}
+      - KEYCLOAK_PORT=${KEYCLOAK_PORT:-8443}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-apihub}
+      - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
+      - LITELLM_PORT=${LITELLM_PORT:-4000}
+      - UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service-${APP_COLOR}}
+      - APISIX_UPSTREAM=${APISIX_UPSTREAM:-apisix}
+    ports:
+      - "127.0.0.1:${UNIBRIDGE_UI_PORT:?UNIBRIDGE_UI_PORT is required}:443"
+    volumes:
+      - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/nginx/ssl/tls.crt:ro
+      - ${TLS_KEY_PATH:-./certs/tls.key}:/etc/nginx/ssl/tls.key:ro
+    depends_on:
+      unibridge-service:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O- https://localhost/healthz | grep -q '^ok$'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      apihub-net:
+        aliases:
+          - unibridge-ui-${APP_COLOR}
+
+networks:
+  apihub-net:
+    external: true
+    name: ${UNIBRIDGE_NETWORK_NAME:-unibridge-net}
+
+volumes:
+  unibridge-data:
+    name: ${UNIBRIDGE_DATA_VOLUME:-unibridge_unibridge-data}

@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     ENABLE_DEV_TOKEN_ENDPOINT: bool = False
     APISIX_ADMIN_URL: str = "http://apisix:9180"
     APISIX_ADMIN_KEY: str = ""
+    APISIX_PROVISION_ON_START: bool = True
+    APISIX_UNIBRIDGE_SERVICE_NODE: str = "unibridge-service:8000"
+    APISIX_LLM_CONVERTER_NODE: str = "llm-converter:4001"
     PROMETHEUS_URL: str = "http://prometheus:9090"
     LITELLM_MASTER_KEY: str = ""
 

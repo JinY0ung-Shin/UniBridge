@@ -87,6 +87,94 @@ async def test_lifespan_provisions_llm_admin_route_when_master_key_set():
 
 
 @pytest.mark.asyncio
+async def test_lifespan_uses_configured_apisix_upstream_nodes():
+    app = FastAPI()
+    put_resource = AsyncMock()
+
+    with (
+        patch("app.main.validate_settings"),
+        patch("app.main.init_db", new=AsyncMock()),
+        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.connection_manager.initialize", new=AsyncMock()),
+        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
+        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
+        patch("app.main.rate_limiter.update_limits"),
+        patch(
+            "app.main.settings",
+            SimpleNamespace(
+                LITELLM_MASTER_KEY="sk-test",
+                APISIX_PROVISION_ON_START=True,
+                APISIX_UNIBRIDGE_SERVICE_NODE="unibridge-service-green:8000",
+                APISIX_LLM_CONVERTER_NODE="llm-converter-green:4001",
+            ),
+        ),
+        patch("app.services.apisix_client.get_resource", AsyncMock(side_effect=RuntimeError("not found"))),
+        patch("app.services.apisix_client.put_resource", put_resource),
+        patch(
+            "app.services.alert_checker.start_checker",
+            new=AsyncMock(return_value=_DummyTask()),
+        ),
+        patch("app.routers.alerts.set_alert_state"),
+        patch("app.routers.users._kc_admin", None),
+    ):
+        async with lifespan(app):
+            pass
+
+    upstream_calls = {
+        call.args[1]: call.args[2]
+        for call in put_resource.await_args_list
+        if call.args[0] == "upstreams"
+    }
+
+    assert upstream_calls["unibridge-service"]["nodes"] == {
+        "unibridge-service-green:8000": 1
+    }
+    assert upstream_calls["llm-converter"]["nodes"] == {
+        "llm-converter-green:4001": 1
+    }
+
+
+@pytest.mark.asyncio
+async def test_lifespan_can_skip_apisix_route_provisioning():
+    app = FastAPI()
+    put_resource = AsyncMock()
+    get_resource = AsyncMock()
+    list_resources = AsyncMock(return_value={"items": []})
+
+    with (
+        patch("app.main.validate_settings"),
+        patch("app.main.init_db", new=AsyncMock()),
+        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.connection_manager.initialize", new=AsyncMock()),
+        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
+        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
+        patch("app.main.rate_limiter.update_limits"),
+        patch(
+            "app.main.settings",
+            SimpleNamespace(
+                LITELLM_MASTER_KEY="sk-test",
+                APISIX_PROVISION_ON_START=False,
+            ),
+        ),
+        patch("app.services.apisix_client.get_resource", get_resource),
+        patch("app.services.apisix_client.put_resource", put_resource),
+        patch("app.services.apisix_client.list_resources", list_resources),
+        patch(
+            "app.services.alert_checker.start_checker",
+            new=AsyncMock(return_value=_DummyTask()),
+        ),
+        patch("app.routers.alerts.set_alert_state"),
+        patch("app.routers.users._kc_admin", None),
+    ):
+        async with lifespan(app):
+            pass
+
+    put_resource.assert_not_awaited()
+    get_resource.assert_not_awaited()
+    assert list_resources.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_lifespan_loads_persisted_alert_state_before_starting_checker():
     app = FastAPI()
     put_resource = AsyncMock()

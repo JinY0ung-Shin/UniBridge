@@ -8,6 +8,9 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
+BLUEGREEN_INFRA_COMPOSE_FILE = REPO_ROOT / "docker-compose.infra.yml"
+BLUEGREEN_APP_COMPOSE_FILE = REPO_ROOT / "docker-compose.app.yml"
+BLUEGREEN_EDGE_COMPOSE_FILE = REPO_ROOT / "docker-compose.edge.yml"
 ENV_EXAMPLE_FILE = REPO_ROOT / ".env.example"
 REALM_EXPORT_FILE = REPO_ROOT / "keycloak" / "realm-export.json"
 PROMETHEUS_CONFIG_FILE = REPO_ROOT / "prometheus" / "prometheus.yml"
@@ -133,6 +136,46 @@ def test_docker_compose_declares_ui_and_prometheus_healthchecks() -> None:
     assert "/healthz" in str(ui_healthcheck)
     assert "/-/ready" in str(prometheus_healthcheck)
     assert "/-/healthy" in str(blackbox_healthcheck)
+
+
+def test_bluegreen_compose_splits_stateful_infra_from_app_tier() -> None:
+    infra_services = set(_load_yaml(BLUEGREEN_INFRA_COMPOSE_FILE)["services"])
+    app_services = set(_load_yaml(BLUEGREEN_APP_COMPOSE_FILE)["services"])
+    edge_services = set(_load_yaml(BLUEGREEN_EDGE_COMPOSE_FILE)["services"])
+
+    assert {
+        "etcd",
+        "apisix",
+        "keycloak-db",
+        "keycloak",
+        "litellm-db",
+        "litellm",
+        "prometheus",
+        "blackbox-exporter",
+    } <= infra_services
+    assert {"unibridge-service", "llm-converter", "unibridge-ui"} == app_services
+    assert {"edge"} == edge_services
+    assert not {"unibridge-service", "llm-converter", "unibridge-ui"} & infra_services
+
+
+def test_bluegreen_app_uses_color_specific_targets_and_deferred_apisix_promotion() -> None:
+    app_services = _load_yaml(BLUEGREEN_APP_COMPOSE_FILE)["services"]
+    service_env = app_services["unibridge-service"]["environment"]
+    ui_env = app_services["unibridge-ui"]["environment"]
+
+    assert "APISIX_PROVISION_ON_START=${APISIX_PROVISION_ON_START:-false}" in service_env
+    assert (
+        "APISIX_UNIBRIDGE_SERVICE_NODE=${APISIX_UNIBRIDGE_SERVICE_NODE:-unibridge-service-${APP_COLOR}:8000}"
+        in service_env
+    )
+    assert (
+        "APISIX_LLM_CONVERTER_NODE=${APISIX_LLM_CONVERTER_NODE:-llm-converter-${APP_COLOR}:4001}"
+        in service_env
+    )
+    assert (
+        "UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service-${APP_COLOR}}"
+        in ui_env
+    )
 
 
 def test_readme_states_compose_v2_required_for_resource_limits() -> None:
