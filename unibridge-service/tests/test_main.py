@@ -140,6 +140,8 @@ async def test_lifespan_can_skip_apisix_route_provisioning():
     put_resource = AsyncMock()
     get_resource = AsyncMock()
     list_resources = AsyncMock(return_value={"items": []})
+    replay = AsyncMock()
+    start_checker = AsyncMock(return_value=_DummyTask())
 
     with (
         patch("app.main.validate_settings"),
@@ -159,19 +161,23 @@ async def test_lifespan_can_skip_apisix_route_provisioning():
         patch("app.services.apisix_client.get_resource", get_resource),
         patch("app.services.apisix_client.put_resource", put_resource),
         patch("app.services.apisix_client.list_resources", list_resources),
-        patch(
-            "app.services.alert_checker.start_checker",
-            new=AsyncMock(return_value=_DummyTask()),
-        ),
+        patch("app.main.api_keys.sync_all_consumer_route_restrictions", replay),
+        patch("app.services.alert_checker.start_checker", start_checker),
         patch("app.routers.alerts.set_alert_state"),
         patch("app.routers.users._kc_admin", None),
     ):
         async with lifespan(app):
             pass
 
+    # Route/upstream provisioning is skipped entirely when the flag is false.
     put_resource.assert_not_awaited()
     get_resource.assert_not_awaited()
     assert list_resources.await_count == 2
+    # …but the stored API-key restriction replay still runs on every boot
+    # (database is the source of truth — see main.py), and the alert checker
+    # must still start regardless of the provisioning flag.
+    replay.assert_awaited_once()
+    start_checker.assert_awaited_once()
 
 
 @pytest.mark.asyncio

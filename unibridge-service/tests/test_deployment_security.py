@@ -16,6 +16,9 @@ REALM_EXPORT_FILE = REPO_ROOT / "keycloak" / "realm-export.json"
 PROMETHEUS_CONFIG_FILE = REPO_ROOT / "prometheus" / "prometheus.yml"
 PROMETHEUS_RULES_DIR = REPO_ROOT / "prometheus" / "rules"
 NGINX_CONFIG_FILE = REPO_ROOT / "unibridge-ui" / "nginx.conf"
+EDGE_TEMPLATE_FILE = REPO_ROOT / "deploy" / "edge" / "default.conf.template"
+DEPLOY_SCRIPT_FILE = REPO_ROOT / "scripts" / "deploy-bluegreen.sh"
+UI_ENTRYPOINT_FILE = REPO_ROOT / "unibridge-ui" / "entrypoint.sh"
 
 COMPOSE_SERVICE_LIMITS = {
     "etcd": {"memory": "256m", "cpus": "0.50"},
@@ -277,3 +280,42 @@ def test_realm_export_keeps_only_service_account_user() -> None:
         "keycloak/realm-export.json still contains forbidden usernames: "
         f"{unexpected_users}"
     )
+
+
+def test_edge_template_strips_consumer_identity_and_keeps_keepalive() -> None:
+    template = EDGE_TEMPLATE_FILE.read_text(encoding="utf-8")
+
+    # Client-supplied consumer identity must be cleared at the trust boundary so
+    # only APISIX can assert it downstream.
+    assert 'proxy_set_header X-Consumer-Username "";' in template
+    assert 'proxy_set_header X-Consumer-Custom-Id "";' in template
+
+    # Connection header is driven by a map (keep-alive for normal requests,
+    # upgrade only for real WebSocket), not an unconditional "upgrade".
+    assert "map $http_upgrade $connection_upgrade" in template
+    assert "proxy_set_header Connection $connection_upgrade;" in template
+    assert 'proxy_set_header Connection "upgrade";' not in template
+
+
+def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
+    script = DEPLOY_SCRIPT_FILE.read_text(encoding="utf-8")
+
+    # Refuses SQLite for blue/green unless explicitly overridden.
+    assert "require_shared_db_safe" in script
+    assert "ALLOW_SQLITE_BLUEGREEN" in script
+    # Serializes mutating runs with a lock.
+    assert "flock" in script
+    assert "acquire_lock" in script
+    # Forces re-provisioning if APISIX lost its core routes (etcd reset).
+    assert "apisix_has_core_routes" in script
+    # APISIX promotion PUTs retry instead of leaving colors half-switched.
+    assert "apisix_put" in script
+
+
+def test_ui_entrypoint_fails_loudly_on_bad_template() -> None:
+    entrypoint = UI_ENTRYPOINT_FILE.read_text(encoding="utf-8")
+
+    assert "set -eu" in entrypoint
+    # Guards against leftover placeholders and invalid config before exec'ing nginx.
+    assert "__UNIBRIDGE_SERVICE_UPSTREAM__" in entrypoint
+    assert "nginx -t" in entrypoint

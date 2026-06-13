@@ -1,3 +1,11 @@
+# Send "Connection: upgrade" only for real WebSocket upgrades; otherwise send
+# "close"-free keep-alive ("" lets nginx manage the upstream connection header),
+# so ordinary HTTP requests are not forced to renegotiate per request.
+map $http_upgrade $connection_upgrade {
+    default "";
+    "websocket" "upgrade";
+}
+
 server {
     listen 443 ssl;
     client_max_body_size 100m;
@@ -23,8 +31,18 @@ server {
     }
 
     location / {
+        # Strip any client-supplied consumer identity at the trust boundary.
+        # Only APISIX (key-auth) may assert these downstream; clearing them here
+        # prevents a forged "X-Consumer-Username: admin" from reaching any hop.
+        proxy_set_header X-Consumer-Username "";
+        proxy_set_header X-Consumer-Custom-Id "";
+
         set $unibridge_ui "unibridge-ui-__ACTIVE_COLOR__";
         proxy_pass https://$unibridge_ui:443;
+        # Internal-only hop: the active UI container presents the same in-cluster
+        # self-signed cert as the edge, so verification/SNI are intentionally off.
+        # All traffic stays on the host-managed docker network. Do NOT reuse this
+        # block to proxy to anything outside that network.
         proxy_ssl_server_name off;
         proxy_ssl_verify off;
         proxy_http_version 1.1;
@@ -33,6 +51,6 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection $connection_upgrade;
     }
 }

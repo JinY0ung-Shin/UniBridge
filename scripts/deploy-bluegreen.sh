@@ -1,18 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# SECURITY: this script sources $ENV_FILE with `set -a`, exporting secrets
+# (APISIX_ADMIN_KEY, DB passwords, master keys, …) into the environment and
+# passing the admin key to curl. Do NOT run it with `bash -x` / xtrace in
+# shared or persisted CI logs — that would echo those secret values. As a
+# safeguard we disable xtrace while sourcing the env file below.
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-$ROOT_DIR/.env}"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a
+  _had_xtrace=0
+  case $- in *x*) _had_xtrace=1; set +x ;; esac
   # shellcheck disable=SC1090
   . "$ENV_FILE"
+  [[ "$_had_xtrace" == 1 ]] && set -x
+  unset _had_xtrace
   set +a
 fi
 
 STATE_DIR="${BLUEGREEN_STATE_DIR:-$ROOT_DIR/.deploy}"
 STATE_FILE="${BLUEGREEN_STATE_FILE:-$STATE_DIR/bluegreen-active}"
+LOCK_FILE="${BLUEGREEN_LOCK_FILE:-$STATE_DIR/bluegreen.lock}"
 EDGE_TEMPLATE="$ROOT_DIR/deploy/edge/default.conf.template"
 EDGE_CONFIG="$ROOT_DIR/deploy/edge/generated/default.conf"
 
@@ -102,6 +113,39 @@ active_color() {
   fi
 }
 
+# Serialize mutating operations. Two concurrent deploys can otherwise pick the
+# same target color and race on the same compose project / container names.
+acquire_lock() {
+  mkdir -p "$STATE_DIR"
+  exec 9>"$LOCK_FILE"
+  if ! flock -n 9; then
+    echo "Another deploy-bluegreen.sh run holds the lock ($LOCK_FILE); aborting." >&2
+    exit 1
+  fi
+}
+
+# Both app colors mount the SAME meta volume, so they share one database file.
+# SQLite is not safe for concurrent writers across containers (both colors run
+# the alert checker, and a freshly-booted color runs `alembic upgrade head` on
+# the shared file while the old color is still live). Refuse SQLite for
+# blue/green unless the operator explicitly opts in.
+require_shared_db_safe() {
+  local url="${META_DB_URL:-}"
+  if [[ -z "$url" || "$url" == sqlite* ]]; then
+    if [[ "${ALLOW_SQLITE_BLUEGREEN:-false}" != "true" ]]; then
+      echo "ERROR: META_DB_URL is SQLite (or unset)." >&2
+      echo "  Blue/green runs blue and green app stacks against the same shared meta" >&2
+      echo "  volume. SQLite cannot be safely written by two containers at once, and a" >&2
+      echo "  new color runs 'alembic upgrade head' on the shared file at boot." >&2
+      echo "  Use a networked database (e.g. Postgres) via META_DB_URL, or set" >&2
+      echo "  ALLOW_SQLITE_BLUEGREEN=true to override at your own risk." >&2
+      exit 1
+    fi
+    echo "WARNING: ALLOW_SQLITE_BLUEGREEN=true — proceeding with a shared SQLite meta" >&2
+    echo "         store. Concurrent writes from both colors may corrupt it." >&2
+  fi
+}
+
 wait_url() {
   local url="$1"
   local label="$2"
@@ -132,6 +176,55 @@ admin_url() {
   printf '%s' "${url%/}"
 }
 
+# PUT an APISIX admin resource with retry, so a transient admin 503/timeout in
+# the middle of a multi-resource promotion does not leave colors half-switched.
+apisix_put() {
+  local path="$1"
+  local body="$2"
+  local base_url
+  base_url="$(admin_url)"
+  local attempts=5 delay=2 i
+  for ((i = 1; i <= attempts; i++)); do
+    if curl -fsS -X PUT "$base_url/apisix/admin/$path" \
+      -H "X-API-KEY: $APISIX_ADMIN_KEY" \
+      -H "Content-Type: application/json" \
+      --data "$body" >/dev/null; then
+      return 0
+    fi
+    echo "APISIX admin PUT $path failed (attempt $i/$attempts)" >&2
+    [[ $i -lt $attempts ]] && sleep "$delay"
+  done
+  echo "APISIX admin PUT $path failed after $attempts attempts" >&2
+  return 1
+}
+
+# Wait until the APISIX admin API answers (any successful auth'd response),
+# tolerating the warmup window right after the infra stack starts.
+wait_apisix_admin() {
+  local base_url
+  base_url="$(admin_url)"
+  local i
+  for ((i = 1; i <= 60; i++)); do
+    if curl -fsS -o /dev/null \
+      -H "X-API-KEY: ${APISIX_ADMIN_KEY:-}" \
+      "$base_url/apisix/admin/routes" 2>/dev/null; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+# True only when the core route already exists in etcd. A 404 (etcd reset /
+# fresh APISIX) returns non-zero so the caller can force re-provisioning.
+apisix_has_core_routes() {
+  local base_url
+  base_url="$(admin_url)"
+  curl -fsS -o /dev/null \
+    -H "X-API-KEY: $APISIX_ADMIN_KEY" \
+    "$base_url/apisix/admin/routes/query-api" 2>/dev/null
+}
+
 promote_apisix() {
   local color="$1"
   validate_color "$color"
@@ -141,21 +234,13 @@ promote_apisix() {
     exit 1
   fi
 
-  local base_url
-  base_url="$(admin_url)"
   local service_body
   local converter_body
   service_body="$(printf '{"name":"unibridge-service","type":"roundrobin","nodes":{"unibridge-service-%s:8000":1}}' "$color")"
   converter_body="$(printf '{"name":"llm-converter","type":"roundrobin","scheme":"http","nodes":{"llm-converter-%s:4001":1}}' "$color")"
 
-  curl -fsS -X PUT "$base_url/apisix/admin/upstreams/unibridge-service" \
-    -H "X-API-KEY: $APISIX_ADMIN_KEY" \
-    -H "Content-Type: application/json" \
-    --data "$service_body" >/dev/null
-  curl -fsS -X PUT "$base_url/apisix/admin/upstreams/llm-converter" \
-    -H "X-API-KEY: $APISIX_ADMIN_KEY" \
-    -H "Content-Type: application/json" \
-    --data "$converter_body" >/dev/null
+  apisix_put "upstreams/unibridge-service" "$service_body"
+  apisix_put "upstreams/llm-converter" "$converter_body"
 }
 
 promote_edge() {
@@ -199,18 +284,29 @@ deploy_color() {
     fi
   fi
   validate_color "$target"
+  require_shared_db_safe
 
   local port
   port="$(color_port "$target")"
-  local provision_on_start="false"
-  if [[ -z "$old" ]]; then
-    provision_on_start="true"
-  fi
 
   echo "Starting infra stack..."
   up_infra
 
-  echo "Building and starting $target app stack on local port $port..."
+  # Decide whether the new color should provision APISIX routes at boot.
+  # First-ever deploy (no active color) always provisions. Otherwise routes
+  # normally already live in shared etcd, so we skip — UNLESS etcd was reset
+  # and the core routes are gone, in which case skipping would leave the system
+  # with no routes (silent total outage). Detect that and force provisioning.
+  local provision_on_start="false"
+  if [[ -z "$old" ]]; then
+    provision_on_start="true"
+  elif [[ -n "${APISIX_ADMIN_KEY:-}" ]] && wait_apisix_admin && ! apisix_has_core_routes; then
+    echo "WARNING: APISIX is reachable but core routes are missing (etcd reset?)." >&2
+    echo "         Forcing route re-provisioning on $target." >&2
+    provision_on_start="true"
+  fi
+
+  echo "Building and starting $target app stack on local port $port (provision=$provision_on_start)..."
   compose_app "$target" "$port" "$provision_on_start" up -d --build --wait
   wait_color "$target"
 
@@ -248,7 +344,18 @@ rollback() {
     echo "No active color state found; cannot infer rollback target." >&2
     exit 1
   fi
-  promote_color "$(other_color "$current")"
+
+  local target
+  target="$(other_color "$current")"
+
+  # The old color may have been stopped after a previous promotion
+  # (STOP_OLD_AFTER_PROMOTE=true). promote_color waits on its health endpoints,
+  # so bring it back up first; otherwise rollback would just time out. No
+  # --build here: rollback restores the previously-deployed image as-is.
+  echo "Ensuring $target stack is running before rollback..."
+  compose_app "$target" "$(color_port "$target")" "false" up -d --wait
+
+  promote_color "$target"
 }
 
 status() {
@@ -271,13 +378,16 @@ main() {
 
   case "$command" in
     deploy)
+      acquire_lock
       deploy_color "${1:-}"
       ;;
     promote)
       [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+      acquire_lock
       promote_color "$1"
       ;;
     rollback)
+      acquire_lock
       rollback
       ;;
     status)
@@ -285,6 +395,7 @@ main() {
       ;;
     stop)
       [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+      acquire_lock
       stop_color "$1"
       ;;
     -h|--help|help|"")

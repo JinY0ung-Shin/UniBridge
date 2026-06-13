@@ -13,6 +13,47 @@ stack into three Compose files:
 The original `docker-compose.yml` is still supported for single-stack
 deployments.
 
+## Pre-Deploy Checklist (read before applying)
+
+Work through this before running `deploy-bluegreen.sh` on a real environment.
+
+1. **Use a networked metadata DB — not SQLite.** Both colors share one meta
+   volume; SQLite cannot be written by two containers safely, and a new color
+   runs `alembic upgrade head` on the shared file at boot. Set
+   `META_DB_URL=postgresql+asyncpg://…`. The script refuses SQLite unless
+   `ALLOW_SQLITE_BLUEGREEN=true`. (See "Database" below.)
+
+2. **Set ports in `.env`, and make them consistent.** The script reads `.env`
+   (`--env-file`); define every port there:
+   - `UNIBRIDGE_EDGE_PORT` must equal the **actual public port**. CORS and
+     Keycloak redirect/origin derive from it. If it is wrong, the UI loads but
+     login/API calls fail.
+   - Keycloak's registered redirect URI / web origin
+     (`KEYCLOAK_REDIRECT_URI`, `KEYCLOAK_WEB_ORIGIN`, realm config) must match
+     `https://HOST_IP:UNIBRIDGE_EDGE_PORT`.
+   - All host ports must be distinct: `UNIBRIDGE_EDGE_PORT`,
+     `BLUEGREEN_BLUE_UI_PORT`, `BLUEGREEN_GREEN_UI_PORT`, `KEYCLOAK_PORT`,
+     `LITELLM_PORT`, `PROMETHEUS_PORT`, `APISIX_ADMIN_PORT`.
+   - If you changed the APISIX admin port, also set `APISIX_ADMIN_PORT` (or
+     `APISIX_ADMIN_HOST_URL`) — promotion calls the admin API there.
+
+3. **Know what is and isn't zero-downtime.** Only UniBridge (the edge port) is
+   rotated blue/green. Keycloak, LiteLLM, APISIX and the databases live in the
+   **infra** stack as single instances: they stay up *during* an app deploy, but
+   updating/restarting them is a normal restart with downtime — blue/green does
+   not cover them.
+
+4. **Migrations must be backward-compatible (expand/contract).** While both
+   colors run, the old code must tolerate the new schema. Add nullable/new
+   columns first, deploy compatible code, drop old fields in a later release.
+
+5. **First run is a bootstrap, not a swap.** `deploy-bluegreen.sh deploy blue`
+   provisions APISIX routes for the first time; the public edge port only starts
+   listening once the edge stack comes up. Plan the initial cutover accordingly.
+
+6. **One operation at a time.** `deploy`/`promote`/`rollback`/`stop` take a lock
+   (`.deploy/bluegreen.lock`) — do not run two in parallel.
+
 ## Runtime Model
 
 Public traffic should enter through `unibridge-edge` on `UNIBRIDGE_EDGE_PORT`
@@ -28,6 +69,28 @@ The deploy script starts the inactive color, waits for:
 - `https://127.0.0.1:<color-port>/_api/health`
 
 Then it promotes APISIX upstreams and reloads the edge proxy.
+
+## Database: Postgres Required (not SQLite)
+
+> **Blue/green needs a networked metadata database. Do not use the default
+> SQLite store.**
+
+Both the blue and green app stacks mount the **same** meta volume
+(`UNIBRIDGE_DATA_VOLUME`), so they share one database file. During a normal
+update both colors run at once (the old color stays up for rollback, and the
+new color runs `alembic upgrade head` at boot). SQLite cannot be safely written
+by two containers concurrently — and migrating its file while the old version is
+still live risks `database is locked` errors, lost writes, or corruption.
+
+Set `META_DB_URL` to a networked database before deploying, e.g.:
+
+```env
+META_DB_URL=postgresql+asyncpg://unibridge:<password>@<host>:5432/unibridge
+```
+
+`scripts/deploy-bluegreen.sh` refuses to deploy when `META_DB_URL` is SQLite (or
+unset). To override anyway — single-color use, or you accept the risk — set
+`ALLOW_SQLITE_BLUEGREEN=true`.
 
 ## Existing Volume Names
 
@@ -98,6 +161,15 @@ To stop the old color automatically after promotion:
 STOP_OLD_AFTER_PROMOTE=true DRAIN_SECONDS=30 scripts/deploy-bluegreen.sh deploy
 ```
 
+`rollback` re-promotes the previous color. If that color was stopped (e.g. via
+`STOP_OLD_AFTER_PROMOTE=true` or a manual `stop`), `rollback` brings its
+containers back up first, then waits for health and promotes. Rollback only
+works to a color whose image still exists — it does not rebuild.
+
+Only one mutating command (`deploy`/`promote`/`rollback`/`stop`) can run at a
+time; the script takes a lock (`.deploy/bluegreen.lock`) and aborts if another
+run holds it.
+
 ## Manual Promotion
 
 If a color is already running and healthy:
@@ -119,3 +191,10 @@ The inactive color starts with `APISIX_PROVISION_ON_START=false` during normal
 updates. This prevents a warming container from changing APISIX before health
 checks pass. If a release changes built-in APISIX route definitions, bootstrap
 the route change intentionally before relying on normal blue/green promotion.
+
+Stored API-key route restrictions are replayed from the database on **every**
+boot regardless of `APISIX_PROVISION_ON_START`, so the database stays the source
+of truth even on inactive colors. Route/upstream *provisioning* stays gated by
+the flag, but if the script detects that APISIX has lost its core routes (e.g.
+an etcd reset) it forces re-provisioning on the next `deploy` so the system
+cannot silently come up with no routes.

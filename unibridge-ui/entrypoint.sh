@@ -1,4 +1,9 @@
 #!/bin/sh
+# Fail fast: a silent sed/template failure here would otherwise leave nginx
+# serving unsubstituted "__…__" placeholders, which only surface as 502s at
+# request time.
+set -eu
+
 # Generate runtime config from environment variables
 LITELLM_ADMIN_URL="https://${HOST_IP:-localhost}:${LITELLM_PORT:-4000}/ui"
 KEYCLOAK_URL="${KEYCLOAK_EXTERNAL_URL:-https://${HOST_IP:-localhost}:${KEYCLOAK_PORT:-8443}}"
@@ -28,5 +33,14 @@ sed -i \
   -e "s/__UNIBRIDGE_SERVICE_UPSTREAM__/$(sed_escape "$UNIBRIDGE_SERVICE_UPSTREAM")/g" \
   -e "s/__APISIX_UPSTREAM__/$(sed_escape "$APISIX_UPSTREAM")/g" \
   /etc/nginx/conf.d/default.conf
+
+# Catch both a failed substitution (leftover placeholder) and any resulting
+# invalid config before handing off to nginx, so the container fails loudly
+# instead of booting with a broken proxy.
+if grep -q '__UNIBRIDGE_SERVICE_UPSTREAM__\|__APISIX_UPSTREAM__' /etc/nginx/conf.d/default.conf; then
+  echo "entrypoint: upstream placeholders were not substituted in default.conf" >&2
+  exit 1
+fi
+nginx -t
 
 exec nginx -g 'daemon off;'

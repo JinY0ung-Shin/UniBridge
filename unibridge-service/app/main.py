@@ -362,11 +362,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         "LITELLM_MASTER_KEY not set — skipping LiteLLM route provisioning"
                     )
 
-                async for db in get_db():
-                    await api_keys.sync_all_consumer_route_restrictions(db)
-                    logger.info("Replayed stored API key route restrictions")
-                    break
-
                 break
             except Exception as exc:
                 if _attempt < _max_retries:
@@ -390,6 +385,48 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     else:
         logger.info("Skipping APISIX route provisioning because APISIX_PROVISION_ON_START=false")
+
+    # Replay stored API-key consumer-restrictions on EVERY boot, regardless of
+    # APISIX_PROVISION_ON_START. The database is the source of truth for
+    # per-consumer route access; this reconciles APISIX with it. It only updates
+    # the consumer-restriction whitelist on routes that already exist (never
+    # upstreams or proxy targets), so it is safe to run on an inactive blue/green
+    # color before promotion. Running it unconditionally is what lets an inactive
+    # color — or any color booting after an etcd reset — restore the real access
+    # rules instead of leaving routes stuck at deny-all (or stale) until the next
+    # first-boot-style provision.
+    import asyncio as _asyncio_replay
+
+    _replay_max_retries = 10
+    for _replay_attempt in range(1, _replay_max_retries + 1):
+        try:
+            async for db in get_db():
+                await api_keys.sync_all_consumer_route_restrictions(db)
+                logger.info(
+                    "Replayed stored API key route restrictions "
+                    "(APISIX_PROVISION_ON_START=%s)",
+                    getattr(settings, "APISIX_PROVISION_ON_START", True),
+                )
+                break
+            break
+        except Exception as exc:
+            if _replay_attempt < _replay_max_retries:
+                _delay = min(2**_replay_attempt, 15)  # 2,4,8,15,15,… capped
+                logger.warning(
+                    "API key restriction replay attempt %d/%d failed: %s — retrying in %ds",
+                    _replay_attempt,
+                    _replay_max_retries,
+                    exc,
+                    _delay,
+                )
+                await _asyncio_replay.sleep(_delay)
+            else:
+                logger.error(
+                    "API key restriction replay failed after %d attempts: %s",
+                    _replay_max_retries,
+                    exc,
+                )
+                raise
 
     from app.services.alert_state import (
         AlertStateManager,
