@@ -35,9 +35,10 @@ Converter (`cd llm-converter`): `pytest`
 E2E (`cd e2e`): `pytest -v`   (needs `LLM_API_KEY`; see e2e/README.md)
 Full stack: `docker compose up -d`
 
-CI (`.github/workflows/ci.yml`): frontend = lint+test+build; backend = ruff + alembic
-upgrade/check + pytest; converter = pytest; scripts = shell syntax; live e2e is
-deployment-gated with `RUN_LIVE_E2E=true`. Python 3.12, Node lts.
+Release gate: use the Codex `$unibridge-release` skill. It runs local frontend
+lint/test/build, backend ruff + alembic upgrade/check + pytest, converter pytest,
+shell syntax checks, and e2e skip-health before tagging/publishing. Live E2E
+requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
 
 ## Gotchas
 - **Migrations auto-apply at boot**: `app.main` lifespan → `init_db()` → `alembic upgrade head`.
