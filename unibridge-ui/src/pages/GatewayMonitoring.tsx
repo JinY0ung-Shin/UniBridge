@@ -273,7 +273,7 @@ function GatewayMonitoring() {
               >
                 <option value="">{t('gatewayMonitoring.allApiKeys')}</option>
                 {apiKeyOptions.map((k) => (
-                  <option key={k.name} value={k.name}>{k.name}</option>
+                  <option key={k.name} value={k.name} title={k.description || undefined}>{k.name}</option>
                 ))}
               </select>
             </label>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -12,8 +12,10 @@ import {
   getLlmTopKeys,
   getLlmErrors,
   getLlmRequestsTotal,
+  getApiKeys,
 } from '../api/client';
 import { useChartTheme } from '../components/useChartTheme';
+import { usePermissions } from '../components/usePermissions';
 import './Monitoring.css';
 import './LlmMonitoring.css';
 import TimeRangeSelector from '../components/TimeRangeSelector';
@@ -35,6 +37,7 @@ function formatTokens(value: number): string {
 
 function LlmMonitoring() {
   const { t } = useTranslation();
+  const { permissions, loaded: permissionsLoaded } = usePermissions();
   const [selection, setSelection] = useState<TimeSelection>({ kind: 'preset', value: '1h' });
   const selKey = selectionKey(selection);
   const span = selectionSpanSeconds(selection);
@@ -80,6 +83,24 @@ function LlmMonitoring() {
     queryFn: () => getLlmRequestsTotal(selection, bucket),
     refetchInterval,
   });
+
+  // Map API key name → its description, to surface the key's purpose on hover
+  // in the Top API Keys table. Requires apikeys.read; degrades to no tooltip.
+  const canReadApiKeys = permissionsLoaded && permissions.includes('apikeys.read');
+  const apiKeysQuery = useQuery({
+    queryKey: ['api-keys', 'llm-monitoring-descriptions'],
+    queryFn: getApiKeys,
+    staleTime: 5 * 60 * 1000,
+    refetchInterval: false,
+    enabled: canReadApiKeys,
+  });
+  const apiKeyDescriptions = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const k of apiKeysQuery.data ?? []) {
+      if (k.description) map[k.name] = k.description;
+    }
+    return map;
+  }, [apiKeysQuery.data]);
 
   const summary = summaryQuery.data;
   const tokenData = tokensQuery.data;
@@ -266,7 +287,7 @@ function LlmMonitoring() {
               <tbody>
                 {(topKeysQuery.data ?? []).map((k) => (
                   <tr key={k.api_key}>
-                    <td className="cell-alias">
+                    <td className="cell-alias" title={apiKeyDescriptions[k.api_key] || undefined}>
                       {k.api_key}
                     </td>
                     <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
