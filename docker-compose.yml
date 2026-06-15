@@ -293,6 +293,48 @@ services:
     networks:
       - apihub-net
 
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:13.0.2}
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "0.50"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.50"
+    expose:
+      - "3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      - GF_AUTH_ANONYMOUS_ENABLED=${GRAFANA_ANONYMOUS_ENABLED:-false}
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-https://${HOST_IP:-localhost}:${UNIBRIDGE_UI_PORT:-3000}/grafana/}
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+      - GF_USERS_DEFAULT_THEME=system
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES=false
+      - GF_PLUGINS_PREINSTALL_DISABLED=true
+      - GF_PLUGINS_PREINSTALL_AUTO_UPDATE=false
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - apihub-net
+
   blackbox-exporter:
     image: quay.io/prometheus/blackbox-exporter:v0.28.0
     restart: unless-stopped
@@ -479,6 +521,7 @@ services:
       - LITELLM_PORT=${LITELLM_PORT:-4000}
       - UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service}
       - APISIX_UPSTREAM=${APISIX_UPSTREAM:-apisix}
+      - GRAFANA_UPSTREAM=${GRAFANA_UPSTREAM:-grafana}
     ports:
       - "${UNIBRIDGE_UI_PORT:-3000}:443"
     volumes:
@@ -508,6 +551,7 @@ volumes:
   unibridge-data:
   etcd-data:
   prometheus-data:
+  grafana-data:
   keycloak-db-data:
   litellm-db-data:
   unibridge-db-data:

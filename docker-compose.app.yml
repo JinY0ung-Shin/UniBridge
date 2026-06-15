@@ -181,6 +181,7 @@ services:
       - LITELLM_PORT=${LITELLM_PORT:-4000}
       - UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service-${APP_COLOR}}
       - APISIX_UPSTREAM=${APISIX_UPSTREAM:-apisix}
+      - GRAFANA_UPSTREAM=${GRAFANA_UPSTREAM:-grafana}
     ports:
       - "127.0.0.1:${UNIBRIDGE_UI_PORT:?UNIBRIDGE_UI_PORT is required}:443"
     volumes:

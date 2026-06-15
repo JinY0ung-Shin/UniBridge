@@ -11,6 +11,7 @@ KEYCLOAK_REALM_VALUE="${KEYCLOAK_REALM:-apihub}"
 KEYCLOAK_CLIENT_ID="${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}"
 UNIBRIDGE_SERVICE_UPSTREAM="${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service}"
 APISIX_UPSTREAM="${APISIX_UPSTREAM:-apisix}"
+GRAFANA_UPSTREAM="${GRAFANA_UPSTREAM:-grafana}"
 
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -32,12 +33,13 @@ EOF
 sed -i \
   -e "s/__UNIBRIDGE_SERVICE_UPSTREAM__/$(sed_escape "$UNIBRIDGE_SERVICE_UPSTREAM")/g" \
   -e "s/__APISIX_UPSTREAM__/$(sed_escape "$APISIX_UPSTREAM")/g" \
+  -e "s/__GRAFANA_UPSTREAM__/$(sed_escape "$GRAFANA_UPSTREAM")/g" \
   /etc/nginx/conf.d/default.conf
 
 # Catch both a failed substitution (leftover placeholder) and any resulting
 # invalid config before handing off to nginx, so the container fails loudly
 # instead of booting with a broken proxy.
-if grep -q '__UNIBRIDGE_SERVICE_UPSTREAM__\|__APISIX_UPSTREAM__' /etc/nginx/conf.d/default.conf; then
+if grep -q '__UNIBRIDGE_SERVICE_UPSTREAM__\|__APISIX_UPSTREAM__\|__GRAFANA_UPSTREAM__' /etc/nginx/conf.d/default.conf; then
   echo "entrypoint: upstream placeholders were not substituted in default.conf" >&2
   exit 1
 fi
