@@ -84,6 +84,34 @@ def _flatten_text_blocks(content: Any) -> str:
     return "".join(out)
 
 
+def _convert_image_block(block: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Translate an Anthropic image block to an OpenAI chat image part."""
+    source = block.get("source")
+    if not isinstance(source, dict):
+        return None
+
+    source_type = source.get("type")
+    url: Optional[str] = None
+    if source_type == "base64":
+        media_type = source.get("media_type")
+        data = source.get("data")
+        if isinstance(media_type, str) and media_type and isinstance(data, str) and data:
+            url = f"data:{media_type};base64,{data}"
+    elif source_type == "url":
+        raw_url = source.get("url")
+        if isinstance(raw_url, str) and raw_url:
+            url = raw_url
+
+    if not url:
+        return None
+
+    image_url: Dict[str, Any] = {"url": url}
+    detail = block.get("detail")
+    if detail and detail != "original":
+        image_url["detail"] = detail
+    return {"type": "image_url", "image_url": image_url}
+
+
 def _convert_assistant_message(content: Any) -> Dict[str, Any]:
     """Translate one Anthropic assistant turn to one OpenAI assistant message.
 
@@ -137,10 +165,10 @@ def _convert_assistant_message(content: Any) -> Dict[str, Any]:
 def _convert_user_message(content: Any) -> List[Dict[str, Any]]:
     """Translate one Anthropic user turn into one or more OpenAI messages.
 
-    An Anthropic user turn can hold both plain text and ``tool_result``
-    blocks; OpenAI expresses those as separate messages — text stays a
-    ``user`` message, each ``tool_result`` becomes a ``tool`` message keyed
-    by ``tool_call_id``.
+    An Anthropic user turn can hold plain text, images, and ``tool_result``
+    blocks. OpenAI expresses ``tool_result`` as separate ``tool`` messages and
+    text/image input as a user message. Tool results are emitted first so they
+    stay adjacent to the assistant message that created the tool calls.
     """
     if isinstance(content, str):
         return [{"role": "user", "content": content}]
@@ -149,6 +177,8 @@ def _convert_user_message(content: Any) -> List[Dict[str, Any]]:
 
     out: List[Dict[str, Any]] = []
     text_parts: List[str] = []
+    content_parts: List[Dict[str, Any]] = []
+    has_image = False
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -157,12 +187,33 @@ def _convert_user_message(content: Any) -> List[Dict[str, Any]]:
             t = block.get("text")
             if isinstance(t, str):
                 text_parts.append(t)
+                content_parts.append({"type": "text", "text": t})
+        elif btype == "image":
+            image_part = _convert_image_block(block)
+            if image_part is not None:
+                has_image = True
+                content_parts.append(image_part)
         elif btype == "tool_result":
             tr_content = block.get("content", "")
             # Anthropic allows tool_result.content to be a structured list of
-            # text blocks; collapse to a plain string for OpenAI.
+            # text/image blocks. Tool messages are text-only in the upstream
+            # chat route, so keep text in the tool message and forward images
+            # as the user input that immediately follows it.
             if isinstance(tr_content, list):
-                tr_content = _flatten_text_blocks(tr_content)
+                tool_text_parts: List[str] = []
+                for part in tr_content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text":
+                        text = part.get("text")
+                        if isinstance(text, str):
+                            tool_text_parts.append(text)
+                    elif part.get("type") == "image":
+                        image_part = _convert_image_block(part)
+                        if image_part is not None:
+                            has_image = True
+                            content_parts.append(image_part)
+                tr_content = "".join(tool_text_parts)
             elif not isinstance(tr_content, str):
                 tr_content = json.dumps(tr_content, ensure_ascii=False)
             tool_msg: Dict[str, Any] = {
@@ -172,15 +223,16 @@ def _convert_user_message(content: Any) -> List[Dict[str, Any]]:
             }
             out.append(tool_msg)
 
-    if text_parts:
-        # Place the user text *after* the tool messages. OpenAI/vLLM require a
+    if content_parts:
+        # Place the user input *after* the tool messages. OpenAI/vLLM require a
         # ``tool`` message to immediately follow the assistant message bearing
         # the matching ``tool_calls`` — a ``user`` message wedged in between is
         # rejected ("tool message must be a response to a preceding message with
         # tool_calls"). The claude_agent_sdk routinely batches a follow-up user
         # prompt together with tool_result blocks in one turn, so this ordering
         # matters; appending keeps the tool results adjacent to their call.
-        out.append({"role": "user", "content": "".join(text_parts)})
+        user_content: Any = content_parts if has_image else "".join(text_parts)
+        out.append({"role": "user", "content": user_content})
 
     return out
 

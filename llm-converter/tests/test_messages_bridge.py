@@ -182,6 +182,132 @@ class TestRequestConversion:
             {"role": "tool", "tool_call_id": "tu_1", "content": "line1\nline2"}
         ]
 
+    def test_tool_result_image_content_forwarded_after_tool_message(self):
+        body = {
+            "model": "m",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "tu_1", "name": "Read", "input": {}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_1",
+                            "content": [
+                                {"type": "text", "text": "image loaded"},
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/png",
+                                        "data": "iVBORw0KGgo=",
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+
+        out = anthropic_request_to_openai_body(body)
+
+        assert [m["role"] for m in out["messages"]] == ["assistant", "tool", "user"]
+        assert out["messages"][1] == {
+            "role": "tool",
+            "tool_call_id": "tu_1",
+            "content": "image loaded",
+        }
+        assert out["messages"][2] == {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+                },
+            ],
+        }
+
+    def test_user_image_base64_converted_to_openai_multimodal_content(self):
+        body = {
+            "model": "m",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe this"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "iVBORw0KGgo=",
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+
+        out = anthropic_request_to_openai_body(body)
+
+        assert out["messages"] == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe this"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,iVBORw0KGgo=",
+                        },
+                    },
+                ],
+            }
+        ]
+
+    def test_user_image_url_converted_to_openai_multimodal_content(self):
+        body = {
+            "model": "m",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe this"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": "https://example.com/image.png",
+                            },
+                            "detail": "high",
+                        },
+                    ],
+                }
+            ],
+        }
+
+        out = anthropic_request_to_openai_body(body)
+
+        assert out["messages"][0] == {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe this"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "https://example.com/image.png",
+                        "detail": "high",
+                    },
+                },
+            ],
+        }
+
     def test_tools_definition_converted(self):
         body = {
             "model": "m",
@@ -284,6 +410,49 @@ class TestRequestConversion:
         # tool message sits immediately after the assistant tool_calls.
         assert out["messages"][1] == {"role": "tool", "tool_call_id": "tu_1", "content": "done"}
         assert out["messages"][2] == {"role": "user", "content": "also, hurry"}
+
+    def test_user_turn_mixing_image_text_and_tool_result_keeps_tool_adjacent(self):
+        body = {
+            "model": "m",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "also inspect this"},
+                        {"type": "tool_result", "tool_use_id": "tu_1", "content": "done"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": "/9j/4AAQSkZJRg==",
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+
+        out = anthropic_request_to_openai_body(body)
+
+        assert [m["role"] for m in out["messages"]] == ["assistant", "tool", "user"]
+        assert out["messages"][1] == {"role": "tool", "tool_call_id": "tu_1", "content": "done"}
+        assert out["messages"][2] == {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "also inspect this"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/jpeg;base64,/9j/4AAQSkZJRg=="},
+                },
+            ],
+        }
 
 
 # ---------------------------------------------------------------------------

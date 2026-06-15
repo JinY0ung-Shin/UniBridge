@@ -159,6 +159,62 @@ def test_non_streaming_translates_openai_to_anthropic():
     assert data["usage"] == {"input_tokens": 3, "output_tokens": 2}
 
 
+def test_messages_route_forwards_anthropic_image_as_openai_image_url():
+    captured = {}
+    openai_resp = {
+        "id": "chatcmpl-1",
+        "model": "GLM-4.6",
+        "choices": [{"message": {"content": "image seen"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=json.dumps(openai_resp).encode(),
+        )
+
+    client = TestClient(_make_app(handler))
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "GLM-4.6",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this?"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "iVBORw0KGgo=",
+                            },
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert captured["body"]["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what is this?"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+                },
+            ],
+        }
+    ]
+
+
 def test_upstream_error_forwarded_verbatim():
     err = {"error": {"message": "rate limited", "type": "rate_limit_error"}}
 
