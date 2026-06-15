@@ -983,6 +983,19 @@ def _labels(route: str | None, consumer: str | None, *extra: str) -> str:
     return "{" + ",".join(parts) + "}" if parts else ""
 
 
+def _llm_labels(*extra: str) -> str:
+    """PromQL selector for LLM-proxy traffic across the three LLM routes.
+
+    LLM requests pass through APISIX on the ``llm-proxy``/``llm-messages``/
+    ``llm-responses`` routes, so ``apisix_http_status`` carries their real HTTP
+    status codes — including gateway-layer errors (401/403/429) that never reach
+    LiteLLM and so are invisible to the ``litellm_*`` counters.
+    """
+    parts = list(extra)
+    parts.append('route=~"llm-proxy|llm-messages|llm-responses"')
+    return "{" + ",".join(parts) + "}"
+
+
 def _metric_label(row: dict[str, Any], *names: str) -> str:
     metric = row.get("metric", {})
     if not isinstance(metric, dict):
@@ -1351,6 +1364,95 @@ async def metrics_routes_comparison(
     return {"total_requests": round(total), "routes": routes}
 
 
+@router.get("/metrics/consumers-comparison")
+async def metrics_consumers_comparison(
+    tw: TimeWindow = Depends(resolve_time_window),
+    scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
+) -> dict[str, Any]:
+    """Per-API-key (consumer) comparison: requests, share, error_rate, p50/p95 latency.
+
+    Self-scoped callers see only their own key (forced consumer); admins see all.
+    LLM-proxy traffic is excluded by the default selector (covered on the LLM page).
+    """
+    # Comparison groups by consumer; restricted callers are forced to their own.
+    forced = _scope_consumer(scope, None, None)
+    hs = _labels(None, forced)
+    hs5 = _labels(None, forced, 'code=~"5.."')
+    try:
+        requests_res, errors_res, p50_res, p95_res, total_res = await asyncio.gather(
+            prometheus_client.instant_query(
+                f"topk(10, sum by (consumer) (increase(apisix_http_status{hs}[{tw.promql_window}])))",
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                f"sum by (consumer) (increase(apisix_http_status{hs5}[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                f"histogram_quantile(0.5, sum by (consumer, le) (rate(apisix_http_latency_bucket{hs}[5m])))",
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                f"histogram_quantile(0.95, sum by (consumer, le) (rate(apisix_http_latency_bucket{hs}[5m])))",
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                f"sum(increase(apisix_http_status{hs}[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
+
+    def _map_consumer_value(res: list[dict[str, Any]]) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for r in res or []:
+            # Requests with no API key carry an empty consumer label. The fallback
+            # contains characters _SAFE_CONSUMER_RE rejects, so it can never collide
+            # with a real key name.
+            consumer = r.get("metric", {}).get("consumer") or "(no api key)"
+            value = r.get("value")
+            if not value:
+                continue
+            try:
+                out[consumer] = float(value[1])
+            except (IndexError, ValueError, TypeError):
+                continue
+        return out
+
+    requests_map = _map_consumer_value(requests_res)
+    errors_map = _map_consumer_value(errors_res)
+    p50_map = _map_consumer_value(p50_res)
+    p95_map = _map_consumer_value(p95_res)
+
+    # Denominator for share is the true total across all consumers, not just the
+    # top-10 rows, so shares stay accurate when more than 10 keys are active.
+    total = _extract_scalar(total_res)
+    consumers: list[dict[str, Any]] = []
+    for consumer, req in requests_map.items():
+        req_rounded = round(req)
+        if req_rounded <= 0:
+            continue
+        share = (req / total * 100) if total > 0 else 0.0
+        err = errors_map.get(consumer, 0.0)
+        error_rate = (err / req * 100) if req > 0 else 0.0
+        p50 = p50_map.get(consumer)
+        p95 = p95_map.get(consumer)
+        consumers.append({
+            "consumer": consumer,
+            "requests": req_rounded,
+            "share": round(share, 2),
+            "error_rate": round(error_rate, 2),
+            "latency_p50_ms": round(p50, 2) if p50 is not None and not math.isnan(p50) else None,
+            "latency_p95_ms": round(p95, 2) if p95 is not None and not math.isnan(p95) else None,
+        })
+
+    consumers.sort(key=lambda c: c["requests"], reverse=True)
+    return {"total_requests": round(total), "consumers": consumers}
+
+
 @router.get("/metrics/requests-total")
 async def metrics_requests_total(
     tw: TimeWindow = Depends(resolve_time_window),
@@ -1662,23 +1764,66 @@ async def llm_metrics_top_keys(
     return keys
 
 
+@router.get("/metrics/llm/status-codes")
+async def llm_metrics_status_codes(
+    tw: TimeWindow = Depends(resolve_time_window),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+) -> list[dict[str, Any]]:
+    """LLM HTTP status code distribution.
+
+    Sourced from APISIX (``apisix_http_status``) rather than LiteLLM counters so
+    every status code is broken out (200/400/429/500/…) and gateway-layer errors
+    that never reach LiteLLM are still counted.
+    """
+    hs = _llm_labels()
+    try:
+        results = await prometheus_client.instant_query(
+            f"sum by (code) (increase(apisix_http_status{hs}[{tw.promql_window}]))",
+            eval_time=tw.eval_time,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
+
+    codes = []
+    for r in results:
+        code = r.get("metric", {}).get("code", "unknown")
+        value = r.get("value", [0, "0"])
+        try:
+            count = round(float(value[1]))
+        except (IndexError, ValueError, TypeError):
+            count = 0
+        if count > 0:
+            codes.append({"code": code, "count": count})
+    codes.sort(key=lambda x: x["count"], reverse=True)
+    return codes
+
+
 @router.get("/metrics/llm/errors")
 async def llm_metrics_errors(
     tw: TimeWindow = Depends(resolve_time_window),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
-    """LLM request success/error rate over time."""
+    """LLM request success/error rate over time.
+
+    Sourced from APISIX status codes (2xx/3xx = success, everything else = error)
+    so gateway-layer failures (auth, rate-limit) are reflected, unlike the LiteLLM
+    failed-request counter which only sees requests that reach the proxy. The error
+    bucket is the complement of success (``code!~"2..|3.."``) so non-HTTP outcomes
+    APISIX records — notably code 0 for client-aborted/timed-out streams — are not
+    silently dropped.
+    """
+    hs_ok = _llm_labels('code=~"2..|3.."')
+    hs_err = _llm_labels('code!~"2..|3.."')
     try:
         success_points, error_points = await asyncio.gather(
             _volume_series(
-                lambda window: (
-                    f"sum(increase(litellm_proxy_total_requests_metric_total[{window}])) "
-                    f"- sum(increase(litellm_proxy_failed_requests_metric_total[{window}]))"
-                ),
+                lambda window: f"sum(increase(apisix_http_status{hs_ok}[{window}]))",
                 tw,
             ),
             _volume_series(
-                lambda window: f"sum(increase(litellm_proxy_failed_requests_metric_total[{window}]))",
+                lambda window: f"sum(increase(apisix_http_status{hs_err}[{window}]))",
                 tw,
             ),
         )

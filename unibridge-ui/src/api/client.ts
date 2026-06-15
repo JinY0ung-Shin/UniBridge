@@ -664,6 +664,29 @@ export async function getMetricsRoutesComparison(
   return data;
 }
 
+export type ConsumerComparisonRow = {
+  consumer: string;
+  requests: number;
+  share: number;
+  error_rate: number;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+};
+
+export type ConsumerComparisonResponse = {
+  total_requests: number;
+  consumers: ConsumerComparisonRow[];
+};
+
+export async function getMetricsConsumersComparison(
+  sel: TimeSelection = DEFAULT_SELECTION,
+): Promise<ConsumerComparisonResponse> {
+  const { data } = await client.get('/admin/gateway/metrics/consumers-comparison', {
+    params: { ...timeParams(sel) },
+  });
+  return data;
+}
+
 /* ── LLM Metrics ── */
 
 export interface LlmSummary {
@@ -734,6 +757,15 @@ export async function getLlmErrors(
 ): Promise<LlmErrorPoint[]> {
   const { data } = await client.get('/admin/gateway/metrics/llm/errors', {
     params: { ...timeParams(sel), ...bucketParam(bucket) },
+  });
+  return data;
+}
+
+export async function getLlmStatusCodes(
+  sel: TimeSelection = DEFAULT_SELECTION,
+): Promise<StatusCodeData[]> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/status-codes', {
+    params: { ...timeParams(sel) },
   });
   return data;
 }

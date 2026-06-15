@@ -13,6 +13,7 @@ import {
   getMetricsStatusCodes,
   getMetricsLatency,
   getMetricsRoutesComparison,
+  getMetricsConsumersComparison,
   getApiKeys,
   type RouteComparisonRow,
 } from '../api/client';
@@ -161,6 +162,27 @@ function GatewayMonitoring() {
     refetchInterval,
   });
 
+  const consumersComparisonQuery = useQuery({
+    queryKey: ['metrics-consumers-comparison', selKey],
+    queryFn: () => getMetricsConsumersComparison(selection),
+    refetchInterval,
+    // Cross-key overview; the panel is hidden when scoped to one key, so skip the fetch.
+    enabled: !selectedConsumer,
+  });
+
+  const apiKeyDescriptions = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const k of apiKeysQuery.data ?? []) {
+      if (k.description) map[k.name] = k.description;
+    }
+    return map;
+  }, [apiKeysQuery.data]);
+
+  const maxConsumerRequests = useMemo(() => {
+    const rows = consumersComparisonQuery.data?.consumers ?? [];
+    return rows.reduce((m, c) => (c.requests > m ? c.requests : m), 0);
+  }, [consumersComparisonQuery.data]);
+
   const routeLabel = (r: RouteComparisonRow) => r.name || r.route;
 
   const sortedRoutes = useMemo<RouteComparisonRow[]>(() => {
@@ -252,7 +274,8 @@ function GatewayMonitoring() {
   const isError = summaryQuery.isError;
   const hasPartialError = !isError && (
     requestsQuery.isError || requestsTotalQuery.isError ||
-    statusQuery.isError || latencyQuery.isError || routesComparisonQuery.isError
+    statusQuery.isError || latencyQuery.isError || routesComparisonQuery.isError ||
+    consumersComparisonQuery.isError
   );
 
   return (
@@ -448,6 +471,44 @@ function GatewayMonitoring() {
           <div className="no-data">{t('gatewayMonitoring.noRouteData')}</div>
         )}
       </div>
+
+      {/* API Key Comparison — cross-key overview; hidden when the page is
+          already scoped to a single key via the filter. */}
+      {!selectedConsumer && (
+      <div className="chart-panel">
+        <div className="chart-panel__title">{t('gatewayMonitoring.apiKeyComparison')}</div>
+        {(consumersComparisonQuery.data?.consumers ?? []).length > 0 ? (
+          <div className="table-container" style={{ border: 'none' }}>
+            <table className="data-table comparison-table">
+              <thead>
+                <tr>
+                  <th>{t('gatewayMonitoring.apiKey')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.requests')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.share')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.errorRate')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.latencyP50')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.latencyP95')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(consumersComparisonQuery.data?.consumers ?? []).map((c) => (
+                  <tr key={c.consumer}>
+                    <td className="cell-alias" title={apiKeyDescriptions[c.consumer] || undefined}>{c.consumer}</td>
+                    <td className="cell-metric"><BarCell value={c.requests} max={maxConsumerRequests} /></td>
+                    <td className="cell-metric"><BarCell value={c.share} max={100} suffix="%" /></td>
+                    <td className={`cell-metric ${errorRateClass(c.error_rate)}`}>{c.error_rate.toFixed(2)}%</td>
+                    <td className="cell-metric">{c.latency_p50_ms == null ? '—' : c.latency_p50_ms.toFixed(1)}</td>
+                    <td className="cell-metric">{c.latency_p95_ms == null ? '—' : c.latency_p95_ms.toFixed(1)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="no-data">{t('gatewayMonitoring.noApiKeyData')}</div>
+        )}
+      </div>
+      )}
 
       {/* Route Detail Panel */}
       {selectedRoute && (

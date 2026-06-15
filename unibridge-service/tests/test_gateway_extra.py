@@ -980,6 +980,95 @@ async def test_llm_metrics_errors_prom_error(client, admin_token):
 
 
 @pytest.mark.asyncio
+async def test_llm_metrics_status_codes(client, admin_token):
+    # Sourced from APISIX apisix_http_status (instant_query), broken out by code.
+    results = [
+        {"metric": {"code": "200"}, "value": [0, "300"]},
+        {"metric": {"code": "429"}, "value": [0, "12"]},
+        {"metric": {"code": "500"}, "value": [0, "3"]},
+        {"metric": {"code": "204"}, "value": [0, "0"]},
+    ]
+    with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
+               return_value=results):
+        resp = await client.get(
+            "/admin/gateway/metrics/llm/status-codes?range=1h",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 200
+    rows = resp.json()
+    # Zero-count codes dropped, sorted by count desc.
+    assert rows == [
+        {"code": "200", "count": 300},
+        {"code": "429", "count": 12},
+        {"code": "500", "count": 3},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_llm_metrics_status_codes_prom_error(client, admin_token):
+    with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
+               side_effect=RuntimeError("p")):
+        resp = await client.get(
+            "/admin/gateway/metrics/llm/status-codes?range=1h",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_metrics_consumers_comparison(client, admin_token):
+    requests_result = [
+        {"metric": {"consumer": "alice"}, "value": [0, "800"]},
+        {"metric": {"consumer": "bob"}, "value": [0, "200"]},
+        {"metric": {"consumer": ""}, "value": [0, "100"]},
+    ]
+    errors_result = [
+        {"metric": {"consumer": "alice"}, "value": [0, "8"]},
+    ]
+    p50_result = [
+        {"metric": {"consumer": "alice"}, "value": [0, "12.0"]},
+    ]
+    p95_result = [
+        {"metric": {"consumer": "alice"}, "value": [0, "40.0"]},
+    ]
+    # Global total is a separate query (> sum of the top rows here) so share stays
+    # accurate when traffic exists beyond the top-10 consumers.
+    total_result = [{"value": [0, "2000"]}]
+    mock = AsyncMock(side_effect=[requests_result, errors_result, p50_result, p95_result, total_result])
+    with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+        resp = await client.get(
+            "/admin/gateway/metrics/consumers-comparison?range=1h",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_requests"] == 2000
+    by_consumer = {c["consumer"]: c for c in data["consumers"]}
+    # Empty consumer label surfaces as the collision-proof "(no api key)" sentinel.
+    assert set(by_consumer) == {"alice", "bob", "(no api key)"}
+    assert by_consumer["alice"]["requests"] == 800
+    # Share is relative to the global total (800/2000 = 40%), not the top-row sum.
+    assert by_consumer["alice"]["share"] == pytest.approx(40.0, rel=0.01)
+    assert by_consumer["alice"]["error_rate"] == pytest.approx(1.0, rel=0.01)
+    assert by_consumer["alice"]["latency_p50_ms"] == pytest.approx(12.0)
+    assert by_consumer["bob"]["error_rate"] == 0.0
+    assert by_consumer["bob"]["latency_p50_ms"] is None
+    # Sorted by requests desc.
+    assert [c["consumer"] for c in data["consumers"]] == ["alice", "bob", "(no api key)"]
+
+
+@pytest.mark.asyncio
+async def test_metrics_consumers_comparison_prom_error(client, admin_token):
+    with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
+               side_effect=RuntimeError("p")):
+        resp = await client.get(
+            "/admin/gateway/metrics/consumers-comparison?range=1h",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 502
+
+
+@pytest.mark.asyncio
 async def test_llm_metrics_requests_total(client, admin_token):
     series = [{"values": [[1.0, "42"]]}]
     with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,

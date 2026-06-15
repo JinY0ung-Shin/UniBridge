@@ -436,7 +436,10 @@
     "latencyP95": "p95 (ms)",
     "route": "라우트",
     "requests": "요청",
-    "noRouteData": "라우트 트래픽 데이터가 없습니다"
+    "noRouteData": "라우트 트래픽 데이터가 없습니다",
+    "apiKeyComparison": "API 키별 비교",
+    "apiKey": "API 키",
+    "noApiKeyData": "API 키 트래픽 데이터가 없습니다"
   },
   "llmMonitoring": {
     "title": "LLM 모니터링",
@@ -455,6 +458,8 @@
     "requestVolume": "요청 수",
     "byModel": "모델별 사용량",
     "topKeys": "UniBridge API Key별 사용량",
+    "statusCodeDist": "상태 코드 분포",
+    "noStatusData": "상태 코드 데이터가 없습니다",
     "errorRate": "성공 / 실패율",
     "model": "모델",
     "tokens": "토큰",

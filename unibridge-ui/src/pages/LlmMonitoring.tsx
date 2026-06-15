@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend,
+  Tooltip, ResponsiveContainer, Legend, Cell,
 } from 'recharts';
 import {
   getLlmSummary,
@@ -11,10 +11,11 @@ import {
   getLlmByModel,
   getLlmTopKeys,
   getLlmErrors,
+  getLlmStatusCodes,
   getLlmRequestsTotal,
   getApiKeys,
 } from '../api/client';
-import { useChartTheme } from '../components/useChartTheme';
+import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
 import { usePermissions } from '../components/usePermissions';
 import './Monitoring.css';
 import './LlmMonitoring.css';
@@ -78,6 +79,12 @@ function LlmMonitoring() {
     refetchInterval,
   });
 
+  const statusCodesQuery = useQuery({
+    queryKey: ['llm-status-codes', selKey],
+    queryFn: () => getLlmStatusCodes(selection),
+    refetchInterval,
+  });
+
   const requestsTotalQuery = useQuery({
     queryKey: ['llm-requests-total', selKey, bucketKey(bucket)],
     queryFn: () => getLlmRequestsTotal(selection, bucket),
@@ -120,7 +127,8 @@ function LlmMonitoring() {
   const isError = summaryQuery.isError;
   const hasPartialError = !isError && (
     tokensQuery.isError || byModelQuery.isError ||
-    topKeysQuery.isError || errorsQuery.isError || requestsTotalQuery.isError
+    topKeysQuery.isError || errorsQuery.isError ||
+    statusCodesQuery.isError || requestsTotalQuery.isError
   );
 
   return (
@@ -309,6 +317,34 @@ function LlmMonitoring() {
           </div>
         ) : (
           <div className="no-data">{t('llmMonitoring.noKeyData')}</div>
+        )}
+      </div>
+
+      {/* Status Code Distribution */}
+      <div className="chart-panel">
+        <div className="chart-panel__title">{t('llmMonitoring.statusCodeDist')}</div>
+        {(statusCodesQuery.data ?? []).length > 0 ? (
+          <div className="chart-container">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={statusCodesQuery.data}>
+                <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
+                <XAxis dataKey="code" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                <Tooltip
+                  contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
+                  labelStyle={{ color: chartColors.axis }}
+                  itemStyle={{ color: chartColors.textSecondary }}
+                />
+                <Bar dataKey="count" name={t('llmMonitoring.requests')}>
+                  {(statusCodesQuery.data ?? []).map((entry, index) => (
+                    <Cell key={index} fill={statusCodeColor(entry.code, chartColors)} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="no-data">{t('llmMonitoring.noStatusData')}</div>
         )}
       </div>
 
