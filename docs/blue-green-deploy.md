@@ -96,9 +96,15 @@ unset). To override anyway — single-color use, or you accept the risk — set
 
 If you already run a single-stack deployment on the default SQLite meta store,
 copy that data into the new Postgres database before the first blue-green
-deploy. From `unibridge-service/` (with the **same `ENCRYPTION_KEY`** as the
-source — encrypted credentials are copied verbatim and stay valid only under
-the same key):
+deploy.
+
+> **Stop the old stack (or quiesce writes) first.** This is a one-shot snapshot
+> copy, not a live replica — any row written to SQLite after the copy begins is
+> lost. Bring the single-stack deployment down, run the migration, then cut over.
+
+From `unibridge-service/` (with the **same `ENCRYPTION_KEY`** as the source —
+encrypted credentials are copied verbatim and stay valid only under the same
+key):
 
 ```bash
 python -m scripts.migrate_sqlite_to_postgres \

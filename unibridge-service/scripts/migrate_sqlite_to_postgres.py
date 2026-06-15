@@ -43,6 +43,16 @@ The target may also be supplied via the ``TARGET_META_DB_URL`` env var. The
 script refuses to write into a target that already contains data unless
 ``--truncate`` is given, so a re-run does not duplicate or collide. After a
 successful run, point ``META_DB_URL`` at the Postgres URL and deploy.
+
+Caveats
+-------
+- **Stop the old app (or quiesce writes) first.** This is a one-shot snapshot
+  copy, not a live replica — any row written to SQLite after the copy starts is
+  lost. Bring the single-stack deployment down before running, then cut over.
+- **Same ``ENCRYPTION_KEY``** on the target deployment, or stored credentials
+  cannot be decrypted (encrypted columns are copied as-is).
+- Re-running is safe: a non-empty target is refused unless ``--truncate`` wipes
+  it first; ``--truncate`` re-copies cleanly and re-resets sequences.
 """
 
 from __future__ import annotations
