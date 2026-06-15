@@ -6,7 +6,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, NoReturn
+from typing import Any, Callable, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 import httpx
@@ -810,13 +810,12 @@ def _validate_custom_range(start: int, end: int) -> None:
 def _bucketed_window(raw_start: float, raw_end: float, bucket: str) -> TimeWindow:
     """Build a TimeWindow whose volume series snaps to KST calendar buckets.
 
-    The query window is widened so it covers whole buckets: start floors to the
-    bucket containing raw_start, end ceils past the bucket containing raw_end so
-    the current (in-progress) bucket is included.
+    The query window is widened so it starts at the bucket containing raw_start.
+    The raw end stays at "now" or the requested custom end so Prometheus never
+    evaluates a range query at a future bucket boundary.
     """
     bsec = BUCKET_SECONDS[bucket]
     aligned_start = _align_down_kst(raw_start, bucket)
-    aligned_end = _align_down_kst(raw_end, bucket) + bsec
     bstep = f"{bsec}s"
     return TimeWindow(
         promql_window=f"{int(raw_end - aligned_start)}s",
@@ -825,7 +824,7 @@ def _bucketed_window(raw_start: float, raw_end: float, bucket: str) -> TimeWindo
         volume_window=BUCKET_WINDOW[bucket],
         eval_time=float(raw_end),
         start=float(aligned_start),
-        end=float(aligned_end),
+        end=float(raw_end),
         is_custom=True,
         bucket=bucket,
     )
@@ -1045,6 +1044,50 @@ def _bucket_points(
             continue
         out.append({"timestamp": bucket_start, "value": p["value"]})
     return out
+
+
+async def _volume_series(
+    query_for_window: Callable[[str], str],
+    tw: TimeWindow,
+) -> list[dict[str, Any]]:
+    if tw.bucket not in VALID_BUCKETS or tw.start is None or tw.end is None:
+        results = await prometheus_client.range_query(
+            query_for_window(tw.volume_window),
+            duration=tw.promql_window,
+            step=tw.volume_step,
+            start=tw.start,
+            end=tw.end,
+        )
+        return _extract_timeseries(results)
+
+    bsec = BUCKET_SECONDS[tw.bucket]
+    raw_end = float(tw.eval_time if tw.eval_time is not None else tw.end)
+    current_start = float(_align_down_kst(raw_end, tw.bucket))
+    points: list[dict[str, Any]] = []
+    if current_start > float(tw.start):
+        completed_results = await prometheus_client.range_query(
+            query_for_window(tw.volume_window),
+            duration=tw.promql_window,
+            step=tw.volume_step,
+            start=tw.start,
+            end=current_start,
+        )
+        points = _bucket_points(_extract_timeseries(completed_results), tw)
+
+    elapsed = int(raw_end - current_start)
+    if elapsed > 0:
+        partial_window = f"{min(max(elapsed, 1), bsec)}s"
+        partial_results = await prometheus_client.instant_query(
+            query_for_window(partial_window),
+            eval_time=raw_end,
+        )
+        points.append(
+            {
+                "timestamp": int(current_start),
+                "value": round(_extract_scalar(partial_results), 4),
+            }
+        )
+    return points
 
 
 @router.get("/metrics/summary")
@@ -1320,18 +1363,14 @@ async def metrics_requests_total(
     consumer = _scope_consumer(scope, route, consumer)
     hs = _labels(route, consumer)
     try:
-        results = await prometheus_client.range_query(
-            f"sum(increase(apisix_http_status{hs}[{tw.volume_window}]))",
-            duration=tw.promql_window,
-            step=tw.volume_step,
-            start=tw.start,
-            end=tw.end,
+        return await _volume_series(
+            lambda window: f"sum(increase(apisix_http_status{hs}[{window}]))",
+            tw,
         )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
-    return _bucket_points(_extract_timeseries(results), tw)
 
 
 # ── LLM Metrics ────────────────────────────────────────────────────────────
@@ -1408,20 +1447,14 @@ async def llm_metrics_tokens(
 ) -> dict[str, list[dict[str, Any]]]:
     """Token usage trend: prompt and completion tokens over time."""
     try:
-        prompt_results, completion_results = await asyncio.gather(
-            prometheus_client.range_query(
-                f"sum(increase(litellm_input_tokens_metric_total[{tw.volume_window}]))",
-                duration=tw.promql_window,
-                step=tw.volume_step,
-                start=tw.start,
-                end=tw.end,
+        prompt_points, completion_points = await asyncio.gather(
+            _volume_series(
+                lambda window: f"sum(increase(litellm_input_tokens_metric_total[{window}]))",
+                tw,
             ),
-            prometheus_client.range_query(
-                f"sum(increase(litellm_output_tokens_metric_total[{tw.volume_window}]))",
-                duration=tw.promql_window,
-                step=tw.volume_step,
-                start=tw.start,
-                end=tw.end,
+            _volume_series(
+                lambda window: f"sum(increase(litellm_output_tokens_metric_total[{window}]))",
+                tw,
             ),
         )
     except Exception as exc:
@@ -1430,8 +1463,8 @@ async def llm_metrics_tokens(
         )
 
     return {
-        "prompt": _bucket_points(_extract_timeseries(prompt_results), tw),
-        "completion": _bucket_points(_extract_timeseries(completion_results), tw),
+        "prompt": prompt_points,
+        "completion": completion_points,
     }
 
 
@@ -1636,29 +1669,23 @@ async def llm_metrics_errors(
 ) -> list[dict[str, Any]]:
     """LLM request success/error rate over time."""
     try:
-        success_results, error_results = await asyncio.gather(
-            prometheus_client.range_query(
-                f"sum(increase(litellm_proxy_total_requests_metric_total[{tw.volume_window}])) - sum(increase(litellm_proxy_failed_requests_metric_total[{tw.volume_window}]))",
-                duration=tw.promql_window,
-                step=tw.volume_step,
-                start=tw.start,
-                end=tw.end,
+        success_points, error_points = await asyncio.gather(
+            _volume_series(
+                lambda window: (
+                    f"sum(increase(litellm_proxy_total_requests_metric_total[{window}])) "
+                    f"- sum(increase(litellm_proxy_failed_requests_metric_total[{window}]))"
+                ),
+                tw,
             ),
-            prometheus_client.range_query(
-                f"sum(increase(litellm_proxy_failed_requests_metric_total[{tw.volume_window}]))",
-                duration=tw.promql_window,
-                step=tw.volume_step,
-                start=tw.start,
-                end=tw.end,
+            _volume_series(
+                lambda window: f"sum(increase(litellm_proxy_failed_requests_metric_total[{window}]))",
+                tw,
             ),
         )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
-
-    success_points = _bucket_points(_extract_timeseries(success_results), tw)
-    error_points = _bucket_points(_extract_timeseries(error_results), tw)
 
     error_map = {p["timestamp"]: p["value"] for p in error_points}
     combined = []
@@ -1680,15 +1707,11 @@ async def llm_metrics_requests_total(
 ) -> list[dict[str, Any]]:
     """LLM request volume per time bucket."""
     try:
-        results = await prometheus_client.range_query(
-            f"sum(increase(litellm_proxy_total_requests_metric_total[{tw.volume_window}]))",
-            duration=tw.promql_window,
-            step=tw.volume_step,
-            start=tw.start,
-            end=tw.end,
+        return await _volume_series(
+            lambda window: f"sum(increase(litellm_proxy_total_requests_metric_total[{window}]))",
+            tw,
         )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
-    return _bucket_points(_extract_timeseries(results), tw)
