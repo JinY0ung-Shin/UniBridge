@@ -6,6 +6,7 @@ import {
   epochToKstLocal,
   formatChartTime,
   formatChartTimestamp,
+  formatBucketLabel,
   formatKstChip,
 } from '../utils/time';
 
@@ -95,5 +96,11 @@ describe('KST monitoring helpers', () => {
   it('formatKstChip renders start~end', () => {
     const end = epoch + 2 * 86400 + 9 * 3600; // 5/22 18:00 KST
     expect(formatKstChip(epoch, end)).toBe('5/20 09:00~5/22 18:00');
+  });
+
+  it('formatBucketLabel renders per-granularity KST labels', () => {
+    expect(formatBucketLabel(epoch, 'hour')).toBe('5/20 09h');
+    expect(formatBucketLabel(epoch, 'day')).toBe('5/20');
+    expect(formatBucketLabel(epoch, 'week')).toBe('5/20~');
   });
 });

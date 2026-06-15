@@ -745,6 +745,27 @@ _TIER_SECONDS = {
     "60d": 5184000,
 }
 
+# Calendar-bucket granularity (overrides auto stepping when requested).
+# Bars are aligned to KST (UTC+9, no DST) calendar boundaries; weeks start Monday.
+_KST_OFFSET = 9 * 3600
+BUCKET_SECONDS = {"hour": 3600, "day": 86400, "week": 604800}
+BUCKET_WINDOW = {"hour": "1h", "day": "1d", "week": "7d"}
+VALID_BUCKETS = set(BUCKET_SECONDS.keys())
+
+
+def _align_down_kst(epoch: float, bucket: str) -> int:
+    """Floor an epoch (seconds) to the start of its KST calendar bucket."""
+    bsec = BUCKET_SECONDS[bucket]
+    kst = int(epoch) + _KST_OFFSET
+    if bucket == "week":
+        # 1970-01-01 (epoch day 0) is a Thursday; Monday is day index ≡ 4 (mod 7).
+        day = kst // 86400
+        monday = ((day - 4) // 7) * 7 + 4
+        aligned_kst = monday * 86400
+    else:
+        aligned_kst = (kst // bsec) * bsec
+    return aligned_kst - _KST_OFFSET
+
 
 def _tier_for_span(span: int) -> str:
     """Smallest preset tier whose duration covers the given span (seconds)."""
@@ -764,6 +785,7 @@ class TimeWindow:
     start: float | None       # custom → start epoch; preset → None
     end: float | None
     is_custom: bool
+    bucket: str = "auto"      # calendar bucket for volume series: auto|hour|day|week
 
 
 def _validate_custom_range(start: int, end: int) -> None:
@@ -785,12 +807,40 @@ def _validate_custom_range(start: int, end: int) -> None:
         )
 
 
+def _bucketed_window(raw_start: float, raw_end: float, bucket: str) -> TimeWindow:
+    """Build a TimeWindow whose volume series snaps to KST calendar buckets.
+
+    The query window is widened so it covers whole buckets: start floors to the
+    bucket containing raw_start, end ceils past the bucket containing raw_end so
+    the current (in-progress) bucket is included.
+    """
+    bsec = BUCKET_SECONDS[bucket]
+    aligned_start = _align_down_kst(raw_start, bucket)
+    aligned_end = _align_down_kst(raw_end, bucket) + bsec
+    bstep = f"{bsec}s"
+    return TimeWindow(
+        promql_window=f"{int(raw_end - aligned_start)}s",
+        step=bstep,
+        volume_step=bstep,
+        volume_window=BUCKET_WINDOW[bucket],
+        eval_time=float(raw_end),
+        start=float(aligned_start),
+        end=float(aligned_end),
+        is_custom=True,
+        bucket=bucket,
+    )
+
+
 def resolve_time_window(
     time_range: str = Query(
         "1h", alias="range", description="Preset range: 15m, 1h, 6h, 24h, 7d, 30d, 60d"
     ),
     start: int | None = Query(None, description="Custom range start (epoch seconds)"),
     end: int | None = Query(None, description="Custom range end (epoch seconds)"),
+    bucket: str = Query(
+        "auto",
+        description="Calendar bucket for volume series: auto, hour, day, week",
+    ),
 ) -> TimeWindow:
     if start is not None or end is not None:
         if start is None or end is None:
@@ -799,6 +849,8 @@ def resolve_time_window(
                 detail="both start and end are required for a custom range",
             )
         _validate_custom_range(start, end)
+        if bucket in VALID_BUCKETS:
+            return _bucketed_window(float(start), float(end), bucket)
         span = end - start
         tier = _tier_for_span(span)
         vstep, vwindow = RANGE_VOLUME[tier]
@@ -814,6 +866,9 @@ def resolve_time_window(
         )
     if time_range not in VALID_RANGES:
         time_range = "1h"
+    if bucket in VALID_BUCKETS:
+        now = time.time()
+        return _bucketed_window(now - _TIER_SECONDS[time_range], now, bucket)
     vstep, vwindow = RANGE_VOLUME[time_range]
     return TimeWindow(
         promql_window=time_range,
@@ -967,6 +1022,29 @@ def _extract_timeseries(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         except (ValueError, TypeError):
             points.append({"timestamp": int(ts), "value": 0.0})
     return points
+
+
+def _bucket_points(
+    points: list[dict[str, Any]], tw: TimeWindow
+) -> list[dict[str, Any]]:
+    """Re-label calendar-bucketed volume points to the bucket's start time.
+
+    Prometheus samples increase(metric[bucket]) at each bucket boundary, so a
+    sample at time T covers (T-bucket, T]. We shift the timestamp back by one
+    bucket so it marks the period start, and drop the leading sample whose
+    window falls entirely before the requested range.
+    """
+    if tw.bucket not in VALID_BUCKETS or tw.start is None:
+        return points
+    bsec = BUCKET_SECONDS[tw.bucket]
+    start = int(tw.start)
+    out = []
+    for p in points:
+        bucket_start = int(p["timestamp"]) - bsec
+        if bucket_start < start:
+            continue
+        out.append({"timestamp": bucket_start, "value": p["value"]})
+    return out
 
 
 @router.get("/metrics/summary")
@@ -1253,7 +1331,7 @@ async def metrics_requests_total(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
-    return _extract_timeseries(results)
+    return _bucket_points(_extract_timeseries(results), tw)
 
 
 # ── LLM Metrics ────────────────────────────────────────────────────────────
@@ -1352,8 +1430,8 @@ async def llm_metrics_tokens(
         )
 
     return {
-        "prompt": _extract_timeseries(prompt_results),
-        "completion": _extract_timeseries(completion_results),
+        "prompt": _bucket_points(_extract_timeseries(prompt_results), tw),
+        "completion": _bucket_points(_extract_timeseries(completion_results), tw),
     }
 
 
@@ -1579,8 +1657,8 @@ async def llm_metrics_errors(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
 
-    success_points = _extract_timeseries(success_results)
-    error_points = _extract_timeseries(error_results)
+    success_points = _bucket_points(_extract_timeseries(success_results), tw)
+    error_points = _bucket_points(_extract_timeseries(error_results), tw)
 
     error_map = {p["timestamp"]: p["value"] for p in error_points}
     combined = []
@@ -1613,4 +1691,4 @@ async def llm_metrics_requests_total(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
-    return _extract_timeseries(results)
+    return _bucket_points(_extract_timeseries(results), tw)

@@ -2026,6 +2026,86 @@ class TestResolveTimeWindow:
         assert exc.value.status_code == 400
 
 
+class TestBucketWindow:
+    def test_align_down_kst_hour_day_week(self):
+        from datetime import datetime, timedelta, timezone
+        from app.routers.gateway import _align_down_kst, _KST_OFFSET
+
+        kst = timezone(timedelta(hours=9))
+        # Wednesday 2026-06-17 03:05 KST
+        t = datetime(2026, 6, 17, 3, 5, tzinfo=kst).timestamp()
+
+        hour = _align_down_kst(t, "hour")
+        assert hour % 3600 == 0
+        assert datetime.fromtimestamp(hour, kst).strftime("%H:%M") == "03:00"
+
+        day = _align_down_kst(t, "day")
+        assert (day + _KST_OFFSET) % 86400 == 0  # KST midnight
+        assert datetime.fromtimestamp(day, kst).strftime("%Y-%m-%d %H:%M") == "2026-06-17 00:00"
+
+        week = _align_down_kst(t, "week")
+        wk = datetime.fromtimestamp(week, kst)
+        assert wk.strftime("%H:%M") == "00:00"
+        assert wk.weekday() == 0  # Monday
+        assert wk.strftime("%Y-%m-%d") == "2026-06-15"
+
+    def test_resolve_preset_with_day_bucket(self):
+        from app.routers.gateway import resolve_time_window, _KST_OFFSET
+
+        tw = resolve_time_window(time_range="30d", start=None, end=None, bucket="day")
+        assert tw.bucket == "day"
+        assert tw.is_custom is True
+        assert tw.volume_step == "86400s"
+        assert tw.step == "86400s"
+        assert tw.volume_window == "1d"
+        # start floors to a KST midnight; end ceils a whole number of days past it
+        assert (int(tw.start) + _KST_OFFSET) % 86400 == 0
+        assert (int(tw.end) - int(tw.start)) % 86400 == 0
+
+    def test_resolve_custom_with_week_bucket_aligns_monday(self):
+        from datetime import datetime, timedelta, timezone
+        from app.routers.gateway import resolve_time_window
+
+        kst = timezone(timedelta(hours=9))
+        start = int(datetime(2026, 5, 6, 12, 0, tzinfo=kst).timestamp())  # Wed
+        end = int(datetime(2026, 6, 3, 12, 0, tzinfo=kst).timestamp())    # Wed
+        tw = resolve_time_window(time_range="1h", start=start, end=end, bucket="week")
+        assert tw.bucket == "week"
+        assert tw.volume_step == "604800s"
+        assert datetime.fromtimestamp(tw.start, kst).weekday() == 0  # Monday
+        assert (int(tw.end) - int(tw.start)) % 604800 == 0
+
+    def test_invalid_bucket_falls_back_to_auto(self):
+        from app.routers.gateway import resolve_time_window
+
+        tw = resolve_time_window(time_range="6h", start=None, end=None, bucket="nope")
+        assert tw.bucket == "auto"
+        assert tw.volume_window == "30m"  # auto behavior preserved
+
+    def test_bucket_points_shifts_and_drops_leading(self):
+        from app.routers.gateway import _bucketed_window, _bucket_points
+
+        tw = _bucketed_window(1_700_000_000.0, 1_700_000_000.0 + 3 * 86400, "day")
+        start = int(tw.start)
+        raw = [
+            {"timestamp": start, "value": 1.0},               # leading: window before range → dropped
+            {"timestamp": start + 86400, "value": 2.0},       # → bucket starting at `start`
+            {"timestamp": start + 2 * 86400, "value": 3.0},   # → bucket starting at start+1d
+        ]
+        out = _bucket_points(raw, tw)
+        assert out == [
+            {"timestamp": start, "value": 2.0},
+            {"timestamp": start + 86400, "value": 3.0},
+        ]
+
+    def test_bucket_points_noop_for_auto(self):
+        from app.routers.gateway import resolve_time_window, _bucket_points
+
+        tw = resolve_time_window(time_range="1h", start=None, end=None)
+        pts = [{"timestamp": 100, "value": 1.0}]
+        assert _bucket_points(pts, tw) == pts
+
+
 class TestMetricsCustomRange:
     async def test_summary_custom_passes_eval_time(self, client, admin_token):
         scalar = [{"value": [1000, "5"]}]

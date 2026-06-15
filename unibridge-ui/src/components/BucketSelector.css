@@ -1,0 +1,37 @@
+/* Granularity toggle for volume/bar charts. Self-contained so it styles
+   correctly on the Dashboard (which does not import Monitoring.css). */
+
+.bucket-toggle {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.bucket-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+  border: none;
+  border-right: 1px solid var(--border-default);
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.bucket-btn:last-child {
+  border-right: none;
+}
+
+.bucket-btn:hover {
+  color: var(--text-secondary);
+}
+
+.bucket-btn--active {
+  background: var(--text-primary);
+  color: var(--text-inverse);
+}

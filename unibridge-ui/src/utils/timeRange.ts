@@ -32,3 +32,20 @@ export function selectionKey(sel: TimeSelection): string {
 export function selectionSpanSeconds(sel: TimeSelection): number {
   return sel.kind === 'preset' ? PRESET_SECONDS[sel.value] ?? 3600 : sel.end - sel.start;
 }
+
+/**
+ * Calendar bucket granularity for volume/bar charts. `auto` keeps the legacy
+ * range-derived stepping; hour/day/week snap bars to KST calendar boundaries.
+ */
+export const BUCKETS = ['auto', 'hour', 'day', 'week'] as const;
+export type Bucket = (typeof BUCKETS)[number];
+
+/** Query param for bucketed endpoints; omitted (no override) when auto. */
+export function bucketParam(bucket: Bucket): Record<string, string> {
+  return bucket === 'auto' ? {} : { bucket };
+}
+
+/** Stable react-query key fragment for a bucket. */
+export function bucketKey(bucket: Bucket): string {
+  return `bucket:${bucket}`;
+}
