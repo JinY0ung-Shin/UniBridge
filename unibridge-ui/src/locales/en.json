@@ -403,6 +403,13 @@
     "clear": "Clear custom range",
     "invalid": "Start must be before end, span at least 60 seconds, and end cannot be in the future."
   },
+  "bucket": {
+    "label": "Bucket",
+    "auto": "Auto",
+    "hour": "Hourly",
+    "day": "Daily",
+    "week": "Weekly"
+  },
   "gatewayMonitoring": {
     "title": "Gateway Monitoring",
     "subtitle": "Real-time API traffic and performance metrics",

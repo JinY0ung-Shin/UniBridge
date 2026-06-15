@@ -85,6 +85,17 @@ export function formatChartTimestamp(epochSeconds: number, spanSeconds: number):
   return `${p.hour}:${p.minute}`;
 }
 
+/** epoch seconds (bucket start) → KST label for a calendar bucket bar. */
+export function formatBucketLabel(
+  epochSeconds: number,
+  bucket: 'hour' | 'day' | 'week',
+): string {
+  const p = kstParts(epochSeconds);
+  if (bucket === 'hour') return `${Number(p.month)}/${Number(p.day)} ${p.hour}h`;
+  if (bucket === 'week') return `${Number(p.month)}/${Number(p.day)}~`;
+  return `${Number(p.month)}/${Number(p.day)}`;
+}
+
 /** Two epochs → "M/D HH:mm~M/D HH:mm" chip text in KST. */
 export function formatKstChip(startSeconds: number, endSeconds: number): string {
   const s = kstParts(startSeconds);

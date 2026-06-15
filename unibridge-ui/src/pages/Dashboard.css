@@ -130,6 +130,12 @@
   margin-bottom: 4px;
 }
 
+.section-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .section-link {
   font-size: 13px;
   font-weight: 500;

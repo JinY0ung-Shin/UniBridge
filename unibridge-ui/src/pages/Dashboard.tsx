@@ -1,14 +1,21 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer,
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
-import { getHealth, getAdminDatabases, getMetricsSummary, getMetricsRequests, getLlmSummary, getLlmTokens, type DatabaseHealth } from '../api/client';
+import { getHealth, getAdminDatabases, getMetricsSummary, getMetricsRequests, getMetricsRequestsTotal, getLlmSummary, getLlmTokens, type DatabaseHealth } from '../api/client';
 import { usePermissions } from '../components/usePermissions';
 import { useChartTheme } from '../components/useChartTheme';
+import BucketSelector from '../components/BucketSelector';
+import { type Bucket, type TimeSelection, bucketKey } from '../utils/timeRange';
+import { formatBucketLabel } from '../utils/time';
 import './Dashboard.css';
+
+const BUCKET_RANGE: Record<Exclude<Bucket, 'auto'>, string> = { hour: '24h', day: '30d', week: '60d' };
+const dashSel = (b: Bucket): TimeSelection => ({ kind: 'preset', value: b === 'auto' ? '1h' : BUCKET_RANGE[b] });
 
 interface DashboardDbEntry {
   alias: string;
@@ -25,6 +32,8 @@ function Dashboard() {
   const { permissions } = usePermissions();
   const chartColors = useChartTheme();
   const canViewMonitoring = permissions.includes('gateway.monitoring.read');
+  const [gwBucket, setGwBucket] = useState<Bucket>('auto');
+  const [llmBucket, setLlmBucket] = useState<Bucket>('auto');
 
   const healthQuery = useQuery({
     queryKey: ['health'],
@@ -48,7 +57,14 @@ function Dashboard() {
     queryKey: ['dashboard-gw-requests'],
     queryFn: () => getMetricsRequests(),
     refetchInterval: 30_000,
-    enabled: canViewMonitoring,
+    enabled: canViewMonitoring && gwBucket === 'auto',
+  });
+
+  const gwVolumeQuery = useQuery({
+    queryKey: ['dashboard-gw-volume', bucketKey(gwBucket)],
+    queryFn: () => getMetricsRequestsTotal(dashSel(gwBucket), undefined, undefined, gwBucket),
+    refetchInterval: 30_000,
+    enabled: canViewMonitoring && gwBucket !== 'auto',
   });
 
   const llmSummaryQuery = useQuery({
@@ -59,8 +75,8 @@ function Dashboard() {
   });
 
   const llmTokensQuery = useQuery({
-    queryKey: ['dashboard-llm-tokens'],
-    queryFn: () => getLlmTokens(),
+    queryKey: ['dashboard-llm-tokens', bucketKey(llmBucket)],
+    queryFn: () => getLlmTokens(dashSel(llmBucket), llmBucket),
     refetchInterval: 30_000,
     enabled: canViewMonitoring,
   });
@@ -140,7 +156,10 @@ function Dashboard() {
         <>
           <div className="section-header">
             <h2 className="section-title">{t('dashboard.gatewayMonitoring')}</h2>
-            <Link to="/gateway/monitoring" className="section-link">{t('dashboard.viewDetails')}</Link>
+            <div className="section-header__actions">
+              <BucketSelector value={gwBucket} onChange={setGwBucket} />
+              <Link to="/gateway/monitoring" className="section-link">{t('dashboard.viewDetails')}</Link>
+            </div>
           </div>
           {gwSummaryQuery.isLoading && (
             <div className="loading-message">{t('gatewayMonitoring.loadingMetrics')}</div>
@@ -166,22 +185,42 @@ function Dashboard() {
                   <div className="summary-card__label">{t('gatewayMonitoring.avgLatency')}</div>
                 </div>
               </div>
-              {(gwRequestsQuery.data ?? []).length > 0 && (
-                <div className="dashboard-mini-chart">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={(gwRequestsQuery.data ?? []).map((p) => ({ time: formatTime(p.timestamp), rps: p.value }))}>
-                      <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                      <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
-                      <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
-                      <Tooltip
-                        contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                        labelStyle={{ color: chartColors.axis }}
-                        itemStyle={{ color: chartColors.textSecondary }}
-                      />
-                      <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name="req/s" />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
+              {gwBucket === 'auto' ? (
+                (gwRequestsQuery.data ?? []).length > 0 && (
+                  <div className="dashboard-mini-chart">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={(gwRequestsQuery.data ?? []).map((p) => ({ time: formatTime(p.timestamp), rps: p.value }))}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
+                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <Tooltip
+                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
+                          labelStyle={{ color: chartColors.axis }}
+                          itemStyle={{ color: chartColors.textSecondary }}
+                        />
+                        <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name="req/s" />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )
+              ) : (
+                (gwVolumeQuery.data ?? []).length > 0 && (
+                  <div className="dashboard-mini-chart">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={(gwVolumeQuery.data ?? []).map((p) => ({ time: formatBucketLabel(p.timestamp, gwBucket), requests: Math.round(p.value) }))}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
+                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <Tooltip
+                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
+                          labelStyle={{ color: chartColors.axis }}
+                          itemStyle={{ color: chartColors.textSecondary }}
+                        />
+                        <Bar dataKey="requests" fill={chartColors.blue} name="Requests" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )
               )}
             </>
           )}
@@ -193,7 +232,10 @@ function Dashboard() {
         <>
           <div className="section-header">
             <h2 className="section-title">{t('dashboard.llmMonitoring')}</h2>
-            <Link to="/llm/monitoring" className="section-link">{t('dashboard.viewDetails')}</Link>
+            <div className="section-header__actions">
+              <BucketSelector value={llmBucket} onChange={setLlmBucket} />
+              <Link to="/llm/monitoring" className="section-link">{t('dashboard.viewDetails')}</Link>
+            </div>
           </div>
           {llmSummaryQuery.isLoading && (
             <div className="loading-message">{t('llmMonitoring.loadingMetrics')}</div>
@@ -224,22 +266,42 @@ function Dashboard() {
               {(llmTokensQuery.data?.prompt ?? []).length > 0 && (
                 <div className="dashboard-mini-chart">
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={(llmTokensQuery.data?.prompt ?? []).map((p, i) => ({
-                      time: formatTime(p.timestamp),
-                      prompt: Math.round(p.value),
-                      completion: Math.round(llmTokensQuery.data?.completion?.[i]?.value ?? 0),
-                    }))}>
-                      <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                      <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
-                      <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
-                      <Tooltip
-                        contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
-                        labelStyle={{ color: chartColors.axis }}
-                        itemStyle={{ color: chartColors.textSecondary }}
-                      />
-                      <Line type="monotone" dataKey="prompt" stroke={chartColors.blue} strokeWidth={2} dot={false} name="Prompt" />
-                      <Line type="monotone" dataKey="completion" stroke={chartColors.green} strokeWidth={2} dot={false} name="Completion" />
-                    </LineChart>
+                    {llmBucket === 'auto' ? (
+                      <LineChart data={(llmTokensQuery.data?.prompt ?? []).map((p, i) => ({
+                        time: formatTime(p.timestamp),
+                        prompt: Math.round(p.value),
+                        completion: Math.round(llmTokensQuery.data?.completion?.[i]?.value ?? 0),
+                      }))}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
+                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <Tooltip
+                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
+                          labelStyle={{ color: chartColors.axis }}
+                          itemStyle={{ color: chartColors.textSecondary }}
+                        />
+                        <Line type="monotone" dataKey="prompt" stroke={chartColors.blue} strokeWidth={2} dot={false} name="Prompt" />
+                        <Line type="monotone" dataKey="completion" stroke={chartColors.green} strokeWidth={2} dot={false} name="Completion" />
+                      </LineChart>
+                    ) : (
+                      <BarChart data={(llmTokensQuery.data?.prompt ?? []).map((p, i) => ({
+                        time: formatBucketLabel(p.timestamp, llmBucket),
+                        prompt: Math.round(p.value),
+                        completion: Math.round(llmTokensQuery.data?.completion?.[i]?.value ?? 0),
+                      }))}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
+                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <Tooltip
+                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
+                          labelStyle={{ color: chartColors.axis }}
+                          itemStyle={{ color: chartColors.textSecondary }}
+                        />
+                        <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
+                        <Bar dataKey="prompt" stackId="tokens" fill={chartColors.blue} name="Prompt" />
+                        <Bar dataKey="completion" stackId="tokens" fill={chartColors.green} name="Completion" />
+                      </BarChart>
+                    )}
                   </ResponsiveContainer>
                 </div>
               )}

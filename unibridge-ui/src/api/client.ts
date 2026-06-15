@@ -1,7 +1,7 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import keycloak from '../keycloak';
-import { type TimeSelection, DEFAULT_SELECTION, timeParams } from '../utils/timeRange';
-export type { TimeSelection } from '../utils/timeRange';
+import { type TimeSelection, type Bucket, DEFAULT_SELECTION, timeParams, bucketParam } from '../utils/timeRange';
+export type { TimeSelection, Bucket } from '../utils/timeRange';
 
 const API_BASE = '/_api';
 
@@ -631,9 +631,10 @@ export async function getMetricsRequestsTotal(
   sel: TimeSelection = DEFAULT_SELECTION,
   route?: string,
   consumer?: string,
+  bucket: Bucket = 'auto',
 ): Promise<TimeSeriesPoint[]> {
   const { data } = await client.get('/admin/gateway/metrics/requests-total', {
-    params: { ...timeParams(sel), route, consumer },
+    params: { ...timeParams(sel), ...bucketParam(bucket), route, consumer },
   });
   return data;
 }
@@ -707,8 +708,13 @@ export async function getLlmSummary(sel: TimeSelection = DEFAULT_SELECTION): Pro
   return data;
 }
 
-export async function getLlmTokens(sel: TimeSelection = DEFAULT_SELECTION): Promise<LlmTokenSeries> {
-  const { data } = await client.get('/admin/gateway/metrics/llm/tokens', { params: { ...timeParams(sel) } });
+export async function getLlmTokens(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  bucket: Bucket = 'auto',
+): Promise<LlmTokenSeries> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/tokens', {
+    params: { ...timeParams(sel), ...bucketParam(bucket) },
+  });
   return data;
 }
 
@@ -722,13 +728,23 @@ export async function getLlmTopKeys(sel: TimeSelection = DEFAULT_SELECTION): Pro
   return data;
 }
 
-export async function getLlmErrors(sel: TimeSelection = DEFAULT_SELECTION): Promise<LlmErrorPoint[]> {
-  const { data } = await client.get('/admin/gateway/metrics/llm/errors', { params: { ...timeParams(sel) } });
+export async function getLlmErrors(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  bucket: Bucket = 'auto',
+): Promise<LlmErrorPoint[]> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/errors', {
+    params: { ...timeParams(sel), ...bucketParam(bucket) },
+  });
   return data;
 }
 
-export async function getLlmRequestsTotal(sel: TimeSelection = DEFAULT_SELECTION): Promise<TimeSeriesPoint[]> {
-  const { data } = await client.get('/admin/gateway/metrics/llm/requests-total', { params: { ...timeParams(sel) } });
+export async function getLlmRequestsTotal(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  bucket: Bucket = 'auto',
+): Promise<TimeSeriesPoint[]> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/requests-total', {
+    params: { ...timeParams(sel), ...bucketParam(bucket) },
+  });
   return data;
 }
 

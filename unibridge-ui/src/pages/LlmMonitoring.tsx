@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -12,13 +12,16 @@ import {
   getLlmTopKeys,
   getLlmErrors,
   getLlmRequestsTotal,
+  getApiKeys,
 } from '../api/client';
 import { useChartTheme } from '../components/useChartTheme';
+import { usePermissions } from '../components/usePermissions';
 import './Monitoring.css';
 import './LlmMonitoring.css';
 import TimeRangeSelector from '../components/TimeRangeSelector';
-import { type TimeSelection, selectionKey, selectionSpanSeconds } from '../utils/timeRange';
-import { formatChartTimestamp } from '../utils/time';
+import BucketSelector from '../components/BucketSelector';
+import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey } from '../utils/timeRange';
+import { formatChartTimestamp, formatBucketLabel } from '../utils/time';
 
 const LITELLM_ADMIN_URL = window.__RUNTIME_CONFIG__?.LITELLM_ADMIN_URL || import.meta.env.VITE_LITELLM_ADMIN_URL || 'https://localhost:4000/ui';
 
@@ -34,11 +37,15 @@ function formatTokens(value: number): string {
 
 function LlmMonitoring() {
   const { t } = useTranslation();
+  const { permissions, loaded: permissionsLoaded } = usePermissions();
   const [selection, setSelection] = useState<TimeSelection>({ kind: 'preset', value: '1h' });
   const selKey = selectionKey(selection);
   const span = selectionSpanSeconds(selection);
   const refetchInterval = selection.kind === 'custom' ? false : 30_000;
   const rangeLabel = selection.kind === 'preset' ? selection.value : t('llmMonitoring.customRange');
+  const [bucket, setBucket] = useState<Bucket>('auto');
+  const volumeLabel = (ts: number) =>
+    bucket === 'auto' ? formatChartTimestamp(ts, span) : formatBucketLabel(ts, bucket);
   const chartColors = useChartTheme();
 
   const summaryQuery = useQuery({
@@ -48,8 +55,8 @@ function LlmMonitoring() {
   });
 
   const tokensQuery = useQuery({
-    queryKey: ['llm-tokens', selKey],
-    queryFn: () => getLlmTokens(selection),
+    queryKey: ['llm-tokens', selKey, bucketKey(bucket)],
+    queryFn: () => getLlmTokens(selection, bucket),
     refetchInterval,
   });
 
@@ -66,27 +73,45 @@ function LlmMonitoring() {
   });
 
   const errorsQuery = useQuery({
-    queryKey: ['llm-errors', selKey],
-    queryFn: () => getLlmErrors(selection),
+    queryKey: ['llm-errors', selKey, bucketKey(bucket)],
+    queryFn: () => getLlmErrors(selection, bucket),
     refetchInterval,
   });
 
   const requestsTotalQuery = useQuery({
-    queryKey: ['llm-requests-total', selKey],
-    queryFn: () => getLlmRequestsTotal(selection),
+    queryKey: ['llm-requests-total', selKey, bucketKey(bucket)],
+    queryFn: () => getLlmRequestsTotal(selection, bucket),
     refetchInterval,
   });
+
+  // Map API key name → its description, to surface the key's purpose on hover
+  // in the Top API Keys table. Requires apikeys.read; degrades to no tooltip.
+  const canReadApiKeys = permissionsLoaded && permissions.includes('apikeys.read');
+  const apiKeysQuery = useQuery({
+    queryKey: ['api-keys', 'llm-monitoring-descriptions'],
+    queryFn: getApiKeys,
+    staleTime: 5 * 60 * 1000,
+    refetchInterval: false,
+    enabled: canReadApiKeys,
+  });
+  const apiKeyDescriptions = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const k of apiKeysQuery.data ?? []) {
+      if (k.description) map[k.name] = k.description;
+    }
+    return map;
+  }, [apiKeysQuery.data]);
 
   const summary = summaryQuery.data;
   const tokenData = tokensQuery.data;
   const tokenChartData = (tokenData?.prompt ?? []).map((p, i) => ({
-    time: formatChartTimestamp(p.timestamp, span),
+    time: volumeLabel(p.timestamp),
     prompt: Math.round(p.value),
     completion: Math.round(tokenData?.completion?.[i]?.value ?? 0),
   }));
 
   const errorChartData = (errorsQuery.data ?? []).map((p) => ({
-    time: formatChartTimestamp(p.timestamp, span),
+    time: volumeLabel(p.timestamp),
     success: p.success,
     error: p.error,
   }));
@@ -119,6 +144,7 @@ function LlmMonitoring() {
             </svg>
           </a>
           <TimeRangeSelector value={selection} onChange={setSelection} />
+          <BucketSelector value={bucket} onChange={setBucket} />
         </div>
       </div>
 
@@ -180,7 +206,7 @@ function LlmMonitoring() {
         {(requestsTotalQuery.data ?? []).length > 0 ? (
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={(requestsTotalQuery.data ?? []).map((p) => ({ time: formatChartTimestamp(p.timestamp, span), requests: Math.round(p.value) }))}>
+              <BarChart data={(requestsTotalQuery.data ?? []).map((p) => ({ time: volumeLabel(p.timestamp), requests: Math.round(p.value) }))}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
                 <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
@@ -261,7 +287,7 @@ function LlmMonitoring() {
               <tbody>
                 {(topKeysQuery.data ?? []).map((k) => (
                   <tr key={k.api_key}>
-                    <td className="cell-alias">
+                    <td className="cell-alias" title={apiKeyDescriptions[k.api_key] || undefined}>
                       {k.api_key}
                     </td>
                     <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>

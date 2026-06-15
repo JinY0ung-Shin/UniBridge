@@ -17,6 +17,14 @@ vi.mock('../api/client', () => ({
   getLlmTopKeys: vi.fn(),
   getLlmErrors: vi.fn(),
   getLlmRequestsTotal: vi.fn(),
+  getApiKeys: vi.fn(),
+}));
+
+// Stable across vi.resetModules() so the dynamically re-imported page sees a
+// loaded permission set (the real PermissionContext would be a fresh, empty
+// instance after a module reset, disabling the api-keys lookup).
+vi.mock('../components/usePermissions', () => ({
+  usePermissions: () => ({ permissions: ['apikeys.read', 'gateway.monitoring.read'], loaded: true }),
 }));
 
 import { screen, waitFor } from '@testing-library/react';
@@ -29,6 +37,7 @@ import {
   getLlmSummary,
   getLlmTokens,
   getLlmTopKeys,
+  getApiKeys,
 } from '../api/client';
 import { renderWithProviders } from './helpers';
 
@@ -38,6 +47,7 @@ const mockedGetLlmByModel = vi.mocked(getLlmByModel);
 const mockedGetLlmTopKeys = vi.mocked(getLlmTopKeys);
 const mockedGetLlmErrors = vi.mocked(getLlmErrors);
 const mockedGetLlmRequestsTotal = vi.mocked(getLlmRequestsTotal);
+const mockedGetApiKeys = vi.mocked(getApiKeys);
 
 describe('LlmMonitoring', () => {
   beforeEach(() => {
@@ -54,6 +64,7 @@ describe('LlmMonitoring', () => {
     mockedGetLlmTopKeys.mockResolvedValue([]);
     mockedGetLlmErrors.mockResolvedValue([]);
     mockedGetLlmRequestsTotal.mockResolvedValue([]);
+    mockedGetApiKeys.mockResolvedValue([]);
     window.__RUNTIME_CONFIG__ = {
       ...window.__RUNTIME_CONFIG__,
       LITELLM_ADMIN_URL: 'https://localhost:4000/ui',
@@ -139,5 +150,22 @@ describe('LlmMonitoring', () => {
     expect(screen.getAllByText('2.0K').length).toBeGreaterThan(0);
     expect(screen.getAllByText('5.0K').length).toBeGreaterThan(0);
     expect(screen.getAllByText('25').length).toBeGreaterThan(0);
+  });
+
+  it('shows the API key description as a tooltip on its name', async () => {
+    mockedGetLlmTopKeys.mockResolvedValue([
+      { api_key: 'customer-portal', input_tokens: 0, output_tokens: 0, tokens: 0, requests: 0 },
+    ]);
+    mockedGetApiKeys.mockResolvedValue([
+      { name: 'customer-portal', description: 'Customer support chatbot', api_key: null, key_created: true, allowed_databases: [], allowed_routes: [], rate_limit_per_minute: null, owner: null, created_at: null },
+    ]);
+    const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
+
+    renderWithProviders(<LlmMonitoring />);
+
+    await screen.findByText('customer-portal');
+    await waitFor(() => {
+      expect(screen.getByText('customer-portal').closest('td')).toHaveAttribute('title', 'Customer support chatbot');
+    });
   });
 });

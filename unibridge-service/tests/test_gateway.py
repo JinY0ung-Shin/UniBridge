@@ -1750,6 +1750,46 @@ class TestMetricsRequestsTotal:
         assert kwargs["step"] == "86400s"
         assert "[1d]" in mock.call_args.args[0]
 
+    async def test_day_bucket_uses_completed_range_and_partial_instant(self, client, admin_token):
+        from datetime import datetime, timedelta, timezone
+
+        kst = timezone(timedelta(hours=9))
+        start = int(datetime(2026, 6, 10, 3, 0, tzinfo=kst).timestamp())
+        end = int(datetime(2026, 6, 12, 12, 0, tzinfo=kst).timestamp())
+        aligned_start = int(datetime(2026, 6, 10, 0, 0, tzinfo=kst).timestamp())
+        current_start = int(datetime(2026, 6, 12, 0, 0, tzinfo=kst).timestamp())
+        completed = [{
+            "values": [
+                [aligned_start, "1"],
+                [aligned_start + 86400, "2"],
+                [current_start, "3"],
+            ],
+        }]
+        partial = [{"value": [end, "4"]}]
+        range_mock = AsyncMock(return_value=completed)
+        instant_mock = AsyncMock(return_value=partial)
+
+        with patch("app.routers.gateway.prometheus_client.range_query", range_mock), \
+             patch("app.routers.gateway.prometheus_client.instant_query", instant_mock):
+            resp = await client.get(
+                f"/admin/gateway/metrics/requests-total?start={start}&end={end}&bucket=day",
+                headers=auth_header(admin_token),
+            )
+
+        assert resp.status_code == 200
+        assert resp.json() == [
+            {"timestamp": aligned_start, "value": 2.0},
+            {"timestamp": aligned_start + 86400, "value": 3.0},
+            {"timestamp": current_start, "value": 4.0},
+        ]
+        _, range_kwargs = range_mock.call_args
+        assert range_kwargs["start"] == float(aligned_start)
+        assert range_kwargs["end"] == float(current_start)
+        assert range_kwargs["step"] == "86400s"
+        assert "[1d]" in range_mock.call_args.args[0]
+        assert instant_mock.call_args.kwargs["eval_time"] == float(end)
+        assert "[43200s]" in instant_mock.call_args.args[0]
+
     async def test_prometheus_error_returns_502(self, client, admin_token):
         with patch(
             "app.routers.gateway.prometheus_client.range_query",
@@ -2026,6 +2066,87 @@ class TestResolveTimeWindow:
         assert exc.value.status_code == 400
 
 
+class TestBucketWindow:
+    def test_align_down_kst_hour_day_week(self):
+        from datetime import datetime, timedelta, timezone
+        from app.routers.gateway import _align_down_kst, _KST_OFFSET
+
+        kst = timezone(timedelta(hours=9))
+        # Wednesday 2026-06-17 03:05 KST
+        t = datetime(2026, 6, 17, 3, 5, tzinfo=kst).timestamp()
+
+        hour = _align_down_kst(t, "hour")
+        assert hour % 3600 == 0
+        assert datetime.fromtimestamp(hour, kst).strftime("%H:%M") == "03:00"
+
+        day = _align_down_kst(t, "day")
+        assert (day + _KST_OFFSET) % 86400 == 0  # KST midnight
+        assert datetime.fromtimestamp(day, kst).strftime("%Y-%m-%d %H:%M") == "2026-06-17 00:00"
+
+        week = _align_down_kst(t, "week")
+        wk = datetime.fromtimestamp(week, kst)
+        assert wk.strftime("%H:%M") == "00:00"
+        assert wk.weekday() == 0  # Monday
+        assert wk.strftime("%Y-%m-%d") == "2026-06-15"
+
+    def test_resolve_preset_with_day_bucket(self):
+        import time as _t
+        from app.routers.gateway import resolve_time_window, _KST_OFFSET
+
+        tw = resolve_time_window(time_range="30d", start=None, end=None, bucket="day")
+        assert tw.bucket == "day"
+        assert tw.is_custom is True
+        assert tw.volume_step == "86400s"
+        assert tw.step == "86400s"
+        assert tw.volume_window == "1d"
+        # start floors to a KST midnight; end remains the real eval time, not a future midnight
+        assert (int(tw.start) + _KST_OFFSET) % 86400 == 0
+        assert tw.end <= _t.time() + 1
+
+    def test_resolve_custom_with_week_bucket_aligns_monday(self):
+        from datetime import datetime, timedelta, timezone
+        from app.routers.gateway import resolve_time_window
+
+        kst = timezone(timedelta(hours=9))
+        start = int(datetime(2026, 5, 6, 12, 0, tzinfo=kst).timestamp())  # Wed
+        end = int(datetime(2026, 6, 3, 12, 0, tzinfo=kst).timestamp())    # Wed
+        tw = resolve_time_window(time_range="1h", start=start, end=end, bucket="week")
+        assert tw.bucket == "week"
+        assert tw.volume_step == "604800s"
+        assert datetime.fromtimestamp(tw.start, kst).weekday() == 0  # Monday
+        assert tw.end == float(end)
+
+    def test_invalid_bucket_falls_back_to_auto(self):
+        from app.routers.gateway import resolve_time_window
+
+        tw = resolve_time_window(time_range="6h", start=None, end=None, bucket="nope")
+        assert tw.bucket == "auto"
+        assert tw.volume_window == "30m"  # auto behavior preserved
+
+    def test_bucket_points_shifts_and_drops_leading(self):
+        from app.routers.gateway import _bucketed_window, _bucket_points
+
+        tw = _bucketed_window(1_700_000_000.0, 1_700_000_000.0 + 3 * 86400, "day")
+        start = int(tw.start)
+        raw = [
+            {"timestamp": start, "value": 1.0},               # leading: window before range → dropped
+            {"timestamp": start + 86400, "value": 2.0},       # → bucket starting at `start`
+            {"timestamp": start + 2 * 86400, "value": 3.0},   # → bucket starting at start+1d
+        ]
+        out = _bucket_points(raw, tw)
+        assert out == [
+            {"timestamp": start, "value": 2.0},
+            {"timestamp": start + 86400, "value": 3.0},
+        ]
+
+    def test_bucket_points_noop_for_auto(self):
+        from app.routers.gateway import resolve_time_window, _bucket_points
+
+        tw = resolve_time_window(time_range="1h", start=None, end=None)
+        pts = [{"timestamp": 100, "value": 1.0}]
+        assert _bucket_points(pts, tw) == pts
+
+
 class TestMetricsCustomRange:
     async def test_summary_custom_passes_eval_time(self, client, admin_token):
         scalar = [{"value": [1000, "5"]}]
@@ -2082,6 +2203,48 @@ class TestLlmMetricsCustomRange:
         assert resp.status_code == 200
         assert mock.call_args.kwargs.get("start") == 1000000.0
         assert mock.call_args.kwargs.get("end") == 1003600.0
+
+    async def test_llm_tokens_day_bucket_appends_partial_bucket(self, client, admin_token):
+        from datetime import datetime, timedelta, timezone
+
+        kst = timezone(timedelta(hours=9))
+        start = int(datetime(2026, 6, 10, 3, 0, tzinfo=kst).timestamp())
+        end = int(datetime(2026, 6, 12, 12, 0, tzinfo=kst).timestamp())
+        aligned_start = int(datetime(2026, 6, 10, 0, 0, tzinfo=kst).timestamp())
+        current_start = int(datetime(2026, 6, 12, 0, 0, tzinfo=kst).timestamp())
+        completed = [{
+            "values": [
+                [aligned_start, "1"],
+                [aligned_start + 86400, "2"],
+                [current_start, "3"],
+            ],
+        }]
+        partial = [{"value": [end, "4"]}]
+        range_mock = AsyncMock(return_value=completed)
+        instant_mock = AsyncMock(return_value=partial)
+
+        with patch("app.routers.gateway.prometheus_client.range_query", range_mock), \
+             patch("app.routers.gateway.prometheus_client.instant_query", instant_mock):
+            resp = await client.get(
+                f"/admin/gateway/metrics/llm/tokens?start={start}&end={end}&bucket=day",
+                headers=auth_header(admin_token),
+            )
+
+        assert resp.status_code == 200
+        expected = [
+            {"timestamp": aligned_start, "value": 2.0},
+            {"timestamp": aligned_start + 86400, "value": 3.0},
+            {"timestamp": current_start, "value": 4.0},
+        ]
+        assert resp.json() == {"prompt": expected, "completion": expected}
+        assert range_mock.call_count == 2
+        assert instant_mock.call_count == 2
+        for call in range_mock.call_args_list:
+            assert call.kwargs["end"] == float(current_start)
+            assert "[1d]" in call.args[0]
+        for call in instant_mock.call_args_list:
+            assert call.kwargs["eval_time"] == float(end)
+            assert "[43200s]" in call.args[0]
 
 
 class TestLabelsHelper:

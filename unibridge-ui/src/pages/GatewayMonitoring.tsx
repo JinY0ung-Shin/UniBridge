@@ -21,8 +21,9 @@ import { usePermissions } from '../components/usePermissions';
 import './Monitoring.css';
 import './GatewayMonitoring.css';
 import TimeRangeSelector from '../components/TimeRangeSelector';
-import { type TimeSelection, selectionKey, selectionSpanSeconds } from '../utils/timeRange';
-import { formatChartTime, formatChartTimestamp } from '../utils/time';
+import BucketSelector from '../components/BucketSelector';
+import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey } from '../utils/timeRange';
+import { formatChartTime, formatChartTimestamp, formatBucketLabel } from '../utils/time';
 
 function BarCell({ value, max, suffix = '' }: { value: number; max: number; suffix?: string }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
@@ -102,6 +103,9 @@ function GatewayMonitoring() {
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
   const [sort, setSort] = useState<{ column: SortColumn; dir: SortDir }>({ column: 'requests', dir: 'desc' });
   const [selectedConsumer, setSelectedConsumer] = useState<string>('');
+  const [bucket, setBucket] = useState<Bucket>('auto');
+  const volumeLabel = (ts: number) =>
+    bucket === 'auto' ? formatChartTimestamp(ts, span) : formatBucketLabel(ts, bucket);
 
   const toggleSort = (column: SortColumn) => {
     setSort((prev) =>
@@ -196,8 +200,8 @@ function GatewayMonitoring() {
   }, [routesComparisonQuery.data]);
 
   const requestsTotalQuery = useQuery({
-    queryKey: ['metrics-requests-total', selKey, selectedConsumer],
-    queryFn: () => getMetricsRequestsTotal(selection, undefined, selectedConsumer || undefined),
+    queryKey: ['metrics-requests-total', selKey, selectedConsumer, bucketKey(bucket)],
+    queryFn: () => getMetricsRequestsTotal(selection, undefined, selectedConsumer || undefined, bucket),
     refetchInterval,
   });
 
@@ -224,8 +228,8 @@ function GatewayMonitoring() {
   });
 
   const routeVolumQuery = useQuery({
-    queryKey: ['metrics-requests-total', selKey, selectedRoute, selectedConsumer],
-    queryFn: () => getMetricsRequestsTotal(selection, selectedRoute!, selectedConsumer || undefined),
+    queryKey: ['metrics-requests-total', selKey, selectedRoute, selectedConsumer, bucketKey(bucket)],
+    queryFn: () => getMetricsRequestsTotal(selection, selectedRoute!, selectedConsumer || undefined, bucket),
     refetchInterval,
     enabled: !!selectedRoute,
   });
@@ -269,12 +273,13 @@ function GatewayMonitoring() {
               >
                 <option value="">{t('gatewayMonitoring.allApiKeys')}</option>
                 {apiKeyOptions.map((k) => (
-                  <option key={k.name} value={k.name}>{k.name}</option>
+                  <option key={k.name} value={k.name} title={k.description || undefined}>{k.name}</option>
                 ))}
               </select>
             </label>
           )}
           <TimeRangeSelector value={selection} onChange={setSelection} />
+          <BucketSelector value={bucket} onChange={setBucket} />
         </div>
       </div>
 
@@ -332,7 +337,7 @@ function GatewayMonitoring() {
         {(requestsTotalQuery.data ?? []).length > 0 ? (
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={(requestsTotalQuery.data ?? []).map((p) => ({ time: formatChartTimestamp(p.timestamp, span), requests: Math.round(p.value) }))}>
+              <BarChart data={(requestsTotalQuery.data ?? []).map((p) => ({ time: volumeLabel(p.timestamp), requests: Math.round(p.value) }))}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
                 <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
@@ -503,7 +508,7 @@ function GatewayMonitoring() {
                 {(routeVolumQuery.data ?? []).length > 0 ? (
                   <div className="chart-container">
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={(routeVolumQuery.data ?? []).map((p) => ({ time: formatChartTimestamp(p.timestamp, span), requests: Math.round(p.value) }))}>
+                      <BarChart data={(routeVolumQuery.data ?? []).map((p) => ({ time: volumeLabel(p.timestamp), requests: Math.round(p.value) }))}>
                         <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
                         <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
