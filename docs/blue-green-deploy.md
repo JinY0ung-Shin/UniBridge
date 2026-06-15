@@ -106,6 +106,11 @@ From `unibridge-service/` (with the **same `ENCRYPTION_KEY`** as the source —
 encrypted credentials are copied verbatim and stay valid only under the same
 key):
 
+Make sure the SQLite source has already been upgraded by the current app (or by
+running `alembic upgrade head`) before copying. The migration script verifies
+that the source `alembic_version` matches the current code's head and stops if
+it does not.
+
 ```bash
 python -m scripts.migrate_sqlite_to_postgres \
   --source sqlite+aiosqlite:///data/meta.db \

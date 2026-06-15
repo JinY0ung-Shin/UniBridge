@@ -21,6 +21,11 @@ What it does
 3. Resets each table's identity/serial sequence to ``max(id)`` so the next
    INSERT in the live app does not collide with a copied primary key.
 
+Before copying, the source SQLite DB must already be upgraded to the current
+Alembic head. The script checks ``alembic_version`` and stops if the source is
+missing migrations, because copying through the current ORM model would bypass
+Alembic's historical data-fix steps.
+
 Encrypted columns (``*_encrypted``) are copied verbatim — they stay valid as
 long as the target deployment uses the **same ``ENCRYPTION_KEY``** as the
 source. Verify this before cutting over, or the app cannot decrypt credentials.
@@ -49,6 +54,9 @@ Caveats
 - **Stop the old app (or quiesce writes) first.** This is a one-shot snapshot
   copy, not a live replica — any row written to SQLite after the copy starts is
   lost. Bring the single-stack deployment down before running, then cut over.
+- **Upgrade the source SQLite DB first.** Run the current app or
+  ``alembic upgrade head`` against the SQLite meta DB before copying. The script
+  refuses a source whose ``alembic_version`` is not the current head.
 - **Same ``ENCRYPTION_KEY``** on the target deployment, or stored credentials
   cannot be decrypted (encrypted columns are copied as-is).
 - Re-running is safe: a non-empty target is refused unless ``--truncate`` wipes
@@ -102,6 +110,28 @@ async def _table_names(engine: AsyncEngine) -> set[str]:
     async with engine.connect() as conn:
         return await conn.run_sync(
             lambda sync_conn: set(inspect(sync_conn).get_table_names())
+        )
+
+
+async def _ensure_source_at_head(engine: AsyncEngine, table_names: set[str]) -> None:
+    if "alembic_version" not in table_names:
+        raise SystemExit(
+            "source has no alembic_version table. Run the current app or "
+            "`alembic upgrade head` against the SQLite meta DB before copying."
+        )
+
+    async with engine.connect() as conn:
+        rows = (
+            await conn.execute(text("SELECT version_num FROM alembic_version"))
+        ).scalars().all()
+
+    if rows != [ALEMBIC_HEAD_REVISION]:
+        current = ", ".join(rows) if rows else "<empty>"
+        raise SystemExit(
+            "source SQLite DB is not at Alembic head "
+            f"(current={current}, expected={ALEMBIC_HEAD_REVISION}). "
+            "Run the current app or `alembic upgrade head` against the SQLite "
+            "meta DB before copying."
         )
 
 
@@ -201,6 +231,7 @@ async def migrate(source: str, target: str, batch_size: int, truncate: bool, dry
         src_tables = await _table_names(src_engine)
         if not src_tables - {"alembic_version"}:
             raise SystemExit(f"source has no data tables: {source}")
+        await _ensure_source_at_head(src_engine, src_tables)
 
         await _ensure_target_schema(tgt_engine)
 
