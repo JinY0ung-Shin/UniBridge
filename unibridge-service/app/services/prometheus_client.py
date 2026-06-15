@@ -12,6 +12,29 @@ logger = logging.getLogger(__name__)
 
 PROM_TIMEOUT = 10.0
 
+# Shared client so every monitoring query reuses pooled keep-alive connections
+# instead of paying a fresh TCP (and TLS) handshake per query. A dashboard load
+# fans out dozens of queries, so per-call client creation dominated latency.
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(
+            timeout=PROM_TIMEOUT,
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=40),
+        )
+    return _client
+
+
+async def aclose() -> None:
+    """Close the shared client. Call on app shutdown."""
+    global _client
+    if _client is not None and not _client.is_closed:
+        await _client.aclose()
+    _client = None
+
 
 def _base_url() -> str:
     return settings.PROMETHEUS_URL.rstrip("/")
@@ -27,10 +50,9 @@ async def instant_query(query: str, eval_time: float | None = None) -> list[dict
     params: dict[str, str] = {"query": query}
     if eval_time is not None:
         params["time"] = str(eval_time)
-    async with httpx.AsyncClient(timeout=PROM_TIMEOUT) as client:
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        data = resp.json()
+    resp = await _get_client().get(url, params=params)
+    resp.raise_for_status()
+    data = resp.json()
     if data.get("status") != "success":
         logger.warning("Prometheus query failed: %s", data)
         return []
@@ -56,15 +78,14 @@ async def range_query(
         end_ts = time.time()
         start_ts = end_ts - _parse_duration(duration)
 
-    async with httpx.AsyncClient(timeout=PROM_TIMEOUT) as client:
-        resp = await client.get(url, params={
-            "query": query,
-            "start": str(start_ts),
-            "end": str(end_ts),
-            "step": step,
-        })
-        resp.raise_for_status()
-        data = resp.json()
+    resp = await _get_client().get(url, params={
+        "query": query,
+        "start": str(start_ts),
+        "end": str(end_ts),
+        "step": step,
+    })
+    resp.raise_for_status()
+    data = resp.json()
     if data.get("status") != "success":
         logger.warning("Prometheus range query failed: %s", data)
         return []

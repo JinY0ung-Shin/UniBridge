@@ -515,6 +515,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Disposing all NAS resources...")
     await nas_manager.dispose_all()
 
+    from app.services import prometheus_client
+    await prometheus_client.aclose()
+
     # Close Keycloak admin client if initialized
     from app.routers.users import _kc_admin
 
