@@ -136,6 +136,31 @@ services:
     networks:
       - apihub-net
 
+  unibridge-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "0.50"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.50"
+    environment:
+      - POSTGRES_DB=unibridge
+      - POSTGRES_USER=unibridge
+      - POSTGRES_PASSWORD=${UNIBRIDGE_DB_PASSWORD:?UNIBRIDGE_DB_PASSWORD is required}
+    volumes:
+      - unibridge-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U unibridge -d unibridge"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - apihub-net
+
   unibridge-service:
     build:
       context: ./unibridge-service
@@ -165,7 +190,7 @@ services:
       - HOST_IP=${HOST_IP:-localhost}
       - KEYCLOAK_PORT=${KEYCLOAK_PORT:-8443}
       - UNIBRIDGE_UI_PORT=${UNIBRIDGE_UI_PORT:-3000}
-      - META_DB_URL=${META_DB_URL}
+      - META_DB_URL=${META_DB_URL:-postgresql+asyncpg://unibridge:${UNIBRIDGE_DB_PASSWORD}@unibridge-db:5432/unibridge}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
       - JWT_SECRET=${JWT_SECRET}
       - ENABLE_DEV_TOKEN_ENDPOINT=${ENABLE_DEV_TOKEN_ENDPOINT:-false}
@@ -204,6 +229,8 @@ services:
       - REQUESTS_CA_BUNDLE=${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}
       - SSL_CERT_FILE=${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}
     depends_on:
+      unibridge-db:
+        condition: service_healthy
       keycloak:
         condition: service_healthy
       litellm:
@@ -483,3 +510,4 @@ volumes:
   prometheus-data:
   keycloak-db-data:
   litellm-db-data:
+  unibridge-db-data:

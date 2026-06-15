@@ -36,7 +36,7 @@ services:
       - HOST_IP=${HOST_IP:-localhost}
       - KEYCLOAK_PORT=${KEYCLOAK_PORT:-8443}
       - UNIBRIDGE_UI_PORT=${UNIBRIDGE_EDGE_PORT:-${PUBLIC_UNIBRIDGE_UI_PORT:-3000}}
-      - META_DB_URL=${META_DB_URL}
+      - META_DB_URL=${META_DB_URL:-postgresql+asyncpg://unibridge:${UNIBRIDGE_DB_PASSWORD}@unibridge-db:5432/unibridge}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
       - JWT_SECRET=${JWT_SECRET}
       - ENABLE_DEV_TOKEN_ENDPOINT=${ENABLE_DEV_TOKEN_ENDPOINT:-false}

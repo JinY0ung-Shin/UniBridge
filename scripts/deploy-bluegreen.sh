@@ -131,9 +131,23 @@ acquire_lock() {
 # blue/green unless the operator explicitly opts in.
 require_shared_db_safe() {
   local url="${META_DB_URL:-}"
-  if [[ -z "$url" || "$url" == sqlite* ]]; then
+  # An unset META_DB_URL falls back to the bundled networked 'unibridge-db'
+  # Postgres service (see docker-compose.app.yml/.infra.yml), which is safe for
+  # blue/green — but only if its password is set, since the compose default
+  # interpolates UNIBRIDGE_DB_PASSWORD into the connection URL.
+  if [[ -z "$url" ]]; then
+    if [[ -z "${UNIBRIDGE_DB_PASSWORD:-}" ]]; then
+      echo "ERROR: META_DB_URL is unset and UNIBRIDGE_DB_PASSWORD is empty." >&2
+      echo "  With no META_DB_URL the stack uses the bundled 'unibridge-db' Postgres" >&2
+      echo "  service, which needs UNIBRIDGE_DB_PASSWORD. Set it, or point META_DB_URL" >&2
+      echo "  at your own networked database." >&2
+      exit 1
+    fi
+    return 0
+  fi
+  if [[ "$url" == sqlite* ]]; then
     if [[ "${ALLOW_SQLITE_BLUEGREEN:-false}" != "true" ]]; then
-      echo "ERROR: META_DB_URL is SQLite (or unset)." >&2
+      echo "ERROR: META_DB_URL is SQLite." >&2
       echo "  Blue/green runs blue and green app stacks against the same shared meta" >&2
       echo "  volume. SQLite cannot be safely written by two containers at once, and a" >&2
       echo "  new color runs 'alembic upgrade head' on the shared file at boot." >&2

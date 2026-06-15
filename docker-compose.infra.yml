@@ -223,6 +223,31 @@ services:
     networks:
       - apihub-net
 
+  unibridge-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "0.50"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.50"
+    environment:
+      - POSTGRES_DB=unibridge
+      - POSTGRES_USER=unibridge
+      - POSTGRES_PASSWORD=${UNIBRIDGE_DB_PASSWORD:?UNIBRIDGE_DB_PASSWORD is required}
+    volumes:
+      - unibridge-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U unibridge -d unibridge"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - apihub-net
+
   litellm:
     image: ghcr.io/berriai/litellm:main-v1.83.14-stable.patch.3
     restart: unless-stopped
@@ -284,3 +309,5 @@ volumes:
     name: ${KEYCLOAK_DB_DATA_VOLUME:-unibridge_keycloak-db-data}
   litellm-db-data:
     name: ${LITELLM_DB_DATA_VOLUME:-unibridge_litellm-db-data}
+  unibridge-db-data:
+    name: ${UNIBRIDGE_DB_DATA_VOLUME:-unibridge_unibridge-db-data}

@@ -82,46 +82,66 @@ new color runs `alembic upgrade head` at boot). SQLite cannot be safely written
 by two containers concurrently — and migrating its file while the old version is
 still live risks `database is locked` errors, lost writes, or corruption.
 
-Set `META_DB_URL` to a networked database before deploying, e.g.:
+The stack ships a bundled `unibridge-db` Postgres service and uses it by default:
+leave `META_DB_URL` **unset** and just set `UNIBRIDGE_DB_PASSWORD` in `.env`. The
+compose files then resolve `META_DB_URL` to:
+
+```
+postgresql+asyncpg://unibridge:<UNIBRIDGE_DB_PASSWORD>@unibridge-db:5432/unibridge
+```
+
+To use your own external Postgres instead, set `META_DB_URL` explicitly:
 
 ```env
 META_DB_URL=postgresql+asyncpg://unibridge:<password>@<host>:5432/unibridge
 ```
 
-`scripts/deploy-bluegreen.sh` refuses to deploy when `META_DB_URL` is SQLite (or
-unset). To override anyway — single-color use, or you accept the risk — set
-`ALLOW_SQLITE_BLUEGREEN=true`.
+`scripts/deploy-bluegreen.sh` refuses to deploy when `META_DB_URL` is SQLite, or
+when it is unset and `UNIBRIDGE_DB_PASSWORD` is also empty (the bundled Postgres
+would have no password). To force a shared SQLite store anyway — single-color
+use, or you accept the risk — set `ALLOW_SQLITE_BLUEGREEN=true`.
 
 ### Migrating existing SQLite data to Postgres
 
-If you already run a single-stack deployment on the default SQLite meta store,
-copy that data into the new Postgres database before the first blue-green
-deploy.
+If you already run a single-stack deployment on the legacy SQLite meta store,
+copy that data into the bundled `unibridge-db` Postgres before the first
+blue-green deploy. The migration runs inside the Compose network so it can reach
+`unibridge-db` by name; the SQLite source file lives in the mounted data volume
+at `/app/data/meta.db`.
 
 > **Stop the old stack (or quiesce writes) first.** This is a one-shot snapshot
 > copy, not a live replica — any row written to SQLite after the copy begins is
-> lost. Bring the single-stack deployment down, run the migration, then cut over.
-
-From `unibridge-service/` (with the **same `ENCRYPTION_KEY`** as the source —
-encrypted credentials are copied verbatim and stay valid only under the same
-key):
+> lost. Bring the single-stack app down, run the migration, then cut over.
 
 Make sure the SQLite source has already been upgraded by the current app (or by
 running `alembic upgrade head`) before copying. The migration script verifies
 that the source `alembic_version` matches the current code's head and stops if
 it does not.
 
+With `UNIBRIDGE_DB_PASSWORD` set in `.env` (and the **same `ENCRYPTION_KEY`** as
+the source — encrypted credentials are copied verbatim and stay valid only under
+the same key):
+
 ```bash
-python -m scripts.migrate_sqlite_to_postgres \
-  --source sqlite+aiosqlite:///data/meta.db \
-  --target postgresql+asyncpg://unibridge:<password>@<host>:5432/unibridge
+# 1. Start only the bundled meta-store Postgres
+docker compose up -d unibridge-db
+
+# 2. Copy SQLite -> Postgres (ENCRYPTION_KEY is inherited from .env)
+docker compose run --rm --no-deps unibridge-service \
+  python -m scripts.migrate_sqlite_to_postgres \
+    --source sqlite+aiosqlite:///data/meta.db \
+    --target "postgresql+asyncpg://unibridge:${UNIBRIDGE_DB_PASSWORD}@unibridge-db:5432/unibridge"
 ```
 
 It creates the schema on the empty Postgres target, copies every table, and
 resets sequences so the live app does not collide with copied primary keys. Use
 `--dry-run` to preview row counts; it refuses a non-empty target unless
-`--truncate` is given. After it succeeds, point `META_DB_URL` at the Postgres
-URL and deploy.
+`--truncate` is given. After it succeeds, leave `META_DB_URL` unset (the stack
+defaults to `unibridge-db`) and deploy.
+
+> Using your own external Postgres instead of the bundled service? Point
+> `--target` (and afterward `META_DB_URL`) at it, and you can run the script
+> directly from `unibridge-service/` without Compose.
 
 ## Existing Volume Names
 
@@ -130,6 +150,7 @@ deployments can keep their data. Defaults match Docker Compose's normal names
 when this repo runs as project `unibridge`:
 
 - `unibridge_unibridge-data`
+- `unibridge_unibridge-db-data`
 - `unibridge_etcd-data`
 - `unibridge_keycloak-db-data`
 - `unibridge_litellm-db-data`
@@ -140,6 +161,7 @@ If the old deployment used a different `COMPOSE_PROJECT_NAME`, set these in
 
 ```env
 UNIBRIDGE_DATA_VOLUME=<old-project>_unibridge-data
+UNIBRIDGE_DB_DATA_VOLUME=<old-project>_unibridge-db-data
 ETCD_DATA_VOLUME=<old-project>_etcd-data
 KEYCLOAK_DB_DATA_VOLUME=<old-project>_keycloak-db-data
 LITELLM_DB_DATA_VOLUME=<old-project>_litellm-db-data
