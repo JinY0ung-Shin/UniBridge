@@ -92,6 +92,37 @@ META_DB_URL=postgresql+asyncpg://unibridge:<password>@<host>:5432/unibridge
 unset). To override anyway — single-color use, or you accept the risk — set
 `ALLOW_SQLITE_BLUEGREEN=true`.
 
+### Migrating existing SQLite data to Postgres
+
+If you already run a single-stack deployment on the default SQLite meta store,
+copy that data into the new Postgres database before the first blue-green
+deploy.
+
+> **Stop the old stack (or quiesce writes) first.** This is a one-shot snapshot
+> copy, not a live replica — any row written to SQLite after the copy begins is
+> lost. Bring the single-stack deployment down, run the migration, then cut over.
+
+From `unibridge-service/` (with the **same `ENCRYPTION_KEY`** as the source —
+encrypted credentials are copied verbatim and stay valid only under the same
+key):
+
+Make sure the SQLite source has already been upgraded by the current app (or by
+running `alembic upgrade head`) before copying. The migration script verifies
+that the source `alembic_version` matches the current code's head and stops if
+it does not.
+
+```bash
+python -m scripts.migrate_sqlite_to_postgres \
+  --source sqlite+aiosqlite:///data/meta.db \
+  --target postgresql+asyncpg://unibridge:<password>@<host>:5432/unibridge
+```
+
+It creates the schema on the empty Postgres target, copies every table, and
+resets sequences so the live app does not collide with copied primary keys. Use
+`--dry-run` to preview row counts; it refuses a non-empty target unless
+`--truncate` is given. After it succeeds, point `META_DB_URL` at the Postgres
+URL and deploy.
+
 ## Existing Volume Names
 
 The split Compose files use explicit volume names so existing single-stack
