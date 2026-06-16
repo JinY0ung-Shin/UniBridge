@@ -49,3 +49,24 @@ export function bucketParam(bucket: Bucket): Record<string, string> {
 export function bucketKey(bucket: Bucket): string {
   return `bucket:${bucket}`;
 }
+
+/**
+ * One-shot bucket→period convenience mapping. Picking a calendar bucket nudges
+ * the time range to a sensible default span; `auto`/`hour` leave it untouched.
+ */
+export const BUCKET_PERIOD: Record<Bucket, string | null> = {
+  auto: null,
+  hour: null,
+  day: '7d',
+  week: '30d',
+};
+
+/**
+ * Suggested time selection for a freshly picked bucket, or `null` when the
+ * bucket carries no opinion (auto/hour). Pages apply this once on bucket
+ * change; the period selector remains independently adjustable afterward.
+ */
+export function periodForBucket(bucket: Bucket): TimeSelection | null {
+  const value = BUCKET_PERIOD[bucket];
+  return value ? { kind: 'preset', value } : null;
+}

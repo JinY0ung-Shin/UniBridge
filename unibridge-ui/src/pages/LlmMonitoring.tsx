@@ -10,6 +10,8 @@ import {
   getLlmTokens,
   getLlmByModel,
   getLlmTopKeys,
+  getLlmByModelSeries,
+  getLlmTopKeysSeries,
   getLlmErrors,
   getLlmStatusCodes,
   getLlmRequestsTotal,
@@ -17,11 +19,12 @@ import {
 } from '../api/client';
 import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
 import { usePermissions } from '../components/usePermissions';
+import BucketedBreakdownView from '../components/BucketedBreakdownView';
 import './Monitoring.css';
 import './LlmMonitoring.css';
 import TimeRangeSelector from '../components/TimeRangeSelector';
 import BucketSelector from '../components/BucketSelector';
-import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey } from '../utils/timeRange';
+import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket } from '../utils/timeRange';
 import { formatChartTimestamp, formatBucketLabel } from '../utils/time';
 
 const LITELLM_ADMIN_URL = window.__RUNTIME_CONFIG__?.LITELLM_ADMIN_URL || import.meta.env.VITE_LITELLM_ADMIN_URL || 'https://localhost:4000/ui';
@@ -70,6 +73,20 @@ function LlmMonitoring() {
   const topKeysQuery = useQuery({
     queryKey: ['llm-top-keys', selKey],
     queryFn: () => getLlmTopKeys(selection),
+    refetchInterval,
+  });
+
+  const byModelSeriesQuery = useQuery({
+    queryKey: ['llm-by-model-series', selKey, bucketKey(bucket)],
+    queryFn: () => getLlmByModelSeries(selection, bucket),
+    enabled: bucket !== 'auto',
+    refetchInterval,
+  });
+
+  const topKeysSeriesQuery = useQuery({
+    queryKey: ['llm-top-keys-series', selKey, bucketKey(bucket)],
+    queryFn: () => getLlmTopKeysSeries(selection, bucket),
+    enabled: bucket !== 'auto',
     refetchInterval,
   });
 
@@ -128,7 +145,8 @@ function LlmMonitoring() {
   const hasPartialError = !isError && (
     tokensQuery.isError || byModelQuery.isError ||
     topKeysQuery.isError || errorsQuery.isError ||
-    statusCodesQuery.isError || requestsTotalQuery.isError
+    statusCodesQuery.isError || requestsTotalQuery.isError ||
+    byModelSeriesQuery.isError || topKeysSeriesQuery.isError
   );
 
   return (
@@ -152,7 +170,14 @@ function LlmMonitoring() {
             </svg>
           </a>
           <TimeRangeSelector value={selection} onChange={setSelection} />
-          <BucketSelector value={bucket} onChange={setBucket} />
+          <BucketSelector
+            value={bucket}
+            onChange={(b) => {
+              setBucket(b);
+              const p = periodForBucket(b);
+              if (p) setSelection(p);
+            }}
+          />
         </div>
       </div>
 
@@ -277,6 +302,16 @@ function LlmMonitoring() {
         )}
       </div>
 
+      {/* Usage by Model over time */}
+      <BucketedBreakdownView
+        title={t('breakdown.byModelOverTime')}
+        data={byModelSeriesQuery.data}
+        loading={byModelSeriesQuery.isLoading}
+        bucket={bucket}
+        unit="tokens"
+        valueFmt={formatTokens}
+      />
+
       {/* Top API Keys */}
       <div className="chart-panel">
         <div className="chart-panel__title">{t('llmMonitoring.topKeys')}</div>
@@ -319,6 +354,16 @@ function LlmMonitoring() {
           <div className="no-data">{t('llmMonitoring.noKeyData')}</div>
         )}
       </div>
+
+      {/* Top API Keys over time */}
+      <BucketedBreakdownView
+        title={t('breakdown.byKeyOverTime')}
+        data={topKeysSeriesQuery.data}
+        loading={topKeysSeriesQuery.isLoading}
+        bucket={bucket}
+        unit="tokens"
+        valueFmt={formatTokens}
+      />
 
       {/* Status Code Distribution */}
       <div className="chart-panel">

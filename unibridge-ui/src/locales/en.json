@@ -410,6 +410,15 @@
     "day": "Daily",
     "week": "Weekly"
   },
+  "breakdown": {
+    "byModelOverTime": "Usage by model (over time)",
+    "byKeyOverTime": "Usage by API key (over time)",
+    "byRouteOverTime": "Requests by route (over time)",
+    "byConsumerOverTime": "Requests by API key (over time)",
+    "total": "Total",
+    "others": "Others",
+    "selectBucketHint": "Select Daily or Weekly to see usage over time."
+  },
   "gatewayMonitoring": {
     "title": "Gateway Monitoring",
     "subtitle": "Real-time API traffic and performance metrics",

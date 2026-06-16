@@ -780,6 +780,61 @@ export async function getLlmRequestsTotal(
   return data;
 }
 
+/* ── Bucketed per-dimension breakdowns ── */
+
+export interface BucketedSeries {
+  key: string;
+  total: number;
+  points: number[];
+}
+
+export interface BucketedBreakdown {
+  buckets: number[];
+  series: BucketedSeries[];
+  unit: 'tokens' | 'requests';
+}
+
+export async function getLlmByModelSeries(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  bucket: Bucket = 'auto',
+): Promise<BucketedBreakdown> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/by-model-series', {
+    params: { ...timeParams(sel), ...bucketParam(bucket) },
+  });
+  return data;
+}
+
+export async function getLlmTopKeysSeries(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  bucket: Bucket = 'auto',
+): Promise<BucketedBreakdown> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/top-keys-series', {
+    params: { ...timeParams(sel), ...bucketParam(bucket) },
+  });
+  return data;
+}
+
+export async function getRoutesComparisonSeries(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  consumer?: string,
+  bucket: Bucket = 'auto',
+): Promise<BucketedBreakdown> {
+  const { data } = await client.get('/admin/gateway/metrics/routes-comparison-series', {
+    params: { ...timeParams(sel), ...bucketParam(bucket), consumer },
+  });
+  return data;
+}
+
+export async function getConsumersComparisonSeries(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  bucket: Bucket = 'auto',
+): Promise<BucketedBreakdown> {
+  const { data } = await client.get('/admin/gateway/metrics/consumers-comparison-series', {
+    params: { ...timeParams(sel), ...bucketParam(bucket) },
+  });
+  return data;
+}
+
 /* ── API Keys ── */
 
 export interface ApiKey {

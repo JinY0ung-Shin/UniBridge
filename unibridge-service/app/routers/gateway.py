@@ -1103,6 +1103,167 @@ async def _volume_series(
     return points
 
 
+# Top-N cap for bucketed breakdowns: keep at most this many series; the rest
+# collapse into a single "(others)" series.
+_GROUPED_TOPN = 12
+_OTHERS_KEY = "(others)"
+
+
+def _grouped_extract_timeseries(
+    results: list[dict[str, Any]], label_names: tuple[str, ...]
+) -> dict[str, dict[int, float]]:
+    """Group a Prometheus range-query result by label(s).
+
+    Returns {label_value: {timestamp: value}}. Mirrors _extract_timeseries but
+    keeps every result item (one per label combination) instead of just the
+    first, and indexes points by timestamp so callers can align them onto a
+    shared bucket axis.
+    """
+    out: dict[str, dict[int, float]] = {}
+    for r in results or []:
+        key = _metric_label(r, *label_names)
+        series = out.setdefault(key, {})
+        for ts, val in r.get("values", []):
+            try:
+                v = float(val)
+                if v != v:  # NaN
+                    v = 0.0
+            except (ValueError, TypeError):
+                v = 0.0
+            ts_i = int(ts)
+            series[ts_i] = series.get(ts_i, 0.0) + v
+    return out
+
+
+def _grouped_instant(
+    results: list[dict[str, Any]], label_names: tuple[str, ...]
+) -> dict[str, float]:
+    """Group a Prometheus instant-query result by label(s) → {key: value}."""
+    out: dict[str, float] = {}
+    for r in results or []:
+        key = _metric_label(r, *label_names)
+        value = r.get("value")
+        if not value:
+            continue
+        try:
+            v = float(value[1])
+            if v != v:  # NaN
+                v = 0.0
+        except (IndexError, ValueError, TypeError):
+            continue
+        out[key] = out.get(key, 0.0) + v
+    return out
+
+
+def _assemble_grouped_breakdown(
+    per_key_points: dict[str, dict[int, float]],
+    buckets: list[int],
+    unit: str,
+) -> dict[str, Any]:
+    """Build the {buckets, series, unit} payload with top-N + "(others)".
+
+    ``per_key_points`` maps label value → {bucket_start: value}. ``buckets`` is
+    the shared ascending bucket axis; each series' points[] is aligned to it
+    (missing buckets filled with 0). Series whose total is 0 are dropped; the
+    series beyond the top-12 by total collapse into a single "(others)" series.
+    """
+    rounder = round if unit == "requests" else (lambda v: round(v, 4))
+
+    raw_series: list[dict[str, Any]] = []
+    for key, ts_map in per_key_points.items():
+        points = [rounder(ts_map.get(b, 0.0)) for b in buckets]
+        total = rounder(sum(ts_map.get(b, 0.0) for b in buckets))
+        if total <= 0:
+            continue
+        raw_series.append({"key": key, "total": total, "points": points})
+
+    raw_series.sort(key=lambda s: s["total"], reverse=True)
+    top = raw_series[:_GROUPED_TOPN]
+    rest = raw_series[_GROUPED_TOPN:]
+
+    if rest:
+        others_points = [
+            rounder(sum(s["points"][i] for s in rest)) for i in range(len(buckets))
+        ]
+        others_total = rounder(sum(s["total"] for s in rest))
+        if others_total > 0:
+            top.append(
+                {"key": _OTHERS_KEY, "total": others_total, "points": others_points}
+            )
+
+    return {"buckets": buckets, "series": top, "unit": unit}
+
+
+async def _grouped_volume_series(
+    query_for_window: Callable[[str], str],
+    tw: TimeWindow,
+    label_names: tuple[str, ...],
+    unit: str,
+) -> dict[str, Any]:
+    """Bucketed per-dimension breakdown mirroring _volume_series.
+
+    ``query_for_window(window)`` must yield a PromQL expression that groups by
+    ``label_names`` (e.g. ``sum by (route) (increase(metric{...}[<window>]))``).
+    Returns one points[] per label value, all aligned to a single shared bucket
+    axis, with top-12 + "(others)" applied. See _assemble_grouped_breakdown.
+    """
+    # Non-calendar (auto) path: a plain range query over volume_step.
+    if tw.bucket not in VALID_BUCKETS or tw.start is None or tw.end is None:
+        results = await prometheus_client.range_query(
+            query_for_window(tw.volume_window),
+            duration=tw.promql_window,
+            step=tw.volume_step,
+            start=tw.start,
+            end=tw.end,
+        )
+        grouped = _grouped_extract_timeseries(results, label_names)
+        buckets = sorted({ts for series in grouped.values() for ts in series})
+        return _assemble_grouped_breakdown(grouped, buckets, unit)
+
+    bsec = BUCKET_SECONDS[tw.bucket]
+    raw_end = float(tw.eval_time if tw.eval_time is not None else tw.end)
+    current_start = int(_align_down_kst(raw_end, tw.bucket))
+    start = int(tw.start)
+
+    # Completed buckets: range query, then shift each sample back one bucket so
+    # its timestamp marks the period start (mirrors _bucket_points).
+    per_key_points: dict[str, dict[int, float]] = {}
+    bucket_set: set[int] = set()
+    if float(current_start) > float(tw.start):
+        completed = await prometheus_client.range_query(
+            query_for_window(tw.volume_window),
+            duration=tw.promql_window,
+            step=tw.volume_step,
+            start=tw.start,
+            end=float(current_start),
+        )
+        grouped = _grouped_extract_timeseries(completed, label_names)
+        for key, ts_map in grouped.items():
+            dest = per_key_points.setdefault(key, {})
+            for ts, value in ts_map.items():
+                bucket_start = ts - bsec
+                if bucket_start < start:
+                    continue
+                dest[bucket_start] = dest.get(bucket_start, 0.0) + value
+                bucket_set.add(bucket_start)
+
+    # Partial current bucket: instant query over the elapsed window.
+    elapsed = int(raw_end - current_start)
+    if elapsed > 0:
+        partial_window = f"{min(max(elapsed, 1), bsec)}s"
+        partial = await prometheus_client.instant_query(
+            query_for_window(partial_window),
+            eval_time=raw_end,
+        )
+        for key, value in _grouped_instant(partial, label_names).items():
+            dest = per_key_points.setdefault(key, {})
+            dest[current_start] = dest.get(current_start, 0.0) + value
+        bucket_set.add(current_start)
+
+    buckets = sorted(bucket_set)
+    return _assemble_grouped_breakdown(per_key_points, buckets, unit)
+
+
 @router.get("/metrics/summary")
 async def metrics_summary(
     tw: TimeWindow = Depends(resolve_time_window),
@@ -1453,6 +1614,57 @@ async def metrics_consumers_comparison(
     return {"total_requests": round(total), "consumers": consumers}
 
 
+@router.get("/metrics/routes-comparison-series")
+async def metrics_routes_comparison_series(
+    tw: TimeWindow = Depends(resolve_time_window),
+    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
+    scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
+) -> dict[str, Any]:
+    """Per-route request volume bucketed over time (stacked-bar breakdown)."""
+    consumer = _scope_consumer(scope, None, consumer)
+    hs = _labels(None, consumer)
+    try:
+        return await _grouped_volume_series(
+            lambda window: f"sum by (route) (increase(apisix_http_status{hs}[{window}]))",
+            tw,
+            ("route",),
+            "requests",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
+
+
+@router.get("/metrics/consumers-comparison-series")
+async def metrics_consumers_comparison_series(
+    tw: TimeWindow = Depends(resolve_time_window),
+    scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
+) -> dict[str, Any]:
+    """Per-API-key (consumer) request volume bucketed over time.
+
+    Self-scoped callers are forced to their own key; an empty consumer label
+    (requests with no API key) surfaces as "(no api key)".
+    """
+    forced = _scope_consumer(scope, None, None)
+    hs = _labels(None, forced)
+    try:
+        breakdown = await _grouped_volume_series(
+            lambda window: f"sum by (consumer) (increase(apisix_http_status{hs}[{window}]))",
+            tw,
+            ("consumer",),
+            "requests",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
+    for series in breakdown["series"]:
+        if series["key"] == "unknown":
+            series["key"] = "(no api key)"
+    return breakdown
+
+
 @router.get("/metrics/requests-total")
 async def metrics_requests_total(
     tw: TimeWindow = Depends(resolve_time_window),
@@ -1680,6 +1892,32 @@ async def llm_metrics_by_model(
     return models
 
 
+@router.get("/metrics/llm/by-model-series")
+async def llm_metrics_by_model_series(
+    tw: TimeWindow = Depends(resolve_time_window),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+) -> dict[str, Any]:
+    """Per-model token usage bucketed over time (stacked-bar breakdown).
+
+    Mirrors /metrics/llm/by-model: the ``litellm_*`` counters carry no ``route``
+    label, so no selector is applied (matching the instant sibling exactly).
+    """
+    try:
+        return await _grouped_volume_series(
+            lambda window: (
+                "sum by (requested_model, model) "
+                f"(increase(litellm_total_tokens_metric_total[{window}]))"
+            ),
+            tw,
+            ("requested_model", "model"),
+            "tokens",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
+
+
 @router.get("/metrics/llm/top-keys")
 async def llm_metrics_top_keys(
     tw: TimeWindow = Depends(resolve_time_window),
@@ -1762,6 +2000,32 @@ async def llm_metrics_top_keys(
                 }
             )
     return keys
+
+
+@router.get("/metrics/llm/top-keys-series")
+async def llm_metrics_top_keys_series(
+    tw: TimeWindow = Depends(resolve_time_window),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+) -> dict[str, Any]:
+    """Per-API-key (end_user) token usage bucketed over time.
+
+    Mirrors /metrics/llm/top-keys: the ``litellm_*`` counters carry no ``route``
+    label, so no selector is applied (matching the instant sibling exactly).
+    """
+    try:
+        return await _grouped_volume_series(
+            lambda window: (
+                "sum by (end_user) "
+                f"(increase(litellm_total_tokens_metric_total[{window}]))"
+            ),
+            tw,
+            ("end_user",),
+            "tokens",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
 
 
 @router.get("/metrics/llm/status-codes")

@@ -14,16 +14,19 @@ import {
   getMetricsLatency,
   getMetricsRoutesComparison,
   getMetricsConsumersComparison,
+  getRoutesComparisonSeries,
+  getConsumersComparisonSeries,
   getApiKeys,
   type RouteComparisonRow,
 } from '../api/client';
 import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
 import { usePermissions } from '../components/usePermissions';
+import BucketedBreakdownView from '../components/BucketedBreakdownView';
 import './Monitoring.css';
 import './GatewayMonitoring.css';
 import TimeRangeSelector from '../components/TimeRangeSelector';
 import BucketSelector from '../components/BucketSelector';
-import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey } from '../utils/timeRange';
+import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket } from '../utils/timeRange';
 import { formatChartTime, formatChartTimestamp, formatBucketLabel } from '../utils/time';
 
 function BarCell({ value, max, suffix = '' }: { value: number; max: number; suffix?: string }) {
@@ -170,6 +173,20 @@ function GatewayMonitoring() {
     enabled: !selectedConsumer,
   });
 
+  const routesSeriesQuery = useQuery({
+    queryKey: ['metrics-routes-comparison-series', selKey, selectedConsumer, bucketKey(bucket)],
+    queryFn: () => getRoutesComparisonSeries(selection, selectedConsumer || undefined, bucket),
+    refetchInterval,
+    enabled: bucket !== 'auto',
+  });
+
+  const consumersSeriesQuery = useQuery({
+    queryKey: ['metrics-consumers-comparison-series', selKey, bucketKey(bucket)],
+    queryFn: () => getConsumersComparisonSeries(selection, bucket),
+    refetchInterval,
+    enabled: bucket !== 'auto' && !selectedConsumer,
+  });
+
   const apiKeyDescriptions = useMemo(() => {
     const map: Record<string, string> = {};
     for (const k of apiKeysQuery.data ?? []) {
@@ -302,7 +319,14 @@ function GatewayMonitoring() {
             </label>
           )}
           <TimeRangeSelector value={selection} onChange={setSelection} />
-          <BucketSelector value={bucket} onChange={setBucket} />
+          <BucketSelector
+            value={bucket}
+            onChange={(b) => {
+              setBucket(b);
+              const p = periodForBucket(b);
+              if (p) setSelection(p);
+            }}
+          />
         </div>
       </div>
 
@@ -472,6 +496,16 @@ function GatewayMonitoring() {
         )}
       </div>
 
+      {/* Per-route requests over time (bucketed) */}
+      <BucketedBreakdownView
+        title={t('breakdown.byRouteOverTime')}
+        data={routesSeriesQuery.data}
+        bucket={bucket}
+        loading={routesSeriesQuery.isLoading}
+        unit="requests"
+        valueFmt={(n) => Math.round(n).toLocaleString()}
+      />
+
       {/* API Key Comparison — cross-key overview; hidden when the page is
           already scoped to a single key via the filter. */}
       {!selectedConsumer && (
@@ -508,6 +542,18 @@ function GatewayMonitoring() {
           <div className="no-data">{t('gatewayMonitoring.noApiKeyData')}</div>
         )}
       </div>
+      )}
+
+      {/* Per-API-key requests over time (bucketed) — same cross-key scope */}
+      {!selectedConsumer && (
+        <BucketedBreakdownView
+          title={t('breakdown.byConsumerOverTime')}
+          data={consumersSeriesQuery.data}
+          bucket={bucket}
+          loading={consumersSeriesQuery.isLoading}
+          unit="requests"
+          valueFmt={(n) => Math.round(n).toLocaleString()}
+        />
       )}
 
       {/* Route Detail Panel */}
