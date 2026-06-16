@@ -423,6 +423,8 @@ services:
       - CONVERTER_CONNECT_TIMEOUT=${CONVERTER_CONNECT_TIMEOUT:-10}
       - CONVERTER_WRITE_TIMEOUT=${CONVERTER_WRITE_TIMEOUT:-120}
       - CONVERTER_POOL_TIMEOUT=${CONVERTER_POOL_TIMEOUT:-10}
+      # Idle SSE keepalive (seconds) so proxies don't drop silent streams; 0 disables.
+      - CONVERTER_SSE_HEARTBEAT_SECONDS=${CONVERTER_SSE_HEARTBEAT_SECONDS:-15}
       # In-memory previous_response_id store (TTL seconds / max conversations /
       # total byte budget; 0 disables the byte budget).
       - CONVERTER_RESPONSE_STORE_TTL=${CONVERTER_RESPONSE_STORE_TTL:-3600}

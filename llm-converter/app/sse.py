@@ -7,6 +7,8 @@ plumbing stay testable in isolation.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 from typing import Any, AsyncIterator, Dict
@@ -14,6 +16,61 @@ from typing import Any, AsyncIterator, Dict
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# SSE comment line (ignored by spec-compliant clients) used as an idle keepalive.
+_HEARTBEAT = b": ping\n\n"
+
+
+async def with_heartbeat(
+    source: AsyncIterator[bytes],
+    interval: float,
+    beat: bytes = _HEARTBEAT,
+) -> AsyncIterator[bytes]:
+    """Forward ``source`` chunks, injecting ``beat`` whenever it stays silent for
+    ``interval`` seconds.
+
+    Keeps the byte stream flowing so intermediaries (nginx/APISIX/LBs) with idle
+    read timeouts don't drop a long-but-quiet LLM response. ``interval`` <= 0
+    disables the heartbeat and forwards ``source`` unchanged. The single pending
+    ``__anext__`` is preserved across heartbeats (never cancelled on timeout) so no
+    upstream chunk is lost. On teardown the pending pull is cancelled AND the source
+    iterator is closed, so cleanup chains into ``source``'s own ``finally`` (e.g.
+    closing the upstream httpx response) even when teardown lands in the window
+    between delivering a chunk and starting the next pull (``pending is None``).
+    """
+    if interval <= 0:
+        async for chunk in source:
+            yield chunk
+        return
+
+    it = source.__aiter__()
+    pending: asyncio.Task[bytes] | None = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(it.__anext__())
+            try:
+                chunk = await asyncio.wait_for(asyncio.shield(pending), interval)
+            except asyncio.TimeoutError:
+                yield beat
+                continue
+            except StopAsyncIteration:
+                return
+            pending = None
+            yield chunk
+    finally:
+        # Cancel the in-flight pull first so the source generator is no longer
+        # executing, THEN close it. Closing covers the pending-is-None window
+        # (just delivered a chunk) where there is no task to carry the cancel
+        # into the source's finally. aclose() is a no-op once the gen is done.
+        if pending is not None:
+            pending.cancel()
+            with contextlib.suppress(BaseException):
+                await pending
+        aclose = getattr(it, "aclose", None)
+        if aclose is not None:
+            with contextlib.suppress(BaseException):
+                await aclose()
 
 # Hop-by-hop headers (RFC 7230 §6.1) plus transport-framing headers set by
 # httpx/Starlette automatically. Never forwarded in either direction.

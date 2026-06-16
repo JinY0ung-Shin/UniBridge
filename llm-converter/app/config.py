@@ -132,5 +132,14 @@ class _Settings:
         """Whether to surface upstream ``reasoning_content`` as Responses reasoning items."""
         return _bool_env("CONVERTER_EMIT_REASONING", True)
 
+    @property
+    def sse_heartbeat_seconds(self) -> float:
+        """Idle interval after which a streaming response emits an SSE comment
+        (``: ping``) to keep the connection's byte flow alive. LLM streams can be
+        silent past a proxy's read timeout (nginx/APISIX, LBs) during long TTFT or
+        reasoning; the heartbeat stops those intermediaries from dropping the
+        socket. <= 0 disables it. Default 15s."""
+        return float(_int_env("CONVERTER_SSE_HEARTBEAT_SECONDS", 15))
+
 
 settings = _Settings()

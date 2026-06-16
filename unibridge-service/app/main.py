@@ -249,6 +249,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                 "uri": "/api/llm/*",
                                 "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
                                 "upstream_id": "litellm",
+                                # LLM responses can stay silent past APISIX's
+                                # default 60s read timeout (long TTFT, reasoning,
+                                # large non-stream completions); allow long reads
+                                # so the gateway doesn't drop the socket.
+                                "timeout": {"connect": 60, "send": 600, "read": 600},
                                 "plugins": {
                                     "key-auth": {},
                                     "proxy-rewrite": {
@@ -335,6 +340,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                     "methods": ["POST", "OPTIONS"],
                                     "priority": 10,
                                     "upstream_id": "llm-converter",
+                                    # Match llm-proxy: don't let APISIX's default
+                                    # 60s read timeout cut long/idle LLM streams.
+                                    "timeout": {"connect": 60, "send": 600, "read": 600},
                                     "plugins": {
                                         "key-auth": {},
                                         "consumer-restriction": {

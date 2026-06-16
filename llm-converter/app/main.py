@@ -48,6 +48,7 @@ from app.sse import (
     filter_headers,
     format_sse,
     iter_openai_sse_chunks,
+    with_heartbeat,
 )
 from app.stream_sanitizer import sanitize_events
 
@@ -247,7 +248,7 @@ async def messages(request: Request) -> Response:
     resp_headers["X-Accel-Buffering"] = "no"
 
     return StreamingResponse(
-        body_iter(),
+        with_heartbeat(body_iter(), settings.sse_heartbeat_seconds),
         status_code=upstream.status_code,
         headers=resp_headers,
         media_type="text/event-stream",
@@ -476,7 +477,7 @@ async def responses(request: Request) -> Response:
     resp_headers["X-Accel-Buffering"] = "no"
 
     return StreamingResponse(
-        body_iter(),
+        with_heartbeat(body_iter(), settings.sse_heartbeat_seconds),
         status_code=upstream.status_code,
         headers=resp_headers,
         media_type="text/event-stream",
