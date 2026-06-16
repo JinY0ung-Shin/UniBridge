@@ -853,8 +853,13 @@ async def test_resource_owner_lists_apisix_resources_with_email_mapping(client, 
         and row["alerts_enabled"] is True
         for row in rows
     )
-    assert not any(
-        row["resource_type"] == "route" and row["resource_id"] == "llm-proxy"
+    # Protected/system routes are now listed too so admins can assign owners
+    # and toggle alerts for them from the UI.
+    assert any(
+        row["resource_type"] == "route"
+        and row["resource_id"] == "llm-proxy"
+        and row["display_name"] == "LLM Proxy"
+        and row["alerts_enabled"] is True
         for row in rows
     )
     assert not any(row["resource_type"] == "upstream" for row in rows)
