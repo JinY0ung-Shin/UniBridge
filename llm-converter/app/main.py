@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 # read so a misbehaving upstream that opens a non-event-stream response and then
 # trickles (or never finishes) the body cannot pin a worker forever — the
 # client's read timeout is left unbounded for legitimately long completions.
-_ERROR_BODY_READ_TIMEOUT = 30.0
+_ERROR_BODY_READ_TIMEOUT = 120.0
 
 app = FastAPI(title="UniBridge LLM Converter")
 

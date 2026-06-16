@@ -421,7 +421,7 @@ services:
       # Upstream httpx timeouts (seconds; read 0 = unbounded for long streams).
       - CONVERTER_REQUEST_TIMEOUT=${CONVERTER_REQUEST_TIMEOUT:-0}
       - CONVERTER_CONNECT_TIMEOUT=${CONVERTER_CONNECT_TIMEOUT:-10}
-      - CONVERTER_WRITE_TIMEOUT=${CONVERTER_WRITE_TIMEOUT:-30}
+      - CONVERTER_WRITE_TIMEOUT=${CONVERTER_WRITE_TIMEOUT:-120}
       - CONVERTER_POOL_TIMEOUT=${CONVERTER_POOL_TIMEOUT:-10}
       # In-memory previous_response_id store (TTL seconds / max conversations /
       # total byte budget; 0 disables the byte budget).

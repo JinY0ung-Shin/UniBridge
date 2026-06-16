@@ -90,7 +90,7 @@ def _get_timeout() -> httpx.Timeout:
     return httpx.Timeout(
         read,
         connect=float(_int_env("CONVERTER_CONNECT_TIMEOUT", 10)),
-        write=float(_int_env("CONVERTER_WRITE_TIMEOUT", 30)),
+        write=float(_int_env("CONVERTER_WRITE_TIMEOUT", 120)),
         pool=float(_int_env("CONVERTER_POOL_TIMEOUT", 10)),
     )
 
