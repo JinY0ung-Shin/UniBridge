@@ -9,6 +9,7 @@ import {
 import { getHealth, getAdminDatabases, getMetricsSummary, getMetricsRequests, getMetricsRequestsTotal, getLlmSummary, getLlmTokens, type DatabaseHealth } from '../api/client';
 import { usePermissions } from '../components/usePermissions';
 import { useChartTheme } from '../components/useChartTheme';
+import UniBridgeLogo from '../components/UniBridgeLogo';
 import BucketSelector from '../components/BucketSelector';
 import { type Bucket, type TimeSelection, bucketKey } from '../utils/timeRange';
 import { formatBucketLabel } from '../utils/time';
@@ -99,8 +100,11 @@ function Dashboard() {
   return (
     <div className="dashboard">
       <div className="page-header">
-        <h1>{t('dashboard.title')}</h1>
-        <p className="page-subtitle">{t('dashboard.subtitle')}</p>
+        <UniBridgeLogo className="dashboard-brand-mark" />
+        <div className="dashboard-header-copy">
+          <h1>{t('dashboard.title')}</h1>
+          <p className="page-subtitle">{t('dashboard.subtitle')}</p>
+        </div>
       </div>
 
       {/* Summary cards */}

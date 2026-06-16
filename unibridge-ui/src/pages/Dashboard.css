@@ -3,7 +3,20 @@
 }
 
 .dashboard .page-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
   margin-bottom: 28px;
+}
+
+.dashboard-brand-mark {
+  width: 54px;
+  height: 54px;
+  flex: 0 0 54px;
+}
+
+.dashboard-header-copy {
+  min-width: 0;
 }
 
 /* ── Summary Cards ── */
@@ -157,4 +170,34 @@
   padding: 16px 20px;
   height: 200px;
   margin-bottom: 32px;
+}
+
+@media (max-width: 720px) {
+  .dashboard .page-header {
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 22px;
+  }
+
+  .dashboard-brand-mark {
+    width: 44px;
+    height: 44px;
+    flex-basis: 44px;
+  }
+
+  .summary-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .section-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .section-header__actions {
+    width: 100%;
+    justify-content: space-between;
+    flex-wrap: wrap;
+  }
 }

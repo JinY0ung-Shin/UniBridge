@@ -7,6 +7,7 @@ import { useAuth } from './useAuth';
 import { PermissionProvider } from './PermissionContext';
 import { navItems, hasNavPermission } from './navItems';
 import SettingsModal from './SettingsModal';
+import UniBridgeLogo from './UniBridgeLogo';
 import './Layout.css';
 
 interface LayoutProps {
@@ -61,9 +62,7 @@ function Layout({ children }: LayoutProps) {
         </button>
         <Link to="/" className="mobile-brand" aria-label="UniBridge">
           <span className="sidebar-logo-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <path d="M3 5h10M3 8h10M3 11h7" stroke="var(--text-inverse)" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
+            <UniBridgeLogo className="sidebar-logo-mark" />
           </span>
         </Link>
         {username && <span className="mobile-username">{username}</span>}
@@ -72,9 +71,7 @@ function Layout({ children }: LayoutProps) {
         <div className="sidebar-header">
           <Link to="/" className="sidebar-logo">
             <div className="sidebar-logo-icon">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M3 5h10M3 8h10M3 11h7" stroke="var(--text-inverse)" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
+              <UniBridgeLogo className="sidebar-logo-mark" />
             </div>
             <span className="sidebar-title">UniBridge</span>
           </Link>
