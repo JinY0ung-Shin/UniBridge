@@ -260,9 +260,10 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
 
     Fields without an OpenAI equivalent (``thinking``, ``metadata``,
     ``anthropic_*`` namespacing) are dropped — the upstream vLLM enables
-    reasoning via its chat template, not via a request flag. Fields with
-    a 1:1 analogue (``max_tokens``, ``temperature``, ``top_p``, ``stop``)
-    are forwarded as-is.
+    reasoning *depth* via its chat template, not via a request flag. Fields
+    with a 1:1 analogue (``max_tokens``, ``temperature``, ``top_p``, ``stop``)
+    are forwarded as-is. The one reasoning knob that does map is Anthropic's
+    ``output_config.effort`` → OpenAI ``reasoning_effort``.
     """
     out: Dict[str, Any] = {}
 
@@ -280,6 +281,14 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
         out["stream"] = bool(body["stream"])
     if "stop_sequences" in body:
         out["stop"] = body["stop_sequences"]
+
+    # Anthropic's reasoning-depth control lives in ``output_config.effort``
+    # ("low" | "medium" | "high" | "xhigh" | "max"); OpenAI's analogue is the
+    # top-level ``reasoning_effort``. (``thinking`` has no OpenAI equivalent and
+    # is dropped — see the docstring.) Mirror responses_bridge's reasoning map.
+    output_config = body.get("output_config")
+    if isinstance(output_config, dict) and output_config.get("effort"):
+        out["reasoning_effort"] = output_config["effort"]
 
     messages: List[Dict[str, Any]] = []
 

@@ -371,6 +371,30 @@ class TestRequestConversion:
         out = anthropic_request_to_openai_body(body)
         assert "thinking" not in out
 
+    def test_output_config_effort_becomes_reasoning_effort(self):
+        """Anthropic ``output_config.effort`` maps to OpenAI ``reasoning_effort``
+        (mirrors the Responses bridge)."""
+        body = {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "output_config": {"effort": "high"},
+        }
+        out = anthropic_request_to_openai_body(body)
+        assert out["reasoning_effort"] == "high"
+        assert "output_config" not in out
+
+    def test_output_config_without_effort_is_ignored(self):
+        # A missing/empty effort must not emit a null reasoning_effort that
+        # upstream might reject.
+        for oc in ({}, {"effort": None}, {"format": {"type": "text"}}):
+            body = {
+                "model": "m",
+                "messages": [{"role": "user", "content": "hi"}],
+                "output_config": oc,
+            }
+            out = anthropic_request_to_openai_body(body)
+            assert "reasoning_effort" not in out, f"failed for {oc!r}"
+
     def test_stop_sequences_renamed(self):
         body = {
             "model": "m",
