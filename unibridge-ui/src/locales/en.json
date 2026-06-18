@@ -548,6 +548,8 @@
     "rateLimitHint": "Maximum number of query requests a single user can make per minute",
     "maxConcurrent": "Max concurrent queries (per user)",
     "maxConcurrentHint": "Maximum number of queries a single user can run simultaneously",
+    "defaultRowLimit": "Default row limit",
+    "defaultRowLimitHint": "Maximum rows returned when a query does not specify its own limit; excess rows are truncated",
     "sqlBlacklist": "SQL Keyword Blacklist",
     "blockedKeywords": "Additional blocked keywords",
     "blockedKeywordsHint": "Comma-separated list of SQL keywords to block (e.g. VACUUM, ANALYZE). Built-in blocks: GRANT, REVOKE, SHUTDOWN, KILL, etc.",

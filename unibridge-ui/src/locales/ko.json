@@ -548,6 +548,8 @@
     "rateLimitHint": "한 사용자가 분당 실행할 수 있는 최대 쿼리 요청 수",
     "maxConcurrent": "최대 동시 쿼리 수 (사용자별)",
     "maxConcurrentHint": "한 사용자가 동시에 실행할 수 있는 최대 쿼리 수",
+    "defaultRowLimit": "기본 행 수 제한",
+    "defaultRowLimitHint": "쿼리에 별도 제한을 지정하지 않았을 때 반환되는 최대 행 수이며, 초과분은 잘립니다",
     "sqlBlacklist": "SQL 키워드 블랙리스트",
     "blockedKeywords": "추가 차단 키워드",
     "blockedKeywordsHint": "차단할 SQL 키워드를 쉼표로 구분 (예: VACUUM, ANALYZE). 기본 차단: GRANT, REVOKE, SHUTDOWN, KILL 등",

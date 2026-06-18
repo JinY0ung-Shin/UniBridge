@@ -33,6 +33,7 @@ except ImportError:  # pragma: no cover - test environment may omit neo4j
 
 from app.config import settings
 from app.schemas import QueryResponse
+from app.services.settings_manager import settings_manager
 from app.services.connection_manager import run_clickhouse_locked
 from app.services.graphdb_utils import (
     GraphDBResponseTooLarge,
@@ -322,7 +323,7 @@ async def execute_query(
     Raises asyncio.TimeoutError on timeout.
     Raises any DB-level exceptions on failure.
     """
-    effective_limit = limit or settings.DEFAULT_ROW_LIMIT
+    effective_limit = limit or settings_manager.default_row_limit
     effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
 
     # Reject multi-statement SQL for non-admin users
@@ -430,7 +431,7 @@ async def execute_clickhouse_query(
     inside the worker thread. This keeps the client protected even when the
     awaiting coroutine times out while the thread continues running.
     """
-    effective_limit = limit or settings.DEFAULT_ROW_LIMIT
+    effective_limit = limit or settings_manager.default_row_limit
     effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
 
     if check_multi_statement(sql):
@@ -559,7 +560,7 @@ async def execute_neo4j_query(
     timeout: int | None = None,
 ) -> QueryResponse:
     """Execute a Neo4j Cypher query with timeout and row limit."""
-    effective_limit = limit or settings.DEFAULT_ROW_LIMIT
+    effective_limit = limit or settings_manager.default_row_limit
     effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
     try:
         return await asyncio.wait_for(

@@ -36,11 +36,13 @@ class TestSettingsManager:
     async def test_defaults_when_empty(self, manager):
         assert manager.rate_limit_per_minute == 60
         assert manager.max_concurrent_queries == 5
+        assert manager.default_row_limit == 10000
         assert manager.blocked_sql_keywords == []
 
     async def test_load_from_db(self, manager, settings_db):
         settings_db.add(SystemConfig(key="rate_limit_per_minute", value="100"))
         settings_db.add(SystemConfig(key="max_concurrent_queries", value="10"))
+        settings_db.add(SystemConfig(key="default_row_limit", value="500"))
         settings_db.add(SystemConfig(
             key="blocked_sql_keywords",
             value=json.dumps(["VACUUM", "ANALYZE"]),
@@ -51,6 +53,7 @@ class TestSettingsManager:
 
         assert manager.rate_limit_per_minute == 100
         assert manager.max_concurrent_queries == 10
+        assert manager.default_row_limit == 500
         assert manager.blocked_sql_keywords == ["VACUUM", "ANALYZE"]
 
     async def test_update_setting(self, manager, settings_db):
@@ -68,6 +71,17 @@ class TestSettingsManager:
         await manager.update(settings_db, blocked_sql_keywords=["VACUUM"])
         assert manager.blocked_sql_keywords == ["VACUUM"]
 
+    async def test_update_default_row_limit(self, manager, settings_db):
+        await manager.update(settings_db, default_row_limit=250)
+        assert manager.default_row_limit == 250
+
+        from sqlalchemy import select
+        result = await settings_db.execute(
+            select(SystemConfig).where(SystemConfig.key == "default_row_limit")
+        )
+        row = result.scalar_one()
+        assert row.value == "250"
+
     async def test_partial_update(self, manager, settings_db):
         original_concurrent = manager.max_concurrent_queries
         await manager.update(settings_db, rate_limit_per_minute=999)
@@ -77,4 +91,5 @@ class TestSettingsManager:
         result = manager.get_all()
         assert "rate_limit_per_minute" in result
         assert "max_concurrent_queries" in result
+        assert "default_row_limit" in result
         assert "blocked_sql_keywords" in result

@@ -8,6 +8,7 @@ function settingsKey(settings: QuerySettings): string {
   return [
     settings.rate_limit_per_minute,
     settings.max_concurrent_queries,
+    settings.default_row_limit,
     settings.blocked_sql_keywords.join('\0'),
   ].join(':');
 }
@@ -17,6 +18,7 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
   const queryClient = useQueryClient();
   const [rateLimit, setRateLimit] = useState(settings.rate_limit_per_minute);
   const [maxConcurrent, setMaxConcurrent] = useState(settings.max_concurrent_queries);
+  const [defaultRowLimit, setDefaultRowLimit] = useState(settings.default_row_limit);
   const [blockedKeywords, setBlockedKeywords] = useState(settings.blocked_sql_keywords.join(', '));
 
   const updateMut = useMutation({
@@ -35,6 +37,7 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
     updateMut.mutate({
       rate_limit_per_minute: rateLimit,
       max_concurrent_queries: maxConcurrent,
+      default_row_limit: defaultRowLimit,
       blocked_sql_keywords: keywords,
     });
   }
@@ -64,6 +67,17 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
             onChange={(e) => setMaxConcurrent(Number(e.target.value))}
           />
           <span className="form-hint">{t('querySettings.maxConcurrentHint')}</span>
+        </div>
+        <div className="form-group">
+          <label>{t('querySettings.defaultRowLimit')}</label>
+          <input
+            type="number"
+            min={1}
+            max={1000000}
+            value={defaultRowLimit}
+            onChange={(e) => setDefaultRowLimit(Number(e.target.value))}
+          />
+          <span className="form-hint">{t('querySettings.defaultRowLimitHint')}</span>
         </div>
       </div>
 

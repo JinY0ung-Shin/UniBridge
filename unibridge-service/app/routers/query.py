@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import metrics
 from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_role_permissions, require_permission
-from app.config import settings
 from app.database import get_db
 from app.models import Permission, QueryTemplate
 from app.schemas import (
@@ -381,7 +380,7 @@ async def execute(
             # the executor; statement_type was normalized to "select" by
             # _detect_statement_type so the upstream gates pass uniformly.
             raw_form = detect_sparql_statement_type(req.sql)
-            effective_limit = req.limit or settings.DEFAULT_ROW_LIMIT
+            effective_limit = req.limit or settings_manager.default_row_limit
             response = await execute_graphdb_query(
                 client=graphdb_client,
                 repo=repo,

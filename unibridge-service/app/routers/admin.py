@@ -993,6 +993,7 @@ async def update_settings(
         db,
         rate_limit_per_minute=body.rate_limit_per_minute,
         max_concurrent_queries=body.max_concurrent_queries,
+        default_row_limit=body.default_row_limit,
         blocked_sql_keywords=body.blocked_sql_keywords,
     )
 

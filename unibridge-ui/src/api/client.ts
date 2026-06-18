@@ -190,12 +190,14 @@ export interface AdminAuditLogParams {
 export interface QuerySettings {
   rate_limit_per_minute: number;
   max_concurrent_queries: number;
+  default_row_limit: number;
   blocked_sql_keywords: string[];
 }
 
 export interface QuerySettingsUpdate {
   rate_limit_per_minute?: number;
   max_concurrent_queries?: number;
+  default_row_limit?: number;
   blocked_sql_keywords?: string[];
 }
 
