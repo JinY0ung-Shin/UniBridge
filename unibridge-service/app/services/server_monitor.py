@@ -314,6 +314,16 @@ async def evaluate_hosts(
         if disk_pct is not None:
             warn = _effective(host.disk_warn_pct, thresholds.disk_warn_pct)
             crit = _effective(host.disk_crit_pct, thresholds.disk_crit_pct)
+            alert_threshold = min(warn, crit)
+            if warn > crit:
+                logger.warning(
+                    "Invalid disk thresholds for host %s: warn %.1f > crit %.1f; "
+                    "using %.1f for alert health",
+                    name,
+                    warn,
+                    crit,
+                    alert_threshold,
+                )
             if disk_pct >= crit:
                 severity: str | None = "critical"
             elif disk_pct >= warn:
@@ -324,10 +334,10 @@ async def evaluate_hosts(
                 alert_type="server_disk",
                 target=name,
                 display=display,
-                is_healthy=disk_pct < warn,
+                is_healthy=disk_pct < alert_threshold,
                 severity=severity,
                 value=disk_pct,
-                threshold=warn,
+                threshold=alert_threshold,
                 message=(
                     f"Server '{display}' disk usage is {disk_pct:.1f}% "
                     f"(warn {warn:.0f}% / crit {crit:.0f}%)."

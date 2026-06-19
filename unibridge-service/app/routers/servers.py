@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
 from app.database import get_db
-from app.models import MonitoredHost
+from app.models import AlertSettings, MonitoredHost
 from app.schemas import (
     MonitoredHostCreate,
     MonitoredHostResponse,
@@ -35,6 +35,34 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/servers", tags=["Servers"])
 
 _METRICS = {"cpu", "mem", "disk"}
+
+
+def _reject_invalid_disk_thresholds(warn: float, crit: float) -> None:
+    if warn > crit:
+        raise HTTPException(
+            status_code=422,
+            detail="disk_warn_pct must be less than or equal to disk_crit_pct",
+        )
+
+
+async def _global_disk_thresholds(db: AsyncSession) -> tuple[float, float]:
+    result = await db.execute(select(AlertSettings).where(AlertSettings.id == 1))
+    settings = result.scalar_one_or_none()
+    if settings is None:
+        return 80.0, 90.0
+    return float(settings.server_disk_warn_pct), float(settings.server_disk_crit_pct)
+
+
+async def _validate_effective_disk_thresholds(
+    db: AsyncSession,
+    *,
+    warn: float | None,
+    crit: float | None,
+) -> None:
+    global_warn, global_crit = await _global_disk_thresholds(db)
+    effective_warn = float(warn) if warn is not None else global_warn
+    effective_crit = float(crit) if crit is not None else global_crit
+    _reject_invalid_disk_thresholds(effective_warn, effective_crit)
 
 
 def _parse_labels(labels_json: str | None) -> dict[str, str] | None:
@@ -120,6 +148,11 @@ async def create_server(
     _user: CurrentUser = Depends(require_permission("servers.write")),
     db: AsyncSession = Depends(get_db),
 ) -> MonitoredHostResponse:
+    await _validate_effective_disk_thresholds(
+        db,
+        warn=body.disk_warn_pct,
+        crit=body.disk_crit_pct,
+    )
     host = MonitoredHost(
         name=body.name,
         address=body.address,
@@ -158,6 +191,13 @@ async def update_server(
     if host is None:
         raise HTTPException(status_code=404, detail="Server not found")
     before = _audit_snapshot(host)
+    next_disk_warn = body.disk_warn_pct if "disk_warn_pct" in body.model_fields_set else host.disk_warn_pct
+    next_disk_crit = body.disk_crit_pct if "disk_crit_pct" in body.model_fields_set else host.disk_crit_pct
+    await _validate_effective_disk_thresholds(
+        db,
+        warn=next_disk_warn,
+        crit=next_disk_crit,
+    )
     if body.address is not None:
         host.address = body.address
     if body.enabled is not None:
@@ -175,6 +215,7 @@ async def update_server(
     # doesn't linger as a stale "down" while unscraped.
     if not host.enabled:
         await _clear_host_alert_state(db, host.name)
+        await db.commit()
     await server_monitor.sync_targets_from_db(db)
     await log_admin_action(
         db, actor=_user.username, action="update",

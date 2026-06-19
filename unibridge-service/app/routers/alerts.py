@@ -144,6 +144,14 @@ def _settings_audit_snapshot(settings: AlertSettings) -> dict[str, Any]:
     }
 
 
+def _validate_settings_disk_thresholds(settings: AlertSettings) -> None:
+    if settings.server_disk_warn_pct > settings.server_disk_crit_pct:
+        raise HTTPException(
+            status_code=422,
+            detail="server_disk_warn_pct must be less than or equal to server_disk_crit_pct",
+        )
+
+
 def _channel_audit_snapshot(ch: AlertChannel) -> dict[str, Any]:
     """Audit snapshot of an alert channel. Webhook URLs can embed tokens in
     their path (e.g. Slack/Teams hooks) and headers carry auth secrets, so the
@@ -329,6 +337,7 @@ async def update_alert_settings(
         settings.server_disk_forecast_hours = body.server_disk_forecast_hours
     if body.repeat_alert_after_cycles is not None:
         settings.repeat_alert_after_cycles = body.repeat_alert_after_cycles
+    _validate_settings_disk_thresholds(settings)
     await db.commit()
     await db.refresh(settings)
 

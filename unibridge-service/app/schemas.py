@@ -611,6 +611,12 @@ class AlertSettingsUpdate(BaseModel):
         ):
             if field_name in self.model_fields_set and getattr(self, field_name) is None:
                 raise ValueError(f"{field_name} cannot be null")
+        _validate_disk_threshold_order(
+            self.server_disk_warn_pct,
+            self.server_disk_crit_pct,
+            warn_name="server_disk_warn_pct",
+            crit_name="server_disk_crit_pct",
+        )
         return self
 
 
@@ -694,6 +700,17 @@ class AlertStatusResponse(BaseModel):
 _HOST_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
+def _validate_disk_threshold_order(
+    warn: float | None,
+    crit: float | None,
+    *,
+    warn_name: str = "disk_warn_pct",
+    crit_name: str = "disk_crit_pct",
+) -> None:
+    if warn is not None and crit is not None and warn > crit:
+        raise ValueError(f"{warn_name} must be less than or equal to {crit_name}")
+
+
 def _validate_host_name(name: str) -> str:
     name = name.strip()
     if not _HOST_NAME_RE.match(name):
@@ -736,6 +753,11 @@ class MonitoredHostCreate(BaseModel):
     def check_address(cls, v: str) -> str:
         return _validate_host_address(v)
 
+    @model_validator(mode="after")
+    def validate_disk_threshold_order(self) -> "MonitoredHostCreate":
+        _validate_disk_threshold_order(self.disk_warn_pct, self.disk_crit_pct)
+        return self
+
 
 class MonitoredHostUpdate(BaseModel):
     address: str | None = Field(None, min_length=1, max_length=255)
@@ -751,6 +773,11 @@ class MonitoredHostUpdate(BaseModel):
     @classmethod
     def check_address(cls, v: str | None) -> str | None:
         return _validate_host_address(v) if v is not None else v
+
+    @model_validator(mode="after")
+    def validate_disk_threshold_order(self) -> "MonitoredHostUpdate":
+        _validate_disk_threshold_order(self.disk_warn_pct, self.disk_crit_pct)
+        return self
 
 
 class MonitoredHostResponse(BaseModel):

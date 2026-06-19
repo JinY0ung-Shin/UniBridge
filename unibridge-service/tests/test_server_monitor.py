@@ -125,6 +125,22 @@ async def test_per_host_threshold_override():
 
 
 @pytest.mark.asyncio
+async def test_disk_invalid_threshold_order_still_alerts_at_critical():
+    """A bad persisted warn/crit order must not suppress critical disk alerts."""
+    th = ServerThresholds(disk_warn_pct=95, disk_crit_pct=90, forecast_hours=0)
+    with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+        q.side_effect = _patch_queries({
+            "up{": [_series("web1", 1)],
+            "node_filesystem_avail_bytes": [_series("web1", 92)],
+        })
+        signals = await evaluate_hosts([_host("web1")], th)
+    disk = next(s for s in signals if s.alert_type == "server_disk")
+    assert disk.severity == "critical"
+    assert disk.is_healthy is False
+    assert disk.threshold == 90
+
+
+@pytest.mark.asyncio
 async def test_disk_forecast_fires_when_predicted_negative():
     th = ServerThresholds(forecast_hours=24)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:

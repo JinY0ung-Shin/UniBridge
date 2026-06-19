@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import pytest
 from unittest.mock import AsyncMock, patch
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.models import AlertState
 from tests.conftest import auth_header
 
 
@@ -64,6 +67,25 @@ async def test_invalid_address_and_name_rejected(client, admin_token):
 
 
 @pytest.mark.asyncio
+async def test_invalid_disk_threshold_order_rejected(client, admin_token):
+    h = auth_header(admin_token)
+    resp = await client.post(
+        "/admin/servers",
+        headers=h,
+        json={"name": "bad-disk", "address": "1.2.3.4:9100", "disk_warn_pct": 95, "disk_crit_pct": 90},
+    )
+    assert resp.status_code == 422
+
+    # A single override is also validated against the global default critical threshold.
+    resp = await client.post(
+        "/admin/servers",
+        headers=h,
+        json={"name": "bad-effective", "address": "1.2.3.5:9100", "disk_warn_pct": 95},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_requires_permission(client, user_token):
     """The seeded 'user' role lacks servers.read/write."""
     h = auth_header(user_token)
@@ -79,3 +101,34 @@ async def test_test_endpoint_reports_status(client, admin_token):
     with patch("app.routers.servers.server_monitor.host_up_map", new=AsyncMock(return_value={"web9": True})):
         resp = await client.post(f"/admin/servers/{host_id}/test", headers=h)
     assert resp.status_code == 200 and resp.json()["status"] == "up"
+
+
+@pytest.mark.asyncio
+async def test_disabling_server_persists_alert_state_cleanup(client, admin_token, seeded_db):
+    h = auth_header(admin_token)
+    created = await client.post(
+        "/admin/servers",
+        headers=h,
+        json={"name": "web-state", "address": "1.2.3.4:9100"},
+    )
+    assert created.status_code == 201, created.text
+    host_id = created.json()["id"]
+
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        db.add(AlertState(alert_type="server_down", target="web-state", status="alert"))
+        await db.commit()
+
+    resp = await client.put(f"/admin/servers/{host_id}", headers=h, json={"enabled": False})
+    assert resp.status_code == 200, resp.text
+
+    async with session_factory() as db:
+        row = (
+            await db.execute(
+                select(AlertState).where(
+                    AlertState.alert_type == "server_down",
+                    AlertState.target == "web-state",
+                )
+            )
+        ).scalar_one_or_none()
+    assert row is None
