@@ -1,0 +1,29 @@
+# node_exporter for UniBridge server monitoring — run this on each monitored host
+# that already runs Docker. For hosts WITHOUT Docker (bare-metal, DB servers),
+# use scripts/install_node_exporter.sh (systemd) instead.
+#
+#   docker compose up -d
+#   curl -s http://localhost:39100/metrics | grep -m1 node_filesystem_avail_bytes
+#
+# Why host namespaces: a container only sees its own namespaces, so node_exporter
+# would report CONTAINER metrics, not the host's. network_mode/pid: host + the
+# host root bind-mount with --path.rootfs=/host make it report true HOST CPU,
+# memory, disk, and network. This mirrors the official node_exporter Docker docs.
+#
+# Security: node_exporter is unauthenticated — open 39100 only to the central
+# Prometheus host (host firewall), never to the public internet.
+services:
+  node_exporter:
+    image: quay.io/prometheus/node-exporter:v1.8.2
+    container_name: node_exporter
+    restart: unless-stopped
+    network_mode: host          # bind host :39100 + accurate network metrics (ports: is ignored)
+    pid: host                   # accurate process/run metrics
+    command:
+      - '--path.rootfs=/host'   # read procfs/sysfs/rootfs from the host mount below
+      - '--web.listen-address=:39100'
+      # Drop the /host bind-mount and pseudo-filesystems from disk metrics so they
+      # don't double-count the real host filesystems.
+      - '--collector.filesystem.mount-points-exclude=^/(host|dev|proc|sys|run|var/lib/docker/.+|var/lib/kubelet/.+)($$|/)'
+    volumes:
+      - '/:/host:ro,rslave'

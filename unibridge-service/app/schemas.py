@@ -723,7 +723,7 @@ def _validate_host_name(name: str) -> str:
 def _validate_host_address(address: str) -> str:
     address = address.strip()
     if ":" not in address:
-        raise ValueError("address must be in host:port form (e.g. 10.0.0.5:9100)")
+        raise ValueError("address must be in host:port form (e.g. 10.0.0.5:39100)")
     host, _, port = address.rpartition(":")
     if not host:
         raise ValueError("address must include a host")

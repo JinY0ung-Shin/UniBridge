@@ -342,7 +342,7 @@ class AlertState(Base):
 class MonitoredHost(Base):
     """A server/host monitored via a node_exporter agent scraped by Prometheus.
 
-    ``address`` is the node_exporter endpoint (``host:9100``) and becomes the
+    ``address`` is the node_exporter endpoint (``host:39100``) and becomes the
     Prometheus ``instance`` label; ``name`` is the friendly key used as the
     alert target and the ``host`` relabel applied via file-based service
     discovery. Per-host threshold columns are nullable overrides — when null,

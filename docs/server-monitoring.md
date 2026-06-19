@@ -31,6 +31,9 @@ global 관리자, webhook/mail channel, alert history, and the Alert Status UI).
 
 ### 1. Install node_exporter on each server
 
+Pick the method that fits the host. Both expose node_exporter on `:39100`.
+
+**Method A — systemd binary (works on any Linux host, incl. non-Docker).**
 Run as root on the target host:
 
 ```bash
@@ -38,7 +41,26 @@ sudo ./scripts/install_node_exporter.sh            # defaults: v1.8.2, 0.0.0.0:3
 sudo ./scripts/install_node_exporter.sh 1.8.2 0.0.0.0:39100
 ```
 
-Open port 39100 from the central Prometheus host to the server.
+**Method B — Docker Compose (for hosts already running Docker).**
+Copy [`deploy/node-exporter/docker-compose.yml`](../deploy/node-exporter/docker-compose.yml)
+to the host and:
+
+```bash
+docker compose up -d
+curl -s http://localhost:39100/metrics | grep -m1 node_filesystem_avail_bytes
+```
+
+> The compose file runs node_exporter with `network_mode: host`, `pid: host`,
+> and the host root bind-mounted at `/host` with `--path.rootfs=/host`. This is
+> required — a plain container only sees its own namespaces and would report
+> *container* metrics, not the host's. Don't drop those settings.
+
+Then **open port 39100 from the central Prometheus host to the server** (host
+firewall, Prometheus IP only — node_exporter has no auth):
+
+```bash
+sudo ufw allow from <PROMETHEUS_IP> to any port 39100 proto tcp
+```
 
 ### 2. Register the host in UniBridge
 
