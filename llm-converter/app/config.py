@@ -133,6 +133,16 @@ class _Settings:
         return _bool_env("CONVERTER_EMIT_REASONING", True)
 
     @property
+    def trace(self) -> bool:
+        """Opt-in verbose tracing (``CONVERTER_TRACE``). When on, ``/v1/messages``
+        logs the full incoming Anthropic request body (system/tools/messages) and
+        every decisive upstream chunk (``finish_reason`` + ``tool_calls`` presence)
+        at INFO. Built to diff two clients hitting the SAME model — e.g. why a
+        request from client A yields parseable tool calls from vLLM while client
+        B's gets a plain-text ``finish_reason: stop``. Off by default (noisy)."""
+        return _bool_env("CONVERTER_TRACE", False)
+
+    @property
     def sse_heartbeat_seconds(self) -> float:
         """Idle interval after which a streaming response emits an SSE comment
         (``: ping``) to keep the connection's byte flow alive. LLM streams can be

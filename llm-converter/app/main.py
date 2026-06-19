@@ -68,6 +68,108 @@ def _make_client(timeout: float | None) -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=timeout, verify=settings.tls_verify)
 
 
+# Cap the full-body trace so a giant request (huge system prompt + many tool
+# schemas) can't blow up a single log line; the diff-relevant prefix survives.
+_TRACE_BODY_MAX = 200_000
+
+
+def _summarize_tool_calls(tool_calls: object) -> object:
+    """Compact view of a streaming ``delta.tool_calls`` for the trace log: just
+    the index/id/name and the arguments-fragment length, never the full args."""
+    if not isinstance(tool_calls, list):
+        return None
+    out = []
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+        args = fn.get("arguments")
+        out.append(
+            {
+                "index": tc.get("index"),
+                "id": tc.get("id"),
+                "name": fn.get("name"),
+                "args_len": len(args) if isinstance(args, str) else 0,
+            }
+        )
+    return out or None
+
+
+def _trace_incoming_messages_request(parsed: dict) -> None:
+    """Log the decisive parts of an incoming ``/v1/messages`` body so two clients
+    hitting the same model can be diffed (system steering / tool set / thinking).
+    Gated by ``settings.trace``; dumps the full body (capped) at INFO."""
+    if not settings.trace:
+        return
+    try:
+        system = parsed.get("system")
+        if isinstance(system, str):
+            system_kind, system_len = "str", len(system)
+        elif isinstance(system, list):
+            system_kind, system_len = "blocks", len(system)
+        elif system is None:
+            system_kind, system_len = "absent", 0
+        else:
+            system_kind, system_len = type(system).__name__, 0
+        tools = parsed.get("tools")
+        tool_names = (
+            [t.get("name") for t in tools if isinstance(t, dict)]
+            if isinstance(tools, list)
+            else []
+        )
+        logger.info(
+            "converter trace request: model=%s stream=%s system=%s/%d "
+            "tools=%d thinking=%s tool_choice=%s max_tokens=%s temperature=%s keys=%s",
+            parsed.get("model"),
+            bool(parsed.get("stream", False)),
+            system_kind,
+            system_len,
+            len(tool_names),
+            parsed.get("thinking"),
+            parsed.get("tool_choice"),
+            parsed.get("max_tokens"),
+            parsed.get("temperature"),
+            sorted(parsed.keys()),
+        )
+        logger.info("converter trace request tool_names=%s", tool_names)
+        body = json.dumps(parsed, ensure_ascii=False)
+        if len(body) > _TRACE_BODY_MAX:
+            body = body[:_TRACE_BODY_MAX] + f"…[+{len(body) - _TRACE_BODY_MAX} chars]"
+        logger.info("converter trace request body=%s", body)
+    except Exception:
+        logger.exception("converter trace: request inspect failed")
+
+
+async def _trace_upstream_chunks(
+    chunks: AsyncIterator[dict], tag: str
+) -> AsyncIterator[dict]:
+    """Pass-through that logs each DECISIVE upstream OpenAI chunk — one carrying a
+    ``finish_reason`` or ``delta.tool_calls`` — so we can see whether vLLM emitted
+    structured tool calls or finished with plain text. Token-by-token content
+    deltas are intentionally NOT logged (too noisy)."""
+    async for chunk in chunks:
+        try:
+            choices = chunk.get("choices") or []
+            ch = choices[0] if isinstance(choices, list) and choices else {}
+            if isinstance(ch, dict):
+                delta = ch.get("delta") if isinstance(ch.get("delta"), dict) else {}
+                fr = ch.get("finish_reason")
+                tc = delta.get("tool_calls")
+                if fr or tc:
+                    logger.info(
+                        "converter trace upstream[%s]: finish_reason=%s tool_calls=%s "
+                        "has_content=%s has_reasoning=%s",
+                        tag,
+                        fr,
+                        _summarize_tool_calls(tc),
+                        bool(delta.get("content")),
+                        bool(delta.get("reasoning_content")),
+                    )
+        except Exception:
+            logger.exception("converter trace: upstream chunk inspect failed")
+        yield chunk
+
+
 def _bad_request(message: str) -> Response:
     return Response(
         status_code=400,
@@ -93,6 +195,8 @@ async def messages(request: Request) -> Response:
         return _bad_request("request body is not valid JSON")
     if not isinstance(parsed, dict):
         return _bad_request("request body must be a JSON object")
+
+    _trace_incoming_messages_request(parsed)
 
     is_stream = bool(parsed.get("stream", False))
 
@@ -215,8 +319,13 @@ async def messages(request: Request) -> Response:
 
     async def body_iter() -> AsyncIterator[bytes]:
         try:
+            upstream_chunks = iter_openai_sse_chunks(upstream)
+            if settings.trace:
+                upstream_chunks = _trace_upstream_chunks(
+                    upstream_chunks, str(bridge_model)
+                )
             anthropic_events = openai_stream_to_anthropic_events(
-                iter_openai_sse_chunks(upstream),
+                upstream_chunks,
                 model=str(bridge_model),
             )
             # Run the bridge output through ``sanitize_events`` too so any
