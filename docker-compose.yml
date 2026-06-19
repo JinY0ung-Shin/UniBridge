@@ -437,6 +437,10 @@ services:
       - CONVERTER_RESPONSE_STORE_MAX_BYTES=${CONVERTER_RESPONSE_STORE_MAX_BYTES:-268435456}
       # Surface upstream reasoning_content as Responses reasoning items.
       - CONVERTER_EMIT_REASONING=${CONVERTER_EMIT_REASONING:-true}
+      # Opt-in verbose tracing: logs the full incoming /v1/messages body and each
+      # decisive upstream chunk (finish_reason + tool_calls) at INFO. Diagnostic
+      # only; leave off in normal operation.
+      - CONVERTER_TRACE=${CONVERTER_TRACE:-false}
     expose:
       - "4001"
     volumes:

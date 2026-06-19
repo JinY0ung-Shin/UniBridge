@@ -54,6 +54,15 @@ from app.stream_sanitizer import sanitize_events
 
 logger = logging.getLogger(__name__)
 
+# Uvicorn configures only its own ``uvicorn*`` loggers; this module's logger
+# propagates to a root logger that defaults to WARNING, so the opt-in INFO traces
+# below would be swallowed. When tracing is on, raise the ``app`` package logger
+# to INFO and make sure a root handler exists to actually emit it.
+if settings.trace:
+    logging.getLogger("app").setLevel(logging.INFO)
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO)
+
 # Upstream error/non-SSE bodies should be small and arrive promptly. Bound the
 # read so a misbehaving upstream that opens a non-event-stream response and then
 # trickles (or never finishes) the body cannot pin a worker forever — the
