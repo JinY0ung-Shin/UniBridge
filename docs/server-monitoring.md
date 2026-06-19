@@ -8,9 +8,9 @@ global 관리자, webhook/mail channel, alert history, and the Alert Status UI).
 ## How it works
 
 ```
-[server] node_exporter:9100 ─┐
-[server] node_exporter:9100 ─┤→ Prometheus scrape ──→ UniBridge alert_checker
-[server] node_exporter:9100 ─┘   (job "nodes")          (instant_query per signal)
+[server] node_exporter:39100 ─┐
+[server] node_exporter:39100 ─┤→ Prometheus scrape ──→ UniBridge alert_checker
+[server] node_exporter:39100 ─┘   (job "nodes")          (instant_query per signal)
                                                               │
                                             AlertStateManager (debounce + severity)
                                                               │
@@ -34,15 +34,15 @@ global 관리자, webhook/mail channel, alert history, and the Alert Status UI).
 Run as root on the target host:
 
 ```bash
-sudo ./scripts/install_node_exporter.sh            # defaults: v1.8.2, 0.0.0.0:9100
-sudo ./scripts/install_node_exporter.sh 1.8.2 0.0.0.0:9100
+sudo ./scripts/install_node_exporter.sh            # defaults: v1.8.2, 0.0.0.0:39100
+sudo ./scripts/install_node_exporter.sh 1.8.2 0.0.0.0:39100
 ```
 
-Open port 9100 from the central Prometheus host to the server.
+Open port 39100 from the central Prometheus host to the server.
 
 ### 2. Register the host in UniBridge
 
-UI → **Servers → Add server**, with `address = <host-ip>:9100`. Optionally set
+UI → **Servers → Add server**, with `address = <host-ip>:39100`. Optionally set
 per-host threshold overrides; leave them blank to inherit the global defaults.
 The status column shows live `up`/`down` from Prometheus.
 
@@ -69,7 +69,7 @@ transition).
 
 ## Push mode (firewalled hosts)
 
-When the central Prometheus cannot reach a host's `:9100` (host behind a
+When the central Prometheus cannot reach a host's `:39100` (host behind a
 firewall/NAT), run a forwarding agent on the host that pushes metrics out
 instead. Enable the remote-write receiver on Prometheus:
 

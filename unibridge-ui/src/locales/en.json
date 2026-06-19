@@ -803,7 +803,7 @@
     "empty": "No servers registered yet. Add one running node_exporter to start monitoring.",
     "name": "Name",
     "address": "node_exporter address",
-    "addressHint": "host:port of the node_exporter agent (default port 9100).",
+    "addressHint": "host:port of the node_exporter agent (default port 39100).",
     "description": "Description",
     "enabled": "Enabled (scraped & monitored)",
     "statusLabel": "Status",

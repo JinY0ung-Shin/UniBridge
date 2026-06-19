@@ -7,17 +7,17 @@
 #   ./install_node_exporter.sh [VERSION] [LISTEN_ADDR]
 #
 #   VERSION      node_exporter release, default 1.8.2
-#   LISTEN_ADDR  bind address, default 0.0.0.0:9100
+#   LISTEN_ADDR  bind address, default 0.0.0.0:39100
 #
 # After it runs, register the host in UniBridge (Servers → Add server) with
-# address "<this-host-ip>:9100". The central Prometheus must be able to reach
+# address "<this-host-ip>:39100". The central Prometheus must be able to reach
 # that address (open the port from Prometheus → host). For hosts behind a
 # firewall that Prometheus cannot reach, use push mode instead — see
 # docs/server-monitoring.md.
 set -euo pipefail
 
 VERSION="${1:-1.8.2}"
-LISTEN_ADDR="${2:-0.0.0.0:9100}"
+LISTEN_ADDR="${2:-0.0.0.0:39100}"
 ARCH="$(uname -m)"
 case "$ARCH" in
   x86_64)  GOARCH="amd64" ;;

@@ -248,7 +248,7 @@ function Servers() {
               <input
                 value={form.address}
                 onChange={(e) => setForm({ ...form, address: e.target.value })}
-                placeholder="10.0.0.5:9100"
+                placeholder="10.0.0.5:39100"
                 required
               />
               <small className="form-hint">{t('servers.addressHint')}</small>
