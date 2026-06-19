@@ -282,6 +282,18 @@ class AlertSettings(Base):
         nullable=False,
         server_default="2",
     )
+    # ── Server (host) monitoring global defaults ──────────────────────────────
+    # Percentage thresholds for node_exporter-derived host signals. A per-host
+    # override (MonitoredHost.*) takes precedence when set; otherwise these apply.
+    server_disk_warn_pct = Column(Float, default=80.0, nullable=False, server_default="80.0")
+    server_disk_crit_pct = Column(Float, default=90.0, nullable=False, server_default="90.0")
+    server_cpu_warn_pct = Column(Float, default=90.0, nullable=False, server_default="90.0")
+    server_mem_warn_pct = Column(Float, default=90.0, nullable=False, server_default="90.0")
+    # predict_linear horizon (hours) for "disk will fill within N hours". 0 disables forecasting.
+    server_disk_forecast_hours = Column(Float, default=24.0, nullable=False, server_default="24.0")
+    # Re-notify cadence for a still-firing alert: 0 = notify once per transition;
+    # N = re-dispatch every N check cycles while the alert persists. Applies to all alert types.
+    repeat_alert_after_cycles = Column(Integer, default=0, nullable=False, server_default="0")
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
     __table_args__ = (
@@ -301,6 +313,7 @@ class AlertHistory(Base):
     resource_type = Column(String(20), nullable=True)
     alert_type = Column(String(20), nullable=False)  # "triggered" / "resolved"
     target = Column(String(100), nullable=False)
+    severity = Column(String(20), nullable=True)  # "warning" / "critical" (host signals); null for binary types
     message = Column(Text, nullable=False)
     recipients = Column(Text, nullable=True)  # JSON array
     sent_at = Column(UtcDateTime, default=utcnow)
@@ -318,8 +331,40 @@ class AlertState(Base):
     since = Column(UtcDateTime, default=utcnow, nullable=False)
     display_target = Column(String(200), nullable=True)
     fail_count = Column(Integer, default=0, nullable=False, server_default="0")
+    severity = Column(String(20), nullable=True)  # current severity while alerting (host signals)
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)
 
     __table_args__ = (
         UniqueConstraint("alert_type", "target", name="uq_alert_state_type_target"),
     )
+
+
+class MonitoredHost(Base):
+    """A server/host monitored via a node_exporter agent scraped by Prometheus.
+
+    ``address`` is the node_exporter endpoint (``host:9100``) and becomes the
+    Prometheus ``instance`` label; ``name`` is the friendly key used as the
+    alert target and the ``host`` relabel applied via file-based service
+    discovery. Per-host threshold columns are nullable overrides — when null,
+    the global :class:`AlertSettings` defaults apply.
+    """
+
+    __tablename__ = "monitored_hosts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), unique=True, nullable=False, index=True)
+    address = Column(String(255), nullable=False)  # node_exporter host:port (== prometheus instance)
+    enabled = Column(Boolean, default=True, nullable=False, server_default="true")
+    labels = Column(Text, nullable=True)  # JSON object of extra Prometheus labels
+    description = Column(String(255), default="", nullable=False, server_default="")
+    # Per-host threshold overrides (null → fall back to AlertSettings global defaults)
+    disk_warn_pct = Column(Float, nullable=True)
+    disk_crit_pct = Column(Float, nullable=True)
+    cpu_warn_pct = Column(Float, nullable=True)
+    mem_warn_pct = Column(Float, nullable=True)
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("enabled", True)
+        super().__init__(**kwargs)

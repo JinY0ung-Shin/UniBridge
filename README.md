@@ -291,6 +291,15 @@ Operational defaults in `docker-compose.yml`:
 - `unibridge-service` and `unibridge-ui` run with `init: true` for PID 1 signal handling and child process reaping.
 - Prometheus scrapes APISIX, LiteLLM, unibridge-service `/metrics`, and Blackbox TCP probes for the Postgres-backed services. Alert rules live under `prometheus/rules/`.
 
+### Server (host) monitoring
+
+Register Linux servers running `node_exporter` to monitor reachability, disk
+(with a `predict_linear` disk-fill forecast), CPU, and memory, with proactive
+alerts routed through the existing 담당자/관리자 alert pipeline. Install the agent
+with [`scripts/install_node_exporter.sh`](./scripts/install_node_exporter.sh),
+add the host in the UI under **Servers**, and tune thresholds globally (Alert
+settings) or per host. Full guide: [`docs/server-monitoring.md`](./docs/server-monitoring.md).
+
 ## Backups
 
 Stateful components (etcd, Keycloak DB, LiteLLM DB, unibridge-service meta DB) are backed up by scripts in [`backup/`](./backup/README.md). Snapshots land in `./snapshots/` (gitignored) with 14-day retention, and manifest SHA256s are verified before any destructive restore.

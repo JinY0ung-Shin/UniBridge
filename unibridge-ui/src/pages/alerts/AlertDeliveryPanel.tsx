@@ -25,7 +25,21 @@ const defaultSettings: AlertSettings = {
   route_error_threshold_pct: 10,
   check_interval_seconds: 60,
   trigger_after_failures: 2,
+  server_disk_warn_pct: 80,
+  server_disk_crit_pct: 90,
+  server_cpu_warn_pct: 90,
+  server_mem_warn_pct: 90,
+  server_disk_forecast_hours: 24,
+  repeat_alert_after_cycles: 0,
 };
+
+type ServerSettingKey =
+  | 'server_disk_warn_pct'
+  | 'server_disk_crit_pct'
+  | 'server_cpu_warn_pct'
+  | 'server_mem_warn_pct'
+  | 'server_disk_forecast_hours'
+  | 'repeat_alert_after_cycles';
 
 const emptyChannelForm = (): AlertChannelCreate & { headerPairs: HeaderPair[] } => ({
   name: '',
@@ -206,6 +220,12 @@ export default function AlertDeliveryPanel() {
       route_error_threshold_pct: settingsForm.route_error_threshold_pct,
       check_interval_seconds: settingsForm.check_interval_seconds,
       trigger_after_failures: settingsForm.trigger_after_failures,
+      server_disk_warn_pct: settingsForm.server_disk_warn_pct,
+      server_disk_crit_pct: settingsForm.server_disk_crit_pct,
+      server_cpu_warn_pct: settingsForm.server_cpu_warn_pct,
+      server_mem_warn_pct: settingsForm.server_mem_warn_pct,
+      server_disk_forecast_hours: settingsForm.server_disk_forecast_hours,
+      repeat_alert_after_cycles: settingsForm.repeat_alert_after_cycles,
     });
   }
 
@@ -297,6 +317,34 @@ export default function AlertDeliveryPanel() {
             <p className="form-hint">{t('alerts.triggerAfterFailuresHelp')}</p>
           </div>
         </div>
+
+        <p className="form-section-label">{t('alerts.serverThresholdsTitle')}</p>
+        <div className="settings-grid">
+          {([
+            ['server_disk_warn_pct', 'alerts.serverDiskWarn', 0, 100],
+            ['server_disk_crit_pct', 'alerts.serverDiskCrit', 0, 100],
+            ['server_cpu_warn_pct', 'alerts.serverCpuWarn', 0, 100],
+            ['server_mem_warn_pct', 'alerts.serverMemWarn', 0, 100],
+            ['server_disk_forecast_hours', 'alerts.serverForecastHours', 0, 720],
+            ['repeat_alert_after_cycles', 'alerts.repeatAfterCycles', 0, 1000],
+          ] as Array<[ServerSettingKey, string, number, number]>).map(([field, labelKey, min, max]) => (
+            <div className="form-group" key={field}>
+              <label htmlFor={`s-${field}`}>{t(labelKey)}</label>
+              <input
+                id={`s-${field}`}
+                type="number"
+                min={min}
+                max={max}
+                value={settingsForm[field] as number}
+                disabled={!hasSettings || !canWrite}
+                onChange={(e) =>
+                  setSettingsDraft((prev) => ({ ...prev, [field]: Number(e.target.value) }))
+                }
+              />
+            </div>
+          ))}
+        </div>
+
         {canWrite && (
           <button type="submit" className="btn btn-primary" disabled={!hasSettings || updateSettingsMutation.isPending}>
             {updateSettingsMutation.isPending ? t('common.saving') : t('alerts.saveSettings')}

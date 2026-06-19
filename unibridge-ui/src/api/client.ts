@@ -1071,6 +1071,12 @@ export interface AlertSettings {
   route_error_threshold_pct: number;
   check_interval_seconds: number;
   trigger_after_failures: number;
+  server_disk_warn_pct?: number;
+  server_disk_crit_pct?: number;
+  server_cpu_warn_pct?: number;
+  server_mem_warn_pct?: number;
+  server_disk_forecast_hours?: number;
+  repeat_alert_after_cycles?: number;
   updated_at?: string | null;
 }
 
@@ -1087,6 +1093,7 @@ export interface AlertHistoryEntry {
   channel_id: number | null;
   alert_type: 'triggered' | 'resolved';
   target: string;
+  severity?: string | null;
   message: string;
   recipients: string[] | null;
   sent_at: string;
@@ -1099,6 +1106,7 @@ export interface AlertStatus {
   type: string;
   status: 'ok' | 'alert';
   since: string | null;
+  severity?: string | null;
 }
 
 // Channels
@@ -1184,6 +1192,73 @@ export async function getAlertHistory(params?: {
 
 export async function getAlertStatus(): Promise<AlertStatus[]> {
   const { data } = await client.get('/admin/alerts/status');
+  return data;
+}
+
+/* ── Monitored servers (hosts) ── */
+
+export interface MonitoredServer {
+  id: number;
+  name: string;
+  address: string;
+  enabled: boolean;
+  description: string;
+  labels: Record<string, string> | null;
+  disk_warn_pct: number | null;
+  disk_crit_pct: number | null;
+  cpu_warn_pct: number | null;
+  mem_warn_pct: number | null;
+  status?: 'up' | 'down' | 'unknown' | 'disabled' | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface MonitoredServerInput {
+  name?: string;
+  address?: string;
+  enabled?: boolean;
+  description?: string;
+  labels?: Record<string, string> | null;
+  disk_warn_pct?: number | null;
+  disk_crit_pct?: number | null;
+  cpu_warn_pct?: number | null;
+  mem_warn_pct?: number | null;
+}
+
+export interface ServerMetricSeries {
+  metric: 'cpu' | 'mem' | 'disk';
+  points: Array<{ t: number; v: number | null }>;
+}
+
+export async function getServers(): Promise<MonitoredServer[]> {
+  const { data } = await client.get('/admin/servers');
+  return data;
+}
+
+export async function createServer(body: MonitoredServerInput): Promise<MonitoredServer> {
+  const { data } = await client.post('/admin/servers', body);
+  return data;
+}
+
+export async function updateServer(id: number, body: MonitoredServerInput): Promise<MonitoredServer> {
+  const { data } = await client.put(`/admin/servers/${id}`, body);
+  return data;
+}
+
+export async function deleteServer(id: number): Promise<void> {
+  await client.delete(`/admin/servers/${id}`);
+}
+
+export async function testServer(id: number): Promise<{ status: string; detail: string | null }> {
+  const { data } = await client.post(`/admin/servers/${id}/test`);
+  return data;
+}
+
+export async function getServerMetrics(
+  id: number,
+  params: { duration?: string; step?: string } = {},
+): Promise<ServerMetricSeries[]> {
+  const { data } = await client.get(`/admin/servers/${id}/metrics`, { params });
   return data;
 }
 

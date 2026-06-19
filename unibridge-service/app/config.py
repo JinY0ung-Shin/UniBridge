@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     APISIX_UNIBRIDGE_SERVICE_NODE: str = "unibridge-service:8000"
     APISIX_LLM_CONVERTER_NODE: str = "llm-converter:4001"
     PROMETHEUS_URL: str = "http://prometheus:9090"
+    # Server (host) monitoring: Prometheus scrape job for node_exporter agents,
+    # and the file-based service-discovery targets file the service writes from
+    # the MonitoredHost registry (must be on a volume shared with Prometheus).
+    NODE_EXPORTER_JOB: str = "nodes"
+    PROMETHEUS_FILE_SD_PATH: str = "/etc/prometheus/file_sd/nodes.json"
     LITELLM_MASTER_KEY: str = ""
 
     # CORS — comma-separated allowed origins (e.g. "http://localhost:3001,https://app.example.com")

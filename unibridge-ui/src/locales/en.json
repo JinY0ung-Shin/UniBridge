@@ -20,7 +20,8 @@
     "alertHistory": "Alert History",
     "llmMonitoring": "LLM Monitoring",
     "s3Connections": "S3 Storage",
-    "nasConnections": "NAS Storage"
+    "nasConnections": "NAS Storage",
+    "servers": "Servers"
   },
   "common": {
     "save": "Save",
@@ -772,12 +773,54 @@
     "varDesc_recipients_json": "Rendered JSON array of mail recipient items",
     "varDesc_rate": "Current error rate (used in error-rate-based alerts)",
     "varDesc_threshold": "Threshold value configured in the rule",
-    "varDesc_rule_name": "Alert rule name"
+    "varDesc_rule_name": "Alert rule name",
+    "typeServerDown": "Server down",
+    "typeServerDisk": "Server disk",
+    "typeServerDiskForecast": "Disk forecast",
+    "typeServerCpu": "Server CPU",
+    "typeServerMem": "Server memory",
+    "severityCritical": "Critical",
+    "severityWarning": "Warning",
+    "serverThresholdsTitle": "Server thresholds (global defaults)",
+    "serverDiskWarn": "Disk warn %",
+    "serverDiskCrit": "Disk critical %",
+    "serverCpuWarn": "CPU warn %",
+    "serverMemWarn": "Memory warn %",
+    "serverForecastHours": "Disk-fill forecast (hours, 0=off)",
+    "repeatAfterCycles": "Re-notify every N cycles (0=once)"
   },
   "pending": {
     "title": "Awaiting approval",
     "message": "Your registration was received. An administrator must approve your account before you can use the service.",
     "account": "Signed in as {{username}}",
     "recheck": "Check again"
+  },
+  "servers": {
+    "title": "Servers",
+    "subtitle": "Monitor host CPU, memory, and disk via node_exporter, with proactive alerts.",
+    "add": "Add server",
+    "edit": "Edit server",
+    "empty": "No servers registered yet. Add one running node_exporter to start monitoring.",
+    "name": "Name",
+    "address": "node_exporter address",
+    "addressHint": "host:port of the node_exporter agent (default port 9100).",
+    "description": "Description",
+    "enabled": "Enabled (scraped & monitored)",
+    "statusLabel": "Status",
+    "disabled": "disabled",
+    "test": "Test",
+    "deleteConfirm": "Delete server \"{{name}}\"?",
+    "deleteFailed": "Failed to delete server",
+    "saveFailed": "Failed to save server",
+    "thresholdsTitle": "Per-host thresholds (optional)",
+    "thresholdsHint": "Leave blank to inherit the global defaults from Alert settings.",
+    "diskWarn": "Disk warn %",
+    "diskCrit": "Disk critical %",
+    "cpuWarn": "CPU warn %",
+    "memWarn": "Memory warn %",
+    "metric_cpu": "CPU usage (%)",
+    "metric_mem": "Memory usage (%)",
+    "metric_disk": "Disk usage (%)",
+    "noMetricData": "No metric data in this window."
   }
 }

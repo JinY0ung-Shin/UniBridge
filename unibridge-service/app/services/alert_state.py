@@ -13,11 +13,20 @@ from app.models import AlertState
 logger = logging.getLogger(__name__)
 
 
+_SEVERITY_RANK = {"warning": 1, "critical": 2}
+
+
+def _severity_rank(severity: str | None) -> int:
+    return _SEVERITY_RANK.get(severity or "", 0)
+
+
 class AlertStateManager:
     """In-memory alert state tracker.
 
     Each entry: status ∈ {"ok", "alert"}, fail_count is the consecutive
     failure tally, since is the timestamp of the most recent status flip.
+    ``severity`` (optional) carries the current host-signal severity while
+    alerting, and ``cycles_in_alert`` drives re-notification cadence.
     """
 
     def __init__(self) -> None:
@@ -38,6 +47,7 @@ class AlertStateManager:
             "since": entry["since"],
             "display_target": entry.get("display_target", target),
             "fail_count": entry.get("fail_count", 0),
+            "severity": entry.get("severity"),
         }
 
     def set_entry(
@@ -49,12 +59,15 @@ class AlertStateManager:
         since: str,
         display_target: str | None = None,
         fail_count: int = 0,
+        severity: str | None = None,
     ) -> None:
         self._states[(alert_type, target)] = {
             "status": status,
             "since": since,
             "display_target": display_target or target,
             "fail_count": fail_count,
+            "severity": severity,
+            "cycles_in_alert": 0,
         }
 
     def update(
@@ -65,11 +78,19 @@ class AlertStateManager:
         is_healthy: bool,
         trigger_after_failures: int,
         display_target: str | None = None,
+        severity: str | None = None,
+        repeat_after_cycles: int = 0,
     ) -> str | None:
         """Update state and return transition type if changed.
 
         Returns "triggered" / "resolved" / None. fail_count drives status:
         flip to "alert" only when fail_count reaches trigger_after_failures.
+
+        ``severity`` (host signals) enables escalation: while already alerting,
+        a rise in severity (e.g. warning → critical) re-fires "triggered".
+        ``repeat_after_cycles`` > 0 re-fires "triggered" every N unhealthy
+        cycles while the alert persists. Callers that pass neither keep the
+        original binary behaviour exactly.
         """
         key = (alert_type, target)
         now = datetime.now(timezone.utc).isoformat()
@@ -77,30 +98,25 @@ class AlertStateManager:
 
         if entry is None:
             if is_healthy:
-                self._states[key] = {
-                    "status": "ok",
-                    "since": now,
-                    "display_target": display_target or target,
-                    "fail_count": 0,
-                }
+                self.set_entry(
+                    alert_type, target,
+                    status="ok", since=now, display_target=display_target, fail_count=0,
+                )
                 logger.info("Alert state %s/%s initialized as ok", alert_type, target)
                 return None
             fail_count = 1
             if fail_count >= trigger_after_failures:
-                self._states[key] = {
-                    "status": "alert",
-                    "since": now,
-                    "display_target": display_target or target,
-                    "fail_count": fail_count,
-                }
+                self.set_entry(
+                    alert_type, target,
+                    status="alert", since=now, display_target=display_target,
+                    fail_count=fail_count, severity=severity,
+                )
                 logger.info("Alert state %s/%s initialized as alert", alert_type, target)
                 return "triggered"
-            self._states[key] = {
-                "status": "ok",
-                "since": now,
-                "display_target": display_target or target,
-                "fail_count": fail_count,
-            }
+            self.set_entry(
+                alert_type, target,
+                status="ok", since=now, display_target=display_target, fail_count=fail_count,
+            )
             logger.info(
                 "Alert state %s/%s initialized as ok (fail_count=%d)",
                 alert_type, target, fail_count,
@@ -114,9 +130,11 @@ class AlertStateManager:
         if is_healthy:
             was_alert = entry["status"] == "alert"
             entry["fail_count"] = 0
+            entry["cycles_in_alert"] = 0
             if was_alert:
                 entry["status"] = "ok"
                 entry["since"] = now
+                entry["severity"] = None
                 logger.info("Alert state %s/%s: alert → ok", alert_type, target)
                 return "resolved"
             return None
@@ -125,10 +143,28 @@ class AlertStateManager:
         entry["fail_count"] = entry.get("fail_count", 0) + 1
         if entry["status"] == "alert":
             entry["fail_count"] = min(entry["fail_count"], trigger_after_failures)
+            # Severity escalation: a rise re-fires immediately; a fall is recorded silently.
+            if severity is not None and _severity_rank(severity) != _severity_rank(entry.get("severity")):
+                escalated = _severity_rank(severity) > _severity_rank(entry.get("severity"))
+                entry["severity"] = severity
+                if escalated:
+                    entry["since"] = now
+                    entry["cycles_in_alert"] = 0
+                    logger.info("Alert state %s/%s escalated to %s", alert_type, target, severity)
+                    return "triggered"
+            # Re-notification cadence while still firing.
+            if repeat_after_cycles and repeat_after_cycles > 0:
+                entry["cycles_in_alert"] = entry.get("cycles_in_alert", 0) + 1
+                if entry["cycles_in_alert"] >= repeat_after_cycles:
+                    entry["cycles_in_alert"] = 0
+                    logger.info("Alert state %s/%s re-notifying (every %d cycles)", alert_type, target, repeat_after_cycles)
+                    return "triggered"
             return None
         if entry["fail_count"] >= trigger_after_failures:
             entry["status"] = "alert"
             entry["since"] = now
+            entry["severity"] = severity
+            entry["cycles_in_alert"] = 0
             logger.info(
                 "Alert state %s/%s: ok → alert (fail_count=%d, threshold=%d)",
                 alert_type, target, entry["fail_count"], trigger_after_failures,
@@ -155,6 +191,7 @@ class AlertStateManager:
                 "target": v.get("display_target", k[1]),
                 "status": v["status"],
                 "since": v["since"] if v["status"] == "alert" else None,
+                "severity": v.get("severity") if v["status"] == "alert" else None,
             }
             for k, v in self._states.items()
         ]
@@ -178,6 +215,7 @@ class AlertStateManager:
                 "since": entry["since"],
                 "display_target": entry.get("display_target", target),
                 "fail_count": entry.get("fail_count", 0),
+                "severity": entry.get("severity"),
             })
         return rows
 
@@ -224,6 +262,7 @@ async def save_alert_state_to_db(
     row.since = _parse_since(entry["since"])
     row.display_target = entry["display_target"]
     row.fail_count = int(entry["fail_count"])
+    row.severity = entry.get("severity")
     row.updated_at = utcnow()
     await db.commit()
 
@@ -249,6 +288,7 @@ async def load_alert_state_from_db(
             since=since.isoformat(),
             display_target=row.display_target,
             fail_count=row.fail_count,
+            severity=row.severity,
         )
 
 
@@ -277,6 +317,7 @@ async def purge_stale_states(
     known_nas_aliases: set[str],
     known_upstream_ids: set[str] | None,
     known_route_ids: set[str] | None,
+    known_host_names: set[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Drop alert states whose targets no longer exist.
 
@@ -309,6 +350,11 @@ async def purge_stale_states(
                 should_remove = True
             elif known_route_ids is not None:
                 should_remove = target not in known_route_ids
+        elif atype.startswith("server_"):
+            # Host signals (server_down / server_disk / server_cpu / ...): key by
+            # host name. Skip the purge when the registry could not be loaded.
+            if known_host_names is not None:
+                should_remove = target not in known_host_names
         elif atype == "error_rate":
             # Global error-rate monitoring was removed; drop any leftover state.
             should_remove = True
