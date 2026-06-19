@@ -20,7 +20,8 @@
     "alertHistory": "알림 이력",
     "llmMonitoring": "LLM 모니터링",
     "s3Connections": "S3 스토리지",
-    "nasConnections": "NAS 스토리지"
+    "nasConnections": "NAS 스토리지",
+    "servers": "서버 모니터링"
   },
   "common": {
     "save": "저장",
@@ -772,12 +773,54 @@
     "varDesc_recipients_json": "메일 수신자 항목으로 렌더링된 JSON 배열",
     "varDesc_rate": "현재 에러율 (에러율 기반 알림에서 사용)",
     "varDesc_threshold": "임계값 (규칙에 설정된 기준값)",
-    "varDesc_rule_name": "알림 규칙 이름"
+    "varDesc_rule_name": "알림 규칙 이름",
+    "typeServerDown": "서버 다운",
+    "typeServerDisk": "서버 디스크",
+    "typeServerDiskForecast": "디스크 예측",
+    "typeServerCpu": "서버 CPU",
+    "typeServerMem": "서버 메모리",
+    "severityCritical": "심각",
+    "severityWarning": "경고",
+    "serverThresholdsTitle": "서버 임계값 (전역 기본값)",
+    "serverDiskWarn": "디스크 경고 %",
+    "serverDiskCrit": "디스크 심각 %",
+    "serverCpuWarn": "CPU 경고 %",
+    "serverMemWarn": "메모리 경고 %",
+    "serverForecastHours": "디스크 소진 예측(시간, 0=끔)",
+    "repeatAfterCycles": "N주기마다 재알림(0=1회)"
   },
   "pending": {
     "title": "가입 승인 대기 중",
     "message": "가입 신청이 접수되었습니다. 관리자가 계정을 승인해야 서비스를 이용할 수 있습니다.",
     "account": "{{username}} 계정으로 로그인됨",
     "recheck": "다시 확인"
+  },
+  "servers": {
+    "title": "서버 모니터링",
+    "subtitle": "node_exporter로 호스트 CPU·메모리·디스크를 모니터링하고 사전 알림을 보냅니다.",
+    "add": "서버 추가",
+    "edit": "서버 편집",
+    "empty": "등록된 서버가 없습니다. node_exporter가 실행 중인 서버를 추가하세요.",
+    "name": "이름",
+    "address": "node_exporter 주소",
+    "addressHint": "node_exporter 에이전트의 host:port (기본 포트 39100).",
+    "description": "설명",
+    "enabled": "활성화 (수집·모니터링)",
+    "statusLabel": "상태",
+    "disabled": "비활성",
+    "test": "테스트",
+    "deleteConfirm": "서버 \"{{name}}\"을(를) 삭제할까요?",
+    "deleteFailed": "서버 삭제 실패",
+    "saveFailed": "서버 저장 실패",
+    "thresholdsTitle": "호스트별 임계값 (선택)",
+    "thresholdsHint": "비워두면 알림 설정의 전역 기본값을 따릅니다.",
+    "diskWarn": "디스크 경고 %",
+    "diskCrit": "디스크 심각 %",
+    "cpuWarn": "CPU 경고 %",
+    "memWarn": "메모리 경고 %",
+    "metric_cpu": "CPU 사용률 (%)",
+    "metric_mem": "메모리 사용률 (%)",
+    "metric_disk": "디스크 사용률 (%)",
+    "noMetricData": "이 구간에 메트릭 데이터가 없습니다."
   }
 }

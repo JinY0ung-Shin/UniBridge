@@ -568,6 +568,12 @@ class AlertSettingsResponse(BaseModel):
     route_error_threshold_pct: float
     check_interval_seconds: int
     trigger_after_failures: int
+    server_disk_warn_pct: float
+    server_disk_crit_pct: float
+    server_cpu_warn_pct: float
+    server_mem_warn_pct: float
+    server_disk_forecast_hours: float
+    repeat_alert_after_cycles: int
     updated_at: datetime | None = None
 
 
@@ -577,6 +583,12 @@ class AlertSettingsUpdate(BaseModel):
     route_error_threshold_pct: float | None = Field(None, ge=0, le=100)
     check_interval_seconds: int | None = Field(None, ge=30, le=3600)
     trigger_after_failures: int | None = Field(None, ge=1, le=10)
+    server_disk_warn_pct: float | None = Field(None, ge=0, le=100)
+    server_disk_crit_pct: float | None = Field(None, ge=0, le=100)
+    server_cpu_warn_pct: float | None = Field(None, ge=0, le=100)
+    server_mem_warn_pct: float | None = Field(None, ge=0, le=100)
+    server_disk_forecast_hours: float | None = Field(None, ge=0, le=720)
+    repeat_alert_after_cycles: int | None = Field(None, ge=0, le=1000)
 
     @field_validator("admin_emails")
     @classmethod
@@ -590,9 +602,21 @@ class AlertSettingsUpdate(BaseModel):
             "route_error_threshold_pct",
             "check_interval_seconds",
             "trigger_after_failures",
+            "server_disk_warn_pct",
+            "server_disk_crit_pct",
+            "server_cpu_warn_pct",
+            "server_mem_warn_pct",
+            "server_disk_forecast_hours",
+            "repeat_alert_after_cycles",
         ):
             if field_name in self.model_fields_set and getattr(self, field_name) is None:
                 raise ValueError(f"{field_name} cannot be null")
+        _validate_disk_threshold_order(
+            self.server_disk_warn_pct,
+            self.server_disk_crit_pct,
+            warn_name="server_disk_warn_pct",
+            crit_name="server_disk_crit_pct",
+        )
         return self
 
 
@@ -653,6 +677,7 @@ class AlertHistoryResponse(BaseModel):
     channel_id: int | None = None
     alert_type: str
     target: str
+    severity: str | None = None
     message: str
     recipients: list[str] | None = None
     sent_at: datetime | None = None
@@ -667,6 +692,118 @@ class AlertStatusResponse(BaseModel):
     type: str
     status: str  # "ok" | "alert"
     since: str | None = None
+    severity: str | None = None
+
+
+# ── Monitored servers (hosts) ─────────────────────────────────────────────────
+
+_HOST_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _validate_disk_threshold_order(
+    warn: float | None,
+    crit: float | None,
+    *,
+    warn_name: str = "disk_warn_pct",
+    crit_name: str = "disk_crit_pct",
+) -> None:
+    if warn is not None and crit is not None and warn > crit:
+        raise ValueError(f"{warn_name} must be less than or equal to {crit_name}")
+
+
+def _validate_host_name(name: str) -> str:
+    name = name.strip()
+    if not _HOST_NAME_RE.match(name):
+        raise ValueError(
+            "name must start alphanumeric and contain only letters, digits, '.', '_', '-'"
+        )
+    return name
+
+
+def _validate_host_address(address: str) -> str:
+    address = address.strip()
+    if ":" not in address:
+        raise ValueError("address must be in host:port form (e.g. 10.0.0.5:9100)")
+    host, _, port = address.rpartition(":")
+    if not host:
+        raise ValueError("address must include a host")
+    if not port.isdigit() or not (1 <= int(port) <= 65535):
+        raise ValueError("address port must be a number between 1 and 65535")
+    return address
+
+
+class MonitoredHostCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    address: str = Field(..., min_length=1, max_length=255)
+    enabled: bool = True
+    description: str = Field("", max_length=255)
+    labels: dict[str, str] | None = None
+    disk_warn_pct: float | None = Field(None, ge=0, le=100)
+    disk_crit_pct: float | None = Field(None, ge=0, le=100)
+    cpu_warn_pct: float | None = Field(None, ge=0, le=100)
+    mem_warn_pct: float | None = Field(None, ge=0, le=100)
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, v: str) -> str:
+        return _validate_host_name(v)
+
+    @field_validator("address")
+    @classmethod
+    def check_address(cls, v: str) -> str:
+        return _validate_host_address(v)
+
+    @model_validator(mode="after")
+    def validate_disk_threshold_order(self) -> "MonitoredHostCreate":
+        _validate_disk_threshold_order(self.disk_warn_pct, self.disk_crit_pct)
+        return self
+
+
+class MonitoredHostUpdate(BaseModel):
+    address: str | None = Field(None, min_length=1, max_length=255)
+    enabled: bool | None = None
+    description: str | None = Field(None, max_length=255)
+    labels: dict[str, str] | None = None
+    disk_warn_pct: float | None = Field(None, ge=0, le=100)
+    disk_crit_pct: float | None = Field(None, ge=0, le=100)
+    cpu_warn_pct: float | None = Field(None, ge=0, le=100)
+    mem_warn_pct: float | None = Field(None, ge=0, le=100)
+
+    @field_validator("address")
+    @classmethod
+    def check_address(cls, v: str | None) -> str | None:
+        return _validate_host_address(v) if v is not None else v
+
+    @model_validator(mode="after")
+    def validate_disk_threshold_order(self) -> "MonitoredHostUpdate":
+        _validate_disk_threshold_order(self.disk_warn_pct, self.disk_crit_pct)
+        return self
+
+
+class MonitoredHostResponse(BaseModel):
+    id: int
+    name: str
+    address: str
+    enabled: bool
+    description: str = ""
+    labels: dict[str, str] | None = None
+    disk_warn_pct: float | None = None
+    disk_crit_pct: float | None = None
+    cpu_warn_pct: float | None = None
+    mem_warn_pct: float | None = None
+    status: str | None = None  # "up" | "down" | "unknown" — live from Prometheus
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ServerMetricPoint(BaseModel):
+    t: float  # epoch seconds
+    v: float | None = None
+
+
+class ServerMetricSeries(BaseModel):
+    metric: str  # "cpu" | "mem" | "disk"
+    points: list[ServerMetricPoint] = []
 
 
 # ── S3 Connections ──────────────────────────────────────────────────────────

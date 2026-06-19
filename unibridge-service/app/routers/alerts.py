@@ -19,6 +19,7 @@ from app.models import (
     AlertHistory,
     AlertSettings,
     DBConnection,
+    MonitoredHost,
     NASConnection,
     ResourceOwner,
     S3Connection,
@@ -52,7 +53,7 @@ def _mask_webhook_url(url: str) -> str:
     return f"{parsed.scheme}://{host}/***"
 
 
-RESOURCE_TYPES = {"db", "s3", "nas", "route"}
+RESOURCE_TYPES = {"db", "s3", "nas", "route", "server"}
 APISIX_RESOURCE_TYPES = {
     "route": "routes",
 }
@@ -117,6 +118,12 @@ def _build_settings_response(settings: AlertSettings) -> AlertSettingsResponse:
         route_error_threshold_pct=settings.route_error_threshold_pct,
         check_interval_seconds=settings.check_interval_seconds,
         trigger_after_failures=settings.trigger_after_failures,
+        server_disk_warn_pct=settings.server_disk_warn_pct,
+        server_disk_crit_pct=settings.server_disk_crit_pct,
+        server_cpu_warn_pct=settings.server_cpu_warn_pct,
+        server_mem_warn_pct=settings.server_mem_warn_pct,
+        server_disk_forecast_hours=settings.server_disk_forecast_hours,
+        repeat_alert_after_cycles=settings.repeat_alert_after_cycles,
         updated_at=settings.updated_at,
     )
 
@@ -128,7 +135,21 @@ def _settings_audit_snapshot(settings: AlertSettings) -> dict[str, Any]:
         "route_error_threshold_pct": settings.route_error_threshold_pct,
         "check_interval_seconds": settings.check_interval_seconds,
         "trigger_after_failures": settings.trigger_after_failures,
+        "server_disk_warn_pct": settings.server_disk_warn_pct,
+        "server_disk_crit_pct": settings.server_disk_crit_pct,
+        "server_cpu_warn_pct": settings.server_cpu_warn_pct,
+        "server_mem_warn_pct": settings.server_mem_warn_pct,
+        "server_disk_forecast_hours": settings.server_disk_forecast_hours,
+        "repeat_alert_after_cycles": settings.repeat_alert_after_cycles,
     }
+
+
+def _validate_settings_disk_thresholds(settings: AlertSettings) -> None:
+    if settings.server_disk_warn_pct > settings.server_disk_crit_pct:
+        raise HTTPException(
+            status_code=422,
+            detail="server_disk_warn_pct must be less than or equal to server_disk_crit_pct",
+        )
 
 
 def _channel_audit_snapshot(ch: AlertChannel) -> dict[str, Any]:
@@ -186,6 +207,9 @@ async def _resource_display_name(
     if resource_type == "nas":
         result = await db.execute(select(NASConnection.alias).where(NASConnection.alias == resource_id))
         return result.scalar_one_or_none()
+    if resource_type == "server":
+        result = await db.execute(select(MonitoredHost.name).where(MonitoredHost.name == resource_id))
+        return result.scalar_one_or_none()
 
     items = await _load_apisix_resources(resource_type)
     for item in items:
@@ -233,6 +257,17 @@ async def _list_resources_for_owners(db: AsyncSession) -> list[ResourceOwnerResp
             resource_type="nas",
             resource_id=alias,
             display_name=alias,
+            emails=_parse_emails(owner.emails) if owner is not None else [],
+            alerts_enabled=owner.alerts_enabled if owner is not None else True,
+        ))
+
+    server_result = await db.execute(select(MonitoredHost.name).order_by(MonitoredHost.name))
+    for name in server_result.scalars().all():
+        owner = owners.get(("server", name))
+        rows.append(ResourceOwnerResponse(
+            resource_type="server",
+            resource_id=name,
+            display_name=name,
             emails=_parse_emails(owner.emails) if owner is not None else [],
             alerts_enabled=owner.alerts_enabled if owner is not None else True,
         ))
@@ -290,6 +325,19 @@ async def update_alert_settings(
         settings.check_interval_seconds = body.check_interval_seconds
     if body.trigger_after_failures is not None:
         settings.trigger_after_failures = body.trigger_after_failures
+    if body.server_disk_warn_pct is not None:
+        settings.server_disk_warn_pct = body.server_disk_warn_pct
+    if body.server_disk_crit_pct is not None:
+        settings.server_disk_crit_pct = body.server_disk_crit_pct
+    if body.server_cpu_warn_pct is not None:
+        settings.server_cpu_warn_pct = body.server_cpu_warn_pct
+    if body.server_mem_warn_pct is not None:
+        settings.server_mem_warn_pct = body.server_mem_warn_pct
+    if body.server_disk_forecast_hours is not None:
+        settings.server_disk_forecast_hours = body.server_disk_forecast_hours
+    if body.repeat_alert_after_cycles is not None:
+        settings.repeat_alert_after_cycles = body.repeat_alert_after_cycles
+    _validate_settings_disk_thresholds(settings)
     await db.commit()
     await db.refresh(settings)
 
@@ -736,7 +784,7 @@ async def list_history(
     return [
         AlertHistoryResponse(
             id=h.id, channel_id=h.channel_id,
-            alert_type=h.alert_type, target=h.target, message=h.message,
+            alert_type=h.alert_type, target=h.target, severity=h.severity, message=h.message,
             recipients=json.loads(h.recipients) if h.recipients else None,
             sent_at=h.sent_at, success=h.success, error_detail=h.error_detail,
         )
@@ -754,6 +802,11 @@ def set_alert_state(state) -> None:
     _alert_state = state
 
 
+def get_alert_state():
+    """Return the live AlertStateManager (or None before startup wiring)."""
+    return _alert_state
+
+
 @router.get("/status", response_model=list[AlertStatusResponse])
 async def alert_status(
     _user: CurrentUser = Depends(require_permission("alerts.read")),
@@ -762,6 +815,9 @@ async def alert_status(
         return []
     alerts = _alert_state.get_all_statuses()
     return [
-        AlertStatusResponse(target=a["target"], type=a["type"], status=a["status"], since=a["since"])
+        AlertStatusResponse(
+            target=a["target"], type=a["type"], status=a["status"],
+            since=a["since"], severity=a.get("severity"),
+        )
         for a in alerts
     ]

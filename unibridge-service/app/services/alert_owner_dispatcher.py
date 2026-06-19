@@ -20,7 +20,7 @@ from app.services.alert_sender import render_recipient_items, render_template, s
 
 logger = logging.getLogger(__name__)
 
-ASSIGNEE_RESOURCE_TYPES = {"db", "s3", "nas", "route"}
+ASSIGNEE_RESOURCE_TYPES = {"db", "s3", "nas", "route", "server"}
 
 
 async def dispatch_alert(
@@ -34,6 +34,7 @@ async def dispatch_alert(
     rate: float | None = None,
     threshold: float | None = None,
     monitor_label: str = "",
+    severity: str | None = None,
 ) -> None:
     """Send an alert to the resource's assignees (담당자) plus the global admins (관리자).
 
@@ -48,6 +49,7 @@ async def dispatch_alert(
         resource_type=resource_type,
         alert_type=alert_type,
         target=target,
+        severity=severity,
         message=message,
         recipients=None,
         success=False,
@@ -106,6 +108,7 @@ async def dispatch_alert(
                 rate=rate,
                 threshold=threshold,
                 monitor_label=monitor_label,
+                severity=severity,
             )
             send_args = {
                 "url": channel_webhook_url,
@@ -240,6 +243,7 @@ def _render_payload(
     rate: float | None,
     threshold: float | None,
     monitor_label: str,
+    severity: str | None = None,
 ) -> str:
     status_label = "장애 발생" if alert_type == "triggered" else "정상 복구"
     return render_template(
@@ -254,4 +258,5 @@ def _render_payload(
         rate=f"{rate:.1f}" if rate is not None else "",
         threshold=f"{threshold:.1f}" if threshold is not None else "",
         rule_name=monitor_label,
+        severity=severity or "",
     )

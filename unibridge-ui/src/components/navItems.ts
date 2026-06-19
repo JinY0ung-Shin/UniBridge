@@ -28,6 +28,7 @@ export const navItems: NavItem[] = [
   { to: '/gateway/upstreams', labelKey: 'nav.gatewayUpstreams', icon: 'Gateway Upstreams', section: 'gateway', permission: 'gateway.upstreams.read' },
   { to: '/gateway/monitoring', labelKey: 'nav.gatewayMonitoring', icon: 'Gateway Monitoring', section: 'gateway', permission: ['gateway.monitoring.read', 'gateway.monitoring.self'] },
   { to: '/llm/monitoring', labelKey: 'nav.llmMonitoring', icon: 'LLM Monitoring', section: 'llm', permission: 'gateway.monitoring.read' },
+  { to: '/servers', labelKey: 'nav.servers', icon: 'Gateway Monitoring', section: 'servers', permission: 'servers.read' },
   { to: '/api-keys', labelKey: 'nav.apiKeys', icon: 'API Keys', section: 'access', permission: 'apikeys.read' },
   { to: '/my-api-key', labelKey: 'nav.myApiKey', icon: 'API Keys', section: 'access', permission: 'apikeys.self' },
   { to: '/roles', labelKey: 'nav.roles', icon: 'Roles', section: 'admin', permission: 'admin.roles.read' },

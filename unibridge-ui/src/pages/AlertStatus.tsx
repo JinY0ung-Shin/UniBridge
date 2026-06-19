@@ -13,8 +13,19 @@ function typeLabel(t: (k: string) => string, type: string): string {
     upstream_health: t('alerts.typeUpstreamHealth'),
     error_rate: t('alerts.typeErrorRate'),
     route_error_rate: t('alerts.typeRouteErrorRate'),
+    server_down: t('alerts.typeServerDown'),
+    server_disk: t('alerts.typeServerDisk'),
+    server_disk_forecast: t('alerts.typeServerDiskForecast'),
+    server_cpu: t('alerts.typeServerCpu'),
+    server_mem: t('alerts.typeServerMem'),
   };
   return map[type] ?? type;
+}
+
+function severityLabel(t: (k: string) => string, severity: string | null): string {
+  if (severity === 'critical') return t('alerts.severityCritical');
+  if (severity === 'warning') return t('alerts.severityWarning');
+  return '';
 }
 
 function formatDuration(ts: string | null): string {
@@ -112,6 +123,21 @@ function AlertStatus() {
                           >
                             {typeLabel(t, e.type)}
                           </span>
+                          {e.severity && (
+                            <span
+                              style={{
+                                marginLeft: 6,
+                                padding: '1px 8px',
+                                borderRadius: 999,
+                                fontSize: '0.72rem',
+                                fontWeight: 600,
+                                color: '#fff',
+                                background: e.severity === 'critical' ? 'var(--accent-red, #d23b3b)' : 'var(--accent-yellow, #d29a3b)',
+                              }}
+                            >
+                              {severityLabel(t, e.severity)}
+                            </span>
+                          )}
                         </td>
                         <td className="cell-target">{e.target || '*'}</td>
                         <td className="cell-timestamp">{formatKST(e.since)}</td>

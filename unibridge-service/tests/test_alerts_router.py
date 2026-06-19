@@ -401,6 +401,23 @@ async def test_update_alert_settings_rejects_explicit_numeric_nulls(client, admi
 
 
 @pytest.mark.asyncio
+async def test_update_alert_settings_rejects_invalid_disk_threshold_order(client, admin_token):
+    resp = await client.put(
+        "/admin/alerts/settings",
+        json={"server_disk_warn_pct": 95, "server_disk_crit_pct": 90},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 422
+
+    partial_resp = await client.put(
+        "/admin/alerts/settings",
+        json={"server_disk_warn_pct": 95},
+        headers=auth_header(admin_token),
+    )
+    assert partial_resp.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_update_alert_settings_trigger_after_failures(client, admin_token):
     resp = await client.put(
         "/admin/alerts/settings",

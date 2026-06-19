@@ -25,6 +25,15 @@ scrape_configs:
     metrics_path: '/metrics'
     scrape_interval: 15s
 
+  # Monitored servers (hosts) running node_exporter. Targets are written by
+  # unibridge-service from the MonitoredHost registry into this file_sd file
+  # (shared volume); no Prometheus reload is needed when hosts are added/removed.
+  - job_name: 'nodes'
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/file_sd/nodes.json
+        refresh_interval: 30s
+
   - job_name: 'infra-db-tcp'
     metrics_path: '/probe'
     params:

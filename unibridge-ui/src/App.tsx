@@ -29,6 +29,8 @@ const S3Connections = lazy(() => import('./pages/S3Connections'));
 const S3Browser = lazy(() => import('./pages/S3Browser'));
 const NasConnections = lazy(() => import('./pages/NasConnections'));
 const NasBrowser = lazy(() => import('./pages/NasBrowser'));
+const Servers = lazy(() => import('./pages/Servers'));
+const ServerDetail = lazy(() => import('./pages/ServerDetail'));
 
 export function ProtectedRoute({ permission, children }: { permission: string | string[]; children: React.ReactNode }) {
   const { t } = useTranslation();
@@ -88,6 +90,8 @@ function App() {
           <Route path="/s3/browse/:alias" element={<ProtectedRoute permission="s3.browse"><S3Browser /></ProtectedRoute>} />
           <Route path="/nas" element={<ProtectedRoute permission="nas.connections.read"><NasConnections /></ProtectedRoute>} />
           <Route path="/nas/browse/:alias" element={<ProtectedRoute permission="nas.browse"><NasBrowser /></ProtectedRoute>} />
+          <Route path="/servers" element={<ProtectedRoute permission="servers.read"><Servers /></ProtectedRoute>} />
+          <Route path="/servers/:id" element={<ProtectedRoute permission="servers.read"><ServerDetail /></ProtectedRoute>} />
           <Route path="/gateway/routes" element={<ProtectedRoute permission="gateway.routes.read"><GatewayRoutes /></ProtectedRoute>} />
           <Route path="/gateway/routes/new" element={<ProtectedRoute permission="gateway.routes.write"><GatewayRouteForm /></ProtectedRoute>} />
           <Route path="/gateway/routes/:id/edit" element={<ProtectedRoute permission="gateway.routes.write"><GatewayRouteForm /></ProtectedRoute>} />

@@ -6,9 +6,11 @@ import time
 from sqlalchemy import select
 
 from app.database import async_session
-from app.models import AlertSettings
+from app.models import AlertSettings, MonitoredHost
+from app.services import server_monitor
 from app.services.alert_owner_dispatcher import dispatch_alert
 from app.services.alert_state import AlertStateManager, save_alert_state_to_db
+from app.services.server_monitor import ServerThresholds
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +214,69 @@ async def _check_route_error_rate() -> list[tuple[str, float]] | None:
     return route_rates
 
 
+async def _load_server_monitoring() -> tuple[list[MonitoredHost], ServerThresholds, int]:
+    """Load enabled monitored hosts, global server thresholds, and re-notify cadence."""
+    async with async_session() as db:
+        settings_row = (
+            await db.execute(select(AlertSettings).where(AlertSettings.id == 1))
+        ).scalar_one_or_none()
+        hosts = list((await db.execute(select(MonitoredHost))).scalars().all())
+
+    if settings_row is None:
+        return hosts, ServerThresholds(), 0
+    thresholds = ServerThresholds(
+        disk_warn_pct=settings_row.server_disk_warn_pct,
+        disk_crit_pct=settings_row.server_disk_crit_pct,
+        cpu_warn_pct=settings_row.server_cpu_warn_pct,
+        mem_warn_pct=settings_row.server_mem_warn_pct,
+        forecast_hours=settings_row.server_disk_forecast_hours,
+    )
+    repeat = int(settings_row.repeat_alert_after_cycles or 0)
+    return hosts, thresholds, repeat
+
+
+async def _check_server_health(
+    state: AlertStateManager,
+    *,
+    trigger_after_failures: int,
+) -> None:
+    """Evaluate node_exporter host signals and dispatch transitions.
+
+    Reuses the shared state machine + dispatch pipeline: each signal is one
+    (alert_type, host) binary state, with warn/critical severity escalation and
+    optional re-notification handled by AlertStateManager.
+
+    A failure to load the registry/thresholds is isolated to this step so it
+    can never abort the DB/NAS/upstream/route checks in the same cycle.
+    """
+    try:
+        hosts, thresholds, repeat = await _load_server_monitoring()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Server health check skipped (config load failed): %s", exc)
+        return
+    enabled = [h for h in hosts if getattr(h, "enabled", False)]
+    if not enabled:
+        return
+    signals = await server_monitor.evaluate_hosts(enabled, thresholds)
+    for sig in signals:
+        transition = state.update(
+            sig.alert_type, sig.target,
+            is_healthy=sig.is_healthy,
+            display_target=sig.display,
+            severity=sig.severity,
+            trigger_after_failures=trigger_after_failures,
+            repeat_after_cycles=repeat,
+        )
+        await _persist_state_safely(state, sig.alert_type, sig.target)
+        if transition:
+            await dispatch_alert(
+                resource_type="server", resource_id=sig.target,
+                alert_type=transition, target=sig.target, message=sig.message,
+                display_target=sig.display, rate=sig.value, threshold=sig.threshold,
+                monitor_label=sig.monitor_label, severity=sig.severity,
+            )
+
+
 async def _persist_state_safely(
     state: AlertStateManager,
     alert_type: str,
@@ -318,7 +383,10 @@ async def run_single_check(state: AlertStateManager, *, trigger_after_failures: 
                 display_target=display, monitor_label="업스트림 헬스체크",
             )
 
-    # 4. Route-level error rate (automatic for every route; global threshold)
+    # 4. Server (host) health via node_exporter metrics
+    await _check_server_health(state, trigger_after_failures=trigger_after_failures)
+
+    # 5. Route-level error rate (automatic for every route; global threshold)
     route_results = await _check_route_error_rate()
     if route_results is None:
         return
