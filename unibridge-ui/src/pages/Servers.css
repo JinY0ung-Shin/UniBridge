@@ -21,13 +21,6 @@
   text-decoration: underline;
 }
 
-.form-section-label {
-  margin: 1rem 0 0.25rem;
-  font-weight: 600;
-  font-size: 0.9rem;
-}
-.form-hint { color: var(--text-tertiary, #888); font-size: 0.8rem; margin: 0.15rem 0 0.5rem; }
-
 .server-charts {
   display: grid;
   grid-template-columns: 1fr;

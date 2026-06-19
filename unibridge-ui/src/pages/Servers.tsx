@@ -200,12 +200,12 @@ function Servers() {
                     <td className="cell-target">{s.address}</td>
                     <td>{s.description}</td>
                     <td className="cell-actions">
-                      <button className="btn btn-sm" onClick={() => testMutation.mutate(s.id)} disabled={testMutation.isPending}>
+                      <button className="btn btn-sm btn-secondary" onClick={() => testMutation.mutate(s.id)} disabled={testMutation.isPending}>
                         {t('servers.test')}
                       </button>
                       {canWrite && (
                         <>
-                          <button className="btn btn-sm" onClick={() => openEdit(s)}>{t('common.edit')}</button>
+                          <button className="btn btn-sm btn-secondary" onClick={() => openEdit(s)}>{t('common.edit')}</button>
                           <button
                             className="btn btn-sm btn-danger"
                             onClick={() => { if (window.confirm(t('servers.deleteConfirm', { name: s.name }))) deleteMutation.mutate(s.id); }}
@@ -229,68 +229,70 @@ function Servers() {
           onClose={closeModal}
           closeLabel={t('common.cancel')}
         >
-          <form
-            className="modal-body"
-            onSubmit={(e) => { e.preventDefault(); submit(); }}
-          >
-            <div className="form-group">
-              <label>{t('servers.name')}</label>
-              <input
-                value={form.name}
-                disabled={editingId != null}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder="web-prod-1"
-                required
-              />
-            </div>
-            <div className="form-group">
-              <label>{t('servers.address')}</label>
-              <input
-                value={form.address}
-                onChange={(e) => setForm({ ...form, address: e.target.value })}
-                placeholder="10.0.0.5:39100"
-                required
-              />
-              <small className="form-hint">{t('servers.addressHint')}</small>
-            </div>
-            <div className="form-group">
-              <label>{t('servers.description')}</label>
-              <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
-            </div>
-            <div className="form-group form-group--checkbox">
-              <label>
-                <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />
-                {t('servers.enabled')}
-              </label>
+          <form onSubmit={(e) => { e.preventDefault(); submit(); }}>
+            <div className="form-grid">
+              <div className="form-group">
+                <label>{t('servers.name')}</label>
+                <input
+                  value={form.name}
+                  disabled={editingId != null}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="web-prod-1"
+                  required
+                />
+              </div>
+              <div className="form-group form-group--full">
+                <label>{t('servers.address')} <span className="hint">{t('servers.addressHint')}</span></label>
+                <input
+                  value={form.address}
+                  onChange={(e) => setForm({ ...form, address: e.target.value })}
+                  placeholder="10.0.0.5:39100"
+                  required
+                />
+              </div>
+              <div className="form-group form-group--full">
+                <label>{t('servers.description')}</label>
+                <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+              </div>
+              <div className="form-group">
+                <label>&nbsp;</label>
+                <label className="method-check">
+                  <input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />
+                  {t('servers.enabled')}
+                </label>
+              </div>
             </div>
 
-            <p className="form-section-label">{t('servers.thresholdsTitle')}</p>
-            <p className="form-hint">{t('servers.thresholdsHint')}</p>
-            <div className="form-row">
+            <div className="form-group form-group--full">
+              <label>{t('servers.thresholdsTitle')} <span className="hint">{t('servers.thresholdsHint')}</span></label>
+            </div>
+            <div className="form-grid">
               <div className="form-group">
                 <label>{t('servers.diskWarn')}</label>
-                <input type="number" min={0} max={100} value={form.disk_warn_pct} onChange={(e) => setForm({ ...form, disk_warn_pct: e.target.value })} />
+                <input type="number" min={0} max={100} value={form.disk_warn_pct} onChange={(e) => setForm({ ...form, disk_warn_pct: e.target.value })} placeholder="80" />
               </div>
               <div className="form-group">
                 <label>{t('servers.diskCrit')}</label>
-                <input type="number" min={0} max={100} value={form.disk_crit_pct} onChange={(e) => setForm({ ...form, disk_crit_pct: e.target.value })} />
+                <input type="number" min={0} max={100} value={form.disk_crit_pct} onChange={(e) => setForm({ ...form, disk_crit_pct: e.target.value })} placeholder="90" />
               </div>
-            </div>
-            <div className="form-row">
               <div className="form-group">
                 <label>{t('servers.cpuWarn')}</label>
-                <input type="number" min={0} max={100} value={form.cpu_warn_pct} onChange={(e) => setForm({ ...form, cpu_warn_pct: e.target.value })} />
+                <input type="number" min={0} max={100} value={form.cpu_warn_pct} onChange={(e) => setForm({ ...form, cpu_warn_pct: e.target.value })} placeholder="90" />
               </div>
               <div className="form-group">
                 <label>{t('servers.memWarn')}</label>
-                <input type="number" min={0} max={100} value={form.mem_warn_pct} onChange={(e) => setForm({ ...form, mem_warn_pct: e.target.value })} />
+                <input type="number" min={0} max={100} value={form.mem_warn_pct} onChange={(e) => setForm({ ...form, mem_warn_pct: e.target.value })} placeholder="90" />
               </div>
             </div>
 
-            <div className="modal-footer">
-              <button type="button" className="btn" onClick={closeModal}>{t('common.cancel')}</button>
+            {(createMutation.isError || updateMutation.isError) && (
+              <div className="form-error">{t('servers.saveFailed')}</div>
+            )}
+
+            <div className="modal-actions">
+              <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
               <button type="submit" className="btn btn-primary" disabled={saving}>
-                {saving ? t('common.loading') : t('common.save')}
+                {saving ? t('common.saving') : editingId == null ? t('common.create') : t('common.save')}
               </button>
             </div>
           </form>
