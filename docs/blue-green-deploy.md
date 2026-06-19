@@ -155,6 +155,7 @@ when this repo runs as project `unibridge`:
 - `unibridge_keycloak-db-data`
 - `unibridge_litellm-db-data`
 - `unibridge_prometheus-data`
+- `unibridge_prometheus-file-sd`
 
 If the old deployment used a different `COMPOSE_PROJECT_NAME`, set these in
 `.env` before running the split stack:
@@ -166,6 +167,7 @@ ETCD_DATA_VOLUME=<old-project>_etcd-data
 KEYCLOAK_DB_DATA_VOLUME=<old-project>_keycloak-db-data
 LITELLM_DB_DATA_VOLUME=<old-project>_litellm-db-data
 PROMETHEUS_DATA_VOLUME=<old-project>_prometheus-data
+PROMETHEUS_FILE_SD_VOLUME=<old-project>_prometheus-file-sd
 ```
 
 ## First Run

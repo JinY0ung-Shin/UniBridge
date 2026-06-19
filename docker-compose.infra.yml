@@ -157,6 +157,7 @@ services:
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-file-sd:/etc/prometheus/file_sd:ro
       - prometheus-data:/prometheus
     depends_on:
       apisix:
@@ -305,6 +306,8 @@ volumes:
     name: ${ETCD_DATA_VOLUME:-unibridge_etcd-data}
   prometheus-data:
     name: ${PROMETHEUS_DATA_VOLUME:-unibridge_prometheus-data}
+  prometheus-file-sd:
+    name: ${PROMETHEUS_FILE_SD_VOLUME:-unibridge_prometheus-file-sd}
   keycloak-db-data:
     name: ${KEYCLOAK_DB_DATA_VOLUME:-unibridge_keycloak-db-data}
   litellm-db-data:

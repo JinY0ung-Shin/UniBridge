@@ -50,6 +50,8 @@ services:
       - APISIX_UNIBRIDGE_SERVICE_NODE=${APISIX_UNIBRIDGE_SERVICE_NODE:-unibridge-service-${APP_COLOR}:8000}
       - APISIX_LLM_CONVERTER_NODE=${APISIX_LLM_CONVERTER_NODE:-llm-converter-${APP_COLOR}:4001}
       - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
+      - NODE_EXPORTER_JOB=${NODE_EXPORTER_JOB:-nodes}
+      - PROMETHEUS_FILE_SD_PATH=${PROMETHEUS_FILE_SD_PATH:-/etc/prometheus/file_sd/nodes.json}
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
       - KEYCLOAK_ISSUER_URL=${KEYCLOAK_ISSUER_URL:-}
       - KEYCLOAK_JWKS_URL=${KEYCLOAK_JWKS_URL:-}
@@ -80,6 +82,8 @@ services:
       - SSL_CERT_FILE=${CONTAINER_CA_BUNDLE_PATH:-/etc/ssl/certs/ca-certificates.crt}
     volumes:
       - unibridge-data:/app/data
+      # Writes Prometheus file_sd targets from the MonitoredHost registry.
+      - prometheus-file-sd:/etc/prometheus/file_sd
       - type: bind
         source: ${NAS_HOST_PATH:-/mnt/nas}
         target: ${NAS_CONTAINER_PATH:-/mnt/nas}
@@ -208,3 +212,5 @@ networks:
 volumes:
   unibridge-data:
     name: ${UNIBRIDGE_DATA_VOLUME:-unibridge_unibridge-data}
+  prometheus-file-sd:
+    name: ${PROMETHEUS_FILE_SD_VOLUME:-unibridge_prometheus-file-sd}
