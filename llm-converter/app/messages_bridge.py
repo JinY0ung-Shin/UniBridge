@@ -416,6 +416,7 @@ class _StreamState:
         "output_tokens",
         "finish_reason",
         "started",
+        "last_tool_index",
     )
 
     def __init__(self, model: str) -> None:
@@ -426,12 +427,34 @@ class _StreamState:
         # contiguous, so we buffer each OpenAI tool call and flush it as one
         # complete Anthropic block before ``message_delta``.
         self.pending_tool_calls: Dict[int, _PendingToolCall] = {}
+        # Index of the most recent tool-call delta seen. Some upstreams omit
+        # ``index`` on continuation/finish chunks (sglang #5661, vLLM's
+        # stripped finish chunk #31437); we attribute an index-less fragment to
+        # this call rather than dropping it. ``None`` until the first tool call.
+        self.last_tool_index: Optional[int] = None
         self.model = model
         self.message_id = f"msg_{uuid.uuid4().hex[:24]}"
         self.input_tokens = 0
         self.output_tokens = 0
         self.finish_reason: Optional[str] = None
         self.started = False
+
+
+def _is_complete_json(s: str) -> bool:
+    """True when ``s`` parses as a whole JSON value on its own.
+
+    Used to tell a genuine *incremental* argument fragment (the OpenAI/sglang
+    canonical stream — e.g. ``{"command":`` then ``"ls"}``, neither of which
+    parses alone) apart from a *full restatement* of an already-complete call
+    (vLLM's dialect — the GLM tool parser emits the whole call at once and the
+    finish chunk re-emits the full arguments; see #31437). Only a complete
+    value triggers the replace-not-append path in :meth:`_PendingToolCall.add_arguments`.
+    """
+    try:
+        json.loads(s)
+        return True
+    except (json.JSONDecodeError, ValueError):
+        return False
 
 
 class _PendingToolCall:
@@ -447,6 +470,33 @@ class _PendingToolCall:
             self.id = call_id
         if name:
             self.name = name
+
+    def add_arguments(self, arguments: str) -> None:
+        """Buffer an argument fragment, tolerant of two upstream dialects.
+
+        - OpenAI/sglang canonical: arguments stream as partial fragments that
+          only form valid JSON once concatenated. These always append.
+        - vLLM/GLM (#31437): the parser emits the *complete* arguments in one
+          delta, then the finish chunk re-emits the *same complete* arguments
+          (with ``id``/``name`` stripped). Appending that would duplicate the
+          JSON (``{...}{...}``) and the downstream SDK would fail to parse the
+          tool input. So when what we've buffered is ALREADY a complete JSON
+          value and this fragment is ALSO a complete JSON value, treat it as a
+          REPLACEMENT, not a continuation (and drop it outright if identical).
+
+        Incremental fragments never satisfy the both-complete condition (a
+        partial prefix like ``{"command":`` doesn't parse), so canonical
+        streaming is unaffected.
+        """
+        if not arguments:
+            return
+        buffered = "".join(self.argument_parts)
+        if buffered and _is_complete_json(buffered) and _is_complete_json(arguments):
+            if arguments == buffered:
+                return  # exact duplicate restatement — drop
+            self.argument_parts = [arguments]  # supersede with the restated value
+            return
+        self.argument_parts.append(arguments)
 
 
 def _message_start_event(state: _StreamState) -> Dict[str, Any]:
@@ -499,7 +549,7 @@ def _record_tool_call_delta(
         pending.update_metadata(call_id, name)
 
     if isinstance(arguments, str) and arguments:
-        pending.argument_parts.append(arguments)
+        pending.add_arguments(arguments)
 
 
 def _flush_tool_calls(state: _StreamState) -> List[Dict[str, Any]]:
@@ -656,7 +706,13 @@ async def openai_stream_to_anthropic_events(
                 continue
             tc_index = tc.get("index")
             if not isinstance(tc_index, int):
-                continue
+                # Some upstreams omit ``index`` on continuation/finish chunks
+                # (sglang #5661; vLLM's stripped finish chunk #31437). Dropping
+                # the fragment silently truncated the tool arguments, leaving the
+                # SDK with an unparseable tool_use. Attribute it to the most
+                # recent call instead (or the first, when none seen yet).
+                tc_index = state.last_tool_index if state.last_tool_index is not None else 0
+            state.last_tool_index = tc_index
             fn = tc.get("function") or {}
             tc_id = tc.get("id")
             tc_name = fn.get("name") if isinstance(fn, dict) else None

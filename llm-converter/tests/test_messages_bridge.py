@@ -876,6 +876,157 @@ class TestStreamConversion:
             )
         assert args_by_index == {"call_a": '{"a":1}', "call_b": '{"b":2}'}
 
+    @staticmethod
+    def _tool_args(out: List[dict]) -> dict:
+        """Reconstruct {tool_use_id: concatenated_partial_json} from events."""
+        result = {}
+        for start in (e for e in out if e["type"] == "content_block_start"):
+            if start["content_block"].get("type") != "tool_use":
+                continue
+            idx = start["index"]
+            result[start["content_block"]["id"]] = "".join(
+                e["delta"]["partial_json"]
+                for e in out
+                if e["type"] == "content_block_delta"
+                and e["index"] == idx
+                and e["delta"]["type"] == "input_json_delta"
+            )
+        return result
+
+    async def test_vllm_full_args_restated_in_finish_chunk_not_duplicated(self):
+        # vLLM/GLM dialect (#31437): the tool parser emits the COMPLETE call in
+        # one delta, then the finish chunk re-emits the SAME full arguments.
+        # Naively appending duplicates the JSON ('{...}{...}') and the SDK can't
+        # parse the tool input — add_arguments must treat the restatement as a
+        # replacement, not a continuation.
+        full = '{"path":"skills/foo/SKILL.md","content":"hi"}'
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "mcp__repo__write_file",
+                                        "arguments": full,
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": full}}
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        ]
+        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        args = self._tool_args(out)
+        assert args == {"call_1": full}
+        assert json.loads(args["call_1"]) == {
+            "path": "skills/foo/SKILL.md",
+            "content": "hi",
+        }
+
+    async def test_vllm_finish_chunk_strips_id_and_name_but_they_are_preserved(self):
+        # The finish chunk drops id/type/name (#31437) and re-sends full args.
+        # The id/name from the first delta must survive, and args must not double.
+        full = '{"id":"r-1"}'
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_x",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "mcp__system__describe_system",
+                                        "arguments": full,
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": full}}
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        ]
+        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        starts = [e for e in out if e["type"] == "content_block_start"]
+        tool_start = next(s for s in starts if s["content_block"]["type"] == "tool_use")
+        assert tool_start["content_block"]["id"] == "call_x"
+        assert tool_start["content_block"]["name"] == "mcp__system__describe_system"
+        assert self._tool_args(out) == {"call_x": full}
+
+    async def test_tool_call_delta_without_index_attributed_to_last_call(self):
+        # sglang #5661 / vLLM stripped chunks omit ``index`` on continuation
+        # fragments. They must attach to the open call instead of being dropped
+        # (which previously truncated the arguments).
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "Bash", "arguments": '{"command":'},
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"function": {"arguments": '"ls -la"}'}}
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        ]
+        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        args = self._tool_args(out)
+        assert args == {"call_1": '{"command":"ls -la"}'}
+        assert json.loads(args["call_1"]) == {"command": "ls -la"}
+
 
 # ---------------------------------------------------------------------------
 # Non-streaming response: OpenAI body → Anthropic body
