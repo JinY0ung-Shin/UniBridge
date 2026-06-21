@@ -25,11 +25,12 @@ async def test_create_list_update_delete(client, admin_token):
     # create
     resp = await client.post("/admin/servers", headers=h, json={
         "name": "web1", "address": "10.0.0.5:9100", "description": "edge",
-        "disk_warn_pct": 70,
+        "disk_warn_pct": 70, "disk_mountpoints": " /, /data, /data ",
     })
     assert resp.status_code == 201, resp.text
     host_id = resp.json()["id"]
     assert resp.json()["disk_warn_pct"] == 70
+    assert resp.json()["disk_mountpoints"] == "/,/data"
 
     # list (status comes from the mocked up_map → unknown)
     resp = await client.get("/admin/servers", headers=h)
@@ -37,9 +38,14 @@ async def test_create_list_update_delete(client, admin_token):
     assert [r["name"] for r in resp.json()] == ["web1"]
 
     # update threshold + disable
-    resp = await client.put(f"/admin/servers/{host_id}", headers=h, json={"cpu_warn_pct": 85, "enabled": False})
+    resp = await client.put(
+        f"/admin/servers/{host_id}",
+        headers=h,
+        json={"cpu_warn_pct": 85, "enabled": False, "disk_mountpoints": None},
+    )
     assert resp.status_code == 200
     assert resp.json()["cpu_warn_pct"] == 85 and resp.json()["enabled"] is False
+    assert resp.json()["disk_mountpoints"] is None
 
     # delete
     resp = await client.delete(f"/admin/servers/{host_id}", headers=h)
@@ -64,6 +70,18 @@ async def test_invalid_address_and_name_rejected(client, admin_token):
     assert (await client.post("/admin/servers", headers=h, json={"name": "x", "address": "no-port"})).status_code == 422
     assert (await client.post("/admin/servers", headers=h, json={"name": "bad name", "address": "1.2.3.4:9100"})).status_code == 422
     assert (await client.post("/admin/servers", headers=h, json={"name": "y", "address": "1.2.3.4:99999"})).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_invalid_disk_mountpoints_rejected(client, admin_token):
+    h = auth_header(admin_token)
+    for value in ("data", "/data/../secret", r"C:\\data"):
+        resp = await client.post(
+            "/admin/servers",
+            headers=h,
+            json={"name": f"bad-{len(value)}", "address": "1.2.3.4:9100", "disk_mountpoints": value},
+        )
+        assert resp.status_code == 422
 
 
 @pytest.mark.asyncio

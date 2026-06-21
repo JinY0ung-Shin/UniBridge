@@ -85,6 +85,7 @@ def _host_response(host: MonitoredHost, status: str | None = None) -> MonitoredH
         enabled=host.enabled,
         description=host.description or "",
         labels=_parse_labels(host.labels),
+        disk_mountpoints=host.disk_mountpoints,
         disk_warn_pct=host.disk_warn_pct,
         disk_crit_pct=host.disk_crit_pct,
         cpu_warn_pct=host.cpu_warn_pct,
@@ -102,6 +103,7 @@ def _audit_snapshot(host: MonitoredHost) -> dict[str, Any]:
         "enabled": host.enabled,
         "description": host.description or "",
         "labels": _parse_labels(host.labels),
+        "disk_mountpoints": host.disk_mountpoints,
         "disk_warn_pct": host.disk_warn_pct,
         "disk_crit_pct": host.disk_crit_pct,
         "cpu_warn_pct": host.cpu_warn_pct,
@@ -159,6 +161,7 @@ async def create_server(
         enabled=body.enabled,
         description=body.description,
         labels=json.dumps(body.labels, ensure_ascii=False) if body.labels else None,
+        disk_mountpoints=body.disk_mountpoints,
         disk_warn_pct=body.disk_warn_pct,
         disk_crit_pct=body.disk_crit_pct,
         cpu_warn_pct=body.cpu_warn_pct,
@@ -206,6 +209,8 @@ async def update_server(
         host.description = body.description
     if "labels" in body.model_fields_set:
         host.labels = json.dumps(body.labels, ensure_ascii=False) if body.labels else None
+    if "disk_mountpoints" in body.model_fields_set:
+        host.disk_mountpoints = body.disk_mountpoints
     for field in ("disk_warn_pct", "disk_crit_pct", "cpu_warn_pct", "mem_warn_pct"):
         if field in body.model_fields_set:
             setattr(host, field, getattr(body, field))
@@ -278,7 +283,7 @@ async def server_metrics(
 
     series: list[ServerMetricSeries] = []
     for metric in ("cpu", "mem", "disk"):
-        query = server_monitor.metric_query(metric, host.name)
+        query = server_monitor.metric_query(metric, host.name, disk_mountpoints=host.disk_mountpoints)
         if query is None:
             continue
         try:

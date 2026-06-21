@@ -22,6 +22,7 @@ interface FormState {
   address: string;
   description: string;
   enabled: boolean;
+  disk_mountpoints: string;
   disk_warn_pct: string;
   disk_crit_pct: string;
   cpu_warn_pct: string;
@@ -30,6 +31,7 @@ interface FormState {
 
 const emptyForm: FormState = {
   name: '', address: '', description: '', enabled: true,
+  disk_mountpoints: '',
   disk_warn_pct: '', disk_crit_pct: '', cpu_warn_pct: '', mem_warn_pct: '',
 };
 
@@ -38,6 +40,11 @@ function pctOrNull(value: string): number | null {
   if (trimmed === '') return null;
   const n = Number(trimmed);
   return Number.isFinite(n) ? n : null;
+}
+
+function strOrNull(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
 }
 
 function numToStr(value: number | null): string {
@@ -148,6 +155,7 @@ function Servers() {
       address: server.address,
       description: server.description ?? '',
       enabled: server.enabled,
+      disk_mountpoints: server.disk_mountpoints ?? '',
       disk_warn_pct: numToStr(server.disk_warn_pct),
       disk_crit_pct: numToStr(server.disk_crit_pct),
       cpu_warn_pct: numToStr(server.cpu_warn_pct),
@@ -164,12 +172,14 @@ function Servers() {
       cpu_warn_pct: pctOrNull(form.cpu_warn_pct),
       mem_warn_pct: pctOrNull(form.mem_warn_pct),
     };
+    const diskMountpoints = strOrNull(form.disk_mountpoints);
     if (editingId == null) {
       createMutation.mutate({
         name: form.name.trim(),
         address: form.address.trim(),
         description: form.description.trim(),
         enabled: form.enabled,
+        disk_mountpoints: diskMountpoints,
         ...thresholds,
       });
     } else {
@@ -179,6 +189,7 @@ function Servers() {
           address: form.address.trim(),
           description: form.description.trim(),
           enabled: form.enabled,
+          disk_mountpoints: diskMountpoints,
           ...thresholds,
         },
       });
@@ -214,6 +225,7 @@ function Servers() {
                   <th>{t('servers.statusLabel')}</th>
                   <th>{t('servers.name')}</th>
                   <th>{t('servers.address')}</th>
+                  <th>{t('servers.diskMountpoints')}</th>
                   <th>{t('servers.description')}</th>
                   <th>{t('common.actions')}</th>
                 </tr>
@@ -230,6 +242,7 @@ function Servers() {
                       <button className="link-button" onClick={() => navigate(`/servers/${s.id}`)}>{s.name}</button>
                     </td>
                     <td className="cell-target">{s.address}</td>
+                    <td className="cell-target">{s.disk_mountpoints || t('servers.diskMountpointsInherited')}</td>
                     <td>{s.description}</td>
                     <td className="cell-actions">
                       <button className="btn btn-sm btn-secondary" onClick={() => testMutation.mutate(s.id)} disabled={testMutation.isPending}>
@@ -280,6 +293,14 @@ function Servers() {
                   onChange={(e) => setForm({ ...form, address: e.target.value })}
                   placeholder="10.0.0.5:39100"
                   required
+                />
+              </div>
+              <div className="form-group form-group--full">
+                <label>{t('servers.diskMountpoints')} <span className="hint">{t('servers.diskMountpointsHint')}</span></label>
+                <input
+                  value={form.disk_mountpoints}
+                  onChange={(e) => setForm({ ...form, disk_mountpoints: e.target.value })}
+                  placeholder={t('servers.diskMountpointsPlaceholder')}
                 />
               </div>
               <div className="form-group form-group--full">

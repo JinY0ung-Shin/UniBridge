@@ -51,20 +51,62 @@ def _job() -> str:
     return settings.NODE_EXPORTER_JOB
 
 
-def _mountpoint_selector() -> str:
+def _mountpoint_values(raw: str | None = None) -> tuple[str, ...]:
+    if raw is None:
+        raw = settings.NODE_EXPORTER_DISK_MOUNTPOINTS or ""
+    return tuple(m.strip() for m in raw.split(",") if m.strip())
+
+
+def _regex_label_literal(value: str) -> str:
+    return _escape_label(re.escape(value))
+
+
+def _mountpoint_selector(raw: str | None = None) -> str:
     """Optional ``,mountpoint=~"^(...)$"`` label fragment restricting disk
-    metrics to the configured ``NODE_EXPORTER_DISK_MOUNTPOINTS`` whitelist.
+    metrics to a mountpoint whitelist.
 
     Empty config → empty string → no filter, i.e. every real filesystem is
     considered (the historical behavior). Mountpoint values are regex-escaped
     so paths with metacharacters cannot alter the selector.
     """
-    raw = settings.NODE_EXPORTER_DISK_MOUNTPOINTS or ""
-    mounts = [m.strip() for m in raw.split(",") if m.strip()]
+    mounts = _mountpoint_values(raw)
     if not mounts:
         return ""
-    alt = "|".join(re.escape(m) for m in mounts)
+    alt = "|".join(_regex_label_literal(m) for m in mounts)
     return f',mountpoint=~"^({alt})$"'
+
+
+def _host_selector(host_names: Iterable[str] | None = None) -> str:
+    if not host_names:
+        return ""
+    names = [str(name) for name in host_names if str(name)]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return f',host="{_escape_label(names[0])}"'
+    alt = "|".join(_regex_label_literal(name) for name in names)
+    return f',host=~"^({alt})$"'
+
+
+def _disk_mountpoint_groups(hosts: Iterable[Any]) -> dict[tuple[str, ...], list[str]]:
+    """Group hosts by their effective disk mountpoint whitelist.
+
+    ``MonitoredHost.disk_mountpoints`` overrides the global env. Hosts without a
+    per-host value inherit ``NODE_EXPORTER_DISK_MOUNTPOINTS``.
+    """
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for host in hosts:
+        name = str(getattr(host, "name", "") or "")
+        if not name:
+            continue
+        raw = getattr(host, "disk_mountpoints", None)
+        effective_raw = raw if raw else (settings.NODE_EXPORTER_DISK_MOUNTPOINTS or "")
+        groups.setdefault(_mountpoint_values(effective_raw), []).append(name)
+    return groups
+
+
+def _has_disk_mountpoint_override(hosts: Iterable[Any]) -> bool:
+    return any(bool(getattr(host, "disk_mountpoints", None)) for host in hosts)
 
 
 # ── File-based service discovery ─────────────────────────────────────────────
@@ -182,23 +224,52 @@ def _q_up() -> str:
     return f'up{{job="{_job()}"}}'
 
 
-def _q_disk_pct() -> str:
+def _q_disk_pct(
+    mountpoints_raw: str | None = None,
+    host_names: Iterable[str] | None = None,
+) -> str:
     j = _job()
-    mp = _mountpoint_selector()
+    hs = _host_selector(host_names)
+    mp = _mountpoint_selector(mountpoints_raw)
     return (
         f'max by (host) (100 * (1 - '
-        f'node_filesystem_avail_bytes{{job="{j}",fstype!~"{_FS_EXCLUDE}"{mp}}} / '
-        f'node_filesystem_size_bytes{{job="{j}",fstype!~"{_FS_EXCLUDE}"{mp}}}))'
+        f'node_filesystem_avail_bytes{{job="{j}",fstype!~"{_FS_EXCLUDE}"{hs}{mp}}} / '
+        f'node_filesystem_size_bytes{{job="{j}",fstype!~"{_FS_EXCLUDE}"{hs}{mp}}}))'
     )
 
 
-def _q_disk_forecast(horizon_seconds: float) -> str:
+def _q_disk_forecast(
+    horizon_seconds: float,
+    mountpoints_raw: str | None = None,
+    host_names: Iterable[str] | None = None,
+) -> str:
     j = _job()
-    mp = _mountpoint_selector()
+    hs = _host_selector(host_names)
+    mp = _mountpoint_selector(mountpoints_raw)
     return (
         f'min by (host) (predict_linear('
-        f'node_filesystem_avail_bytes{{job="{j}",fstype!~"{_FS_EXCLUDE}"{mp}}}[6h], '
+        f'node_filesystem_avail_bytes{{job="{j}",fstype!~"{_FS_EXCLUDE}"{hs}{mp}}}[6h], '
         f'{int(horizon_seconds)}))'
+    )
+
+
+def _q_disk_pct_for_hosts(hosts: Iterable[Any]) -> str:
+    host_list = list(hosts)
+    if not _has_disk_mountpoint_override(host_list):
+        return _q_disk_pct()
+    return " or ".join(
+        f"({_q_disk_pct(','.join(mountpoints), host_names)})"
+        for mountpoints, host_names in _disk_mountpoint_groups(host_list).items()
+    )
+
+
+def _q_disk_forecast_for_hosts(hosts: Iterable[Any], horizon_seconds: float) -> str:
+    host_list = list(hosts)
+    if not _has_disk_mountpoint_override(host_list):
+        return _q_disk_forecast(horizon_seconds)
+    return " or ".join(
+        f"({_q_disk_forecast(horizon_seconds, ','.join(mountpoints), host_names)})"
+        for mountpoints, host_names in _disk_mountpoint_groups(host_list).items()
     )
 
 
@@ -221,7 +292,12 @@ def _escape_label(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def metric_query(metric: str, host_name: str) -> str | None:
+def metric_query(
+    metric: str,
+    host_name: str,
+    *,
+    disk_mountpoints: str | None = None,
+) -> str | None:
     """PromQL for a single host's time series (used by the metrics dashboard)."""
     j = _job()
     sel = f'job="{j}",host="{_escape_label(host_name)}"'
@@ -233,7 +309,7 @@ def metric_query(metric: str, host_name: str) -> str | None:
             f'node_memory_MemTotal_bytes{{{sel}}})'
         )
     if metric == "disk":
-        mp = _mountpoint_selector()
+        mp = _mountpoint_selector(disk_mountpoints)
         return (
             f'max by (host) (100 * (1 - '
             f'node_filesystem_avail_bytes{{{sel},fstype!~"{_FS_EXCLUDE}"{mp}}} / '
@@ -292,14 +368,14 @@ async def evaluate_hosts(
     forecast_on = thresholds.forecast_hours and thresholds.forecast_hours > 0
     try:
         up_map = _map_by_host(await prometheus_client.instant_query(_q_up()))
-        disk_map = _map_by_host(await prometheus_client.instant_query(_q_disk_pct()))
+        disk_map = _map_by_host(await prometheus_client.instant_query(_q_disk_pct_for_hosts(enabled)))
         cpu_map = _map_by_host(await prometheus_client.instant_query(_q_cpu_pct()))
         mem_map = _map_by_host(await prometheus_client.instant_query(_q_mem_pct()))
         forecast_map: dict[str, float] = {}
         if forecast_on:
             forecast_map = _map_by_host(
                 await prometheus_client.instant_query(
-                    _q_disk_forecast(thresholds.forecast_hours * 3600.0)
+                    _q_disk_forecast_for_hosts(enabled, thresholds.forecast_hours * 3600.0)
                 )
             )
     except Exception as exc:  # noqa: BLE001

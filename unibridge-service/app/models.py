@@ -361,6 +361,7 @@ class MonitoredHost(Base):
     enabled = Column(Boolean, default=True, nullable=False, server_default="true")
     labels = Column(Text, nullable=True)  # JSON object of extra Prometheus labels
     description = Column(String(255), default="", nullable=False, server_default="")
+    disk_mountpoints = Column(Text, nullable=True)  # comma-separated node_exporter mountpoints; null = global default
     # Per-host threshold overrides (null → fall back to AlertSettings global defaults)
     disk_warn_pct = Column(Float, nullable=True)
     disk_crit_pct = Column(Float, nullable=True)

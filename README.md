@@ -78,6 +78,7 @@ cp .env.example .env
 | `NAS_HOST_PATH` | `/mnt/nas` | Host path bind-mounted read-only into `unibridge-service` for NAS browsing |
 | `NAS_CONTAINER_PATH` | `/mnt/nas` | Container path where the NAS host path appears |
 | `NAS_ALLOWED_ROOTS` | `NAS_CONTAINER_PATH` | Comma-separated container paths allowed as NAS connection `base_path` roots |
+| `NODE_EXPORTER_DISK_MOUNTPOINTS` | empty | Optional global comma-separated disk mountpoint default for server monitoring; per-server settings override it |
 | `S3_OP_TIMEOUT_SECONDS` | 30 | Per-operation timeout for S3-compatible storage calls |
 
 ### 3. TLS certificates
@@ -298,7 +299,9 @@ Register Linux servers running `node_exporter` to monitor reachability, disk
 alerts routed through the existing 담당자/관리자 alert pipeline. Install the agent
 with [`scripts/install_node_exporter.sh`](./scripts/install_node_exporter.sh),
 add the host in the UI under **Servers**, and tune thresholds globally (Alert
-settings) or per host. Full guide: [`docs/server-monitoring.md`](./docs/server-monitoring.md).
+settings) or per host. Disk checks can also be limited to selected node_exporter
+mountpoints globally with `NODE_EXPORTER_DISK_MOUNTPOINTS`, or per host in the
+Servers UI. Full guide: [`docs/server-monitoring.md`](./docs/server-monitoring.md).
 
 ## Backups
 

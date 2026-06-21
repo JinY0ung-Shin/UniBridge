@@ -68,6 +68,18 @@ UI → **Servers → Add server**, with `address = <host-ip>:39100`. Optionally 
 per-host threshold overrides; leave them blank to inherit the global defaults.
 The status column shows live `up`/`down` from Prometheus.
 
+For disk capacity, each server can also set a comma-separated list of
+node_exporter `mountpoint` labels to watch, for example:
+
+```text
+/,/data,/backup
+```
+
+When set, only those mountpoints are considered for that server's `server_disk`
+and `server_disk_forecast` checks. When blank, the server inherits the global
+`NODE_EXPORTER_DISK_MOUNTPOINTS` env value; if that is also blank, every real
+non-pseudo filesystem counts and the most-full one drives the alert.
+
 ## Signals & thresholds
 
 | alert_type             | Fires when                                              | Severity |

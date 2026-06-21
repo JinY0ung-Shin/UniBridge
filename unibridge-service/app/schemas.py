@@ -735,12 +735,39 @@ def _validate_host_address(address: str) -> str:
     return address
 
 
+def _normalize_disk_mountpoints(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if "\x00" in value:
+        raise ValueError("disk_mountpoints must not contain a NUL byte")
+
+    mounts: list[str] = []
+    seen: set[str] = set()
+    for raw_mount in value.split(","):
+        mount = raw_mount.strip()
+        if not mount:
+            continue
+        if "\\" in mount:
+            raise ValueError("disk_mountpoints must contain POSIX mountpoints, not backslashes")
+        path = PurePosixPath(mount)
+        if not path.is_absolute():
+            raise ValueError("disk_mountpoints entries must be absolute POSIX paths")
+        if any(part == ".." for part in path.parts):
+            raise ValueError("disk_mountpoints entries must not contain '..' segments")
+        normalized = str(PurePosixPath(*[part for part in path.parts if part != "."]))
+        if normalized not in seen:
+            seen.add(normalized)
+            mounts.append(normalized)
+    return ",".join(mounts) if mounts else None
+
+
 class MonitoredHostCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     address: str = Field(..., min_length=1, max_length=255)
     enabled: bool = True
     description: str = Field("", max_length=255)
     labels: dict[str, str] | None = None
+    disk_mountpoints: str | None = Field(None, max_length=1000)
     disk_warn_pct: float | None = Field(None, ge=0, le=100)
     disk_crit_pct: float | None = Field(None, ge=0, le=100)
     cpu_warn_pct: float | None = Field(None, ge=0, le=100)
@@ -756,6 +783,11 @@ class MonitoredHostCreate(BaseModel):
     def check_address(cls, v: str) -> str:
         return _validate_host_address(v)
 
+    @field_validator("disk_mountpoints")
+    @classmethod
+    def check_disk_mountpoints(cls, v: str | None) -> str | None:
+        return _normalize_disk_mountpoints(v)
+
     @model_validator(mode="after")
     def validate_disk_threshold_order(self) -> "MonitoredHostCreate":
         _validate_disk_threshold_order(self.disk_warn_pct, self.disk_crit_pct)
@@ -767,6 +799,7 @@ class MonitoredHostUpdate(BaseModel):
     enabled: bool | None = None
     description: str | None = Field(None, max_length=255)
     labels: dict[str, str] | None = None
+    disk_mountpoints: str | None = Field(None, max_length=1000)
     disk_warn_pct: float | None = Field(None, ge=0, le=100)
     disk_crit_pct: float | None = Field(None, ge=0, le=100)
     cpu_warn_pct: float | None = Field(None, ge=0, le=100)
@@ -776,6 +809,11 @@ class MonitoredHostUpdate(BaseModel):
     @classmethod
     def check_address(cls, v: str | None) -> str | None:
         return _validate_host_address(v) if v is not None else v
+
+    @field_validator("disk_mountpoints")
+    @classmethod
+    def check_disk_mountpoints(cls, v: str | None) -> str | None:
+        return _normalize_disk_mountpoints(v)
 
     @model_validator(mode="after")
     def validate_disk_threshold_order(self) -> "MonitoredHostUpdate":
@@ -790,6 +828,7 @@ class MonitoredHostResponse(BaseModel):
     enabled: bool
     description: str = ""
     labels: dict[str, str] | None = None
+    disk_mountpoints: str | None = None
     disk_warn_pct: float | None = None
     disk_crit_pct: float | None = None
     cpu_warn_pct: float | None = None

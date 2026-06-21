@@ -1205,6 +1205,7 @@ export interface MonitoredServer {
   enabled: boolean;
   description: string;
   labels: Record<string, string> | null;
+  disk_mountpoints: string | null;
   disk_warn_pct: number | null;
   disk_crit_pct: number | null;
   cpu_warn_pct: number | null;
@@ -1220,6 +1221,7 @@ export interface MonitoredServerInput {
   enabled?: boolean;
   description?: string;
   labels?: Record<string, string> | null;
+  disk_mountpoints?: string | null;
   disk_warn_pct?: number | null;
   disk_crit_pct?: number | null;
   cpu_warn_pct?: number | null;

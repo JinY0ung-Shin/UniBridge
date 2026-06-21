@@ -18,6 +18,7 @@ def _host(name="web1", address="10.0.0.1:9100", enabled=True, labels=None, **ove
         disk_crit_pct=overrides.get("disk_crit_pct"),
         cpu_warn_pct=overrides.get("cpu_warn_pct"),
         mem_warn_pct=overrides.get("mem_warn_pct"),
+        disk_mountpoints=overrides.get("disk_mountpoints"),
     )
 
 
@@ -85,6 +86,51 @@ def test_disk_queries_apply_configured_mountpoint_whitelist():
         for q in (server_monitor._q_disk_pct(), metric_query("disk", "web1")):
             assert q.count(sel) == 2
         assert server_monitor._q_disk_forecast(3600).count(sel) == 1
+
+
+def test_disk_mountpoint_selector_escapes_regex_metacharacters_for_promql_string():
+    sel = server_monitor._mountpoint_selector("/data.prod,/mnt/cache+ssd")
+
+    assert r"/data\\.prod" in sel
+    assert r"/mnt/cache\\+ssd" in sel
+
+
+def test_disk_queries_group_per_host_mountpoint_overrides():
+    hosts = [
+        _host("web1", disk_mountpoints="/data"),
+        _host("web2", disk_mountpoints="/backup"),
+        _host("web3"),
+    ]
+    with patch.object(server_monitor.settings, "NODE_EXPORTER_DISK_MOUNTPOINTS", "/"):
+        q = server_monitor._q_disk_pct_for_hosts(hosts)
+        forecast = server_monitor._q_disk_forecast_for_hosts(hosts, 3600)
+
+    assert q.count(" or ") == 2
+    assert 'host="web1"' in q and r'mountpoint=~"^(/data)$"' in q
+    assert 'host="web2"' in q and r'mountpoint=~"^(/backup)$"' in q
+    assert 'host="web3"' in q and r'mountpoint=~"^(/)$"' in q
+    assert forecast.count(" or ") == 2
+    assert 'host="web1"' in forecast and r'mountpoint=~"^(/data)$"' in forecast
+
+
+def test_disk_queries_escape_grouped_host_regex_values():
+    hosts = [
+        _host("web.1", disk_mountpoints="/data"),
+        _host("web2", disk_mountpoints="/data"),
+    ]
+
+    q = server_monitor._q_disk_pct_for_hosts(hosts)
+
+    assert r'host=~"^(web\\.1|web2)$"' in q
+
+
+def test_metric_query_uses_host_mountpoint_override():
+    with patch.object(server_monitor.settings, "NODE_EXPORTER_DISK_MOUNTPOINTS", "/"):
+        q = metric_query("disk", "web1", disk_mountpoints="/data")
+
+    assert q is not None
+    assert r'mountpoint=~"^(/data)$"' in q
+    assert r'mountpoint=~"^(/)$"' not in q
 
 
 # ── evaluation ───────────────────────────────────────────────────────────────

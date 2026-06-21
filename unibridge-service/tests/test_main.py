@@ -529,6 +529,12 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
                 scalars=lambda: SimpleNamespace(all=lambda: []),
             )
 
+    class _ServersDb:
+        async def execute(self, _query):
+            return SimpleNamespace(
+                scalars=lambda: SimpleNamespace(all=lambda: []),
+            )
+
     class _SettingsDb:
         pass
 
@@ -551,7 +557,17 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     replay_route_restrictions = AsyncMock(
         side_effect=lambda db: events.append(("replay", db.__class__.__name__))
     )
-    db_iter = iter([_ConnectionsDb(), _S3Db(), _NasDb(), _SettingsDb(), _ReplayDb(), _AlertStateDb()])
+    db_iter = iter(
+        [
+            _ConnectionsDb(),
+            _S3Db(),
+            _NasDb(),
+            _ServersDb(),
+            _SettingsDb(),
+            _ReplayDb(),
+            _AlertStateDb(),
+        ]
+    )
 
     with (
         patch("app.main.validate_settings"),

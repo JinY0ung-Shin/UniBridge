@@ -30,10 +30,10 @@ class Settings(BaseSettings):
     # the MonitoredHost registry (must be on a volume shared with Prometheus).
     NODE_EXPORTER_JOB: str = "nodes"
     PROMETHEUS_FILE_SD_PATH: str = "/etc/prometheus/file_sd/nodes.json"
-    # Optional comma-separated mountpoint whitelist for disk-capacity alerts
-    # (e.g. "/,/data,/backup"). Empty → every real (non-pseudo) filesystem is
-    # considered, taking the most-full one per host. When set, only these
-    # mountpoints count; the most-full among them still drives the host alert.
+    # Optional global comma-separated mountpoint whitelist for disk-capacity
+    # alerts (e.g. "/,/data,/backup"). Hosts with MonitoredHost.disk_mountpoints
+    # override this. Empty at both levels → every real (non-pseudo) filesystem is
+    # considered, taking the most-full one per host.
     NODE_EXPORTER_DISK_MOUNTPOINTS: str = ""
     LITELLM_MASTER_KEY: str = ""
 
