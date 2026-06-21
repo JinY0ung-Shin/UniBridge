@@ -81,10 +81,27 @@ def _make_client(timeout: float | None) -> httpx.AsyncClient:
 # schemas) can't blow up a single log line; the diff-relevant prefix survives.
 _TRACE_BODY_MAX = 200_000
 
+# Cap each logged tool-call argument fragment / reconstructed args blob so a
+# huge tool input can't blow up a log line, while still showing the shape.
+_TRACE_ARGS_MAX = 4_000
+
+
+def _is_json(s: object) -> bool:
+    """True when ``s`` is a string that parses as a whole JSON value."""
+    if not isinstance(s, str):
+        return False
+    try:
+        json.loads(s)
+        return True
+    except (json.JSONDecodeError, ValueError):
+        return False
+
 
 def _summarize_tool_calls(tool_calls: object) -> object:
-    """Compact view of a streaming ``delta.tool_calls`` for the trace log: just
-    the index/id/name and the arguments-fragment length, never the full args."""
+    """Compact view of a streaming ``delta.tool_calls`` for the trace log: the
+    index/id/name, the arguments-fragment length, AND a capped preview of the
+    actual fragment — so duplicated / truncated / malformed args (the vLLM-GLM
+    dialect failure) are visible, not just their length."""
     if not isinstance(tool_calls, list):
         return None
     out = []
@@ -99,6 +116,7 @@ def _summarize_tool_calls(tool_calls: object) -> object:
                 "id": tc.get("id"),
                 "name": fn.get("name"),
                 "args_len": len(args) if isinstance(args, str) else 0,
+                "args": args[:_TRACE_ARGS_MAX] if isinstance(args, str) else None,
             }
         )
     return out or None
@@ -155,7 +173,19 @@ async def _trace_upstream_chunks(
     """Pass-through that logs each DECISIVE upstream OpenAI chunk — one carrying a
     ``finish_reason`` or ``delta.tool_calls`` — so we can see whether vLLM emitted
     structured tool calls or finished with plain text. Token-by-token content
-    deltas are intentionally NOT logged (too noisy)."""
+    deltas are intentionally NOT logged (too noisy). A terminal ``END`` line
+    reports totals so the three failure shapes are distinguishable:
+      - HANG: no ``END`` line at all (stream never completes), or END with
+        ``last_finish_reason=None``.
+      - tool-call-as-TEXT: ``toolcall_deltas=0`` but ``content_chunks>0`` and
+        ``last_finish_reason=stop`` (the call came back as prose, not structure).
+      - structured: ``toolcall_deltas>0`` (then check the per-chunk ``args`` and
+        the downstream trace for malformed/duplicated args)."""
+    chunk_count = 0
+    toolcall_delta_count = 0
+    content_chunks = 0
+    reasoning_chunks = 0
+    last_finish: object = None
     async for chunk in chunks:
         try:
             choices = chunk.get("choices") or []
@@ -164,6 +194,15 @@ async def _trace_upstream_chunks(
                 delta = ch.get("delta") if isinstance(ch.get("delta"), dict) else {}
                 fr = ch.get("finish_reason")
                 tc = delta.get("tool_calls")
+                chunk_count += 1
+                if tc:
+                    toolcall_delta_count += 1
+                if delta.get("content"):
+                    content_chunks += 1
+                if delta.get("reasoning_content"):
+                    reasoning_chunks += 1
+                if fr:
+                    last_finish = fr
                 if fr or tc:
                     logger.info(
                         "converter trace upstream[%s]: finish_reason=%s tool_calls=%s "
@@ -174,9 +213,87 @@ async def _trace_upstream_chunks(
                         bool(delta.get("content")),
                         bool(delta.get("reasoning_content")),
                     )
+            err = chunk.get("error")
+            if err:
+                logger.info("converter trace upstream[%s]: ERROR chunk=%s", tag, err)
         except Exception:
             logger.exception("converter trace: upstream chunk inspect failed")
         yield chunk
+    logger.info(
+        "converter trace upstream[%s] END: chunks=%d toolcall_deltas=%d "
+        "content_chunks=%d reasoning_chunks=%d last_finish_reason=%s",
+        tag,
+        chunk_count,
+        toolcall_delta_count,
+        content_chunks,
+        reasoning_chunks,
+        last_finish,
+    )
+
+
+async def _trace_downstream_events(
+    events: AsyncIterator[dict], tag: str
+) -> AsyncIterator[dict]:
+    """Pass-through over the Anthropic events the converter EMITS to the SDK.
+
+    The upstream trace shows what vLLM sent; this shows what the bridge
+    produced from it — exactly what ``claude_agent_sdk`` consumes. For each
+    tool_use block it logs the id/name and the RECONSTRUCTED arguments (the
+    concatenated ``input_json_delta`` fragments) plus whether they parse as
+    valid JSON, so a malformed tool_use (empty name, duplicated/invalid JSON)
+    is visible here even when the raw upstream looked fine. Also logs the
+    terminal ``stop_reason`` and any terminal ``error`` event."""
+    args_buf: dict = {}
+    names: dict = {}
+    async for evt in events:
+        try:
+            et = evt.get("type")
+            if et == "content_block_start":
+                cb = evt.get("content_block") or {}
+                if cb.get("type") in ("tool_use", "server_tool_use"):
+                    idx = evt.get("index")
+                    args_buf[idx] = []
+                    names[idx] = cb.get("name")
+                    logger.info(
+                        "converter trace downstream[%s]: tool_use START index=%s id=%s name=%r",
+                        tag,
+                        idx,
+                        cb.get("id"),
+                        cb.get("name"),
+                    )
+            elif et == "content_block_delta":
+                d = evt.get("delta") or {}
+                if d.get("type") == "input_json_delta":
+                    idx = evt.get("index")
+                    if idx in args_buf:
+                        args_buf[idx].append(d.get("partial_json") or "")
+            elif et == "content_block_stop":
+                idx = evt.get("index")
+                if idx in args_buf:
+                    joined = "".join(args_buf.pop(idx))
+                    logger.info(
+                        "converter trace downstream[%s]: tool_use END index=%s name=%r "
+                        "args_valid_json=%s args_len=%d args=%s",
+                        tag,
+                        idx,
+                        names.pop(idx, None),
+                        _is_json(joined),
+                        len(joined),
+                        joined[:_TRACE_ARGS_MAX],
+                    )
+            elif et == "message_delta":
+                logger.info(
+                    "converter trace downstream[%s]: message_delta stop_reason=%s",
+                    tag,
+                    (evt.get("delta") or {}).get("stop_reason"),
+                )
+            elif et == "error":
+                logger.info(
+                    "converter trace downstream[%s]: ERROR event=%s", tag, evt.get("error")
+                )
+        except Exception:
+            logger.exception("converter trace: downstream event inspect failed")
+        yield evt
 
 
 def _bad_request(message: str) -> Response:
@@ -379,7 +496,14 @@ async def messages(request: Request) -> Response:
             # Run the bridge output through ``sanitize_events`` too so any
             # invariant slip in the conversion still gets caught (empty-delta
             # drop, monotonic indices, dangling-block close).
-            async for sanitized in sanitize_events(anthropic_events):
+            sanitized_events = sanitize_events(anthropic_events)
+            if settings.trace:
+                # Trace the FINAL events the SDK receives (post-sanitize), so a
+                # malformed tool_use shows up exactly as the consumer sees it.
+                sanitized_events = _trace_downstream_events(
+                    sanitized_events, str(bridge_model)
+                )
+            async for sanitized in sanitized_events:
                 yield format_sse(sanitized)
         except Exception:
             # The bridge/upstream raised mid-stream (connection reset, malformed
