@@ -43,6 +43,22 @@ def test_build_targets_user_label_cannot_clobber_host():
     assert entries[0]["labels"]["host"] == "web1"
 
 
+@pytest.mark.asyncio
+async def test_write_targets_file_is_world_readable(tmp_path):
+    # Prometheus scrapes file_sd as a different UID (nobody); the targets file
+    # must be readable by group/other, not the 0600 that mkstemp defaults to.
+    import json
+    import os
+    import stat
+
+    path = tmp_path / "nodes.json"
+    await server_monitor.write_targets_file([_host("web1", "10.0.0.1:39100")], str(path))
+
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    assert mode & stat.S_IROTH, f"targets file not other-readable: {oct(mode)}"
+    assert json.loads(path.read_text())[0]["targets"] == ["10.0.0.1:39100"]
+
+
 def test_metric_query_escapes_and_covers_metrics():
     assert metric_query("cpu", "web1") is not None
     assert 'host="web1"' in metric_query("disk", "web1")

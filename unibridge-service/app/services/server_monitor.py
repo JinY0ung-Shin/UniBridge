@@ -86,6 +86,10 @@ def _write_json_atomic(path: str, data: Any) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False, indent=2)
+        # mkstemp creates the file 0600; Prometheus scrapes file_sd as a
+        # different UID (nobody) and must be able to read it. Without this the
+        # targets file is silently unreadable -> zero "nodes" targets.
+        os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     except BaseException:
         try:
