@@ -1230,6 +1230,7 @@ export interface MonitoredServerInput {
 
 export interface ServerMetricSeries {
   metric: 'cpu' | 'mem' | 'disk';
+  mountpoint?: string | null;
   points: Array<{ t: number; v: number | null }>;
 }
 

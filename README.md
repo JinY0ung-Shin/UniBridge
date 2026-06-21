@@ -301,7 +301,8 @@ with [`scripts/install_node_exporter.sh`](./scripts/install_node_exporter.sh),
 add the host in the UI under **Servers**, and tune thresholds globally (Alert
 settings) or per host. Disk checks can also be limited to selected node_exporter
 mountpoints globally with `NODE_EXPORTER_DISK_MOUNTPOINTS`, or per host in the
-Servers UI. Full guide: [`docs/server-monitoring.md`](./docs/server-monitoring.md).
+Servers UI; the server detail disk chart splits those selected mountpoints into
+separate lines. Full guide: [`docs/server-monitoring.md`](./docs/server-monitoring.md).
 
 ## Backups
 

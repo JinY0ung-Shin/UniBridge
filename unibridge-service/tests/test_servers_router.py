@@ -122,6 +122,45 @@ async def test_test_endpoint_reports_status(client, admin_token):
 
 
 @pytest.mark.asyncio
+async def test_metrics_returns_disk_series_per_mountpoint(client, admin_token):
+    h = auth_header(admin_token)
+    created = await client.post(
+        "/admin/servers",
+        headers=h,
+        json={"name": "web-metrics", "address": "1.2.3.4:9100", "disk_mountpoints": "/,/data"},
+    )
+    assert created.status_code == 201, created.text
+    host_id = created.json()["id"]
+
+    async def fake_range_query(query, **_kwargs):
+        if "node_cpu_seconds_total" in query:
+            return [{"metric": {"host": "web-metrics"}, "values": [[1, "10"]]}]
+        if "node_memory_MemAvailable_bytes" in query:
+            return [{"metric": {"host": "web-metrics"}, "values": [[1, "20"]]}]
+        if "node_filesystem_avail_bytes" in query:
+            assert "max by (host, mountpoint)" in query
+            return [
+                {"metric": {"host": "web-metrics", "mountpoint": "/"}, "values": [[1, "55"], [2, "56"]]},
+                {"metric": {"host": "web-metrics", "mountpoint": "/data"}, "values": [[1, "75"], [2, "NaN"]]},
+            ]
+        return []
+
+    with patch("app.routers.servers.prometheus_client.range_query", new=fake_range_query):
+        resp = await client.get(f"/admin/servers/{host_id}/metrics", headers=h)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert [(s["metric"], s["mountpoint"]) for s in body] == [
+        ("cpu", None),
+        ("mem", None),
+        ("disk", "/"),
+        ("disk", "/data"),
+    ]
+    assert body[2]["points"] == [{"t": 1.0, "v": 55.0}, {"t": 2.0, "v": 56.0}]
+    assert body[3]["points"] == [{"t": 1.0, "v": 75.0}, {"t": 2.0, "v": None}]
+
+
+@pytest.mark.asyncio
 async def test_disabling_server_persists_alert_state_cleanup(client, admin_token, seeded_db):
     h = auth_header(admin_token)
     created = await client.post(

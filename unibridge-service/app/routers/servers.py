@@ -281,6 +281,18 @@ async def server_metrics(
     if host is None:
         raise HTTPException(status_code=404, detail="Server not found")
 
+    def points_from_result(result: dict[str, Any] | None) -> list[ServerMetricPoint]:
+        points: list[ServerMetricPoint] = []
+        for ts, raw in (result or {}).get("values", []):
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                value = None
+            if value is not None and value != value:  # NaN
+                value = None
+            points.append(ServerMetricPoint(t=float(ts), v=value))
+        return points
+
     series: list[ServerMetricSeries] = []
     for metric in ("cpu", "mem", "disk"):
         query = server_monitor.metric_query(metric, host.name, disk_mountpoints=host.disk_mountpoints)
@@ -291,15 +303,19 @@ async def server_metrics(
         except Exception as exc:  # noqa: BLE001
             logger.warning("Server metric query failed (%s/%s): %s", host.name, metric, exc)
             results = []
-        points: list[ServerMetricPoint] = []
-        if results:
-            for ts, raw in results[0].get("values", []):
-                try:
-                    value = float(raw)
-                except (TypeError, ValueError):
-                    value = None
-                if value is not None and value != value:  # NaN
-                    value = None
-                points.append(ServerMetricPoint(t=float(ts), v=value))
-        series.append(ServerMetricSeries(metric=metric, points=points))
+        if metric == "disk":
+            if not results:
+                series.append(ServerMetricSeries(metric=metric))
+                continue
+            for result in sorted(results, key=lambda item: str(item.get("metric", {}).get("mountpoint") or "")):
+                mountpoint = result.get("metric", {}).get("mountpoint")
+                series.append(
+                    ServerMetricSeries(
+                        metric=metric,
+                        mountpoint=str(mountpoint) if mountpoint else None,
+                        points=points_from_result(result),
+                    )
+                )
+            continue
+        series.append(ServerMetricSeries(metric=metric, points=points_from_result(results[0] if results else None)))
     return series

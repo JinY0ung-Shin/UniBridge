@@ -73,7 +73,7 @@ def test_disk_queries_have_no_mountpoint_filter_by_default():
         assert server_monitor._mountpoint_selector() == ""
         assert "mountpoint" not in server_monitor._q_disk_pct()
         assert "mountpoint" not in server_monitor._q_disk_forecast(3600)
-        assert "mountpoint" not in metric_query("disk", "web1")
+        assert "mountpoint=~" not in metric_query("disk", "web1")
 
 
 def test_disk_queries_apply_configured_mountpoint_whitelist():
@@ -129,6 +129,7 @@ def test_metric_query_uses_host_mountpoint_override():
         q = metric_query("disk", "web1", disk_mountpoints="/data")
 
     assert q is not None
+    assert "max by (host, mountpoint)" in q
     assert r'mountpoint=~"^(/data)$"' in q
     assert r'mountpoint=~"^(/)$"' not in q
 

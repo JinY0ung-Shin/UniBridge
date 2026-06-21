@@ -311,7 +311,7 @@ def metric_query(
     if metric == "disk":
         mp = _mountpoint_selector(disk_mountpoints)
         return (
-            f'max by (host) (100 * (1 - '
+            f'max by (host, mountpoint) (100 * (1 - '
             f'node_filesystem_avail_bytes{{{sel},fstype!~"{_FS_EXCLUDE}"{mp}}} / '
             f'node_filesystem_size_bytes{{{sel},fstype!~"{_FS_EXCLUDE}"{mp}}}))'
         )

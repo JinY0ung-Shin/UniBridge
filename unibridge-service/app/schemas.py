@@ -845,7 +845,8 @@ class ServerMetricPoint(BaseModel):
 
 class ServerMetricSeries(BaseModel):
     metric: str  # "cpu" | "mem" | "disk"
-    points: list[ServerMetricPoint] = []
+    mountpoint: str | None = None  # set for disk series when Prometheus returns the label
+    points: list[ServerMetricPoint] = Field(default_factory=list)
 
 
 # ── S3 Connections ──────────────────────────────────────────────────────────

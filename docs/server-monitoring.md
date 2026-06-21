@@ -80,6 +80,10 @@ and `server_disk_forecast` checks. When blank, the server inherits the global
 `NODE_EXPORTER_DISK_MOUNTPOINTS` env value; if that is also blank, every real
 non-pseudo filesystem counts and the most-full one drives the alert.
 
+The server detail disk chart keeps the same mountpoint scope but displays each
+returned `mountpoint` label as a separate line. Alerts still use the worst
+selected filesystem per host so existing warning/critical behavior stays stable.
+
 ## Signals & thresholds
 
 | alert_type             | Fires when                                              | Severity |
