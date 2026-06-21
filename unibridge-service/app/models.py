@@ -275,6 +275,10 @@ class AlertSettings(Base):
     # Global admins (관리자) — receive every alert. JSON array of emails.
     admin_emails = Column(Text, default="[]", server_default="[]", nullable=False)
     route_error_threshold_pct = Column(Float, default=10.0, nullable=False, server_default="10.0")
+    # Minimum request volume (over the 5-minute window) a route must see before its
+    # 5xx error rate can trigger an alert. Suppresses noisy alerts on low-traffic
+    # routes where a single error inflates the percentage. 0 disables the floor.
+    route_error_min_requests = Column(Integer, default=20, nullable=False, server_default="20")
     check_interval_seconds = Column(Integer, default=60, nullable=False, server_default="60")
     trigger_after_failures = Column(
         Integer,

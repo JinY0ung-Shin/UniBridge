@@ -718,6 +718,8 @@
     "channels": "Channels",
     "mailChannel": "Mail Channel",
     "routeErrorThreshold": "Route Error Threshold (%)",
+    "routeErrorMinRequests": "Minimum Requests to Alert",
+    "routeErrorMinRequestsHelp": "A route must receive at least this many requests over the 5-minute window before its error rate can trigger an alert. Suppresses noisy alerts on low-traffic routes. 0 disables.",
     "checkInterval": "Check Interval (seconds)",
     "triggerAfterFailures": "Consecutive failures to trigger",
     "triggerAfterFailuresHelp": "An alert fires only after this many consecutive failed checks (1–10).",

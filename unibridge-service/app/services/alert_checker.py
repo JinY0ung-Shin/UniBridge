@@ -61,11 +61,20 @@ def _normalize_route_error_threshold_pct(value: float | int | None) -> float:
     return min(100.0, max(0.0, float(value)))
 
 
-async def _load_route_error_threshold(db) -> float:
+async def _load_route_error_settings(db) -> tuple[float, int]:
+    """Return (threshold_pct, min_requests) for route 5xx alerting."""
     result = await db.execute(
-        select(AlertSettings.route_error_threshold_pct).where(AlertSettings.id == 1)
+        select(
+            AlertSettings.route_error_threshold_pct,
+            AlertSettings.route_error_min_requests,
+        ).where(AlertSettings.id == 1)
     )
-    return _normalize_route_error_threshold_pct(result.scalar_one_or_none())
+    row = result.one_or_none()
+    if row is None:
+        return 10.0, 20
+    threshold = _normalize_route_error_threshold_pct(row[0])
+    min_requests = 0 if row[1] is None else max(0, int(row[1]))
+    return threshold, min_requests
 
 
 async def _refresh_route_labels() -> None:
@@ -161,22 +170,27 @@ async def _check_upstream_health() -> list[tuple[str, bool]]:
     return results
 
 
-async def _check_route_error_rate() -> list[tuple[str, float]] | None:
+async def _check_route_error_rate() -> list[tuple[str, float, float]] | None:
     """Check 5xx error rate per APISIX route.
 
-    Returns [(route_id, rate_pct), ...] for every route that has traffic
-    in the last 5 minutes. Routes with 0 errors are included with rate=0
-    so that resolved transitions are detected correctly.
+    Returns [(route_id, rate_pct, sample_count), ...] for every route that has
+    traffic in the last 5 minutes, where ``sample_count`` is the approximate
+    number of requests over the window (used to suppress alerts on low-traffic
+    routes). Routes with 0 errors are included with rate=0 so that resolved
+    transitions are detected correctly.
+
+    Uses ``increase()`` rather than ``rate()`` so the denominator is a request
+    count; the error ratio is identical either way.
     """
     from app.services import prometheus_client
     try:
         total_results = await prometheus_client.instant_query(
-            'sum by (route) (rate(apisix_http_status[5m]))'
+            'sum by (route) (increase(apisix_http_status[5m]))'
         )
         if not total_results:
             return []
         err_results = await prometheus_client.instant_query(
-            'sum by (route) (rate(apisix_http_status{code=~"5.."}[5m]))'
+            'sum by (route) (increase(apisix_http_status{code=~"5.."}[5m]))'
         )
     except Exception as exc:
         logger.warning("Route error rate check failed: %s", exc)
@@ -195,7 +209,7 @@ async def _check_route_error_rate() -> list[tuple[str, float]] | None:
             continue
         err_map[rid] = val
 
-    route_rates: list[tuple[str, float]] = []
+    route_rates: list[tuple[str, float, float]] = []
     for item in total_results:
         rid = item.get("metric", {}).get("route")
         if not rid:
@@ -210,7 +224,7 @@ async def _check_route_error_rate() -> list[tuple[str, float]] | None:
         pct = (err / total) * 100
         if pct != pct:
             pct = 0.0
-        route_rates.append((str(rid), pct))
+        route_rates.append((str(rid), pct, total))
     return route_rates
 
 
@@ -296,6 +310,8 @@ async def _evaluate_route_error_rule(
     rate: float,
     threshold: float,
     trigger_after_failures: int,
+    sample_count: float = 0.0,
+    min_requests: int = 0,
     display_target: str | None = None,
 ) -> None:
     if display_target is None:
@@ -304,7 +320,12 @@ async def _evaluate_route_error_rule(
     else:
         display = display_target
 
-    is_healthy = rate < threshold
+    # Routes below the minimum request floor are treated as healthy: too little
+    # traffic to judge, so they never trigger and any active alert resolves.
+    if sample_count < min_requests:
+        is_healthy = True
+    else:
+        is_healthy = rate < threshold
     transition = state.update(
         "route_error_rate",
         route_id,
@@ -396,11 +417,10 @@ async def run_single_check(state: AlertStateManager, *, trigger_after_failures: 
         return
 
     async with async_session() as db:
-        route_threshold = await _load_route_error_threshold(db)
+        route_threshold, route_min_requests = await _load_route_error_settings(db)
 
-    route_rate_by_id = dict(route_results)
     processed: set[str] = set()
-    for route_id, rate in route_results:
+    for route_id, rate, sample_count in route_results:
         processed.add(route_id)
         await _evaluate_route_error_rule(
             state,
@@ -408,12 +428,14 @@ async def run_single_check(state: AlertStateManager, *, trigger_after_failures: 
             rate=rate,
             threshold=route_threshold,
             trigger_after_failures=trigger_after_failures,
+            sample_count=sample_count,
+            min_requests=route_min_requests,
         )
 
     # Routes that were alerting but no longer report traffic → resolve at rate 0.
     for entry in active_route_alerts:
         route_id = entry["target"]
-        if route_id in processed or route_id in route_rate_by_id:
+        if route_id in processed:
             continue
         await _evaluate_route_error_rule(
             state,
@@ -421,6 +443,8 @@ async def run_single_check(state: AlertStateManager, *, trigger_after_failures: 
             rate=0.0,
             threshold=route_threshold,
             trigger_after_failures=trigger_after_failures,
+            sample_count=0.0,
+            min_requests=route_min_requests,
             display_target=entry.get("display_target"),
         )
 

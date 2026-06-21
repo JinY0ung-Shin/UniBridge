@@ -566,6 +566,7 @@ class AlertSettingsResponse(BaseModel):
     mail_channel_id: int | None = None
     admin_emails: list[str] = []
     route_error_threshold_pct: float
+    route_error_min_requests: int
     check_interval_seconds: int
     trigger_after_failures: int
     server_disk_warn_pct: float
@@ -581,6 +582,7 @@ class AlertSettingsUpdate(BaseModel):
     mail_channel_id: int | None = None
     admin_emails: list[str] | None = None
     route_error_threshold_pct: float | None = Field(None, ge=0, le=100)
+    route_error_min_requests: int | None = Field(None, ge=0, le=1_000_000)
     check_interval_seconds: int | None = Field(None, ge=30, le=3600)
     trigger_after_failures: int | None = Field(None, ge=1, le=10)
     server_disk_warn_pct: float | None = Field(None, ge=0, le=100)
@@ -600,6 +602,7 @@ class AlertSettingsUpdate(BaseModel):
     def reject_explicit_numeric_nulls(self) -> "AlertSettingsUpdate":
         for field_name in (
             "route_error_threshold_pct",
+            "route_error_min_requests",
             "check_interval_seconds",
             "trigger_after_failures",
             "server_disk_warn_pct",

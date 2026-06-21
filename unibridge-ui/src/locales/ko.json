@@ -718,6 +718,8 @@
     "channels": "채널",
     "mailChannel": "메일 채널",
     "routeErrorThreshold": "라우트 에러율 임계치 (%)",
+    "routeErrorMinRequests": "알람 최소 요청 수",
+    "routeErrorMinRequestsHelp": "최근 5분 동안 이 횟수 이상 요청을 받은 라우트만 에러율로 알람을 발송합니다. 트래픽이 적은 라우트의 불필요한 알람을 억제합니다. 0이면 비활성화.",
     "checkInterval": "확인 주기 (초)",
     "triggerAfterFailures": "연속 실패 횟수",
     "triggerAfterFailuresHelp": "이 횟수만큼 연속으로 실패해야 알람이 발송됩니다 (1~10).",

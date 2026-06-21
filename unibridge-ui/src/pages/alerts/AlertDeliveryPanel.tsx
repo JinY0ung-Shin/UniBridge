@@ -23,6 +23,7 @@ const defaultSettings: AlertSettings = {
   mail_channel_id: null,
   admin_emails: [],
   route_error_threshold_pct: 10,
+  route_error_min_requests: 20,
   check_interval_seconds: 60,
   trigger_after_failures: 2,
   server_disk_warn_pct: 80,
@@ -218,6 +219,7 @@ export default function AlertDeliveryPanel() {
     updateSettingsMutation.mutate({
       mail_channel_id: settingsForm.mail_channel_id,
       route_error_threshold_pct: settingsForm.route_error_threshold_pct,
+      route_error_min_requests: settingsForm.route_error_min_requests,
       check_interval_seconds: settingsForm.check_interval_seconds,
       trigger_after_failures: settingsForm.trigger_after_failures,
       server_disk_warn_pct: settingsForm.server_disk_warn_pct,
@@ -282,6 +284,22 @@ export default function AlertDeliveryPanel() {
                 setSettingsDraft((prev) => ({ ...prev, route_error_threshold_pct: Number(e.target.value) }))
               }
             />
+          </div>
+          <div className="form-group">
+            <label htmlFor="route-min-requests">{t('alerts.routeErrorMinRequests')}</label>
+            <input
+              id="route-min-requests"
+              type="number"
+              min={0}
+              max={1000000}
+              step={1}
+              value={settingsForm.route_error_min_requests}
+              disabled={!hasSettings || !canWrite}
+              onChange={(e) =>
+                setSettingsDraft((prev) => ({ ...prev, route_error_min_requests: Number(e.target.value) }))
+              }
+            />
+            <p className="form-hint">{t('alerts.routeErrorMinRequestsHelp')}</p>
           </div>
           <div className="form-group">
             <label htmlFor="check-interval">{t('alerts.checkInterval')}</label>

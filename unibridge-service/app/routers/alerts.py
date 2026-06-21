@@ -92,6 +92,7 @@ async def _get_or_create_alert_settings(
             id=1,
             admin_emails="[]",
             route_error_threshold_pct=10.0,
+            route_error_min_requests=20,
             check_interval_seconds=60,
             trigger_after_failures=2,
         )
@@ -116,6 +117,7 @@ def _build_settings_response(settings: AlertSettings) -> AlertSettingsResponse:
         mail_channel_id=settings.mail_channel_id,
         admin_emails=_parse_emails(settings.admin_emails),
         route_error_threshold_pct=settings.route_error_threshold_pct,
+        route_error_min_requests=settings.route_error_min_requests,
         check_interval_seconds=settings.check_interval_seconds,
         trigger_after_failures=settings.trigger_after_failures,
         server_disk_warn_pct=settings.server_disk_warn_pct,
@@ -133,6 +135,7 @@ def _settings_audit_snapshot(settings: AlertSettings) -> dict[str, Any]:
         "mail_channel_id": settings.mail_channel_id,
         "admin_emails": _parse_emails(settings.admin_emails),
         "route_error_threshold_pct": settings.route_error_threshold_pct,
+        "route_error_min_requests": settings.route_error_min_requests,
         "check_interval_seconds": settings.check_interval_seconds,
         "trigger_after_failures": settings.trigger_after_failures,
         "server_disk_warn_pct": settings.server_disk_warn_pct,
@@ -321,6 +324,8 @@ async def update_alert_settings(
         settings.admin_emails = json.dumps(body.admin_emails, ensure_ascii=False)
     if body.route_error_threshold_pct is not None:
         settings.route_error_threshold_pct = body.route_error_threshold_pct
+    if body.route_error_min_requests is not None:
+        settings.route_error_min_requests = body.route_error_min_requests
     if body.check_interval_seconds is not None:
         settings.check_interval_seconds = body.check_interval_seconds
     if body.trigger_after_failures is not None:

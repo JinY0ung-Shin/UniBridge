@@ -21,6 +21,9 @@ class _FakeResult:
     def scalar_one_or_none(self):
         return self.rows[0] if self.rows else None
 
+    def one_or_none(self):
+        return self.rows[0] if self.rows else None
+
 
 class _FakeSessionContext:
     def __init__(self, db):
@@ -33,9 +36,15 @@ class _FakeSessionContext:
         return False
 
 
-def _threshold_db(threshold: float = 10.0):
-    """A fake session whose only query (route_error_threshold_pct) returns ``threshold``."""
-    return SimpleNamespace(execute=AsyncMock(return_value=_FakeResult([threshold])))
+def _threshold_db(threshold: float = 10.0, min_requests: int = 0):
+    """A fake session whose route-settings query returns (threshold, min_requests).
+
+    Defaults to min_requests=0 so the low-traffic floor is disabled and tests
+    exercise the threshold logic directly.
+    """
+    return SimpleNamespace(
+        execute=AsyncMock(return_value=_FakeResult([(threshold, min_requests)]))
+    )
 
 
 class TestAlertChecker:
@@ -237,7 +246,7 @@ class TestAlertChecker:
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
-             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 12.5)])), \
+             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 12.5, 100.0)])), \
              patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(10.0))), \
              patch("app.services.alert_checker._get_route_label", new=AsyncMock(return_value="checkout")), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
@@ -274,7 +283,7 @@ class TestAlertChecker:
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
-             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 4.0)])), \
+             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 4.0, 100.0)])), \
              patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(3.0))), \
              patch("app.services.alert_checker._get_route_label", new=AsyncMock(return_value="checkout")), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
@@ -302,7 +311,7 @@ class TestAlertChecker:
 
         with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
-             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 4.0)])), \
+             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 4.0, 100.0)])), \
              patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(10.0))), \
              patch("app.services.alert_checker._get_route_label", new=AsyncMock(return_value="checkout")), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
@@ -311,6 +320,34 @@ class TestAlertChecker:
 
             await run_single_check(state, trigger_after_failures=2)
 
+        mock_dispatch.assert_not_called()
+        assert state.get_status("route_error_rate", "route-a") == "ok"
+
+    @pytest.mark.asyncio
+    async def test_route_error_rate_below_min_requests_does_not_dispatch(self):
+        """A high error rate on a low-traffic route must not trigger an alert."""
+        state = AlertStateManager()
+        # Seed fail_count=1 so a non-guarded unhealthy reading would cross N=2.
+        state.update(
+            "route_error_rate",
+            "route-a",
+            is_healthy=False,
+            display_target="checkout (route-a)",
+            trigger_after_failures=2,
+        )
+
+        with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+             patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+             patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("route-a", 50.0, 5.0)])), \
+             patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(10.0, min_requests=20))), \
+             patch("app.services.alert_checker._get_route_label", new=AsyncMock(return_value="checkout")), \
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+            mock_db.return_value = []
+            mock_up.return_value = []
+
+            await run_single_check(state, trigger_after_failures=2)
+
+        # 50% error rate but only 5 requests (< 20 floor) → treated as healthy.
         mock_dispatch.assert_not_called()
         assert state.get_status("route_error_rate", "route-a") == "ok"
 
@@ -375,6 +412,7 @@ class TestCheckRouteErrorRate:
         from app.services.alert_checker import _check_route_error_rate
 
         async def mock_query(query):
+            assert "increase(apisix_http_status" in query  # count-based, not rate()
             if "code=~" in query:
                 # Only r1 has 5xx errors
                 return [{"metric": {"route": "r1"}, "value": [0, "2.0"]}]
@@ -391,10 +429,13 @@ class TestCheckRouteErrorRate:
         ):
             results = await _check_route_error_rate()
 
-        d = dict(results)
-        assert d["r1"] == pytest.approx(10.0)   # 2/20 = 10%
-        assert d["r2"] == pytest.approx(0.0)    # 0/10 = 0% (resolvable)
-        assert "r3" not in d                     # zero-traffic skipped
+        rates = {rid: pct for rid, pct, _count in results}
+        counts = {rid: count for rid, _pct, count in results}
+        assert rates["r1"] == pytest.approx(10.0)   # 2/20 = 10%
+        assert rates["r2"] == pytest.approx(0.0)    # 0/10 = 0% (resolvable)
+        assert "r3" not in rates                     # zero-traffic skipped
+        assert counts["r1"] == pytest.approx(20.0)   # sample_count = request volume
+        assert counts["r2"] == pytest.approx(10.0)
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_traffic(self):

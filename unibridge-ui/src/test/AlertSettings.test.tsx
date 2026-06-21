@@ -60,6 +60,7 @@ const settingsFixture = {
   mail_channel_id: null as number | null,
   admin_emails: [] as string[],
   route_error_threshold_pct: 10,
+  route_error_min_requests: 20,
   check_interval_seconds: 60,
   trigger_after_failures: 2,
 };

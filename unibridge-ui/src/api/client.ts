@@ -1069,6 +1069,7 @@ export interface AlertSettings {
   mail_channel_id: number | null;
   admin_emails: string[];
   route_error_threshold_pct: number;
+  route_error_min_requests: number;
   check_interval_seconds: number;
   trigger_after_failures: number;
   server_disk_warn_pct?: number;
