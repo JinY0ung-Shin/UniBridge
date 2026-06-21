@@ -186,6 +186,14 @@ async def _trace_upstream_chunks(
     content_chunks = 0
     reasoning_chunks = 0
     last_finish: object = None
+    # Accumulate the assistant text + reasoning (capped) so a turn that ends
+    # with NO structured tool call can be inspected: if the body contains a
+    # ``<tool_call>``-style marker, vLLM's parser failed to extract a call the
+    # model actually made (announce-then-stop); if not, it was a plain reply.
+    content_buf: list[str] = []
+    reasoning_buf: list[str] = []
+    content_len = 0
+    reasoning_len = 0
     async for chunk in chunks:
         try:
             choices = chunk.get("choices") or []
@@ -197,10 +205,18 @@ async def _trace_upstream_chunks(
                 chunk_count += 1
                 if tc:
                     toolcall_delta_count += 1
-                if delta.get("content"):
+                c = delta.get("content")
+                if isinstance(c, str) and c:
                     content_chunks += 1
-                if delta.get("reasoning_content"):
+                    if content_len < _TRACE_ARGS_MAX:
+                        content_buf.append(c)
+                        content_len += len(c)
+                r = delta.get("reasoning_content")
+                if isinstance(r, str) and r:
                     reasoning_chunks += 1
+                    if reasoning_len < _TRACE_ARGS_MAX:
+                        reasoning_buf.append(r)
+                        reasoning_len += len(r)
                 if fr:
                     last_finish = fr
                 if fr or tc:
@@ -229,6 +245,28 @@ async def _trace_upstream_chunks(
         reasoning_chunks,
         last_finish,
     )
+    # When a turn produced no structured tool call, dump the actual text +
+    # reasoning so we can see whether a tool call is hiding in the prose (vLLM
+    # parser miss) or the model simply replied. Marker hits are flagged.
+    if toolcall_delta_count == 0:
+        content_text = "".join(content_buf)
+        reasoning_text = "".join(reasoning_buf)
+        markers = [
+            m
+            for m in ("<tool_call>", "</tool_call>", "functools", "tool_call", "function_call", "<|tool")
+            if m in content_text or m in reasoning_text
+        ]
+        logger.info(
+            "converter trace upstream[%s] END no-toolcall: markers=%s content=%s",
+            tag,
+            markers,
+            content_text[:_TRACE_ARGS_MAX],
+        )
+        logger.info(
+            "converter trace upstream[%s] END no-toolcall: reasoning=%s",
+            tag,
+            reasoning_text[:_TRACE_ARGS_MAX],
+        )
 
 
 async def _trace_downstream_events(
