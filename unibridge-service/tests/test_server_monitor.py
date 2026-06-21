@@ -66,6 +66,27 @@ def test_metric_query_escapes_and_covers_metrics():
     assert '\\"' in metric_query("mem", 'a"b')
 
 
+def test_disk_queries_have_no_mountpoint_filter_by_default():
+    # Empty whitelist → historical behavior: every real filesystem counts.
+    with patch.object(server_monitor.settings, "NODE_EXPORTER_DISK_MOUNTPOINTS", ""):
+        assert server_monitor._mountpoint_selector() == ""
+        assert "mountpoint" not in server_monitor._q_disk_pct()
+        assert "mountpoint" not in server_monitor._q_disk_forecast(3600)
+        assert "mountpoint" not in metric_query("disk", "web1")
+
+
+def test_disk_queries_apply_configured_mountpoint_whitelist():
+    with patch.object(
+        server_monitor.settings, "NODE_EXPORTER_DISK_MOUNTPOINTS", "/, /data ,/backup",
+    ):
+        sel = server_monitor._mountpoint_selector()
+        assert sel == r',mountpoint=~"^(/|/data|/backup)$"'
+        # Filter lands on both numerator and denominator in every disk query.
+        for q in (server_monitor._q_disk_pct(), metric_query("disk", "web1")):
+            assert q.count(sel) == 2
+        assert server_monitor._q_disk_forecast(3600).count(sel) == 1
+
+
 # ── evaluation ───────────────────────────────────────────────────────────────
 
 def _patch_queries(mapping):

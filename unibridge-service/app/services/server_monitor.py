@@ -24,6 +24,7 @@ import json
 import logging
 import math
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -48,6 +49,22 @@ SERVER_ALERT_TYPES = (
 
 def _job() -> str:
     return settings.NODE_EXPORTER_JOB
+
+
+def _mountpoint_selector() -> str:
+    """Optional ``,mountpoint=~"^(...)$"`` label fragment restricting disk
+    metrics to the configured ``NODE_EXPORTER_DISK_MOUNTPOINTS`` whitelist.
+
+    Empty config → empty string → no filter, i.e. every real filesystem is
+    considered (the historical behavior). Mountpoint values are regex-escaped
+    so paths with metacharacters cannot alter the selector.
+    """
+    raw = settings.NODE_EXPORTER_DISK_MOUNTPOINTS or ""
+    mounts = [m.strip() for m in raw.split(",") if m.strip()]
+    if not mounts:
+        return ""
+    alt = "|".join(re.escape(m) for m in mounts)
+    return f',mountpoint=~"^({alt})$"'
 
 
 # ── File-based service discovery ─────────────────────────────────────────────
@@ -167,18 +184,20 @@ def _q_up() -> str:
 
 def _q_disk_pct() -> str:
     j = _job()
+    mp = _mountpoint_selector()
     return (
         f'max by (host) (100 * (1 - '
-        f'node_filesystem_avail_bytes{{job="{j}",fstype!~"{_FS_EXCLUDE}"}} / '
-        f'node_filesystem_size_bytes{{job="{j}",fstype!~"{_FS_EXCLUDE}"}}))'
+        f'node_filesystem_avail_bytes{{job="{j}",fstype!~"{_FS_EXCLUDE}"{mp}}} / '
+        f'node_filesystem_size_bytes{{job="{j}",fstype!~"{_FS_EXCLUDE}"{mp}}}))'
     )
 
 
 def _q_disk_forecast(horizon_seconds: float) -> str:
     j = _job()
+    mp = _mountpoint_selector()
     return (
         f'min by (host) (predict_linear('
-        f'node_filesystem_avail_bytes{{job="{j}",fstype!~"{_FS_EXCLUDE}"}}[6h], '
+        f'node_filesystem_avail_bytes{{job="{j}",fstype!~"{_FS_EXCLUDE}"{mp}}}[6h], '
         f'{int(horizon_seconds)}))'
     )
 
@@ -214,10 +233,11 @@ def metric_query(metric: str, host_name: str) -> str | None:
             f'node_memory_MemTotal_bytes{{{sel}}})'
         )
     if metric == "disk":
+        mp = _mountpoint_selector()
         return (
             f'max by (host) (100 * (1 - '
-            f'node_filesystem_avail_bytes{{{sel},fstype!~"{_FS_EXCLUDE}"}} / '
-            f'node_filesystem_size_bytes{{{sel},fstype!~"{_FS_EXCLUDE}"}}))'
+            f'node_filesystem_avail_bytes{{{sel},fstype!~"{_FS_EXCLUDE}"{mp}}} / '
+            f'node_filesystem_size_bytes{{{sel},fstype!~"{_FS_EXCLUDE}"{mp}}}))'
         )
     return None
 
