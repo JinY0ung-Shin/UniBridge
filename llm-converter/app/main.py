@@ -231,7 +231,33 @@ async def messages(request: Request) -> Response:
 
     if not is_stream:
         try:
-            upstream = await client.send(upstream_req)
+            try:
+                # Bound the whole non-streaming round-trip. The httpx ``read``
+                # timeout is left unbounded for legitimately long completions, so
+                # without this a LiteLLM that accepts the connection then stalls
+                # the body would pin this worker forever. See
+                # ``settings.nonstream_timeout``.
+                upstream = await asyncio.wait_for(
+                    client.send(upstream_req), timeout=settings.nonstream_timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "converter messages: non-streaming upstream timed out after %ss",
+                    settings.nonstream_timeout,
+                )
+                return Response(
+                    status_code=504,
+                    content=json.dumps(
+                        {
+                            "type": "error",
+                            "error": {
+                                "type": "timeout",
+                                "message": "upstream request timed out",
+                            },
+                        }
+                    ).encode("utf-8"),
+                    media_type="application/json",
+                )
             resp_headers = filter_headers(upstream.headers.items(), DROP_FROM_RESPONSE)
             content = upstream.content
             media_type = upstream.headers.get("content-type")
@@ -244,7 +270,20 @@ async def messages(request: Request) -> Response:
             ):
                 try:
                     openai_resp = json.loads(content)
-                    if isinstance(openai_resp, dict):
+                    if isinstance(openai_resp, dict) and openai_resp.get("error"):
+                        # Some OpenAI-compatible upstreams return HTTP 200 with an
+                        # error-shaped body (no ``choices``). Translating it would
+                        # fabricate a successful-looking empty message, hiding the
+                        # real failure. Forward it verbatim instead — mirrors the
+                        # streaming path's ``chunk.get("error")`` detection. Truthy
+                        # check: some providers set ``"error": null`` on normal
+                        # bodies.
+                        logger.warning(
+                            "converter messages: upstream returned %s with an error "
+                            "body; forwarding verbatim",
+                            upstream.status_code,
+                        )
+                    elif isinstance(openai_resp, dict):
                         anthropic_resp = openai_response_to_anthropic_body(openai_resp)
                         content = json.dumps(anthropic_resp, ensure_ascii=False).encode("utf-8")
                         media_type = "application/json"
@@ -431,7 +470,24 @@ async def responses(request: Request) -> Response:
 
     if not is_stream:
         try:
-            upstream = await client.send(upstream_req)
+            try:
+                # Bound the whole non-streaming round-trip; see the /v1/messages
+                # branch and ``settings.nonstream_timeout``.
+                upstream = await asyncio.wait_for(
+                    client.send(upstream_req), timeout=settings.nonstream_timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "converter responses: non-streaming upstream timed out after %ss",
+                    settings.nonstream_timeout,
+                )
+                return Response(
+                    status_code=504,
+                    content=json.dumps(
+                        {"error": {"type": "timeout", "message": "upstream request timed out"}}
+                    ).encode("utf-8"),
+                    media_type="application/json",
+                )
             resp_headers = filter_headers(upstream.headers.items(), DROP_FROM_RESPONSE)
             content = upstream.content
             media_type = upstream.headers.get("content-type")
@@ -441,7 +497,16 @@ async def responses(request: Request) -> Response:
             ):
                 try:
                     chat = json.loads(content)
-                    if isinstance(chat, dict):
+                    if isinstance(chat, dict) and chat.get("error"):
+                        # HTTP 200 with an error-shaped body (no ``choices``):
+                        # forward verbatim rather than fabricating an empty
+                        # successful Responses object. Mirrors /v1/messages.
+                        logger.warning(
+                            "converter responses: upstream returned %s with an error "
+                            "body; forwarding verbatim",
+                            upstream.status_code,
+                        )
+                    elif isinstance(chat, dict):
                         resp_obj = chat_response_to_responses_body(
                             chat, parsed, response_id, emit_reasoning=settings.emit_reasoning
                         )

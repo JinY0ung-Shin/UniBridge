@@ -8,6 +8,7 @@ response (streaming SSE and one-shot JSON) back to the Anthropic shape.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Iterable
 
@@ -296,6 +297,73 @@ def test_streaming_upstream_error_chunk_becomes_error_event():
     assert events[-1]["type"] == "error"
     assert events[-1]["error"]["type"] == "rate_limit_error"
     assert not any(e["type"] == "message_stop" for e in events)
+
+
+def test_non_streaming_200_error_body_forwarded_verbatim():
+    # Some OpenAI-compatible upstreams return HTTP 200 with an error-shaped body
+    # (no ``choices``). It must NOT be translated into a successful-looking empty
+    # message — the caller has to see the real failure.
+    err = {"error": {"message": "upstream exploded", "type": "api_error"}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "application/json"},
+            content=json.dumps(err).encode(),
+        )
+
+    client = TestClient(_make_app(handler))
+    resp = client.post(
+        "/v1/messages",
+        json={"model": "GLM-4.6", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert resp.status_code == 200
+    # Forwarded verbatim, not turned into {"type":"message", content:[], ...}.
+    assert resp.json() == err
+    assert resp.json().get("type") != "message"
+
+
+def test_responses_200_error_body_forwarded_verbatim():
+    err = {"error": {"message": "upstream exploded", "type": "api_error"}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"content-type": "application/json"},
+            content=json.dumps(err).encode(),
+        )
+
+    client = TestClient(_make_app(handler))
+    resp = client.post(
+        "/v1/responses",
+        json={"model": "GLM-4.6", "input": "hi"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == err
+    assert resp.json().get("object") != "response"
+
+
+def test_non_streaming_upstream_stall_times_out_504(monkeypatch):
+    # A non-streaming upstream that accepts the connection then stalls the body
+    # must not pin the worker forever — the total non-stream deadline returns 504.
+    monkeypatch.setattr(
+        type(converter_main.settings),
+        "nonstream_timeout",
+        property(lambda self: 0.05),
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(2)
+        return httpx.Response(
+            200, headers={"content-type": "application/json"},
+            content=json.dumps({"choices": []}).encode(),
+        )
+
+    client = TestClient(_make_app(handler))
+    resp = client.post(
+        "/v1/messages",
+        json={"model": "GLM-4.6", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert resp.status_code == 504
+    assert resp.json()["error"]["type"] == "timeout"
 
 
 def test_invalid_json_body_returns_400():

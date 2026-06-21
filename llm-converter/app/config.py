@@ -111,6 +111,20 @@ class _Settings:
         return _get_timeout()
 
     @property
+    def nonstream_timeout(self) -> float | None:
+        """Total wall-clock deadline (seconds) for a non-streaming upstream
+        request — sending the body, waiting for generation, and reading the full
+        response. The httpx ``read`` timeout cannot bound this safely: a
+        non-streaming completion's body arrives atomically only after generation
+        finishes, so a per-chunk read timeout tight enough to catch a stall would
+        also cut off legitimately slow completions. This is a generous *total*
+        ceiling instead, so a LiteLLM that accepts the connection and then stalls
+        (or trickles) the body cannot pin a worker forever. Default 600s; set
+        ``CONVERTER_NONSTREAM_TIMEOUT`` <= 0 to disable (restore unbounded)."""
+        raw = _int_env("CONVERTER_NONSTREAM_TIMEOUT", 600)
+        return None if raw <= 0 else float(raw)
+
+    @property
     def response_store_ttl(self) -> float:
         """TTL (seconds) for the in-memory previous_response_id conversation store."""
         return float(_int_env("CONVERTER_RESPONSE_STORE_TTL", 3600))
