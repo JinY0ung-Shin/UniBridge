@@ -255,15 +255,42 @@ def _convert_tool_choice(tc: Any) -> Any:
     return None
 
 
+def _output_format_to_response_format(fmt: Any) -> Optional[Dict[str, Any]]:
+    """Map Anthropic ``output_config.format`` to OpenAI ``response_format``.
+
+    Anthropic carries a bare ``schema`` (and an optional ``name``); chat
+    /completions nests it under ``json_schema`` with a required ``name``.
+    Mirrors responses_bridge's ``text.format`` map; ``name`` defaults to
+    ``"response"`` since Anthropic doesn't require one but OpenAI/vLLM do.
+    """
+    if not isinstance(fmt, dict):
+        return None
+    ftype = fmt.get("type")
+    if ftype == "json_object":
+        return {"type": "json_object"}
+    if ftype == "json_schema":
+        js: Dict[str, Any] = {"name": fmt.get("name") or "response"}
+        if "schema" in fmt:
+            js["schema"] = fmt.get("schema")
+        if "strict" in fmt:
+            js["strict"] = fmt.get("strict")
+        return {"type": "json_schema", "json_schema": js}
+    # "text" (the default) → omit response_format entirely.
+    return None
+
+
 def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
     """Translate an Anthropic ``/v1/messages`` body to an OpenAI one.
 
-    Fields without an OpenAI equivalent (``thinking``, ``metadata``,
+    Fields without an OpenAI equivalent (``thinking``, ``top_k``,
     ``anthropic_*`` namespacing) are dropped — the upstream vLLM enables
     reasoning *depth* via its chat template, not via a request flag. Fields
     with a 1:1 analogue (``max_tokens``, ``temperature``, ``top_p``, ``stop``)
-    are forwarded as-is. The one reasoning knob that does map is Anthropic's
-    ``output_config.effort`` → OpenAI ``reasoning_effort``.
+    are forwarded as-is. Fields that need a reshape map across:
+    ``output_config.effort`` → ``reasoning_effort``,
+    ``output_config.format`` → ``response_format``,
+    ``metadata.user_id`` → ``user``, and ``tool_choice``'s
+    ``disable_parallel_tool_use`` → ``parallel_tool_calls``.
     """
     out: Dict[str, Any] = {}
 
@@ -282,13 +309,23 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
     if "stop_sequences" in body:
         out["stop"] = body["stop_sequences"]
 
-    # Anthropic's reasoning-depth control lives in ``output_config.effort``
-    # ("low" | "medium" | "high" | "xhigh" | "max"); OpenAI's analogue is the
-    # top-level ``reasoning_effort``. (``thinking`` has no OpenAI equivalent and
-    # is dropped — see the docstring.) Mirror responses_bridge's reasoning map.
+    # ``output_config`` bundles two OpenAI-mappable knobs (``thinking`` itself
+    # has no OpenAI equivalent and is dropped — see the docstring):
+    #   - ``effort`` ("low".."max") → top-level ``reasoning_effort``
+    #   - ``format`` (structured outputs) → ``response_format``
     output_config = body.get("output_config")
-    if isinstance(output_config, dict) and output_config.get("effort"):
-        out["reasoning_effort"] = output_config["effort"]
+    if isinstance(output_config, dict):
+        if output_config.get("effort"):
+            out["reasoning_effort"] = output_config["effort"]
+        rf = _output_format_to_response_format(output_config.get("format"))
+        if rf is not None:
+            out["response_format"] = rf
+
+    # Anthropic's ``metadata.user_id`` is the end-user tracking id; OpenAI's
+    # analogue is the top-level ``user`` string.
+    metadata = body.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("user_id"):
+        out["user"] = metadata["user_id"]
 
     messages: List[Dict[str, Any]] = []
 
@@ -316,22 +353,32 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
 
     tools = body.get("tools")
     if isinstance(tools, list) and tools:
-        out["tools"] = [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.get("name"),
-                    "description": t.get("description", ""),
-                    "parameters": t.get("input_schema", {}) or {},
-                },
+        converted_tools = []
+        for t in tools:
+            if not isinstance(t, dict) or not t.get("name"):
+                continue
+            fn: Dict[str, Any] = {
+                "name": t.get("name"),
+                "description": t.get("description", ""),
+                "parameters": t.get("input_schema", {}) or {},
             }
-            for t in tools
-            if isinstance(t, dict) and t.get("name")
-        ]
+            # Preserve an explicit ``strict`` flag so the structured-tool-output
+            # guarantee the caller asked for survives the reshape.
+            if isinstance(t.get("strict"), bool):
+                fn["strict"] = t["strict"]
+            converted_tools.append({"type": "function", "function": fn})
+        if converted_tools:
+            out["tools"] = converted_tools
 
-    tc = _convert_tool_choice(body.get("tool_choice"))
+    tool_choice = body.get("tool_choice")
+    tc = _convert_tool_choice(tool_choice)
     if tc is not None:
         out["tool_choice"] = tc
+    # Anthropic carries the parallelism flag inside ``tool_choice``; OpenAI has
+    # a top-level ``parallel_tool_calls``. Only emit it when explicitly disabled
+    # (OpenAI's default is True), so we don't add noise to every request.
+    if isinstance(tool_choice, dict) and tool_choice.get("disable_parallel_tool_use") is True:
+        out["parallel_tool_calls"] = False
 
     if "stream_options" in body:
         out["stream_options"] = body["stream_options"]

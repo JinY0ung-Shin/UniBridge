@@ -395,6 +395,105 @@ class TestRequestConversion:
             out = anthropic_request_to_openai_body(body)
             assert "reasoning_effort" not in out, f"failed for {oc!r}"
 
+    def test_output_config_format_becomes_response_format(self):
+        """Anthropic ``output_config.format`` (json_schema) maps to OpenAI
+        ``response_format`` with the schema nested under ``json_schema``."""
+        body = {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "output_config": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "Person",
+                    "schema": {"type": "object", "properties": {"n": {"type": "string"}}},
+                    "strict": True,
+                }
+            },
+        }
+        out = anthropic_request_to_openai_body(body)
+        assert out["response_format"] == {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "Person",
+                "schema": {"type": "object", "properties": {"n": {"type": "string"}}},
+                "strict": True,
+            },
+        }
+        assert "output_config" not in out
+
+    def test_output_config_format_json_object_and_name_default(self):
+        # json_object passes through; a json_schema without a name gets the
+        # "response" default (OpenAI/vLLM require a name).
+        obj = anthropic_request_to_openai_body(
+            {"model": "m", "messages": [], "output_config": {"format": {"type": "json_object"}}}
+        )
+        assert obj["response_format"] == {"type": "json_object"}
+
+        named = anthropic_request_to_openai_body(
+            {"model": "m", "messages": [], "output_config": {"format": {"type": "json_schema", "schema": {}}}}
+        )
+        assert named["response_format"]["json_schema"]["name"] == "response"
+
+    def test_output_config_effort_and_format_coexist(self):
+        body = {
+            "model": "m",
+            "messages": [],
+            "output_config": {"effort": "low", "format": {"type": "json_object"}},
+        }
+        out = anthropic_request_to_openai_body(body)
+        assert out["reasoning_effort"] == "low"
+        assert out["response_format"] == {"type": "json_object"}
+
+    def test_metadata_user_id_becomes_user(self):
+        body = {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "metadata": {"user_id": "u-123"},
+        }
+        out = anthropic_request_to_openai_body(body)
+        assert out["user"] == "u-123"
+        assert "metadata" not in out
+
+    def test_metadata_without_user_id_is_ignored(self):
+        out = anthropic_request_to_openai_body(
+            {"model": "m", "messages": [], "metadata": {"other": "x"}}
+        )
+        assert "user" not in out
+
+    def test_tool_strict_flag_preserved(self):
+        body = {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {"name": "Strict", "description": "", "input_schema": {}, "strict": True},
+                {"name": "Loose", "description": "", "input_schema": {}},
+            ],
+        }
+        out = anthropic_request_to_openai_body(body)
+        assert out["tools"][0]["function"].get("strict") is True
+        # Tools without an explicit strict flag don't gain one.
+        assert "strict" not in out["tools"][1]["function"]
+
+    def test_tool_choice_disable_parallel_maps_to_parallel_tool_calls(self):
+        body = {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"name": "Bash", "description": "", "input_schema": {}}],
+            "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
+        }
+        out = anthropic_request_to_openai_body(body)
+        assert out["tool_choice"] == "auto"
+        assert out["parallel_tool_calls"] is False
+
+    def test_tool_choice_without_disable_parallel_omits_flag(self):
+        body = {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": {"type": "auto"},
+        }
+        out = anthropic_request_to_openai_body(body)
+        assert "parallel_tool_calls" not in out
+
     def test_stop_sequences_renamed(self):
         body = {
             "model": "m",
