@@ -50,6 +50,26 @@ function statusClass(status?: string | null): string {
   return 'status-badge--unknown';
 }
 
+/**
+ * Surface the backend's reason for a failure instead of a generic toast.
+ * FastAPI uses two `detail` shapes: a plain string for HTTPException (409/403,
+ * threshold 422) and an array of `{msg, loc}` for request-body validation
+ * (e.g. a bad host:port address). Handle both, falling back to `fallback`.
+ */
+function extractErrorMessage(err: unknown, fallback: string): string {
+  if (err && typeof err === 'object' && 'isAxiosError' in err) {
+    const detail = (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+    if (Array.isArray(detail)) {
+      const msgs = detail
+        .map((d) => (d && typeof d === 'object' && 'msg' in d ? String((d as { msg: unknown }).msg) : ''))
+        .filter(Boolean);
+      if (msgs.length) return msgs.join('; ');
+    }
+  }
+  return fallback;
+}
+
 function Servers() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -80,19 +100,31 @@ function Servers() {
   const createMutation = useMutation({
     mutationFn: (data: MonitoredServerInput) => createServer(data),
     onSuccess: () => { invalidate(); closeModal(); },
-    onError: () => addToast({ type: 'error', title: t('servers.saveFailed') }),
+    onError: (err) => addToast({
+      type: 'error',
+      title: t('servers.saveFailed'),
+      message: extractErrorMessage(err, ''),
+    }),
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: number; data: MonitoredServerInput }) => updateServer(id, data),
     onSuccess: () => { invalidate(); closeModal(); },
-    onError: () => addToast({ type: 'error', title: t('servers.saveFailed') }),
+    onError: (err) => addToast({
+      type: 'error',
+      title: t('servers.saveFailed'),
+      message: extractErrorMessage(err, ''),
+    }),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => deleteServer(id),
     onSuccess: invalidate,
-    onError: () => addToast({ type: 'error', title: t('servers.deleteFailed') }),
+    onError: (err) => addToast({
+      type: 'error',
+      title: t('servers.deleteFailed'),
+      message: extractErrorMessage(err, ''),
+    }),
   });
 
   const testMutation = useMutation({
