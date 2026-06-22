@@ -131,6 +131,18 @@
   font-size: 13px;
 }
 
+/* Header filter group (shared by gateway + LLM monitoring). Wraps and stays
+   right-aligned so controls drop to a new line instead of being clipped off
+   the right edge when the content area is narrow. */
+
+.page-header__filters {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 /* API key filter (shared by gateway + LLM monitoring) */
 
 .api-key-filter {

@@ -165,7 +165,7 @@ function LlmMonitoring() {
           <h1>{t('llmMonitoring.title')}</h1>
           <p className="page-subtitle">{t('llmMonitoring.subtitle')}</p>
         </div>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+        <div className="page-header__filters">
           <a
             href={LITELLM_ADMIN_URL}
             target="_blank"

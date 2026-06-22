@@ -136,13 +136,8 @@
   outline-offset: -2px;
 }
 
-.page-header__filters {
-  display: flex;
-  gap: 16px;
-  align-items: center;
-}
-
-/* .api-key-filter styles live in Monitoring.css (shared with LLM monitoring). */
+/* .page-header__filters and .api-key-filter styles live in Monitoring.css
+   (shared with LLM monitoring). */
 
 @media (max-width: 720px) {
   .page-header__filters {
