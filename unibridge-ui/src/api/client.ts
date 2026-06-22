@@ -728,46 +728,58 @@ export interface LlmErrorPoint {
   error: number;
 }
 
-export async function getLlmSummary(sel: TimeSelection = DEFAULT_SELECTION): Promise<LlmSummary> {
-  const { data } = await client.get('/admin/gateway/metrics/llm/summary', { params: { ...timeParams(sel) } });
+export async function getLlmSummary(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  apiKey?: string,
+): Promise<LlmSummary> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/summary', { params: { ...timeParams(sel), api_key: apiKey } });
   return data;
 }
 
 export async function getLlmTokens(
   sel: TimeSelection = DEFAULT_SELECTION,
   bucket: Bucket = 'auto',
+  apiKey?: string,
 ): Promise<LlmTokenSeries> {
   const { data } = await client.get('/admin/gateway/metrics/llm/tokens', {
-    params: { ...timeParams(sel), ...bucketParam(bucket) },
+    params: { ...timeParams(sel), ...bucketParam(bucket), api_key: apiKey },
   });
   return data;
 }
 
-export async function getLlmByModel(sel: TimeSelection = DEFAULT_SELECTION): Promise<LlmModelUsage[]> {
-  const { data } = await client.get('/admin/gateway/metrics/llm/by-model', { params: { ...timeParams(sel) } });
+export async function getLlmByModel(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  apiKey?: string,
+): Promise<LlmModelUsage[]> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/by-model', { params: { ...timeParams(sel), api_key: apiKey } });
   return data;
 }
 
-export async function getLlmTopKeys(sel: TimeSelection = DEFAULT_SELECTION): Promise<LlmKeyUsage[]> {
-  const { data } = await client.get('/admin/gateway/metrics/llm/top-keys', { params: { ...timeParams(sel) } });
+export async function getLlmTopKeys(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  apiKey?: string,
+): Promise<LlmKeyUsage[]> {
+  const { data } = await client.get('/admin/gateway/metrics/llm/top-keys', { params: { ...timeParams(sel), api_key: apiKey } });
   return data;
 }
 
 export async function getLlmErrors(
   sel: TimeSelection = DEFAULT_SELECTION,
   bucket: Bucket = 'auto',
+  apiKey?: string,
 ): Promise<LlmErrorPoint[]> {
   const { data } = await client.get('/admin/gateway/metrics/llm/errors', {
-    params: { ...timeParams(sel), ...bucketParam(bucket) },
+    params: { ...timeParams(sel), ...bucketParam(bucket), api_key: apiKey },
   });
   return data;
 }
 
 export async function getLlmStatusCodes(
   sel: TimeSelection = DEFAULT_SELECTION,
+  apiKey?: string,
 ): Promise<StatusCodeData[]> {
   const { data } = await client.get('/admin/gateway/metrics/llm/status-codes', {
-    params: { ...timeParams(sel) },
+    params: { ...timeParams(sel), api_key: apiKey },
   });
   return data;
 }
@@ -775,9 +787,10 @@ export async function getLlmStatusCodes(
 export async function getLlmRequestsTotal(
   sel: TimeSelection = DEFAULT_SELECTION,
   bucket: Bucket = 'auto',
+  apiKey?: string,
 ): Promise<TimeSeriesPoint[]> {
   const { data } = await client.get('/admin/gateway/metrics/llm/requests-total', {
-    params: { ...timeParams(sel), ...bucketParam(bucket) },
+    params: { ...timeParams(sel), ...bucketParam(bucket), api_key: apiKey },
   });
   return data;
 }
@@ -799,9 +812,10 @@ export interface BucketedBreakdown {
 export async function getLlmByModelSeries(
   sel: TimeSelection = DEFAULT_SELECTION,
   bucket: Bucket = 'auto',
+  apiKey?: string,
 ): Promise<BucketedBreakdown> {
   const { data } = await client.get('/admin/gateway/metrics/llm/by-model-series', {
-    params: { ...timeParams(sel), ...bucketParam(bucket) },
+    params: { ...timeParams(sel), ...bucketParam(bucket), api_key: apiKey },
   });
   return data;
 }
@@ -809,9 +823,10 @@ export async function getLlmByModelSeries(
 export async function getLlmTopKeysSeries(
   sel: TimeSelection = DEFAULT_SELECTION,
   bucket: Bucket = 'auto',
+  apiKey?: string,
 ): Promise<BucketedBreakdown> {
   const { data } = await client.get('/admin/gateway/metrics/llm/top-keys-series', {
-    params: { ...timeParams(sel), ...bucketParam(bucket) },
+    params: { ...timeParams(sel), ...bucketParam(bucket), api_key: apiKey },
   });
   return data;
 }
@@ -1094,6 +1109,7 @@ export interface AlertHistoryEntry {
   channel_id: number | null;
   alert_type: 'triggered' | 'resolved';
   target: string;
+  display_target?: string | null;
   severity?: string | null;
   message: string;
   recipients: string[] | null;

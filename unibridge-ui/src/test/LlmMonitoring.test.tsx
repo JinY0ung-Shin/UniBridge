@@ -163,9 +163,14 @@ describe('LlmMonitoring', () => {
 
     renderWithProviders(<LlmMonitoring />);
 
-    await screen.findByText('customer-portal');
+    // The key name now also appears as an <option> in the API-key filter, so
+    // scope the assertion to the Top API Keys table cell (a <td>).
     await waitFor(() => {
-      expect(screen.getByText('customer-portal').closest('td')).toHaveAttribute('title', 'Customer support chatbot');
+      const cell = screen
+        .getAllByText('customer-portal')
+        .map((el) => el.closest('td'))
+        .find((td): td is HTMLTableCellElement => td != null);
+      expect(cell).toHaveAttribute('title', 'Customer support chatbot');
     });
   });
 });

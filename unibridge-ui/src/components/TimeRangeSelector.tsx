@@ -15,10 +15,17 @@ function currentEpochSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+// KST calendar-day midnight ("YYYY-MM-DDT00:00") for the day containing epochSec.
+function kstMidnightLocal(epochSec: number): string {
+  return `${epochToKstLocal(epochSec).slice(0, 10)}T00:00`;
+}
+
+// Default custom range: the previous full KST day. Both bounds snap to 00:00 so
+// the time fields always open at midnight (only the date needs adjusting).
 function defaultLocalRange(nowSec: number): { start: string; end: string } {
   return {
-    start: epochToKstLocal(nowSec - 3600),
-    end: epochToKstLocal(nowSec),
+    start: kstMidnightLocal(nowSec - 86400),
+    end: kstMidnightLocal(nowSec),
   };
 }
 

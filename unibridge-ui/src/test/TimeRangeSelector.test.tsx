@@ -88,8 +88,10 @@ describe('TimeRangeSelector', () => {
 
       await user.click(screen.getByTestId('custom-toggle'));
 
-      expect((screen.getByTestId('custom-start') as HTMLInputElement).value).toBe('2026-05-20T08:10');
-      expect((screen.getByTestId('custom-end') as HTMLInputElement).value).toBe('2026-05-20T09:10');
+      // Default range = previous full KST day; both bounds snap to 00:00.
+      // openedAt = 2026-05-20 09:10 KST → end midnight today, start midnight yesterday.
+      expect((screen.getByTestId('custom-start') as HTMLInputElement).value).toBe('2026-05-19T00:00');
+      expect((screen.getByTestId('custom-end') as HTMLInputElement).value).toBe('2026-05-20T00:00');
     } finally {
       dateNow.mockRestore();
     }

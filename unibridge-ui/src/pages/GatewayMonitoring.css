@@ -142,28 +142,7 @@
   align-items: center;
 }
 
-.api-key-filter {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-
-.api-key-filter__select {
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  border: 1px solid var(--border-default);
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.api-key-filter__select:focus {
-  outline: none;
-  border-color: var(--accent-blue);
-}
+/* .api-key-filter styles live in Monitoring.css (shared with LLM monitoring). */
 
 @media (max-width: 720px) {
   .page-header__filters {
@@ -171,15 +150,5 @@
     align-items: stretch;
     flex-direction: column;
     gap: 10px;
-  }
-
-  .api-key-filter {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .api-key-filter__select {
-    width: 100%;
   }
 }

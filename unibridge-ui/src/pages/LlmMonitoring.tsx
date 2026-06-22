@@ -47,38 +47,43 @@ function LlmMonitoring() {
   const span = selectionSpanSeconds(selection);
   const refetchInterval = selection.kind === 'custom' ? false : 30_000;
   const rangeLabel = selection.kind === 'preset' ? selection.value : t('llmMonitoring.customRange');
+  const [selectedKey, setSelectedKey] = useState<string>('');
   const [bucket, setBucket] = useState<Bucket>('auto');
   const volumeLabel = (ts: number) =>
     bucket === 'auto' ? formatChartTimestamp(ts, span) : formatBucketLabel(ts, bucket);
   const chartColors = useChartTheme();
 
+  const keyFilter = selectedKey || undefined;
+
   const summaryQuery = useQuery({
-    queryKey: ['llm-summary', selKey],
-    queryFn: () => getLlmSummary(selection),
+    queryKey: ['llm-summary', selKey, selectedKey],
+    queryFn: () => getLlmSummary(selection, keyFilter),
     refetchInterval,
   });
 
   const tokensQuery = useQuery({
-    queryKey: ['llm-tokens', selKey, bucketKey(bucket)],
-    queryFn: () => getLlmTokens(selection, bucket),
+    queryKey: ['llm-tokens', selKey, selectedKey, bucketKey(bucket)],
+    queryFn: () => getLlmTokens(selection, bucket, keyFilter),
     refetchInterval,
   });
 
   const byModelQuery = useQuery({
-    queryKey: ['llm-by-model', selKey],
-    queryFn: () => getLlmByModel(selection),
+    queryKey: ['llm-by-model', selKey, selectedKey],
+    queryFn: () => getLlmByModel(selection, keyFilter),
     refetchInterval,
   });
 
+  // Cross-key overview; the panel is hidden when scoped to one key, so skip the fetch.
   const topKeysQuery = useQuery({
     queryKey: ['llm-top-keys', selKey],
     queryFn: () => getLlmTopKeys(selection),
     refetchInterval,
+    enabled: !selectedKey,
   });
 
   const byModelSeriesQuery = useQuery({
-    queryKey: ['llm-by-model-series', selKey, bucketKey(bucket)],
-    queryFn: () => getLlmByModelSeries(selection, bucket),
+    queryKey: ['llm-by-model-series', selKey, selectedKey, bucketKey(bucket)],
+    queryFn: () => getLlmByModelSeries(selection, bucket, keyFilter),
     enabled: bucket !== 'auto',
     refetchInterval,
   });
@@ -86,25 +91,25 @@ function LlmMonitoring() {
   const topKeysSeriesQuery = useQuery({
     queryKey: ['llm-top-keys-series', selKey, bucketKey(bucket)],
     queryFn: () => getLlmTopKeysSeries(selection, bucket),
-    enabled: bucket !== 'auto',
+    enabled: bucket !== 'auto' && !selectedKey,
     refetchInterval,
   });
 
   const errorsQuery = useQuery({
-    queryKey: ['llm-errors', selKey, bucketKey(bucket)],
-    queryFn: () => getLlmErrors(selection, bucket),
+    queryKey: ['llm-errors', selKey, selectedKey, bucketKey(bucket)],
+    queryFn: () => getLlmErrors(selection, bucket, keyFilter),
     refetchInterval,
   });
 
   const statusCodesQuery = useQuery({
-    queryKey: ['llm-status-codes', selKey],
-    queryFn: () => getLlmStatusCodes(selection),
+    queryKey: ['llm-status-codes', selKey, selectedKey],
+    queryFn: () => getLlmStatusCodes(selection, keyFilter),
     refetchInterval,
   });
 
   const requestsTotalQuery = useQuery({
-    queryKey: ['llm-requests-total', selKey, bucketKey(bucket)],
-    queryFn: () => getLlmRequestsTotal(selection, bucket),
+    queryKey: ['llm-requests-total', selKey, selectedKey, bucketKey(bucket)],
+    queryFn: () => getLlmRequestsTotal(selection, bucket, keyFilter),
     refetchInterval,
   });
 
@@ -124,6 +129,10 @@ function LlmMonitoring() {
       if (k.description) map[k.name] = k.description;
     }
     return map;
+  }, [apiKeysQuery.data]);
+  const apiKeyOptions = useMemo(() => {
+    const items = apiKeysQuery.data ?? [];
+    return [...items].sort((a, b) => a.name.localeCompare(b.name));
   }, [apiKeysQuery.data]);
 
   const summary = summaryQuery.data;
@@ -169,6 +178,21 @@ function LlmMonitoring() {
               <path d="M10.5 1.5L1.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
           </a>
+          {canReadApiKeys && (
+            <label className="api-key-filter">
+              <span className="api-key-filter__label">{t('llmMonitoring.apiKeyFilter')}</span>
+              <select
+                className="api-key-filter__select"
+                value={selectedKey}
+                onChange={(e) => setSelectedKey(e.target.value)}
+              >
+                <option value="">{t('llmMonitoring.allApiKeys')}</option>
+                {apiKeyOptions.map((k) => (
+                  <option key={k.name} value={k.name} title={k.description || undefined}>{k.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <TimeRangeSelector value={selection} onChange={setSelection} />
           <BucketSelector
             value={bucket}
@@ -312,7 +336,8 @@ function LlmMonitoring() {
         valueFmt={formatTokens}
       />
 
-      {/* Top API Keys */}
+      {/* Top API Keys — cross-key overview; hidden when scoped to a single key. */}
+      {!selectedKey && (
       <div className="chart-panel">
         <div className="chart-panel__title">{t('llmMonitoring.topKeys')}</div>
         {(topKeysQuery.data ?? []).length > 0 ? (
@@ -354,16 +379,19 @@ function LlmMonitoring() {
           <div className="no-data">{t('llmMonitoring.noKeyData')}</div>
         )}
       </div>
+      )}
 
-      {/* Top API Keys over time */}
-      <BucketedBreakdownView
-        title={t('breakdown.byKeyOverTime')}
-        data={topKeysSeriesQuery.data}
-        loading={topKeysSeriesQuery.isLoading}
-        bucket={bucket}
-        unit="tokens"
-        valueFmt={formatTokens}
-      />
+      {/* Top API Keys over time — same cross-key scope */}
+      {!selectedKey && (
+        <BucketedBreakdownView
+          title={t('breakdown.byKeyOverTime')}
+          data={topKeysSeriesQuery.data}
+          loading={topKeysSeriesQuery.isLoading}
+          bucket={bucket}
+          unit="tokens"
+          valueFmt={formatTokens}
+        />
+      )}
 
       {/* Status Code Distribution */}
       <div className="chart-panel">

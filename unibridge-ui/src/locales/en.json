@@ -457,6 +457,8 @@
     "loadingMetrics": "Loading LLM metrics...",
     "loadFailed": "Failed to load LLM metrics. Is Prometheus running?",
     "partialLoadFailed": "Some LLM metrics failed to load. Data may be incomplete.",
+    "apiKeyFilter": "API Key",
+    "allApiKeys": "All",
     "totalTokens": "Total Tokens ({{range}})",
     "customRange": "custom",
     "promptTokens": "Prompt Tokens",

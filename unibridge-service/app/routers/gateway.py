@@ -996,6 +996,27 @@ def _llm_labels(*extra: str) -> str:
     return "{" + ",".join(parts) + "}"
 
 
+def _llm_key_selector(api_key: str | None) -> str:
+    """PromQL selector scoping ``litellm_*`` counters to one API key.
+
+    The proxy route stamps each LLM request with the UniBridge API-key name as
+    the LiteLLM ``end_user`` (``x-litellm-end-user-id: $consumer_name`` on the
+    ``llm-proxy`` route), so filtering on ``end_user`` scopes every litellm
+    metric to a single key. Returns an empty string (no selector) when unscoped.
+    """
+    return f'{{end_user="{api_key}"}}' if api_key else ""
+
+
+def _llm_consumer_extra(api_key: str | None) -> tuple[str, ...]:
+    """APISIX ``consumer`` label extras for ``_llm_labels``, scoped to one key.
+
+    ``apisix_http_status`` carries the API-key name as ``consumer`` (the same
+    value the litellm ``end_user`` holds), so status/error series can be scoped
+    to the same key the litellm counters are filtered by.
+    """
+    return (f'consumer="{api_key}"',) if api_key else ()
+
+
 def _metric_label(row: dict[str, Any], *names: str) -> str:
     metric = row.get("metric", {})
     if not isinstance(metric, dict):
@@ -1693,9 +1714,11 @@ async def metrics_requests_total(
 @router.get("/metrics/llm/summary")
 async def llm_metrics_summary(
     tw: TimeWindow = Depends(resolve_time_window),
+    api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
     """LLM token usage summary: total tokens, cost, requests, latency."""
+    sel = _llm_key_selector(api_key)
     try:
         (
             tokens,
@@ -1707,31 +1730,31 @@ async def llm_metrics_summary(
             latency_count,
         ) = await asyncio.gather(
             prometheus_client.instant_query(
-                f"sum(increase(litellm_total_tokens_metric_total[{tw.promql_window}]))",
+                f"sum(increase(litellm_total_tokens_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_input_tokens_metric_total[{tw.promql_window}]))",
+                f"sum(increase(litellm_input_tokens_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_output_tokens_metric_total[{tw.promql_window}]))",
+                f"sum(increase(litellm_output_tokens_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_spend_metric_total[{tw.promql_window}]))",
+                f"sum(increase(litellm_spend_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_proxy_total_requests_metric_total[{tw.promql_window}]))",
+                f"sum(increase(litellm_proxy_total_requests_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_request_total_latency_metric_sum[{tw.promql_window}]))",
+                f"sum(increase(litellm_request_total_latency_metric_sum{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_request_total_latency_metric_count[{tw.promql_window}]))",
+                f"sum(increase(litellm_request_total_latency_metric_count{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
         )
@@ -1757,17 +1780,19 @@ async def llm_metrics_summary(
 @router.get("/metrics/llm/tokens")
 async def llm_metrics_tokens(
     tw: TimeWindow = Depends(resolve_time_window),
+    api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, list[dict[str, Any]]]:
     """Token usage trend: prompt and completion tokens over time."""
+    sel = _llm_key_selector(api_key)
     try:
         prompt_points, completion_points = await asyncio.gather(
             _volume_series(
-                lambda window: f"sum(increase(litellm_input_tokens_metric_total[{window}]))",
+                lambda window: f"sum(increase(litellm_input_tokens_metric_total{sel}[{window}]))",
                 tw,
             ),
             _volume_series(
-                lambda window: f"sum(increase(litellm_output_tokens_metric_total[{window}]))",
+                lambda window: f"sum(increase(litellm_output_tokens_metric_total{sel}[{window}]))",
                 tw,
             ),
         )
@@ -1785,9 +1810,11 @@ async def llm_metrics_tokens(
 @router.get("/metrics/llm/by-model")
 async def llm_metrics_by_model(
     tw: TimeWindow = Depends(resolve_time_window),
+    api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """Token usage, request count, and cost breakdown by model."""
+    sel = _llm_key_selector(api_key)
     try:
         (
             token_results,
@@ -1797,23 +1824,23 @@ async def llm_metrics_by_model(
             request_results,
         ) = await asyncio.gather(
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_total_tokens_metric_total[{tw.promql_window}]))",
+                f"sum by (requested_model, model) (increase(litellm_total_tokens_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_input_tokens_metric_total[{tw.promql_window}]))",
+                f"sum by (requested_model, model) (increase(litellm_input_tokens_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_output_tokens_metric_total[{tw.promql_window}]))",
+                f"sum by (requested_model, model) (increase(litellm_output_tokens_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_spend_metric_total[{tw.promql_window}]))",
+                f"sum by (requested_model, model) (increase(litellm_spend_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_proxy_total_requests_metric_total[{tw.promql_window}]))",
+                f"sum by (requested_model, model) (increase(litellm_proxy_total_requests_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
         )
@@ -1895,18 +1922,20 @@ async def llm_metrics_by_model(
 @router.get("/metrics/llm/by-model-series")
 async def llm_metrics_by_model_series(
     tw: TimeWindow = Depends(resolve_time_window),
+    api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
     """Per-model token usage bucketed over time (stacked-bar breakdown).
 
-    Mirrors /metrics/llm/by-model: the ``litellm_*`` counters carry no ``route``
-    label, so no selector is applied (matching the instant sibling exactly).
+    Mirrors /metrics/llm/by-model: filters on ``end_user`` when scoped to one
+    API key (matching the instant sibling exactly).
     """
+    sel = _llm_key_selector(api_key)
     try:
         return await _grouped_volume_series(
             lambda window: (
                 "sum by (requested_model, model) "
-                f"(increase(litellm_total_tokens_metric_total[{window}]))"
+                f"(increase(litellm_total_tokens_metric_total{sel}[{window}]))"
             ),
             tw,
             ("requested_model", "model"),
@@ -1921,9 +1950,11 @@ async def llm_metrics_by_model_series(
 @router.get("/metrics/llm/top-keys")
 async def llm_metrics_top_keys(
     tw: TimeWindow = Depends(resolve_time_window),
+    api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """Top UniBridge API keys by token usage."""
+    sel = _llm_key_selector(api_key)
     try:
         (
             token_results,
@@ -1932,19 +1963,19 @@ async def llm_metrics_top_keys(
             req_results,
         ) = await asyncio.gather(
             prometheus_client.instant_query(
-                f"topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total[{tw.promql_window}])))",
+                f"topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total{sel}[{tw.promql_window}])))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (end_user) (increase(litellm_input_tokens_metric_total[{tw.promql_window}]))",
+                f"sum by (end_user) (increase(litellm_input_tokens_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (end_user) (increase(litellm_output_tokens_metric_total[{tw.promql_window}]))",
+                f"sum by (end_user) (increase(litellm_output_tokens_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (end_user) (increase(litellm_proxy_total_requests_metric_total[{tw.promql_window}]))",
+                f"sum by (end_user) (increase(litellm_proxy_total_requests_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
         )
@@ -2005,18 +2036,20 @@ async def llm_metrics_top_keys(
 @router.get("/metrics/llm/top-keys-series")
 async def llm_metrics_top_keys_series(
     tw: TimeWindow = Depends(resolve_time_window),
+    api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
     """Per-API-key (end_user) token usage bucketed over time.
 
-    Mirrors /metrics/llm/top-keys: the ``litellm_*`` counters carry no ``route``
-    label, so no selector is applied (matching the instant sibling exactly).
+    Mirrors /metrics/llm/top-keys: filters on ``end_user`` when scoped to one
+    API key (matching the instant sibling exactly).
     """
+    sel = _llm_key_selector(api_key)
     try:
         return await _grouped_volume_series(
             lambda window: (
                 "sum by (end_user) "
-                f"(increase(litellm_total_tokens_metric_total[{window}]))"
+                f"(increase(litellm_total_tokens_metric_total{sel}[{window}]))"
             ),
             tw,
             ("end_user",),
@@ -2031,6 +2064,7 @@ async def llm_metrics_top_keys_series(
 @router.get("/metrics/llm/status-codes")
 async def llm_metrics_status_codes(
     tw: TimeWindow = Depends(resolve_time_window),
+    api_key: str | None = Query(None, description="Filter to one API key (APISIX consumer)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """LLM HTTP status code distribution.
@@ -2039,7 +2073,7 @@ async def llm_metrics_status_codes(
     every status code is broken out (200/400/429/500/…) and gateway-layer errors
     that never reach LiteLLM are still counted.
     """
-    hs = _llm_labels()
+    hs = _llm_labels(*_llm_consumer_extra(api_key))
     try:
         results = await prometheus_client.instant_query(
             f"sum by (code) (increase(apisix_http_status{hs}[{tw.promql_window}]))",
@@ -2067,6 +2101,7 @@ async def llm_metrics_status_codes(
 @router.get("/metrics/llm/errors")
 async def llm_metrics_errors(
     tw: TimeWindow = Depends(resolve_time_window),
+    api_key: str | None = Query(None, description="Filter to one API key (APISIX consumer)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """LLM request success/error rate over time.
@@ -2078,8 +2113,9 @@ async def llm_metrics_errors(
     APISIX records — notably code 0 for client-aborted/timed-out streams — are not
     silently dropped.
     """
-    hs_ok = _llm_labels('code=~"2..|3.."')
-    hs_err = _llm_labels('code!~"2..|3.."')
+    consumer_extra = _llm_consumer_extra(api_key)
+    hs_ok = _llm_labels('code=~"2..|3.."', *consumer_extra)
+    hs_err = _llm_labels('code!~"2..|3.."', *consumer_extra)
     try:
         success_points, error_points = await asyncio.gather(
             _volume_series(
@@ -2112,12 +2148,14 @@ async def llm_metrics_errors(
 @router.get("/metrics/llm/requests-total")
 async def llm_metrics_requests_total(
     tw: TimeWindow = Depends(resolve_time_window),
+    api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """LLM request volume per time bucket."""
+    sel = _llm_key_selector(api_key)
     try:
         return await _volume_series(
-            lambda window: f"sum(increase(litellm_proxy_total_requests_metric_total[{window}]))",
+            lambda window: f"sum(increase(litellm_proxy_total_requests_metric_total{sel}[{window}]))",
             tw,
         )
     except Exception as exc:

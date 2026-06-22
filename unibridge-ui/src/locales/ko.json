@@ -457,6 +457,8 @@
     "loadingMetrics": "LLM 메트릭을 불러오는 중...",
     "loadFailed": "LLM 메트릭을 불러오지 못했습니다. Prometheus가 실행 중인지 확인하세요.",
     "partialLoadFailed": "일부 LLM 메트릭을 불러오지 못했습니다. 데이터가 불완전할 수 있습니다.",
+    "apiKeyFilter": "API 키",
+    "allApiKeys": "전체",
     "totalTokens": "총 토큰 ({{range}})",
     "customRange": "커스텀",
     "promptTokens": "프롬프트 토큰",

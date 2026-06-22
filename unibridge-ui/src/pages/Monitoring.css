@@ -130,3 +130,40 @@
   color: var(--text-tertiary);
   font-size: 13px;
 }
+
+/* API key filter (shared by gateway + LLM monitoring) */
+
+.api-key-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.api-key-filter__select {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.api-key-filter__select:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+@media (max-width: 720px) {
+  .api-key-filter {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .api-key-filter__select {
+    width: 100%;
+  }
+}
