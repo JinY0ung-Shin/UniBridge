@@ -20,6 +20,10 @@ class SettingsManager:
         self.rate_limit_per_minute: int = app_settings.RATE_LIMIT_PER_MINUTE
         self.max_concurrent_queries: int = app_settings.MAX_CONCURRENT_QUERIES
         self.default_row_limit: int = app_settings.DEFAULT_ROW_LIMIT
+        # Gateway (APISIX) read/send timeout for the query route, in seconds.
+        # Seeded from env; overridable at runtime via the settings UI, which also
+        # live-patches the APISIX route.
+        self.query_route_timeout: int = app_settings.APISIX_QUERY_ROUTE_TIMEOUT
         self.blocked_sql_keywords: list[str] = []
 
     async def load_from_db(self, db: AsyncSession) -> None:
@@ -45,6 +49,12 @@ class SettingsManager:
             except ValueError:
                 logger.warning("Invalid default_row_limit in DB, using default")
 
+        if "query_route_timeout" in rows:
+            try:
+                self.query_route_timeout = int(rows["query_route_timeout"])
+            except ValueError:
+                logger.warning("Invalid query_route_timeout in DB, using default")
+
         if "blocked_sql_keywords" in rows:
             try:
                 self.blocked_sql_keywords = json.loads(rows["blocked_sql_keywords"])
@@ -52,10 +62,12 @@ class SettingsManager:
                 logger.warning("Invalid blocked_sql_keywords in DB, using default")
 
         logger.info(
-            "Settings loaded: rate_limit=%d/min, max_concurrent=%d, default_row_limit=%d, blocked_keywords=%d",
+            "Settings loaded: rate_limit=%d/min, max_concurrent=%d, default_row_limit=%d, "
+            "query_route_timeout=%ds, blocked_keywords=%d",
             self.rate_limit_per_minute,
             self.max_concurrent_queries,
             self.default_row_limit,
+            self.query_route_timeout,
             len(self.blocked_sql_keywords),
         )
 
@@ -65,6 +77,7 @@ class SettingsManager:
         rate_limit_per_minute: int | None = None,
         max_concurrent_queries: int | None = None,
         default_row_limit: int | None = None,
+        query_route_timeout: int | None = None,
         blocked_sql_keywords: list[str] | None = None,
     ) -> None:
         """Update settings in memory and persist to DB."""
@@ -81,6 +94,10 @@ class SettingsManager:
         if default_row_limit is not None:
             self.default_row_limit = default_row_limit
             updates["default_row_limit"] = str(default_row_limit)
+
+        if query_route_timeout is not None:
+            self.query_route_timeout = query_route_timeout
+            updates["query_route_timeout"] = str(query_route_timeout)
 
         if blocked_sql_keywords is not None:
             self.blocked_sql_keywords = blocked_sql_keywords
@@ -104,6 +121,7 @@ class SettingsManager:
             "rate_limit_per_minute": self.rate_limit_per_minute,
             "max_concurrent_queries": self.max_concurrent_queries,
             "default_row_limit": self.default_row_limit,
+            "query_route_timeout": self.query_route_timeout,
             "blocked_sql_keywords": self.blocked_sql_keywords,
         }
 

@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     APISIX_ADMIN_URL: str = "http://apisix:9180"
     APISIX_ADMIN_KEY: str = ""
     APISIX_PROVISION_ON_START: bool = True
+    # Gateway read/send timeout (seconds) for the query route. APISIX defaults to
+    # 60s, which cuts long queries before the app's own timeout fires; keep this
+    # above the app's max req.timeout (300s) so the app wins the race and returns
+    # a clean 408. Connect stays short (APISIX_QUERY_ROUTE_CONNECT_TIMEOUT).
+    APISIX_QUERY_ROUTE_TIMEOUT: int = 310
+    APISIX_QUERY_ROUTE_CONNECT_TIMEOUT: int = 10
     APISIX_UNIBRIDGE_SERVICE_NODE: str = "unibridge-service:8000"
     APISIX_LLM_CONVERTER_NODE: str = "llm-converter:4001"
     PROMETHEUS_URL: str = "http://prometheus:9090"

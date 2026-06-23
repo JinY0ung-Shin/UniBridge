@@ -553,6 +553,8 @@
     "maxConcurrentHint": "한 사용자가 동시에 실행할 수 있는 최대 쿼리 수",
     "defaultRowLimit": "기본 행 수 제한",
     "defaultRowLimitHint": "쿼리에 별도 제한을 지정하지 않았을 때 반환되는 최대 행 수이며, 초과분은 잘립니다",
+    "queryRouteTimeout": "쿼리 게이트웨이 타임아웃(초)",
+    "queryRouteTimeoutHint": "APISIX 게이트웨이가 쿼리 응답을 기다리다 연결을 끊기까지의 시간입니다. 재시작 없이 즉시 반영됩니다. 쿼리 자체 타임아웃(최대 300초)보다 크게 잡아야 느린 쿼리가 게이트웨이에서 잘리지 않습니다",
     "sqlBlacklist": "SQL 키워드 블랙리스트",
     "blockedKeywords": "추가 차단 키워드",
     "blockedKeywordsHint": "차단할 SQL 키워드를 쉼표로 구분 (예: VACUUM, ANALYZE). 기본 차단: GRANT, REVOKE, SHUTDOWN, KILL 등",

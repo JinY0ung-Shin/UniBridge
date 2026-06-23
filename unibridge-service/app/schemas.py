@@ -317,6 +317,7 @@ class SystemConfigResponse(BaseModel):
     rate_limit_per_minute: int
     max_concurrent_queries: int
     default_row_limit: int
+    query_route_timeout: int
     blocked_sql_keywords: list[str]
 
 
@@ -324,6 +325,9 @@ class SystemConfigUpdate(BaseModel):
     rate_limit_per_minute: int | None = Field(None, ge=1, le=1000)
     max_concurrent_queries: int | None = Field(None, ge=1, le=100)
     default_row_limit: int | None = Field(None, ge=1, le=1_000_000)
+    query_route_timeout: int | None = Field(
+        None, ge=1, le=3600, description="APISIX query route read/send timeout (seconds)"
+    )
     blocked_sql_keywords: list[str] | None = Field(None, description="Each keyword must be non-empty")
 
     @staticmethod

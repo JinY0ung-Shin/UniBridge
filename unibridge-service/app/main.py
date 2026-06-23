@@ -163,6 +163,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                             "uri": "/api/query/*",
                             "methods": ["POST", "GET"],
                             "upstream_id": "unibridge-service",
+                            # Without this, APISIX's default 60s read timeout cuts
+                            # long queries before the app's own timeout fires. The
+                            # app allows req.timeout up to 300s (schemas.py), so
+                            # keep the gateway read above that — the app then wins
+                            # the race and returns a clean 408 + audit log.
+                            # Seeded from APISIX_QUERY_ROUTE_TIMEOUT (env) but
+                            # runtime-overridable via the settings UI, which
+                            # live-patches this route. settings_manager was loaded
+                            # from the DB just above, so this reflects the latest.
+                            "timeout": {
+                                "connect": getattr(
+                                    settings, "APISIX_QUERY_ROUTE_CONNECT_TIMEOUT", 10
+                                ),
+                                "send": settings_manager.query_route_timeout,
+                                "read": settings_manager.query_route_timeout,
+                            },
                             "plugins": {
                                 "key-auth": {},
                                 "proxy-rewrite": {

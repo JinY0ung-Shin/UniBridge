@@ -191,6 +191,7 @@ export interface QuerySettings {
   rate_limit_per_minute: number;
   max_concurrent_queries: number;
   default_row_limit: number;
+  query_route_timeout: number;
   blocked_sql_keywords: string[];
 }
 
@@ -198,6 +199,7 @@ export interface QuerySettingsUpdate {
   rate_limit_per_minute?: number;
   max_concurrent_queries?: number;
   default_row_limit?: number;
+  query_route_timeout?: number;
   blocked_sql_keywords?: string[];
 }
 

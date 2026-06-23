@@ -18,6 +18,7 @@ const defaultSettings = {
   rate_limit_per_minute: 60,
   max_concurrent_queries: 5,
   default_row_limit: 10000,
+  query_route_timeout: 310,
   blocked_sql_keywords: ['DROP', 'TRUNCATE'],
 };
 

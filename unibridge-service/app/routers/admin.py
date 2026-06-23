@@ -41,6 +41,7 @@ from app.services.connection_manager import (
     encrypt_password,
     run_clickhouse_locked,
 )
+from app.config import settings as app_settings
 from app.services.settings_manager import settings_manager
 
 logger = logging.getLogger(__name__)
@@ -994,6 +995,7 @@ async def update_settings(
         rate_limit_per_minute=body.rate_limit_per_minute,
         max_concurrent_queries=body.max_concurrent_queries,
         default_row_limit=body.default_row_limit,
+        query_route_timeout=body.query_route_timeout,
         blocked_sql_keywords=body.blocked_sql_keywords,
     )
 
@@ -1002,6 +1004,32 @@ async def update_settings(
         rate_limit=body.rate_limit_per_minute,
         max_concurrent=body.max_concurrent_queries,
     )
+
+    # Live-apply the query-route timeout to APISIX so it takes effect without a
+    # restart. Best-effort: the value is already persisted, and boot provisioning
+    # re-applies it, so a transient APISIX error must not fail the settings save.
+    if body.query_route_timeout is not None:
+        from app.services import apisix_client
+
+        timeout_s = settings_manager.query_route_timeout
+        try:
+            await apisix_client.patch_resource(
+                "routes",
+                "query-api",
+                {
+                    "timeout": {
+                        "connect": app_settings.APISIX_QUERY_ROUTE_CONNECT_TIMEOUT,
+                        "send": timeout_s,
+                        "read": timeout_s,
+                    }
+                },
+            )
+        except Exception:
+            logger.exception(
+                "Failed to live-patch query-api route timeout to %ds; "
+                "persisted, will apply on next provisioning",
+                timeout_s,
+            )
 
     data = settings_manager.get_all()
 

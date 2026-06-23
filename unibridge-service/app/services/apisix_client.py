@@ -84,6 +84,24 @@ async def put_resource(resource: str, resource_id: str, body: dict[str, Any]) ->
     return data.get("value", data)
 
 
+async def patch_resource(resource: str, resource_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Partially update an APISIX resource via PATCH.
+
+    APISIX merges the given fields into the existing resource, so this preserves
+    everything not named in ``body`` (e.g. consumer-restriction whitelists).
+    """
+    _validate_resource_type(resource)
+    _validate_resource_id(resource_id)
+    url = f"{_base_url()}/apisix/admin/{resource}/{resource_id}"
+    async with httpx.AsyncClient(timeout=APISIX_TIMEOUT) as client:
+        resp = await client.patch(url, json=body, headers=_headers())
+        resp.raise_for_status()
+        data = resp.json()
+
+    logger.info("APISIX PATCH %s/%s: status=%d", resource, resource_id, resp.status_code)
+    return data.get("value", data)
+
+
 async def delete_resource(resource: str, resource_id: str) -> None:
     """Delete an APISIX resource."""
     _validate_resource_type(resource)
