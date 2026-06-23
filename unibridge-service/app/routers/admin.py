@@ -996,6 +996,7 @@ async def update_settings(
         max_concurrent_queries=body.max_concurrent_queries,
         default_row_limit=body.default_row_limit,
         query_route_timeout=body.query_route_timeout,
+        gateway_route_timeout=body.gateway_route_timeout,
         blocked_sql_keywords=body.blocked_sql_keywords,
     )
 
@@ -1029,6 +1030,20 @@ async def update_settings(
                 "Failed to live-patch query-api route timeout to %ds; "
                 "persisted, will apply on next provisioning",
                 timeout_s,
+            )
+
+    # Re-apply the gateway default timeout to existing non-override routes.
+    # Best-effort: the value is persisted regardless, and routes pick it up when
+    # next saved even if APISIX is momentarily unreachable.
+    if body.gateway_route_timeout is not None:
+        from app.routers.gateway import sync_default_route_timeout
+
+        try:
+            count = await sync_default_route_timeout(settings_manager.gateway_route_timeout)
+            logger.info("Applied default gateway timeout to %d route(s)", count)
+        except Exception:
+            logger.exception(
+                "Failed to apply default gateway timeout to existing routes; persisted"
             )
 
     data = settings_manager.get_all()

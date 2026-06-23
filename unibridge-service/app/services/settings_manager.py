@@ -24,6 +24,10 @@ class SettingsManager:
         # Seeded from env; overridable at runtime via the settings UI, which also
         # live-patches the APISIX route.
         self.query_route_timeout: int = app_settings.APISIX_QUERY_ROUTE_TIMEOUT
+        # Default gateway-route read/send timeout (seconds) for user-registered
+        # routes that don't override it. Changing this re-applies to existing
+        # non-override routes (see admin settings endpoint).
+        self.gateway_route_timeout: int = app_settings.APISIX_GATEWAY_ROUTE_TIMEOUT
         self.blocked_sql_keywords: list[str] = []
 
     async def load_from_db(self, db: AsyncSession) -> None:
@@ -55,6 +59,12 @@ class SettingsManager:
             except ValueError:
                 logger.warning("Invalid query_route_timeout in DB, using default")
 
+        if "gateway_route_timeout" in rows:
+            try:
+                self.gateway_route_timeout = int(rows["gateway_route_timeout"])
+            except ValueError:
+                logger.warning("Invalid gateway_route_timeout in DB, using default")
+
         if "blocked_sql_keywords" in rows:
             try:
                 self.blocked_sql_keywords = json.loads(rows["blocked_sql_keywords"])
@@ -78,6 +88,7 @@ class SettingsManager:
         max_concurrent_queries: int | None = None,
         default_row_limit: int | None = None,
         query_route_timeout: int | None = None,
+        gateway_route_timeout: int | None = None,
         blocked_sql_keywords: list[str] | None = None,
     ) -> None:
         """Update settings in memory and persist to DB."""
@@ -98,6 +109,10 @@ class SettingsManager:
         if query_route_timeout is not None:
             self.query_route_timeout = query_route_timeout
             updates["query_route_timeout"] = str(query_route_timeout)
+
+        if gateway_route_timeout is not None:
+            self.gateway_route_timeout = gateway_route_timeout
+            updates["gateway_route_timeout"] = str(gateway_route_timeout)
 
         if blocked_sql_keywords is not None:
             self.blocked_sql_keywords = blocked_sql_keywords
@@ -122,6 +137,7 @@ class SettingsManager:
             "max_concurrent_queries": self.max_concurrent_queries,
             "default_row_limit": self.default_row_limit,
             "query_route_timeout": self.query_route_timeout,
+            "gateway_route_timeout": self.gateway_route_timeout,
             "blocked_sql_keywords": self.blocked_sql_keywords,
         }
 

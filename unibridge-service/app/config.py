@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # a clean 408. Connect stays short (APISIX_QUERY_ROUTE_CONNECT_TIMEOUT).
     APISIX_QUERY_ROUTE_TIMEOUT: int = 310
     APISIX_QUERY_ROUTE_CONNECT_TIMEOUT: int = 10
+    # Default read/send timeout (seconds) applied to user-registered gateway
+    # routes that don't set their own. APISIX's built-in default is 60s; this is
+    # the seed for the runtime-configurable gateway_route_timeout setting.
+    APISIX_GATEWAY_ROUTE_TIMEOUT: int = 60
+    APISIX_GATEWAY_ROUTE_CONNECT_TIMEOUT: int = 10
     APISIX_UNIBRIDGE_SERVICE_NODE: str = "unibridge-service:8000"
     APISIX_LLM_CONVERTER_NODE: str = "llm-converter:4001"
     PROMETHEUS_URL: str = "http://prometheus:9090"

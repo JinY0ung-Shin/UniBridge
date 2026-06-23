@@ -192,6 +192,7 @@ export interface QuerySettings {
   max_concurrent_queries: number;
   default_row_limit: number;
   query_route_timeout: number;
+  gateway_route_timeout: number;
   blocked_sql_keywords: string[];
 }
 
@@ -200,6 +201,7 @@ export interface QuerySettingsUpdate {
   max_concurrent_queries?: number;
   default_row_limit?: number;
   query_route_timeout?: number;
+  gateway_route_timeout?: number;
   blocked_sql_keywords?: string[];
 }
 
@@ -465,6 +467,8 @@ export interface GatewayRoute {
   status: number;
   require_auth?: boolean;
   strip_prefix?: boolean;
+  timeout_seconds?: number | null;
+  timeout_override?: boolean;
   service_key?: GatewayServiceKey | null;
   service_keys?: GatewayServiceKey[];
   plugins?: Record<string, unknown>;

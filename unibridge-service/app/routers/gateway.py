@@ -24,6 +24,7 @@ from app.services import openapi_export
 from app.services import prometheus_client
 from app.services.alert_state import delete_alert_state
 from app.services.audit import log_admin_action
+from app.services.settings_manager import settings_manager
 from app.services.apisix_system_resources import PROTECTED_ROUTE_IDS, PROTECTED_UPSTREAM_IDS
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,92 @@ def _extract_strip_prefix(route: dict[str, Any]) -> bool:
     plugins = route.get("plugins", {})
     pr = plugins.get("proxy-rewrite", {})
     return "regex_uri" in pr
+
+
+# Marks a route whose timeout was set explicitly per-route (vs. inheriting the
+# global gateway default). Stored as an APISIX route label so a later change to
+# the global default skips overridden routes.
+_TIMEOUT_OVERRIDE_LABEL = "ub_route_timeout"
+
+
+def _extract_route_timeout(route: dict[str, Any]) -> int | None:
+    """Return the route's read timeout in whole seconds, or None if unset."""
+    timeout = route.get("timeout")
+    if not isinstance(timeout, dict):
+        return None
+    read = timeout.get("read")
+    if isinstance(read, (int, float)):
+        return int(read)
+    return None
+
+
+def _is_timeout_override(route: dict[str, Any]) -> bool:
+    labels = route.get("labels")
+    return isinstance(labels, dict) and labels.get(_TIMEOUT_OVERRIDE_LABEL) == "1"
+
+
+def _attach_timeout_fields(route: dict[str, Any]) -> None:
+    """Surface timeout state to the UI: effective seconds + whether it's an override."""
+    route["timeout_seconds"] = _extract_route_timeout(route)
+    route["timeout_override"] = _is_timeout_override(route)
+
+
+def _apply_route_timeout(
+    body: dict[str, Any], existing_route: dict[str, Any] | None
+) -> None:
+    """Translate the UI ``timeout`` field (seconds or null) into APISIX config.
+
+    A positive integer is an explicit per-route override (flagged via label); a
+    null/absent/zero value means inherit the global ``gateway_route_timeout``
+    default (and clears the override flag). Existing labels are preserved.
+    """
+    override = body.pop("timeout", None)
+    labels = dict(existing_route.get("labels") or {}) if existing_route else {}
+
+    if isinstance(override, (int, float)) and override > 0:
+        seconds = int(override)
+        labels[_TIMEOUT_OVERRIDE_LABEL] = "1"
+    else:
+        seconds = settings_manager.gateway_route_timeout
+        labels.pop(_TIMEOUT_OVERRIDE_LABEL, None)
+
+    body["timeout"] = {
+        "connect": settings.APISIX_GATEWAY_ROUTE_CONNECT_TIMEOUT,
+        "send": seconds,
+        "read": seconds,
+    }
+    if labels:
+        body["labels"] = labels
+    else:
+        body.pop("labels", None)
+
+
+async def sync_default_route_timeout(seconds: int) -> int:
+    """Re-apply the global default timeout to existing gateway routes.
+
+    Skips system/protected routes and routes carrying a per-route override. Best
+    effort and idempotent; returns the number of routes patched. Raises only if
+    listing routes fails (so the caller can surface a hard APISIX outage).
+    """
+    listing = await apisix_client.list_resources("routes")
+    timeout = {
+        "connect": settings.APISIX_GATEWAY_ROUTE_CONNECT_TIMEOUT,
+        "send": seconds,
+        "read": seconds,
+    }
+    patched = 0
+    for route in listing.get("items", []):
+        route_id = route.get("id")
+        if not route_id or route_id in PROTECTED_ROUTE_IDS or _is_timeout_override(route):
+            continue
+        if _extract_route_timeout(route) == seconds:
+            continue
+        try:
+            await apisix_client.patch_resource("routes", str(route_id), {"timeout": timeout})
+            patched += 1
+        except Exception:
+            logger.warning("Failed to apply default timeout to route %s", route_id, exc_info=True)
+    return patched
 
 
 def _health_path_for_route(route: dict[str, Any]) -> str:
@@ -284,6 +371,7 @@ async def list_routes(
         _attach_service_key_fields(item)
         item["require_auth"] = "key-auth" in item.get("plugins", {})
         item["strip_prefix"] = _extract_strip_prefix(item)
+        _attach_timeout_fields(item)
         item["system"] = item.get("id") in PROTECTED_ROUTE_IDS
     return result
 
@@ -305,6 +393,7 @@ async def get_route(
     _attach_service_key_fields(route)
     route["require_auth"] = "key-auth" in route.get("plugins", {})
     route["strip_prefix"] = _extract_strip_prefix(route)
+    _attach_timeout_fields(route)
     return route
 
 
@@ -354,6 +443,7 @@ async def save_route(
         )
 
     body = _inject_plugins(body, existing_plugins)
+    _apply_route_timeout(body, existing_route)
     plugins = body.get("plugins")
     if isinstance(plugins, dict) and "key-auth" in plugins:
         body = apply_master_consumer_restriction(
@@ -390,6 +480,7 @@ async def save_route(
     _attach_service_key_fields(result)
     result["require_auth"] = "key-auth" in result.get("plugins", {})
     result["strip_prefix"] = _extract_strip_prefix(result)
+    _attach_timeout_fields(result)
     return result
 
 

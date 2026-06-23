@@ -10,6 +10,7 @@ function settingsKey(settings: QuerySettings): string {
     settings.max_concurrent_queries,
     settings.default_row_limit,
     settings.query_route_timeout,
+    settings.gateway_route_timeout,
     settings.blocked_sql_keywords.join('\0'),
   ].join(':');
 }
@@ -21,6 +22,7 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
   const [maxConcurrent, setMaxConcurrent] = useState(settings.max_concurrent_queries);
   const [defaultRowLimit, setDefaultRowLimit] = useState(settings.default_row_limit);
   const [queryRouteTimeout, setQueryRouteTimeout] = useState(settings.query_route_timeout);
+  const [gatewayRouteTimeout, setGatewayRouteTimeout] = useState(settings.gateway_route_timeout);
   const [blockedKeywords, setBlockedKeywords] = useState(settings.blocked_sql_keywords.join(', '));
 
   const updateMut = useMutation({
@@ -41,6 +43,7 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
       max_concurrent_queries: maxConcurrent,
       default_row_limit: defaultRowLimit,
       query_route_timeout: queryRouteTimeout,
+      gateway_route_timeout: gatewayRouteTimeout,
       blocked_sql_keywords: keywords,
     });
   }
@@ -92,6 +95,21 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
             onChange={(e) => setQueryRouteTimeout(Number(e.target.value))}
           />
           <span className="form-hint">{t('querySettings.queryRouteTimeoutHint')}</span>
+        </div>
+      </div>
+
+      <div className="settings-card">
+        <h3>{t('querySettings.gatewaySection')}</h3>
+        <div className="form-group">
+          <label>{t('querySettings.gatewayRouteTimeout')}</label>
+          <input
+            type="number"
+            min={1}
+            max={3600}
+            value={gatewayRouteTimeout}
+            onChange={(e) => setGatewayRouteTimeout(Number(e.target.value))}
+          />
+          <span className="form-hint">{t('querySettings.gatewayRouteTimeoutHint')}</span>
         </div>
       </div>
 

@@ -67,6 +67,8 @@ function routeFormKey(route: GatewayRoute | undefined, isEdit: boolean): string 
     route.status,
     route.require_auth,
     route.strip_prefix,
+    route.timeout_override,
+    route.timeout_seconds,
     serviceKeySignature,
   ]);
 }
@@ -102,6 +104,10 @@ function GatewayRouteEditor({
   const [statusVal, setStatusVal] = useState(initialRoute?.status ?? 1);
   const [requireAuth, setRequireAuth] = useState(!!initialRoute?.require_auth);
   const [stripPrefix, setStripPrefix] = useState(initialRoute ? !!initialRoute.strip_prefix : true);
+  // Blank = inherit the global gateway default; a number is a per-route override.
+  const [timeoutInput, setTimeoutInput] = useState(
+    initialRoute?.timeout_override ? String(initialRoute.timeout_seconds ?? '') : '',
+  );
   const [serviceKeys, setServiceKeys] = useState<ServiceKeyRow[]>(() => initialServiceKeys(initialRoute));
   const [assignees, setAssignees] = useState(initialAssignees);
   const [error, setError] = useState('');
@@ -162,6 +168,7 @@ function GatewayRouteEditor({
       status: statusVal,
       require_auth: requireAuth,
       strip_prefix: stripPrefix,
+      timeout: timeoutInput.trim() === '' ? null : Number(timeoutInput),
       service_keys,
     };
 
@@ -292,6 +299,18 @@ function GatewayRouteEditor({
             <input type="checkbox" checked={stripPrefix} onChange={(e) => setStripPrefix(e.target.checked)} />
             {t('gatewayRouteForm.stripPrefix')}
           </label>
+          <div className="field" style={{ marginTop: 12 }}>
+            <label>{t('gatewayRouteForm.timeout')}</label>
+            <input
+              type="number"
+              min={1}
+              max={3600}
+              value={timeoutInput}
+              onChange={(e) => setTimeoutInput(e.target.value)}
+              placeholder={t('gatewayRouteForm.timeoutPlaceholder')}
+            />
+            <span className="field-hint">{t('gatewayRouteForm.timeoutHint')}</span>
+          </div>
         </div>
 
         <div className="form-section">
