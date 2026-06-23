@@ -49,6 +49,7 @@ async def dispatch_alert(
         resource_type=resource_type,
         alert_type=alert_type,
         target=target,
+        display_target=display_target,
         severity=severity,
         message=message,
         recipients=None,

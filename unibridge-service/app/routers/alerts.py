@@ -789,7 +789,8 @@ async def list_history(
     return [
         AlertHistoryResponse(
             id=h.id, channel_id=h.channel_id,
-            alert_type=h.alert_type, target=h.target, severity=h.severity, message=h.message,
+            alert_type=h.alert_type, target=h.target, display_target=h.display_target,
+            severity=h.severity, message=h.message,
             recipients=json.loads(h.recipients) if h.recipients else None,
             sent_at=h.sent_at, success=h.success, error_detail=h.error_detail,
         )

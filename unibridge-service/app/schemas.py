@@ -684,6 +684,7 @@ class AlertHistoryResponse(BaseModel):
     channel_id: int | None = None
     alert_type: str
     target: str
+    display_target: str | None = None
     severity: str | None = None
     message: str
     recipients: list[str] | None = None

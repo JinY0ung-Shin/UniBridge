@@ -112,7 +112,7 @@ function AlertHistory() {
                           : t('alerts.resolved')}
                       </span>
                     </td>
-                    <td>{entry.target}</td>
+                    <td>{entry.display_target || entry.target}</td>
                     <td className="cell-message">{entry.message}</td>
                     <td>
                       {entry.success === null ? (

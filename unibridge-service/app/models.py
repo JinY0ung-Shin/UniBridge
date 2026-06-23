@@ -316,7 +316,8 @@ class AlertHistory(Base):
     channel_id = Column(Integer, ForeignKey("alert_channels.id", ondelete="SET NULL"), nullable=True)
     resource_type = Column(String(20), nullable=True)
     alert_type = Column(String(20), nullable=False)  # "triggered" / "resolved"
-    target = Column(String(100), nullable=False)
+    target = Column(String(100), nullable=False)  # stable key/id (route_id, alias, …) — used for filtering
+    display_target = Column(String(200), nullable=True)  # human-friendly label (e.g. "route-name (id)"); falls back to target
     severity = Column(String(20), nullable=True)  # "warning" / "critical" (host signals); null for binary types
     message = Column(Text, nullable=False)
     recipients = Column(Text, nullable=True)  # JSON array
