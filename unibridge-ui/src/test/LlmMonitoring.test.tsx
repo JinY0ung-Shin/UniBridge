@@ -120,8 +120,8 @@ describe('LlmMonitoring', () => {
     });
 
     expect(screen.getAllByText('Requests').length).toBeGreaterThan(0);
-    expect(screen.getByText('Input Tokens')).toBeInTheDocument();
-    expect(screen.getByText('Output Tokens')).toBeInTheDocument();
+    expect(screen.getAllByText('Input Tokens').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Output Tokens').length).toBeGreaterThan(0);
     expect(screen.getByText('3.0K')).toBeInTheDocument();
     expect(screen.getByText('2.0K')).toBeInTheDocument();
     expect(screen.getByText('5.0K')).toBeInTheDocument();
@@ -134,6 +134,7 @@ describe('LlmMonitoring', () => {
         api_key: 'customer-portal',
         input_tokens: 3000,
         output_tokens: 2000,
+        cached_tokens: 800,
         tokens: 5000,
         requests: 25,
       },
@@ -157,7 +158,7 @@ describe('LlmMonitoring', () => {
 
   it('shows the API key description as a tooltip on its name', async () => {
     mockedGetLlmTopKeys.mockResolvedValue([
-      { api_key: 'customer-portal', input_tokens: 0, output_tokens: 0, tokens: 0, requests: 0 },
+      { api_key: 'customer-portal', input_tokens: 0, output_tokens: 0, cached_tokens: 0, tokens: 0, requests: 0 },
     ]);
     mockedGetApiKeys.mockResolvedValue([
       { name: 'customer-portal', description: 'Customer support chatbot', api_key: null, key_created: true, allowed_databases: [], allowed_routes: [], rate_limit_per_minute: null, owner: null, created_at: null },

@@ -961,8 +961,12 @@ async def test_llm_metrics_top_keys(client, admin_token):
         {"metric": {"end_user": "customer-portal"}, "value": [0, "50"]},
         {"metric": {"end_user": "internal-batch"}, "value": [0, "bad"]},
     ]
+    cached = [
+        {"metric": {"end_user": "customer-portal"}, "value": [0, "200"]},
+        {"metric": {"end_user": "bad-key"}, "value": [0, "bogus"]},
+    ]
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
-               side_effect=[tokens, input_tokens, output_tokens, requests]) as prom_query:
+               side_effect=[tokens, input_tokens, output_tokens, requests, cached]) as prom_query:
         resp = await client.get(
             "/admin/gateway/metrics/llm/top-keys?range=1h",
             headers=auth_header(admin_token),
@@ -974,6 +978,7 @@ async def test_llm_metrics_top_keys(client, admin_token):
         "api_key": "customer-portal",
         "input_tokens": 650,
         "output_tokens": 350,
+        "cached_tokens": 200,
         "tokens": 1000,
         "requests": 50,
     }

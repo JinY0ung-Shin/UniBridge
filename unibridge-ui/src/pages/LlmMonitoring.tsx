@@ -218,6 +218,18 @@ function LlmMonitoring() {
             <div className="metric-card__label">{t('llmMonitoring.totalTokens', { range: rangeLabel })}</div>
           </div>
           <div className="metric-card">
+            <div className="metric-card__value">{formatTokens(summary.prompt_tokens)}</div>
+            <div className="metric-card__label">{t('llmMonitoring.inputTokens')}</div>
+          </div>
+          <div className="metric-card">
+            <div className="metric-card__value">{formatTokens(summary.completion_tokens)}</div>
+            <div className="metric-card__label">{t('llmMonitoring.outputTokens')}</div>
+          </div>
+          <div className="metric-card">
+            <div className="metric-card__value">{formatTokens(summary.cached_tokens)}</div>
+            <div className="metric-card__label">{t('llmMonitoring.cached')}</div>
+          </div>
+          <div className="metric-card">
             <div className="metric-card__value">{formatCost(summary.estimated_cost)}</div>
             <div className="metric-card__label">{t('llmMonitoring.estimatedCost')}</div>
           </div>
@@ -358,6 +370,7 @@ function LlmMonitoring() {
                   <th>{t('llmMonitoring.apiKey')}</th>
                   <th style={{ textAlign: 'right' }}>{t('llmMonitoring.inputTokens')}</th>
                   <th style={{ textAlign: 'right' }}>{t('llmMonitoring.outputTokens')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.cached')}</th>
                   <th style={{ textAlign: 'right' }}>{t('llmMonitoring.totalTokenShort')}</th>
                   <th style={{ textAlign: 'right' }}>{t('llmMonitoring.requests')}</th>
                 </tr>
@@ -373,6 +386,9 @@ function LlmMonitoring() {
                     </td>
                     <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
                       {formatTokens(k.output_tokens)}
+                    </td>
+                    <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                      {formatTokens(k.cached_tokens)}
                     </td>
                     <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
                       {formatTokens(k.tokens)}
