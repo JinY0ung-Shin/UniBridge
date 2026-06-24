@@ -39,6 +39,10 @@ server {
 
         set $unibridge_ui "unibridge-ui-__ACTIVE_COLOR__";
         proxy_pass https://$unibridge_ui:443;
+        # Match the downstream UI gateway timeout so long-running /api requests
+        # are not cut by this edge hop at nginx's 60s default.
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
         # Internal-only hop: the active UI container presents the same in-cluster
         # self-signed cert as the edge, so verification/SNI are intentionally off.
         # All traffic stays on the host-managed docker network. Do NOT reuse this
