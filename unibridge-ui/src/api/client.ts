@@ -701,6 +701,8 @@ export interface LlmSummary {
   total_tokens: number;
   prompt_tokens: number;
   completion_tokens: number;
+  cached_tokens: number;
+  cache_hit_rate: number;
   estimated_cost: number;
   total_requests: number;
   avg_latency_ms: number;
@@ -709,6 +711,7 @@ export interface LlmSummary {
 export interface LlmTokenSeries {
   prompt: TimeSeriesPoint[];
   completion: TimeSeriesPoint[];
+  cached: TimeSeriesPoint[];
 }
 
 export interface LlmModelUsage {
@@ -716,6 +719,7 @@ export interface LlmModelUsage {
   tokens: number;
   input_tokens: number;
   output_tokens: number;
+  cached_tokens: number;
   cost: number;
   requests: number;
 }

@@ -1819,6 +1819,7 @@ async def llm_metrics_summary(
             requests,
             latency_sum,
             latency_count,
+            cached,
         ) = await asyncio.gather(
             prometheus_client.instant_query(
                 f"sum(increase(litellm_total_tokens_metric_total{sel}[{tw.promql_window}]))",
@@ -1848,6 +1849,10 @@ async def llm_metrics_summary(
                 f"sum(increase(litellm_request_total_latency_metric_count{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
+            prometheus_client.instant_query(
+                f"sum(increase(litellm_input_cached_tokens_metric_total{sel}[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
+            ),
         )
     except Exception as exc:
         raise HTTPException(
@@ -1858,13 +1863,18 @@ async def llm_metrics_summary(
     latency_cnt = _extract_scalar(latency_count)
     avg_latency = (latency_total / latency_cnt * 1000) if latency_cnt > 0 else 0.0
 
+    prompt_val = _extract_scalar(prompt)
+    cached_val = _extract_scalar(cached)
+
     return {
         "total_tokens": round(_extract_scalar(tokens)),
-        "prompt_tokens": round(_extract_scalar(prompt)),
+        "prompt_tokens": round(prompt_val),
         "completion_tokens": round(_extract_scalar(completion)),
         "estimated_cost": round(_extract_scalar(spend), 4),
         "total_requests": round(_extract_scalar(requests)),
         "avg_latency_ms": round(avg_latency, 2),
+        "cached_tokens": round(cached_val),
+        "cache_hit_rate": round(min(cached_val / prompt_val, 1.0), 4) if prompt_val > 0 else 0.0,
     }
 
 
@@ -1877,13 +1887,17 @@ async def llm_metrics_tokens(
     """Token usage trend: prompt and completion tokens over time."""
     sel = _llm_key_selector(api_key)
     try:
-        prompt_points, completion_points = await asyncio.gather(
+        prompt_points, completion_points, cached_points = await asyncio.gather(
             _volume_series(
                 lambda window: f"sum(increase(litellm_input_tokens_metric_total{sel}[{window}]))",
                 tw,
             ),
             _volume_series(
                 lambda window: f"sum(increase(litellm_output_tokens_metric_total{sel}[{window}]))",
+                tw,
+            ),
+            _volume_series(
+                lambda window: f"sum(increase(litellm_input_cached_tokens_metric_total{sel}[{window}]))",
                 tw,
             ),
         )
@@ -1895,6 +1909,7 @@ async def llm_metrics_tokens(
     return {
         "prompt": prompt_points,
         "completion": completion_points,
+        "cached": cached_points,
     }
 
 
@@ -1913,6 +1928,7 @@ async def llm_metrics_by_model(
             output_token_results,
             cost_results,
             request_results,
+            cached_token_results,
         ) = await asyncio.gather(
             prometheus_client.instant_query(
                 f"sum by (requested_model, model) (increase(litellm_total_tokens_metric_total{sel}[{tw.promql_window}]))",
@@ -1932,6 +1948,10 @@ async def llm_metrics_by_model(
             ),
             prometheus_client.instant_query(
                 f"sum by (requested_model, model) (increase(litellm_proxy_total_requests_metric_total{sel}[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                f"sum by (requested_model, model) (increase(litellm_input_cached_tokens_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
         )
@@ -1980,6 +2000,14 @@ async def llm_metrics_by_model(
         except (IndexError, ValueError, TypeError):
             request_map[model] = 0
 
+    cached_map: dict[str, int] = {}
+    for r in cached_token_results:
+        model = _metric_label(r, "requested_model", "model")
+        try:
+            cached_map[model] = round(float(r["value"][1]))
+        except (IndexError, ValueError, TypeError):
+            cached_map[model] = 0
+
     models = []
     for model in (
         token_map.keys()
@@ -1987,6 +2015,7 @@ async def llm_metrics_by_model(
         | output_token_map.keys()
         | cost_map.keys()
         | request_map.keys()
+        | cached_map.keys()
     ):
         tokens = token_map.get(model, 0)
         input_tokens = input_token_map.get(model, 0)
@@ -1995,7 +2024,15 @@ async def llm_metrics_by_model(
             tokens = input_tokens + output_tokens
         cost = cost_map.get(model, 0.0)
         requests = request_map.get(model, 0)
-        if tokens > 0 or input_tokens > 0 or output_tokens > 0 or cost > 0 or requests > 0:
+        cached_tokens = cached_map.get(model, 0)
+        if (
+            tokens > 0
+            or input_tokens > 0
+            or output_tokens > 0
+            or cost > 0
+            or requests > 0
+            or cached_tokens > 0
+        ):
             models.append(
                 {
                     "model": model,
@@ -2004,6 +2041,7 @@ async def llm_metrics_by_model(
                     "output_tokens": output_tokens,
                     "cost": cost,
                     "requests": requests,
+                    "cached_tokens": cached_tokens,
                 }
             )
     models.sort(key=lambda x: (x["tokens"], x["requests"]), reverse=True)

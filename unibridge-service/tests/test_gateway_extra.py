@@ -720,6 +720,7 @@ async def test_llm_metrics_summary_success(client, admin_token):
         [{"value": [0, "150"]}],    # requests
         [{"value": [0, "30"]}],     # latency_sum
         [{"value": [0, "10"]}],     # latency_count
+        [{"value": [0, "2000"]}],   # cached
     ]
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
                side_effect=side_effects):
@@ -732,12 +733,14 @@ async def test_llm_metrics_summary_success(client, admin_token):
     assert data["total_tokens"] == 12000
     assert data["estimated_cost"] == 1.2345
     assert data["avg_latency_ms"] == 3000.0  # 30/10*1000
+    assert data["cached_tokens"] == 2000
+    assert data["cache_hit_rate"] == round(2000 / 8000, 4)
 
 
 @pytest.mark.asyncio
 async def test_llm_metrics_summary_zero_count(client, admin_token):
     """latency_count = 0 → avg_latency = 0."""
-    side_effects = [[{"value": [0, "0"]}]] * 7
+    side_effects = [[{"value": [0, "0"]}]] * 8
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
                side_effect=side_effects):
         resp = await client.get(
@@ -761,7 +764,7 @@ async def test_llm_metrics_summary_prometheus_error(client, admin_token):
 
 @pytest.mark.asyncio
 async def test_llm_metrics_summary_invalid_range_defaults(client, admin_token):
-    side_effects = [[{"value": [0, "0"]}]] * 7
+    side_effects = [[{"value": [0, "0"]}]] * 8
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
                side_effect=side_effects):
         resp = await client.get(
@@ -772,10 +775,35 @@ async def test_llm_metrics_summary_invalid_range_defaults(client, admin_token):
 
 
 @pytest.mark.asyncio
+async def test_llm_metrics_summary_cache_hit_rate_zero_prompt(client, admin_token):
+    """cache_hit_rate is 0.0 when prompt tokens are 0 even if cached is present."""
+    side_effects = [
+        [{"value": [0, "0"]}],      # tokens
+        [{"value": [0, "0"]}],      # prompt
+        [{"value": [0, "0"]}],      # completion
+        [{"value": [0, "0"]}],      # spend
+        [{"value": [0, "0"]}],      # requests
+        [{"value": [0, "0"]}],      # latency_sum
+        [{"value": [0, "0"]}],      # latency_count
+        [{"value": [0, "500"]}],    # cached
+    ]
+    with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
+               side_effect=side_effects):
+        resp = await client.get(
+            "/admin/gateway/metrics/llm/summary?range=1h",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["cached_tokens"] == 500
+    assert data["cache_hit_rate"] == 0.0
+
+
+@pytest.mark.asyncio
 async def test_llm_metrics_tokens(client, admin_token):
     series = [{"values": [[1.0, "100"]]}]
     with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,
-               side_effect=[series, series]):
+               side_effect=[series, series, series]):
         resp = await client.get(
             "/admin/gateway/metrics/llm/tokens?range=1h",
             headers=auth_header(admin_token),
@@ -784,6 +812,7 @@ async def test_llm_metrics_tokens(client, admin_token):
     body = resp.json()
     assert body["prompt"] == [{"timestamp": 1.0, "value": 100.0}]
     assert body["completion"] == [{"timestamp": 1.0, "value": 100.0}]
+    assert body["cached"] == [{"timestamp": 1.0, "value": 100.0}]
 
 
 @pytest.mark.asyncio
@@ -857,8 +886,17 @@ async def test_llm_metrics_by_model(client, admin_token):
         {"metric": {"requested_model": "request-only"}, "value": [0, "3"]},
         {"metric": {"requested_model": "bad"}, "value": [0, "bogus"]},
     ]
+    cached = [
+        {
+            "metric": {
+                "requested_model": "GaussO3.2-260402-vllm",
+                "model": "GaussO3.2-260402",
+            },
+            "value": [0, "1500"],
+        },
+    ]
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
-               side_effect=[tokens, input_tokens, output_tokens, cost, requests]) as prom_query:
+               side_effect=[tokens, input_tokens, output_tokens, cost, requests, cached]) as prom_query:
         resp = await client.get(
             "/admin/gateway/metrics/llm/by-model?range=1h",
             headers=auth_header(admin_token),
@@ -872,6 +910,7 @@ async def test_llm_metrics_by_model(client, admin_token):
     assert rows[0]["output_tokens"] == 2000
     assert rows[0]["cost"] == 12.345
     assert rows[0]["requests"] == 25
+    assert rows[0]["cached_tokens"] == 1500
     assert rows[1] == {
         "model": "split-only",
         "tokens": 12,
@@ -879,6 +918,7 @@ async def test_llm_metrics_by_model(client, admin_token):
         "output_tokens": 5,
         "cost": 0.0,
         "requests": 0,
+        "cached_tokens": 0,
     }
     assert rows[2] == {
         "model": "request-only",
@@ -887,6 +927,7 @@ async def test_llm_metrics_by_model(client, admin_token):
         "output_tokens": 0,
         "cost": 0.0,
         "requests": 3,
+        "cached_tokens": 0,
     }
     assert all("sum by (requested_model, model)" in call.args[0] for call in prom_query.call_args_list)
 

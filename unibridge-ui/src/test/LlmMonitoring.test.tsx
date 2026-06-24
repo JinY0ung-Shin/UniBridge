@@ -55,11 +55,13 @@ describe('LlmMonitoring', () => {
       total_tokens: 0,
       prompt_tokens: 0,
       completion_tokens: 0,
+      cached_tokens: 0,
+      cache_hit_rate: 0,
       estimated_cost: 0,
       total_requests: 0,
       avg_latency_ms: 0,
     });
-    mockedGetLlmTokens.mockResolvedValue({ prompt: [], completion: [] });
+    mockedGetLlmTokens.mockResolvedValue({ prompt: [], completion: [], cached: [] });
     mockedGetLlmByModel.mockResolvedValue([]);
     mockedGetLlmTopKeys.mockResolvedValue([]);
     mockedGetLlmErrors.mockResolvedValue([]);
@@ -104,6 +106,7 @@ describe('LlmMonitoring', () => {
         tokens: 5000,
         input_tokens: 3000,
         output_tokens: 2000,
+        cached_tokens: 1500,
         requests: 25,
         cost: 12.345,
       },

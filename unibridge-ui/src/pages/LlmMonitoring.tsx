@@ -141,6 +141,7 @@ function LlmMonitoring() {
     time: volumeLabel(p.timestamp),
     prompt: Math.round(p.value),
     completion: Math.round(tokenData?.completion?.[i]?.value ?? 0),
+    cached: Math.round(tokenData?.cached?.[i]?.value ?? 0),
   }));
 
   const errorChartData = (errorsQuery.data ?? []).map((p) => ({
@@ -228,6 +229,10 @@ function LlmMonitoring() {
             <div className="metric-card__value">{summary.avg_latency_ms}ms</div>
             <div className="metric-card__label">{t('llmMonitoring.avgLatency')}</div>
           </div>
+          <div className="metric-card">
+            <div className="metric-card__value">{`${((summary.cache_hit_rate ?? 0) * 100).toFixed(1)}%`}</div>
+            <div className="metric-card__label">{t('llmMonitoring.cacheHitRate')}</div>
+          </div>
         </div>
       )}
 
@@ -249,6 +254,7 @@ function LlmMonitoring() {
                 <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
                 <Bar dataKey="prompt" stackId="tokens" fill={chartColors.blue} name={t('llmMonitoring.prompt')} />
                 <Bar dataKey="completion" stackId="tokens" fill={chartColors.green} name={t('llmMonitoring.completion')} />
+                <Bar dataKey="cached" stackId="cached" fill={chartColors.yellow} name={t('llmMonitoring.cached')} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -292,6 +298,7 @@ function LlmMonitoring() {
                   <th>{t('llmMonitoring.model')}</th>
                   <th style={{ textAlign: 'right' }}>{t('llmMonitoring.inputTokens')}</th>
                   <th style={{ textAlign: 'right' }}>{t('llmMonitoring.outputTokens')}</th>
+                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.cached')}</th>
                   <th style={{ textAlign: 'right' }}>{t('llmMonitoring.totalTokenShort')}</th>
                   <th style={{ textAlign: 'right' }}>{t('llmMonitoring.requests')}</th>
                   <th style={{ textAlign: 'right' }}>{t('llmMonitoring.cost')}</th>
@@ -306,6 +313,9 @@ function LlmMonitoring() {
                     </td>
                     <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
                       {formatTokens(m.output_tokens)}
+                    </td>
+                    <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                      {formatTokens(m.cached_tokens)}
                     </td>
                     <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
                       {formatTokens(m.tokens)}

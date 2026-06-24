@@ -488,6 +488,8 @@
     "error": "Error",
     "prompt": "Prompt",
     "completion": "Completion",
+    "cached": "Cached",
+    "cacheHitRate": "Cache Hit Rate",
     "noData": "No data available",
     "noTokenData": "No token usage data available",
     "noModelData": "No model usage data available",

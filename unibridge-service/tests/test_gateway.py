@@ -2183,7 +2183,7 @@ class TestMetricsCustomRange:
 class TestLlmMetricsCustomRange:
     async def test_llm_summary_custom_eval_time(self, client, admin_token):
         scalar = [{"value": [1000, "3"]}]
-        mock = AsyncMock(side_effect=[scalar] * 7)
+        mock = AsyncMock(side_effect=[scalar] * 8)
         with patch("app.routers.gateway.prometheus_client.instant_query", mock):
             resp = await client.get(
                 "/admin/gateway/metrics/llm/summary?start=1000000&end=1003600",
@@ -2236,9 +2236,9 @@ class TestLlmMetricsCustomRange:
             {"timestamp": aligned_start + 86400, "value": 3.0},
             {"timestamp": current_start, "value": 4.0},
         ]
-        assert resp.json() == {"prompt": expected, "completion": expected}
-        assert range_mock.call_count == 2
-        assert instant_mock.call_count == 2
+        assert resp.json() == {"prompt": expected, "completion": expected, "cached": expected}
+        assert range_mock.call_count == 3
+        assert instant_mock.call_count == 3
         for call in range_mock.call_args_list:
             assert call.kwargs["end"] == float(current_start)
             assert "[1d]" in call.args[0]
