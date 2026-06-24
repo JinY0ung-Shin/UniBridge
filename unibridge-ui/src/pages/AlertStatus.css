@@ -45,6 +45,24 @@
   color: var(--accent-orange, #f59e0b);
 }
 
+.severity-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.severity-badge--critical {
+  background: var(--accent-red, #d23b3b);
+}
+
+.severity-badge--warning {
+  background: var(--accent-yellow, #d29a3b);
+}
+
 /* Summary cards */
 .status-summary {
   display: grid;

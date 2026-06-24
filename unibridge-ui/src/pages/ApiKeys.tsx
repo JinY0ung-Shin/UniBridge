@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -71,6 +71,8 @@ function ApiKeys() {
   const [form, setForm] = useState<FormState>({ ...emptyForm });
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [keySearch, setKeySearch] = useState('');
+  const copyTimeoutRef = useRef<number | null>(null);
 
   const keysQuery = useQuery({ queryKey: ['api-keys'], queryFn: getApiKeys });
   const dbsQuery = useQuery({ queryKey: ['admin-databases'], queryFn: getAdminDatabases });
@@ -119,8 +121,38 @@ function ApiKeys() {
   const routes = routesQuery.data?.items ?? [];
   const s3Connections = s3ConnectionsQuery.data ?? [];
   const nasConnections = canReadNasConnections ? nasConnectionsQuery.data ?? [] : [];
+  const normalizedKeySearch = keySearch.trim().toLowerCase();
+  const filteredKeys = normalizedKeySearch
+    ? keys.filter((key) => [
+        key.name,
+        key.description,
+        key.api_key,
+        key.owner,
+        key.is_master ? t('apiKeys.allAccess') : '',
+        ...key.allowed_databases,
+        ...key.allowed_routes,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedKeySearch))
+    : keys;
+
+  function clearCopyTimer() {
+    if (copyTimeoutRef.current !== null) {
+      window.clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      clearCopyTimer();
+    };
+  }, []);
 
   function openCreate() {
+    clearCopyTimer();
     setForm({ ...emptyForm, apiKey: generateKey() });
     setEditingName(null);
     setCreatedKey(null);
@@ -129,6 +161,7 @@ function ApiKeys() {
   }
 
   function openEdit(k: ApiKey) {
+    clearCopyTimer();
     const isMaster = isMasterAccess(k);
     setForm({
       name: k.name,
@@ -150,6 +183,7 @@ function ApiKeys() {
   }
 
   function closeModal() {
+    clearCopyTimer();
     setShowModal(false);
     setEditingName(null);
     setCreatedKey(null);
@@ -216,9 +250,18 @@ function ApiKeys() {
 
   async function handleCopy() {
     if (createdKey) {
-      await navigator.clipboard.writeText(createdKey);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      try {
+        clearCopyTimer();
+        await navigator.clipboard.writeText(createdKey);
+        setCopied(true);
+        copyTimeoutRef.current = window.setTimeout(() => {
+          setCopied(false);
+          copyTimeoutRef.current = null;
+        }, 2000);
+      } catch {
+        setCopied(false);
+        addToast({ type: 'error', title: t('apiKeys.copyFailed') });
+      }
     }
   }
 
@@ -265,49 +308,92 @@ function ApiKeys() {
           <h1>{t('apiKeys.title')}</h1>
           <p className="page-subtitle">{t('apiKeys.subtitle')}</p>
         </div>
-        {canWrite && (
-          <button className="btn btn-primary" onClick={openCreate}>{t('apiKeys.addKey')}</button>
+        {(keys.length > 0 || canWrite) && (
+          <div className="page-header__actions api-keys-header-actions">
+            {keys.length > 0 && (
+              <input
+                className="api-key-search-input"
+                type="search"
+                value={keySearch}
+                onChange={(event) => setKeySearch(event.target.value)}
+                placeholder={t('apiKeys.searchPlaceholder')}
+                aria-label={t('apiKeys.searchPlaceholder')}
+              />
+            )}
+            {canWrite && (
+              <button type="button" className="btn btn-primary" onClick={openCreate}>{t('apiKeys.addKey')}</button>
+            )}
+          </div>
         )}
       </div>
 
-      {keysQuery.isLoading && <div className="loading-message">{t('apiKeys.loadingKeys')}</div>}
-      {keysQuery.isError && <div className="error-banner">{t('apiKeys.loadFailed')}</div>}
+      {keysQuery.isLoading && <div className="loading-message" role="status">{t('apiKeys.loadingKeys')}</div>}
+      {keysQuery.isError && <div className="error-banner" role="alert">{t('apiKeys.loadFailed')}</div>}
 
-      {keys.length > 0 && (
+      {keys.length > 0 && filteredKeys.length > 0 && (
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t('apiKeys.keyName')}</th>
-                <th>{t('apiKeys.description')}</th>
-                <th>{t('apiKeys.apiKey')}</th>
-                <th>{t('apiKeys.allowedDatabases')}</th>
-                <th>{t('apiKeys.allowedRoutes')}</th>
-                <th>{t('apiKeys.expiresAt')}</th>
-                <th>{t('common.actions')}</th>
+                <th scope="col">{t('apiKeys.keyName')}</th>
+                <th scope="col">{t('apiKeys.description')}</th>
+                <th scope="col">{t('apiKeys.apiKey')}</th>
+                <th scope="col">{t('apiKeys.allowedDatabases')}</th>
+                <th scope="col">{t('apiKeys.allowedRoutes')}</th>
+                <th scope="col">{t('apiKeys.expiresAt')}</th>
+                <th scope="col">{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
-              {keys.map((k) => (
-                <tr key={k.name}>
-                  <td className="cell-alias">{k.name}</td>
-                  <td>{k.description || '\u2014'}</td>
-                  <td className="cell-key">{k.api_key || '\u2014'}</td>
-                  <td><div className="cell-tags">{renderTags(k.allowed_databases)}</div></td>
-                  <td><div className="cell-tags">{renderTags(k.allowed_routes)}</div></td>
-                  <td>{k.expires_at ? formatKST(k.expires_at) : '—'}</td>
-                  <td>
-                    {canWrite && (
-                      <div className="action-buttons">
-                        <button className="btn btn-sm btn-secondary" onClick={() => openEdit(k)}>{t('common.edit')}</button>
-                        <button className="btn btn-sm btn-danger" onClick={() => handleDelete(k)} disabled={deleteMut.isPending}>{t('common.delete')}</button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {filteredKeys.map((k) => {
+                const isDeleting = deleteMut.isPending && deleteMut.variables === k.name;
+                return (
+                  <tr key={k.name}>
+                    <td className="cell-alias">{k.name}</td>
+                    <td>{k.description || '\u2014'}</td>
+                    <td className="cell-key">{k.api_key || '\u2014'}</td>
+                    <td><div className="cell-tags">{renderTags(k.allowed_databases)}</div></td>
+                    <td><div className="cell-tags">{renderTags(k.allowed_routes)}</div></td>
+                    <td>{k.expires_at ? formatKST(k.expires_at) : '—'}</td>
+                    <td>
+                      {canWrite && (
+                        <div className="action-buttons">
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-secondary"
+                            aria-label={t('apiKeys.editKey', { name: k.name })}
+                            onClick={() => openEdit(k)}
+                          >
+                            {t('common.edit')}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-danger"
+                            aria-label={t('apiKeys.deleteKey', { name: k.name })}
+                            onClick={() => handleDelete(k)}
+                            disabled={deleteMut.isPending}
+                            aria-busy={isDeleting}
+                          >
+                            {isDeleting ? t('common.deleting') : t('common.delete')}
+                          </button>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!keysQuery.isLoading && keys.length > 0 && filteredKeys.length === 0 && !keysQuery.isError && (
+        <div className="empty-state">
+          <h3>{t('apiKeys.noSearchResults')}</h3>
+          <p>{t('apiKeys.noSearchResultsDesc')}</p>
+          <button type="button" className="btn btn-secondary empty-state-action" onClick={() => setKeySearch('')}>
+            {t('common.clearSearch')}
+          </button>
         </div>
       )}
 
@@ -328,46 +414,57 @@ function ApiKeys() {
         >
           {createdKey ? (
             <>
-              <div className="key-created-banner">
+              <div className="key-created-banner" role="status" aria-live="polite">
                 <p>{t('apiKeys.keyCreatedMessage')}</p>
                 <div className="key-display">
                   <code>{createdKey}</code>
-                  <button className="copy-btn" onClick={handleCopy}>
+                  <button
+                    type="button"
+                    className="copy-btn"
+                    onClick={handleCopy}
+                    aria-label={copied ? t('apiKeys.copiedCreatedKey') : t('apiKeys.copyCreatedKey')}
+                  >
                     {copied ? t('apiKeys.copied') : t('apiKeys.copy')}
                   </button>
                 </div>
               </div>
               <div className="modal-actions">
-                <button className="btn btn-primary" onClick={closeModal}>{t('common.done')}</button>
+                <button type="button" className="btn btn-primary" onClick={closeModal}>{t('common.done')}</button>
               </div>
             </>
           ) : (
             <form onSubmit={handleSubmit}>
               <div className="form-grid">
                 <div className="form-group">
-                  <label>{t('apiKeys.keyName')}</label>
+                  <label htmlFor="api-key-name">{t('apiKeys.keyName')}</label>
                   <input
+                    id="api-key-name"
                     value={form.name}
                     onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
                     placeholder="my-app"
                     required
                     disabled={!!editingName}
+                    aria-label={t('apiKeys.keyName')}
                   />
                 </div>
                 <div className="form-group">
-                  <label>{t('apiKeys.description')}</label>
+                  <label htmlFor="api-key-description">{t('apiKeys.description')}</label>
                   <input
+                    id="api-key-description"
                     value={form.description}
                     onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))}
                     placeholder={t('apiKeys.descriptionPlaceholder')}
+                    aria-label={t('apiKeys.description')}
                   />
                 </div>
                 <div className="form-group form-group--full">
-                  <label>{t('apiKeys.apiKey')}</label>
+                  <label htmlFor="api-key-secret">{t('apiKeys.apiKey')}</label>
                   <input
+                    id="api-key-secret"
                     value={form.apiKey}
                     onChange={(e) => setForm((p) => ({ ...p, apiKey: e.target.value }))}
                     placeholder={editingName ? t('apiKeys.apiKeyPlaceholderEdit') : t('apiKeys.apiKeyPlaceholderNew')}
+                    aria-label={t('apiKeys.apiKey')}
                   />
                   <button type="button" className="btn btn-sm btn-secondary generate-btn" onClick={() => setForm((p) => ({ ...p, apiKey: generateKey() }))}>
                     {t('apiKeys.generateKey')}
@@ -385,8 +482,8 @@ function ApiKeys() {
                   </label>
                 </div>
                 <div className="form-group form-group--full">
-                  <label>{t('apiKeys.allowedDatabases')}</label>
-                  <div className="checkbox-list">
+                  <label id="api-key-allowed-databases-label">{t('apiKeys.allowedDatabases')}</label>
+                  <div className="checkbox-list" role="group" aria-labelledby="api-key-allowed-databases-label">
                     {databases.length === 0 && s3Connections.length === 0 && nasConnections.length === 0 && (
                       <div className="checkbox-list-empty">{t('apiKeys.noneSelected')}</div>
                     )}
@@ -429,8 +526,8 @@ function ApiKeys() {
                   </div>
                 </div>
                 <div className="form-group form-group--full">
-                  <label>{t('apiKeys.allowedRoutes')}</label>
-                  <div className="checkbox-list">
+                  <label id="api-key-allowed-routes-label">{t('apiKeys.allowedRoutes')}</label>
+                  <div className="checkbox-list" role="group" aria-labelledby="api-key-allowed-routes-label">
                     {routes.length === 0 && <div className="checkbox-list-empty">{t('apiKeys.noneSelected')}</div>}
                     {routes.map((r) => (
                       <label key={r.id} className={accessItemClass}>
@@ -447,8 +544,13 @@ function ApiKeys() {
                   </div>
                 </div>
                 <div className="form-group form-group--full">
-                  <label>{t('apiKeys.writePermissions')}</label>
-                  <div className="checkbox-list">
+                  <label id="api-key-write-permissions-label">{t('apiKeys.writePermissions')}</label>
+                  <div
+                    className="checkbox-list"
+                    role="group"
+                    aria-labelledby="api-key-write-permissions-label"
+                    aria-describedby="api-key-write-permissions-hint"
+                  >
                     <label className="checkbox-list-item">
                       <input
                         type="checkbox"
@@ -474,34 +576,46 @@ function ApiKeys() {
                       <span className="checkbox-list-label">{t('apiKeys.allowDelete')}</span>
                     </label>
                   </div>
-                  <small className="form-hint">{t('apiKeys.writePermissionsHint')}</small>
+                  <small id="api-key-write-permissions-hint" className="form-hint">
+                    {t('apiKeys.writePermissionsHint')}
+                  </small>
                 </div>
                 <div className="form-group form-group--full">
-                  <label>{t('apiKeys.allowedTables')}</label>
+                  <label htmlFor="api-key-allowed-tables">{t('apiKeys.allowedTables')}</label>
                   <input
+                    id="api-key-allowed-tables"
                     value={form.allowedTables}
                     onChange={(e) => setForm((p) => ({ ...p, allowedTables: e.target.value }))}
                     placeholder={t('apiKeys.allowedTablesPlaceholder')}
+                    aria-label={t('apiKeys.allowedTables')}
+                    aria-describedby="api-key-allowed-tables-hint"
                   />
-                  <small className="form-hint">{t('apiKeys.allowedTablesHint')}</small>
+                  <small id="api-key-allowed-tables-hint" className="form-hint">
+                    {t('apiKeys.allowedTablesHint')}
+                  </small>
                 </div>
                 <div className="form-group">
-                  <label>{t('apiKeys.rateLimit')}</label>
+                  <label htmlFor="api-key-rate-limit">{t('apiKeys.rateLimit')}</label>
                   <input
+                    id="api-key-rate-limit"
                     type="number"
                     min={1}
                     step={1}
                     value={form.rateLimit}
                     onChange={(e) => setForm((p) => ({ ...p, rateLimit: e.target.value }))}
                     placeholder={t('apiKeys.rateLimitHint')}
+                    aria-label={t('apiKeys.rateLimit')}
+                    aria-describedby="api-key-rate-limit-hint"
                   />
-                  <small className="form-hint">{t('apiKeys.rateLimitHint')}</small>
+                  <small id="api-key-rate-limit-hint" className="form-hint">
+                    {t('apiKeys.rateLimitHint')}
+                  </small>
                 </div>
               </div>
 
               <div className="modal-actions">
                 <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
-                <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                <button type="submit" className="btn btn-primary" disabled={isSaving} aria-busy={isSaving}>
                   {isSaving ? t('common.saving') : editingName ? t('common.update') : t('common.create')}
                 </button>
               </div>

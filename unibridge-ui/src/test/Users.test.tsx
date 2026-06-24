@@ -45,6 +45,7 @@ describe('Users', () => {
     });
 
     expect(screen.getByText('test@example.com')).toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: 'Search users...' })).toBeInTheDocument();
   });
 
   it('renders empty state when loading', () => {
@@ -65,8 +66,10 @@ describe('Users', () => {
       expect(screen.getByText('testuser')).toBeInTheDocument();
     });
 
-    expect(screen.getByRole('button', { name: 'Role' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Change role for testuser' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reset password for testuser' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Disable user testuser' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete user testuser' })).toBeInTheDocument();
   });
 
   it('hides action buttons for viewer users', async () => {

@@ -38,6 +38,7 @@ function Roles() {
   const [description, setDescription] = useState('');
   const [selectedPerms, setSelectedPerms] = useState<Set<string>>(new Set());
   const [error, setError] = useState('');
+  const [roleSearch, setRoleSearch] = useState('');
 
   const rolesQuery = useQuery({ queryKey: ROLES_KEY, queryFn: getRoles });
   const permsQuery = useQuery({ queryKey: ['all-permissions'], queryFn: getAllPermissions });
@@ -66,6 +67,19 @@ function Roles() {
   const roles = rolesQuery.data ?? [];
   const allPerms = permsQuery.data ?? [];
   const permGroups = groupPermissions(allPerms);
+  const normalizedRoleSearch = roleSearch.trim().toLowerCase();
+  const filteredRoles = normalizedRoleSearch
+    ? roles.filter((role) => [
+        role.name,
+        role.description,
+        role.is_system ? t('roles.system') : '',
+        ...role.permissions,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedRoleSearch))
+    : roles;
 
   function openCreate() {
     setEditingRole(null);
@@ -135,44 +149,90 @@ function Roles() {
         canAdd={canWrite}
         addLabel={t('roles.addRole')}
         onAdd={openCreate}
+        extra={roles.length > 0 ? (
+          <input
+            className="role-search-input"
+            type="search"
+            value={roleSearch}
+            onChange={(event) => setRoleSearch(event.target.value)}
+            placeholder={t('roles.searchPlaceholder')}
+            aria-label={t('roles.searchPlaceholder')}
+          />
+        ) : null}
       />
 
-      {rolesQuery.isLoading && <div className="loading-message">{t('roles.loadingRoles')}</div>}
-      {rolesQuery.isError && <div className="error-banner">{t('roles.loadFailed')}</div>}
+      {rolesQuery.isLoading && <div className="loading-message" role="status">{t('roles.loadingRoles')}</div>}
+      {rolesQuery.isError && <div className="error-banner" role="alert">{t('roles.loadFailed')}</div>}
 
-      {roles.length > 0 && (
+      {roles.length > 0 && filteredRoles.length > 0 && (
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t('common.name')}</th>
-                <th>{t('roles.description')}</th>
-                <th>{t('permissions.title')}</th>
-                <th>{t('common.type')}</th>
-                <th>{t('common.actions')}</th>
+                <th scope="col">{t('common.name')}</th>
+                <th scope="col">{t('roles.description')}</th>
+                <th scope="col">{t('permissions.title')}</th>
+                <th scope="col">{t('common.type')}</th>
+                <th scope="col">{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
-              {roles.map((role) => (
-                <tr key={role.id}>
-                  <td className="cell-alias">{role.name}</td>
-                  <td>{role.description || '—'}</td>
-                  <td className="perm-count">{t('roles.permissionCount', { count: role.permissions.length })}</td>
-                  <td>{role.is_system ? <span className="system-badge">{t('roles.system')}</span> : '—'}</td>
-                  <td>
-                    {canWrite && (
-                      <div className="action-buttons">
-                        <button className="btn btn-sm btn-secondary" onClick={() => openEdit(role)}>{t('common.edit')}</button>
-                        {!role.is_system && (
-                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(role)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
-                        )}
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {filteredRoles.map((role) => {
+                const isDeleting = deleteMutation.isPending && deleteMutation.variables === role.id;
+                return (
+                  <tr key={role.id}>
+                    <td className="cell-alias">{role.name}</td>
+                    <td>{role.description || '—'}</td>
+                    <td className="perm-count">{t('roles.permissionCount', { count: role.permissions.length })}</td>
+                    <td>{role.is_system ? <span className="system-badge">{t('roles.system')}</span> : '—'}</td>
+                    <td>
+                      {canWrite && (
+                        <div className="action-buttons">
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-secondary"
+                            aria-label={t('roles.editRole', { name: role.name })}
+                            onClick={() => openEdit(role)}
+                          >
+                            {t('common.edit')}
+                          </button>
+                          {!role.is_system && (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-danger"
+                              aria-label={t('roles.deleteRole', { name: role.name })}
+                              onClick={() => handleDelete(role)}
+                              disabled={deleteMutation.isPending}
+                              aria-busy={isDeleting}
+                            >
+                              {isDeleting ? t('common.deleting') : t('common.delete')}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!rolesQuery.isLoading && roles.length > 0 && filteredRoles.length === 0 && !rolesQuery.isError && (
+        <div className="empty-state">
+          <h3>{t('roles.noSearchResults')}</h3>
+          <p>{t('roles.noSearchResultsDesc')}</p>
+          <button type="button" className="btn btn-secondary empty-state-action" onClick={() => setRoleSearch('')}>
+            {t('common.clearSearch')}
+          </button>
+        </div>
+      )}
+
+      {!rolesQuery.isLoading && roles.length === 0 && !rolesQuery.isError && (
+        <div className="empty-state">
+          <h3>{t('roles.noRoles')}</h3>
+          <p>{t('roles.noRolesDesc')}</p>
         </div>
       )}
 
@@ -186,21 +246,25 @@ function Roles() {
           <form onSubmit={handleSubmit}>
             <div className="form-grid">
               <div className="form-group form-group--full">
-                <label>{t('common.name')}</label>
+                <label htmlFor="role-name">{t('common.name')}</label>
                 <input
+                  id="role-name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="role-name"
                   required
                   disabled={!!editingRole}
+                  aria-label={t('common.name')}
                 />
               </div>
               <div className="form-group form-group--full">
-                <label>{t('roles.description')}</label>
+                <label htmlFor="role-description">{t('roles.description')}</label>
                 <input
+                  id="role-description"
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   placeholder="Role description"
+                  aria-label={t('roles.description')}
                 />
               </div>
             </div>
@@ -225,11 +289,11 @@ function Roles() {
               ))}
             </div>
 
-            {error && <div className="form-error">{error}</div>}
+            {error && <div className="form-error" role="alert">{error}</div>}
 
             <div className="modal-actions">
               <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
-              <button type="submit" className="btn btn-primary" disabled={isSaving}>
+              <button type="submit" className="btn btn-primary" disabled={isSaving} aria-busy={isSaving}>
                 {isSaving ? t('common.saving') : editingRole ? t('common.update') : t('common.create')}
               </button>
             </div>

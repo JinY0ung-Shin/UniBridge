@@ -35,6 +35,7 @@ function NasConnections() {
   const [editingAlias, setEditingAlias] = useState<string | null>(null);
   const [form, setForm] = useState<NasConnectionConfig>({ ...emptyForm });
   const [testResults, setTestResults] = useState<Record<string, { status: string }>>({});
+  const [connectionSearch, setConnectionSearch] = useState('');
 
   const connQuery = useQuery({
     queryKey: ['nas-connections'],
@@ -85,6 +86,21 @@ function NasConnections() {
   });
 
   const connections = connQuery.data ?? [];
+  const normalizedConnectionSearch = connectionSearch.trim().toLowerCase();
+  const filteredConnections = normalizedConnectionSearch
+    ? connections.filter((conn) => [
+        conn.alias,
+        conn.base_path,
+        conn.show_hidden ? t('nas.showHidden') : '',
+        conn.follow_symlinks ? t('nas.followSymlinks') : '',
+        testResults[conn.alias]?.status,
+        conn.status,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedConnectionSearch))
+    : connections;
 
   function openCreate() {
     setForm({ ...emptyForm });
@@ -151,32 +167,46 @@ function NasConnections() {
           <h1>{t('nas.title')}</h1>
           <p className="page-subtitle">{t('nas.subtitle')}</p>
         </div>
-        {canWrite && (
-          <button className="btn btn-primary" onClick={openCreate}>
-            {t('nas.addConnection')}
-          </button>
-        )}
+        <div className="page-header__actions connections-header-actions">
+          {connections.length > 0 && (
+            <input
+              className="connection-search-input"
+              type="search"
+              value={connectionSearch}
+              onChange={(event) => setConnectionSearch(event.target.value)}
+              placeholder={t('nas.connectionSearchPlaceholder')}
+              aria-label={t('nas.connectionSearchPlaceholder')}
+            />
+          )}
+          {canWrite && (
+            <button type="button" className="btn btn-primary" onClick={openCreate}>
+              {t('nas.addConnection')}
+            </button>
+          )}
+        </div>
       </div>
 
-      {connQuery.isLoading && <div className="loading-message">{t('nas.loadingConnections')}</div>}
-      {connQuery.isError && <div className="error-banner">{t('nas.loadFailed')}</div>}
+      {connQuery.isLoading && <div className="loading-message" role="status">{t('nas.loadingConnections')}</div>}
+      {connQuery.isError && <div className="error-banner" role="alert">{t('nas.loadFailed')}</div>}
 
-      {connections.length > 0 && (
+      {connections.length > 0 && filteredConnections.length > 0 && (
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t('nas.alias')}</th>
-                <th>{t('nas.basePath')}</th>
-                <th>{t('nas.showHidden')}</th>
-                <th>{t('nas.followSymlinks')}</th>
-                <th>{t('common.status')}</th>
-                <th>{t('common.actions')}</th>
+                <th scope="col">{t('nas.alias')}</th>
+                <th scope="col">{t('nas.basePath')}</th>
+                <th scope="col">{t('nas.showHidden')}</th>
+                <th scope="col">{t('nas.followSymlinks')}</th>
+                <th scope="col">{t('common.status')}</th>
+                <th scope="col">{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
-              {connections.map((conn) => {
+              {filteredConnections.map((conn) => {
                 const testResult = testResults[conn.alias];
+                const isTesting = testMutation.isPending && testMutation.variables === conn.alias;
+                const isDeleting = deleteMutation.isPending && deleteMutation.variables === conn.alias;
                 return (
                   <tr key={conn.alias}>
                     <td className="cell-alias">{conn.alias}</td>
@@ -197,14 +227,19 @@ function NasConnections() {
                     <td>
                       <div className="action-buttons">
                         <button
+                          type="button"
                           className="btn btn-sm btn-secondary"
+                          aria-label={t('nas.testConnection', { alias: conn.alias })}
                           onClick={() => handleTest(conn.alias)}
                           disabled={testMutation.isPending}
+                          aria-busy={isTesting}
                         >
-                          {t('common.test')}
+                          {isTesting ? t('common.testing') : t('common.test')}
                         </button>
                         <button
+                          type="button"
                           className="btn btn-sm btn-primary"
+                          aria-label={t('nas.browseConnection', { alias: conn.alias })}
                           onClick={() => navigate(`/nas/browse/${encodeURIComponent(conn.alias)}`)}
                         >
                           {t('nas.browse')}
@@ -212,17 +247,22 @@ function NasConnections() {
                         {canWrite && (
                           <>
                             <button
+                              type="button"
                               className="btn btn-sm btn-secondary"
+                              aria-label={t('nas.editConnection', { alias: conn.alias })}
                               onClick={() => openEdit(conn)}
                             >
                               {t('common.edit')}
                             </button>
                             <button
+                              type="button"
                               className="btn btn-sm btn-danger"
+                              aria-label={t('nas.deleteConnection', { alias: conn.alias })}
                               onClick={() => handleDelete(conn.alias)}
                               disabled={deleteMutation.isPending}
+                              aria-busy={isDeleting}
                             >
-                              {t('common.delete')}
+                              {isDeleting ? t('common.deleting') : t('common.delete')}
                             </button>
                           </>
                         )}
@@ -233,6 +273,16 @@ function NasConnections() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!connQuery.isLoading && connections.length > 0 && filteredConnections.length === 0 && !connQuery.isError && (
+        <div className="empty-state">
+          <h3>{t('nas.noSearchResults')}</h3>
+          <p>{t('nas.noSearchResultsDesc')}</p>
+          <button type="button" className="btn btn-secondary empty-state-action" onClick={() => setConnectionSearch('')}>
+            {t('common.clearSearch')}
+          </button>
         </div>
       )}
 
@@ -252,29 +302,41 @@ function NasConnections() {
           <form onSubmit={handleSubmit}>
             <div className="form-grid">
               <div className="form-group">
-                <label>{t('nas.alias')}</label>
+                <label htmlFor="nas-alias">{t('nas.alias')}</label>
                 <input
+                  id="nas-alias"
                   type="text"
                   value={form.alias}
                   onChange={(e) => updateField('alias', e.target.value)}
                   required
                   disabled={!!editingAlias}
                   placeholder="e.g., my-nas"
+                  aria-label={t('nas.alias')}
                 />
               </div>
               <div className="form-group form-group--full">
-                <label>{t('nas.basePath')} <span className="hint">{t('nas.basePathHint')}</span></label>
+                <label htmlFor="nas-base-path">
+                  {t('nas.basePath')}{' '}
+                  <span id="nas-base-path-hint" className="hint">{t('nas.basePathHint')}</span>
+                </label>
                 <input
+                  id="nas-base-path"
                   type="text"
                   value={form.base_path}
                   onChange={(e) => updateField('base_path', e.target.value)}
                   required
                   placeholder="/mnt/share/data"
+                  aria-label={t('nas.basePath')}
+                  aria-describedby="nas-base-path-hint"
                 />
               </div>
               <div className="form-group">
-                <label>{t('nas.maxDownloadBytes')} <span className="hint">{t('nas.maxDownloadBytesHint')}</span></label>
+                <label htmlFor="nas-max-download-bytes">
+                  {t('nas.maxDownloadBytes')}{' '}
+                  <span id="nas-max-download-bytes-hint" className="hint">{t('nas.maxDownloadBytesHint')}</span>
+                </label>
                 <input
+                  id="nas-max-download-bytes"
                   type="number"
                   min={1}
                   value={form.max_download_bytes ?? ''}
@@ -285,6 +347,8 @@ function NasConnections() {
                     )
                   }
                   placeholder="524288000"
+                  aria-label={t('nas.maxDownloadBytes')}
+                  aria-describedby="nas-max-download-bytes-hint"
                 />
               </div>
               <div className="form-group">
@@ -312,7 +376,7 @@ function NasConnections() {
             </div>
 
             {(createMutation.isError || updateMutation.isError) && (
-              <div className="form-error">
+              <div className="form-error" role="alert">
                 {(createMutation.error as Error)?.message ||
                   (updateMutation.error as Error)?.message ||
                   t('common.errorOccurred')}
@@ -323,7 +387,7 @@ function NasConnections() {
               <button type="button" className="btn btn-secondary" onClick={closeModal}>
                 {t('common.cancel')}
               </button>
-              <button type="submit" className="btn btn-primary" disabled={isSaving}>
+              <button type="submit" className="btn btn-primary" disabled={isSaving} aria-busy={isSaving}>
                 {isSaving ? t('common.saving') : editingAlias ? t('common.update') : t('common.create')}
               </button>
             </div>

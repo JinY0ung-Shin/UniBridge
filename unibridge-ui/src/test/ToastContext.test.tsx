@@ -36,6 +36,7 @@ describe('ToastContext', () => {
     });
     expect(screen.getByText('Saved')).toBeInTheDocument();
     expect(screen.getByText('Resource saved')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Saved');
   });
 
   it('renders multiple toasts at once', () => {
@@ -56,6 +57,7 @@ describe('ToastContext', () => {
     expect(screen.getByText('One')).toBeInTheDocument();
     expect(screen.getByText('Two')).toBeInTheDocument();
     expect(screen.getByText('Three')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Two');
   });
 
   it('auto-dismisses after timeout', () => {
@@ -86,7 +88,7 @@ describe('ToastContext', () => {
     });
     expect(screen.getByText('Closable')).toBeInTheDocument();
 
-    const closeBtn = screen.getByRole('button', { name: '×' });
+    const closeBtn = screen.getByRole('button', { name: 'Close' });
     act(() => {
       fireEvent.click(closeBtn);
     });

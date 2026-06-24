@@ -45,6 +45,35 @@ describe('GatewayUpstreams', () => {
     expect(screen.getByText('localhost:3000 (w:1)')).toBeInTheDocument();
   });
 
+  it('filters upstreams by search text', async () => {
+    mockedGetGatewayUpstreams.mockResolvedValue({
+      items: [
+        makeGatewayUpstream({ id: 'upstream-1', name: 'orders-api', nodes: { 'orders.internal:3000': 1 } }),
+        makeGatewayUpstream({ id: 'upstream-2', name: 'billing-api', scheme: 'https', nodes: { 'billing.internal:443': 1 } }),
+      ],
+      total: 2,
+    });
+
+    renderWithProviders(<GatewayUpstreams />);
+
+    await waitFor(() => {
+      expect(screen.getByText('orders-api')).toBeInTheDocument();
+    });
+
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Search upstreams...' }), 'billing');
+
+    expect(screen.queryByText('orders-api')).not.toBeInTheDocument();
+    expect(screen.getByText('billing-api')).toBeInTheDocument();
+
+    await userEvent.clear(screen.getByRole('searchbox', { name: 'Search upstreams...' }));
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Search upstreams...' }), 'missing');
+
+    expect(screen.getByText('No matching upstreams')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+    expect(screen.getByText('orders-api')).toBeInTheDocument();
+    expect(screen.getByText('billing-api')).toBeInTheDocument();
+  });
+
   it('submits https upstreams with the selected scheme and default port', async () => {
     const user = userEvent.setup();
     mockedSaveGatewayUpstream.mockResolvedValue(makeGatewayUpstream({ scheme: 'https', nodes: { 'secure.example.com:443': 1 } }));
@@ -52,9 +81,9 @@ describe('GatewayUpstreams', () => {
     renderWithProviders(<GatewayUpstreams />);
 
     await user.click(screen.getByRole('button', { name: '+ Add Upstream' }));
-    await user.type(screen.getByPlaceholderText('my-backend'), 'secure-api');
-    await user.selectOptions(screen.getAllByRole('combobox')[0], 'https');
-    await user.type(screen.getByPlaceholderText('e.g. 192.168.1.10 or api.example.com'), 'secure.example.com');
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'secure-api');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Scheme' }), 'https');
+    await user.type(screen.getByRole('textbox', { name: 'Node 1 host or IP' }), 'secure.example.com');
     await user.click(screen.getByRole('button', { name: 'Create' }));
 
     await waitFor(() => {
@@ -104,6 +133,42 @@ describe('GatewayUpstreams', () => {
 
     const dialog = screen.getByRole('dialog', { name: 'Add Upstream' });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveAttribute(
+      'aria-describedby',
+      'gateway-upstream-name-hint',
+    );
+    expect(document.getElementById('gateway-upstream-name-hint')).toHaveTextContent(
+      'Identifier name',
+    );
+    expect(screen.getByRole('combobox', { name: 'Scheme' })).toHaveAttribute(
+      'aria-describedby',
+      'gateway-upstream-scheme-hint',
+    );
+    expect(screen.getByRole('combobox', { name: 'Host Header' })).toHaveAttribute(
+      'aria-describedby',
+      'gateway-upstream-host-header-hint',
+    );
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Host Header' }), 'rewrite');
+    expect(screen.getByRole('textbox', { name: 'Custom Host' })).toHaveAttribute(
+      'id',
+      'gateway-upstream-rewrite-host',
+    );
+    expect(screen.getByRole('combobox', { name: 'Type' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Type' })).toHaveAttribute(
+      'aria-describedby',
+      'gateway-upstream-type-hint',
+    );
+    expect(screen.getByRole('group', { name: 'Nodes' })).toHaveAttribute(
+      'aria-describedby',
+      'gateway-upstream-nodes-hint',
+    );
+    expect(screen.getByRole('textbox', { name: 'Node 1 host or IP' })).toHaveAttribute(
+      'aria-describedby',
+      'gateway-upstream-nodes-hint',
+    );
+    for (const option of ['Round Robin', 'Consistent Hash', 'EWMA', 'Least Connections']) {
+      expect(screen.getByRole('option', { name: option })).toBeInTheDocument();
+    }
   });
 
   it('opens edit modal on edit button click', async () => {
@@ -116,7 +181,7 @@ describe('GatewayUpstreams', () => {
       expect(screen.getByText('test-upstream')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit upstream test-upstream' }));
 
     expect(screen.getByText('Edit Upstream')).toBeInTheDocument();
   });
@@ -134,7 +199,7 @@ describe('GatewayUpstreams', () => {
       expect(screen.getByText('test-upstream')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete upstream test-upstream' }));
 
     expect(window.confirm).toHaveBeenCalled();
     await waitFor(() => {

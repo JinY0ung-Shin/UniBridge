@@ -12,7 +12,19 @@
   display: flex;
   gap: 10px;
   margin-bottom: 24px;
-  align-items: center;
+  align-items: flex-end;
+}
+
+.add-perm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.add-perm-field label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .perm-input,
@@ -45,6 +57,33 @@
   width: 200px;
   appearance: none;
   cursor: pointer;
+}
+
+.permission-filter-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.permission-search-input {
+  width: min(300px, 36vw);
+  min-width: 190px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-sans);
+  outline: none;
+}
+
+.permission-search-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.permission-search-input::placeholder {
+  color: var(--text-tertiary);
 }
 
 /* ── Table tweaks ── */
@@ -107,4 +146,18 @@
   padding: 2px 8px;
   font-size: 12px;
   font-family: monospace;
+}
+
+@media (max-width: 720px) {
+  .add-perm-row,
+  .permission-filter-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .perm-input,
+  .perm-select,
+  .permission-search-input {
+    width: 100%;
+  }
 }

@@ -74,6 +74,7 @@ function GatewayUpstreams() {
   const [type, setType] = useState('roundrobin');
   const [nodes, setNodes] = useState<NodeEntry[]>([emptyNodeForScheme(defaultScheme)]);
   const [error, setError] = useState('');
+  const [upstreamSearch, setUpstreamSearch] = useState('');
 
   const upstreamsQuery = useQuery({
     queryKey: UPSTREAMS_KEY,
@@ -95,6 +96,22 @@ function GatewayUpstreams() {
   });
 
   const upstreams = upstreamsQuery.data?.items ?? [];
+  const normalizedUpstreamSearch = upstreamSearch.trim().toLowerCase();
+  const filteredUpstreams = normalizedUpstreamSearch
+    ? upstreams.filter((u) => [
+        u.name,
+        u.id,
+        normalizeScheme(u.scheme),
+        u.type,
+        u.pass_host,
+        u.upstream_host,
+        formatNodes(u.nodes || {}),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedUpstreamSearch))
+    : upstreams;
 
   function openCreate() {
     setEditingId(null);
@@ -190,25 +207,37 @@ function GatewayUpstreams() {
         canAdd={canWrite}
         addLabel={t('gatewayUpstreams.addUpstream')}
         onAdd={openCreate}
+        extra={upstreams.length > 0 ? (
+          <input
+            className="upstream-search-input"
+            type="search"
+            value={upstreamSearch}
+            onChange={(event) => setUpstreamSearch(event.target.value)}
+            placeholder={t('gatewayUpstreams.searchPlaceholder')}
+            aria-label={t('gatewayUpstreams.searchPlaceholder')}
+          />
+        ) : null}
       />
 
-      {upstreamsQuery.isLoading && <div className="loading-message">{t('gatewayUpstreams.loadingUpstreams')}</div>}
-      {upstreamsQuery.isError && <div className="error-banner">{t('gatewayUpstreams.loadFailed')}</div>}
+      {upstreamsQuery.isLoading && <div className="loading-message" role="status">{t('gatewayUpstreams.loadingUpstreams')}</div>}
+      {upstreamsQuery.isError && <div className="error-banner" role="alert">{t('gatewayUpstreams.loadFailed')}</div>}
 
-      {upstreams.length > 0 && (
+      {upstreams.length > 0 && filteredUpstreams.length > 0 && (
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t('common.name')}</th>
-                <th>{t('gatewayUpstreams.scheme')}</th>
-                <th>{t('common.type')}</th>
-                <th>{t('gatewayUpstreams.nodes')}</th>
-                <th>{t('common.actions')}</th>
+                <th scope="col">{t('common.name')}</th>
+                <th scope="col">{t('gatewayUpstreams.scheme')}</th>
+                <th scope="col">{t('common.type')}</th>
+                <th scope="col">{t('gatewayUpstreams.nodes')}</th>
+                <th scope="col">{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
-              {upstreams.map((u) => (
+              {filteredUpstreams.map((u) => {
+                const isDeleting = deleteMutation.isPending && deleteMutation.variables === u.id;
+                return (
                 <tr key={u.id}>
                   <td className="cell-alias">
                     {u.name || u.id}
@@ -221,16 +250,43 @@ function GatewayUpstreams() {
                     <div className="action-buttons">
                       {canWrite && !u.system && (
                         <>
-                          <button className="btn btn-sm btn-secondary" onClick={() => openEdit(u)}>{t('common.edit')}</button>
-                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(u)} disabled={deleteMutation.isPending}>{t('common.delete')}</button>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-secondary"
+                            aria-label={t('gatewayUpstreams.editUpstream', { name: u.name || u.id })}
+                            onClick={() => openEdit(u)}
+                          >
+                            {t('common.edit')}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-danger"
+                            aria-label={t('gatewayUpstreams.deleteUpstream', { name: u.name || u.id })}
+                            onClick={() => handleDelete(u)}
+                            disabled={deleteMutation.isPending}
+                            aria-busy={isDeleting}
+                          >
+                            {isDeleting ? t('common.deleting') : t('common.delete')}
+                          </button>
                         </>
                       )}
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!upstreamsQuery.isLoading && upstreams.length > 0 && filteredUpstreams.length === 0 && !upstreamsQuery.isError && (
+        <div className="empty-state">
+          <h3>{t('gatewayUpstreams.noSearchResults')}</h3>
+          <p>{t('gatewayUpstreams.noSearchResultsDesc')}</p>
+          <button type="button" className="btn btn-secondary empty-state-action" onClick={() => setUpstreamSearch('')}>
+            {t('common.clearSearch')}
+          </button>
         </div>
       )}
 
@@ -250,52 +306,94 @@ function GatewayUpstreams() {
           <form onSubmit={handleSubmit}>
             <div className="form-grid">
               <div className="form-group">
-                <label>{t('common.name')}</label>
-                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="my-backend" />
-                <span className="field-hint">{t('gatewayUpstreams.nameHint')}</span>
+                <label htmlFor="gateway-upstream-name">{t('common.name')}</label>
+                <input
+                  id="gateway-upstream-name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="my-backend"
+                  aria-label={t('common.name')}
+                  aria-describedby="gateway-upstream-name-hint"
+                />
+                <span id="gateway-upstream-name-hint" className="field-hint">
+                  {t('gatewayUpstreams.nameHint')}
+                </span>
               </div>
               <div className="form-group">
-                <label>{t('gatewayUpstreams.scheme')}</label>
-                <select value={scheme} onChange={(e) => handleSchemeChange(e.target.value)}>
+                <label htmlFor="gateway-upstream-scheme">{t('gatewayUpstreams.scheme')}</label>
+                <select
+                  id="gateway-upstream-scheme"
+                  value={scheme}
+                  onChange={(e) => handleSchemeChange(e.target.value)}
+                  aria-label={t('gatewayUpstreams.scheme')}
+                  aria-describedby="gateway-upstream-scheme-hint"
+                >
                   <option value="http">HTTP</option>
                   <option value="https">HTTPS</option>
                 </select>
-                <span className="field-hint">{t('gatewayUpstreams.schemeHint')}</span>
+                <span id="gateway-upstream-scheme-hint" className="field-hint">
+                  {t('gatewayUpstreams.schemeHint')}
+                </span>
               </div>
               <div className="form-group">
-                <label>{t('gatewayUpstreams.hostHeader')}</label>
-                <select value={passHost} onChange={(e) => setPassHost(normalizePassHost(e.target.value, defaultPassHost))}>
+                <label htmlFor="gateway-upstream-host-header">{t('gatewayUpstreams.hostHeader')}</label>
+                <select
+                  id="gateway-upstream-host-header"
+                  value={passHost}
+                  onChange={(e) => setPassHost(normalizePassHost(e.target.value, defaultPassHost))}
+                  aria-label={t('gatewayUpstreams.hostHeader')}
+                  aria-describedby="gateway-upstream-host-header-hint"
+                >
                   <option value="node">{t('gatewayUpstreams.hostHeaderNode')}</option>
                   <option value="pass">{t('gatewayUpstreams.hostHeaderPass')}</option>
                   <option value="rewrite">{t('gatewayUpstreams.hostHeaderRewrite')}</option>
                 </select>
-                <span className="field-hint">{t('gatewayUpstreams.hostHeaderHint')}</span>
+                <span id="gateway-upstream-host-header-hint" className="field-hint">
+                  {t('gatewayUpstreams.hostHeaderHint')}
+                </span>
               </div>
               {passHost === 'rewrite' && (
                 <div className="form-group">
-                  <label>{t('gatewayUpstreams.upstreamHost')}</label>
+                  <label htmlFor="gateway-upstream-rewrite-host">{t('gatewayUpstreams.upstreamHost')}</label>
                   <input
+                    id="gateway-upstream-rewrite-host"
                     value={upstreamHost}
                     onChange={(e) => setUpstreamHost(e.target.value)}
                     placeholder="api.example.com"
+                    aria-label={t('gatewayUpstreams.upstreamHost')}
                     required
                   />
                 </div>
               )}
               <div className="form-group">
-                <label>{t('common.type')}</label>
-                <select value={type} onChange={(e) => setType(e.target.value)}>
-                  <option value="roundrobin">Round Robin</option>
-                  <option value="chash">Consistent Hash</option>
-                  <option value="ewma">EWMA</option>
-                  <option value="least_conn">Least Connections</option>
+                <label htmlFor="gateway-upstream-type">{t('common.type')}</label>
+                <select
+                  id="gateway-upstream-type"
+                  value={type}
+                  onChange={(e) => setType(e.target.value)}
+                  aria-label={t('common.type')}
+                  aria-describedby="gateway-upstream-type-hint"
+                >
+                  <option value="roundrobin">{t('gatewayUpstreams.typeRoundRobin')}</option>
+                  <option value="chash">{t('gatewayUpstreams.typeConsistentHash')}</option>
+                  <option value="ewma">{t('gatewayUpstreams.typeEwma')}</option>
+                  <option value="least_conn">{t('gatewayUpstreams.typeLeastConnections')}</option>
                 </select>
-                <span className="field-hint">{t('gatewayUpstreams.typeHint')}</span>
+                <span id="gateway-upstream-type-hint" className="field-hint">
+                  {t('gatewayUpstreams.typeHint')}
+                </span>
               </div>
               <div className="form-group form-group--full">
-                <label>{t('gatewayUpstreams.nodesLabel')}</label>
-                <span className="field-hint">{t('gatewayUpstreams.nodesHint')}</span>
-                <div className="nodes-list">
+                <label id="gateway-upstream-nodes-label">{t('gatewayUpstreams.nodesLabel')}</label>
+                <span id="gateway-upstream-nodes-hint" className="field-hint">
+                  {t('gatewayUpstreams.nodesHint')}
+                </span>
+                <div
+                  className="nodes-list"
+                  role="group"
+                  aria-labelledby="gateway-upstream-nodes-label"
+                  aria-describedby="gateway-upstream-nodes-hint"
+                >
                   <div className="node-row node-row--header">
                     <span className="node-label node-host">{t('gatewayUpstreams.hostIp')}</span>
                     <span className="node-label node-port">{t('gatewayUpstreams.port')}</span>
@@ -308,6 +406,8 @@ function GatewayUpstreams() {
                         placeholder="e.g. 192.168.1.10 or api.example.com"
                         value={node.host}
                         onChange={(e) => updateNode(idx, 'host', e.target.value)}
+                        aria-label={t('gatewayUpstreams.nodeHost', { index: idx + 1 })}
+                        aria-describedby="gateway-upstream-nodes-hint"
                         required
                       />
                       <input
@@ -316,6 +416,8 @@ function GatewayUpstreams() {
                         type="number"
                         value={node.port}
                         onChange={(e) => updateNode(idx, 'port', e.target.value)}
+                        aria-label={t('gatewayUpstreams.nodePort', { index: idx + 1 })}
+                        aria-describedby="gateway-upstream-nodes-hint"
                       />
                       <input
                         className="node-weight"
@@ -323,24 +425,43 @@ function GatewayUpstreams() {
                         type="number"
                         value={node.weight}
                         onChange={(e) => updateNode(idx, 'weight', e.target.value)}
+                        aria-label={t('gatewayUpstreams.nodeWeight', { index: idx + 1 })}
+                        aria-describedby="gateway-upstream-nodes-hint"
                       />
                       {nodes.length > 1 && (
-                        <button type="button" className="node-remove" onClick={() => removeNode(idx)}>&times;</button>
+                        <button
+                          type="button"
+                          className="node-remove"
+                          aria-label={t('gatewayUpstreams.removeNode', { index: idx + 1 })}
+                          onClick={() => removeNode(idx)}
+                        >
+                          &times;
+                        </button>
                       )}
                     </div>
                   ))}
-                  <button type="button" className="btn btn-sm btn-secondary add-node-btn" onClick={addNode}>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-secondary add-node-btn"
+                    onClick={addNode}
+                    aria-describedby="gateway-upstream-nodes-hint"
+                  >
                     {t('gatewayUpstreams.addNode')}
                   </button>
                 </div>
               </div>
             </div>
 
-            {error && <div className="form-error">{error}</div>}
+            {error && <div className="form-error" role="alert">{error}</div>}
 
             <div className="modal-actions">
               <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
-              <button type="submit" className="btn btn-primary" disabled={saveMutation.isPending}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={saveMutation.isPending}
+                aria-busy={saveMutation.isPending}
+              >
                 {saveMutation.isPending ? t('common.saving') : editingId ? t('common.update') : t('common.create')}
               </button>
             </div>

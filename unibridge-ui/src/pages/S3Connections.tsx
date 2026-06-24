@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -36,6 +36,7 @@ function S3Connections() {
   const [editingAlias, setEditingAlias] = useState<string | null>(null);
   const [form, setForm] = useState<S3ConnectionConfig>({ ...emptyForm });
   const [testResults, setTestResults] = useState<Record<string, { status: string }>>({});
+  const [connectionSearch, setConnectionSearch] = useState('');
 
   const connQuery = useQuery({
     queryKey: ['s3-connections'],
@@ -87,8 +88,24 @@ function S3Connections() {
 
   const [curlModal, setCurlModal] = useState<{ alias: string; curl: string } | null>(null);
   const [curlCopied, setCurlCopied] = useState(false);
+  const curlCopyTimeoutRef = useRef<number | null>(null);
 
   const connections = connQuery.data ?? [];
+  const normalizedConnectionSearch = connectionSearch.trim().toLowerCase();
+  const filteredConnections = normalizedConnectionSearch
+    ? connections.filter((conn) => [
+        conn.alias,
+        conn.endpoint_url || 'AWS S3',
+        conn.region,
+        conn.default_bucket,
+        testResults[conn.alias]?.status,
+        conn.status,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedConnectionSearch))
+    : connections;
 
   function openCreate() {
     setForm({ ...emptyForm });
@@ -142,7 +159,21 @@ function S3Connections() {
     testMutation.mutate(alias);
   }
 
+  function clearCurlCopyTimer() {
+    if (curlCopyTimeoutRef.current !== null) {
+      window.clearTimeout(curlCopyTimeoutRef.current);
+      curlCopyTimeoutRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      clearCurlCopyTimer();
+    };
+  }, []);
+
   function handleCurl(alias: string, defaultBucket: string | null | undefined) {
+    clearCurlCopyTimer();
     const base = `${window.location.origin}/api/s3`;
     const bucket = defaultBucket || '<BUCKET>';
     const curl = [
@@ -173,12 +204,27 @@ function S3Connections() {
     setCurlCopied(false);
   }
 
-  function handleCurlCopy() {
+  async function handleCurlCopy() {
     if (curlModal) {
-      navigator.clipboard.writeText(curlModal.curl);
-      setCurlCopied(true);
-      setTimeout(() => setCurlCopied(false), 2000);
+      try {
+        clearCurlCopyTimer();
+        await navigator.clipboard.writeText(curlModal.curl);
+        setCurlCopied(true);
+        curlCopyTimeoutRef.current = window.setTimeout(() => {
+          setCurlCopied(false);
+          curlCopyTimeoutRef.current = null;
+        }, 2000);
+      } catch {
+        setCurlCopied(false);
+        addToast({ type: 'error', title: t('connections.copyFailed') });
+      }
     }
+  }
+
+  function closeCurlModal() {
+    clearCurlCopyTimer();
+    setCurlCopied(false);
+    setCurlModal(null);
   }
 
   function updateField<K extends keyof S3ConnectionConfig>(key: K, value: S3ConnectionConfig[K]) {
@@ -194,32 +240,46 @@ function S3Connections() {
           <h1>{t('s3.title')}</h1>
           <p className="page-subtitle">{t('s3.subtitle')}</p>
         </div>
-        {canWrite && (
-          <button className="btn btn-primary" onClick={openCreate}>
-            {t('s3.addConnection')}
-          </button>
-        )}
+        <div className="page-header__actions connections-header-actions">
+          {connections.length > 0 && (
+            <input
+              className="connection-search-input"
+              type="search"
+              value={connectionSearch}
+              onChange={(event) => setConnectionSearch(event.target.value)}
+              placeholder={t('s3.searchPlaceholder')}
+              aria-label={t('s3.searchPlaceholder')}
+            />
+          )}
+          {canWrite && (
+            <button type="button" className="btn btn-primary" onClick={openCreate}>
+              {t('s3.addConnection')}
+            </button>
+          )}
+        </div>
       </div>
 
-      {connQuery.isLoading && <div className="loading-message">{t('s3.loadingConnections')}</div>}
-      {connQuery.isError && <div className="error-banner">{t('s3.loadFailed')}</div>}
+      {connQuery.isLoading && <div className="loading-message" role="status">{t('s3.loadingConnections')}</div>}
+      {connQuery.isError && <div className="error-banner" role="alert">{t('s3.loadFailed')}</div>}
 
-      {connections.length > 0 && (
+      {connections.length > 0 && filteredConnections.length > 0 && (
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t('s3.alias')}</th>
-                <th>{t('s3.endpointUrl')}</th>
-                <th>{t('s3.region')}</th>
-                <th>{t('s3.defaultBucket')}</th>
-                <th>{t('common.status')}</th>
-                <th>{t('common.actions')}</th>
+                <th scope="col">{t('s3.alias')}</th>
+                <th scope="col">{t('s3.endpointUrl')}</th>
+                <th scope="col">{t('s3.region')}</th>
+                <th scope="col">{t('s3.defaultBucket')}</th>
+                <th scope="col">{t('common.status')}</th>
+                <th scope="col">{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
-              {connections.map((conn) => {
+              {filteredConnections.map((conn) => {
                 const testResult = testResults[conn.alias];
+                const isTesting = testMutation.isPending && testMutation.variables === conn.alias;
+                const isDeleting = deleteMutation.isPending && deleteMutation.variables === conn.alias;
                 return (
                   <tr key={conn.alias}>
                     <td className="cell-alias">{conn.alias}</td>
@@ -240,20 +300,27 @@ function S3Connections() {
                     <td>
                       <div className="action-buttons">
                         <button
+                          type="button"
                           className="btn btn-sm btn-secondary"
+                          aria-label={t('s3.testConnection', { alias: conn.alias })}
                           onClick={() => handleTest(conn.alias)}
                           disabled={testMutation.isPending}
+                          aria-busy={isTesting}
                         >
-                          {t('common.test')}
+                          {isTesting ? t('common.testing') : t('common.test')}
                         </button>
                         <button
+                          type="button"
                           className="btn btn-sm btn-outline"
+                          aria-label={t('s3.showCurl', { alias: conn.alias })}
                           onClick={() => handleCurl(conn.alias, conn.default_bucket)}
                         >
                           cURL
                         </button>
                         <button
+                          type="button"
                           className="btn btn-sm btn-primary"
+                          aria-label={t('s3.browseConnection', { alias: conn.alias })}
                           onClick={() => navigate(`/s3/browse/${encodeURIComponent(conn.alias)}`)}
                         >
                           {t('s3.browse')}
@@ -261,17 +328,22 @@ function S3Connections() {
                         {canWrite && (
                           <>
                             <button
+                              type="button"
                               className="btn btn-sm btn-secondary"
+                              aria-label={t('s3.editConnection', { alias: conn.alias })}
                               onClick={() => openEdit(conn)}
                             >
                               {t('common.edit')}
                             </button>
                             <button
+                              type="button"
                               className="btn btn-sm btn-danger"
+                              aria-label={t('s3.deleteConnection', { alias: conn.alias })}
                               onClick={() => handleDelete(conn.alias)}
                               disabled={deleteMutation.isPending}
+                              aria-busy={isDeleting}
                             >
-                              {t('common.delete')}
+                              {isDeleting ? t('common.deleting') : t('common.delete')}
                             </button>
                           </>
                         )}
@@ -282,6 +354,16 @@ function S3Connections() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!connQuery.isLoading && connections.length > 0 && filteredConnections.length === 0 && !connQuery.isError && (
+        <div className="empty-state">
+          <h3>{t('s3.noSearchResults')}</h3>
+          <p>{t('s3.noSearchResultsDesc')}</p>
+          <button type="button" className="btn btn-secondary empty-state-action" onClick={() => setConnectionSearch('')}>
+            {t('common.clearSearch')}
+          </button>
         </div>
       )}
 
@@ -301,68 +383,94 @@ function S3Connections() {
           <form onSubmit={handleSubmit}>
             <div className="form-grid">
               <div className="form-group">
-                <label>{t('s3.alias')}</label>
+                <label htmlFor="s3-alias">{t('s3.alias')}</label>
                 <input
+                  id="s3-alias"
                   type="text"
                   value={form.alias}
                   onChange={(e) => updateField('alias', e.target.value)}
                   required
                   disabled={!!editingAlias}
                   placeholder="e.g., my-s3"
+                  aria-label={t('s3.alias')}
                 />
               </div>
               <div className="form-group">
-                <label>{t('s3.region')}</label>
+                <label htmlFor="s3-region">{t('s3.region')}</label>
                 <input
+                  id="s3-region"
                   type="text"
                   value={form.region}
                   onChange={(e) => updateField('region', e.target.value)}
                   required
                   placeholder="us-east-1"
+                  aria-label={t('s3.region')}
                 />
               </div>
               <div className="form-group form-group--full">
-                <label>{t('s3.endpointUrl')} <span className="hint">{t('s3.endpointUrlHint')}</span></label>
+                <label htmlFor="s3-endpoint-url">
+                  {t('s3.endpointUrl')}{' '}
+                  <span id="s3-endpoint-url-hint" className="hint">{t('s3.endpointUrlHint')}</span>
+                </label>
                 <input
+                  id="s3-endpoint-url"
                   type="text"
                   value={form.endpoint_url ?? ''}
                   onChange={(e) => updateField('endpoint_url', e.target.value)}
                   placeholder="https://minio.example.com:9000"
+                  aria-label={t('s3.endpointUrl')}
+                  aria-describedby="s3-endpoint-url-hint"
                 />
               </div>
               <div className="form-group">
-                <label>
+                <label htmlFor="s3-access-key-id">
                   {t('s3.accessKeyId')}
-                  {editingAlias && <span className="hint"> {t('s3.secretAccessKeyHint')}</span>}
+                  {editingAlias && (
+                    <span id="s3-access-key-id-hint" className="hint"> {t('s3.secretAccessKeyHint')}</span>
+                  )}
                 </label>
                 <input
+                  id="s3-access-key-id"
                   type="text"
                   value={form.access_key_id ?? ''}
                   onChange={(e) => updateField('access_key_id', e.target.value)}
                   required={!editingAlias}
                   placeholder={editingAlias ? (form.access_key_id_masked || 'AKIAIOSFODNN7EXAMPLE') : 'AKIAIOSFODNN7EXAMPLE'}
+                  aria-label={t('s3.accessKeyId')}
+                  aria-describedby={editingAlias ? 's3-access-key-id-hint' : undefined}
                 />
               </div>
               <div className="form-group">
-                <label>
+                <label htmlFor="s3-secret-access-key">
                   {t('s3.secretAccessKey')}
-                  {editingAlias && <span className="hint"> {t('s3.secretAccessKeyHint')}</span>}
+                  {editingAlias && (
+                    <span id="s3-secret-access-key-hint" className="hint"> {t('s3.secretAccessKeyHint')}</span>
+                  )}
                 </label>
                 <input
+                  id="s3-secret-access-key"
                   type="password"
                   value={form.secret_access_key ?? ''}
                   onChange={(e) => updateField('secret_access_key', e.target.value)}
                   placeholder="********"
                   required={!editingAlias}
+                  aria-label={t('s3.secretAccessKey')}
+                  aria-describedby={editingAlias ? 's3-secret-access-key-hint' : undefined}
                 />
               </div>
               <div className="form-group">
-                <label>{t('s3.defaultBucket')} <span className="hint">{t('s3.defaultBucketHint')}</span></label>
+                <label htmlFor="s3-default-bucket">
+                  {t('s3.defaultBucket')}{' '}
+                  <span id="s3-default-bucket-hint" className="hint">{t('s3.defaultBucketHint')}</span>
+                </label>
                 <input
+                  id="s3-default-bucket"
                   type="text"
                   value={form.default_bucket ?? ''}
                   onChange={(e) => updateField('default_bucket', e.target.value)}
                   placeholder="my-bucket"
+                  aria-label={t('s3.defaultBucket')}
+                  aria-describedby="s3-default-bucket-hint"
                 />
               </div>
               <div className="form-group">
@@ -379,7 +487,7 @@ function S3Connections() {
             </div>
 
             {(createMutation.isError || updateMutation.isError) && (
-              <div className="form-error">
+              <div className="form-error" role="alert">
                 {(createMutation.error as Error)?.message ||
                   (updateMutation.error as Error)?.message ||
                   t('common.errorOccurred')}
@@ -390,7 +498,7 @@ function S3Connections() {
               <button type="button" className="btn btn-secondary" onClick={closeModal}>
                 {t('common.cancel')}
               </button>
-              <button type="submit" className="btn btn-primary" disabled={isSaving}>
+              <button type="submit" className="btn btn-primary" disabled={isSaving} aria-busy={isSaving}>
                 {isSaving ? t('common.saving') : editingAlias ? t('common.update') : t('common.create')}
               </button>
             </div>
@@ -401,15 +509,23 @@ function S3Connections() {
       {curlModal && (
         <ResourceModal
           title={`cURL — ${curlModal.alias}`}
-          onClose={() => setCurlModal(null)}
+          onClose={closeCurlModal}
           closeLabel={t('common.close')}
           className="modal--sm"
         >
           <div className="curl-block">
             <pre className="curl-code">{curlModal.curl}</pre>
-            <button className="btn btn-sm btn-secondary curl-copy-btn" onClick={handleCurlCopy}>
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary curl-copy-btn"
+              onClick={handleCurlCopy}
+              aria-label={curlCopied ? t('gatewayRoutes.curlCopiedLabel') : t('gatewayRoutes.curlCopyLabel')}
+            >
               {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
             </button>
+            <span className="visually-hidden" role="status" aria-live="polite">
+              {curlCopied ? t('gatewayRoutes.curlCopied') : ''}
+            </span>
           </div>
         </ResourceModal>
       )}

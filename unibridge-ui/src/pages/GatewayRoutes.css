@@ -12,6 +12,30 @@
 .gateway-routes .page-header-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.route-search-input {
+  width: min(260px, 32vw);
+  min-width: 180px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-sans);
+  outline: none;
+}
+
+.route-search-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.route-search-input::placeholder {
+  color: var(--text-tertiary);
 }
 
 .method-badges {
@@ -96,6 +120,7 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-style: italic;
 }
 
 .gateway-routes .data-table {
@@ -227,6 +252,14 @@
   padding: 16px;
 }
 
+.curl-route-name {
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .curl-code {
   background: var(--bg-secondary);
   border: 1px solid var(--border-default);
@@ -242,4 +275,16 @@
 
 .curl-copy-btn {
   float: right;
+}
+
+@media (max-width: 720px) {
+  .gateway-routes .page-header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .route-search-input,
+  .gateway-routes .page-header-actions .btn {
+    width: 100%;
+  }
 }

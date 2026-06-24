@@ -3,23 +3,22 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { getAlertHistory, type AlertHistoryEntry } from '../api/client';
 import { formatKST } from '../utils/time';
+import './AuditLogs.css';
 import './AlertHistory.css';
 
 const PAGE_SIZE = 50;
+const EMPTY_FILTER_FORM = {
+  alert_type: '',
+  target: '',
+};
 
 function AlertHistory() {
   const { t } = useTranslation();
   const [page, setPage] = useState(0);
 
-  const [filterForm, setFilterForm] = useState({
-    alert_type: '',
-    target: '',
-  });
+  const [filterForm, setFilterForm] = useState({ ...EMPTY_FILTER_FORM });
 
-  const [appliedFilterForm, setAppliedFilterForm] = useState({
-    alert_type: '',
-    target: '',
-  });
+  const [appliedFilterForm, setAppliedFilterForm] = useState({ ...EMPTY_FILTER_FORM });
 
   const historyQuery = useQuery({
     queryKey: ['alert-history', appliedFilterForm, page],
@@ -35,10 +34,18 @@ function AlertHistory() {
 
   const entries: AlertHistoryEntry[] = historyQuery.data ?? [];
   const hasMore = entries.length === PAGE_SIZE;
+  const hasFilterValues =
+    Object.values(filterForm).some(Boolean) || Object.values(appliedFilterForm).some(Boolean);
 
   function applyFilters() {
     setPage(0);
     setAppliedFilterForm({ ...filterForm });
+  }
+
+  function resetFilters() {
+    setPage(0);
+    setFilterForm({ ...EMPTY_FILTER_FORM });
+    setAppliedFilterForm({ ...EMPTY_FILTER_FORM });
   }
 
   function goToPage(newPage: number) {
@@ -54,34 +61,47 @@ function AlertHistory() {
 
       {/* Filter bar */}
       <div className="filter-bar">
-        <select
-          value={filterForm.alert_type}
-          onChange={(e) => setFilterForm((f) => ({ ...f, alert_type: e.target.value }))}
-          className="filter-select"
-        >
-          <option value="">{t('alerts.filterAlertType')}</option>
-          <option value="triggered">{t('alerts.triggered')}</option>
-          <option value="resolved">{t('alerts.resolved')}</option>
-        </select>
-        <input
-          type="text"
-          placeholder={t('alerts.filterTarget')}
-          value={filterForm.target}
-          onChange={(e) => setFilterForm((f) => ({ ...f, target: e.target.value }))}
-          className="filter-input"
-          onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
-        />
-        <button className="btn btn-primary" onClick={applyFilters}>
-          {t('common.search')}
-        </button>
+        <div className="filter-field">
+          <label htmlFor="alert-history-type-filter">{t('alerts.filterAlertType')}</label>
+          <select
+            id="alert-history-type-filter"
+            value={filterForm.alert_type}
+            onChange={(e) => setFilterForm((f) => ({ ...f, alert_type: e.target.value }))}
+            className="filter-select"
+          >
+            <option value="">{t('alerts.filterAlertType')}</option>
+            <option value="triggered">{t('alerts.triggered')}</option>
+            <option value="resolved">{t('alerts.resolved')}</option>
+          </select>
+        </div>
+        <div className="filter-field">
+          <label htmlFor="alert-history-target-filter">{t('alerts.filterTarget')}</label>
+          <input
+            id="alert-history-target-filter"
+            type="text"
+            placeholder={t('alerts.filterTarget')}
+            value={filterForm.target}
+            onChange={(e) => setFilterForm((f) => ({ ...f, target: e.target.value }))}
+            className="filter-input"
+            onKeyDown={(e) => e.key === 'Enter' && applyFilters()}
+          />
+        </div>
+        <div className="filter-actions">
+          <button type="button" className="btn btn-primary" onClick={applyFilters}>
+            {t('common.search')}
+          </button>
+          <button type="button" className="btn btn-secondary" onClick={resetFilters} disabled={!hasFilterValues}>
+            {t('common.resetFilters')}
+          </button>
+        </div>
       </div>
 
       {historyQuery.isLoading && (
-        <div className="loading-message">{t('common.loading')}</div>
+        <div className="loading-message" role="status">{t('common.loading')}</div>
       )}
 
       {historyQuery.isError && (
-        <div className="error-banner">{t('alerts.loadFailed')}</div>
+        <div className="error-banner" role="alert">{t('alerts.loadFailed')}</div>
       )}
 
       {entries.length > 0 && (
@@ -90,11 +110,11 @@ function AlertHistory() {
             <table className="data-table alert-history-table">
               <thead>
                 <tr>
-                  <th>{t('alerts.sentAt')}</th>
-                  <th>{t('alerts.filterAlertType')}</th>
-                  <th>{t('alerts.target')}</th>
-                  <th>{t('alerts.message')}</th>
-                  <th>{t('common.status')}</th>
+                  <th scope="col">{t('alerts.sentAt')}</th>
+                  <th scope="col">{t('alerts.filterAlertType')}</th>
+                  <th scope="col">{t('alerts.target')}</th>
+                  <th scope="col">{t('alerts.message')}</th>
+                  <th scope="col">{t('common.status')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -132,17 +152,23 @@ function AlertHistory() {
           {/* Pagination */}
           <div className="pagination">
             <button
+              type="button"
               className="btn btn-sm btn-secondary"
+              aria-label={t('common.previousPage')}
+              title={t('common.previousPage')}
               disabled={page === 0}
               onClick={() => goToPage(page - 1)}
             >
               {t('common.previous')}
             </button>
-            <span className="page-info">
+            <span className="page-info" role="status" aria-live="polite">
               {t('common.page', { page: page + 1 })}
             </span>
             <button
+              type="button"
               className="btn btn-sm btn-secondary"
+              aria-label={t('common.nextPage')}
+              title={t('common.nextPage')}
               disabled={!hasMore}
               onClick={() => goToPage(page + 1)}
             >

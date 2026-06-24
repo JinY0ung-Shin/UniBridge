@@ -172,6 +172,7 @@ function LlmMonitoring() {
             target="_blank"
             rel="noopener noreferrer"
             className="admin-link-btn"
+            aria-label={`${t('llmMonitoring.adminDashboard')} ${t('common.opensInNewTab')}`}
           >
             {t('llmMonitoring.adminDashboard')}
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ marginLeft: 4 }}>
@@ -206,9 +207,9 @@ function LlmMonitoring() {
         </div>
       </div>
 
-      {isLoading && <div className="loading-message">{t('llmMonitoring.loadingMetrics')}</div>}
-      {isError && <div className="error-banner">{t('llmMonitoring.loadFailed')}</div>}
-      {hasPartialError && <div className="error-banner">{t('llmMonitoring.partialLoadFailed')}</div>}
+      {isLoading && <div className="loading-message" role="status">{t('llmMonitoring.loadingMetrics')}</div>}
+      {isError && <div className="error-banner" role="alert">{t('llmMonitoring.loadFailed')}</div>}
+      {hasPartialError && <div className="error-banner" role="alert">{t('llmMonitoring.partialLoadFailed')}</div>}
 
       {/* Summary Cards */}
       {summary && (
@@ -307,13 +308,13 @@ function LlmMonitoring() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>{t('llmMonitoring.model')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.inputTokens')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.outputTokens')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.cached')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.totalTokenShort')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.requests')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.cost')}</th>
+                  <th scope="col">{t('llmMonitoring.model')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.inputTokens')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.outputTokens')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.cached')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.totalTokenShort')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.requests')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.cost')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -367,12 +368,12 @@ function LlmMonitoring() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>{t('llmMonitoring.apiKey')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.inputTokens')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.outputTokens')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.cached')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.totalTokenShort')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('llmMonitoring.requests')}</th>
+                  <th scope="col">{t('llmMonitoring.apiKey')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.inputTokens')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.outputTokens')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.cached')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.totalTokenShort')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.requests')}</th>
                 </tr>
               </thead>
               <tbody>

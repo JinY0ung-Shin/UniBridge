@@ -84,7 +84,7 @@ function BucketedBreakdownView({
     <div className="chart-panel">
       <div className="chart-panel__title">{title}</div>
       {loading ? (
-        <div className="no-data">…</div>
+        <div className="no-data" role="status">{t('breakdown.loading')}</div>
       ) : hasData ? (
         <>
           <div className="chart-container">
@@ -116,43 +116,36 @@ function BucketedBreakdownView({
             </ResponsiveContainer>
           </div>
 
-          <div className="table-container" style={{ border: 'none' }}>
+          <div className="table-container table-container--plain">
             <table className="data-table">
               <thead>
                 <tr>
-                  <th />
+                  <th scope="col" aria-hidden="true" />
                   {bucketLabels.map((label, i) => (
-                    <th key={i} style={{ textAlign: 'right' }}>{label}</th>
+                    <th key={i} scope="col" className="breakdown-cell--right">{label}</th>
                   ))}
-                  <th style={{ textAlign: 'right' }}>{t('breakdown.total')}</th>
+                  <th scope="col" className="breakdown-cell--right">{t('breakdown.total')}</th>
                 </tr>
               </thead>
               <tbody>
                 {data!.series.map((s, si) => (
                   <tr key={s.key}>
-                    <td className="cell-alias">
+                    <th scope="row" className="cell-alias">
                       <span
-                        style={{
-                          display: 'inline-block',
-                          width: 8,
-                          height: 8,
-                          borderRadius: 2,
-                          marginRight: 6,
-                          background: SERIES_PALETTE[si % SERIES_PALETTE.length],
-                        }}
+                        className={`breakdown-swatch breakdown-swatch--${si % SERIES_PALETTE.length}`}
                       />
                       {s.key}
-                    </td>
+                    </th>
                     {data!.buckets.map((_, bi) => (
                       <td
                         key={bi}
-                        style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}
+                        className="breakdown-cell--right breakdown-cell--mono"
                       >
                         {fmt(s.points[bi] ?? 0)}
                       </td>
                     ))}
                     <td
-                      style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 600 }}
+                      className="breakdown-cell--right breakdown-cell--mono breakdown-cell--total"
                     >
                       {fmt(s.total)}
                     </td>
@@ -163,7 +156,7 @@ function BucketedBreakdownView({
           </div>
         </>
       ) : (
-        <div className="no-data">{t('breakdown.selectBucketHint')}</div>
+        <div className="no-data">{t('breakdown.noData')}</div>
       )}
     </div>
   );

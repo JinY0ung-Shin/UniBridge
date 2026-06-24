@@ -50,6 +50,29 @@ describe('AlertStatus page', () => {
     await waitFor(() => expect(screen.getByText('mystery')).toBeInTheDocument());
   });
 
+  it('renders alert severities when supplied', async () => {
+    mockGet.mockResolvedValue([
+      {
+        target: 'node-1',
+        type: 'server_down',
+        status: 'alert',
+        since: null,
+        severity: 'critical',
+      },
+      {
+        target: 'node-2',
+        type: 'server_cpu',
+        status: 'alert',
+        since: null,
+        severity: 'warning',
+      },
+    ]);
+    renderWithProviders(<AlertStatus />);
+    await waitFor(() => expect(screen.getByText('node-1')).toBeInTheDocument());
+    expect(screen.getByText('Critical')).toBeInTheDocument();
+    expect(screen.getByText('Warning')).toBeInTheDocument();
+  });
+
   it('refresh button triggers refetch', async () => {
     mockGet.mockResolvedValue([
       { target: 'svc', type: 'db_health', status: 'ok', since: null },
@@ -57,7 +80,7 @@ describe('AlertStatus page', () => {
     renderWithProviders(<AlertStatus />);
     await waitFor(() => expect(screen.getByText('svc')).toBeInTheDocument());
     const initialCalls = mockGet.mock.calls.length;
-    const btn = screen.getByRole('button', { name: /Refresh|Loading|새로고침|로딩/i });
+    const btn = screen.getByRole('button', { name: 'Refresh alert status' });
     fireEvent.click(btn);
     await waitFor(() =>
       expect(mockGet.mock.calls.length).toBeGreaterThan(initialCalls),

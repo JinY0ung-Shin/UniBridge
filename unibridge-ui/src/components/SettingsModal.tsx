@@ -34,14 +34,16 @@ function SettingsModal({ onClose }: SettingsModalProps) {
         <div className="settings-section">
           <div className="settings-label">{t('settings.theme')}</div>
           <p className="settings-desc">{t('settings.themeDesc')}</p>
-          <div className="theme-options">
+          <div className="theme-options" role="group" aria-label={t('settings.theme')}>
             {THEME_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
+                type="button"
+                aria-pressed={theme === opt.value}
                 className={`theme-option ${theme === opt.value ? 'theme-option--active' : ''}`}
                 onClick={() => setTheme(opt.value)}
               >
-                <span className="theme-option-icon">{opt.icon}</span>
+                <span className="theme-option-icon" aria-hidden="true">{opt.icon}</span>
                 <span className="theme-option-label">{t(opt.labelKey)}</span>
               </button>
             ))}
@@ -52,7 +54,7 @@ function SettingsModal({ onClose }: SettingsModalProps) {
         <div className="settings-section">
           <div className="settings-label">{t('settings.language')}</div>
           <p className="settings-desc">{t('settings.languageDesc')}</p>
-          <div className="language-options">
+          <div className="language-options" role="radiogroup" aria-label={t('settings.language')}>
             <label className="language-option">
               <input
                 type="radio"
@@ -85,13 +87,14 @@ function SettingsModal({ onClose }: SettingsModalProps) {
             href={`${keycloak.createAccountUrl({ redirectUri: window.location.href })}#/security/signingin`}
             target="_blank"
             rel="noopener noreferrer"
+            aria-label={`${t('settings.changePassword')} ${t('common.opensInNewTab')}`}
           >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
               <rect x="3" y="7" width="10" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
               <path d="M5 7V5a3 3 0 016 0v2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
             </svg>
             <span>{t('settings.changePassword')}</span>
-            <svg className="settings-external-icon" width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <svg className="settings-external-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true" focusable="false">
               <path d="M5 1H2.5A1.5 1.5 0 001 2.5v7A1.5 1.5 0 002.5 11h7A1.5 1.5 0 0011 9.5V7M7 1h4v4M11 1L5.5 6.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </a>

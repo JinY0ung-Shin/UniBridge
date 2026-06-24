@@ -90,10 +90,10 @@ describe('LlmMonitoring', () => {
     renderWithProviders(<LlmMonitoring />);
 
     await waitFor(() => {
-      expect(screen.getByRole('link', { name: /LiteLLM Admin/i })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'LiteLLM Admin opens in new tab' })).toBeInTheDocument();
     });
 
-    expect(screen.getByRole('link', { name: /LiteLLM Admin/i })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'LiteLLM Admin opens in new tab' })).toHaveAttribute(
       'href',
       'https://localhost:4000/ui',
     );

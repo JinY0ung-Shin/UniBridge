@@ -39,10 +39,20 @@ const mockedGetS3Connections = vi.mocked(getS3Connections);
 const mockedGetNasConnections = vi.mocked(getNasConnections);
 const mockedCreateApiKey = vi.mocked(createApiKey);
 const mockedDeleteApiKey = vi.mocked(deleteApiKey);
+const clipboardWriteText = vi.fn();
+
+async function typeKeyName(name: string) {
+  await userEvent.type(screen.getByRole('textbox', { name: 'Name' }), name);
+}
 
 describe('ApiKeys', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: clipboardWriteText },
+    });
+    clipboardWriteText.mockResolvedValue(undefined);
     mockedGetApiKeys.mockResolvedValue([]);
     mockedGetAdminDatabases.mockResolvedValue([]);
     mockedGetGatewayRoutes.mockResolvedValue({ items: [], total: 0 });
@@ -87,6 +97,32 @@ describe('ApiKeys', () => {
     expect(screen.getAllByText('All access')).toHaveLength(2);
   });
 
+  it('filters API keys by search text', async () => {
+    mockedGetApiKeys.mockResolvedValue([
+      makeApiKey({ name: 'orders-client', description: 'Order service', allowed_databases: ['orders-db'] }),
+      makeApiKey({ name: 'billing-client', description: 'Billing service', allowed_databases: ['billing-db'] }),
+    ]);
+
+    renderWithProviders(<ApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText('orders-client')).toBeInTheDocument();
+    });
+
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Search API keys...' }), 'billing');
+
+    expect(screen.queryByText('orders-client')).not.toBeInTheDocument();
+    expect(screen.getByText('billing-client')).toBeInTheDocument();
+
+    await userEvent.clear(screen.getByRole('searchbox', { name: 'Search API keys...' }));
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Search API keys...' }), 'missing');
+
+    expect(screen.getByText('No matching API keys')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+    expect(screen.getByText('orders-client')).toBeInTheDocument();
+    expect(screen.getByText('billing-client')).toBeInTheDocument();
+  });
+
   it('hides write actions for users with read-only API key permission', async () => {
     const key = makeApiKey();
     mockedGetApiKeys.mockResolvedValue([key]);
@@ -125,6 +161,17 @@ describe('ApiKeys', () => {
 
     const dialog = screen.getByRole('dialog', { name: 'Add API Key' });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveAttribute('id', 'api-key-name');
+    expect(screen.getByRole('textbox', { name: 'Description' })).toHaveAttribute('id', 'api-key-description');
+    expect(screen.getByRole('textbox', { name: 'API Key' })).toHaveAttribute('id', 'api-key-secret');
+    expect(screen.getByRole('group', { name: 'Allowed Data Sources' })).toHaveAttribute(
+      'aria-labelledby',
+      'api-key-allowed-databases-label',
+    );
+    expect(screen.getByRole('group', { name: 'Allowed Routes' })).toHaveAttribute(
+      'aria-labelledby',
+      'api-key-allowed-routes-label',
+    );
   });
 
   it('opens edit modal on edit button click', async () => {
@@ -137,7 +184,7 @@ describe('ApiKeys', () => {
       expect(screen.getByText('my-app')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit API key my-app' }));
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Edit API Key' })).toBeInTheDocument();
@@ -194,7 +241,7 @@ describe('ApiKeys', () => {
       expect(screen.getByText('my-app')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit API key my-app' }));
 
     const databaseOption = screen.getByRole('checkbox', { name: /analytics-db/i }).closest('label');
     const routeOption = screen.getByRole('checkbox', { name: /users api/i }).closest('label');
@@ -236,7 +283,7 @@ describe('ApiKeys', () => {
     });
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
-    await userEvent.type(screen.getByPlaceholderText('my-app'), 'new-app');
+    await typeKeyName('new-app');
     await userEvent.click(screen.getByRole('checkbox', { name: /lakes3/i }));
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
 
@@ -277,7 +324,7 @@ describe('ApiKeys', () => {
     });
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
-    await userEvent.type(screen.getByPlaceholderText('my-app'), 'nas-client');
+    await typeKeyName('nas-client');
     await userEvent.click(screen.getByRole('checkbox', { name: /company-nas/i }));
     await userEvent.click(screen.getByRole('checkbox', { name: /nas-api/i }));
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
@@ -321,7 +368,7 @@ describe('ApiKeys', () => {
     });
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
-    await userEvent.type(screen.getByPlaceholderText('my-app'), 'master-client');
+    await typeKeyName('master-client');
     await userEvent.click(screen.getByRole('checkbox', { name: /master key/i }));
     expect(screen.getByRole('checkbox', { name: /postgres/i })).toBeDisabled();
     expect(screen.getByRole('checkbox', { name: /query-api/i })).toBeDisabled();
@@ -360,7 +407,7 @@ describe('ApiKeys', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
 
-    await userEvent.type(screen.getByPlaceholderText('my-app'), 'new-app');
+    await typeKeyName('new-app');
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
 
     await waitFor(() => {
@@ -371,6 +418,50 @@ describe('ApiKeys', () => {
     await waitFor(() => {
       expect(screen.getByText('key-secret-12345')).toBeInTheDocument();
     });
+    expect(screen.getByRole('status')).toHaveTextContent('API key created');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copy generated API key' }));
+    await waitFor(() => {
+      expect(clipboardWriteText).toHaveBeenCalledWith('key-secret-12345');
+    });
+    expect(screen.getByRole('button', { name: 'Generated API key copied' })).toHaveTextContent('Copied!');
+  });
+
+  it('shows copy failure feedback for a newly created key', async () => {
+    clipboardWriteText.mockRejectedValueOnce(new Error('blocked'));
+    mockedCreateApiKey.mockResolvedValue({
+      name: 'new-app',
+      description: '',
+      api_key: 'key-secret-12345',
+      key_created: true,
+      allowed_databases: [],
+      allowed_routes: [],
+      rate_limit_per_minute: null,
+      owner: null,
+      created_at: '2026-04-11T00:00:00Z',
+    });
+
+    renderWithProviders(<ApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No API keys')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
+    await typeKeyName('new-app');
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('key-secret-12345')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copy generated API key' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to copy API key')).toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Copy generated API key' })).toHaveTextContent('Copy');
+    expect(screen.queryByRole('button', { name: 'Generated API key copied' })).not.toBeInTheDocument();
   });
 
   it('calls deleteApiKey after confirmation', async () => {
@@ -386,12 +477,38 @@ describe('ApiKeys', () => {
       expect(screen.getByText('my-app')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete API key my-app' }));
 
     expect(window.confirm).toHaveBeenCalled();
     await waitFor(() => {
       expect(mockedDeleteApiKey).toHaveBeenCalledWith('my-app', expect.anything());
     });
+
+    vi.restoreAllMocks();
+  });
+
+  it('shows pending feedback only on the active delete row', async () => {
+    mockedGetApiKeys.mockResolvedValue([
+      makeApiKey({ name: 'orders-client' }),
+      makeApiKey({ name: 'billing-client' }),
+    ]);
+    mockedDeleteApiKey.mockReturnValue(new Promise<Awaited<ReturnType<typeof deleteApiKey>>>(() => {}));
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    renderWithProviders(<ApiKeys />);
+
+    await waitFor(() => {
+      expect(screen.getByText('orders-client')).toBeInTheDocument();
+    });
+
+    const ordersDelete = screen.getByRole('button', { name: 'Delete API key orders-client' });
+    const billingDelete = screen.getByRole('button', { name: 'Delete API key billing-client' });
+    await userEvent.click(ordersDelete);
+
+    expect(ordersDelete).toHaveAttribute('aria-busy', 'true');
+    expect(ordersDelete).toHaveTextContent('Deleting...');
+    expect(billingDelete).toHaveAttribute('aria-busy', 'false');
+    expect(billingDelete).toHaveTextContent('Delete');
 
     vi.restoreAllMocks();
   });
@@ -430,11 +547,32 @@ describe('ApiKeys', () => {
     });
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
-    await userEvent.type(screen.getByPlaceholderText('my-app'), 'writer-app');
+    await typeKeyName('writer-app');
+    expect(screen.getByRole('group', { name: 'Write Permissions' })).toHaveAttribute(
+      'aria-describedby',
+      'api-key-write-permissions-hint',
+    );
+    expect(document.getElementById('api-key-write-permissions-hint')).toHaveTextContent(
+      'DDL is never allowed',
+    );
+    expect(screen.getByRole('textbox', { name: 'Allowed Tables' })).toHaveAttribute(
+      'aria-describedby',
+      'api-key-allowed-tables-hint',
+    );
+    expect(document.getElementById('api-key-allowed-tables-hint')).toHaveTextContent(
+      'Leave empty to allow all tables',
+    );
+    expect(screen.getByRole('spinbutton', { name: 'Rate limit (per min)' })).toHaveAttribute(
+      'aria-describedby',
+      'api-key-rate-limit-hint',
+    );
+    expect(document.getElementById('api-key-rate-limit-hint')).toHaveTextContent(
+      'Leave empty for unlimited',
+    );
     await userEvent.click(screen.getByRole('checkbox', { name: 'Allow INSERT' }));
     await userEvent.click(screen.getByRole('checkbox', { name: 'Allow DELETE' }));
     await userEvent.type(
-      screen.getByPlaceholderText('users, orders'),
+      screen.getByRole('textbox', { name: 'Allowed Tables' }),
       'orders, line_items',
     );
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
@@ -464,7 +602,7 @@ describe('ApiKeys', () => {
     });
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
-    await userEvent.type(screen.getByPlaceholderText('my-app'), 'plain-app');
+    await typeKeyName('plain-app');
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
 
     await waitFor(() => {
@@ -496,7 +634,7 @@ describe('ApiKeys', () => {
       expect(screen.getByText('my-app')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit API key my-app' }));
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Edit API Key' })).toBeInTheDocument();
@@ -505,6 +643,6 @@ describe('ApiKeys', () => {
     expect(screen.getByRole('checkbox', { name: 'Allow INSERT' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Allow UPDATE' })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Allow DELETE' })).toBeChecked();
-    expect(screen.getByPlaceholderText('users, orders')).toHaveValue('orders, users');
+    expect(screen.getByRole('textbox', { name: 'Allowed Tables' })).toHaveValue('orders, users');
   });
 });

@@ -53,6 +53,7 @@ describe('S3Browser page', () => {
     await waitFor(() => {
       expect(screen.getByText(/Failed to load|불러오지 못/i)).toBeInTheDocument();
     });
+    expect(screen.getByRole('alert')).toHaveTextContent(/Failed to load|불러오지 못/i);
   });
 
   it('auto-selects first bucket and lists objects with folder navigation', async () => {
@@ -66,8 +67,39 @@ describe('S3Browser page', () => {
     });
     renderWithProviders(<S3Browser />);
     await waitFor(() => expect(screen.getByText('logs')).toBeInTheDocument());
+    expect(screen.getByRole('combobox', { name: /Select Bucket|버킷 선택/i })).toHaveAttribute('id', 's3-bucket-select');
     expect(screen.getByText('README.md')).toBeInTheDocument();
     expect(screen.getByText(/1\.2 KB/)).toBeInTheDocument();
+  });
+
+  it('filters the currently loaded S3 folder listing', async () => {
+    mockBuckets.mockResolvedValue([{ name: 'bk-1', creation_date: null }]);
+    mockObjects.mockResolvedValue({
+      folders: [{ prefix: 'logs/' }],
+      objects: [
+        { key: 'README.md', size: 1234, last_modified: '2026-04-30T12:00:00Z' },
+        { key: 'orders.csv', size: 100, last_modified: null },
+      ],
+      is_truncated: false,
+      next_continuation_token: null,
+      key_count: 3,
+    });
+
+    renderWithProviders(<S3Browser />);
+    await waitFor(() => expect(screen.getByText('README.md')).toBeInTheDocument());
+    const filter = screen.getByRole('searchbox', { name: /Filter current folder|현재 폴더 필터/i });
+
+    fireEvent.change(filter, { target: { value: 'orders' } });
+    expect(screen.getByText('orders.csv')).toBeInTheDocument();
+    expect(screen.queryByText('README.md')).not.toBeInTheDocument();
+    expect(screen.queryByText('logs')).not.toBeInTheDocument();
+
+    fireEvent.change(filter, { target: { value: 'missing' } });
+    expect(screen.getByText(/No matching objects|일치하는 오브젝트/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Clear filter|필터 지우기/i }));
+    expect(screen.getByText('README.md')).toBeInTheDocument();
+    expect(screen.getByText('logs')).toBeInTheDocument();
   });
 
   it('navigates into a folder via click', async () => {
@@ -89,7 +121,36 @@ describe('S3Browser page', () => {
       });
     renderWithProviders(<S3Browser />);
     await waitFor(() => expect(screen.getByText('logs')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('logs'));
+    const folderRow = screen.getByRole('button', { name: 'Open folder logs' });
+    expect(folderRow).toHaveAttribute('tabindex', '0');
+    fireEvent.click(folderRow);
+    await waitFor(() => expect(screen.getByText('2026.txt')).toBeInTheDocument());
+    expect(screen.getByRole('navigation', { name: 'S3 path' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'logs' })).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('navigates into a folder via keyboard activation', async () => {
+    mockBuckets.mockResolvedValue([{ name: 'bk-1', creation_date: null }]);
+    mockObjects
+      .mockResolvedValueOnce({
+        folders: [{ prefix: 'logs/' }],
+        objects: [],
+        is_truncated: false,
+        next_continuation_token: null,
+        key_count: 1,
+      })
+      .mockResolvedValueOnce({
+        folders: [],
+        objects: [{ key: 'logs/2026.txt', size: 0, last_modified: null }],
+        is_truncated: false,
+        next_continuation_token: null,
+        key_count: 1,
+      });
+    renderWithProviders(<S3Browser />);
+    await waitFor(() => expect(screen.getByText('logs')).toBeInTheDocument());
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Open folder logs' }), { key: 'Enter' });
+
     await waitFor(() => expect(screen.getByText('2026.txt')).toBeInTheDocument());
   });
 
@@ -121,7 +182,7 @@ describe('S3Browser page', () => {
     await waitFor(() => expect(screen.getByText('a')).toBeInTheDocument());
     fireEvent.click(screen.getByText('a'));
     await waitFor(() => expect(screen.getByText('b')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('..'));
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Go to parent folder' }), { key: ' ' });
     await waitFor(() => {
       expect(screen.queryByText('b')).not.toBeInTheDocument();
     });
@@ -187,7 +248,9 @@ describe('S3Browser page', () => {
 
     renderWithProviders(<S3Browser />);
     await waitFor(() => expect(screen.getByText('file.txt')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Download|다운로드/i }));
+    const downloadButton = screen.getByRole('button', { name: 'Download file.txt' });
+    expect(downloadButton).toHaveAttribute('title', 'Download file.txt');
+    fireEvent.click(downloadButton);
     await waitFor(() => expect(mockDownload).toHaveBeenCalled());
     expect(clickSpy).toHaveBeenCalled();
     clickSpy.mockRestore();
@@ -205,7 +268,7 @@ describe('S3Browser page', () => {
     mockDownload.mockRejectedValue(new Error('nope'));
     renderWithProviders(<S3Browser />);
     await waitFor(() => expect(screen.getByText('file.txt')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Download|다운로드/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Download file.txt' }));
     await waitFor(() => {
       expect(
         screen.getByText(/Failed to generate download|다운로드 URL 생성 실패/i),
@@ -233,7 +296,7 @@ describe('S3Browser page', () => {
     });
     renderWithProviders(<S3Browser />);
     await waitFor(() => expect(screen.getByText('file.txt')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /metadata|메타/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show metadata for file.txt' }));
     const dialog = await screen.findByRole('dialog', { name: /Metadata|메타데이터/i });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
     expect(screen.getByText('Content-Type')).toBeInTheDocument();
@@ -253,7 +316,7 @@ describe('S3Browser page', () => {
     mockMeta.mockRejectedValue(new Error('nope'));
     renderWithProviders(<S3Browser />);
     await waitFor(() => expect(screen.getByText('file.txt')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /metadata|메타/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show metadata for file.txt' }));
     await waitFor(() => {
       expect(
         screen.getByText(/Failed to load metadata|메타데이터 조회 실패/i),

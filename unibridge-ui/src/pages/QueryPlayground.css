@@ -12,6 +12,7 @@
   display: flex;
   gap: 10px;
   align-items: center;
+  flex-wrap: wrap;
   margin-bottom: 16px;
 }
 
@@ -25,6 +26,7 @@
   background: var(--bg-secondary);
   color: var(--text-primary);
   min-width: 200px;
+  max-width: 100%;
   transition: border-color 0.15s;
   appearance: none;
   cursor: pointer;
@@ -39,6 +41,7 @@
   color: var(--text-tertiary);
   margin-left: 4px;
   font-family: var(--font-mono);
+  white-space: nowrap;
 }
 
 /* ── SQL Editor ── */
@@ -257,6 +260,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   margin-bottom: 10px;
 }
 
@@ -265,8 +269,41 @@
   color: var(--text-tertiary);
 }
 
+.workspace-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.saved-search-input {
+  width: min(260px, 32vw);
+  min-width: 180px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--font-sans);
+  outline: none;
+}
+
+.saved-search-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.saved-search-input::placeholder {
+  color: var(--text-tertiary);
+}
+
 .history-row {
   cursor: pointer;
+}
+
+.history-row:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
+  background: var(--bg-hover);
 }
 
 .history-table .cell-sql,
@@ -309,4 +346,38 @@
   overflow-x: auto;
   overflow-y: auto;
   max-height: 600px;
+}
+
+@media (max-width: 720px) {
+  .playground-controls {
+    align-items: stretch;
+  }
+
+  .db-selector,
+  .playground-controls .btn {
+    width: 100%;
+  }
+
+  .shortcut-hint {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .workspace-panel-header,
+  .workspace-panel-actions,
+  .saved-search-input,
+  .workspace-panel-actions .btn {
+    width: 100%;
+  }
+
+  .workspace-panel-header,
+  .workspace-panel-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .sql-editor {
+    padding: 14px;
+    min-height: 180px;
+  }
 }

@@ -218,36 +218,40 @@ function Users() {
           <p className="page-subtitle">{t('users.subtitle')}</p>
         </div>
         {canWrite && (
-          <button className="btn btn-primary" onClick={openCreate}>{t('users.addUser')}</button>
+          <button type="button" className="btn btn-primary" onClick={openCreate}>{t('users.addUser')}</button>
         )}
       </div>
 
       <div className="search-bar">
         <input
-          type="text"
+          type="search"
           placeholder={t('users.searchPlaceholder')}
+          aria-label={t('users.searchPlaceholder')}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
 
-      {usersQuery.isLoading && <div className="loading-message">{t('users.loadingUsers')}</div>}
-      {usersQuery.isError && <div className="error-banner">{t('users.loadFailed')}</div>}
+      {usersQuery.isLoading && <div className="loading-message" role="status">{t('users.loadingUsers')}</div>}
+      {usersQuery.isError && <div className="error-banner" role="alert">{t('users.loadFailed')}</div>}
 
       {users.length > 0 && (
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t('connections.username')}</th>
-                <th>{t('users.email')}</th>
-                <th>{t('users.role')}</th>
-                <th>{t('common.status')}</th>
-                <th>{t('common.actions')}</th>
+                <th scope="col">{t('connections.username')}</th>
+                <th scope="col">{t('users.email')}</th>
+                <th scope="col">{t('users.role')}</th>
+                <th scope="col">{t('common.status')}</th>
+                <th scope="col">{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
-              {users.map((user) => (
+              {users.map((user) => {
+                const isToggling = toggleEnabledMutation.isPending && toggleEnabledMutation.variables?.userId === user.id;
+                const isDeleting = deleteMutation.isPending && deleteMutation.variables === user.id;
+                return (
                 <tr key={user.id} className={user.enabled ? '' : 'row-disabled'}>
                   <td className="cell-alias">{user.username}</td>
                   <td>{user.email || '—'}</td>
@@ -264,29 +268,62 @@ function Users() {
                   <td>
                     {canWrite && user.username !== currentUsername && (
                       <div className="action-buttons">
-                        <button className="btn btn-sm btn-secondary" onClick={() => openRoleChange(user)}>{t('users.role')}</button>
-                        <button className="btn btn-sm btn-secondary" onClick={() => openPasswordReset(user)}>{t('users.resetPw')}</button>
                         <button
-                          className={`btn btn-sm ${user.enabled ? 'btn-warning' : 'btn-success'}`}
-                          onClick={() => handleToggleEnabled(user)}
-                          disabled={toggleEnabledMutation.isPending}
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          aria-label={t('users.changeRoleFor', { name: user.username })}
+                          onClick={() => openRoleChange(user)}
                         >
-                          {user.enabled ? t('users.disable') : t('users.enable')}
+                          {t('users.role')}
                         </button>
                         <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          aria-label={t('users.resetPasswordFor', { name: user.username })}
+                          onClick={() => openPasswordReset(user)}
+                        >
+                          {t('users.resetPw')}
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn btn-sm ${user.enabled ? 'btn-warning' : 'btn-success'}`}
+                          aria-label={t(user.enabled ? 'users.disableUser' : 'users.enableUser', { name: user.username })}
+                          onClick={() => handleToggleEnabled(user)}
+                          disabled={toggleEnabledMutation.isPending}
+                          aria-busy={isToggling}
+                        >
+                          {isToggling ? t('common.saving') : user.enabled ? t('users.disable') : t('users.enable')}
+                        </button>
+                        <button
+                          type="button"
                           className="btn btn-sm btn-danger"
+                          aria-label={t('users.deleteUser', { name: user.username })}
                           onClick={() => handleDelete(user)}
                           disabled={deleteMutation.isPending}
+                          aria-busy={isDeleting}
                         >
-                          {t('common.delete')}
+                          {isDeleting ? t('common.deleting') : t('common.delete')}
                         </button>
                       </div>
                     )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!usersQuery.isLoading && users.length === 0 && !usersQuery.isError && (
+        <div className="empty-state">
+          <h3>{debouncedSearch ? t('users.noSearchResults') : t('users.noUsers')}</h3>
+          <p>{debouncedSearch ? t('users.noSearchResultsDesc') : t('users.noUsersDesc')}</p>
+          {debouncedSearch && (
+            <button type="button" className="btn btn-secondary empty-state-action" onClick={() => setSearch('')}>
+              {t('common.clearSearch')}
+            </button>
+          )}
         </div>
       )}
 
@@ -296,37 +333,43 @@ function Users() {
           <form onSubmit={handleCreateSubmit}>
             <div className="form-grid">
               <div className="form-group form-group--full">
-                <label>{t('connections.username')}</label>
+                <label htmlFor="user-create-username">{t('connections.username')}</label>
                 <input
+                  id="user-create-username"
                   value={newUsername}
                   onChange={(e) => setNewUsername(e.target.value)}
                   placeholder="username"
+                  aria-label={t('connections.username')}
                   required
                 />
               </div>
               <div className="form-group form-group--full">
-                <label>{t('users.emailOptional')}</label>
+                <label htmlFor="user-create-email">{t('users.emailOptional')}</label>
                 <input
+                  id="user-create-email"
                   type="email"
                   value={newEmail}
                   onChange={(e) => setNewEmail(e.target.value)}
                   placeholder="user@example.com"
+                  aria-label={t('users.emailOptional')}
                 />
               </div>
               <div className="form-group form-group--full">
-                <label>{t('users.passwordMin')}</label>
+                <label htmlFor="user-create-password">{t('users.passwordMin')}</label>
                 <input
+                  id="user-create-password"
                   type="password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   placeholder="********"
+                  aria-label={t('users.passwordMin')}
                   minLength={8}
                   required
                 />
               </div>
               <div className="form-group form-group--full">
-                <label>{t('users.role')}</label>
-                <select value={newRole} onChange={(e) => setNewRole(e.target.value)} required>
+                <label htmlFor="user-create-role">{t('users.role')}</label>
+                <select id="user-create-role" value={newRole} onChange={(e) => setNewRole(e.target.value)} aria-label={t('users.role')} required>
                   {roles.map((r) => (
                     <option key={r} value={r}>{r}</option>
                   ))}
@@ -334,11 +377,16 @@ function Users() {
               </div>
             </div>
 
-            {error && <div className="form-error">{error}</div>}
+            {error && <div className="form-error" role="alert">{error}</div>}
 
             <div className="modal-actions">
               <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
-              <button type="submit" className="btn btn-primary" disabled={isSaving}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={isSaving}
+                aria-busy={createMutation.isPending}
+              >
                 {createMutation.isPending ? t('users.creating') : t('common.create')}
               </button>
             </div>
@@ -356,8 +404,8 @@ function Users() {
           <form onSubmit={handleRoleSubmit}>
             <div className="form-grid">
               <div className="form-group form-group--full">
-                <label>{t('users.role')}</label>
-                <select value={changeRoleValue} onChange={(e) => setChangeRoleValue(e.target.value)} required>
+                <label htmlFor="user-change-role">{t('users.role')}</label>
+                <select id="user-change-role" value={changeRoleValue} onChange={(e) => setChangeRoleValue(e.target.value)} aria-label={t('users.role')} required>
                   {roles.map((r) => (
                     <option key={r} value={r}>{r}</option>
                   ))}
@@ -365,11 +413,16 @@ function Users() {
               </div>
             </div>
 
-            {error && <div className="form-error">{error}</div>}
+            {error && <div className="form-error" role="alert">{error}</div>}
 
             <div className="modal-actions">
               <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
-              <button type="submit" className="btn btn-primary" disabled={isSaving}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={isSaving}
+                aria-busy={changeRoleMutation.isPending}
+              >
                 {changeRoleMutation.isPending ? t('common.saving') : t('users.updateRole')}
               </button>
             </div>
@@ -387,12 +440,14 @@ function Users() {
           <form onSubmit={handlePasswordSubmit}>
             <div className="form-grid">
               <div className="form-group form-group--full">
-                <label>{t('users.newPassword')}</label>
+                <label htmlFor="user-reset-password">{t('users.newPassword')}</label>
                 <input
+                  id="user-reset-password"
                   type="password"
                   value={resetPwValue}
                   onChange={(e) => setResetPwValue(e.target.value)}
                   placeholder="********"
+                  aria-label={t('users.newPassword')}
                   minLength={8}
                   required
                 />
@@ -409,11 +464,16 @@ function Users() {
               </div>
             </div>
 
-            {error && <div className="form-error">{error}</div>}
+            {error && <div className="form-error" role="alert">{error}</div>}
 
             <div className="modal-actions">
               <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
-              <button type="submit" className="btn btn-primary" disabled={isSaving}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={isSaving}
+                aria-busy={resetPasswordMutation.isPending}
+              >
                 {resetPasswordMutation.isPending ? t('users.resetting') : t('users.resetPassword')}
               </button>
             </div>

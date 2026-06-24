@@ -108,7 +108,7 @@ function ServerDetail() {
     <div className="connections">
       <div className="page-header">
         <div>
-          <button className="link-button" onClick={() => navigate('/servers')}>&larr; {t('servers.title')}</button>
+          <button type="button" className="link-button" onClick={() => navigate('/servers')}>&larr; {t('servers.title')}</button>
           <h1>{server?.name ?? `#${id}`}</h1>
           <p className="page-subtitle">{server?.address}</p>
         </div>
@@ -116,6 +116,7 @@ function ServerDetail() {
           {DURATIONS.map((d) => (
             <button
               key={d.key}
+              type="button"
               className={`btn btn-sm${d.key === duration.key ? ' btn-primary' : ''}`}
               onClick={() => setDuration(d)}
             >
@@ -125,59 +126,65 @@ function ServerDetail() {
         </div>
       </div>
 
-      {metricsQuery.isLoading && <div className="loading-message">{t('common.loading')}</div>}
-      {metricsQuery.isError && <div className="error-banner">{t('common.errorOccurred')}</div>}
+      {metricsQuery.isLoading && <div className="loading-message" role="status">{t('common.loading')}</div>}
+      {metricsQuery.isError && <div className="error-banner" role="alert">{t('common.errorOccurred')}</div>}
 
       {!metricsQuery.isLoading && !metricsQuery.isError && (
-        <div className="server-charts">
-          {chartPanels.map((panel) => {
-            return (
-              <div className="server-chart-card" key={panel.metric}>
-                <h3>{t(`servers.metric_${panel.metric}`)}</h3>
-                <div className="server-chart-body">
-                  {panel.data.length === 0 ? (
-                    <div className="empty-state empty-state--small"><p>{t('servers.noMetricData')}</p></div>
-                  ) : (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={panel.data}>
-                        <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} />
-                        <XAxis dataKey="time" stroke={theme.axis} tick={{ fontSize: 11 }} minTickGap={40} />
-                        <YAxis stroke={theme.axis} tick={{ fontSize: 11 }} domain={[0, 100]} unit="%" />
-                        <Tooltip
-                          contentStyle={{ background: theme.tooltipBg, border: `1px solid ${theme.tooltipBorder}` }}
-                          formatter={(value) => {
-                            const n = Number(value);
-                            return Number.isFinite(n) ? `${n.toFixed(1)}%` : '—';
-                          }}
-                        />
-                        {panel.lines.length > 1 && (
-                          <Legend
-                            iconType="line"
-                            verticalAlign="top"
-                            height={24}
-                            wrapperStyle={{ color: theme.textSecondary, fontSize: 12 }}
+        chartPanels.length === 0 ? (
+          <div className="empty-state server-detail-empty">
+            <p>{t('servers.noMetricData')}</p>
+          </div>
+        ) : (
+          <div className="server-charts">
+            {chartPanels.map((panel) => {
+              return (
+                <div className="server-chart-card" key={panel.metric}>
+                  <h3>{t(`servers.metric_${panel.metric}`)}</h3>
+                  <div className="server-chart-body">
+                    {panel.data.length === 0 ? (
+                      <div className="empty-state empty-state--small"><p>{t('servers.noMetricData')}</p></div>
+                    ) : (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={panel.data}>
+                          <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} />
+                          <XAxis dataKey="time" stroke={theme.axis} tick={{ fontSize: 11 }} minTickGap={40} />
+                          <YAxis stroke={theme.axis} tick={{ fontSize: 11 }} domain={[0, 100]} unit="%" />
+                          <Tooltip
+                            contentStyle={{ background: theme.tooltipBg, border: `1px solid ${theme.tooltipBorder}` }}
+                            formatter={(value) => {
+                              const n = Number(value);
+                              return Number.isFinite(n) ? `${n.toFixed(1)}%` : '—';
+                            }}
                           />
-                        )}
-                        {panel.lines.map((line) => (
-                          <Line
-                            key={line.key}
-                            type="monotone"
-                            dataKey={line.key}
-                            name={line.name}
-                            stroke={line.color}
-                            strokeWidth={2}
-                            dot={false}
-                            connectNulls
-                          />
-                        ))}
-                      </LineChart>
-                    </ResponsiveContainer>
-                  )}
+                          {panel.lines.length > 1 && (
+                            <Legend
+                              iconType="line"
+                              verticalAlign="top"
+                              height={24}
+                              wrapperStyle={{ color: theme.textSecondary, fontSize: 12 }}
+                            />
+                          )}
+                          {panel.lines.map((line) => (
+                            <Line
+                              key={line.key}
+                              type="monotone"
+                              dataKey={line.key}
+                              name={line.name}
+                              stroke={line.color}
+                              strokeWidth={2}
+                              dot={false}
+                              connectNulls
+                            />
+                          ))}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )
       )}
     </div>
   );

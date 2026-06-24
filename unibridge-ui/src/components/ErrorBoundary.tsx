@@ -35,10 +35,14 @@ export class ErrorBoundary extends Component<Props, State> {
       }}>
         <div style={{ textAlign: 'center', maxWidth: 560 }}>
           <h2 style={{ marginBottom: '0.75rem' }}>Something went wrong</h2>
-          <p style={{ color: 'var(--text-tertiary)', lineHeight: 1.6, marginBottom: '1.5rem' }}>
+          <p
+            role="alert"
+            style={{ color: 'var(--text-tertiary)', lineHeight: 1.6, marginBottom: '1.5rem' }}
+          >
             {error?.message || 'An unexpected error occurred.'}
           </p>
           <button
+            type="button"
             onClick={() => window.location.reload()}
             style={{
               padding: '8px 24px',
@@ -51,6 +55,9 @@ export class ErrorBoundary extends Component<Props, State> {
             Reload
           </button>
           <button
+            type="button"
+            aria-expanded={showDetails}
+            aria-controls={error?.stack ? 'error-boundary-details' : undefined}
             onClick={() => this.setState(s => ({ showDetails: !s.showDetails }))}
             style={{
               padding: '8px 16px',
@@ -62,7 +69,7 @@ export class ErrorBoundary extends Component<Props, State> {
             {showDetails ? 'Hide details' : 'Show details'}
           </button>
           {showDetails && error?.stack && (
-            <pre style={{
+            <pre id="error-boundary-details" style={{
               marginTop: '1.5rem', padding: '1rem',
               background: 'var(--bg-tertiary)', border: '1px solid var(--border-hover)',
               borderRadius: 6, textAlign: 'left', fontSize: 12,

@@ -9,6 +9,27 @@
   margin-bottom: 28px;
 }
 
+.role-search-input {
+  width: min(260px, 32vw);
+  min-width: 180px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-sans);
+  outline: none;
+}
+
+.role-search-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.role-search-input::placeholder {
+  color: var(--text-tertiary);
+}
+
 .perm-count {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -74,4 +95,10 @@
   color: var(--accent-blue);
   text-transform: uppercase;
   letter-spacing: 0.3px;
+}
+
+@media (max-width: 720px) {
+  .role-search-input {
+    width: 100%;
+  }
 }

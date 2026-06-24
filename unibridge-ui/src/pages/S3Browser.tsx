@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, type KeyboardEvent } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -39,6 +39,7 @@ function S3Browser() {
   const [isTruncated, setIsTruncated] = useState(false);
   const [loadingObjects, setLoadingObjects] = useState(false);
   const [metadataModal, setMetadataModal] = useState<S3ObjectMetadata | null>(null);
+  const [objectFilter, setObjectFilter] = useState('');
 
   const bucketsQuery = useQuery({
     queryKey: ['s3-buckets', alias],
@@ -94,12 +95,20 @@ function S3Browser() {
 
   function navigateToFolder(folderPrefix: string) {
     setPrefix(folderPrefix);
+    setObjectFilter('');
   }
 
   function navigateUp() {
     const parts = prefix.replace(/\/$/, '').split('/');
     parts.pop();
     setPrefix(parts.length > 0 ? parts.join('/') + '/' : '');
+    setObjectFilter('');
+  }
+
+  function handleFolderRowKeyDown(event: KeyboardEvent<HTMLTableRowElement>, action: () => void) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    action();
   }
 
   const [downloadingKeys, setDownloadingKeys] = useState<Set<string>>(new Set());
@@ -161,6 +170,29 @@ function S3Browser() {
     }
   }
 
+  const objectRows = useMemo(
+    () => objects.filter((o) => o.key !== prefix),
+    [objects, prefix],
+  );
+  const filterText = objectFilter.trim().toLowerCase();
+  const filteringObjects = filterText.length > 0;
+  const visibleFolders = useMemo(
+    () => folders.filter((folder) => {
+      if (!filterText) return true;
+      return folder.prefix.replace(prefix, '').replace(/\/$/, '').toLowerCase().includes(filterText);
+    }),
+    [folders, filterText, prefix],
+  );
+  const visibleObjects = useMemo(
+    () => objectRows.filter((object) => {
+      if (!filterText) return true;
+      return object.key.replace(prefix, '').toLowerCase().includes(filterText);
+    }),
+    [objectRows, filterText, prefix],
+  );
+  const loadedEntryCount = folders.length + objectRows.length;
+  const visibleEntryCount = visibleFolders.length + visibleObjects.length;
+
   return (
     <div className="s3-browser">
       <div className="page-header">
@@ -168,7 +200,7 @@ function S3Browser() {
           <h1>{t('s3.browserTitle')} — {alias}</h1>
           <p className="page-subtitle">{t('s3.browserSubtitle')}</p>
         </div>
-        <button className="btn btn-secondary" onClick={() => navigate('/s3')}>
+        <button type="button" className="btn btn-secondary" onClick={() => navigate('/s3')}>
           {t('s3.backToConnections')}
         </button>
       </div>
@@ -176,15 +208,17 @@ function S3Browser() {
       {/* Bucket selector */}
       <div className="s3-toolbar">
         <div className="s3-bucket-select">
-          <label>{t('s3.selectBucket')}</label>
+          <label htmlFor="s3-bucket-select">{t('s3.selectBucket')}</label>
           {bucketsQuery.isLoading ? (
-            <span className="loading-message">{t('s3.loadingBuckets')}</span>
+            <span className="loading-message" role="status">{t('s3.loadingBuckets')}</span>
           ) : (
             <select
+              id="s3-bucket-select"
               value={selectedBucket}
               onChange={(e) => {
                 setSelectedBucket(e.target.value);
                 setPrefix('');
+                setObjectFilter('');
               }}
             >
               <option value="">{t('s3.selectBucket')}</option>
@@ -197,7 +231,7 @@ function S3Browser() {
       </div>
 
       {bucketsQuery.isError && (
-        <div className="error-banner">{t('s3.loadFailed')}</div>
+        <div className="error-banner" role="alert">{t('s3.loadFailed')}</div>
       )}
 
       {!bucketsQuery.isLoading && buckets.length === 0 && !bucketsQuery.isError && (
@@ -209,37 +243,80 @@ function S3Browser() {
       {selectedBucket && (
         <>
           {/* Breadcrumbs */}
-          <div className="s3-breadcrumbs">
+          <nav className="s3-breadcrumbs" aria-label={t('s3.breadcrumbs')}>
             {breadcrumbs.map((bc, i) => (
               <span key={bc.prefix}>
-                {i > 0 && <span className="s3-breadcrumb-sep">/</span>}
+                {i > 0 && <span className="s3-breadcrumb-sep" aria-hidden="true">/</span>}
                 <button
+                  type="button"
                   className={`s3-breadcrumb ${i === breadcrumbs.length - 1 ? 's3-breadcrumb--active' : ''}`}
-                  onClick={() => setPrefix(bc.prefix)}
+                  aria-current={i === breadcrumbs.length - 1 ? 'page' : undefined}
+                  onClick={() => {
+                    setPrefix(bc.prefix);
+                    setObjectFilter('');
+                  }}
                 >
                   {bc.label}
                 </button>
               </span>
             ))}
+          </nav>
+
+          <div className="s3-list-toolbar">
+            <div className="s3-object-filter">
+              <input
+                type="search"
+                className="s3-object-filter-input"
+                placeholder={t('s3.objectFilterPlaceholder')}
+                aria-label={t('s3.objectFilterPlaceholder')}
+                value={objectFilter}
+                onChange={(e) => setObjectFilter(e.target.value)}
+              />
+              {objectFilter && (
+                <button
+                  type="button"
+                  className="s3-object-filter-clear"
+                  aria-label={t('s3.clearFilter')}
+                  title={t('s3.clearFilter')}
+                  onClick={() => setObjectFilter('')}
+                >
+                  &times;
+                </button>
+              )}
+            </div>
+            {!loadingObjects && visibleEntryCount > 0 && (
+              <span className="s3-entry-count">
+                {!filteringObjects && isTruncated
+                  ? t('s3.entryCountMore', { count: visibleEntryCount })
+                  : t('s3.entryCount', { count: visibleEntryCount })}
+              </span>
+            )}
           </div>
 
           {/* Object listing */}
-          {loadingObjects && folders.length === 0 && objects.length === 0 ? (
-            <div className="loading-message">{t('s3.loadingObjects')}</div>
+          {loadingObjects && loadedEntryCount === 0 ? (
+            <div className="loading-message" role="status">{t('s3.loadingObjects')}</div>
           ) : (
             <div className="table-container">
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>{t('s3.fileName')}</th>
-                    <th>{t('s3.size')}</th>
-                    <th>{t('s3.lastModified')}</th>
-                    <th>{t('common.actions')}</th>
+                    <th scope="col">{t('s3.fileName')}</th>
+                    <th scope="col">{t('s3.size')}</th>
+                    <th scope="col">{t('s3.lastModified')}</th>
+                    <th scope="col">{t('common.actions')}</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {prefix && (
-                    <tr className="s3-row-folder" onClick={navigateUp} style={{ cursor: 'pointer' }}>
+                  {prefix && !filteringObjects && (
+                    <tr
+                      className="s3-row-folder"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={t('s3.parentFolder')}
+                      onClick={navigateUp}
+                      onKeyDown={(event) => handleFolderRowKeyDown(event, navigateUp)}
+                    >
                       <td className="cell-alias">
                         <span className="s3-icon s3-icon-folder">..</span>
                       </td>
@@ -248,30 +325,37 @@ function S3Browser() {
                       <td></td>
                     </tr>
                   )}
-                  {folders.map((f) => (
-                    <tr
-                      key={f.prefix}
-                      className="s3-row-folder"
-                      onClick={() => navigateToFolder(f.prefix)}
-                      style={{ cursor: 'pointer' }}
-                    >
-                      <td className="cell-alias">
-                        <span className="s3-icon s3-icon-folder">
-                          {f.prefix.replace(prefix, '').replace(/\/$/, '')}
-                        </span>
-                      </td>
-                      <td>—</td>
-                      <td>—</td>
-                      <td></td>
-                    </tr>
-                  ))}
-                  {objects
-                    .filter((o) => o.key !== prefix)
-                    .map((obj) => (
+                  {visibleFolders.map((f) => {
+                    const folderName = f.prefix.replace(prefix, '').replace(/\/$/, '');
+                    return (
+                      <tr
+                        key={f.prefix}
+                        className="s3-row-folder"
+                        role="button"
+                        tabIndex={0}
+                        aria-label={t('s3.openFolder', { name: folderName })}
+                        onClick={() => navigateToFolder(f.prefix)}
+                        onKeyDown={(event) => handleFolderRowKeyDown(event, () => navigateToFolder(f.prefix))}
+                      >
+                        <td className="cell-alias">
+                          <span className="s3-icon s3-icon-folder">
+                            {folderName}
+                          </span>
+                        </td>
+                        <td>—</td>
+                        <td>—</td>
+                        <td></td>
+                      </tr>
+                    );
+                  })}
+                  {visibleObjects.map((obj) => {
+                    const objectName = obj.key.replace(prefix, '');
+                    const isDownloading = downloadingKeys.has(obj.key);
+                    return (
                     <tr key={obj.key}>
                       <td className="cell-alias">
                         <span className="s3-icon s3-icon-file">
-                          {obj.key.replace(prefix, '')}
+                          {objectName}
                         </span>
                       </td>
                       <td className="mono">{formatBytes(obj.size)}</td>
@@ -279,28 +363,40 @@ function S3Browser() {
                       <td>
                         <div className="action-buttons">
                           <button
+                            type="button"
                             className="btn btn-sm btn-primary"
                             onClick={(e) => { e.stopPropagation(); handleDownload(obj.key); }}
-                            disabled={downloadingKeys.has(obj.key)}
+                            disabled={isDownloading}
+                            aria-busy={isDownloading}
+                            aria-label={isDownloading
+                              ? t('s3.downloadingFile', { name: objectName })
+                              : t('s3.downloadFile', { name: objectName })}
+                            title={isDownloading
+                              ? t('s3.downloadingFile', { name: objectName })
+                              : t('s3.downloadFile', { name: objectName })}
                           >
-                            {downloadingKeys.has(obj.key) ? t('s3.downloading') : t('s3.download')}
+                            {isDownloading ? t('s3.downloading') : t('s3.download')}
                           </button>
                           <button
+                            type="button"
                             className="btn btn-sm btn-outline"
                             onClick={(e) => { e.stopPropagation(); handleMetadata(obj.key); }}
+                            aria-label={t('s3.metadataFile', { name: objectName })}
+                            title={t('s3.metadataFile', { name: objectName })}
                           >
                             {t('s3.metadata')}
                           </button>
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
 
-              {folders.length === 0 && objects.filter((o) => o.key !== prefix).length === 0 && !loadingObjects && (
+              {visibleEntryCount === 0 && !loadingObjects && (
                 <div className="empty-state">
-                  <p>{t('s3.noObjects')}</p>
+                  <p>{filteringObjects ? t('s3.noFilterResults') : t('s3.noObjects')}</p>
                 </div>
               )}
             </div>
@@ -309,9 +405,11 @@ function S3Browser() {
           {isTruncated && (
             <div className="s3-load-more">
               <button
+                type="button"
                 className="btn btn-secondary"
                 onClick={loadMore}
                 disabled={loadingObjects}
+                aria-busy={loadingObjects}
               >
                 {loadingObjects ? t('common.loading') : t('s3.loadMore')}
               </button>

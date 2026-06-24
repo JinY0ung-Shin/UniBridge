@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders, makeDatabase, makeAuditLog, makeSavedQuery } from './helpers';
 import QueryPlayground from '../pages/QueryPlayground';
@@ -29,7 +29,9 @@ const mockGetSavedQueries = getSavedQueries as ReturnType<typeof vi.fn>;
 const mockCreateSavedQuery = createSavedQuery as ReturnType<typeof vi.fn>;
 const mockDeleteSavedQuery = deleteSavedQuery as ReturnType<typeof vi.fn>;
 
-const sqlEditorPlaceholder = 'SELECT * FROM users LIMIT 10;';
+function sqlEditor() {
+  return screen.getByRole('textbox', { name: 'SQL editor' });
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -69,6 +71,7 @@ describe('QueryPlayground — history panel', () => {
     await waitFor(() => {
       expect(screen.getByText('No query history yet')).toBeInTheDocument();
     });
+    expect(screen.getByRole('button', { name: 'Refresh query history' })).toBeInTheDocument();
   });
 
   it('clicking a history row loads SQL and database into the editor', async () => {
@@ -90,7 +93,30 @@ describe('QueryPlayground — history panel', () => {
 
     await user.click(screen.getByText('SELECT 42'));
 
-    expect(screen.getByPlaceholderText(sqlEditorPlaceholder)).toHaveValue('SELECT 42');
+    expect(sqlEditor()).toHaveValue('SELECT 42');
+    expect(screen.getByRole('combobox')).toHaveValue('test-db');
+  });
+
+  it('loads a history row from keyboard activation', async () => {
+    mockGetQueryHistory.mockResolvedValue({
+      items: [makeAuditLog({ id: 1, sql: 'SELECT 99', database_alias: 'test-db' })],
+      total: 1,
+    });
+
+    renderWithProviders(<QueryPlayground />);
+
+    await waitFor(() => {
+      expect(screen.getByText('SELECT 99')).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: 'test-db' })).toBeInTheDocument();
+    });
+
+    fireEvent.keyDown(screen.getByRole('button', { name: /Load into editor: SELECT 99/ }), {
+      key: 'Enter',
+    });
+
+    expect(sqlEditor()).toHaveValue('SELECT 99');
     expect(screen.getByRole('combobox')).toHaveValue('test-db');
   });
 });
@@ -114,8 +140,45 @@ describe('QueryPlayground — saved queries panel', () => {
       expect(screen.getByText('My users')).toBeInTheDocument();
     });
     expect(screen.getByText('No db')).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: 'Load' })).toHaveLength(2);
-    expect(screen.getAllByRole('button', { name: 'Delete' })).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'Load saved query "My users"' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete saved query "My users"' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Load saved query "No db"' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete saved query "No db"' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh saved queries' })).toBeInTheDocument();
+  });
+
+  it('filters saved queries by search text', async () => {
+    const user = userEvent.setup();
+    mockGetSavedQueries.mockResolvedValue([
+      makeSavedQuery({ id: 1, name: 'My users', sql_text: 'SELECT * FROM users' }),
+      makeSavedQuery({
+        id: 2,
+        name: 'Orders report',
+        description: 'Daily order rollup',
+        database_alias: 'test-db',
+        sql_text: 'SELECT * FROM orders',
+      }),
+    ]);
+
+    renderWithProviders(<QueryPlayground />);
+    await openSavedTab(user);
+
+    await waitFor(() => {
+      expect(screen.getByText('My users')).toBeInTheDocument();
+    });
+
+    const search = screen.getByRole('searchbox', { name: /search saved queries/i });
+    await user.type(search, 'orders');
+
+    expect(screen.queryByText('My users')).not.toBeInTheDocument();
+    expect(screen.getByText('Orders report')).toBeInTheDocument();
+
+    await user.clear(search);
+    await user.type(search, 'missing');
+    expect(screen.getByText(/No matching saved queries|일치하는 저장 쿼리/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Clear search|검색 지우기/i }));
+    expect(screen.getByText('My users')).toBeInTheDocument();
+    expect(screen.getByText('Orders report')).toBeInTheDocument();
   });
 
   it('load button fills the editor with the saved query', async () => {
@@ -131,11 +194,11 @@ describe('QueryPlayground — saved queries panel', () => {
     await openSavedTab(user);
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Load' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Load saved query "My users"' })).toBeInTheDocument();
     });
-    await user.click(screen.getByRole('button', { name: 'Load' }));
+    await user.click(screen.getByRole('button', { name: 'Load saved query "My users"' }));
 
-    expect(screen.getByPlaceholderText(sqlEditorPlaceholder)).toHaveValue('SELECT * FROM users');
+    expect(sqlEditor()).toHaveValue('SELECT * FROM users');
     expect(screen.getByRole('combobox')).toHaveValue('test-db');
   });
 
@@ -151,7 +214,7 @@ describe('QueryPlayground — saved queries panel', () => {
     await waitFor(() => {
       expect(screen.getByText('Old one')).toBeInTheDocument();
     });
-    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await user.click(screen.getByRole('button', { name: 'Delete saved query "Old one"' }));
 
     await waitFor(() => {
       expect(mockDeleteSavedQuery).toHaveBeenCalledWith(7);
@@ -169,7 +232,7 @@ describe('QueryPlayground — saved queries panel', () => {
     await waitFor(() => {
       expect(screen.getByText('Old one')).toBeInTheDocument();
     });
-    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await user.click(screen.getByRole('button', { name: 'Delete saved query "Old one"' }));
 
     expect(mockDeleteSavedQuery).not.toHaveBeenCalled();
   });
@@ -183,7 +246,7 @@ describe('QueryPlayground — save query modal', () => {
     const saveButton = screen.getByRole('button', { name: 'Save Query' });
     expect(saveButton).toBeDisabled();
 
-    await user.type(screen.getByPlaceholderText(sqlEditorPlaceholder), 'SELECT 1');
+    await user.type(sqlEditor(), 'SELECT 1');
     expect(saveButton).toBeEnabled();
   });
 
@@ -197,7 +260,7 @@ describe('QueryPlayground — save query modal', () => {
     });
 
     await user.selectOptions(screen.getByRole('combobox'), 'test-db');
-    await user.type(screen.getByPlaceholderText(sqlEditorPlaceholder), 'SELECT 1');
+    await user.type(sqlEditor(), 'SELECT 1');
     await user.click(screen.getByRole('button', { name: 'Save Query' }));
 
     const dialog = await screen.findByRole('dialog');
@@ -220,6 +283,29 @@ describe('QueryPlayground — save query modal', () => {
     });
   });
 
+  it('marks the modal save button as busy while saving', async () => {
+    const user = userEvent.setup();
+    let resolveSave: (value: ReturnType<typeof makeSavedQuery>) => void = () => {};
+    mockCreateSavedQuery.mockReturnValueOnce(new Promise<ReturnType<typeof makeSavedQuery>>((resolve) => {
+      resolveSave = resolve;
+    }));
+
+    renderWithProviders(<QueryPlayground />);
+
+    await user.type(sqlEditor(), 'SELECT 1');
+    await user.click(screen.getByRole('button', { name: 'Save Query' }));
+    await user.type(await screen.findByLabelText('Name'), 'Quick check');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(screen.getByRole('button', { name: 'Saving...' })).toHaveAttribute('aria-busy', 'true');
+
+    resolveSave(makeSavedQuery({ id: 3, name: 'Quick check' }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+  });
+
   it('shows an error and keeps the modal open when saving fails', async () => {
     const user = userEvent.setup();
     mockCreateSavedQuery.mockRejectedValue({
@@ -227,7 +313,7 @@ describe('QueryPlayground — save query modal', () => {
     });
 
     renderWithProviders(<QueryPlayground />);
-    await user.type(screen.getByPlaceholderText(sqlEditorPlaceholder), 'SELECT 1');
+    await user.type(sqlEditor(), 'SELECT 1');
     await user.click(screen.getByRole('button', { name: 'Save Query' }));
 
     await user.type(await screen.findByLabelText('Name'), 'x');
@@ -236,6 +322,7 @@ describe('QueryPlayground — save query modal', () => {
     await waitFor(() => {
       expect(screen.getByText('name must not be empty')).toBeInTheDocument();
     });
+    expect(screen.getByRole('alert')).toHaveTextContent('name must not be empty');
     expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 });

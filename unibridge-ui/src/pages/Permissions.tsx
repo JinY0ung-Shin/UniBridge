@@ -30,6 +30,7 @@ function Permissions() {
   const [availableTables, setAvailableTables] = useState<string[]>([]);
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
   const [tablesLoading, setTablesLoading] = useState(false);
+  const [permissionSearch, setPermissionSearch] = useState('');
 
   const permsQuery = useQuery({
     queryKey: ['permissions'],
@@ -61,6 +62,20 @@ function Permissions() {
   const dbTypeByAlias: Record<string, string> = Object.fromEntries(
     databases.map((d) => [d.alias, d.db_type]),
   );
+  const normalizedPermissionSearch = permissionSearch.trim().toLowerCase();
+  const filteredPermissions = normalizedPermissionSearch
+    ? permissions.filter((perm) => [
+        perm.role,
+        perm.db_alias,
+        ...OPERATIONS.filter((op) => perm[op.key]).map((op) => op.label),
+        ...(perm.allowed_tables && perm.allowed_tables.length > 0 ? perm.allowed_tables : [t('permissions.allTables')]),
+        isGraphBackend(perm.db_alias) ? t('permissions.tableAclNotApplicable') : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedPermissionSearch))
+    : permissions;
 
   function isGraphBackend(alias: string): boolean {
     const dbType = dbTypeByAlias[alias];
@@ -134,57 +149,82 @@ function Permissions() {
 
       {canWrite && (
         <div className="add-perm-row">
-          <input
-            type="text"
-            placeholder={t('permissions.roleName')}
-            value={newRole}
-            onChange={(e) => setNewRole(e.target.value)}
-            className="perm-input"
-          />
-          <select
-            value={newDbAlias}
-            onChange={(e) => setNewDbAlias(e.target.value)}
-            className="perm-select"
-          >
-            <option value="">{t('permissions.selectDatabase')}</option>
-            {dbAliases.map((alias) => (
-              <option key={alias} value={alias}>
-                {alias}
-              </option>
-            ))}
-          </select>
+          <div className="add-perm-field">
+            <label htmlFor="permission-role-name">{t('permissions.roleName')}</label>
+            <input
+              id="permission-role-name"
+              type="text"
+              placeholder={t('permissions.roleName')}
+              value={newRole}
+              onChange={(e) => setNewRole(e.target.value)}
+              className="perm-input"
+            />
+          </div>
+          <div className="add-perm-field">
+            <label htmlFor="permission-database">{t('permissions.selectDatabase')}</label>
+            <select
+              id="permission-database"
+              value={newDbAlias}
+              onChange={(e) => setNewDbAlias(e.target.value)}
+              className="perm-select"
+            >
+              <option value="">{t('permissions.selectDatabase')}</option>
+              {dbAliases.map((alias) => (
+                <option key={alias} value={alias}>
+                  {alias}
+                </option>
+              ))}
+            </select>
+          </div>
           <button
+            type="button"
             className="btn btn-primary"
             onClick={handleAdd}
             disabled={!newRole.trim() || !newDbAlias || updateMut.isPending}
+            aria-busy={updateMut.isPending}
           >
             {t('permissions.addPermission')}
           </button>
         </div>
       )}
 
-      {permsQuery.isLoading && <div className="loading-message">{t('permissions.loadingPermissions')}</div>}
+      {permsQuery.isLoading && <div className="loading-message" role="status">{t('permissions.loadingPermissions')}</div>}
 
       {permsQuery.isError && (
-        <div className="error-banner">{t('permissions.loadFailed')}</div>
+        <div className="error-banner" role="alert">{t('permissions.loadFailed')}</div>
       )}
 
       {permissions.length > 0 && (
+        <div className="permission-filter-row">
+          <input
+            className="permission-search-input"
+            type="search"
+            value={permissionSearch}
+            onChange={(event) => setPermissionSearch(event.target.value)}
+            placeholder={t('permissions.searchPlaceholder')}
+            aria-label={t('permissions.searchPlaceholder')}
+          />
+        </div>
+      )}
+
+      {permissions.length > 0 && filteredPermissions.length > 0 && (
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t('permissions.role')}</th>
-                <th>{t('connections.database')}</th>
+                <th scope="col">{t('permissions.role')}</th>
+                <th scope="col">{t('connections.database')}</th>
                 {OPERATIONS.map((op) => (
-                  <th key={op.key} className="th-center">{op.label}</th>
+                  <th key={op.key} scope="col" className="th-center">{op.label}</th>
                 ))}
-                <th>{t('permissions.allowedTables')}</th>
-                <th>{t('common.actions')}</th>
+                <th scope="col">{t('permissions.allowedTables')}</th>
+                <th scope="col">{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
-              {permissions.map((perm) => (
+              {filteredPermissions.map((perm) => {
+                const isDeleting = perm.id != null && deleteMut.isPending && deleteMut.variables === perm.id;
+                return (
                 <tr key={perm.id ?? `${perm.role}-${perm.db_alias}`}>
                   <td className="cell-alias">{perm.role}</td>
                   <td>{perm.db_alias}</td>
@@ -193,6 +233,11 @@ function Permissions() {
                       <input
                         type="checkbox"
                         className="perm-checkbox"
+                        aria-label={t('permissions.toggleOperation', {
+                          operation: op.label,
+                          role: perm.role,
+                          db: perm.db_alias,
+                        })}
                         checked={perm[op.key]}
                         onChange={() => toggleOperation(perm, op.key)}
 	                        disabled={!canWrite || updateMut.isPending}
@@ -224,10 +269,20 @@ function Permissions() {
                               )}
                             </div>
                             <div className="table-selector-actions">
-                              <button className="btn btn-sm btn-primary" onClick={() => handleSaveTables(perm)}>
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-primary"
+                                aria-label={t('permissions.saveTableAccess', { role: perm.role, db: perm.db_alias })}
+                                onClick={() => handleSaveTables(perm)}
+                              >
                                 {t('common.save')}
                               </button>
-                              <button className="btn btn-sm" onClick={handleCancelTables}>
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                aria-label={t('permissions.cancelTableAccess', { role: perm.role, db: perm.db_alias })}
+                                onClick={handleCancelTables}
+                              >
                                 {t('common.cancel')}
                               </button>
                             </div>
@@ -247,7 +302,9 @@ function Permissions() {
                         )}
 	                        {canWrite && (
 	                          <button
+                              type="button"
 	                            className="btn btn-sm btn-link"
+                              aria-label={t('permissions.editTableAccess', { role: perm.role, db: perm.db_alias })}
 	                            onClick={() => handleEditTables(perm)}
 	                          >
 	                            {t('common.edit')}
@@ -259,18 +316,32 @@ function Permissions() {
 	                  <td>
 	                    {canWrite && (
 	                      <button
+                          type="button"
 	                        className="btn btn-sm btn-danger"
+                          aria-label={t('permissions.removePermission', { role: perm.role, db: perm.db_alias })}
 	                        onClick={() => handleDelete(perm)}
 	                        disabled={deleteMut.isPending}
+                          aria-busy={isDeleting}
 	                      >
-	                        {t('common.remove')}
+	                        {isDeleting ? t('common.deleting') : t('common.remove')}
 	                      </button>
 	                    )}
 	                  </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!permsQuery.isLoading && permissions.length > 0 && filteredPermissions.length === 0 && !permsQuery.isError && (
+        <div className="empty-state">
+          <h3>{t('permissions.noSearchResults')}</h3>
+          <p>{t('permissions.noSearchResultsDesc')}</p>
+          <button type="button" className="btn btn-secondary empty-state-action" onClick={() => setPermissionSearch('')}>
+            {t('common.clearSearch')}
+          </button>
         </div>
       )}
 

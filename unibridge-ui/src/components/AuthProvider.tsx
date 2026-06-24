@@ -81,11 +81,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       <div style={centeredBox}>
         <div style={{ textAlign: 'center', maxWidth: 500 }}>
           <h2 style={{ marginBottom: '1rem' }}>Authentication Error</h2>
-          <p style={{ color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
+          <p role="alert" style={{ color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
             {error || 'Authentication failed. Please try again.'}
           </p>
-          <button onClick={() => window.location.reload()} style={actionBtn}>
-            Retry
+          <button type="button" onClick={() => window.location.reload()} style={actionBtn}>
+            {t('common.retry')}
           </button>
         </div>
       </div>
@@ -99,7 +99,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       <div style={centeredBox}>
         <div style={{ textAlign: 'center', maxWidth: 520 }}>
           <h2 style={{ marginBottom: '1rem' }}>{t('pending.title')}</h2>
-          <p style={{ color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
+          <p role="status" aria-live="polite" style={{ color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
             {t('pending.message')}
           </p>
           {username && (
@@ -108,8 +108,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             </p>
           )}
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-            <button onClick={recheckApproval} style={actionBtn}>{t('pending.recheck')}</button>
-            <button onClick={logout} style={actionBtn}>{t('common.logout')}</button>
+            <button type="button" onClick={recheckApproval} style={actionBtn}>{t('pending.recheck')}</button>
+            <button type="button" onClick={logout} style={actionBtn}>{t('common.logout')}</button>
           </div>
         </div>
       </div>

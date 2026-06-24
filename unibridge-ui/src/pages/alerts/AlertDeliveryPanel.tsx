@@ -191,7 +191,7 @@ export default function AlertDeliveryPanel() {
   }
 
   function handleDeleteChannel(ch: AlertChannel) {
-    if (window.confirm(t('alerts.deleteConfirm'))) deleteChannelMutation.mutate(ch.id);
+    if (window.confirm(t('alerts.deleteChannelConfirm', { name: ch.name }))) deleteChannelMutation.mutate(ch.id);
   }
 
   async function handleTestChannel(ch: AlertChannel) {
@@ -216,6 +216,7 @@ export default function AlertDeliveryPanel() {
 
   function handleSettingsSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!hasSettingsDraft) return;
     updateSettingsMutation.mutate({
       mail_channel_id: settingsForm.mail_channel_id,
       route_error_threshold_pct: settingsForm.route_error_threshold_pct,
@@ -231,8 +232,16 @@ export default function AlertDeliveryPanel() {
     });
   }
 
+  function handleSettingsDiscard() {
+    setSettingsDraft({});
+  }
+
   const isSavingChannel = createChannelMutation.isPending || updateChannelMutation.isPending;
   const hasSettings = Boolean(settingsQuery.data);
+  const hasSettingsDraft = Boolean(
+    settingsQuery.data &&
+    Object.entries(settingsDraft).some(([key, value]) => settingsQuery.data?.[key as keyof AlertSettings] !== value),
+  );
   const isLoading = channelsQuery.isLoading || settingsQuery.isLoading;
   const isError = channelsQuery.isError || settingsQuery.isError;
   const templateVars: [string, string][] = [
@@ -298,8 +307,9 @@ export default function AlertDeliveryPanel() {
               onChange={(e) =>
                 setSettingsDraft((prev) => ({ ...prev, route_error_min_requests: Number(e.target.value) }))
               }
+              aria-describedby="route-min-requests-help"
             />
-            <p className="form-hint">{t('alerts.routeErrorMinRequestsHelp')}</p>
+            <p id="route-min-requests-help" className="form-hint">{t('alerts.routeErrorMinRequestsHelp')}</p>
           </div>
           <div className="form-group">
             <label htmlFor="check-interval">{t('alerts.checkInterval')}</label>
@@ -331,8 +341,9 @@ export default function AlertDeliveryPanel() {
                   trigger_after_failures: Number(e.target.value),
                 }))
               }
+              aria-describedby="trigger-after-failures-help"
             />
-            <p className="form-hint">{t('alerts.triggerAfterFailuresHelp')}</p>
+            <p id="trigger-after-failures-help" className="form-hint">{t('alerts.triggerAfterFailuresHelp')}</p>
           </div>
         </div>
 
@@ -364,23 +375,41 @@ export default function AlertDeliveryPanel() {
         </div>
 
         {canWrite && (
-          <button type="submit" className="btn btn-primary" disabled={!hasSettings || updateSettingsMutation.isPending}>
-            {updateSettingsMutation.isPending ? t('common.saving') : t('alerts.saveSettings')}
-          </button>
+          <div className="settings-save-bar">
+            <span>{hasSettingsDraft ? t('alerts.settingsChanged') : t('alerts.noSettingsChanges')}</span>
+            <div className="settings-save-actions">
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={handleSettingsDiscard}
+                disabled={!hasSettingsDraft || updateSettingsMutation.isPending}
+              >
+                {t('alerts.discardSettingsChanges')}
+              </button>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={!hasSettings || !hasSettingsDraft || updateSettingsMutation.isPending}
+                aria-busy={updateSettingsMutation.isPending}
+              >
+                {updateSettingsMutation.isPending ? t('common.saving') : t('alerts.saveSettings')}
+              </button>
+            </div>
+          </div>
         )}
       </form>
 
       <div className="section-header">
         <h2>{t('alerts.channels')}</h2>
         {canWrite && (
-          <button className="btn btn-primary" onClick={openCreateChannel}>+ {t('alerts.addChannel')}</button>
+          <button type="button" className="btn btn-primary" onClick={openCreateChannel}>+ {t('alerts.addChannel')}</button>
         )}
       </div>
 
       <p className="alert-note">{t('alerts.recipientsDuplicateHint')}</p>
 
-      {isLoading && <div className="loading-message">{t('common.loading')}</div>}
-      {isError && <div className="error-banner">{t('common.errorOccurred')}</div>}
+      {isLoading && <div className="loading-message" role="status">{t('common.loading')}</div>}
+      {isError && <div className="error-banner" role="alert">{t('common.errorOccurred')}</div>}
       {!isLoading && channels.length === 0 && !isError && (
         <div className="empty-state"><h3>{t('alerts.noChannels')}</h3></div>
       )}
@@ -389,14 +418,16 @@ export default function AlertDeliveryPanel() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t('common.name')}</th>
-                <th>{t('alerts.webhookUrl')}</th>
-                <th>{t('alerts.enabled')}</th>
-                {canWrite && <th>{t('common.actions')}</th>}
+                <th scope="col">{t('common.name')}</th>
+                <th scope="col">{t('alerts.webhookUrl')}</th>
+                <th scope="col">{t('alerts.enabled')}</th>
+                {canWrite && <th scope="col">{t('common.actions')}</th>}
               </tr>
             </thead>
             <tbody>
-              {channels.map((ch) => (
+              {channels.map((ch) => {
+                const isDeleting = deleteChannelMutation.isPending && deleteChannelMutation.variables === ch.id;
+                return (
                 <tr key={ch.id}>
                   <td className="cell-alias">{ch.name}</td>
                   <td className="cell-webhook-url">
@@ -411,27 +442,39 @@ export default function AlertDeliveryPanel() {
                     <td>
                       <div className="action-buttons">
                         <button
+                          type="button"
                           className="btn btn-sm btn-outline"
+                          aria-label={t('alerts.testChannelNamed', { name: ch.name })}
                           onClick={() => handleTestChannel(ch)}
                           disabled={testingChannelIds.has(ch.id)}
+                          aria-busy={testingChannelIds.has(ch.id)}
                         >
                           {testingChannelIds.has(ch.id) ? t('common.loading') : t('alerts.testChannel')}
                         </button>
-                        <button className="btn btn-sm btn-secondary" onClick={() => openEditChannel(ch)}>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          aria-label={t('alerts.editChannelNamed', { name: ch.name })}
+                          onClick={() => openEditChannel(ch)}
+                        >
                           {t('common.edit')}
                         </button>
                         <button
+                          type="button"
                           className="btn btn-sm btn-danger"
+                          aria-label={t('alerts.deleteChannelNamed', { name: ch.name })}
                           onClick={() => handleDeleteChannel(ch)}
                           disabled={deleteChannelMutation.isPending}
+                          aria-busy={isDeleting}
                         >
-                          {t('common.delete')}
+                          {isDeleting ? t('common.deleting') : t('common.delete')}
                         </button>
                       </div>
                     </td>
                   )}
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -476,12 +519,13 @@ export default function AlertDeliveryPanel() {
                   value={channelForm.payload_template}
                   onChange={(e) => updateChannelField('payload_template', e.target.value)}
                   required
+                  aria-describedby="alert-channel-payload-template-help"
                 />
                 <details className="template-vars">
                   <summary className="form-hint template-vars-toggle">
                     {t('alerts.templateVarsToggle', { count: templateVars.length })}
                   </summary>
-                  <p className="form-hint">{t('alerts.templateHelp')}</p>
+                  <p id="alert-channel-payload-template-help" className="form-hint">{t('alerts.templateHelp')}</p>
                   <dl className="template-vars-list">
                     {templateVars.map(([name, desc]) => (
                       <div key={name} className="template-var-row">
@@ -501,35 +545,47 @@ export default function AlertDeliveryPanel() {
                   value={channelForm.recipient_item_template ?? ''}
                   onChange={(e) => updateChannelField('recipient_item_template', e.target.value)}
                   placeholder='{"email":"{{email}}"}'
+                  aria-describedby="alert-channel-recipient-item-template-help"
                 />
-                <p className="form-hint">{t('alerts.recipientItemTemplateHelp')}</p>
+                <p id="alert-channel-recipient-item-template-help" className="form-hint">
+                  {t('alerts.recipientItemTemplateHelp')}
+                </p>
               </div>
               <div className="form-group form-group--full">
-                <label>{t('alerts.headers')}</label>
-                {channelForm.headerPairs.map((pair, idx) => (
-                  <div key={idx} className="header-row">
-                    <input
-                      type="text"
-                      className="header-key"
-                      placeholder={t('alerts.headerName')}
-                      value={pair.key}
-                      onChange={(e) => updateHeaderPair(idx, 'key', e.target.value)}
-                    />
-                    <input
-                      type="text"
-                      className="header-value"
-                      placeholder={t('alerts.headerValue')}
-                      value={pair.value}
-                      onChange={(e) => updateHeaderPair(idx, 'value', e.target.value)}
-                    />
-                    <button type="button" className="btn btn-sm btn-danger" onClick={() => removeHeaderPair(idx)}>
-                      &times;
-                    </button>
-                  </div>
-                ))}
-                <button type="button" className="btn btn-sm btn-outline" onClick={addHeaderPair}>
-                  + {t('alerts.addHeader')}
-                </button>
+                <label id="alert-channel-headers-label">{t('alerts.headers')}</label>
+                <div role="group" aria-labelledby="alert-channel-headers-label">
+                  {channelForm.headerPairs.map((pair, idx) => (
+                    <div key={idx} className="header-row">
+                      <input
+                        type="text"
+                        className="header-key"
+                        placeholder={t('alerts.headerName')}
+                        value={pair.key}
+                        onChange={(e) => updateHeaderPair(idx, 'key', e.target.value)}
+                        aria-label={`${t('alerts.headerName')} ${idx + 1}`}
+                      />
+                      <input
+                        type="text"
+                        className="header-value"
+                        placeholder={t('alerts.headerValue')}
+                        value={pair.value}
+                        onChange={(e) => updateHeaderPair(idx, 'value', e.target.value)}
+                        aria-label={`${t('alerts.headerValue')} ${idx + 1}`}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-danger"
+                        aria-label={t('alerts.removeHeader', { index: idx + 1 })}
+                        onClick={() => removeHeaderPair(idx)}
+                      >
+                        &times;
+                      </button>
+                    </div>
+                  ))}
+                  <button type="button" className="btn btn-sm btn-outline" onClick={addHeaderPair}>
+                    + {t('alerts.addHeader')}
+                  </button>
+                </div>
               </div>
               <div className="form-group form-group--full">
                 <label className="checkbox-label">
@@ -546,7 +602,12 @@ export default function AlertDeliveryPanel() {
               <button type="button" className="btn btn-secondary" onClick={closeChannelModal}>
                 {t('alerts.cancel')}
               </button>
-              <button type="submit" className="btn btn-primary" disabled={isSavingChannel}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={isSavingChannel}
+                aria-busy={isSavingChannel}
+              >
                 {isSavingChannel ? t('common.saving') : t('alerts.save')}
               </button>
             </div>

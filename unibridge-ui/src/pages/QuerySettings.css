@@ -54,14 +54,44 @@
   margin-top: 4px;
 }
 
+.settings-save-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-save-status {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.settings-save-status--changed {
+  color: var(--text-primary);
+}
+
+.settings-save-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .save-success {
   color: var(--accent-green);
   font-size: 13px;
-  margin-left: 12px;
 }
 
 .save-error {
   color: var(--accent-red);
   font-size: 13px;
-  margin-left: 12px;
+}
+
+@media (max-width: 720px) {
+  .settings-save-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-save-actions {
+    justify-content: flex-end;
+  }
 }

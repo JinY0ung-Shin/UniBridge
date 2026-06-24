@@ -65,9 +65,43 @@ describe('GatewayRouteForm', () => {
       expect(screen.getByRole('heading', { name: 'New Route' })).toBeInTheDocument();
     });
 
-    expect(screen.getByPlaceholderText('My API Route')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('myservice/*')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveAttribute('id', 'gateway-route-name');
+    expect(screen.getByRole('textbox', { name: 'URI' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Methods' })).toHaveAttribute(
+      'aria-labelledby',
+      'gateway-route-methods-label',
+    );
+    expect(screen.getByRole('combobox', { name: 'Upstream' })).toHaveAttribute('id', 'gateway-route-upstream');
     expect(screen.getByText('/api/')).toBeInTheDocument();
+    expect(screen.getByText('(Upstream)')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'URI' })).toHaveAttribute(
+      'aria-describedby',
+      'gateway-route-uri-hint',
+    );
+    expect(document.getElementById('gateway-route-uri-hint')).toHaveTextContent(
+      'Must start with /api/',
+    );
+    expect(screen.getByRole('spinbutton', { name: 'Timeout (seconds)' })).toHaveAttribute(
+      'aria-describedby',
+      'gateway-route-timeout-hint',
+    );
+    expect(document.getElementById('gateway-route-timeout-hint')).toHaveTextContent(
+      'Leave blank to use the global default timeout',
+    );
+    expect(screen.getByRole('checkbox', { name: 'Require Authentication (key-auth)' })).toHaveAttribute(
+      'aria-describedby',
+      'gateway-route-require-auth-hint',
+    );
+    expect(document.getElementById('gateway-route-require-auth-hint')).toHaveTextContent(
+      'Consumer registration required',
+    );
+    expect(screen.getByRole('textbox', { name: 'Assignee emails' })).toHaveAttribute(
+      'aria-describedby',
+      'gateway-route-assignees-hint',
+    );
+    expect(document.getElementById('gateway-route-assignees-hint')).toHaveTextContent(
+      'Emails notified of this route',
+    );
   });
 
   it('renders method checkboxes', async () => {
@@ -77,6 +111,7 @@ describe('GatewayRouteForm', () => {
       expect(screen.getByRole('heading', { name: 'New Route' })).toBeInTheDocument();
     });
 
+    expect(screen.getByRole('group', { name: 'Methods' })).toBeInTheDocument();
     for (const method of ['GET', 'POST', 'PUT', 'DELETE', 'PATCH']) {
       expect(screen.getByRole('checkbox', { name: method })).toBeInTheDocument();
     }
@@ -105,13 +140,17 @@ describe('GatewayRouteForm', () => {
       expect(screen.getByRole('option', { name: 'my-upstream' })).toBeInTheDocument();
     });
 
-    await user.type(screen.getByPlaceholderText('myservice/*'), 'external/*');
-    await user.selectOptions(screen.getAllByRole('combobox')[1], 'us-1');
+    await user.type(screen.getByRole('textbox', { name: 'URI' }), 'external/*');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Upstream' }), 'us-1');
     await user.click(screen.getByRole('button', { name: '+ Add Header' }));
     await user.click(screen.getByRole('button', { name: '+ Add Header' }));
+    expect(screen.getByRole('button', { name: 'Remove header row 1' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove header row 2' })).toBeInTheDocument();
 
-    const headerNameInputs = screen.getAllByPlaceholderText('Authorization');
-    const headerValueInputs = screen.getAllByPlaceholderText('Bearer sk-xxx...');
+    const headerNameInputs = screen.getAllByRole('textbox', { name: /Header Name/ });
+    const headerValueInputs = screen.getAllByLabelText(/Header Value/);
+    expect(headerNameInputs[0]).toHaveAttribute('id', 'gateway-route-header-name-1');
+    expect(headerValueInputs[0]).toHaveAttribute('id', 'gateway-route-header-value-1');
     await user.type(headerNameInputs[0], 'X-Api-Key');
     await user.type(headerValueInputs[0], 'secret-1');
     await user.type(headerNameInputs[1], 'Authorization');
@@ -177,7 +216,7 @@ describe('GatewayRouteForm', () => {
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Edit Route' })).toBeInTheDocument();
     });
-    const nameInput = screen.getByPlaceholderText('My API Route');
+    const nameInput = screen.getByRole('textbox', { name: 'Name' });
     expect(nameInput).toHaveValue('old-route');
 
     await user.clear(nameInput);
@@ -195,7 +234,7 @@ describe('GatewayRouteForm', () => {
     renderWithQueryClient(queryClient);
 
     await waitFor(() => {
-      expect(screen.getByPlaceholderText('My API Route')).toHaveValue('new-route');
+      expect(screen.getByRole('textbox', { name: 'Name' })).toHaveValue('new-route');
     });
   });
 
@@ -219,10 +258,10 @@ describe('GatewayRouteForm', () => {
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Edit Route' })).toBeInTheDocument());
     // assignee field prefilled from loaded owners
-    expect(screen.getByPlaceholderText('alice@example.com, bob@example.com')).toHaveValue('a@b.com');
+    expect(screen.getByRole('textbox', { name: 'Assignee emails' })).toHaveValue('a@b.com');
 
-    await user.clear(screen.getByPlaceholderText('My API Route'));
-    await user.type(screen.getByPlaceholderText('My API Route'), 'new-route');
+    await user.clear(screen.getByRole('textbox', { name: 'Name' }));
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'new-route');
     await user.click(screen.getByRole('button', { name: 'Update Route' }));
 
     await waitFor(() => expect(mockedSaveGatewayRoute).toHaveBeenCalledTimes(1));
@@ -237,8 +276,8 @@ describe('GatewayRouteForm', () => {
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'New Route' })).toBeInTheDocument());
 
-    expect(screen.getByPlaceholderText('My API Route')).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText('alice@example.com, bob@example.com')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Name' })).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Assignee emails' })).not.toBeInTheDocument();
     expect(mockedGetAlertResourceOwners).not.toHaveBeenCalled();
   });
 
@@ -260,10 +299,17 @@ describe('GatewayRouteForm', () => {
       expect(screen.getByRole('heading', { name: 'Edit Route' })).toBeInTheDocument();
     });
 
-    expect(screen.getByDisplayValue('X-Api-Key')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('***1234')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('Authorization')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('***5678')).toBeInTheDocument();
+    expect(screen.getByLabelText('Header Name 1')).toHaveValue('X-Api-Key');
+    expect(screen.getByLabelText('Header Value 1')).toHaveAttribute('placeholder', '***1234');
+    expect(screen.getByLabelText('Header Value 1')).toHaveAttribute(
+      'aria-describedby',
+      'gateway-route-header-value-1-hint gateway-route-service-key-help',
+    );
+    expect(document.getElementById('gateway-route-header-value-1-hint')).toHaveTextContent(
+      'Leave empty to keep current',
+    );
+    expect(screen.getByLabelText('Header Name 2')).toHaveValue('Authorization');
+    expect(screen.getByLabelText('Header Value 2')).toHaveAttribute('placeholder', '***5678');
 
     await user.click(screen.getByRole('button', { name: 'Update Route' }));
 

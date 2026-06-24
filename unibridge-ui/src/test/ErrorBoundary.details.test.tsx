@@ -26,11 +26,14 @@ describe('ErrorBoundary details + reload', () => {
     );
 
     const toggle = screen.getByRole('button', { name: 'Show details' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(toggle);
     // After click, button label flips
-    expect(screen.getByRole('button', { name: 'Hide details' })).toBeInTheDocument();
+    const hide = screen.getByRole('button', { name: 'Hide details' });
+    expect(hide).toHaveAttribute('aria-expanded', 'true');
+    expect(hide).toHaveAttribute('aria-controls', 'error-boundary-details');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Hide details' }));
+    fireEvent.click(hide);
     expect(screen.getByRole('button', { name: 'Show details' })).toBeInTheDocument();
   });
 
@@ -56,6 +59,7 @@ describe('ErrorBoundary details + reload', () => {
       </ErrorBoundary>,
     );
     expect(screen.getByText('An unexpected error occurred.')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('An unexpected error occurred.');
   });
 
   it('renders an enabled Reload button in error state', () => {

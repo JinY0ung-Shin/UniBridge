@@ -14,7 +14,7 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
-import { screen, waitFor, fireEvent } from '@testing-library/react';
+import { screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   getNasEntries,
@@ -28,6 +28,7 @@ import { renderWithProviders } from './helpers';
 const mockEntries = vi.mocked(getNasEntries);
 const mockMeta = vi.mocked(getNasEntryMetadata);
 const mockDownload = vi.mocked(downloadNasEntry);
+const clipboardWriteText = vi.fn();
 
 /** A NasEntry exactly per contract §6/§10 — name/path/is_dir/size/modified_time, nothing else. */
 function makeEntry(overrides: Partial<NasEntryShape> = {}): NasEntryShape {
@@ -87,6 +88,12 @@ describe('NasBrowser page', () => {
     mockEntries.mockReset();
     mockMeta.mockReset();
     mockDownload.mockReset();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: clipboardWriteText },
+    });
+    clipboardWriteText.mockReset();
+    clipboardWriteText.mockResolvedValue(undefined);
   });
 
   it('lists entries at the base_path root (no bucket selector)', async () => {
@@ -131,7 +138,36 @@ describe('NasBrowser page', () => {
     fireEvent.click(screen.getByText('logs'));
 
     await waitFor(() => expect(screen.getByText('2026.txt')).toBeInTheDocument());
+    expect(screen.getByRole('navigation', { name: 'NAS path' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'logs' })).toHaveAttribute('aria-current', 'page');
     // The descent must use the folder entry's own `path`, not a reconstructed key.
+    expect(mockEntries).toHaveBeenLastCalledWith(
+      'nas-main',
+      expect.objectContaining({ path: 'logs' }),
+    );
+  });
+
+  it('descends into a folder from the keyboard row target', async () => {
+    mockEntries
+      .mockResolvedValueOnce(
+        makeListResponse({
+          folders: [makeEntry({ name: 'logs', path: 'logs', is_dir: true, size: null })],
+          total_count: 1,
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeListResponse({
+          path: 'logs',
+          files: [makeEntry({ name: '2026.txt', path: 'logs/2026.txt', size: 10 })],
+          total_count: 1,
+        }),
+      );
+    renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
+
+    const row = await screen.findByRole('button', { name: `${i18n.t('nas.folder')}: logs` });
+    fireEvent.keyDown(row, { key: 'Enter' });
+
+    await waitFor(() => expect(screen.getByText('2026.txt')).toBeInTheDocument());
     expect(mockEntries).toHaveBeenLastCalledWith(
       'nas-main',
       expect.objectContaining({ path: 'logs' }),
@@ -164,6 +200,12 @@ describe('NasBrowser page', () => {
     expect(dialog).toHaveTextContent('/api/nas/nas-main/metadata?path=file.txt');
     expect(dialog).toHaveTextContent('/api/nas/nas-main/download?path=file.txt');
     expect(dialog).toHaveTextContent("-H 'apikey: <YOUR_API_KEY>'");
+
+    fireEvent.click(within(dialog).getByRole('button', { name: labelRe('nas.apiExamplesCopyLabel') }));
+    await waitFor(() => {
+      expect(clipboardWriteText).toHaveBeenCalledWith(expect.stringContaining('/api/nas/nas-main/download?path=file.txt'));
+    });
+    expect(within(dialog).getByRole('status')).toHaveTextContent(i18n.t('nas.apiExamplesCopied'));
   });
 
   it('shows an error banner when the listing fails', async () => {
@@ -194,7 +236,7 @@ describe('NasBrowser page', () => {
     renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('file.txt')).toBeInTheDocument());
 
-    const downloadBtn = screen.getByRole('button', { name: labelRe('nas.download') });
+    const downloadBtn = screen.getByRole('button', { name: 'Download file.txt' });
     expect(downloadBtn).toBeInTheDocument();
     fireEvent.click(downloadBtn);
 
@@ -216,7 +258,7 @@ describe('NasBrowser page', () => {
     renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('file.txt')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: labelRe('nas.download') }));
+    fireEvent.click(screen.getByRole('button', { name: 'Download file.txt' }));
     await waitFor(() => expect(mockDownload).toHaveBeenCalled());
   });
 
@@ -269,7 +311,7 @@ describe('NasBrowser page', () => {
     renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('file.txt')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: labelRe('nas.metadata', 's3.metadata') }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show metadata for file.txt' }));
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveAttribute('aria-modal', 'true');
     expect(screen.getByText('text/plain')).toBeInTheDocument();
@@ -358,7 +400,7 @@ describe('NasBrowser page', () => {
     renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('report.csv')).toBeInTheDocument());
 
-    fireEvent.change(screen.getByPlaceholderText(i18n.t('nas.searchPlaceholder')), {
+    fireEvent.change(screen.getByRole('searchbox', { name: i18n.t('nas.searchPlaceholder') }), {
       target: { value: 'rep' },
     });
 
@@ -383,7 +425,7 @@ describe('NasBrowser page', () => {
     renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
 
-    fireEvent.change(screen.getByPlaceholderText(i18n.t('nas.searchPlaceholder')), {
+    fireEvent.change(screen.getByRole('searchbox', { name: i18n.t('nas.searchPlaceholder') }), {
       target: { value: 'zzz' },
     });
 

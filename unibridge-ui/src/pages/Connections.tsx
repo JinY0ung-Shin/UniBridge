@@ -63,6 +63,7 @@ function Connections() {
   const [assigneesDraft, setAssigneesDraft] = useState<string | null>(null);
   const { addToast } = useToast();
   const [testResults, setTestResults] = useState<Record<string, { status: string }>>({});
+  const [connectionSearch, setConnectionSearch] = useState('');
 
   const dbsQuery = useQuery({
     queryKey: ['admin-databases'],
@@ -88,6 +89,9 @@ function Connections() {
   // this until the user edits (derive-during-render — no setState-in-effect).
   const loadedAssigneeText = editingAlias === null ? '' : ownerEmailsFor(editingAlias).join(', ');
   const assigneesValue = assigneesDraft ?? loadedAssigneeText;
+  const databaseLabel = form.db_type === 'graphdb'
+    ? t('connections.repositoryId')
+    : t('connections.database');
 
   async function saveAssignees(alias: string, isCreate: boolean) {
     if (!canManageAlerts || !(isCreate || ownersQuery.isSuccess)) return;
@@ -148,6 +152,22 @@ function Connections() {
   });
 
   const databases = dbsQuery.data ?? [];
+  const normalizedConnectionSearch = connectionSearch.trim().toLowerCase();
+  const filteredDatabases = normalizedConnectionSearch
+    ? databases.filter((db) => [
+        db.alias,
+        db.db_type,
+        db.host,
+        String(db.port),
+        db.database,
+        testResults[db.alias]?.status === 'error' ? t('common.error') : '',
+        testResults[db.alias]?.status && testResults[db.alias]?.status !== 'error' ? t('common.ok') : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedConnectionSearch))
+    : databases;
   const curlCopyTimeoutRef = useRef<number | null>(null);
 
   function clearCurlCopyTimer() {
@@ -205,6 +225,7 @@ function Connections() {
   const [curlCopied, setCurlCopied] = useState(false);
 
   async function handleCurl(db: DatabaseConfig) {
+    clearCurlCopyTimer();
     const alias = db.alias;
     let sampleQuery = 'MATCH (n) RETURN n LIMIT 10';
     let tableName = '<TABLE>';
@@ -268,36 +289,52 @@ function Connections() {
           <h1>{t('connections.title')}</h1>
           <p className="page-subtitle">{t('connections.subtitle')}</p>
         </div>
-        {canWrite && (
-          <button className="btn btn-primary" onClick={openCreate}>
-            {t('connections.addConnection')}
-          </button>
+        {(databases.length > 0 || canWrite) && (
+          <div className="page-header__actions connections-header-actions">
+            {databases.length > 0 && (
+              <input
+                className="connection-search-input"
+                type="search"
+                value={connectionSearch}
+                onChange={(event) => setConnectionSearch(event.target.value)}
+                placeholder={t('connections.searchPlaceholder')}
+                aria-label={t('connections.searchPlaceholder')}
+              />
+            )}
+            {canWrite && (
+              <button type="button" className="btn btn-primary" onClick={openCreate}>
+                {t('connections.addConnection')}
+              </button>
+            )}
+          </div>
         )}
       </div>
 
-      {dbsQuery.isLoading && <div className="loading-message">{t('connections.loadingConnections')}</div>}
+      {dbsQuery.isLoading && <div className="loading-message" role="status">{t('connections.loadingConnections')}</div>}
 
       {dbsQuery.isError && (
-        <div className="error-banner">{t('connections.loadFailed')}</div>
+        <div className="error-banner" role="alert">{t('connections.loadFailed')}</div>
       )}
 
-      {databases.length > 0 && (
+      {databases.length > 0 && filteredDatabases.length > 0 && (
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t('connections.alias')}</th>
-                <th>{t('common.type')}</th>
-                <th>{t('connections.hostPort')}</th>
-                <th>{t('connections.database')}</th>
-                <th>{t('connections.poolSize')}</th>
-                <th>{t('common.status')}</th>
-                <th>{t('common.actions')}</th>
+                <th scope="col">{t('connections.alias')}</th>
+                <th scope="col">{t('common.type')}</th>
+                <th scope="col">{t('connections.hostPort')}</th>
+                <th scope="col">{t('connections.database')}</th>
+                <th scope="col">{t('connections.poolSize')}</th>
+                <th scope="col">{t('common.status')}</th>
+                <th scope="col">{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
-              {databases.map((db) => {
+              {filteredDatabases.map((db) => {
                 const testResult = testResults[db.alias];
+                const isTesting = testMutation.isPending && testMutation.variables === db.alias;
+                const isDeleting = deleteMutation.isPending && deleteMutation.variables === db.alias;
                 return (
                   <tr key={db.alias}>
                     <td className="cell-alias">{db.alias}</td>
@@ -319,14 +356,19 @@ function Connections() {
                     <td>
                       <div className="action-buttons">
                         <button
+                          type="button"
                           className="btn btn-sm btn-secondary"
+                          aria-label={t('connections.testConnection', { alias: db.alias })}
                           onClick={() => handleTest(db.alias)}
                           disabled={testMutation.isPending}
+                          aria-busy={isTesting}
                         >
-                          {t('common.test')}
+                          {isTesting ? t('common.testing') : t('common.test')}
                         </button>
                         <button
+                          type="button"
                           className="btn btn-sm btn-outline"
+                          aria-label={t('connections.showCurl', { alias: db.alias })}
                           onClick={() => handleCurl(db)}
                         >
                           cURL
@@ -334,17 +376,22 @@ function Connections() {
                         {canWrite && (
                           <>
                             <button
+                              type="button"
                               className="btn btn-sm btn-secondary"
+                              aria-label={t('connections.editConnection', { alias: db.alias })}
                               onClick={() => openEdit(db)}
                             >
                               {t('common.edit')}
                             </button>
                             <button
+                              type="button"
                               className="btn btn-sm btn-danger"
+                              aria-label={t('connections.deleteConnection', { alias: db.alias })}
                               onClick={() => handleDelete(db.alias)}
                               disabled={deleteMutation.isPending}
+                              aria-busy={isDeleting}
                             >
-                              {t('common.delete')}
+                              {isDeleting ? t('common.deleting') : t('common.delete')}
                             </button>
                           </>
                         )}
@@ -355,6 +402,16 @@ function Connections() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!dbsQuery.isLoading && databases.length > 0 && filteredDatabases.length === 0 && !dbsQuery.isError && (
+        <div className="empty-state">
+          <h3>{t('connections.noSearchResults')}</h3>
+          <p>{t('connections.noSearchResultsDesc')}</p>
+          <button type="button" className="btn btn-secondary empty-state-action" onClick={() => setConnectionSearch('')}>
+            {t('common.clearSearch')}
+          </button>
         </div>
       )}
 
@@ -375,19 +432,22 @@ function Connections() {
           <form onSubmit={handleSubmit}>
             <div className="form-grid">
               <div className="form-group">
-                <label>{t('connections.alias')}</label>
+                <label htmlFor="connection-alias">{t('connections.alias')}</label>
                 <input
+                  id="connection-alias"
                   type="text"
                   value={form.alias}
                   onChange={(e) => updateField('alias', e.target.value)}
                   required
                   disabled={!!editingAlias}
                   placeholder="e.g., main-db"
+                  aria-label={t('connections.alias')}
                 />
               </div>
               <div className="form-group">
-                <label>{t('common.type')}</label>
+                <label htmlFor="connection-db-type">{t('common.type')}</label>
                 <select
+                  id="connection-db-type"
                   value={form.db_type}
                   onChange={(e) => {
                     const newType = e.target.value as DatabaseConfig['db_type'];
@@ -410,6 +470,7 @@ function Connections() {
                       secure: nextSecure,
                     }));
                   }}
+                  aria-label={t('common.type')}
                 >
                   <option value="postgres">PostgreSQL</option>
                   <option value="mssql">MS SQL</option>
@@ -419,61 +480,76 @@ function Connections() {
                 </select>
               </div>
               <div className="form-group">
-                <label>{t('connections.host')}</label>
+                <label htmlFor="connection-host">{t('connections.host')}</label>
                 <input
+                  id="connection-host"
                   type="text"
                   value={form.host}
                   onChange={(e) => updateField('host', e.target.value)}
                   required
                   placeholder="localhost"
+                  aria-label={t('connections.host')}
                 />
               </div>
               <div className="form-group">
-                <label>{t('connections.port')}</label>
+                <label htmlFor="connection-port">{t('connections.port')}</label>
                 <input
+                  id="connection-port"
                   type="number"
                   value={form.port}
                   onChange={(e) => updateField('port', Number(e.target.value))}
                   required
+                  aria-label={t('connections.port')}
                 />
               </div>
               <div className="form-group">
-                <label>
-                  {form.db_type === 'graphdb'
-                    ? t('connections.repositoryId')
-                    : t('connections.database')}
-                </label>
+                <label htmlFor="connection-database">{databaseLabel}</label>
                 <input
+                  id="connection-database"
                   type="text"
                   value={form.database}
                   onChange={(e) => updateField('database', e.target.value)}
                   required
                   placeholder={form.db_type === 'graphdb' ? 'my-repo' : 'mydb'}
+                  aria-label={databaseLabel}
                 />
               </div>
               <div className="form-group">
-                <label>{t('connections.username')}</label>
+                <label htmlFor="connection-username">{t('connections.username')}</label>
                 <input
+                  id="connection-username"
                   type="text"
                   value={form.username}
                   onChange={(e) => updateField('username', e.target.value)}
                   required
                   placeholder="dbuser"
+                  aria-label={t('connections.username')}
                 />
               </div>
               <div className="form-group form-group--full">
-                <label>{t('connections.password')} {editingAlias && <span className="hint">{t('connections.passwordHint')}</span>}</label>
+                <label htmlFor="connection-password">
+                  {t('connections.password')}{' '}
+                  {editingAlias && (
+                    <span id="connection-password-hint" className="hint">
+                      {t('connections.passwordHint')}
+                    </span>
+                  )}
+                </label>
                 <input
+                  id="connection-password"
                   type="password"
                   value={form.password ?? ''}
                   onChange={(e) => updateField('password', e.target.value)}
                   placeholder="********"
+                  aria-label={t('connections.password')}
+                  aria-describedby={editingAlias ? 'connection-password-hint' : undefined}
                 />
               </div>
               {form.db_type === 'clickhouse' && (
                 <div className="form-group">
-                  <label>{t('connections.protocol')}</label>
+                  <label htmlFor="connection-protocol">{t('connections.protocol')}</label>
                   <select
+                    id="connection-protocol"
                     value={form.protocol ?? 'http'}
                     onChange={(e) => {
                       const proto = e.target.value as 'http' | 'https';
@@ -485,6 +561,7 @@ function Connections() {
                         port: isSecure ? 8443 : 8123,
                       }));
                     }}
+                    aria-label={t('connections.protocol')}
                   >
                     <option value="http">HTTP</option>
                     <option value="https">HTTPS</option>
@@ -493,8 +570,9 @@ function Connections() {
               )}
               {form.db_type === 'neo4j' && (
                 <div className="form-group">
-                  <label>{t('connections.protocol')}</label>
+                  <label htmlFor="connection-protocol">{t('connections.protocol')}</label>
                   <select
+                    id="connection-protocol"
                     value={form.protocol ?? 'bolt'}
                     onChange={(e) => {
                       const proto = e.target.value as (typeof NEO4J_PROTOCOLS)[number];
@@ -504,6 +582,7 @@ function Connections() {
                         secure: null,
                       }));
                     }}
+                    aria-label={t('connections.protocol')}
                   >
                     {NEO4J_PROTOCOLS.map((p) => (
                       <option key={p} value={p}>{p}</option>
@@ -513,12 +592,14 @@ function Connections() {
               )}
               {form.db_type === 'graphdb' && (
                 <div className="form-group">
-                  <label>{t('connections.protocol')}</label>
+                  <label htmlFor="connection-protocol">{t('connections.protocol')}</label>
                   <select
+                    id="connection-protocol"
                     value={form.protocol ?? 'http'}
                     onChange={(e) =>
                       updateField('protocol', e.target.value as DatabaseConfig['protocol'])
                     }
+                    aria-label={t('connections.protocol')}
                   >
                     <option value="http">http</option>
                     <option value="https">https</option>
@@ -528,48 +609,55 @@ function Connections() {
               {form.db_type !== 'clickhouse' && form.db_type !== 'neo4j' && form.db_type !== 'graphdb' && (
                 <>
                   <div className="form-group">
-                    <label>{t('connections.poolSize')}</label>
+                    <label htmlFor="connection-pool-size">{t('connections.poolSize')}</label>
                     <input
+                      id="connection-pool-size"
                       type="number"
                       value={form.pool_size}
                       onChange={(e) => updateField('pool_size', Number(e.target.value))}
                       min={1}
                       max={100}
+                      aria-label={t('connections.poolSize')}
                     />
                   </div>
                   <div className="form-group">
-                    <label>{t('connections.maxOverflow')}</label>
+                    <label htmlFor="connection-max-overflow">{t('connections.maxOverflow')}</label>
                     <input
+                      id="connection-max-overflow"
                       type="number"
                       value={form.max_overflow}
                       onChange={(e) => updateField('max_overflow', Number(e.target.value))}
                       min={0}
                       max={100}
+                      aria-label={t('connections.maxOverflow')}
                     />
                   </div>
                 </>
               )}
               {canReadAlerts && (
                 <div className="form-group form-group--full">
-                  <label>{t('connections.assignees')}</label>
+                  <label htmlFor="connection-assignees">{t('connections.assignees')}</label>
                   <textarea
+                    id="connection-assignees"
                     value={assigneesValue}
                     onChange={(e) => setAssigneesDraft(e.target.value)}
                     rows={2}
                     disabled={!canManageAlerts || !assigneesReady}
+                    aria-label={t('connections.assignees')}
+                    aria-describedby="connection-assignees-hint"
                     placeholder={
                       editingAlias !== null && !assigneesReady
                         ? t('common.loading')
                         : 'alice@example.com, bob@example.com'
                     }
                   />
-                  <span className="hint">{t('connections.assigneesHint')}</span>
+                  <span id="connection-assignees-hint" className="hint">{t('connections.assigneesHint')}</span>
                 </div>
               )}
             </div>
 
             {(createMutation.isError || updateMutation.isError) && (
-              <div className="form-error">
+              <div className="form-error" role="alert">
                 {(createMutation.error as Error)?.message ||
                   (updateMutation.error as Error)?.message ||
                   t('common.errorOccurred')}
@@ -580,7 +668,7 @@ function Connections() {
               <button type="button" className="btn btn-secondary" onClick={closeModal}>
                 {t('common.cancel')}
               </button>
-              <button type="submit" className="btn btn-primary" disabled={isSaving}>
+              <button type="submit" className="btn btn-primary" disabled={isSaving} aria-busy={isSaving}>
                 {isSaving ? t('common.saving') : editingAlias ? t('common.update') : t('common.create')}
               </button>
             </div>
@@ -597,9 +685,17 @@ function Connections() {
         >
           <div className="curl-block">
             <pre className="curl-code">{curlModal.curl}</pre>
-            <button className="btn btn-sm btn-secondary curl-copy-btn" onClick={handleCurlCopy}>
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary curl-copy-btn"
+              onClick={handleCurlCopy}
+              aria-label={curlCopied ? t('gatewayRoutes.curlCopiedLabel') : t('gatewayRoutes.curlCopyLabel')}
+            >
               {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
             </button>
+            <span className="visually-hidden" role="status" aria-live="polite">
+              {curlCopied ? t('gatewayRoutes.curlCopied') : ''}
+            </span>
           </div>
         </ResourceModal>
       )}

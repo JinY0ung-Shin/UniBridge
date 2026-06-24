@@ -141,8 +141,17 @@
   color: var(--text-secondary);
 }
 
+.nas-row-folder {
+  cursor: pointer;
+}
+
 .nas-row-folder:hover {
   background: var(--bg-hover);
+}
+
+.nas-row-folder:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
 }
 
 .nas-icon {

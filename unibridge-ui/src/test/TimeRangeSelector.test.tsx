@@ -1,4 +1,4 @@
-import { fireEvent, screen } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import TimeRangeSelector from '../components/TimeRangeSelector';
@@ -12,6 +12,9 @@ describe('TimeRangeSelector', () => {
     );
     expect(screen.getByRole('button', { name: '15m' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '1h' })).toHaveClass('time-range-btn--active');
+    expect(screen.getByRole('group', { name: 'Time range' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '1h' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '15m' })).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('fires onChange with a preset when a preset button is clicked', async () => {
@@ -30,10 +33,15 @@ describe('TimeRangeSelector', () => {
     renderWithProviders(
       <TimeRangeSelector value={{ kind: 'preset', value: '1h' }} onChange={onChange} />,
     );
+    expect(screen.getByTestId('custom-toggle')).toHaveAttribute('aria-expanded', 'false');
     await user.click(screen.getByTestId('custom-toggle'));
+    expect(screen.getByTestId('custom-toggle')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('custom-toggle')).toHaveAttribute('aria-controls', 'time-range-popover');
+    expect(screen.getByRole('dialog', { name: 'Custom time range' })).toBeInTheDocument();
 
     const start = screen.getByTestId('custom-start') as HTMLInputElement;
     const end = screen.getByTestId('custom-end') as HTMLInputElement;
+    await waitFor(() => expect(start).toHaveFocus());
     await user.clear(start);
     await user.type(start, '2026-05-20T09:00');
     await user.clear(end);
@@ -45,6 +53,23 @@ describe('TimeRangeSelector', () => {
       start: Date.UTC(2026, 4, 20, 0, 0, 0) / 1000,
       end: Date.UTC(2026, 4, 20, 1, 0, 0) / 1000,
     });
+  });
+
+  it('closes the custom popover with Escape and returns focus to the custom button', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <TimeRangeSelector value={{ kind: 'preset', value: '1h' }} onChange={vi.fn()} />,
+    );
+
+    const toggle = screen.getByTestId('custom-toggle');
+    await user.click(toggle);
+    expect(screen.getByRole('dialog', { name: 'Custom time range' })).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByRole('dialog', { name: 'Custom time range' })).not.toBeInTheDocument();
+    expect(toggle).toHaveFocus();
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('disables apply when start is not before end', async () => {
@@ -59,6 +84,13 @@ describe('TimeRangeSelector', () => {
     await user.type(start, '2026-05-20T10:00');
     await user.clear(end);
     await user.type(end, '2026-05-20T09:00');
+
+    const error = screen.getByRole('alert');
+    expect(error).toHaveTextContent('Start must be before end');
+    expect(start).toHaveAttribute('aria-invalid', 'true');
+    expect(end).toHaveAttribute('aria-invalid', 'true');
+    expect(start).toHaveAttribute('aria-describedby', error.id);
+    expect(end).toHaveAttribute('aria-describedby', error.id);
     expect(screen.getByTestId('custom-apply')).toBeDisabled();
   });
 
@@ -72,6 +104,7 @@ describe('TimeRangeSelector', () => {
     const end = screen.getByTestId('custom-end') as HTMLInputElement;
     fireEvent.change(start, { target: { value: '2026-05-20T09:00:00' } });
     fireEvent.change(end, { target: { value: '2026-05-20T09:00:30' } });
+    expect(screen.getByRole('alert')).toHaveTextContent('span at least 60 seconds');
     expect(screen.getByTestId('custom-apply')).toBeDisabled();
   });
 

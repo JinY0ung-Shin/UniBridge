@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import type { KeyboardEvent } from 'react';
 import { getQueryHistory } from '../api/client';
 import { formatKST } from '../utils/time';
 
@@ -23,6 +24,16 @@ function QueryHistoryPanel({ onLoad }: QueryHistoryPanelProps) {
 
   const items = historyQuery.data?.items ?? [];
 
+  function handleHistoryKeyDown(
+    event: KeyboardEvent<HTMLTableRowElement>,
+    sql: string,
+    databaseAlias: string | null,
+  ) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    onLoad(sql, databaseAlias);
+  }
+
   return (
     <div className="workspace-panel">
       <div className="workspace-panel-header">
@@ -30,15 +41,17 @@ function QueryHistoryPanel({ onLoad }: QueryHistoryPanelProps) {
         <button
           type="button"
           className="btn btn-secondary btn-sm"
+          aria-label={t('queryPlayground.refreshHistory')}
+          title={t('queryPlayground.refreshHistory')}
           onClick={() => historyQuery.refetch()}
         >
           {t('common.refresh')}
         </button>
       </div>
 
-      {historyQuery.isLoading && <div className="loading-message">{t('common.loading')}</div>}
+      {historyQuery.isLoading && <div className="loading-message" role="status">{t('common.loading')}</div>}
       {historyQuery.isError && (
-        <div className="error-banner">{t('queryPlayground.historyLoadFailed')}</div>
+        <div className="error-banner" role="alert">{t('queryPlayground.historyLoadFailed')}</div>
       )}
 
       {items.length > 0 && (
@@ -46,10 +59,10 @@ function QueryHistoryPanel({ onLoad }: QueryHistoryPanelProps) {
           <table className="data-table history-table">
             <thead>
               <tr>
-                <th>{t('auditLogs.timestamp')}</th>
-                <th>{t('connections.database')}</th>
-                <th>{t('auditLogs.sql')}</th>
-                <th>{t('common.status')}</th>
+                <th scope="col">{t('auditLogs.timestamp')}</th>
+                <th scope="col">{t('connections.database')}</th>
+                <th scope="col">{t('auditLogs.sql')}</th>
+                <th scope="col">{t('common.status')}</th>
               </tr>
             </thead>
             <tbody>
@@ -58,7 +71,11 @@ function QueryHistoryPanel({ onLoad }: QueryHistoryPanelProps) {
                   key={entry.id}
                   className="history-row"
                   title={t('queryPlayground.loadIntoEditor')}
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`${t('queryPlayground.loadIntoEditor')}: ${truncateSql(entry.sql, 40)}`}
                   onClick={() => onLoad(entry.sql, entry.database_alias)}
+                  onKeyDown={(event) => handleHistoryKeyDown(event, entry.sql, entry.database_alias)}
                 >
                   <td className="cell-timestamp">{formatKST(entry.timestamp)}</td>
                   <td>{entry.database_alias}</td>

@@ -50,12 +50,41 @@ describe('AuditLogs', () => {
       expect(screen.getByText('No audit logs found')).toBeInTheDocument();
     });
 
-    // Database select dropdown
-    expect(screen.getByRole('combobox')).toBeInTheDocument();
-    // User text input
-    expect(screen.getByPlaceholderText('User')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Database filter' })).toHaveAttribute('id', 'audit-database-filter');
+    expect(screen.getByRole('textbox', { name: 'User filter' })).toHaveAttribute('id', 'audit-user-filter');
+    expect(screen.getByLabelText('From date')).toHaveAttribute('id', 'audit-from-date');
+    expect(screen.getByLabelText('To date')).toHaveAttribute('id', 'audit-to-date');
     // Search button
     expect(screen.getByRole('button', { name: 'Search' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reset filters' })).toBeDisabled();
+  });
+
+  it('resets draft and applied filters', async () => {
+    mockedGetAuditLogs.mockResolvedValue([]);
+    renderWithProviders(<AuditLogs />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No audit logs found')).toBeInTheDocument();
+    });
+
+    const userInput = screen.getByRole('textbox', { name: 'User filter' });
+    await userEvent.type(userInput, 'alice');
+    await userEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() => {
+      expect(mockedGetAuditLogs).toHaveBeenCalledWith(
+        expect.objectContaining({ user: 'alice', offset: 0 }),
+      );
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Reset filters' }));
+
+    expect(userInput).toHaveValue('');
+    await waitFor(() => {
+      expect(mockedGetAuditLogs).toHaveBeenLastCalledWith(
+        expect.objectContaining({ user: undefined, offset: 0 }),
+      );
+    });
   });
 
   it('expands row to show full SQL on click', async () => {
@@ -68,13 +97,15 @@ describe('AuditLogs', () => {
       expect(screen.getByText('admin')).toBeInTheDocument();
     });
 
-    // Click the row to expand it
-    const row = screen.getByText('SELECT * FROM users').closest('tr')!;
+    const row = screen.getByRole('button', { name: 'Toggle details for audit log 1' });
+    expect(row).toHaveAttribute('aria-expanded', 'false');
+    expect(row).toHaveAttribute('aria-controls', 'audit-log-detail-1');
     await userEvent.click(row);
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Full SQL' })).toBeInTheDocument();
     });
+    expect(row).toHaveAttribute('aria-expanded', 'true');
 
     // Full SQL is shown in the detail pre block
     const preTags = document.querySelectorAll('pre.detail-sql');
@@ -94,11 +125,12 @@ describe('AuditLogs', () => {
       expect(screen.getByText('user1')).toBeInTheDocument();
     });
 
-    const prevButton = screen.getByRole('button', { name: 'Previous' });
-    const nextButton = screen.getByRole('button', { name: 'Next' });
+    const prevButton = screen.getByRole('button', { name: 'Previous page' });
+    const nextButton = screen.getByRole('button', { name: 'Next page' });
 
     expect(prevButton).toBeInTheDocument();
     expect(prevButton).toBeDisabled();
     expect(nextButton).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Page 1');
   });
 });

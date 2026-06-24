@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { TIME_RANGES, type TimeSelection } from '../utils/timeRange';
 import { kstLocalToEpoch, epochToKstLocal, formatKstChip } from '../utils/time';
@@ -31,7 +31,10 @@ function defaultLocalRange(nowSec: number): { start: string; end: string } {
 
 function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
   const { t } = useTranslation();
+  const errorId = useId();
   const [open, setOpen] = useState(false);
+  const customButtonRef = useRef<HTMLButtonElement | null>(null);
+  const startInputRef = useRef<HTMLInputElement | null>(null);
   const [validationNowSec, setValidationNowSec] = useState(currentEpochSeconds);
   const initial = defaultLocalRange(validationNowSec);
   const [startLocal, setStartLocal] = useState(
@@ -85,13 +88,31 @@ function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
     setEndLocal(next);
   };
 
+  useEffect(() => {
+    if (open) startInputRef.current?.focus();
+  }, [open]);
+
+  const closeCustom = () => {
+    setOpen(false);
+    customButtonRef.current?.focus();
+  };
+
+  const handlePopoverKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeCustom();
+    }
+  };
+
   return (
     <div className="time-range-selector">
-      <div className="time-range-toggle">
+      <div className="time-range-toggle" role="group" aria-label={t('timeRange.label')}>
         {TIME_RANGES.map((r) => (
           <button
             key={r}
+            type="button"
             className={`time-range-btn ${value.kind === 'preset' && value.value === r ? 'time-range-btn--active' : ''}`}
+            aria-pressed={value.kind === 'preset' && value.value === r}
             onClick={() => onChange({ kind: 'preset', value: r })}
           >
             {r}
@@ -115,6 +136,10 @@ function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
             type="button"
             className="time-range-btn time-range-btn--custom"
             data-testid="custom-toggle"
+            ref={customButtonRef}
+            aria-expanded={open}
+            aria-haspopup="dialog"
+            aria-controls={open ? 'time-range-popover' : undefined}
             onClick={toggleCustom}
           >
             {t('timeRange.custom')} ▾
@@ -123,13 +148,22 @@ function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
       </div>
 
       {open && (
-        <div className="time-range-popover">
+        <div
+          id="time-range-popover"
+          className="time-range-popover"
+          role="dialog"
+          aria-label={t('timeRange.customDialog')}
+          onKeyDown={handlePopoverKeyDown}
+        >
           <label className="time-range-field">
             <span>{t('timeRange.start')}</span>
             <input
+              ref={startInputRef}
               type="datetime-local"
               data-testid="custom-start"
               value={startLocal}
+              aria-invalid={!valid ? 'true' : undefined}
+              aria-describedby={!valid ? errorId : undefined}
               onChange={(e) => updateStartLocal(e.target.value)}
             />
           </label>
@@ -139,12 +173,18 @@ function TimeRangeSelector({ value, onChange }: TimeRangeSelectorProps) {
               type="datetime-local"
               data-testid="custom-end"
               value={endLocal}
+              aria-invalid={!valid ? 'true' : undefined}
+              aria-describedby={!valid ? errorId : undefined}
               onChange={(e) => updateEndLocal(e.target.value)}
             />
           </label>
-          {!valid && <div className="time-range-error">{t('timeRange.invalid')}</div>}
+          {!valid && (
+            <div id={errorId} className="time-range-error" role="alert">
+              {t('timeRange.invalid')}
+            </div>
+          )}
           <div className="time-range-actions">
-            <button type="button" onClick={() => setOpen(false)}>
+            <button type="button" onClick={closeCustom}>
               {t('timeRange.cancel')}
             </button>
             <button type="button" data-testid="custom-apply" disabled={!valid} onClick={apply}>

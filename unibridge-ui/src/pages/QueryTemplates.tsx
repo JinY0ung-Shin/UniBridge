@@ -97,13 +97,13 @@ function ResultTable({ result }: { result: QueryResult }) {
 
   return (
     <div className="template-run-result">
-      <div className="results-meta">
+      <div className="results-meta" role="status" aria-live="polite">
         <span>{t('queryPlayground.rowsReturned', { count: result.row_count })}</span>
         <span>{result.elapsed_ms}ms</span>
       </div>
 
       {result.truncated && (
-        <div className="truncated-warning">
+        <div className="truncated-warning" role="alert">
           {t('queryPlayground.truncatedWarning', { count: result.row_count })}
         </div>
       )}
@@ -114,7 +114,7 @@ function ResultTable({ result }: { result: QueryResult }) {
             <thead>
               <tr>
                 {result.columns.map((column, index) => (
-                  <th key={`${column}-${index}`}>{column}</th>
+                  <th key={`${column}-${index}`} scope="col">{column}</th>
                 ))}
               </tr>
             </thead>
@@ -138,7 +138,7 @@ function ResultTable({ result }: { result: QueryResult }) {
           </table>
         </div>
       ) : (
-        <div className="no-rows">{t('queryPlayground.noRows')}</div>
+        <div className="no-rows" role="status">{t('queryPlayground.noRows')}</div>
       )}
     </div>
   );
@@ -159,6 +159,7 @@ function QueryTemplates() {
   const [timeout, setTimeoutValue] = useState('');
   const [result, setResult] = useState<QueryResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  const [templateSearch, setTemplateSearch] = useState('');
 
   const templatesQuery = useQuery({
     queryKey: ['query-templates'],
@@ -172,6 +173,21 @@ function QueryTemplates() {
 
   const templates = useMemo(() => templatesQuery.data ?? [], [templatesQuery.data]);
   const databases = useMemo(() => databasesQuery.data ?? [], [databasesQuery.data]);
+  const filteredTemplates = useMemo(() => {
+    const normalizedSearch = templateSearch.trim().toLowerCase();
+    if (!normalizedSearch) return templates;
+    return templates.filter((template) => [
+      template.name,
+      template.path,
+      template.description,
+      template.database,
+      template.enabled ? t('common.active') : t('common.disabled'),
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+      .includes(normalizedSearch));
+  }, [templateSearch, templates, t]);
   const selectedTemplate = useMemo(
     () => templates.find((template) => template.path === selectedPath) ?? templates[0],
     [selectedPath, templates],
@@ -184,8 +200,13 @@ function QueryTemplates() {
       }
       return createQueryTemplate(toCreatePayload(payload.form));
     },
-    onSuccess: async (saved) => {
-      await queryClient.invalidateQueries({ queryKey: ['query-templates'] });
+    onSuccess: (saved) => {
+      queryClient.setQueryData<QueryTemplate[]>(['query-templates'], (current) => {
+        const templates = current ?? [];
+        const existingIndex = templates.findIndex((template) => template.path === saved.path);
+        if (existingIndex === -1) return [saved, ...templates];
+        return templates.map((template, index) => (index === existingIndex ? saved : template));
+      });
       setSelectedPath(saved.path);
       setEditingPath(null);
       setForm(emptyForm);
@@ -207,6 +228,8 @@ function QueryTemplates() {
       }
     },
   });
+  const selectedTemplateDeleting =
+    !!selectedTemplate && deleteMutation.isPending && deleteMutation.variables === selectedTemplate.path;
 
   const runMutation = useMutation({
     mutationFn: (path: string) => {
@@ -276,25 +299,44 @@ function QueryTemplates() {
         <p className="page-subtitle">{t('queryTemplates.subtitle')}</p>
       </div>
 
-      {templatesQuery.isLoading && <div className="loading-message">{t('queryTemplates.loading')}</div>}
-      {templatesQuery.isError && <div className="error-banner">{t('queryTemplates.loadFailed')}</div>}
+      {templatesQuery.isLoading && <div className="loading-message" role="status">{t('queryTemplates.loading')}</div>}
+      {templatesQuery.isError && <div className="error-banner" role="alert">{t('queryTemplates.loadFailed')}</div>}
 
       <div className="template-layout">
         <section className="template-list-panel">
           <div className="template-section-header">
             <h2>{t('queryTemplates.savedTemplates')}</h2>
-            <button className="btn btn-secondary btn-sm" onClick={() => templatesQuery.refetch()}>
-              {t('common.refresh')}
-            </button>
+            <div className="template-list-actions">
+              {templates.length > 0 && (
+                <input
+                  className="template-search-input"
+                  type="search"
+                  value={templateSearch}
+                  onChange={(event) => setTemplateSearch(event.target.value)}
+                  placeholder={t('queryTemplates.searchPlaceholder')}
+                  aria-label={t('queryTemplates.searchPlaceholder')}
+                />
+              )}
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                aria-label={t('queryTemplates.refreshTemplates')}
+                title={t('queryTemplates.refreshTemplates')}
+                onClick={() => templatesQuery.refetch()}
+              >
+                {t('common.refresh')}
+              </button>
+            </div>
           </div>
 
-          {templates.length > 0 ? (
+          {templates.length > 0 && filteredTemplates.length > 0 ? (
             <div className="template-list">
-              {templates.map((template) => (
+              {filteredTemplates.map((template) => (
                 <button
                   key={template.path}
                   type="button"
                   className={`template-row ${selectedTemplate?.path === template.path ? 'template-row--active' : ''}`}
+                  aria-pressed={selectedTemplate?.path === template.path}
                   onClick={() => setSelectedPath(template.path)}
                 >
                   <span className="template-row-main">
@@ -306,6 +348,14 @@ function QueryTemplates() {
                   </span>
                 </button>
               ))}
+            </div>
+          ) : templates.length > 0 ? (
+            <div className="empty-state">
+              <h3>{t('queryTemplates.noSearchResults')}</h3>
+              <p>{t('queryTemplates.noSearchResultsDesc')}</p>
+              <button type="button" className="btn btn-secondary empty-state-action" onClick={() => setTemplateSearch('')}>
+                {t('common.clearSearch')}
+              </button>
             </div>
           ) : (
             !templatesQuery.isLoading && (
@@ -321,7 +371,7 @@ function QueryTemplates() {
           <div className="template-section-header">
             <h2>{editingPath ? t('queryTemplates.editTitle') : t('queryTemplates.createTitle')}</h2>
             {editingPath && (
-              <button className="btn btn-secondary btn-sm" onClick={handleCancelEdit}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={handleCancelEdit}>
                 {t('common.cancel')}
               </button>
             )}
@@ -406,9 +456,10 @@ function QueryTemplates() {
                 onChange={(event) => updateForm('sql', event.target.value)}
                 rows={8}
                 spellCheck={false}
+                aria-describedby="template-sql-help"
                 required
               />
-              <div className="template-parameter-help">
+              <div id="template-sql-help" className="template-parameter-help">
                 <span>{t('queryTemplates.parameterSyntaxTitle')}</span>
                 <p>{t('queryTemplates.parameterSyntaxIntro')}</p>
                 <p className="template-parameter-examples">
@@ -434,6 +485,7 @@ function QueryTemplates() {
                 type="submit"
                 className="btn btn-primary"
                 disabled={!canWrite || saveMutation.isPending}
+                aria-busy={saveMutation.isPending}
               >
                 {saveMutation.isPending
                   ? t('common.saving')
@@ -442,7 +494,7 @@ function QueryTemplates() {
                     : t('common.create')}
               </button>
               {saveMutation.isError && (
-                <span className="save-error">{errorMessage(saveMutation.error, t('queryTemplates.saveFailed'))}</span>
+                <span className="save-error" role="alert">{errorMessage(saveMutation.error, t('queryTemplates.saveFailed'))}</span>
               )}
             </div>
           </form>
@@ -457,16 +509,24 @@ function QueryTemplates() {
               <span>/api/query/templates/{selectedTemplate.path}</span>
             </div>
             <div className="template-detail-actions">
-              <button className="btn btn-secondary btn-sm" onClick={() => handleEdit(selectedTemplate)}>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                aria-label={t('queryTemplates.editTemplate', { name: selectedTemplate.name })}
+                onClick={() => handleEdit(selectedTemplate)}
+              >
                 {t('common.edit')}
               </button>
               {canWrite && (
                 <button
+                  type="button"
                   className="btn btn-danger btn-sm"
+                  aria-label={t('queryTemplates.deleteTemplate', { name: selectedTemplate.name })}
                   onClick={() => handleDelete(selectedTemplate)}
                   disabled={deleteMutation.isPending}
+                  aria-busy={selectedTemplateDeleting}
                 >
-                  {t('common.delete')}
+                  {selectedTemplateDeleting ? t('common.deleting') : t('common.delete')}
                 </button>
               )}
             </div>
@@ -495,8 +555,9 @@ function QueryTemplates() {
                   onChange={(event) => setParamsText(event.target.value)}
                   rows={7}
                   spellCheck={false}
+                  aria-describedby="template-run-params-help"
                 />
-                <div className="template-parameter-help">
+                <div id="template-run-params-help" className="template-parameter-help">
                   <span>{t('queryTemplates.parameterSyntaxTitle')}</span>
                   <p>{t('queryTemplates.paramsJsonHelp')}</p>
                   <p className="template-parameter-examples">
@@ -531,9 +592,11 @@ function QueryTemplates() {
                 </div>
               </div>
               <button
+                type="button"
                 className="btn btn-primary"
                 onClick={handleRun}
                 disabled={!canExecute || !selectedTemplate.enabled || runMutation.isPending}
+                aria-busy={runMutation.isPending}
               >
                 {runMutation.isPending ? t('queryPlayground.executing') : t('queryTemplates.run')}
               </button>
@@ -544,7 +607,7 @@ function QueryTemplates() {
           </div>
 
           {runError && (
-            <div className="query-error">
+            <div className="query-error" role="alert">
               <strong>{t('common.error')}:</strong> {runError}
             </div>
           )}

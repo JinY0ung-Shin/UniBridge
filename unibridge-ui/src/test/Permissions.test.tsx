@@ -61,6 +61,41 @@ describe('Permissions', () => {
     expect(screen.getByText('test-db')).toBeInTheDocument();
   });
 
+  it('filters permissions by search text', async () => {
+    mockedGetPermissions.mockResolvedValue([
+      samplePermission,
+      {
+        id: 2,
+        role: 'analyst',
+        db_alias: 'warehouse',
+        allow_select: true,
+        allow_insert: false,
+        allow_update: false,
+        allow_delete: false,
+        allowed_tables: ['events'],
+      },
+    ]);
+
+    renderWithProviders(<Permissions />);
+
+    await waitFor(() => {
+      expect(screen.getByText('admin')).toBeInTheDocument();
+    });
+
+    const search = screen.getByRole('searchbox', { name: /search permissions/i });
+    await userEvent.type(search, 'events');
+
+    expect(screen.queryByText('admin')).not.toBeInTheDocument();
+    expect(screen.getByText('analyst')).toBeInTheDocument();
+
+    await userEvent.clear(search);
+    await userEvent.type(search, 'missing');
+    expect(screen.getByText(/No matching permissions|일치하는 권한/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /Clear search|검색 지우기/i }));
+    expect(screen.getByText('admin')).toBeInTheDocument();
+    expect(screen.getByText('analyst')).toBeInTheDocument();
+  });
+
   it('disables or hides write controls for users with read-only permission access', async () => {
     mockedGetPermissions.mockResolvedValue([samplePermission]);
 
@@ -98,8 +133,8 @@ describe('Permissions', () => {
       expect(screen.getByText('No permissions configured')).toBeInTheDocument();
     });
 
-    expect(screen.getByPlaceholderText('Role name')).toBeInTheDocument();
-    expect(screen.getByRole('combobox')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Role name' })).toHaveAttribute('id', 'permission-role-name');
+    expect(screen.getByRole('combobox', { name: 'Select database...' })).toHaveAttribute('id', 'permission-database');
     expect(screen.getByRole('button', { name: 'Add Permission' })).toBeInTheDocument();
   });
 
@@ -113,9 +148,7 @@ describe('Permissions', () => {
     });
 
     // The checkboxes are in order: SELECT (checked), INSERT, UPDATE, DELETE
-    const checkboxes = screen.getAllByRole('checkbox', { name: '' });
-    // INSERT checkbox is index 1 (allow_insert: false → toggling to true)
-    await userEvent.click(checkboxes[1]);
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Toggle INSERT for admin on test-db' }));
 
     await waitFor(() => {
       expect(mockedUpdatePermission).toHaveBeenCalledWith(
@@ -135,7 +168,7 @@ describe('Permissions', () => {
       expect(screen.getByText('admin')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Remove permission for admin on test-db' }));
 
     expect(window.confirm).toHaveBeenCalled();
     await waitFor(() => {

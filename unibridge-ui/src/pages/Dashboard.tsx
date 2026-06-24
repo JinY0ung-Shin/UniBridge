@@ -28,6 +28,14 @@ function formatTime(ts: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+function MiniChartState({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="dashboard-mini-chart__state" role="status" aria-live="polite">
+      {children}
+    </div>
+  );
+}
+
 function Dashboard() {
   const { t } = useTranslation();
   const { permissions } = usePermissions();
@@ -96,6 +104,25 @@ function Dashboard() {
 
   const isLoading = healthQuery.isLoading || dbsQuery.isLoading;
   const isError = healthQuery.isError || dbsQuery.isError;
+  const gwTrendData = (gwRequestsQuery.data ?? []).map((p) => ({
+    time: formatTime(p.timestamp),
+    rps: p.value,
+  }));
+  const gwVolumeData = gwBucket === 'auto'
+    ? []
+    : (gwVolumeQuery.data ?? []).map((p) => ({
+        time: formatBucketLabel(p.timestamp, gwBucket),
+        requests: Math.round(p.value),
+      }));
+  const gwChartLoading = gwBucket === 'auto' ? gwRequestsQuery.isLoading : gwVolumeQuery.isLoading;
+  const gwChartError = gwBucket === 'auto' ? gwRequestsQuery.isError : gwVolumeQuery.isError;
+  const gwChartHasData = gwBucket === 'auto' ? gwTrendData.length > 0 : gwVolumeData.length > 0;
+  const llmTokenChartData = (llmTokensQuery.data?.prompt ?? []).map((p, i) => ({
+    time: llmBucket === 'auto' ? formatTime(p.timestamp) : formatBucketLabel(p.timestamp, llmBucket),
+    prompt: Math.round(p.value),
+    completion: Math.round(llmTokensQuery.data?.completion?.[i]?.value ?? 0),
+  }));
+  const llmChartHasData = llmTokenChartData.length > 0;
 
   return (
     <div className="dashboard">
@@ -124,9 +151,9 @@ function Dashboard() {
       </div>
 
       {/* Status */}
-      {isLoading && <div className="loading-message">{t('dashboard.loadingHealth')}</div>}
+      {isLoading && <div className="loading-message" role="status">{t('dashboard.loadingHealth')}</div>}
       {isError && (
-        <div className="error-banner">
+        <div className="error-banner" role="alert">
           {t('dashboard.loadFailed')}
         </div>
       )}
@@ -166,7 +193,7 @@ function Dashboard() {
             </div>
           </div>
           {gwSummaryQuery.isLoading && (
-            <div className="loading-message">{t('gatewayMonitoring.loadingMetrics')}</div>
+            <div className="loading-message" role="status">{t('gatewayMonitoring.loadingMetrics')}</div>
           )}
           {gwSummaryQuery.isError && (
             <div className="no-data">{t('dashboard.monitoringNoData')}</div>
@@ -189,11 +216,15 @@ function Dashboard() {
                   <div className="summary-card__label">{t('gatewayMonitoring.avgLatency')}</div>
                 </div>
               </div>
-              {gwBucket === 'auto' ? (
-                (gwRequestsQuery.data ?? []).length > 0 && (
-                  <div className="dashboard-mini-chart">
+              <div className={`dashboard-mini-chart ${gwChartHasData ? '' : 'dashboard-mini-chart--empty'}`}>
+                {gwChartLoading ? (
+                  <MiniChartState>{t('gatewayMonitoring.loadingMetrics')}</MiniChartState>
+                ) : gwChartError ? (
+                  <MiniChartState>{t('dashboard.monitoringNoData')}</MiniChartState>
+                ) : gwBucket === 'auto' ? (
+                  gwTrendData.length > 0 ? (
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={(gwRequestsQuery.data ?? []).map((p) => ({ time: formatTime(p.timestamp), rps: p.value }))}>
+                      <LineChart data={gwTrendData}>
                         <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
                         <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
@@ -205,13 +236,13 @@ function Dashboard() {
                         <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name="req/s" />
                       </LineChart>
                     </ResponsiveContainer>
-                  </div>
-                )
-              ) : (
-                (gwVolumeQuery.data ?? []).length > 0 && (
-                  <div className="dashboard-mini-chart">
+                  ) : (
+                    <MiniChartState>{t('gatewayMonitoring.noRequestData')}</MiniChartState>
+                  )
+                ) : (
+                  gwVolumeData.length > 0 ? (
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={(gwVolumeQuery.data ?? []).map((p) => ({ time: formatBucketLabel(p.timestamp, gwBucket), requests: Math.round(p.value) }))}>
+                      <BarChart data={gwVolumeData}>
                         <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
                         <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
@@ -223,9 +254,11 @@ function Dashboard() {
                         <Bar dataKey="requests" fill={chartColors.blue} name="Requests" />
                       </BarChart>
                     </ResponsiveContainer>
-                  </div>
-                )
-              )}
+                  ) : (
+                    <MiniChartState>{t('gatewayMonitoring.noRequestData')}</MiniChartState>
+                  )
+                )}
+              </div>
             </>
           )}
         </>
@@ -242,7 +275,7 @@ function Dashboard() {
             </div>
           </div>
           {llmSummaryQuery.isLoading && (
-            <div className="loading-message">{t('llmMonitoring.loadingMetrics')}</div>
+            <div className="loading-message" role="status">{t('llmMonitoring.loadingMetrics')}</div>
           )}
           {llmSummaryQuery.isError && (
             <div className="no-data">{t('dashboard.llmNoData')}</div>
@@ -267,15 +300,15 @@ function Dashboard() {
                   <div className="summary-card__label">{t('llmMonitoring.totalRequests', { range: '1h' })}</div>
                 </div>
               </div>
-              {(llmTokensQuery.data?.prompt ?? []).length > 0 && (
-                <div className="dashboard-mini-chart">
+              <div className={`dashboard-mini-chart ${llmChartHasData ? '' : 'dashboard-mini-chart--empty'}`}>
+                {llmTokensQuery.isLoading ? (
+                  <MiniChartState>{t('llmMonitoring.loadingMetrics')}</MiniChartState>
+                ) : llmTokensQuery.isError ? (
+                  <MiniChartState>{t('dashboard.llmNoData')}</MiniChartState>
+                ) : llmChartHasData ? (
                   <ResponsiveContainer width="100%" height="100%">
                     {llmBucket === 'auto' ? (
-                      <LineChart data={(llmTokensQuery.data?.prompt ?? []).map((p, i) => ({
-                        time: formatTime(p.timestamp),
-                        prompt: Math.round(p.value),
-                        completion: Math.round(llmTokensQuery.data?.completion?.[i]?.value ?? 0),
-                      }))}>
+                      <LineChart data={llmTokenChartData}>
                         <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
                         <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
@@ -288,11 +321,7 @@ function Dashboard() {
                         <Line type="monotone" dataKey="completion" stroke={chartColors.green} strokeWidth={2} dot={false} name="Completion" />
                       </LineChart>
                     ) : (
-                      <BarChart data={(llmTokensQuery.data?.prompt ?? []).map((p, i) => ({
-                        time: formatBucketLabel(p.timestamp, llmBucket),
-                        prompt: Math.round(p.value),
-                        completion: Math.round(llmTokensQuery.data?.completion?.[i]?.value ?? 0),
-                      }))}>
+                      <BarChart data={llmTokenChartData}>
                         <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
                         <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
@@ -307,8 +336,10 @@ function Dashboard() {
                       </BarChart>
                     )}
                   </ResponsiveContainer>
-                </div>
-              )}
+                ) : (
+                  <MiniChartState>{t('llmMonitoring.noTokenData')}</MiniChartState>
+                )}
+              </div>
             </>
           )}
         </>

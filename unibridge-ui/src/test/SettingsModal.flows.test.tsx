@@ -63,5 +63,7 @@ describe('SettingsModal interactions', () => {
     renderWithProviders(<SettingsModal onClose={vi.fn()} />);
     const lightBtn = screen.getByRole('button', { name: /Light/i });
     expect(lightBtn.className).toMatch(/active/);
+    expect(lightBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: /Dark/i })).toHaveAttribute('aria-pressed', 'false');
   });
 });

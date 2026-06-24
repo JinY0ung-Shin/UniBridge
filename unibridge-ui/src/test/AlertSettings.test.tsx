@@ -73,10 +73,10 @@ const dbResourceFixture = {
   alerts_enabled: true,
 };
 
-/* ── delivery tab helper: clicks the Delivery tab button ── */
+/* ── delivery tab helper: clicks the Delivery tab ── */
 function goToDeliveryTab() {
   fireEvent.click(
-    screen.getByRole('button', { name: /^Delivery$|^발송 설정$/ }),
+    screen.getByRole('tab', { name: /^Delivery$|^발송 설정$/ }),
   );
 }
 
@@ -103,10 +103,25 @@ describe('AlertSettings page', () => {
 
   it('renders the two tabs and shows the recipients tab by default', async () => {
     renderWithProviders(<AlertSettings />);
-    expect(screen.getByRole('button', { name: /^Assignees \/ Admins$|^담당자 \/ 관리자$/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Delivery$|^발송 설정$/ })).toBeInTheDocument();
+    const recipientsTab = screen.getByRole('tab', { name: /^Assignees \/ Admins$|^담당자 \/ 관리자$/ });
+    const deliveryTab = screen.getByRole('tab', { name: /^Delivery$|^발송 설정$/ });
+    expect(recipientsTab).toHaveAttribute('aria-selected', 'true');
+    expect(recipientsTab).toHaveAttribute('aria-controls', 'alert-settings-panel-recipients');
+    expect(deliveryTab).toHaveAttribute('aria-selected', 'false');
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'alert-settings-tab-recipients');
     // Admins section visible on the default tab
     await waitFor(() => expect(screen.getByText(/^Admins$|^관리자$/)).toBeInTheDocument());
+  });
+
+  it('switches alert settings tabs with arrow keys', async () => {
+    renderWithProviders(<AlertSettings />);
+    const recipientsTab = screen.getByRole('tab', { name: /^Assignees \/ Admins$|^담당자 \/ 관리자$/ });
+    const deliveryTab = screen.getByRole('tab', { name: /^Delivery$|^발송 설정$/ });
+
+    fireEvent.keyDown(recipientsTab, { key: 'ArrowRight' });
+
+    await waitFor(() => expect(deliveryTab).toHaveAttribute('aria-selected', 'true'));
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'alert-settings-tab-delivery');
   });
 
   it('shows empty resources state on the recipients tab', async () => {
@@ -119,11 +134,20 @@ describe('AlertSettings page', () => {
   it('saves admin emails parsed from the textarea', async () => {
     renderWithProviders(<AlertSettings />);
     const adminEmails = await screen.findByLabelText(/Admin emails|관리자 이메일/i);
+    const saveButton = screen.getByRole('button', {
+      name: /^Save admin emails$|^관리자 이메일 저장$/i,
+    });
+    expect(adminEmails).toHaveAttribute('aria-describedby', 'admin-emails-hint');
+    expect(document.getElementById('admin-emails-hint')).toHaveTextContent(
+      'Emails that receive every alert',
+    );
     // textarea is disabled until settings have loaded; wait before typing
     await waitFor(() => expect(adminEmails).toBeEnabled());
+    expect(saveButton).toBeDisabled();
     await userEvent.type(adminEmails, 'ops@example.com, oncall@example.com');
+    expect(saveButton).toBeEnabled();
 
-    fireEvent.click(screen.getByRole('button', { name: /^Admin emails saved$|^관리자 이메일 저장$/i }));
+    fireEvent.click(saveButton);
 
     await waitFor(() => expect(mocks.updateSettings).toHaveBeenCalled());
     expect(mocks.updateSettings.mock.calls[0][0]).toEqual({
@@ -237,6 +261,37 @@ describe('AlertSettings page', () => {
     expect(mocks.updateSettings.mock.calls[0][0]).toMatchObject({ mail_channel_id: 1 });
   });
 
+  it('delivery tab disables settings save until a setting changes', async () => {
+    renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
+
+    const saveButton = screen.getByRole('button', { name: /^Save Settings$|^설정 저장$/i });
+    await waitFor(() => expect(screen.getByText(/^No settings changes$|^설정 변경 없음$/i)).toBeInTheDocument());
+    expect(saveButton).toBeDisabled();
+
+    const thresholdInput = await screen.findByLabelText(/Route Error Threshold|라우트 에러율/i);
+    await userEvent.clear(thresholdInput);
+    await userEvent.type(thresholdInput, '15');
+
+    expect(screen.getByText(/^Unsaved settings changes$|^저장되지 않은 설정 변경 있음$/i)).toBeInTheDocument();
+    expect(saveButton).toBeEnabled();
+  });
+
+  it('delivery tab discards draft settings changes', async () => {
+    renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
+
+    const thresholdInput = await screen.findByLabelText(/Route Error Threshold|라우트 에러율/i);
+    await waitFor(() => expect(thresholdInput).toHaveValue(10));
+    await userEvent.clear(thresholdInput);
+    await userEvent.type(thresholdInput, '15');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Discard settings changes$|^설정 변경 취소$/i }));
+
+    expect(thresholdInput).toHaveValue(10);
+    expect(screen.getByRole('button', { name: /^Save Settings$|^설정 저장$/i })).toBeDisabled();
+  });
+
   it('delivery tab saves updated trigger_after_failures', async () => {
     renderWithProviders(<AlertSettings />);
     goToDeliveryTab();
@@ -244,6 +299,17 @@ describe('AlertSettings page', () => {
       /연속 실패 횟수|Consecutive failures/i,
     );
     await waitFor(() => expect(failuresInput).toHaveValue(2));
+    expect(failuresInput).toHaveAttribute('aria-describedby', 'trigger-after-failures-help');
+    expect(document.getElementById('trigger-after-failures-help')).toHaveTextContent(
+      /consecutive failed checks/,
+    );
+    expect(screen.getByLabelText(/Minimum requests|최소 요청/i)).toHaveAttribute(
+      'aria-describedby',
+      'route-min-requests-help',
+    );
+    expect(document.getElementById('route-min-requests-help')).toHaveTextContent(
+      'at least this many requests',
+    );
 
     await userEvent.clear(failuresInput);
     await userEvent.type(failuresInput, '5');
@@ -293,6 +359,27 @@ describe('AlertSettings page', () => {
 
     await userEvent.type(screen.getByLabelText(/Channel Name|채널 이름/i), 'new-ch');
     await userEvent.type(screen.getByLabelText(/Webhook URL/i), 'https://hooks.example.com/new');
+    expect(screen.getByLabelText(/Payload Template|페이로드 템플릿/i)).toHaveAttribute(
+      'aria-describedby',
+      'alert-channel-payload-template-help',
+    );
+    expect(document.getElementById('alert-channel-payload-template-help')).toHaveTextContent(
+      'variables can be used',
+    );
+    await userEvent.click(screen.getByRole('button', { name: /\+\s*Add Header|\+\s*헤더 추가/i }));
+    expect(screen.getByRole('group', { name: /Headers|헤더/i })).toHaveAttribute(
+      'aria-labelledby',
+      'alert-channel-headers-label',
+    );
+    expect(screen.getByRole('textbox', { name: /Header Name 1|헤더 이름 1/i })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: /Header Value 1|헤더 값 1/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/Recipient Item Template|수신자 항목 템플릿/i)).toHaveAttribute(
+      'aria-describedby',
+      'alert-channel-recipient-item-template-help',
+    );
+    expect(document.getElementById('alert-channel-recipient-item-template-help')).toHaveTextContent(
+      'render each owner email',
+    );
     fireEvent.change(screen.getByLabelText(/Recipient Item Template|수신자 항목 템플릿/i), {
       target: { value: '{"emailAddress":"{{email}}","recipientType":"TO"}' },
     });
@@ -311,7 +398,7 @@ describe('AlertSettings page', () => {
     renderWithProviders(<AlertSettings />);
     goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /^Edit$|^편집$|^수정$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit channel ops-slack' }));
     await waitFor(() =>
       expect(screen.getByText(/^Edit Channel$|^채널 수정$/)).toBeInTheDocument(),
     );
@@ -327,7 +414,7 @@ describe('AlertSettings page', () => {
     renderWithProviders(<AlertSettings />);
     goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /^Delete$|^삭제$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete channel ops-slack' }));
     expect(confirmSpy).toHaveBeenCalled();
     expect(mocks.deleteChannel).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
@@ -340,8 +427,34 @@ describe('AlertSettings page', () => {
     renderWithProviders(<AlertSettings />);
     goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /^Delete$|^삭제$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete channel ops-slack' }));
     await waitFor(() => expect(mocks.deleteChannel).toHaveBeenCalledWith(1));
+    confirmSpy.mockRestore();
+  });
+
+  it('shows pending feedback only on the active channel delete row', async () => {
+    mocks.getChannels.mockResolvedValue([
+      channelFixture,
+      { ...channelFixture, id: 2, name: 'email-ops' },
+    ]);
+    mocks.deleteChannel.mockReturnValue(new Promise<Awaited<ReturnType<typeof deleteAlertChannel>>>(() => {}));
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
+    await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
+
+    const slackDelete = screen.getByRole('button', { name: 'Delete channel ops-slack' });
+    const emailDelete = screen.getByRole('button', { name: 'Delete channel email-ops' });
+    fireEvent.click(slackDelete);
+
+    await waitFor(() => {
+      expect(slackDelete).toHaveAttribute('aria-busy', 'true');
+      expect(slackDelete).toHaveTextContent('Deleting...');
+    });
+    expect(emailDelete).toHaveAttribute('aria-busy', 'false');
+    expect(emailDelete).toHaveTextContent('Delete');
+
     confirmSpy.mockRestore();
   });
 
@@ -351,7 +464,7 @@ describe('AlertSettings page', () => {
     renderWithProviders(<AlertSettings />);
     goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /^Test Send$|^테스트 발송$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Test send ops-slack' }));
     await waitFor(() => expect(mocks.testChannel).toHaveBeenCalledWith(1));
   });
 
@@ -361,7 +474,7 @@ describe('AlertSettings page', () => {
     renderWithProviders(<AlertSettings />);
     goToDeliveryTab();
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /^Test Send$|^테스트 발송$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Test send ops-slack' }));
     await waitFor(() => expect(mocks.testChannel).toHaveBeenCalled());
   });
 });
@@ -385,7 +498,7 @@ describe('AlertSettings page (alerts.read only)', () => {
     await waitFor(() => expect(screen.getByText('orders-db')).toBeInTheDocument());
 
     expect(
-      screen.queryByRole('button', { name: /^Admin emails saved$|^관리자 이메일 저장$/i }),
+      screen.queryByRole('button', { name: /^Save admin emails$|^관리자 이메일 저장$/i }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: /^Send test to admins$|^관리자에게 테스트 발송$/i }),
@@ -436,6 +549,6 @@ describe('AlertSettings page (alerts.read only)', () => {
     await waitFor(() => expect(screen.getByText('ops-slack')).toBeInTheDocument());
 
     expect(screen.getByText(/services\/T1\/B2\/SECRETXYZ/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Test Send$|^테스트 발송$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Test send ops-slack' })).toBeInTheDocument();
   });
 });

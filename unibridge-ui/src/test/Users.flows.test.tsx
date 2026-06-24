@@ -59,7 +59,7 @@ describe('Users page flows', () => {
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
 
     const initialCalls = mocks.getUsers.mock.calls.length;
-    const search = screen.getByPlaceholderText(/Search|검색/i);
+    const search = screen.getByRole('searchbox', { name: /Search|검색/i });
     await userEvent.type(search, 'bob');
     await waitFor(
       () => {
@@ -70,6 +70,36 @@ describe('Users page flows', () => {
     );
   });
 
+  it('shows no-results state when search returns no users', async () => {
+    mocks.getUsers.mockImplementation(async (params) => {
+      if (params?.search) return { users: [], total: 0 };
+      return {
+        users: [makeUser({ id: 'u-1', username: 'alice', enabled: true, role: 'user' })],
+        total: 1,
+      };
+    });
+
+    renderWithProviders(<Users />, { permissions: ADMIN_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
+
+    await userEvent.type(screen.getByRole('searchbox', { name: /Search|검색/i }), 'nobody');
+
+    await waitFor(
+      () => expect(screen.getByText(/No matching users|일치하는 사용자/i)).toBeInTheDocument(),
+      { timeout: 2000 },
+    );
+    expect(screen.queryByText('alice')).not.toBeInTheDocument();
+
+    const search = screen.getByRole('searchbox', { name: /Search|검색/i });
+    await userEvent.click(screen.getByRole('button', { name: /Clear search|검색 지우기/i }));
+
+    await waitFor(
+      () => expect(screen.getByText('alice')).toBeInTheDocument(),
+      { timeout: 2000 },
+    );
+    expect(search).toHaveValue('');
+  });
+
   it('opens create modal, validates short password, then submits', async () => {
     mocks.create.mockResolvedValue(makeUser());
     renderWithProviders(<Users />, { permissions: ADMIN_PERMISSIONS });
@@ -78,11 +108,14 @@ describe('Users page flows', () => {
     fireEvent.click(screen.getByRole('button', { name: /Add User|사용자 추가/i }));
     const dialog = await screen.findByRole('dialog', { name: /Add User|사용자 추가/i });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
-    expect(screen.getByPlaceholderText('username')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: /Username|사용자 이름/i })).toBeInTheDocument();
 
-    const usernameInput = screen.getByPlaceholderText('username');
-    const pwInputs = screen.getAllByDisplayValue(''); // empty inputs
-    const pwInput = pwInputs.find((el) => (el as HTMLInputElement).type === 'password')!;
+    const usernameInput = screen.getByRole('textbox', { name: /Username|사용자 이름/i });
+    const pwInput = screen.getByLabelText(/Password \(min 8 characters\)|비밀번호 \(최소 8자\)/i);
+    expect(usernameInput).toHaveAttribute('id', 'user-create-username');
+    expect(screen.getByRole('textbox', { name: /Email/i })).toHaveAttribute('id', 'user-create-email');
+    expect(pwInput).toHaveAttribute('id', 'user-create-password');
+    expect(screen.getByRole('combobox', { name: /Role|역할/i })).toHaveAttribute('id', 'user-create-role');
 
     await userEvent.type(usernameInput, 'newuser');
     await userEvent.type(pwInput, 'short'); // < 8
@@ -102,11 +135,12 @@ describe('Users page flows', () => {
     renderWithProviders(<Users />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: /^Role$|^역할$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Change role for alice' }));
     const dialog = await screen.findByRole('dialog', { name: /Change.*Role|역할.*변경/i });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
 
-    const select = screen.getByRole('combobox');
+    const select = screen.getByRole('combobox', { name: /Role|역할/i });
+    expect(select).toHaveAttribute('id', 'user-change-role');
     fireEvent.change(select, { target: { value: 'admin' } });
     fireEvent.submit(select.closest('form')!);
     await waitFor(() => expect(mocks.changeRole).toHaveBeenCalled());
@@ -121,11 +155,10 @@ describe('Users page flows', () => {
     fireEvent.click(screen.getByRole('button', { name: /Reset.*Password|비밀번호.*재설정|Reset PW/i }));
     const dialog = await screen.findByRole('dialog', { name: /Reset.*Password|비밀번호.*재설정/i });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
-    expect(screen.getAllByDisplayValue('').length).toBeGreaterThan(0);
+    expect(screen.getByLabelText(/New Password \(min 8 characters\)|새 비밀번호 \(최소 8자\)/i)).toBeInTheDocument();
 
-    const pwInput = screen
-      .getAllByDisplayValue('')
-      .find((el) => (el as HTMLInputElement).type === 'password')!;
+    const pwInput = screen.getByLabelText(/New Password \(min 8 characters\)|새 비밀번호 \(최소 8자\)/i);
+    expect(pwInput).toHaveAttribute('id', 'user-reset-password');
     await userEvent.type(pwInput, 'short');
     fireEvent.submit(pwInput.closest('form')!);
     expect(mocks.reset).not.toHaveBeenCalled();
@@ -145,7 +178,7 @@ describe('Users page flows', () => {
     renderWithProviders(<Users />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: /^Disable$|^비활성화$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disable user alice' }));
     await waitFor(() => expect(mocks.toggle).toHaveBeenCalledWith('u-1', false));
     cs.mockRestore();
   });
@@ -154,8 +187,36 @@ describe('Users page flows', () => {
     const cs = vi.spyOn(window, 'confirm').mockReturnValue(false);
     renderWithProviders(<Users />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /^Disable$|^비활성화$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Disable user alice' }));
     expect(mocks.toggle).not.toHaveBeenCalled();
+    cs.mockRestore();
+  });
+
+  it('shows pending feedback only on the active toggle row', async () => {
+    mocks.getUsers.mockResolvedValue({
+      users: [
+        makeUser({ id: 'u-1', username: 'alice', enabled: true, role: 'user' }),
+        makeUser({ id: 'u-2', username: 'bob', enabled: true, role: 'user' }),
+      ],
+      total: 2,
+    });
+    mocks.toggle.mockReturnValue(new Promise<Awaited<ReturnType<typeof toggleUserEnabled>>>(() => {}));
+    const cs = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    renderWithProviders(<Users />, { permissions: ADMIN_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
+
+    const aliceToggle = screen.getByRole('button', { name: 'Disable user alice' });
+    const bobToggle = screen.getByRole('button', { name: 'Disable user bob' });
+    fireEvent.click(aliceToggle);
+
+    await waitFor(() => {
+      expect(aliceToggle).toHaveAttribute('aria-busy', 'true');
+      expect(aliceToggle).toHaveTextContent('Saving...');
+    });
+    expect(bobToggle).toHaveAttribute('aria-busy', 'false');
+    expect(bobToggle).toHaveTextContent('Disable');
+
     cs.mockRestore();
   });
 
@@ -164,9 +225,37 @@ describe('Users page flows', () => {
     const cs = vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderWithProviders(<Users />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /^Delete$|^삭제$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete user alice' }));
     await waitFor(() => expect(mocks.remove).toHaveBeenCalled());
     expect(mocks.remove.mock.calls[0][0]).toBe('u-1');
+    cs.mockRestore();
+  });
+
+  it('shows pending feedback only on the active delete row', async () => {
+    mocks.getUsers.mockResolvedValue({
+      users: [
+        makeUser({ id: 'u-1', username: 'alice', enabled: true, role: 'user' }),
+        makeUser({ id: 'u-2', username: 'bob', enabled: true, role: 'user' }),
+      ],
+      total: 2,
+    });
+    mocks.remove.mockReturnValue(new Promise<Awaited<ReturnType<typeof deleteKeycloakUser>>>(() => {}));
+    const cs = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    renderWithProviders(<Users />, { permissions: ADMIN_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
+
+    const aliceDelete = screen.getByRole('button', { name: 'Delete user alice' });
+    const bobDelete = screen.getByRole('button', { name: 'Delete user bob' });
+    fireEvent.click(aliceDelete);
+
+    await waitFor(() => {
+      expect(aliceDelete).toHaveAttribute('aria-busy', 'true');
+      expect(aliceDelete).toHaveTextContent('Deleting...');
+    });
+    expect(bobDelete).toHaveAttribute('aria-busy', 'false');
+    expect(bobDelete).toHaveTextContent('Delete');
+
     cs.mockRestore();
   });
 
@@ -175,7 +264,7 @@ describe('Users page flows', () => {
     const cs = vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderWithProviders(<Users />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('alice')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /^Delete$|^삭제$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete user alice' }));
     await waitFor(() => expect(screen.getByText('forbidden')).toBeInTheDocument());
     cs.mockRestore();
   });

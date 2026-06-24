@@ -6,7 +6,33 @@
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 16px;
   margin-bottom: 28px;
+}
+
+.api-keys-header-actions {
+  flex-wrap: wrap;
+}
+
+.api-key-search-input {
+  width: min(260px, 32vw);
+  min-width: 180px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-sans);
+  outline: none;
+}
+
+.api-key-search-input:focus {
+  border-color: var(--accent-blue);
+}
+
+.api-key-search-input::placeholder {
+  color: var(--text-tertiary);
 }
 
 .cell-key {
@@ -38,6 +64,10 @@
 .tag-master {
   background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
   color: var(--accent-blue);
+}
+
+.tag-expired {
+  color: var(--accent-red);
 }
 
 .key-created-banner {
@@ -89,6 +119,18 @@
 .copy-btn:hover {
   border-color: var(--border-hover);
   color: var(--text-primary);
+}
+
+.my-api-key-panel {
+  max-width: 760px;
+}
+
+.my-api-key-renew-note {
+  margin-top: 12px;
+}
+
+.my-api-key-actions {
+  margin-top: 8px;
 }
 
 .generate-btn {
@@ -153,4 +195,10 @@
   color: var(--text-tertiary);
   padding: 8px;
   text-align: center;
+}
+
+@media (max-width: 720px) {
+  .api-key-search-input {
+    width: 100%;
+  }
 }

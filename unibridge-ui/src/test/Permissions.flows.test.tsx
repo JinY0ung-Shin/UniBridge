@@ -67,8 +67,8 @@ describe('Permissions flows', () => {
       expect(screen.getByText('No permissions configured')).toBeInTheDocument();
     });
 
-    await userEvent.type(screen.getByPlaceholderText('Role name'), 'new-role');
-    await userEvent.selectOptions(screen.getByRole('combobox'), 'db-1');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Role name' }), 'new-role');
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: /Select database/ }), 'db-1');
     await userEvent.click(screen.getByRole('button', { name: 'Add Permission' }));
 
     await waitFor(() => {
@@ -80,7 +80,7 @@ describe('Permissions flows', () => {
         }),
       );
     });
-    expect((screen.getByPlaceholderText('Role name') as HTMLInputElement).value).toBe('');
+    expect((screen.getByRole('textbox', { name: 'Role name' }) as HTMLInputElement).value).toBe('');
   });
 
   it('Add Permission button disabled when role or db are missing', async () => {
@@ -94,7 +94,7 @@ describe('Permissions flows', () => {
     const addBtn = screen.getByRole('button', { name: 'Add Permission' });
     expect(addBtn).toBeDisabled();
 
-    await userEvent.type(screen.getByPlaceholderText('Role name'), 'a');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Role name' }), 'a');
     expect(addBtn).toBeDisabled();  // db not yet selected
   });
 
@@ -104,7 +104,7 @@ describe('Permissions flows', () => {
       expect(screen.getByText('analyst')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit table access for analyst on db-1' }));
 
     await waitFor(() => {
       expect(mockedGetDbTables).toHaveBeenCalledWith('db-1');
@@ -120,7 +120,7 @@ describe('Permissions flows', () => {
     );
     expect(usersCheckbox).toBeDefined();
     await userEvent.click(usersCheckbox!);
-    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save table access for analyst on db-1' }));
 
     await waitFor(() => {
       expect(mockedUpdatePermission).toHaveBeenCalledWith(
@@ -135,14 +135,14 @@ describe('Permissions flows', () => {
       expect(screen.getByText('analyst')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit table access for analyst on db-1' }));
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Cancel table access edit for analyst on db-1' })).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel table access edit for analyst on db-1' }));
     await waitFor(() => {
-      expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Save table access for analyst on db-1' })).not.toBeInTheDocument();
     });
   });
 
@@ -153,7 +153,7 @@ describe('Permissions flows', () => {
       expect(screen.getByText('analyst')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit table access for analyst on db-1' }));
     await waitFor(() => {
       expect(screen.getByText('No tables found')).toBeInTheDocument();
     });

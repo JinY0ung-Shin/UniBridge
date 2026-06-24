@@ -10,7 +10,7 @@ vi.mock('../api/client', () => ({
   setAlertResourceOwner: vi.fn(),
 }));
 
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
@@ -35,6 +35,25 @@ const mockedGetDbTables = vi.mocked(getDbTables);
 const mockedGetAlertResourceOwners = vi.mocked(getAlertResourceOwners);
 const mockedSetAlertResourceOwner = vi.mocked(setAlertResourceOwner);
 const clipboardWriteText = vi.fn();
+
+async function fillRequiredConnectionFields({
+  alias,
+  host,
+  database,
+  username,
+  databaseLabel = 'Database',
+}: {
+  alias: string;
+  host: string;
+  database: string;
+  username: string;
+  databaseLabel?: string;
+}) {
+  await userEvent.type(screen.getByRole('textbox', { name: 'Alias' }), alias);
+  await userEvent.type(screen.getByRole('textbox', { name: 'Host' }), host);
+  await userEvent.type(screen.getByRole('textbox', { name: databaseLabel }), database);
+  await userEvent.type(screen.getByRole('textbox', { name: 'Username' }), username);
+}
 
 beforeEach(() => {
   Object.defineProperty(navigator, 'clipboard', {
@@ -78,6 +97,32 @@ describe('Connections', () => {
     expect(screen.getByText('localhost:5432')).toBeInTheDocument();
   });
 
+  it('filters connections by search text', async () => {
+    mockedGetAdminDatabases.mockResolvedValue([
+      makeDatabase({ alias: 'orders-db', database: 'orders', host: 'orders.internal' }),
+      makeDatabase({ alias: 'analytics-db', database: 'warehouse', host: 'analytics.internal', db_type: 'clickhouse' }),
+    ]);
+
+    renderWithProviders(<Connections />);
+
+    await waitFor(() => {
+      expect(screen.getByText('orders-db')).toBeInTheDocument();
+    });
+
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Search connections...' }), 'analytics');
+
+    expect(screen.queryByText('orders-db')).not.toBeInTheDocument();
+    expect(screen.getByText('analytics-db')).toBeInTheDocument();
+
+    await userEvent.clear(screen.getByRole('searchbox', { name: 'Search connections...' }));
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Search connections...' }), 'missing');
+
+    expect(screen.getByText('No matching connections')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+    expect(screen.getByText('orders-db')).toBeInTheDocument();
+    expect(screen.getByText('analytics-db')).toBeInTheDocument();
+  });
+
   it('hides write actions for users with read-only database permission', async () => {
     const db = makeDatabase();
     mockedGetAdminDatabases.mockResolvedValue([db]);
@@ -93,7 +138,7 @@ describe('Connections', () => {
     expect(screen.queryByRole('button', { name: '+ Add Connection' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Test' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Test connection test-db' })).toBeInTheDocument();
   });
 
   it('renders empty state when no databases', async () => {
@@ -127,6 +172,12 @@ describe('Connections', () => {
 
     expect(screen.getByRole('heading', { name: 'Add Connection' })).toBeInTheDocument();
     expect(screen.getByRole('dialog', { name: 'Add Connection' })).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getByRole('textbox', { name: 'Alias' })).toHaveAttribute('id', 'connection-alias');
+    expect(screen.getByRole('combobox', { name: 'Type' })).toHaveAttribute('id', 'connection-db-type');
+    expect(screen.getByRole('textbox', { name: 'Host' })).toHaveAttribute('id', 'connection-host');
+    expect(screen.getByRole('spinbutton', { name: 'Port' })).toHaveAttribute('id', 'connection-port');
+    expect(screen.getByRole('textbox', { name: /Database|Repository/i })).toHaveAttribute('id', 'connection-database');
+    expect(screen.getByRole('textbox', { name: 'Username' })).toHaveAttribute('id', 'connection-username');
   });
 
   it('opens edit modal on edit button click', async () => {
@@ -139,11 +190,18 @@ describe('Connections', () => {
       expect(screen.getByText('test-db')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit connection test-db' }));
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Edit "test-db"' })).toBeInTheDocument();
     });
+    expect(screen.getByLabelText('Password')).toHaveAttribute(
+      'aria-describedby',
+      'connection-password-hint',
+    );
+    expect(document.getElementById('connection-password-hint')).toHaveTextContent(
+      'leave blank to keep current',
+    );
   });
 
   it('calls createDatabase on form submit', async () => {
@@ -158,11 +216,12 @@ describe('Connections', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add Connection' }));
 
-    // Fill out required fields
-    await userEvent.type(screen.getByPlaceholderText('e.g., main-db'), 'new-db');
-    await userEvent.type(screen.getByPlaceholderText('localhost'), 'db.example.com');
-    await userEvent.type(screen.getByPlaceholderText('mydb'), 'proddb');
-    await userEvent.type(screen.getByPlaceholderText('dbuser'), 'admin');
+    await fillRequiredConnectionFields({
+      alias: 'new-db',
+      host: 'db.example.com',
+      database: 'proddb',
+      username: 'admin',
+    });
 
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
 
@@ -182,13 +241,22 @@ describe('Connections', () => {
     await waitFor(() => expect(screen.getByText('No connections yet')).toBeInTheDocument());
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add Connection' }));
-    await userEvent.type(screen.getByPlaceholderText('e.g., main-db'), 'new-db');
-    await userEvent.type(screen.getByPlaceholderText('localhost'), 'db.example.com');
-    await userEvent.type(screen.getByPlaceholderText('mydb'), 'proddb');
-    await userEvent.type(screen.getByPlaceholderText('dbuser'), 'admin');
+    await fillRequiredConnectionFields({
+      alias: 'new-db',
+      host: 'db.example.com',
+      database: 'proddb',
+      username: 'admin',
+    });
     await userEvent.type(
-      screen.getByPlaceholderText('alice@example.com, bob@example.com'),
+      screen.getByRole('textbox', { name: 'Assignee emails' }),
       'alice@example.com',
+    );
+    expect(screen.getByRole('textbox', { name: 'Assignee emails' })).toHaveAttribute(
+      'aria-describedby',
+      'connection-assignees-hint',
+    );
+    expect(document.getElementById('connection-assignees-hint')).toHaveTextContent(
+      'Emails notified of alerts',
     );
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
 
@@ -215,10 +283,10 @@ describe('Connections', () => {
     renderWithProviders(<Connections />);
     await waitFor(() => expect(screen.getByText('test-db')).toBeInTheDocument());
 
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit connection test-db' }));
     // assignee field prefilled from the loaded owners
     await waitFor(() =>
-      expect((screen.getByPlaceholderText('alice@example.com, bob@example.com') as HTMLTextAreaElement).value)
+      expect((screen.getByRole('textbox', { name: 'Assignee emails' }) as HTMLTextAreaElement).value)
         .toBe('x@y.com'),
     );
 
@@ -237,8 +305,8 @@ describe('Connections', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add Connection' }));
 
-    expect(screen.getByPlaceholderText('e.g., main-db')).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText('alice@example.com, bob@example.com')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Alias' })).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Assignee emails' })).not.toBeInTheDocument();
     expect(mockedGetAlertResourceOwners).not.toHaveBeenCalled();
   });
 
@@ -253,11 +321,34 @@ describe('Connections', () => {
       expect(screen.getByText('test-db')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Test' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Test connection test-db' }));
 
     await waitFor(() => {
       expect(mockedTestDatabase).toHaveBeenCalledWith('test-db');
     });
+  });
+
+  it('shows pending feedback only on the active test row', async () => {
+    mockedGetAdminDatabases.mockResolvedValue([
+      makeDatabase({ alias: 'primary-db' }),
+      makeDatabase({ alias: 'analytics-db' }),
+    ]);
+    mockedTestDatabase.mockReturnValue(new Promise<Awaited<ReturnType<typeof testDatabase>>>(() => {}));
+
+    renderWithProviders(<Connections />);
+
+    await waitFor(() => {
+      expect(screen.getByText('primary-db')).toBeInTheDocument();
+    });
+
+    const primaryTest = screen.getByRole('button', { name: 'Test connection primary-db' });
+    const analyticsTest = screen.getByRole('button', { name: 'Test connection analytics-db' });
+    await userEvent.click(primaryTest);
+
+    expect(primaryTest).toHaveAttribute('aria-busy', 'true');
+    expect(primaryTest).toHaveTextContent('Testing...');
+    expect(analyticsTest).toHaveAttribute('aria-busy', 'false');
+    expect(analyticsTest).toHaveTextContent('Test');
   });
 
   it('calls deleteDatabase after confirmation', async () => {
@@ -274,12 +365,38 @@ describe('Connections', () => {
       expect(screen.getByText('test-db')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete connection test-db' }));
 
     expect(window.confirm).toHaveBeenCalled();
     await waitFor(() => {
       expect(mockedDeleteDatabase).toHaveBeenCalledWith('test-db');
     });
+
+    vi.restoreAllMocks();
+  });
+
+  it('shows pending feedback only on the active delete row', async () => {
+    mockedGetAdminDatabases.mockResolvedValue([
+      makeDatabase({ alias: 'primary-db' }),
+      makeDatabase({ alias: 'analytics-db' }),
+    ]);
+    mockedDeleteDatabase.mockReturnValue(new Promise<Awaited<ReturnType<typeof deleteDatabase>>>(() => {}));
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    renderWithProviders(<Connections />);
+
+    await waitFor(() => {
+      expect(screen.getByText('primary-db')).toBeInTheDocument();
+    });
+
+    const primaryDelete = screen.getByRole('button', { name: 'Delete connection primary-db' });
+    const analyticsDelete = screen.getByRole('button', { name: 'Delete connection analytics-db' });
+    await userEvent.click(primaryDelete);
+
+    expect(primaryDelete).toHaveAttribute('aria-busy', 'true');
+    expect(primaryDelete).toHaveTextContent('Deleting...');
+    expect(analyticsDelete).toHaveAttribute('aria-busy', 'false');
+    expect(analyticsDelete).toHaveTextContent('Delete');
 
     vi.restoreAllMocks();
   });
@@ -302,19 +419,19 @@ describe('Connections', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add Connection' }));
 
-    const [typeSelect] = screen.getAllByRole('combobox');
+    const typeSelect = screen.getByRole('combobox', { name: 'Type' });
     await userEvent.selectOptions(typeSelect, 'neo4j');
 
-    expect(screen.getByDisplayValue('7687')).toBeInTheDocument();
+    expect(screen.getByRole('spinbutton', { name: 'Port' })).toHaveValue(7687);
 
-    await userEvent.type(screen.getByPlaceholderText('e.g., main-db'), 'graph-db');
-    await userEvent.type(screen.getByPlaceholderText('localhost'), 'graph.example.com');
-    await userEvent.type(screen.getByPlaceholderText('mydb'), 'neo4j');
-    await userEvent.type(screen.getByPlaceholderText('dbuser'), 'neo4j');
+    await fillRequiredConnectionFields({
+      alias: 'graph-db',
+      host: 'graph.example.com',
+      database: 'neo4j',
+      username: 'neo4j',
+    });
 
-    const comboboxes = screen.getAllByRole('combobox');
-    expect(comboboxes).toHaveLength(2);
-    expect(comboboxes[1]).toHaveDisplayValue('bolt');
+    expect(screen.getByRole('combobox', { name: 'Protocol' })).toHaveDisplayValue('bolt');
 
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
 
@@ -348,7 +465,7 @@ describe('Connections', () => {
       expect(screen.getByText('graph-db')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'cURL' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Show cURL for graph-db' }));
 
     await waitFor(() => {
       expect(screen.getByText(/MATCH \(n\) RETURN n LIMIT 10/)).toBeInTheDocument();
@@ -368,16 +485,18 @@ describe('Connections', () => {
       expect(screen.getByText('test-db')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'cURL' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Show cURL for test-db' }));
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Copy cURL command' })).toBeInTheDocument();
     });
-    await userEvent.click(screen.getByRole('button', { name: 'Copy' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Copy cURL command' }));
 
     await waitFor(() => {
       expect(clipboardWriteText).toHaveBeenCalledTimes(1);
     });
-    expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: /cURL — test-db/ });
+    expect(within(dialog).getByRole('button', { name: 'cURL command copied' })).toHaveTextContent('Copied');
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Copied');
   });
 
   it('shows copy failure when clipboard write rejects', async () => {
@@ -391,17 +510,17 @@ describe('Connections', () => {
       expect(screen.getByText('test-db')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'cURL' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Show cURL for test-db' }));
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Copy cURL command' })).toBeInTheDocument();
     });
-    await userEvent.click(screen.getByRole('button', { name: 'Copy' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Copy cURL command' }));
 
     await waitFor(() => {
       expect(screen.getByText('Failed to copy cURL command')).toBeInTheDocument();
     });
-    expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Copied' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy cURL command' })).toHaveTextContent('Copy');
+    expect(screen.queryByRole('button', { name: 'cURL command copied' })).not.toBeInTheDocument();
   });
 
 });
@@ -493,13 +612,16 @@ describe('Connections — graphdb', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add Connection' }));
 
-    const [typeSelect] = screen.getAllByRole('combobox');
+    const typeSelect = screen.getByRole('combobox', { name: 'Type' });
     await userEvent.selectOptions(typeSelect, 'graphdb');
 
-    await userEvent.type(screen.getByPlaceholderText('e.g., main-db'), 'graphdb-1');
-    await userEvent.type(screen.getByPlaceholderText('localhost'), 'graph.example.com');
-    await userEvent.type(screen.getByPlaceholderText('my-repo'), 'my-repo');
-    await userEvent.type(screen.getByPlaceholderText('dbuser'), 'admin');
+    await fillRequiredConnectionFields({
+      alias: 'graphdb-1',
+      host: 'graph.example.com',
+      database: 'my-repo',
+      username: 'admin',
+      databaseLabel: 'Repository ID',
+    });
 
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
 
@@ -535,7 +657,7 @@ describe('Connections — graphdb', () => {
       expect(screen.getByText('gdb-1')).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'cURL' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Show cURL for gdb-1' }));
 
     await waitFor(() => {
       expect(screen.getByText(/SELECT \?s \?p \?o WHERE/)).toBeInTheDocument();
@@ -571,10 +693,12 @@ describe('Connections (error case)', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add Connection' }));
 
-    await userEvent.type(screen.getByPlaceholderText('e.g., main-db'), 'dup-db');
-    await userEvent.type(screen.getByPlaceholderText('localhost'), 'host');
-    await userEvent.type(screen.getByPlaceholderText('mydb'), 'db');
-    await userEvent.type(screen.getByPlaceholderText('dbuser'), 'u');
+    await fillRequiredConnectionFields({
+      alias: 'dup-db',
+      host: 'host',
+      database: 'db',
+      username: 'u',
+    });
 
     await userEvent.click(screen.getByRole('button', { name: 'Create' }));
 

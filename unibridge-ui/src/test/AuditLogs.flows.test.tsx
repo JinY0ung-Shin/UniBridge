@@ -4,7 +4,7 @@ vi.mock('../api/client', () => ({
   getAdminDatabases: vi.fn(),
 }));
 
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getAuditLogs, getAdminDatabases } from '../api/client';
@@ -82,7 +82,7 @@ describe('AuditLogs flows', () => {
       expect(screen.getByText('No audit logs found')).toBeInTheDocument();
     });
 
-    await userEvent.type(screen.getByPlaceholderText('User'), 'alice');
+    await userEvent.type(screen.getByRole('textbox', { name: 'User filter' }), 'alice');
     const initialCallCount = mockedGetAuditLogs.mock.calls.length;
     await userEvent.click(screen.getByRole('button', { name: 'Search' }));
 
@@ -107,14 +107,14 @@ describe('AuditLogs flows', () => {
     renderWithProviders(<AuditLogs />);
     await waitFor(() => expect(screen.getByText('u1')).toBeInTheDocument());
 
-    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Next page' }));
     await waitFor(() => expect(screen.getByText('page2user')).toBeInTheDocument());
 
-    await userEvent.click(screen.getByRole('button', { name: 'Previous' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Previous page' }));
     await waitFor(() => expect(screen.getByText('u1')).toBeInTheDocument());
   });
 
-  it('clicking an already-expanded row collapses it', async () => {
+  it('keyboard activation expands and collapses a row', async () => {
     const log = makeAuditLog({ sql: 'SELECT * FROM t' });
     mockedGetAuditLogs.mockResolvedValue([log]);
     renderWithProviders(<AuditLogs />);
@@ -123,15 +123,17 @@ describe('AuditLogs flows', () => {
       expect(screen.getByText('admin')).toBeInTheDocument();
     });
 
-    const row = screen.getByText('SELECT * FROM t').closest('tr')!;
-    await userEvent.click(row);
+    const row = screen.getByRole('button', { name: 'Toggle details for audit log 1' });
+    fireEvent.keyDown(row, { key: 'Enter' });
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Full SQL' })).toBeInTheDocument();
     });
+    expect(row).toHaveAttribute('aria-expanded', 'true');
 
-    await userEvent.click(row);
+    fireEvent.keyDown(row, { key: ' ' });
     await waitFor(() => {
       expect(screen.queryByRole('heading', { name: 'Full SQL' })).not.toBeInTheDocument();
     });
+    expect(row).toHaveAttribute('aria-expanded', 'false');
   });
 });

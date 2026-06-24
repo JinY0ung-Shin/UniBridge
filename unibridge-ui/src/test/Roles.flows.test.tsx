@@ -28,6 +28,10 @@ const mocks = {
   perms: vi.mocked(getAllPermissions),
 };
 
+function roleNameInput() {
+  return screen.getByRole('textbox', { name: 'Name' });
+}
+
 describe('Roles page flows', () => {
   beforeEach(() => {
     Object.values(mocks).forEach((m) => m.mockReset());
@@ -72,12 +76,12 @@ describe('Roles page flows', () => {
     await waitFor(() => expect(screen.getByText('admin')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /Add Role|역할 추가/i }));
-    await waitFor(() => expect(screen.getByPlaceholderText('role-name')).toBeInTheDocument());
+    await waitFor(() => expect(roleNameInput()).toBeInTheDocument());
 
-    const nameInput = screen.getByPlaceholderText('role-name');
+    const nameInput = roleNameInput();
     await userEvent.type(nameInput, 'analyst');
 
-    const descInput = screen.getByPlaceholderText('Role description');
+    const descInput = screen.getByRole('textbox', { name: 'Description' });
     await userEvent.type(descInput, 'Read-only analytics');
 
     // Toggle permission checkbox
@@ -96,8 +100,8 @@ describe('Roles page flows', () => {
     renderWithProviders(<Roles />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('admin')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /Add Role|역할 추가/i }));
-    await waitFor(() => expect(screen.getByPlaceholderText('role-name')).toBeInTheDocument());
-    const form = screen.getByPlaceholderText('role-name').closest('form')!;
+    await waitFor(() => expect(roleNameInput()).toBeInTheDocument());
+    const form = roleNameInput().closest('form')!;
     // Submit with empty name (should be blocked by required attribute, but our handler also guards trim)
     fireEvent.submit(form);
     expect(mocks.create).not.toHaveBeenCalled();
@@ -108,16 +112,14 @@ describe('Roles page flows', () => {
     renderWithProviders(<Roles />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('custom')).toBeInTheDocument());
 
-    const editButtons = screen.getAllByRole('button', { name: /^Edit$|^편집$/ });
-    // Edit the second (custom) role to allow delete button visibility too
-    fireEvent.click(editButtons[1]);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit role custom' }));
     await waitFor(() => {
-      const nameInput = screen.getByPlaceholderText('role-name') as HTMLInputElement;
+      const nameInput = roleNameInput() as HTMLInputElement;
       expect(nameInput.disabled).toBe(true);
       expect(nameInput.value).toBe('custom');
     });
 
-    fireEvent.submit(screen.getByPlaceholderText('role-name').closest('form')!);
+    fireEvent.submit(roleNameInput().closest('form')!);
     await waitFor(() => expect(mocks.update).toHaveBeenCalled());
     expect(mocks.update.mock.calls[0][0]).toBe(2);
   });
@@ -127,8 +129,8 @@ describe('Roles page flows', () => {
     renderWithProviders(<Roles />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('admin')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /Add Role|역할 추가/i }));
-    await waitFor(() => expect(screen.getByPlaceholderText('role-name')).toBeInTheDocument());
-    const nameInput = screen.getByPlaceholderText('role-name');
+    await waitFor(() => expect(roleNameInput()).toBeInTheDocument());
+    const nameInput = roleNameInput();
     await userEvent.type(nameInput, 'dup');
     fireEvent.submit(nameInput.closest('form')!);
     await waitFor(() => expect(screen.getByText('name taken')).toBeInTheDocument());
@@ -139,8 +141,8 @@ describe('Roles page flows', () => {
     renderWithProviders(<Roles />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('admin')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: /Add Role|역할 추가/i }));
-    await waitFor(() => expect(screen.getByPlaceholderText('role-name')).toBeInTheDocument());
-    const nameInput = screen.getByPlaceholderText('role-name');
+    await waitFor(() => expect(roleNameInput()).toBeInTheDocument());
+    const nameInput = roleNameInput();
     await userEvent.type(nameInput, 'oops');
     fireEvent.submit(nameInput.closest('form')!);
     await waitFor(() => {
@@ -152,9 +154,9 @@ describe('Roles page flows', () => {
     mocks.update.mockRejectedValue(new Error('boom'));
     renderWithProviders(<Roles />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('custom')).toBeInTheDocument());
-    fireEvent.click(screen.getAllByRole('button', { name: /^Edit$|^편집$/ })[1]);
-    await waitFor(() => expect(screen.getByPlaceholderText('role-name')).toBeInTheDocument());
-    fireEvent.submit(screen.getByPlaceholderText('role-name').closest('form')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit role custom' }));
+    await waitFor(() => expect(roleNameInput()).toBeInTheDocument());
+    fireEvent.submit(roleNameInput().closest('form')!);
     await waitFor(() => {
       expect(screen.getByText(/Failed to update|역할.*업데이트|업데이트.*실패/i)).toBeInTheDocument();
     });
@@ -164,9 +166,9 @@ describe('Roles page flows', () => {
     mocks.update.mockRejectedValue({ response: { data: { detail: 'cannot edit' } } });
     renderWithProviders(<Roles />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('custom')).toBeInTheDocument());
-    fireEvent.click(screen.getAllByRole('button', { name: /^Edit$|^편집$/ })[1]);
-    await waitFor(() => expect(screen.getByPlaceholderText('role-name')).toBeInTheDocument());
-    fireEvent.submit(screen.getByPlaceholderText('role-name').closest('form')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit role custom' }));
+    await waitFor(() => expect(roleNameInput()).toBeInTheDocument());
+    fireEvent.submit(roleNameInput().closest('form')!);
     await waitFor(() => expect(screen.getByText('cannot edit')).toBeInTheDocument());
   });
 
@@ -175,7 +177,7 @@ describe('Roles page flows', () => {
     const cs = vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderWithProviders(<Roles />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('custom')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /^Delete$|^삭제$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete role custom' }));
     await waitFor(() => expect(mocks.remove).toHaveBeenCalled());
     expect(mocks.remove.mock.calls[0][0]).toBe(2);
     cs.mockRestore();
@@ -185,7 +187,7 @@ describe('Roles page flows', () => {
     const cs = vi.spyOn(window, 'confirm').mockReturnValue(false);
     renderWithProviders(<Roles />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('custom')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /^Delete$|^삭제$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete role custom' }));
     expect(mocks.remove).not.toHaveBeenCalled();
     cs.mockRestore();
   });
@@ -195,7 +197,7 @@ describe('Roles page flows', () => {
     const cs = vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderWithProviders(<Roles />, { permissions: ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('custom')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /^Delete$|^삭제$/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete role custom' }));
     await waitFor(() => expect(screen.getByText('cannot delete')).toBeInTheDocument());
     cs.mockRestore();
   });

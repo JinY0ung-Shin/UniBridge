@@ -1,10 +1,14 @@
 import { useState } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import ResourceModal from '../components/ResourceModal';
 
 describe('ResourceModal', () => {
+  afterEach(() => {
+    document.body.style.overflow = '';
+  });
+
   it('renders as an accessible dialog, closes on Escape, and restores trigger focus', async () => {
     const user = userEvent.setup();
 
@@ -29,11 +33,13 @@ describe('ResourceModal', () => {
 
     const dialog = screen.getByRole('dialog', { name: 'Create Resource' });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(document.body.style.overflow).toBe('hidden');
     expect(screen.getByRole('textbox', { name: 'Resource name' })).toHaveFocus();
     expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
 
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog', { name: 'Create Resource' })).not.toBeInTheDocument();
+    expect(document.body.style.overflow).toBe('');
     expect(opener).toHaveFocus();
   });
 

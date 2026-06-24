@@ -15,6 +15,7 @@ import {
   createMyApiKey,
   regenerateMyApiKey,
   renewMyApiKey,
+  deleteMyApiKey,
 } from '../api/client';
 import MyApiKey from '../pages/MyApiKey';
 import { renderWithProviders, makeApiKey } from './helpers';
@@ -23,6 +24,8 @@ const mockedGetMyApiKey = vi.mocked(getMyApiKey);
 const mockedCreateMyApiKey = vi.mocked(createMyApiKey);
 const mockedRegenerateMyApiKey = vi.mocked(regenerateMyApiKey);
 const mockedRenewMyApiKey = vi.mocked(renewMyApiKey);
+const mockedDeleteMyApiKey = vi.mocked(deleteMyApiKey);
+const clipboardWriteText = vi.fn();
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -44,6 +47,11 @@ function makeSelfKey(overrides = {}) {
 describe('MyApiKey', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: clipboardWriteText },
+    });
+    clipboardWriteText.mockResolvedValue(undefined);
     mockedGetMyApiKey.mockResolvedValue(null);
   });
 
@@ -73,6 +81,64 @@ describe('MyApiKey', () => {
     await waitFor(() => {
       expect(screen.getByText('full-secret-key')).toBeInTheDocument();
     });
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Here is your API key. Copy it now',
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copy your revealed API key' }));
+    await waitFor(() => {
+      expect(clipboardWriteText).toHaveBeenCalledWith('full-secret-key');
+    });
+    expect(screen.getByRole('button', { name: 'Your API key was copied' })).toHaveTextContent('Copied!');
+  });
+
+  it('marks the create button as busy while creating a key', async () => {
+    let resolveCreate: (value: ReturnType<typeof makeSelfKey>) => void = () => {};
+    mockedCreateMyApiKey.mockReturnValueOnce(new Promise<ReturnType<typeof makeSelfKey>>((resolve) => {
+      resolveCreate = resolve;
+    }));
+
+    renderWithProviders(<MyApiKey />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No API key yet')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Create API Key' }));
+
+    expect(screen.getByRole('button', { name: 'Saving...' })).toHaveAttribute('aria-busy', 'true');
+
+    resolveCreate(makeSelfKey({ api_key: 'full-secret-key', key_created: true }));
+
+    await waitFor(() => {
+      expect(screen.getByText('full-secret-key')).toBeInTheDocument();
+    });
+  });
+
+  it('shows copy failure feedback when the one-time key cannot be copied', async () => {
+    clipboardWriteText.mockRejectedValueOnce(new Error('blocked'));
+    mockedCreateMyApiKey.mockResolvedValue(
+      makeSelfKey({ api_key: 'full-secret-key', key_created: true }),
+    );
+
+    renderWithProviders(<MyApiKey />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No API key yet')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Create API Key' }));
+    await waitFor(() => {
+      expect(screen.getByText('full-secret-key')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Copy your revealed API key' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to copy API key')).toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Copy your revealed API key' })).toHaveTextContent('Copy');
+    expect(screen.queryByRole('button', { name: 'Your API key was copied' })).not.toBeInTheDocument();
   });
 
   it('shows expiry date with remaining days for an active key', async () => {
@@ -130,6 +196,7 @@ describe('MyApiKey', () => {
     await waitFor(() => {
       expect(screen.getByText('API key renewed for 30 more days.')).toBeInTheDocument();
     });
+    expect(screen.getByText('30 days left')).toBeInTheDocument();
     // Renewal keeps the same key value — nothing is regenerated.
     expect(mockedRegenerateMyApiKey).not.toHaveBeenCalled();
   });
@@ -153,6 +220,33 @@ describe('MyApiKey', () => {
     await waitFor(() => {
       expect(screen.getByText('brand-new-key')).toBeInTheDocument();
     });
+
+    vi.restoreAllMocks();
+  });
+
+  it('deletes the key after confirmation and returns to the empty state', async () => {
+    mockedGetMyApiKey.mockResolvedValue(makeSelfKey());
+    mockedDeleteMyApiKey.mockResolvedValue(undefined);
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    renderWithProviders(<MyApiKey />);
+
+    await waitFor(() => {
+      expect(screen.getByText('self_abc123')).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    expect(window.confirm).toHaveBeenCalledWith(
+      'Delete your API key? This cannot be undone.',
+    );
+    await waitFor(() => {
+      expect(mockedDeleteMyApiKey).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(screen.getByText('No API key yet')).toBeInTheDocument();
+    });
+    expect(screen.getByText('API key deleted')).toBeInTheDocument();
 
     vi.restoreAllMocks();
   });

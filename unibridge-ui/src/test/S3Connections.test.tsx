@@ -34,8 +34,8 @@ describe('S3Connections', () => {
     expect(screen.queryByRole('button', { name: '+ Add S3 Connection' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Test' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'cURL' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Browse' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Test S3 connection s3-main' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show cURL for S3 connection s3-main' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Browse S3 connection s3-main' })).toBeInTheDocument();
   });
 });

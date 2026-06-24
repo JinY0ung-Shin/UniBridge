@@ -40,7 +40,7 @@
 
 .metric-cards {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
   margin-bottom: 24px;
 }
@@ -50,6 +50,7 @@
   border: 1px solid var(--border-default);
   border-radius: var(--radius-lg);
   padding: 20px 24px;
+  min-width: 0;
 }
 
 .metric-card__value {
@@ -59,6 +60,7 @@
   line-height: 1;
   margin-bottom: 4px;
   font-family: var(--font-mono);
+  overflow-wrap: anywhere;
 }
 
 .metric-card__label {
@@ -75,6 +77,7 @@
   border-radius: var(--radius-lg);
   padding: 20px 24px;
   margin-bottom: 16px;
+  min-width: 0;
 }
 
 .chart-panel__title {
@@ -87,7 +90,47 @@
 .chart-container {
   width: 100%;
   height: 240px;
+  min-width: 0;
 }
+
+.chart-panel .table-container--plain {
+  border: none;
+}
+
+.breakdown-cell--right {
+  text-align: right;
+}
+
+.breakdown-cell--mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.breakdown-cell--total {
+  font-weight: 600;
+}
+
+.breakdown-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 2px;
+}
+
+.breakdown-swatch--0 { background: #3b82f6; }
+.breakdown-swatch--1 { background: #10b981; }
+.breakdown-swatch--2 { background: #f59e0b; }
+.breakdown-swatch--3 { background: #ef4444; }
+.breakdown-swatch--4 { background: #8b5cf6; }
+.breakdown-swatch--5 { background: #ec4899; }
+.breakdown-swatch--6 { background: #14b8a6; }
+.breakdown-swatch--7 { background: #f97316; }
+.breakdown-swatch--8 { background: #6366f1; }
+.breakdown-swatch--9 { background: #84cc16; }
+.breakdown-swatch--10 { background: #06b6d4; }
+.breakdown-swatch--11 { background: #a855f7; }
+.breakdown-swatch--12 { background: #64748b; }
 
 /* Recharts theme overrides */
 
@@ -127,6 +170,9 @@
   align-items: center;
   justify-content: center;
   height: 200px;
+  padding: 0 16px;
+  box-sizing: border-box;
+  text-align: center;
   color: var(--text-tertiary);
   font-size: 13px;
 }
@@ -169,6 +215,22 @@
 }
 
 @media (max-width: 720px) {
+  .metric-card {
+    padding: 16px 18px;
+  }
+
+  .metric-card__value {
+    font-size: 26px;
+  }
+
+  .chart-panel {
+    padding: 16px;
+  }
+
+  .chart-container {
+    height: 220px;
+  }
+
   .api-key-filter {
     align-items: flex-start;
     flex-direction: column;

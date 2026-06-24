@@ -163,6 +163,9 @@ describe('App', () => {
 
     // Sidebar title
     expect(screen.getByText('UniBridge')).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Main navigation' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Skip to content' })).toHaveAttribute('href', '#main-content');
+    expect(screen.getByRole('main')).toHaveAttribute('id', 'main-content');
   });
 
   it('opens and closes the mobile navigation drawer', async () => {
@@ -173,19 +176,42 @@ describe('App', () => {
     });
 
     const toggle = screen.getByRole('button', { name: 'Open navigation', hidden: true });
+    const scrim = document.querySelector<HTMLButtonElement>('.nav-scrim')!;
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(scrim).toHaveAttribute('aria-label', 'Close navigation');
+    expect(scrim).toHaveAttribute('aria-hidden', 'true');
+    expect(scrim).toHaveAttribute('tabindex', '-1');
     expect(document.querySelector('.layout')).not.toHaveClass('layout--nav-open');
 
     fireEvent.click(toggle);
 
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(document.querySelector('.layout')).toHaveClass('layout--nav-open');
+    expect(scrim).toHaveAttribute('aria-hidden', 'false');
+    expect(scrim).toHaveAttribute('tabindex', '0');
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: 'Dashboard' })).toHaveFocus();
+    });
 
-    const scrim = document.querySelector<HTMLButtonElement>('.nav-scrim');
-    expect(scrim).toHaveAttribute('aria-label', 'Close navigation');
-    fireEvent.click(scrim!);
+    fireEvent.keyDown(screen.getByRole('link', { name: 'Dashboard' }), { key: 'Escape' });
+
+    expect(toggle).toHaveFocus();
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(scrim).toHaveAttribute('aria-hidden', 'true');
+    expect(scrim).toHaveAttribute('tabindex', '-1');
+    expect(document.querySelector('.layout')).not.toHaveClass('layout--nav-open');
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(document.querySelector('.layout')).toHaveClass('layout--nav-open');
+    expect(scrim).toHaveAttribute('aria-hidden', 'false');
+    expect(scrim).toHaveAttribute('tabindex', '0');
+    fireEvent.click(scrim);
 
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(scrim).toHaveAttribute('aria-hidden', 'true');
+    expect(scrim).toHaveAttribute('tabindex', '-1');
     expect(document.querySelector('.layout')).not.toHaveClass('layout--nav-open');
   });
 
@@ -194,6 +220,21 @@ describe('App', () => {
 
     await waitFor(() => {
       expect(screen.getByText('UniBridge')).toBeInTheDocument();
+    });
+  });
+
+  it('hides decorative navigation icons from assistive technology', async () => {
+    renderWithProviders(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Connections')).toBeInTheDocument();
+    });
+
+    document.querySelectorAll('.sidebar-logo-icon').forEach((icon) => {
+      expect(icon).toHaveAttribute('aria-hidden', 'true');
+    });
+    document.querySelectorAll('.sidebar-nav .nav-icon').forEach((icon) => {
+      expect(icon).toHaveAttribute('aria-hidden', 'true');
     });
   });
 
@@ -252,6 +293,7 @@ describe('App', () => {
     await waitFor(() => {
       expect(screen.getByText('Failed to load permissions.')).toBeInTheDocument();
     });
+    expect(screen.getByRole('alert')).toHaveTextContent('Failed to load permissions.');
 
     vi.mocked(getCurrentUser).mockResolvedValueOnce({
       username: 'test',
@@ -259,7 +301,7 @@ describe('App', () => {
       permissions: ['query.databases.read'],
     });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Retry loading permissions' }));
 
     // After retry, a user without dashboard.read lands on their first accessible
     // page (Connections), so "Connections" appears as both nav link and page title.

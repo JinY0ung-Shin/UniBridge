@@ -94,6 +94,28 @@ describe('NasConnections', () => {
     expect(document.querySelector('input[type="password"]')).toBeNull();
   });
 
+  it('filters connections by search text', async () => {
+    mockGet.mockResolvedValue([
+      makeNasConnection({ alias: 'nas-main', base_path: '/mnt/share' }),
+      makeNasConnection({ alias: 'logs-archive', base_path: '/srv/logs' }),
+    ]);
+    renderWithProviders(<NasConnections />, { permissions: NAS_ADMIN_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('nas-main')).toBeInTheDocument());
+
+    const search = screen.getByRole('searchbox', { name: /search nas connections|nas 연결 검색/i });
+    await userEvent.type(search, 'logs');
+
+    expect(screen.queryByText('nas-main')).not.toBeInTheDocument();
+    expect(screen.getByText('logs-archive')).toBeInTheDocument();
+
+    await userEvent.clear(search);
+    await userEvent.type(search, 'missing');
+    expect(screen.getByText(i18n.t('nas.noSearchResults'))).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /Clear search|검색 지우기/i }));
+    expect(screen.getByText('nas-main')).toBeInTheDocument();
+    expect(screen.getByText('logs-archive')).toBeInTheDocument();
+  });
+
   it('shows empty state and add button for an admin (write permission)', async () => {
     renderWithProviders(<NasConnections />, { permissions: NAS_ADMIN_PERMISSIONS });
     await waitFor(() =>
@@ -120,8 +142,8 @@ describe('NasConnections', () => {
       screen.queryByRole('button', { name: new RegExp(`^${escapeRegExp(i18n.t('common.delete'))}$`, 'i') }),
     ).not.toBeInTheDocument();
     // Read-only users can still test + browse.
-    expect(nasButton('common.test')).toBeInTheDocument();
-    expect(nasButton('nas.browse')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Test NAS connection nas-main' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Browse NAS connection nas-main' })).toBeInTheDocument();
   });
 
   it('opens the create modal and submits a new connection (no credential inputs)', async () => {
@@ -132,10 +154,22 @@ describe('NasConnections', () => {
     fireEvent.click(nasButton('nas.addConnection'));
 
     const dialog = await screen.findByRole('dialog');
-    const aliasInput = within(dialog).getByPlaceholderText(/my-nas/i);
+    const aliasInput = within(dialog).getByRole('textbox', { name: i18n.t('nas.alias') });
+    expect(aliasInput).toHaveAttribute('id', 'nas-alias');
     await userEvent.type(aliasInput, 'new-nas');
 
-    const basePathInput = within(dialog).getByPlaceholderText('/mnt/share/data');
+    const basePathInput = within(dialog).getByRole('textbox', { name: i18n.t('nas.basePath') });
+    expect(basePathInput).toHaveAttribute('aria-describedby', 'nas-base-path-hint');
+    expect(document.getElementById('nas-base-path-hint')).toHaveTextContent(
+      'Absolute path on the server',
+    );
+    expect(within(dialog).getByRole('spinbutton', { name: i18n.t('nas.maxDownloadBytes') })).toHaveAttribute(
+      'aria-describedby',
+      'nas-max-download-bytes-hint',
+    );
+    expect(document.getElementById('nas-max-download-bytes-hint')).toHaveTextContent(
+      'download cap in bytes',
+    );
     await userEvent.type(basePathInput, '/mnt/data');
 
     // The create modal must NOT carry any S3 credential fields.
@@ -159,10 +193,10 @@ describe('NasConnections', () => {
     renderWithProviders(<NasConnections />, { permissions: NAS_ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('edit-me')).toBeInTheDocument());
 
-    fireEvent.click(nasButton('common.edit'));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit NAS connection edit-me' }));
 
     const dialog = await screen.findByRole('dialog');
-    const aliasInput = within(dialog).getByPlaceholderText(/my-nas/i) as HTMLInputElement;
+    const aliasInput = within(dialog).getByRole('textbox', { name: i18n.t('nas.alias') }) as HTMLInputElement;
     expect(aliasInput.disabled).toBe(true);
 
     fireEvent.submit(aliasInput.closest('form')!);
@@ -178,7 +212,7 @@ describe('NasConnections', () => {
     renderWithProviders(<NasConnections />, { permissions: NAS_ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('t1')).toBeInTheDocument());
 
-    fireEvent.click(nasButton('common.test'));
+    fireEvent.click(screen.getByRole('button', { name: 'Test NAS connection t1' }));
     await waitFor(() => expect(mockTest).toHaveBeenCalledWith('t1'));
   });
 
@@ -188,7 +222,7 @@ describe('NasConnections', () => {
     renderWithProviders(<NasConnections />, { permissions: NAS_ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('t2')).toBeInTheDocument());
 
-    fireEvent.click(nasButton('common.test'));
+    fireEvent.click(screen.getByRole('button', { name: 'Test NAS connection t2' }));
     await waitFor(() => expect(mockTest).toHaveBeenCalled());
   });
 
@@ -197,7 +231,7 @@ describe('NasConnections', () => {
     renderWithProviders(<NasConnections />, { permissions: NAS_ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('browse-me')).toBeInTheDocument());
 
-    fireEvent.click(nasButton('nas.browse'));
+    fireEvent.click(screen.getByRole('button', { name: 'Browse NAS connection browse-me' }));
     expect(navigateMock).toHaveBeenCalledWith('/nas/browse/browse-me');
   });
 
@@ -208,7 +242,7 @@ describe('NasConnections', () => {
     renderWithProviders(<NasConnections />, { permissions: NAS_ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('del-me')).toBeInTheDocument());
 
-    fireEvent.click(nasButton('common.delete'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete NAS connection del-me' }));
     await waitFor(() => expect(mockDelete).toHaveBeenCalledWith('del-me'));
     cs.mockRestore();
   });
@@ -219,7 +253,7 @@ describe('NasConnections', () => {
     renderWithProviders(<NasConnections />, { permissions: NAS_ADMIN_PERMISSIONS });
     await waitFor(() => expect(screen.getByText('cancel-me')).toBeInTheDocument());
 
-    fireEvent.click(nasButton('common.delete'));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete NAS connection cancel-me' }));
     expect(mockDelete).not.toHaveBeenCalled();
     cs.mockRestore();
   });

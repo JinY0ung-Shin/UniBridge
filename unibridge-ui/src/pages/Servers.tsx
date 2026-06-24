@@ -87,6 +87,7 @@ function Servers() {
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<FormState>({ ...emptyForm });
+  const [serverSearch, setServerSearch] = useState('');
 
   const serversQuery = useQuery({
     queryKey: ['servers'],
@@ -197,6 +198,20 @@ function Servers() {
   }
 
   const servers = serversQuery.data ?? [];
+  const normalizedServerSearch = serverSearch.trim().toLowerCase();
+  const filteredServers = normalizedServerSearch
+    ? servers.filter((server) => [
+        server.name,
+        server.address,
+        server.description,
+        server.disk_mountpoints || t('servers.diskMountpointsInherited'),
+        server.enabled ? (server.status ?? 'unknown') : t('servers.disabled'),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedServerSearch))
+    : servers;
   const saving = createMutation.isPending || updateMutation.isPending;
 
   return (
@@ -206,62 +221,111 @@ function Servers() {
           <h1>{t('servers.title')}</h1>
           <p className="page-subtitle">{t('servers.subtitle')}</p>
         </div>
-        {canWrite && (
-          <button className="btn btn-primary" onClick={openCreate}>{t('servers.add')}</button>
-        )}
+        <div className="page-header__actions connections-header-actions">
+          {servers.length > 0 && (
+            <input
+              className="connection-search-input"
+              type="search"
+              value={serverSearch}
+              onChange={(event) => setServerSearch(event.target.value)}
+              placeholder={t('servers.searchPlaceholder')}
+              aria-label={t('servers.searchPlaceholder')}
+            />
+          )}
+          {canWrite && (
+            <button type="button" className="btn btn-primary" onClick={openCreate}>{t('servers.add')}</button>
+          )}
+        </div>
       </div>
 
-      {serversQuery.isLoading && <div className="loading-message">{t('common.loading')}</div>}
-      {serversQuery.isError && <div className="error-banner">{t('common.errorOccurred')}</div>}
+      {serversQuery.isLoading && <div className="loading-message" role="status">{t('common.loading')}</div>}
+      {serversQuery.isError && <div className="error-banner" role="alert">{t('common.errorOccurred')}</div>}
 
       {!serversQuery.isLoading && !serversQuery.isError && (
         servers.length === 0 ? (
           <div className="empty-state"><p>{t('servers.empty')}</p></div>
+        ) : filteredServers.length === 0 ? (
+          <div className="empty-state">
+            <h3>{t('servers.noSearchResults')}</h3>
+            <p>{t('servers.noSearchResultsDesc')}</p>
+            <button type="button" className="btn btn-secondary empty-state-action" onClick={() => setServerSearch('')}>
+              {t('common.clearSearch')}
+            </button>
+          </div>
         ) : (
           <div className="table-container">
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>{t('servers.statusLabel')}</th>
-                  <th>{t('servers.name')}</th>
-                  <th>{t('servers.address')}</th>
-                  <th>{t('servers.diskMountpoints')}</th>
-                  <th>{t('servers.description')}</th>
-                  <th>{t('common.actions')}</th>
+                  <th scope="col">{t('servers.statusLabel')}</th>
+                  <th scope="col">{t('servers.name')}</th>
+                  <th scope="col">{t('servers.address')}</th>
+                  <th scope="col">{t('servers.diskMountpoints')}</th>
+                  <th scope="col">{t('servers.description')}</th>
+                  <th scope="col">{t('common.actions')}</th>
                 </tr>
               </thead>
               <tbody>
-                {servers.map((s) => (
-                  <tr key={s.id}>
-                    <td>
-                      <span className={`status-badge ${statusClass(s.enabled ? s.status : 'disabled')}`}>
-                        {s.enabled ? (s.status ?? 'unknown') : t('servers.disabled')}
-                      </span>
-                    </td>
-                    <td>
-                      <button className="link-button" onClick={() => navigate(`/servers/${s.id}`)}>{s.name}</button>
-                    </td>
-                    <td className="cell-target">{s.address}</td>
-                    <td className="cell-target">{s.disk_mountpoints || t('servers.diskMountpointsInherited')}</td>
-                    <td>{s.description}</td>
-                    <td className="cell-actions">
-                      <button className="btn btn-sm btn-secondary" onClick={() => testMutation.mutate(s.id)} disabled={testMutation.isPending}>
-                        {t('servers.test')}
-                      </button>
-                      {canWrite && (
-                        <>
-                          <button className="btn btn-sm btn-secondary" onClick={() => openEdit(s)}>{t('common.edit')}</button>
-                          <button
-                            className="btn btn-sm btn-danger"
-                            onClick={() => { if (window.confirm(t('servers.deleteConfirm', { name: s.name }))) deleteMutation.mutate(s.id); }}
-                          >
-                            {t('common.delete')}
-                          </button>
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {filteredServers.map((s) => {
+                  const isTesting = testMutation.isPending && testMutation.variables === s.id;
+                  const isDeleting = deleteMutation.isPending && deleteMutation.variables === s.id;
+                  return (
+                    <tr key={s.id}>
+                      <td>
+                        <span className={`status-badge ${statusClass(s.enabled ? s.status : 'disabled')}`}>
+                          {s.enabled ? (s.status ?? 'unknown') : t('servers.disabled')}
+                        </span>
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="link-button"
+                          aria-label={t('servers.openDetails', { name: s.name })}
+                          onClick={() => navigate(`/servers/${s.id}`)}
+                        >
+                          {s.name}
+                        </button>
+                      </td>
+                      <td className="cell-target">{s.address}</td>
+                      <td className="cell-target">{s.disk_mountpoints || t('servers.diskMountpointsInherited')}</td>
+                      <td>{s.description}</td>
+                      <td className="cell-actions">
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          aria-label={t('servers.testServer', { name: s.name })}
+                          onClick={() => testMutation.mutate(s.id)}
+                          disabled={testMutation.isPending}
+                          aria-busy={isTesting}
+                        >
+                          {isTesting ? t('common.testing') : t('servers.test')}
+                        </button>
+                        {canWrite && (
+                          <>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-secondary"
+                              aria-label={t('servers.editServer', { name: s.name })}
+                              onClick={() => openEdit(s)}
+                            >
+                              {t('common.edit')}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-danger"
+                              aria-label={t('servers.deleteServer', { name: s.name })}
+                              onClick={() => { if (window.confirm(t('servers.deleteConfirm', { name: s.name }))) deleteMutation.mutate(s.id); }}
+                              disabled={deleteMutation.isPending}
+                              aria-busy={isDeleting}
+                            >
+                              {isDeleting ? t('common.deleting') : t('common.delete')}
+                            </button>
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -272,40 +336,58 @@ function Servers() {
         <ResourceModal
           title={editingId == null ? t('servers.add') : t('servers.edit')}
           onClose={closeModal}
-          closeLabel={t('common.cancel')}
+          closeLabel={t('common.close')}
         >
           <form onSubmit={(e) => { e.preventDefault(); submit(); }}>
             <div className="form-grid">
               <div className="form-group">
-                <label>{t('servers.name')}</label>
+                <label htmlFor="server-name">{t('servers.name')}</label>
                 <input
+                  id="server-name"
                   value={form.name}
                   disabled={editingId != null}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                   placeholder="web-prod-1"
+                  aria-label={t('servers.name')}
                   required
                 />
               </div>
               <div className="form-group form-group--full">
-                <label>{t('servers.address')} <span className="hint">{t('servers.addressHint')}</span></label>
+                <label htmlFor="server-address">
+                  {t('servers.address')} <span id="server-address-hint" className="hint">{t('servers.addressHint')}</span>
+                </label>
                 <input
+                  id="server-address"
                   value={form.address}
                   onChange={(e) => setForm({ ...form, address: e.target.value })}
                   placeholder="10.0.0.5:39100"
+                  aria-label={t('servers.address')}
+                  aria-describedby="server-address-hint"
                   required
                 />
               </div>
               <div className="form-group form-group--full">
-                <label>{t('servers.diskMountpoints')} <span className="hint">{t('servers.diskMountpointsHint')}</span></label>
+                <label htmlFor="server-disk-mountpoints">
+                  {t('servers.diskMountpoints')}{' '}
+                  <span id="server-disk-mountpoints-hint" className="hint">{t('servers.diskMountpointsHint')}</span>
+                </label>
                 <input
+                  id="server-disk-mountpoints"
                   value={form.disk_mountpoints}
                   onChange={(e) => setForm({ ...form, disk_mountpoints: e.target.value })}
                   placeholder={t('servers.diskMountpointsPlaceholder')}
+                  aria-label={t('servers.diskMountpoints')}
+                  aria-describedby="server-disk-mountpoints-hint"
                 />
               </div>
               <div className="form-group form-group--full">
-                <label>{t('servers.description')}</label>
-                <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+                <label htmlFor="server-description">{t('servers.description')}</label>
+                <input
+                  id="server-description"
+                  value={form.description}
+                  onChange={(e) => setForm({ ...form, description: e.target.value })}
+                  aria-label={t('servers.description')}
+                />
               </div>
               <div className="form-group">
                 <label>&nbsp;</label>
@@ -317,34 +399,42 @@ function Servers() {
             </div>
 
             <div className="form-group form-group--full">
-              <label>{t('servers.thresholdsTitle')} <span className="hint">{t('servers.thresholdsHint')}</span></label>
+              <label>
+                <span id="server-thresholds-label">{t('servers.thresholdsTitle')}</span>{' '}
+                <span id="server-thresholds-hint" className="hint">{t('servers.thresholdsHint')}</span>
+              </label>
             </div>
-            <div className="form-grid">
+            <div
+              className="form-grid"
+              role="group"
+              aria-labelledby="server-thresholds-label"
+              aria-describedby="server-thresholds-hint"
+            >
               <div className="form-group">
-                <label>{t('servers.diskWarn')}</label>
-                <input type="number" min={0} max={100} value={form.disk_warn_pct} onChange={(e) => setForm({ ...form, disk_warn_pct: e.target.value })} placeholder="80" />
+                <label htmlFor="server-disk-warn">{t('servers.diskWarn')}</label>
+                <input id="server-disk-warn" type="number" min={0} max={100} value={form.disk_warn_pct} onChange={(e) => setForm({ ...form, disk_warn_pct: e.target.value })} placeholder="80" aria-label={t('servers.diskWarn')} />
               </div>
               <div className="form-group">
-                <label>{t('servers.diskCrit')}</label>
-                <input type="number" min={0} max={100} value={form.disk_crit_pct} onChange={(e) => setForm({ ...form, disk_crit_pct: e.target.value })} placeholder="90" />
+                <label htmlFor="server-disk-crit">{t('servers.diskCrit')}</label>
+                <input id="server-disk-crit" type="number" min={0} max={100} value={form.disk_crit_pct} onChange={(e) => setForm({ ...form, disk_crit_pct: e.target.value })} placeholder="90" aria-label={t('servers.diskCrit')} />
               </div>
               <div className="form-group">
-                <label>{t('servers.cpuWarn')}</label>
-                <input type="number" min={0} max={100} value={form.cpu_warn_pct} onChange={(e) => setForm({ ...form, cpu_warn_pct: e.target.value })} placeholder="90" />
+                <label htmlFor="server-cpu-warn">{t('servers.cpuWarn')}</label>
+                <input id="server-cpu-warn" type="number" min={0} max={100} value={form.cpu_warn_pct} onChange={(e) => setForm({ ...form, cpu_warn_pct: e.target.value })} placeholder="90" aria-label={t('servers.cpuWarn')} />
               </div>
               <div className="form-group">
-                <label>{t('servers.memWarn')}</label>
-                <input type="number" min={0} max={100} value={form.mem_warn_pct} onChange={(e) => setForm({ ...form, mem_warn_pct: e.target.value })} placeholder="90" />
+                <label htmlFor="server-mem-warn">{t('servers.memWarn')}</label>
+                <input id="server-mem-warn" type="number" min={0} max={100} value={form.mem_warn_pct} onChange={(e) => setForm({ ...form, mem_warn_pct: e.target.value })} placeholder="90" aria-label={t('servers.memWarn')} />
               </div>
             </div>
 
             {(createMutation.isError || updateMutation.isError) && (
-              <div className="form-error">{t('servers.saveFailed')}</div>
+              <div className="form-error" role="alert">{t('servers.saveFailed')}</div>
             )}
 
             <div className="modal-actions">
               <button type="button" className="btn btn-secondary" onClick={closeModal}>{t('common.cancel')}</button>
-              <button type="submit" className="btn btn-primary" disabled={saving}>
+              <button type="submit" className="btn btn-primary" disabled={saving} aria-busy={saving}>
                 {saving ? t('common.saving') : editingId == null ? t('common.create') : t('common.save')}
               </button>
             </div>

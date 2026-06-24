@@ -292,8 +292,23 @@ function GatewayMonitoring() {
   const hasPartialError = !isError && (
     requestsQuery.isError || requestsTotalQuery.isError ||
     statusQuery.isError || latencyQuery.isError || routesComparisonQuery.isError ||
-    consumersComparisonQuery.isError
+    consumersComparisonQuery.isError || routesSeriesQuery.isError || consumersSeriesQuery.isError
   );
+  const routeDetailHasError = routeSummaryQuery.isError
+    || routeRequestsQuery.isError
+    || routeStatusQuery.isError
+    || routeVolumQuery.isError;
+
+  function toggleSelectedRoute(route: string) {
+    setSelectedRoute((current) => (current === route ? null : route));
+  }
+
+  function handleRouteRowKeyDown(event: KeyboardEvent<HTMLTableRowElement>, route: string) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggleSelectedRoute(route);
+    }
+  }
 
   return (
     <div className="gateway-monitoring">
@@ -330,9 +345,9 @@ function GatewayMonitoring() {
         </div>
       </div>
 
-      {isLoading && <div className="loading-message">{t('gatewayMonitoring.loadingMetrics')}</div>}
-      {isError && <div className="error-banner">{t('gatewayMonitoring.loadFailed')}</div>}
-      {hasPartialError && <div className="error-banner">{t('gatewayMonitoring.partialLoadFailed')}</div>}
+      {isLoading && <div className="loading-message" role="status">{t('gatewayMonitoring.loadingMetrics')}</div>}
+      {isError && <div className="error-banner" role="alert">{t('gatewayMonitoring.loadFailed')}</div>}
+      {hasPartialError && <div className="error-banner" role="alert">{t('gatewayMonitoring.partialLoadFailed')}</div>}
 
       {/* Summary Cards */}
       {summary && (
@@ -478,7 +493,12 @@ function GatewayMonitoring() {
                   <tr
                     key={r.route}
                     className={`route-row ${selectedRoute === r.route ? 'route-row--selected' : ''}`}
-                    onClick={() => setSelectedRoute(selectedRoute === r.route ? null : r.route)}
+                    onClick={() => toggleSelectedRoute(r.route)}
+                    onKeyDown={(event) => handleRouteRowKeyDown(event, r.route)}
+                    tabIndex={0}
+                    role="button"
+                    aria-pressed={selectedRoute === r.route}
+                    aria-label={t('gatewayMonitoring.openRouteDetail', { route: routeLabel(r) })}
                   >
                     <td className="cell-alias" title={r.name ? r.route : undefined}>{routeLabel(r)}</td>
                     <td className="cell-metric"><BarCell value={r.requests} max={maxRequests} /></td>
@@ -516,12 +536,12 @@ function GatewayMonitoring() {
             <table className="data-table comparison-table">
               <thead>
                 <tr>
-                  <th>{t('gatewayMonitoring.apiKey')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.requests')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.share')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.errorRate')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.latencyP50')}</th>
-                  <th style={{ textAlign: 'right' }}>{t('gatewayMonitoring.latencyP95')}</th>
+                  <th scope="col">{t('gatewayMonitoring.apiKey')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('gatewayMonitoring.requests')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('gatewayMonitoring.share')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('gatewayMonitoring.errorRate')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('gatewayMonitoring.latencyP50')}</th>
+                  <th scope="col" style={{ textAlign: 'right' }}>{t('gatewayMonitoring.latencyP95')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -561,11 +581,27 @@ function GatewayMonitoring() {
         <div className="route-detail-panel">
           <div className="route-detail-header">
             <span className="route-detail-title">{selectedRouteLabel}</span>
-            <button className="route-detail-close" onClick={() => setSelectedRoute(null)}>&times;</button>
+            <button
+              type="button"
+              className="route-detail-close"
+              onClick={() => setSelectedRoute(null)}
+              aria-label={t('gatewayMonitoring.closeRouteDetail')}
+              title={t('gatewayMonitoring.closeRouteDetail')}
+            >
+              &times;
+            </button>
           </div>
 
+          {routeDetailHasError && (
+            <div className="error-banner" role="alert">
+              {routeSummaryQuery.isError
+                ? t('gatewayMonitoring.loadFailed')
+                : t('gatewayMonitoring.partialLoadFailed')}
+            </div>
+          )}
+
           {routeSummaryQuery.isLoading ? (
-            <div className="loading-message">{t('gatewayMonitoring.loadingMetrics')}</div>
+            <div className="loading-message" role="status">{t('gatewayMonitoring.loadingMetrics')}</div>
           ) : routeSummaryQuery.data ? (
             <>
               <div className="metric-cards">
@@ -661,7 +697,9 @@ function GatewayMonitoring() {
                 )}
               </div>
             </>
-          ) : null}
+          ) : routeSummaryQuery.isError ? null : (
+            <div className="no-data">{t('gatewayMonitoring.noRouteDetailData')}</div>
+          )}
         </div>
       )}
     </div>

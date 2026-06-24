@@ -87,7 +87,7 @@ function SaveQueryModal({ sql, databaseAlias, onClose }: SaveQueryModalProps) {
           </div>
         </div>
 
-        {error && <div className="form-error">{error}</div>}
+        {error && <div className="form-error" role="alert">{error}</div>}
 
         <div className="modal-actions">
           <button type="button" className="btn btn-secondary" onClick={onClose}>
@@ -97,6 +97,7 @@ function SaveQueryModal({ sql, databaseAlias, onClose }: SaveQueryModalProps) {
             type="submit"
             className="btn btn-primary"
             disabled={!name.trim() || createMutation.isPending}
+            aria-busy={createMutation.isPending}
           >
             {createMutation.isPending ? t('common.saving') : t('common.save')}
           </button>

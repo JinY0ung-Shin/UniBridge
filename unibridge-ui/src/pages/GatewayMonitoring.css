@@ -20,6 +20,11 @@
   background: var(--bg-hover);
 }
 
+.route-row:focus-visible {
+  outline: 2px solid var(--accent-blue, #3b82f6);
+  outline-offset: -2px;
+}
+
 .route-row--selected {
   background: var(--bg-tertiary);
 }

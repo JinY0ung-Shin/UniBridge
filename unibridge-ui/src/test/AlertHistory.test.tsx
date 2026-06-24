@@ -60,10 +60,12 @@ describe('AlertHistory page', () => {
     renderWithProviders(<AlertHistory />);
     await waitFor(() => expect(mockGet).toHaveBeenCalled());
 
-    const select = screen.getByRole('combobox');
+    const select = screen.getByRole('combobox', { name: /Alert Type|알림 유형/i });
+    expect(select).toHaveAttribute('id', 'alert-history-type-filter');
     fireEvent.change(select, { target: { value: 'triggered' } });
 
-    const targetInput = screen.getByPlaceholderText(/Target|filterTarget/i);
+    const targetInput = screen.getByRole('textbox', { name: /Target|대상/i });
+    expect(targetInput).toHaveAttribute('id', 'alert-history-target-filter');
     await userEvent.type(targetInput, 'db1');
 
     const searchBtn = screen.getByRole('button', { name: /Search|검색/i });
@@ -81,10 +83,38 @@ describe('AlertHistory page', () => {
     });
   });
 
+  it('resets draft and applied filters', async () => {
+    mockGet.mockResolvedValue([makeEntry()]);
+    renderWithProviders(<AlertHistory />);
+    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+
+    const select = screen.getByRole('combobox');
+    fireEvent.change(select, { target: { value: 'triggered' } });
+    const targetInput = screen.getByRole('textbox', { name: /Target|대상/i });
+    await userEvent.type(targetInput, 'db1');
+    fireEvent.click(screen.getByRole('button', { name: /Search|검색/i }));
+
+    await waitFor(() => {
+      expect(mockGet).toHaveBeenCalledWith(
+        expect.objectContaining({ alert_type: 'triggered', target: 'db1', offset: 0 }),
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Reset filters|필터 초기화/i }));
+
+    expect(select).toHaveValue('');
+    expect(targetInput).toHaveValue('');
+    await waitFor(() => {
+      expect(mockGet).toHaveBeenLastCalledWith(
+        expect.objectContaining({ alert_type: undefined, target: undefined, offset: 0 }),
+      );
+    });
+  });
+
   it('Enter key in target input applies filters', async () => {
     mockGet.mockResolvedValue([makeEntry()]);
     renderWithProviders(<AlertHistory />);
-    const targetInput = screen.getByPlaceholderText(/Target|filterTarget/i);
+    const targetInput = screen.getByRole('textbox', { name: /Target|대상/i });
     fireEvent.keyDown(targetInput, { key: 'Enter' });
     await waitFor(() => expect(mockGet).toHaveBeenCalled());
   });
@@ -98,20 +128,25 @@ describe('AlertHistory page', () => {
     renderWithProviders(<AlertHistory />);
     await waitFor(() => expect(screen.getByText('entry-0')).toBeInTheDocument());
 
-    const nextBtn = screen.getByRole('button', { name: /Next|다음/i });
+    expect(screen.getByRole('status')).toHaveTextContent(/Page 1|페이지 1/i);
+
+    const nextBtn = screen.getByRole('button', { name: /Next page|다음 페이지/i });
     fireEvent.click(nextBtn);
     await waitFor(() => {
       expect(mockGet).toHaveBeenLastCalledWith(
         expect.objectContaining({ offset: 50 }),
       );
     });
+    await waitFor(() => {
+      expect(screen.getByRole('status')).toHaveTextContent(/Page 2|페이지 2/i);
+    });
     // After page change, await fresh data render
     await waitFor(() => {
-      const prev = screen.queryByRole('button', { name: /Previous|이전/i });
+      const prev = screen.queryByRole('button', { name: /Previous page|이전 페이지/i });
       expect(prev).not.toBeNull();
     });
 
-    const prevBtn = screen.getByRole('button', { name: /Previous|이전/i });
+    const prevBtn = screen.getByRole('button', { name: /Previous page|이전 페이지/i });
     fireEvent.click(prevBtn);
     await waitFor(() => {
       expect(mockGet).toHaveBeenLastCalledWith(

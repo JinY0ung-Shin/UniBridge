@@ -38,12 +38,46 @@ describe('Roles', () => {
     expect(screen.getByText('custom')).toBeInTheDocument();
   });
 
+  it('filters roles by search text', async () => {
+    mockedGetRoles.mockResolvedValue([
+      makeRole(),
+      makeRole({ id: 2, name: 'analyst', description: 'Reports only', is_system: false, permissions: ['query.execute'] }),
+    ]);
+
+    renderWithProviders(<Roles />);
+
+    await waitFor(() => {
+      expect(screen.getByText('admin')).toBeInTheDocument();
+    });
+
+    const search = screen.getByRole('searchbox', { name: /search roles/i });
+    await userEvent.type(search, 'reports');
+
+    expect(screen.queryByText('admin')).not.toBeInTheDocument();
+    expect(screen.getByText('analyst')).toBeInTheDocument();
+
+    await userEvent.clear(search);
+    await userEvent.type(search, 'missing');
+    expect(screen.getByText(/No matching roles|일치하는 역할/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /Clear search|검색 지우기/i }));
+    expect(screen.getByText('admin')).toBeInTheDocument();
+    expect(screen.getByText('analyst')).toBeInTheDocument();
+  });
+
   it('renders empty state when loading', () => {
     mockedGetRoles.mockReturnValue(new Promise(() => {}));
 
     renderWithProviders(<Roles />);
 
     expect(screen.getByText('Loading roles...')).toBeInTheDocument();
+  });
+
+  it('renders empty state when no roles exist', async () => {
+    renderWithProviders(<Roles />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No roles')).toBeInTheDocument();
+    });
   });
 
   it('system roles do not have delete button', async () => {
@@ -55,7 +89,7 @@ describe('Roles', () => {
       expect(screen.getByText('admin')).toBeInTheDocument();
     });
 
-    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit role admin' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
   });
 
@@ -70,8 +104,8 @@ describe('Roles', () => {
       expect(screen.getByText('custom')).toBeInTheDocument();
     });
 
-    expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit role custom' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete role custom' })).toBeInTheDocument();
   });
 
   it('hides write actions for users with read-only role permission', async () => {
@@ -99,5 +133,7 @@ describe('Roles', () => {
 
     expect(screen.getByRole('heading', { name: 'Add Role' })).toBeInTheDocument();
     expect(screen.getByRole('dialog', { name: 'Add Role' })).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveAttribute('id', 'role-name');
+    expect(screen.getByRole('textbox', { name: 'Description' })).toHaveAttribute('id', 'role-description');
   });
 });

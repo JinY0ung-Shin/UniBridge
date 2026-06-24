@@ -183,6 +183,7 @@ export default function AlertRecipientsPanel() {
 
   function handleAdminsSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!hasAdminEmailChanges || updateAdminsMutation.isPending) return;
     updateAdminsMutation.mutate(parseEmails(adminEmailsValue));
   }
 
@@ -212,6 +213,10 @@ export default function AlertRecipientsPanel() {
   const isLoading = settingsQuery.isLoading || resourcesQuery.isLoading;
   const isError = settingsQuery.isError || resourcesQuery.isError;
   const hasPendingAssigneeChanges = pendingAssigneeChanges.length > 0;
+  const hasAdminEmailChanges = Boolean(
+    settings &&
+      !sameEmails(parseEmails(adminEmailsValue), settings.admin_emails),
+  );
 
   return (
     <div className="alert-tab-content">
@@ -229,23 +234,26 @@ export default function AlertRecipientsPanel() {
             disabled={!hasSettings || !canWrite}
             onChange={(e) => setAdminEmailsDraft(e.target.value)}
             placeholder="ops@example.com, oncall@example.com"
+            aria-describedby="admin-emails-hint"
           />
-          <p className="form-hint">{t('alerts.adminEmailsHint')}</p>
+          <p id="admin-emails-hint" className="form-hint">{t('alerts.adminEmailsHint')}</p>
         </div>
         {canWrite && (
           <div className="setting-control-row">
             <button
               type="submit"
               className="btn btn-primary"
-              disabled={!hasSettings || updateAdminsMutation.isPending}
+              disabled={!hasSettings || !hasAdminEmailChanges || updateAdminsMutation.isPending}
+              aria-busy={updateAdminsMutation.isPending}
             >
-              {updateAdminsMutation.isPending ? t('common.saving') : t('alerts.adminEmailsSaved')}
+              {updateAdminsMutation.isPending ? t('common.saving') : t('alerts.adminEmailsSave')}
             </button>
             <button
               type="button"
               className="btn btn-outline"
               onClick={handleTestAdmins}
               disabled={!canTestAdmins}
+              aria-busy={testAdminsMutation.isPending}
             >
               {testAdminsMutation.isPending ? t('common.loading') : t('alerts.testAdmins')}
             </button>
@@ -257,8 +265,8 @@ export default function AlertRecipientsPanel() {
         <h2>{t('alerts.assigneesTitle')}</h2>
       </div>
 
-      {isLoading && <div className="loading-message">{t('common.loading')}</div>}
-      {isError && <div className="error-banner">{t('common.errorOccurred')}</div>}
+      {isLoading && <div className="loading-message" role="status">{t('common.loading')}</div>}
+      {isError && <div className="error-banner" role="alert">{t('common.errorOccurred')}</div>}
       {!isLoading && resources.length === 0 && !isError && (
         <div className="empty-state"><h3>{t('alerts.noResources')}</h3></div>
       )}
@@ -285,6 +293,7 @@ export default function AlertRecipientsPanel() {
                   className="btn btn-primary"
                   onClick={handleAssigneesSave}
                   disabled={!hasPendingAssigneeChanges || saveAssigneesMutation.isPending}
+                  aria-busy={saveAssigneesMutation.isPending}
                 >
                   {saveAssigneesMutation.isPending ? t('common.saving') : t('alerts.saveAssigneeChanges')}
                 </button>
@@ -302,9 +311,9 @@ export default function AlertRecipientsPanel() {
                   <table className="data-table">
                     <thead>
                       <tr>
-                        <th>{t('alerts.resource')}</th>
-                        <th>{t('alerts.resourceAlerts')}</th>
-                        <th>{t('alerts.assignees')}</th>
+                        <th scope="col">{t('alerts.resource')}</th>
+                        <th scope="col">{t('alerts.resourceAlerts')}</th>
+                        <th scope="col">{t('alerts.assignees')}</th>
                       </tr>
                     </thead>
                     <tbody>

@@ -28,7 +28,7 @@ function DataTablePageHeader({
         <div className="page-header__actions">
           {extra}
           {showAdd && (
-            <button className="btn btn-primary" onClick={onAdd}>
+            <button type="button" className="btn btn-primary" onClick={onAdd}>
               {addLabel}
             </button>
           )}

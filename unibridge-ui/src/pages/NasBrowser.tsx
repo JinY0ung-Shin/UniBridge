@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type KeyboardEvent } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -182,6 +182,7 @@ function NasBrowser() {
   const [downloadingPaths, setDownloadingPaths] = useState<Set<string>>(new Set());
   const [apiExamplesOpen, setApiExamplesOpen] = useState(false);
   const [apiExamplesCopied, setApiExamplesCopied] = useState(false);
+  const apiExamplesCopyTimeoutRef = useRef<number | null>(null);
 
   // Monotonic id so out-of-order list responses can be discarded.
   const fetchReqId = useRef(0);
@@ -254,6 +255,12 @@ function NasBrowser() {
     const parts = path.replace(/\/$/, '').split('/').filter(Boolean);
     parts.pop();
     goToPath(parts.join('/'));
+  }
+
+  function handleFolderRowKeyDown(event: KeyboardEvent<HTMLTableRowElement>, action: () => void) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    action();
   }
 
   async function handleDownload(entryPath: string) {
@@ -357,19 +364,45 @@ function NasBrowser() {
   }
 
   function openApiExamples() {
+    clearApiExamplesCopyTimer();
     setApiExamplesCopied(false);
     setApiExamplesOpen(true);
   }
+
+  function closeApiExamples() {
+    clearApiExamplesCopyTimer();
+    setApiExamplesCopied(false);
+    setApiExamplesOpen(false);
+  }
+
+  function clearApiExamplesCopyTimer() {
+    if (apiExamplesCopyTimeoutRef.current !== null) {
+      window.clearTimeout(apiExamplesCopyTimeoutRef.current);
+      apiExamplesCopyTimeoutRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      clearApiExamplesCopyTimer();
+    };
+  }, []);
 
   async function handleCopyApiExamples() {
     if (!alias) return;
     const examples = buildNasApiExamples(alias, path, files, search);
     try {
+      clearApiExamplesCopyTimer();
       await navigator.clipboard.writeText(
         examples.map((example) => `${t(example.labelKey)}\n${example.curl}`).join('\n\n'),
       );
       setApiExamplesCopied(true);
+      apiExamplesCopyTimeoutRef.current = window.setTimeout(() => {
+        setApiExamplesCopied(false);
+        apiExamplesCopyTimeoutRef.current = null;
+      }, 2000);
     } catch {
+      setApiExamplesCopied(false);
       addToast({ type: 'error', title: t('nas.copyFailed') });
     }
   }
@@ -405,38 +438,40 @@ function NasBrowser() {
           <p className="page-subtitle">{t('nas.browserSubtitle')}</p>
         </div>
         <div className="page-header__actions">
-          <button className="btn btn-secondary" onClick={openApiExamples}>
+          <button type="button" className="btn btn-secondary" onClick={openApiExamples}>
             {t('nas.apiExamples')}
           </button>
-          <button className="btn btn-secondary" onClick={() => navigate('/nas')}>
+          <button type="button" className="btn btn-secondary" onClick={() => navigate('/nas')}>
             {t('nas.backToConnections')}
           </button>
         </div>
       </div>
 
-      {errored && <div className="error-banner">{t('nas.loadFailed')}</div>}
+      {errored && <div className="error-banner" role="alert">{t('nas.loadFailed')}</div>}
 
       {/* Breadcrumbs */}
-      <div className="nas-breadcrumbs">
+      <nav className="nas-breadcrumbs" aria-label={t('nas.breadcrumbs')}>
         {breadcrumbs.map((bc, i) => (
           <span key={bc.path || 'root'}>
-            {i > 0 && <span className="nas-breadcrumb-sep">/</span>}
+            {i > 0 && <span className="nas-breadcrumb-sep" aria-hidden="true">/</span>}
             <button
+              type="button"
               className={`nas-breadcrumb ${i === breadcrumbs.length - 1 ? 'nas-breadcrumb--active' : ''}`}
+              aria-current={i === breadcrumbs.length - 1 ? 'page' : undefined}
               onClick={() => goToPath(bc.path)}
             >
               {bc.label}
             </button>
           </span>
         ))}
-      </div>
+      </nav>
 
       {/* Toolbar: per-folder search + count */}
       <div className="nas-toolbar">
         <div className="nas-search">
           <span className="nas-search-icon"><SearchIcon /></span>
           <input
-            type="text"
+            type="search"
             className="nas-search-input"
             placeholder={t('nas.searchPlaceholder')}
             value={searchInput}
@@ -470,31 +505,32 @@ function NasBrowser() {
 
       {/* Entry listing */}
       {loading && shownCount === 0 ? (
-        <div className="loading-message">{t('nas.loadingEntries')}</div>
+        <div className="loading-message" role="status">{t('nas.loadingEntries')}</div>
       ) : (
         <div className="table-container">
           <table className="data-table nas-table">
             <thead>
               <tr>
-                <th>{t('nas.fileName')}</th>
-                <th>{t('nas.size')}</th>
-                <th>{t('nas.lastModified')}</th>
-                <th className="nas-actions-col">{t('common.actions')}</th>
+                <th scope="col">{t('nas.fileName')}</th>
+                <th scope="col">{t('nas.size')}</th>
+                <th scope="col">{t('nas.lastModified')}</th>
+                <th scope="col" className="nas-actions-col">{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
               {path && !searching && (
-                <tr className="nas-row-folder" onClick={navigateUp} style={{ cursor: 'pointer' }}>
+                <tr
+                  className="nas-row-folder"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={t('nas.parentDirectory')}
+                  onClick={navigateUp}
+                  onKeyDown={(event) => handleFolderRowKeyDown(event, navigateUp)}
+                >
                   <td className="cell-alias">
-                    <button
-                      type="button"
-                      className="nas-name-btn nas-icon nas-icon-folder nas-icon--up"
-                      onClick={(e) => { e.stopPropagation(); navigateUp(); }}
-                      aria-label={t('nas.parentDirectory')}
-                      title={t('nas.parentDirectory')}
-                    >
+                    <span className="nas-name-btn nas-icon nas-icon-folder nas-icon--up" title={t('nas.parentDirectory')}>
                       ..
-                    </button>
+                    </span>
                   </td>
                   <td>—</td>
                   <td>—</td>
@@ -505,18 +541,16 @@ function NasBrowser() {
                 <tr
                   key={f.path}
                   className="nas-row-folder"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${t('nas.folder')}: ${f.name}`}
                   onClick={() => goToPath(f.path)}
-                  style={{ cursor: 'pointer' }}
+                  onKeyDown={(event) => handleFolderRowKeyDown(event, () => goToPath(f.path))}
                 >
                   <td className="cell-alias">
-                    <button
-                      type="button"
-                      className="nas-name-btn nas-icon nas-icon-folder"
-                      onClick={(e) => { e.stopPropagation(); goToPath(f.path); }}
-                      aria-label={`${t('nas.folder')}: ${f.name}`}
-                    >
+                    <span className="nas-name-btn nas-icon nas-icon-folder">
                       {f.name}
-                    </button>
+                    </span>
                   </td>
                   <td>—</td>
                   <td>{formatKST(f.modified_time)}</td>
@@ -544,20 +578,26 @@ function NasBrowser() {
                     <td>
                       <div className="action-buttons nas-actions">
                         <button
+                          type="button"
                           className="nas-action-btn"
                           onClick={(e) => { e.stopPropagation(); handleDownload(file.path); }}
                           disabled={busy}
                           aria-busy={busy}
-                          aria-label={busy ? t('nas.downloading') : t('nas.download')}
-                          title={busy ? t('nas.downloading') : t('nas.download')}
+                          aria-label={busy
+                            ? t('nas.downloadingFile', { name: file.name })
+                            : t('nas.downloadFile', { name: file.name })}
+                          title={busy
+                            ? t('nas.downloadingFile', { name: file.name })
+                            : t('nas.downloadFile', { name: file.name })}
                         >
                           {busy ? <span className="nas-spinner" aria-hidden="true" /> : <DownloadIcon />}
                         </button>
                         <button
+                          type="button"
                           className="nas-action-btn"
                           onClick={(e) => { e.stopPropagation(); handleMetadata(file.path); }}
-                          aria-label={t('nas.metadata')}
-                          title={t('nas.metadata')}
+                          aria-label={t('nas.metadataFile', { name: file.name })}
+                          title={t('nas.metadataFile', { name: file.name })}
                         >
                           <InfoIcon />
                         </button>
@@ -579,7 +619,7 @@ function NasBrowser() {
 
       {hasMore && (
         <div className="nas-load-more">
-          <button className="btn btn-secondary" onClick={loadMore} disabled={loading}>
+          <button type="button" className="btn btn-secondary" onClick={loadMore} disabled={loading}>
             {loading ? t('common.loading') : t('nas.loadMore')}
           </button>
         </div>
@@ -596,7 +636,7 @@ function NasBrowser() {
           <div className="nas-preview-body">
             <div role="status" aria-live="polite" className="nas-preview-status">
               {preview.status === 'loading' && (
-                <div className="loading-message">{t('nas.previewLoading')}</div>
+                <div className="loading-message" role="status">{t('nas.previewLoading')}</div>
               )}
               {preview.status === 'error' && (
                 <div className="nas-preview-message">{t('nas.previewFailed')}</div>
@@ -625,6 +665,7 @@ function NasBrowser() {
           <div className="nas-preview-footer">
             <span className="nas-preview-size">{formatBytes(preview.entry.size)}</span>
             <button
+              type="button"
               className="btn btn-sm btn-primary"
               onClick={() => handleDownload(preview.entry.path)}
               disabled={downloadingPaths.has(preview.entry.path)}
@@ -660,7 +701,7 @@ function NasBrowser() {
       {apiExamplesOpen && (
         <ResourceModal
           title={t('nas.apiExamplesTitle')}
-          onClose={() => setApiExamplesOpen(false)}
+          onClose={closeApiExamples}
           closeLabel={t('common.close')}
           className="nas-api-modal"
         >
@@ -672,9 +713,17 @@ function NasBrowser() {
               </section>
             ))}
             <div className="nas-api-example-actions">
-              <button className="btn btn-sm btn-secondary" onClick={handleCopyApiExamples}>
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
+                onClick={handleCopyApiExamples}
+                aria-label={apiExamplesCopied ? t('nas.apiExamplesCopiedLabel') : t('nas.apiExamplesCopyLabel')}
+              >
                 {apiExamplesCopied ? t('nas.apiExamplesCopied') : t('nas.apiExamplesCopy')}
               </button>
+              <span className="visually-hidden" role="status" aria-live="polite">
+                {apiExamplesCopied ? t('nas.apiExamplesCopied') : ''}
+              </span>
             </div>
           </div>
         </ResourceModal>

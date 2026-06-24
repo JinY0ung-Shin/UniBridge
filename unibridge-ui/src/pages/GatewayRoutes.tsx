@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -35,6 +35,8 @@ function GatewayRoutes() {
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
   const [curlModal, setCurlModal] = useState<{ routeName: string; curl: string } | null>(null);
   const [curlCopied, setCurlCopied] = useState(false);
+  const [routeSearch, setRouteSearch] = useState('');
+  const curlCopyTimeoutRef = useRef<number | null>(null);
 
   const routesQuery = useQuery({
     queryKey: ['gateway-routes'],
@@ -56,6 +58,24 @@ function GatewayRoutes() {
   });
 
   const routes = routesQuery.data?.items ?? [];
+  const normalizedRouteSearch = routeSearch.trim().toLowerCase();
+  const filteredRoutes = normalizedRouteSearch
+    ? routes.filter((route) => {
+        const serviceKeyHeaders = routeServiceKeys(route).map((sk) => sk.header_name);
+        return [
+          route.name,
+          route.uri,
+          route.upstream_id,
+          route.status === 1 ? 'active' : 'disabled',
+          ...(route.methods || ['ALL']),
+          ...serviceKeyHeaders,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+          .includes(normalizedRouteSearch);
+      })
+    : routes;
 
   function handleDelete(route: GatewayRoute) {
     const name = route.name || route.uri;
@@ -63,6 +83,19 @@ function GatewayRoutes() {
       deleteMutation.mutate(route.id);
     }
   }
+
+  function clearCurlCopyTimer() {
+    if (curlCopyTimeoutRef.current !== null) {
+      window.clearTimeout(curlCopyTimeoutRef.current);
+      curlCopyTimeoutRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      clearCurlCopyTimer();
+    };
+  }, []);
 
   async function handleTest(routeId: string, routeName: string) {
     setTestingIds((prev) => new Set(prev).add(routeId));
@@ -98,6 +131,7 @@ function GatewayRoutes() {
   async function handleCurl(route: GatewayRoute) {
     try {
       const { curl } = await getGatewayRouteCurl(route.id);
+      clearCurlCopyTimer();
       setCurlModal({ routeName: route.name || route.uri, curl });
       setCurlCopied(false);
     } catch {
@@ -105,12 +139,27 @@ function GatewayRoutes() {
     }
   }
 
-  function handleCopy() {
+  async function handleCopy() {
     if (curlModal) {
-      navigator.clipboard.writeText(curlModal.curl);
-      setCurlCopied(true);
-      setTimeout(() => setCurlCopied(false), 2000);
+      try {
+        clearCurlCopyTimer();
+        await navigator.clipboard.writeText(curlModal.curl);
+        setCurlCopied(true);
+        curlCopyTimeoutRef.current = window.setTimeout(() => {
+          setCurlCopied(false);
+          curlCopyTimeoutRef.current = null;
+        }, 2000);
+      } catch {
+        setCurlCopied(false);
+        addToast({ type: 'error', title: t('connections.copyFailed') });
+      }
     }
+  }
+
+  function closeCurlModal() {
+    clearCurlCopyTimer();
+    setCurlCopied(false);
+    setCurlModal(null);
   }
 
   async function handleOpenApiDownload() {
@@ -149,39 +198,51 @@ function GatewayRoutes() {
           <p className="page-subtitle">{t('gatewayRoutes.subtitle')}</p>
         </div>
         <div className="page-header-actions">
-          <button className="btn btn-secondary" onClick={handleOpenApiDownload}>
+          {routes.length > 0 && (
+            <input
+              className="route-search-input"
+              type="search"
+              value={routeSearch}
+              onChange={(event) => setRouteSearch(event.target.value)}
+              placeholder={t('gatewayRoutes.searchPlaceholder')}
+              aria-label={t('gatewayRoutes.searchPlaceholder')}
+            />
+          )}
+          <button type="button" className="btn btn-secondary" onClick={handleOpenApiDownload}>
             {t('gatewayRoutes.openApiDownload')}
           </button>
           {canWrite && (
-            <button className="btn btn-primary" onClick={() => navigate('/gateway/routes/new')}>
+            <button type="button" className="btn btn-primary" onClick={() => navigate('/gateway/routes/new')}>
               {t('gatewayRoutes.addRoute')}
             </button>
           )}
         </div>
       </div>
 
-      {routesQuery.isLoading && <div className="loading-message">{t('gatewayRoutes.loadingRoutes')}</div>}
+      {routesQuery.isLoading && <div className="loading-message" role="status">{t('gatewayRoutes.loadingRoutes')}</div>}
 
       {routesQuery.isError && (
-        <div className="error-banner">{t('gatewayRoutes.loadFailed')}</div>
+        <div className="error-banner" role="alert">{t('gatewayRoutes.loadFailed')}</div>
       )}
 
-      {routes.length > 0 && (
+      {routes.length > 0 && filteredRoutes.length > 0 && (
         <div className="table-container">
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t('common.name')}</th>
-                <th>{t('gatewayRoutes.uri')}</th>
-                <th>{t('gatewayRoutes.methods')}</th>
-                <th>{t('gatewayRoutes.upstream')}</th>
-                <th>{t('gatewayRoutes.serviceKey')}</th>
-                <th>{t('common.status')}</th>
-                <th>{t('common.actions')}</th>
+                <th scope="col">{t('common.name')}</th>
+                <th scope="col">{t('gatewayRoutes.uri')}</th>
+                <th scope="col">{t('gatewayRoutes.methods')}</th>
+                <th scope="col">{t('gatewayRoutes.upstream')}</th>
+                <th scope="col">{t('gatewayRoutes.serviceKey')}</th>
+                <th scope="col">{t('common.status')}</th>
+                <th scope="col">{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
-              {routes.map((route) => (
+              {filteredRoutes.map((route) => {
+                const isDeleting = deleteMutation.isPending && deleteMutation.variables === route.id;
+                return (
                 <tr key={route.id}>
                   <td className="cell-alias">
                     {route.name || '—'}
@@ -204,7 +265,9 @@ function GatewayRoutes() {
                         {routeServiceKeys(route).map((sk) => (
                           <div key={sk.header_name} className="service-key-cell-item">
                             <span className="service-key-cell-name">{sk.header_name}</span>
-                            <span className="service-key-cell-value">{sk.header_value}</span>
+                            <span className="service-key-cell-value" title={t('gatewayRoutes.serviceKeyHidden')}>
+                              {t('gatewayRoutes.serviceKeyHidden')}
+                            </span>
                           </div>
                         ))}
                       </div>
@@ -223,14 +286,18 @@ function GatewayRoutes() {
                   <td>
                     <div className="action-buttons">
                       <button
+                        type="button"
                         className="btn btn-sm btn-outline"
+                        aria-label={t('gatewayRoutes.testRoute', { name: route.name || route.uri })}
                         onClick={() => handleTest(route.id, route.name || route.uri)}
                         disabled={testingIds.has(route.id)}
                       >
                         {t('gatewayRoutes.test')}
                       </button>
                       <button
+                        type="button"
                         className="btn btn-sm btn-outline"
+                        aria-label={t('gatewayRoutes.showCurl', { name: route.name || route.uri })}
                         onClick={() => handleCurl(route)}
                       >
                         {t('gatewayRoutes.curl')}
@@ -238,26 +305,42 @@ function GatewayRoutes() {
                       {canWrite && !route.system && (
                         <>
                           <button
+                            type="button"
                             className="btn btn-sm btn-secondary"
+                            aria-label={t('gatewayRoutes.editRoute', { name: route.name || route.uri })}
                             onClick={() => navigate(`/gateway/routes/${route.id}/edit`)}
                           >
                             {t('common.edit')}
                           </button>
                           <button
+                            type="button"
                             className="btn btn-sm btn-danger"
+                            aria-label={t('gatewayRoutes.deleteRoute', { name: route.name || route.uri })}
                             onClick={() => handleDelete(route)}
                             disabled={deleteMutation.isPending}
+                            aria-busy={isDeleting}
                           >
-                            {t('common.delete')}
+                            {isDeleting ? t('common.deleting') : t('common.delete')}
                           </button>
                         </>
                       )}
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!routesQuery.isLoading && routes.length > 0 && filteredRoutes.length === 0 && !routesQuery.isError && (
+        <div className="empty-state">
+          <h3>{t('gatewayRoutes.noSearchResults')}</h3>
+          <p>{t('gatewayRoutes.noSearchResultsDesc')}</p>
+          <button type="button" className="btn btn-secondary empty-state-action" onClick={() => setRouteSearch('')}>
+            {t('common.clearSearch')}
+          </button>
         </div>
       )}
 
@@ -271,15 +354,24 @@ function GatewayRoutes() {
       {curlModal && (
         <ResourceModal
           title={t('gatewayRoutes.curlTitle')}
-          onClose={() => setCurlModal(null)}
+          onClose={closeCurlModal}
           closeLabel={t('common.close')}
           className="modal--sm"
         >
           <div className="curl-block">
+            <div className="curl-route-name">{curlModal.routeName}</div>
             <pre className="curl-code">{curlModal.curl}</pre>
-            <button className="btn btn-sm btn-secondary curl-copy-btn" onClick={handleCopy}>
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary curl-copy-btn"
+              onClick={handleCopy}
+              aria-label={curlCopied ? t('gatewayRoutes.curlCopiedLabel') : t('gatewayRoutes.curlCopyLabel')}
+            >
               {curlCopied ? t('gatewayRoutes.curlCopied') : t('gatewayRoutes.curlCopy')}
             </button>
+            <span className="visually-hidden" role="status" aria-live="polite">
+              {curlCopied ? t('gatewayRoutes.curlCopied') : ''}
+            </span>
           </div>
         </ResourceModal>
       )}

@@ -37,6 +37,15 @@ function ResourceModal({
     document.activeElement instanceof HTMLElement ? document.activeElement : null,
   );
 
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, []);
+
   const isVisuallyHidden = useCallback((element: HTMLElement): boolean => {
     let current: HTMLElement | null = element;
     while (current && current !== dialogRef.current) {

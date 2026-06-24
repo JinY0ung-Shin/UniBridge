@@ -20,6 +20,7 @@ function BucketSelector({ value, onChange }: BucketSelectorProps) {
           key={b}
           type="button"
           className={`bucket-btn ${value === b ? 'bucket-btn--active' : ''}`}
+          aria-pressed={value === b}
           onClick={() => onChange(b)}
         >
           {t(`bucket.${b}`)}

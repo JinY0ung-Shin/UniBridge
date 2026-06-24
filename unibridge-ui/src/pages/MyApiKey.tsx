@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AxiosError } from 'axios';
@@ -9,6 +9,7 @@ import {
   renewMyApiKey,
   deleteMyApiKey,
 } from '../api/client';
+import type { ApiKey } from '../api/client';
 import { useToast } from '../components/useToast';
 import { formatKST } from '../utils/time';
 import './ApiKeys.css';
@@ -19,6 +20,11 @@ function daysUntil(iso: string): number {
   return Math.ceil((new Date(iso).getTime() - Date.now()) / MS_PER_DAY);
 }
 
+function cacheableApiKey(result: ApiKey): ApiKey {
+  if (!result.key_created || !result.api_key) return result;
+  return { ...result, api_key: `***${result.api_key.slice(-4)}` };
+}
+
 function MyApiKey() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -26,13 +32,14 @@ function MyApiKey() {
 
   const [revealedKey, setRevealedKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const copyTimeoutRef = useRef<number | null>(null);
 
   const keyQuery = useQuery({ queryKey: ['my-api-key'], queryFn: getMyApiKey });
 
   const createMut = useMutation({
     mutationFn: createMyApiKey,
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['my-api-key'] });
+      queryClient.setQueryData(['my-api-key'], cacheableApiKey(result));
       if (result.api_key) setRevealedKey(result.api_key);
     },
     onError: (err: unknown) => {
@@ -48,7 +55,7 @@ function MyApiKey() {
   const regenerateMut = useMutation({
     mutationFn: regenerateMyApiKey,
     onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ['my-api-key'] });
+      queryClient.setQueryData(['my-api-key'], cacheableApiKey(result));
       if (result.api_key) setRevealedKey(result.api_key);
     },
     onError: () => addToast({ type: 'error', title: t('myApiKey.regenerateFailed') }),
@@ -56,8 +63,8 @@ function MyApiKey() {
 
   const renewMut = useMutation({
     mutationFn: renewMyApiKey,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['my-api-key'] });
+    onSuccess: (result) => {
+      queryClient.setQueryData(['my-api-key'], result);
       addToast({ type: 'success', title: t('myApiKey.renewSuccess') });
     },
     onError: () => addToast({ type: 'error', title: t('myApiKey.renewFailed') }),
@@ -67,14 +74,30 @@ function MyApiKey() {
     mutationFn: deleteMyApiKey,
     onSuccess: () => {
       setRevealedKey(null);
-      queryClient.invalidateQueries({ queryKey: ['my-api-key'] });
+      setCopied(false);
+      queryClient.setQueryData(['my-api-key'], null);
+      addToast({ type: 'success', title: t('myApiKey.deleteSuccess') });
     },
     onError: () => addToast({ type: 'error', title: t('myApiKey.deleteFailed') }),
   });
 
   const apiKey = keyQuery.data ?? null;
 
+  function clearCopyTimer() {
+    if (copyTimeoutRef.current !== null) {
+      window.clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      clearCopyTimer();
+    };
+  }, []);
+
   function handleCreate() {
+    clearCopyTimer();
     setRevealedKey(null);
     setCopied(false);
     createMut.mutate();
@@ -82,6 +105,7 @@ function MyApiKey() {
 
   function handleRegenerate() {
     if (window.confirm(t('myApiKey.regenerateConfirm'))) {
+      clearCopyTimer();
       setRevealedKey(null);
       setCopied(false);
       regenerateMut.mutate();
@@ -94,15 +118,25 @@ function MyApiKey() {
 
   function handleDelete() {
     if (window.confirm(t('myApiKey.deleteConfirm'))) {
+      clearCopyTimer();
       deleteMut.mutate();
     }
   }
 
   async function handleCopy() {
     if (revealedKey) {
-      await navigator.clipboard.writeText(revealedKey);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      try {
+        clearCopyTimer();
+        await navigator.clipboard.writeText(revealedKey);
+        setCopied(true);
+        copyTimeoutRef.current = window.setTimeout(() => {
+          setCopied(false);
+          copyTimeoutRef.current = null;
+        }, 2000);
+      } catch {
+        setCopied(false);
+        addToast({ type: 'error', title: t('myApiKey.copyFailed') });
+      }
     }
   }
 
@@ -121,15 +155,20 @@ function MyApiKey() {
         </div>
       </div>
 
-      {keyQuery.isLoading && <div className="loading-message">{t('myApiKey.loading')}</div>}
-      {keyQuery.isError && <div className="error-banner">{t('myApiKey.loadFailed')}</div>}
+      {keyQuery.isLoading && <div className="loading-message" role="status">{t('myApiKey.loading')}</div>}
+      {keyQuery.isError && <div className="error-banner" role="alert">{t('myApiKey.loadFailed')}</div>}
 
       {revealedKey && (
-        <div className="key-created-banner">
+        <div className="key-created-banner" role="status" aria-live="polite">
           <p>{t('myApiKey.keyCreatedMessage')}</p>
           <div className="key-display">
             <code>{revealedKey}</code>
-            <button className="copy-btn" onClick={handleCopy}>
+            <button
+              type="button"
+              className="copy-btn"
+              onClick={handleCopy}
+              aria-label={copied ? t('myApiKey.copiedRevealedKey') : t('myApiKey.copyRevealedKey')}
+            >
               {copied ? t('myApiKey.copied') : t('myApiKey.copy')}
             </button>
           </div>
@@ -140,37 +179,43 @@ function MyApiKey() {
         <div className="empty-state">
           <h3>{t('myApiKey.noKey')}</h3>
           <p>{t('myApiKey.noKeyDesc')}</p>
-          <button className="btn btn-primary" onClick={handleCreate} disabled={isBusy}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleCreate}
+            disabled={isBusy}
+            aria-busy={createMut.isPending}
+          >
             {createMut.isPending ? t('common.saving') : t('myApiKey.createKey')}
           </button>
         </div>
       )}
 
       {!keyQuery.isLoading && !keyQuery.isError && apiKey && (
-        <div className="table-container">
-          {isExpired && <div className="error-banner">{t('myApiKey.expiredBanner')}</div>}
+        <div className="table-container my-api-key-panel">
+          {isExpired && <div className="error-banner" role="alert">{t('myApiKey.expiredBanner')}</div>}
           <table className="data-table">
             <tbody>
               <tr>
-                <th>{t('myApiKey.keyName')}</th>
+                <th scope="row">{t('myApiKey.keyName')}</th>
                 <td className="cell-alias">{apiKey.name}</td>
               </tr>
               <tr>
-                <th>{t('myApiKey.apiKey')}</th>
+                <th scope="row">{t('myApiKey.apiKey')}</th>
                 <td className="cell-key">{apiKey.api_key || '—'}</td>
               </tr>
               <tr>
-                <th>{t('myApiKey.scope')}</th>
+                <th scope="row">{t('myApiKey.scope')}</th>
                 <td>{t('myApiKey.scopeSummary')}</td>
               </tr>
               <tr>
-                <th>{t('myApiKey.expiresAt')}</th>
+                <th scope="row">{t('myApiKey.expiresAt')}</th>
                 <td>
                   {apiKey.expires_at ? (
                     <>
                       {formatKST(apiKey.expires_at)}{' '}
                       {isExpired ? (
-                        <span className="tag" style={{ color: 'var(--accent-red)' }}>
+                        <span className="tag tag-expired">
                           {t('myApiKey.expired')}
                         </span>
                       ) : (
@@ -184,15 +229,33 @@ function MyApiKey() {
               </tr>
             </tbody>
           </table>
-          <p className="form-hint" style={{ marginTop: 12 }}>{t('myApiKey.renewDesc')}</p>
-          <div className="action-buttons" style={{ marginTop: 8 }}>
-            <button className="btn btn-primary" onClick={handleRenew} disabled={isBusy}>
+          <p className="form-hint my-api-key-renew-note">{t('myApiKey.renewDesc')}</p>
+          <div className="action-buttons my-api-key-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={handleRenew}
+              disabled={isBusy}
+              aria-busy={renewMut.isPending}
+            >
               {renewMut.isPending ? t('common.saving') : t('myApiKey.renew')}
             </button>
-            <button className="btn btn-secondary" onClick={handleRegenerate} disabled={isBusy}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleRegenerate}
+              disabled={isBusy}
+              aria-busy={regenerateMut.isPending}
+            >
               {regenerateMut.isPending ? t('common.saving') : t('myApiKey.regenerate')}
             </button>
-            <button className="btn btn-danger" onClick={handleDelete} disabled={isBusy}>
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={handleDelete}
+              disabled={isBusy}
+              aria-busy={deleteMut.isPending}
+            >
               {deleteMut.isPending ? t('common.saving') : t('myApiKey.delete')}
             </button>
           </div>

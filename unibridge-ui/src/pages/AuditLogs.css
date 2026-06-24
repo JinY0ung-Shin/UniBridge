@@ -13,7 +13,19 @@
   gap: 10px;
   margin-bottom: 20px;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-end;
+}
+
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.filter-field label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .filter-select,
@@ -48,6 +60,12 @@
   color: var(--text-tertiary);
 }
 
+.filter-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 /* ── Audit table tweaks ── */
 
 .audit-table .audit-row {
@@ -56,6 +74,11 @@
 
 .audit-table .audit-row:hover {
   background: var(--bg-hover) !important;
+}
+
+.audit-table .audit-row:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
 }
 
 .audit-row--expanded {
@@ -148,4 +171,19 @@
 .page-info {
   font-size: 13px;
   color: var(--text-tertiary);
+}
+
+@media (max-width: 720px) {
+  .filter-select,
+  .filter-input,
+  .filter-field,
+  .filter-actions,
+  .filter-actions .btn {
+    width: 100%;
+  }
+
+  .filter-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }

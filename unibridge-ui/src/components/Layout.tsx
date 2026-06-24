@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { NavLink, Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
@@ -20,6 +20,8 @@ function Layout({ children }: LayoutProps) {
   const location = useLocation();
   const [showSettings, setShowSettings] = useState(false);
   const [navOpenPath, setNavOpenPath] = useState<string | null>(null);
+  const mobileNavToggleRef = useRef<HTMLButtonElement | null>(null);
+  const sidebarRef = useRef<HTMLElement | null>(null);
 
   const permissionsQuery = useQuery({
     queryKey: ['current-user'],
@@ -34,27 +36,56 @@ function Layout({ children }: LayoutProps) {
     hasNavPermission(perm, userPermissions);
   const isNavOpen = navOpenPath === location.pathname;
 
+  function openNavigation() {
+    setNavOpenPath(location.pathname);
+  }
+
+  function closeNavigation({ restoreFocus = true } = {}) {
+    setNavOpenPath(null);
+    if (restoreFocus) mobileNavToggleRef.current?.focus();
+  }
+
   useEffect(() => {
     if (!isNavOpen) return;
 
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    const firstNavTarget =
+      sidebarRef.current?.querySelector<HTMLElement>('.sidebar-nav .nav-link') ??
+      sidebarRef.current?.querySelector<HTMLElement>('.sidebar-logo');
+    firstNavTarget?.focus();
 
     return () => {
       document.body.style.overflow = previousOverflow;
     };
   }, [isNavOpen]);
 
+  function handleLayoutKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (!isNavOpen || event.key !== 'Escape') return;
+    event.preventDefault();
+    closeNavigation();
+  }
+
   return (
-    <div className={`layout ${isNavOpen ? 'layout--nav-open' : ''}`}>
+    <div className={`layout ${isNavOpen ? 'layout--nav-open' : ''}`} onKeyDown={handleLayoutKeyDown}>
+      <a className="skip-link" href="#main-content">
+        {t('common.skipToContent')}
+      </a>
       <header className="mobile-topbar">
         <button
+          ref={mobileNavToggleRef}
           type="button"
           className="mobile-nav-toggle"
-          aria-label={t('common.openNavigation')}
+          aria-label={isNavOpen ? t('common.closeNavigation') : t('common.openNavigation')}
           aria-controls="app-sidebar"
           aria-expanded={isNavOpen}
-          onClick={() => setNavOpenPath(location.pathname)}
+          onClick={() => {
+            if (isNavOpen) {
+              closeNavigation({ restoreFocus: false });
+            } else {
+              openNavigation();
+            }
+          }}
         >
           <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
             <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -67,16 +98,16 @@ function Layout({ children }: LayoutProps) {
         </Link>
         {username && <span className="mobile-username">{username}</span>}
       </header>
-      <aside className="sidebar" id="app-sidebar">
+      <aside ref={sidebarRef} className="sidebar" id="app-sidebar">
         <div className="sidebar-header">
           <Link to="/" className="sidebar-logo">
-            <div className="sidebar-logo-icon">
+            <div className="sidebar-logo-icon" aria-hidden="true">
               <UniBridgeLogo className="sidebar-logo-mark" />
             </div>
             <span className="sidebar-title">UniBridge</span>
           </Link>
         </div>
-        <nav className="sidebar-nav">
+        <nav className="sidebar-nav" aria-label={t('common.mainNavigation')}>
           {navItems.filter((item) => hasPermission(item.permission)).map((item, index, filtered) => {
             const prevItem = filtered[index - 1];
             const showDivider = prevItem && prevItem.section !== item.section;
@@ -91,7 +122,7 @@ function Layout({ children }: LayoutProps) {
                     `nav-link ${isActive ? 'nav-link--active' : ''}`
                   }
                 >
-                  <span className="nav-icon">
+                  <span className="nav-icon" aria-hidden="true">
                     {item.icon === 'Dashboard' && (
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <rect x="1" y="1" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
@@ -222,13 +253,19 @@ function Layout({ children }: LayoutProps) {
             <div className="sidebar-user-section">
               <span className="sidebar-username">{username}</span>
               <div className="sidebar-user-actions">
-                <button className="sidebar-settings-btn" onClick={() => setShowSettings(true)} title={t('settings.title')}>
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                <button
+                  type="button"
+                  className="sidebar-settings-btn"
+                  aria-label={t('settings.title')}
+                  title={t('settings.title')}
+                  onClick={() => setShowSettings(true)}
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
                     <path d="M6.5 1h3l.4 2.1a5.5 5.5 0 011.3.7L13.3 3l1.5 2.6-1.7 1.4a5.6 5.6 0 010 1.4l1.7 1.6-1.5 2.6-2.1-.8a5.5 5.5 0 01-1.3.7L9.5 15h-3l-.4-2.1a5.5 5.5 0 01-1.3-.7L2.7 13 1.2 10.4l1.7-1.4a5.6 5.6 0 010-1.4L1.2 5.6 2.7 3l2.1.8a5.5 5.5 0 011.3-.7L6.5 1z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
                     <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.2" />
                   </svg>
                 </button>
-                <button className="sidebar-logout-btn" onClick={logout}>{t('common.logout')}</button>
+                <button type="button" className="sidebar-logout-btn" onClick={logout}>{t('common.logout')}</button>
               </div>
             </div>
           )}
@@ -239,14 +276,22 @@ function Layout({ children }: LayoutProps) {
         type="button"
         className="nav-scrim"
         aria-label={t('common.closeNavigation')}
-        onClick={() => setNavOpenPath(null)}
+        aria-hidden={!isNavOpen}
+        tabIndex={isNavOpen ? 0 : -1}
+        onClick={() => closeNavigation()}
       />
-      <main className="main-content">
+      <main id="main-content" className="main-content" tabIndex={-1}>
         <PermissionProvider permissions={userPermissions} loaded={permissionsLoaded}>
           {permissionsQuery.isError && (
-            <div className="permission-error-banner">
+            <div className="permission-error-banner" role="alert">
               <span>{t('permissions.loadFailed')}</span>
-              <button className="btn btn-sm btn-secondary" onClick={() => permissionsQuery.refetch()}>
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
+                aria-label={t('permissions.retryLoad')}
+                title={t('permissions.retryLoad')}
+                onClick={() => permissionsQuery.refetch()}
+              >
                 {t('common.retry')}
               </button>
             </div>

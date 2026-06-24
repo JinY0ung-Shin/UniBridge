@@ -19,6 +19,9 @@ vi.mock('../api/client', () => ({
   getMetricsStatusCodes: vi.fn(),
   getMetricsLatency: vi.fn(),
   getMetricsRoutesComparison: vi.fn(),
+  getMetricsConsumersComparison: vi.fn(),
+  getRoutesComparisonSeries: vi.fn(),
+  getConsumersComparisonSeries: vi.fn(),
   getMetricsRequestsTotal: vi.fn(),
   getApiKeys: vi.fn(),
 }));
@@ -31,6 +34,9 @@ import {
   getMetricsStatusCodes,
   getMetricsLatency,
   getMetricsRoutesComparison,
+  getMetricsConsumersComparison,
+  getRoutesComparisonSeries,
+  getConsumersComparisonSeries,
   getMetricsRequestsTotal,
   getApiKeys,
 } from '../api/client';
@@ -42,8 +48,12 @@ const mockedGetMetricsRequests = vi.mocked(getMetricsRequests);
 const mockedGetMetricsStatusCodes = vi.mocked(getMetricsStatusCodes);
 const mockedGetMetricsLatency = vi.mocked(getMetricsLatency);
 const mockedGetMetricsRoutesComparison = vi.mocked(getMetricsRoutesComparison);
+const mockedGetMetricsConsumersComparison = vi.mocked(getMetricsConsumersComparison);
+const mockedGetRoutesComparisonSeries = vi.mocked(getRoutesComparisonSeries);
+const mockedGetConsumersComparisonSeries = vi.mocked(getConsumersComparisonSeries);
 const mockedGetMetricsRequestsTotal = vi.mocked(getMetricsRequestsTotal);
 const mockedGetApiKeys = vi.mocked(getApiKeys);
+const emptyBucketedRequests = { buckets: [], series: [], unit: 'requests' as const };
 
 describe('GatewayMonitoring', () => {
   beforeEach(() => {
@@ -53,6 +63,9 @@ describe('GatewayMonitoring', () => {
     mockedGetMetricsStatusCodes.mockResolvedValue([]);
     mockedGetMetricsLatency.mockResolvedValue({ p50: [], p95: [], p99: [] });
     mockedGetMetricsRoutesComparison.mockResolvedValue({ total_requests: 0, routes: [] });
+    mockedGetMetricsConsumersComparison.mockResolvedValue({ total_requests: 0, consumers: [] });
+    mockedGetRoutesComparisonSeries.mockResolvedValue(emptyBucketedRequests);
+    mockedGetConsumersComparisonSeries.mockResolvedValue(emptyBucketedRequests);
     mockedGetMetricsRequestsTotal.mockResolvedValue([]);
     mockedGetApiKeys.mockResolvedValue([]);
   });
@@ -115,6 +128,24 @@ describe('GatewayMonitoring', () => {
     expect(screen.getByText('Route Comparison')).toBeInTheDocument();
   });
 
+  it('shows partial load feedback when bucketed comparison series fail', async () => {
+    const userEvent = (await import('@testing-library/user-event')).default;
+    const user = userEvent.setup();
+    mockedGetRoutesComparisonSeries.mockRejectedValue(new Error('series failed'));
+
+    renderWithProviders(<GatewayMonitoring />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Total Requests (1h)')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Daily' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Some metrics failed to load. Data may be incomplete.')).toBeInTheDocument();
+    });
+  });
+
   it('renders route comparison table with all columns', async () => {
     mockedGetMetricsRoutesComparison.mockResolvedValue({
       total_requests: 1500,
@@ -130,6 +161,53 @@ describe('GatewayMonitoring', () => {
       expect(screen.getByText('route-a')).toBeInTheDocument();
     });
     expect(screen.getByText('route-b')).toBeInTheDocument();
+  });
+
+  it('opens route detail from the keyboard and exposes an accessible close button', async () => {
+    const userEvent = (await import('@testing-library/user-event')).default;
+    const user = userEvent.setup();
+    mockedGetMetricsRoutesComparison.mockResolvedValue({
+      total_requests: 100,
+      routes: [
+        { route: 'route-a', name: 'Orders Route', requests: 100, share: 100, error_rate: 0, latency_p50_ms: 10, latency_p95_ms: 20 },
+      ],
+    });
+
+    renderWithProviders(<GatewayMonitoring />);
+
+    const routeRow = await screen.findByRole('button', { name: 'Open route details for Orders Route' });
+    routeRow.focus();
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(routeRow).toHaveAttribute('aria-pressed', 'true');
+    });
+    expect(screen.getByRole('button', { name: 'Close route details' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close route details' }));
+    expect(routeRow).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('shows route-detail load failure when the selected route summary fails', async () => {
+    const userEvent = (await import('@testing-library/user-event')).default;
+    const user = userEvent.setup();
+    mockedGetMetricsSummary
+      .mockResolvedValueOnce({ total_requests: 0, error_rate: 0, avg_latency_ms: 0 })
+      .mockRejectedValueOnce(new Error('route summary failed'));
+    mockedGetMetricsRoutesComparison.mockResolvedValue({
+      total_requests: 100,
+      routes: [
+        { route: 'route-a', requests: 100, share: 100, error_rate: 0, latency_p50_ms: 10, latency_p95_ms: 20 },
+      ],
+    });
+
+    renderWithProviders(<GatewayMonitoring />);
+
+    await user.click(await screen.findByRole('button', { name: 'Open route details for route-a' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Failed to load metrics. Is Prometheus running?')).toBeInTheDocument();
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent('Failed to load metrics. Is Prometheus running?');
   });
 
   it('renders em-dash for null latency', async () => {

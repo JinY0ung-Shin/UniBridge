@@ -64,7 +64,10 @@ function AlertStatus() {
           <p className="page-subtitle">{t('alerts.statusSubtitle')}</p>
         </div>
         <button
+          type="button"
           className="btn btn-secondary"
+          aria-label={t('alerts.refreshStatus')}
+          title={t('alerts.refreshStatus')}
           onClick={() => statusQuery.refetch()}
           disabled={statusQuery.isFetching}
         >
@@ -73,11 +76,11 @@ function AlertStatus() {
       </div>
 
       {statusQuery.isLoading && (
-        <div className="loading-message">{t('common.loading')}</div>
+        <div className="loading-message" role="status">{t('common.loading')}</div>
       )}
 
       {statusQuery.isError && (
-        <div className="error-banner">{t('common.errorOccurred')}</div>
+        <div className="error-banner" role="alert">{t('common.errorOccurred')}</div>
       )}
 
       {!statusQuery.isLoading && !statusQuery.isError && (
@@ -108,10 +111,10 @@ function AlertStatus() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>{t('alerts.ruleType')}</th>
-                      <th>{t('alerts.target')}</th>
-                      <th>{t('alerts.statusSince')}</th>
-                      <th>{t('alerts.statusDuration')}</th>
+                      <th scope="col">{t('alerts.ruleType')}</th>
+                      <th scope="col">{t('alerts.target')}</th>
+                      <th scope="col">{t('alerts.statusSince')}</th>
+                      <th scope="col">{t('alerts.statusDuration')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -123,17 +126,9 @@ function AlertStatus() {
                           >
                             {typeLabel(t, e.type)}
                           </span>
-                          {e.severity && (
+                          {e.severity && severityLabel(t, e.severity) && (
                             <span
-                              style={{
-                                marginLeft: 6,
-                                padding: '1px 8px',
-                                borderRadius: 999,
-                                fontSize: '0.72rem',
-                                fontWeight: 600,
-                                color: '#fff',
-                                background: e.severity === 'critical' ? 'var(--accent-red, #d23b3b)' : 'var(--accent-yellow, #d29a3b)',
-                              }}
+                              className={`severity-badge severity-badge--${e.severity}`}
                             >
                               {severityLabel(t, e.severity)}
                             </span>
@@ -165,8 +160,8 @@ function AlertStatus() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>{t('alerts.ruleType')}</th>
-                      <th>{t('alerts.target')}</th>
+                      <th scope="col">{t('alerts.ruleType')}</th>
+                      <th scope="col">{t('alerts.target')}</th>
                     </tr>
                   </thead>
                   <tbody>
