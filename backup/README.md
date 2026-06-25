@@ -9,11 +9,24 @@ Operator runbook for backing up and restoring UniBridge state.
 | Component | Source | Output | Why critical |
 |---|---|---|---|
 | etcd | volume `etcd-data` | `etcd.snap` | APISIX routes, consumers, plugin configs |
-| unibridge-service SQLite | volume `unibridge-data` (`meta.db`) | `unibridge-meta.db.gz` | API keys, encrypted credentials, user settings |
+| unibridge-service meta | `unibridge-db` Postgres (default) **or** SQLite `meta.db` | `unibridge-db.sql.gz` **or** `unibridge-meta.db.gz` | API keys, encrypted credentials, user settings |
 | Keycloak Postgres | volume `keycloak-db-data` | `keycloak-db.sql.gz` | users, realms, clients |
 | Bifrost app data | volume `bifrost-data` (`/app/data`) | `bifrost-data.tar.gz` | LLM provider config, virtual keys, request logs |
 
+The metadata store is chosen by `META_DB_URL`: the bundled compose **defaults to the `unibridge-db` Postgres** (`META_DB_URL` unset → resolved to `…@unibridge-db:5432/unibridge`), so `backup.sh` dumps `unibridge-db.sql.gz`. Only an explicit `sqlite` URL selects the legacy file store (`unibridge-meta.db.gz`). An external (non-bundled) Postgres host is skipped with a log line — back that database up separately.
+
 Prometheus time-series data is intentionally **not** backed up — retention is already configured in the Prometheus container and the data is regeneratable over time.
+
+### Split / blue-green deployments
+
+The plain `docker compose` the scripts run sees only the root `docker-compose.yml`. In a split or blue-green deployment the infra services (Bifrost, Keycloak, APISIX, databases) live in `docker-compose.infra.yml` under their own project, so point the backup scripts at the right stack via `.env`:
+
+```env
+BACKUP_COMPOSE_FILES=docker-compose.infra.yml:docker-compose.app.yml
+COMPOSE_PROJECT_NAME=<the infra project name>   # only if customized
+```
+
+`BACKUP_COMPOSE_FILES` is `:`-separated (matches docker's `COMPOSE_FILE` convention) and is expanded into `-f` flags.
 
 ## Layout
 
@@ -22,7 +35,7 @@ Prometheus time-series data is intentionally **not** backed up — retention is 
   etcd.snap
   keycloak-db.sql.gz
   bifrost-data.tar.gz
-  unibridge-meta.db.gz
+  unibridge-db.sql.gz    # default (Postgres); unibridge-meta.db.gz on a SQLite store
   manifest.json          # sizes + SHA256 of each file
 ```
 
@@ -69,8 +82,11 @@ Restore is **per-component and destructive**. Each `restore.sh` invocation:
 ./backup/restore.sh etcd           ./snapshots/2026-04-19_030000Z
 ./backup/restore.sh keycloak-db    ./snapshots/2026-04-19_030000Z
 ./backup/restore.sh bifrost-data   ./snapshots/2026-04-19_030000Z
-./backup/restore.sh unibridge-meta ./snapshots/2026-04-19_030000Z
+./backup/restore.sh unibridge-db   ./snapshots/2026-04-19_030000Z   # default (Postgres)
+./backup/restore.sh unibridge-meta ./snapshots/2026-04-19_030000Z   # legacy SQLite store
 ```
+
+Use `unibridge-db` or `unibridge-meta` to match the file actually present in the backup dir.
 
 ### Full-disaster recovery order
 
@@ -92,9 +108,9 @@ Correct order:
    ```
    docker compose up -d --wait
    ```
-4. **Restore unibridge-service metadata** (this stops/starts the service on its own):
+4. **Restore unibridge-service metadata** (this stops/starts the service on its own). Use the component matching your store — `unibridge-db` for the default Postgres, `unibridge-meta` for the legacy SQLite file:
    ```
-   ./backup/restore.sh unibridge-meta ./snapshots/<stamp>
+   ./backup/restore.sh unibridge-db   ./snapshots/<stamp>
    ```
 5. **Smoke test**: log in via Keycloak, call a known API key endpoint, verify a dynamic route works, hit `/metrics` on APISIX.
 

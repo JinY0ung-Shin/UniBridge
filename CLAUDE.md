@@ -6,7 +6,8 @@ S3/NAS — all behind Keycloak OIDC + RBAC + API keys. See `README.md` for deplo
 
 ## Repo layout (monorepo, 3 code services + infra config)
 - `unibridge-service/` — FastAPI backend (Python 3.12). `app/{routers,services,middleware}`,
-  SQLAlchemy async + Alembic. Meta store = SQLite (`data/meta.db`) by default. See its CLAUDE.md.
+  SQLAlchemy async + Alembic. Meta store: app-code default is SQLite (`data/meta.db`), but the
+  bundled compose defaults `META_DB_URL` to the bundled `unibridge-db` Postgres. See its CLAUDE.md.
 - `unibridge-ui/`      — React 19 + TS + Vite, served by nginx. TanStack Query,
   react-router 7, keycloak-js, i18next, recharts. See its CLAUDE.md.
 - `llm-converter/`     — FastAPI sidecar: translates Anthropic `/v1/messages` and

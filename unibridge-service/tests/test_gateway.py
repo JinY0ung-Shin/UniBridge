@@ -1625,6 +1625,29 @@ class TestConsumerFilter:
         )
         assert resp.status_code == 400
 
+    async def test_invalid_llm_api_key_filter_returns_400(self, client, admin_token):
+        # api_key is interpolated into PromQL selectors; a malformed value must
+        # be rejected at the edge (400), not flow through to a broken query/502.
+        resp = await client.get(
+            '/admin/gateway/metrics/llm/summary?range=1h&api_key="; drop',
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_valid_llm_api_key_filter_scopes_query(self, client, admin_token):
+        scalar = [{"value": [0, "1"]}]
+        mock = AsyncMock(return_value=scalar)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/llm/summary?range=1h&api_key=alice",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        joined = " ".join(call.args[0] for call in mock.call_args_list)
+        # Scopes both the historical LiteLLM (end_user) and Bifrost (api_key) series.
+        assert 'end_user="alice"' in joined
+        assert 'api_key="alice"' in joined
+
     async def test_no_consumer_excludes_llm_proxy(self, client, admin_token):
         total = [{"value": [0, "10"]}]
         err = [{"value": [0, "0"]}]

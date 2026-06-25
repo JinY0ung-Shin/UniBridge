@@ -9,8 +9,29 @@ RETENTION_DAYS="${RETENTION_DAYS:-14}"
 log()  { printf '[%s] %s\n' "$(date -Iseconds)" "$*"; }
 die()  { printf '[%s] ERROR: %s\n' "$(date -Iseconds)" "$*" >&2; exit 1; }
 
+# Run docker compose against the deployment's stack. Single-stack deployments
+# need no configuration (the root docker-compose.yml is picked up by default).
+# Split / blue-green deployments put infra services (Bifrost, Keycloak, APISIX,
+# the databases) in docker-compose.infra.yml under their own project, so plain
+# `docker compose` at the repo root would not see them. Operators point backups
+# at the right stack via .env (sourced by load_env):
+#   BACKUP_COMPOSE_FILES=docker-compose.infra.yml:docker-compose.app.yml
+#   COMPOSE_PROJECT_NAME=<the infra project name>   # if customized
+# BACKUP_COMPOSE_FILES is ':'-separated to match docker's COMPOSE_FILE convention.
 compose() {
-  (cd "$PROJECT_ROOT" && docker compose "$@")
+  local -a files=()
+  if [[ -n "${BACKUP_COMPOSE_FILES:-}" ]]; then
+    local IFS=':'
+    local f
+    for f in $BACKUP_COMPOSE_FILES; do
+      [[ -n "$f" ]] && files+=("-f" "$f")
+    done
+  fi
+  if [[ ${#files[@]} -gt 0 ]]; then
+    (cd "$PROJECT_ROOT" && docker compose "${files[@]}" "$@")
+  else
+    (cd "$PROJECT_ROOT" && docker compose "$@")
+  fi
 }
 
 load_env() {

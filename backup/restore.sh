@@ -19,7 +19,11 @@ components:
   etcd              restore APISIX config store from etcd.snap
   keycloak-db       restore Keycloak Postgres from keycloak-db.sql.gz
   bifrost-data      restore Bifrost app data from bifrost-data.tar.gz
+  unibridge-db      restore unibridge-service Postgres from unibridge-db.sql.gz
   unibridge-meta    restore unibridge-service SQLite from unibridge-meta.db.gz
+
+Pick unibridge-db or unibridge-meta to match the file present in the backup dir
+(the default deployment backs up the bundled unibridge-db Postgres).
 
 example:
   $0 etcd ./snapshots/2026-04-19_030000Z
@@ -88,6 +92,13 @@ main() {
     bifrost-data)
       verify_backup_dir "$dir" "bifrost-data.tar.gz"
       restore_volume bifrost /app/data "$dir/bifrost-data.tar.gz" bifrost
+      ;;
+    unibridge-db)
+      verify_backup_dir "$dir" "unibridge-db.sql.gz"
+      # unibridge-service holds a connection pool to unibridge-db; stop it
+      # first or DROP ... in the dump deadlocks on AccessExclusiveLock.
+      restore_postgres unibridge-db unibridge unibridge \
+        "$dir/unibridge-db.sql.gz" unibridge-service
       ;;
     unibridge-meta)
       verify_backup_dir "$dir" "unibridge-meta.db.gz"

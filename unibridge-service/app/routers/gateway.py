@@ -1017,6 +1017,27 @@ def _validate_consumer(consumer: str | None) -> None:
         )
 
 
+def _validate_api_key_filter(
+    api_key: str | None = Query(
+        None, description="Filter to one UniBridge API key"
+    ),
+) -> str | None:
+    """Validate the ``api_key`` filter before it reaches PromQL.
+
+    The LLM metrics endpoints embed ``api_key`` directly into PromQL label
+    selectors (``end_user``/``api_key``/``consumer``). Validate here as a
+    dependency — i.e. before the endpoint's try/except, which would otherwise
+    re-wrap the 400 as a 502 "Prometheus error" — so a malformed value yields a
+    clean 400 instead of a broken selector or a Prometheus query error. Mirrors
+    the allowlist applied to the gateway-metrics ``consumer`` filter.
+    """
+    if api_key and not _SAFE_CONSUMER_RE.match(api_key):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid api_key filter"
+        )
+    return api_key
+
+
 @dataclass
 class _MonitoringScope:
     """Result of gateway-monitoring authorization + consumer scoping."""
@@ -2090,7 +2111,7 @@ async def metrics_requests_total(
 @router.get("/metrics/llm/summary")
 async def llm_metrics_summary(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one UniBridge API key"),
+    api_key: str | None = Depends(_validate_api_key_filter),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
     """LLM token usage summary: total tokens, cost, requests, latency."""
@@ -2167,7 +2188,7 @@ async def llm_metrics_summary(
 @router.get("/metrics/llm/tokens")
 async def llm_metrics_tokens(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one UniBridge API key"),
+    api_key: str | None = Depends(_validate_api_key_filter),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, list[dict[str, Any]]]:
     """Token usage trend: prompt and completion tokens over time."""
@@ -2201,7 +2222,7 @@ async def llm_metrics_tokens(
 @router.get("/metrics/llm/by-model")
 async def llm_metrics_by_model(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one UniBridge API key"),
+    api_key: str | None = Depends(_validate_api_key_filter),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """Token usage, request count, and cost breakdown by model."""
@@ -2382,7 +2403,7 @@ async def llm_metrics_by_model(
 @router.get("/metrics/llm/by-model-series")
 async def llm_metrics_by_model_series(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one UniBridge API key"),
+    api_key: str | None = Depends(_validate_api_key_filter),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
     """Per-model token usage bucketed over time (stacked-bar breakdown).
@@ -2435,7 +2456,7 @@ async def llm_metrics_by_model_series(
 @router.get("/metrics/llm/top-keys")
 async def llm_metrics_top_keys(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one UniBridge API key"),
+    api_key: str | None = Depends(_validate_api_key_filter),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """Top UniBridge API keys by token usage."""
@@ -2582,7 +2603,7 @@ async def llm_metrics_top_keys(
 @router.get("/metrics/llm/top-keys-series")
 async def llm_metrics_top_keys_series(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one UniBridge API key"),
+    api_key: str | None = Depends(_validate_api_key_filter),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
     """Per-API-key token usage bucketed over time.
@@ -2635,9 +2656,7 @@ async def llm_metrics_top_keys_series(
 @router.get("/metrics/llm/status-codes")
 async def llm_metrics_status_codes(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(
-        None, description="Filter to one API key (APISIX consumer)"
-    ),
+    api_key: str | None = Depends(_validate_api_key_filter),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """LLM HTTP status code distribution.
@@ -2674,9 +2693,7 @@ async def llm_metrics_status_codes(
 @router.get("/metrics/llm/errors")
 async def llm_metrics_errors(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(
-        None, description="Filter to one API key (APISIX consumer)"
-    ),
+    api_key: str | None = Depends(_validate_api_key_filter),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """LLM request success/error rate over time.
@@ -2723,7 +2740,7 @@ async def llm_metrics_errors(
 @router.get("/metrics/llm/requests-total")
 async def llm_metrics_requests_total(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one UniBridge API key"),
+    api_key: str | None = Depends(_validate_api_key_filter),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """LLM request volume per time bucket."""
