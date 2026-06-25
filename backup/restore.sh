@@ -9,6 +9,7 @@ source "$HERE/lib/common.sh"
 source "$HERE/lib/etcd.sh"
 source "$HERE/lib/postgres.sh"
 source "$HERE/lib/sqlite.sh"
+source "$HERE/lib/volume.sh"
 
 usage() {
   cat <<EOF
@@ -17,7 +18,7 @@ Usage: $0 <component> <backup-dir>
 components:
   etcd              restore APISIX config store from etcd.snap
   keycloak-db       restore Keycloak Postgres from keycloak-db.sql.gz
-  litellm-db        restore LiteLLM Postgres from litellm-db.sql.gz
+  bifrost-data      restore Bifrost app data from bifrost-data.tar.gz
   unibridge-meta    restore unibridge-service SQLite from unibridge-meta.db.gz
 
 example:
@@ -84,10 +85,9 @@ main() {
       restore_postgres keycloak-db keycloak "${KC_DB_USER:-keycloak}" \
         "$dir/keycloak-db.sql.gz" keycloak
       ;;
-    litellm-db)
-      verify_backup_dir "$dir" "litellm-db.sql.gz"
-      restore_postgres litellm-db litellm litellm \
-        "$dir/litellm-db.sql.gz" litellm
+    bifrost-data)
+      verify_backup_dir "$dir" "bifrost-data.tar.gz"
+      restore_volume bifrost /app/data "$dir/bifrost-data.tar.gz" bifrost
       ;;
     unibridge-meta)
       verify_backup_dir "$dir" "unibridge-meta.db.gz"

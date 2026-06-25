@@ -1,4 +1,5 @@
 """Tests for webhook URL validation (SSRF protection)."""
+
 from __future__ import annotations
 
 import socket
@@ -11,7 +12,9 @@ from app.services.webhook_security import validate_webhook_url
 # ── Scheme & format ─────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("url", ["ftp://example.com", "file:///etc/passwd", "ws://x.example"])
+@pytest.mark.parametrize(
+    "url", ["ftp://example.com", "file:///etc/passwd", "ws://x.example"]
+)
 def test_rejects_non_http_scheme(url):
     with pytest.raises(ValueError, match="http or https"):
         validate_webhook_url(url)
@@ -37,6 +40,7 @@ def test_rejects_url_without_hostname():
         "keycloak",
         "etcd",
         "apisix",
+        "bifrost",
         "litellm",
         "prometheus",
         "unibridge-service",
@@ -67,13 +71,13 @@ def test_blocks_cloud_metadata_ip():
     "host",
     [
         "127.0.0.1",  # loopback
-        "10.0.0.5",   # private
+        "10.0.0.5",  # private
         "192.168.1.1",
         "172.16.0.1",
-        "0.0.0.0",    # unspecified
+        "0.0.0.0",  # unspecified
         "169.254.10.10",  # link-local
         "224.0.0.1",  # multicast
-        "[::1]",      # ipv6 loopback
+        "[::1]",  # ipv6 loopback
         "[fe80::1]",  # ipv6 link-local
     ],
 )

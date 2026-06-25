@@ -1,19 +1,19 @@
 """LLM endpoint converter.
 
-Translates newer LLM API shapes that sglang/vLLM-backed LiteLLM models do not
-serve reliably into the well-supported ``/v1/chat/completions`` shape, then
-forwards to the upstream LiteLLM proxy.
+Translates newer LLM API shapes that sglang/vLLM-backed OpenAI-compatible
+models do not serve reliably into the well-supported ``/v1/chat/completions``
+shape, then forwards to the upstream LLM gateway.
 
 Phase 1 implements ``POST /v1/messages`` (Anthropic Messages). The request is
 translated to an OpenAI chat-completions body, sent to
-``{LITELLM_URL}/v1/chat/completions``, and the response (streaming SSE or
+``{LLM_GATEWAY_URL}/v1/chat/completions``, and the response (streaming SSE or
 one-shot JSON) is translated back to the Anthropic shape — bypassing LiteLLM's
-own Anthropic adapter, which mis-serializes tool calls and reasoning content
-for ``hosted_vllm``/``openai`` providers.
+old Anthropic adapter behavior, which mis-serialized tool calls and reasoning
+content for ``hosted_vllm``/``openai`` providers.
 
-Authentication is handled upstream by APISIX (key-auth + master-key injection);
-this service trusts its private network and forwards the ``Authorization`` and
-``x-litellm-end-user-id`` headers APISIX set.
+Authentication is handled upstream by APISIX (key-auth plus Bifrost
+attribution/governance header injection); this service trusts its private
+network and forwards those headers to the upstream gateway.
 """
 
 from __future__ import annotations
@@ -253,7 +253,14 @@ async def _trace_upstream_chunks(
         reasoning_text = "".join(reasoning_buf)
         markers = [
             m
-            for m in ("<tool_call>", "</tool_call>", "functools", "tool_call", "function_call", "<|tool")
+            for m in (
+                "<tool_call>",
+                "</tool_call>",
+                "functools",
+                "tool_call",
+                "function_call",
+                "<|tool",
+            )
             if m in content_text or m in reasoning_text
         ]
         logger.info(
@@ -327,7 +334,9 @@ async def _trace_downstream_events(
                 )
             elif et == "error":
                 logger.info(
-                    "converter trace downstream[%s]: ERROR event=%s", tag, evt.get("error")
+                    "converter trace downstream[%s]: ERROR event=%s",
+                    tag,
+                    evt.get("error"),
                 )
         except Exception:
             logger.exception("converter trace: downstream event inspect failed")
@@ -337,9 +346,9 @@ async def _trace_downstream_events(
 def _bad_request(message: str) -> Response:
     return Response(
         status_code=400,
-        content=json.dumps({"error": {"type": "invalid_request_error", "message": message}}).encode(
-            "utf-8"
-        ),
+        content=json.dumps(
+            {"error": {"type": "invalid_request_error", "message": message}}
+        ).encode("utf-8"),
         media_type="application/json",
     )
 
@@ -370,7 +379,7 @@ async def messages(request: Request) -> Response:
     fwd_headers = filter_headers(request.headers.items(), DROP_FROM_REQUEST)
     fwd_headers["content-type"] = "application/json"
 
-    upstream_url = f"{settings.LITELLM_URL}/v1/chat/completions"
+    upstream_url = f"{settings.LLM_GATEWAY_URL}/v1/chat/completions"
     logger.debug(
         "converter messages: upstream=%s stream=%s messages=%d tools=%d",
         upstream_url,
@@ -389,7 +398,7 @@ async def messages(request: Request) -> Response:
             try:
                 # Bound the whole non-streaming round-trip. The httpx ``read``
                 # timeout is left unbounded for legitimately long completions, so
-                # without this a LiteLLM that accepts the connection then stalls
+                # without this a gateway that accepts the connection then stalls
                 # the body would pin this worker forever. See
                 # ``settings.nonstream_timeout``.
                 upstream = await asyncio.wait_for(
@@ -419,10 +428,9 @@ async def messages(request: Request) -> Response:
             # Translate a successful OpenAI JSON body to Anthropic shape. Error
             # responses / non-JSON bodies are forwarded verbatim so the client
             # can see what really happened upstream.
-            if (
-                200 <= upstream.status_code < 300
-                and (media_type or "").lower().startswith("application/json")
-            ):
+            if 200 <= upstream.status_code < 300 and (
+                media_type or ""
+            ).lower().startswith("application/json"):
                 try:
                     openai_resp = json.loads(content)
                     if isinstance(openai_resp, dict) and openai_resp.get("error"):
@@ -440,7 +448,9 @@ async def messages(request: Request) -> Response:
                         )
                     elif isinstance(openai_resp, dict):
                         anthropic_resp = openai_response_to_anthropic_body(openai_resp)
-                        content = json.dumps(anthropic_resp, ensure_ascii=False).encode("utf-8")
+                        content = json.dumps(anthropic_resp, ensure_ascii=False).encode(
+                            "utf-8"
+                        )
                         media_type = "application/json"
                         # ``content-length`` is invalidated by the rewrite; let
                         # Starlette recompute it.
@@ -458,7 +468,9 @@ async def messages(request: Request) -> Response:
                     )
                     content = upstream.content
                     media_type = upstream.headers.get("content-type")
-                    resp_headers = filter_headers(upstream.headers.items(), DROP_FROM_RESPONSE)
+                    resp_headers = filter_headers(
+                        upstream.headers.items(), DROP_FROM_RESPONSE
+                    )
             return Response(
                 content=content,
                 status_code=upstream.status_code,
@@ -496,7 +508,12 @@ async def messages(request: Request) -> Response:
                 return Response(
                     status_code=504,
                     content=json.dumps(
-                        {"error": {"type": "timeout", "message": "upstream read timed out"}}
+                        {
+                            "error": {
+                                "type": "timeout",
+                                "message": "upstream read timed out",
+                            }
+                        }
                     ).encode("utf-8"),
                     media_type="application/json",
                 )
@@ -579,7 +596,7 @@ async def responses(request: Request) -> Response:
     """Translate an OpenAI Responses request through the chat-completions route.
 
     Resolves ``previous_response_id`` from the in-memory conversation store,
-    forwards to LiteLLM, translates the result back to the Responses shape, and
+    forwards to the upstream LLM gateway, translates the result back to the Responses shape, and
     (when ``store`` is not false) persists the accumulated transcript under a
     freshly minted ``resp_<id>`` so the next turn can chain off it.
     """
@@ -603,7 +620,9 @@ async def responses(request: Request) -> Response:
         if prior_messages is None:
             return Response(
                 status_code=400,
-                content=json.dumps(previous_response_not_found_body(prev_id)).encode("utf-8"),
+                content=json.dumps(previous_response_not_found_body(prev_id)).encode(
+                    "utf-8"
+                ),
                 media_type="application/json",
             )
 
@@ -618,17 +637,22 @@ async def responses(request: Request) -> Response:
 
     fwd_headers = filter_headers(request.headers.items(), DROP_FROM_REQUEST)
     fwd_headers["content-type"] = "application/json"
-    upstream_url = f"{settings.LITELLM_URL}/v1/chat/completions"
+    upstream_url = f"{settings.LLM_GATEWAY_URL}/v1/chat/completions"
     response_id = new_response_id()
 
     logger.debug(
         "converter responses: upstream=%s stream=%s prev=%s messages=%d tools=%d",
-        upstream_url, is_stream, bool(prev_id),
-        len(base_messages), len(chat_body.get("tools") or []),
+        upstream_url,
+        is_stream,
+        bool(prev_id),
+        len(base_messages),
+        len(chat_body.get("tools") or []),
     )
 
     client = _make_client(settings.request_timeout)
-    upstream_req = client.build_request("POST", upstream_url, content=chat_bytes, headers=fwd_headers)
+    upstream_req = client.build_request(
+        "POST", upstream_url, content=chat_bytes, headers=fwd_headers
+    )
 
     if not is_stream:
         try:
@@ -646,17 +670,21 @@ async def responses(request: Request) -> Response:
                 return Response(
                     status_code=504,
                     content=json.dumps(
-                        {"error": {"type": "timeout", "message": "upstream request timed out"}}
+                        {
+                            "error": {
+                                "type": "timeout",
+                                "message": "upstream request timed out",
+                            }
+                        }
                     ).encode("utf-8"),
                     media_type="application/json",
                 )
             resp_headers = filter_headers(upstream.headers.items(), DROP_FROM_RESPONSE)
             content = upstream.content
             media_type = upstream.headers.get("content-type")
-            if (
-                200 <= upstream.status_code < 300
-                and (media_type or "").lower().startswith("application/json")
-            ):
+            if 200 <= upstream.status_code < 300 and (
+                media_type or ""
+            ).lower().startswith("application/json"):
                 try:
                     chat = json.loads(content)
                     if isinstance(chat, dict) and chat.get("error"):
@@ -670,13 +698,20 @@ async def responses(request: Request) -> Response:
                         )
                     elif isinstance(chat, dict):
                         resp_obj = chat_response_to_responses_body(
-                            chat, parsed, response_id, emit_reasoning=settings.emit_reasoning
+                            chat,
+                            parsed,
+                            response_id,
+                            emit_reasoning=settings.emit_reasoning,
                         )
-                        content = json.dumps(resp_obj, ensure_ascii=False).encode("utf-8")
+                        content = json.dumps(resp_obj, ensure_ascii=False).encode(
+                            "utf-8"
+                        )
                         media_type = "application/json"
                         resp_headers.pop("content-length", None)
                         if store_flag:
-                            message = (chat.get("choices") or [{}])[0].get("message") or {}
+                            message = (chat.get("choices") or [{}])[0].get(
+                                "message"
+                            ) or {}
                             assistant = assistant_message_from_chat(message)
                             # Skip persisting an empty assistant turn (no content,
                             # no tool_calls) — matches the streaming path, which
@@ -708,7 +743,9 @@ async def responses(request: Request) -> Response:
                     )
                     content = upstream.content
                     media_type = upstream.headers.get("content-type")
-                    resp_headers = filter_headers(upstream.headers.items(), DROP_FROM_RESPONSE)
+                    resp_headers = filter_headers(
+                        upstream.headers.items(), DROP_FROM_RESPONSE
+                    )
             return Response(
                 content=content,
                 status_code=upstream.status_code,
@@ -728,7 +765,9 @@ async def responses(request: Request) -> Response:
     if not upstream_ctype.lower().startswith("text/event-stream"):
         try:
             try:
-                content = await asyncio.wait_for(upstream.aread(), timeout=_ERROR_BODY_READ_TIMEOUT)
+                content = await asyncio.wait_for(
+                    upstream.aread(), timeout=_ERROR_BODY_READ_TIMEOUT
+                )
             except asyncio.TimeoutError:
                 logger.warning(
                     "converter timed out reading non-SSE upstream body (status=%s)",
@@ -737,7 +776,12 @@ async def responses(request: Request) -> Response:
                 return Response(
                     status_code=504,
                     content=json.dumps(
-                        {"error": {"type": "timeout", "message": "upstream read timed out"}}
+                        {
+                            "error": {
+                                "type": "timeout",
+                                "message": "upstream read timed out",
+                            }
+                        }
                     ).encode("utf-8"),
                     media_type="application/json",
                 )
@@ -776,7 +820,8 @@ async def responses(request: Request) -> Response:
                 if (
                     not persisted
                     and store_flag
-                    and payload.get("type") in ("response.completed", "response.incomplete")
+                    and payload.get("type")
+                    in ("response.completed", "response.incomplete")
                     and holder.get("assistant_message")
                 ):
                     conversation_store.put(
@@ -801,9 +846,15 @@ async def responses(request: Request) -> Response:
                     "type": "response.failed",
                     "sequence_number": last_seq + 1,
                     "response": {
-                        "id": response_id, "object": "response", "status": "failed",
-                        "error": {"code": "server_error", "message": "converter stream error"},
-                        "output": [], "usage": None,
+                        "id": response_id,
+                        "object": "response",
+                        "status": "failed",
+                        "error": {
+                            "code": "server_error",
+                            "message": "converter stream error",
+                        },
+                        "output": [],
+                        "usage": None,
                     },
                 }
             )
@@ -812,8 +863,15 @@ async def responses(request: Request) -> Response:
             await client.aclose()
             # Fallback persistence if the terminal event path didn't run but a
             # complete transcript is available; never persist after a bridge error.
-            if not persisted and not failed and store_flag and holder.get("assistant_message"):
-                conversation_store.put(response_id, base_messages + [holder["assistant_message"]])
+            if (
+                not persisted
+                and not failed
+                and store_flag
+                and holder.get("assistant_message")
+            ):
+                conversation_store.put(
+                    response_id, base_messages + [holder["assistant_message"]]
+                )
                 if prev_id is not None:
                     conversation_store.delete(prev_id)
 

@@ -44,14 +44,14 @@ groups:
           summary: "Keycloak database TCP probe failed"
           description: "blackbox-exporter cannot connect to keycloak-db:5432."
 
-      - alert: LiteLLMDbDown
-        expr: probe_success{job="infra-db-tcp",db="litellm-db"} == 0
+      - alert: BifrostDown
+        expr: up{job="bifrost"} == 0
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "LiteLLM database TCP probe failed"
-          description: "blackbox-exporter cannot connect to litellm-db:5432."
+          summary: "Bifrost gateway is down"
+          description: "Prometheus cannot scrape Bifrost metrics."
 
       - alert: UniBridgeAuditWritesMissing
         expr: |

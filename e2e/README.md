@@ -4,7 +4,7 @@ End-to-end tests that validate the LLM converter against a **running** UniBridge
 deployment. They drive the real request path:
 
 ```
-client → UI nginx (:UI_PORT) → APISIX (key-auth, master-key inject) → llm-converter → LiteLLM
+client → UI nginx (:UI_PORT) → APISIX (key-auth, Bifrost headers) → llm-converter → Bifrost
 ```
 
 so a green run confirms routing, authentication, the Anthropic/Responses ↔
@@ -19,7 +19,7 @@ unless `LLM_API_KEY` is set).
 - An APISIX API key exists and is granted LLM access (so its consumer is
   whitelisted on `llm-messages` / `llm-responses` — granting `llm-proxy` is
   enough; access is aliased). Create one via the UI (API Keys) or the admin API.
-- At least one model is configured in LiteLLM (Admin UI `/ui`).
+- At least one model is configured in Bifrost.
 
 ## Configure
 

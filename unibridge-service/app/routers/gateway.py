@@ -14,24 +14,36 @@ from httpx import HTTPStatusError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import CurrentUser, get_current_user, get_role_permissions, require_permission
+from app.auth import (
+    CurrentUser,
+    get_current_user,
+    get_role_permissions,
+    require_permission,
+)
 from app.config import settings
 from app.database import get_db
 from app.models import ApiKeyAccess, QueryTemplate
-from app.routers.api_keys import apply_master_consumer_restriction, list_master_consumer_names
+from app.routers.api_keys import (
+    apply_master_consumer_restriction,
+    list_master_consumer_names,
+)
 from app.services import apisix_client
 from app.services import openapi_export
 from app.services import prometheus_client
 from app.services.alert_state import delete_alert_state
 from app.services.audit import log_admin_action
 from app.services.settings_manager import settings_manager
-from app.services.apisix_system_resources import PROTECTED_ROUTE_IDS, PROTECTED_UPSTREAM_IDS
+from app.services.apisix_system_resources import (
+    PROTECTED_ROUTE_IDS,
+    PROTECTED_UPSTREAM_IDS,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/gateway", tags=["Gateway"])
 
 MASK_KEEP = 4
+
 
 def _mask_value(value: str) -> str:
     if len(value) <= MASK_KEEP:
@@ -156,23 +168,31 @@ async def sync_default_route_timeout(seconds: int) -> int:
     patched = 0
     for route in listing.get("items", []):
         route_id = route.get("id")
-        if not route_id or route_id in PROTECTED_ROUTE_IDS or _is_timeout_override(route):
+        if (
+            not route_id
+            or route_id in PROTECTED_ROUTE_IDS
+            or _is_timeout_override(route)
+        ):
             continue
         if _extract_route_timeout(route) == seconds:
             continue
         try:
-            await apisix_client.patch_resource("routes", str(route_id), {"timeout": timeout})
+            await apisix_client.patch_resource(
+                "routes", str(route_id), {"timeout": timeout}
+            )
             patched += 1
         except Exception:
-            logger.warning("Failed to apply default timeout to route %s", route_id, exc_info=True)
+            logger.warning(
+                "Failed to apply default timeout to route %s", route_id, exc_info=True
+            )
     return patched
 
 
 def _health_path_for_route(route: dict[str, Any]) -> str:
     route_id = route.get("id")
     upstream_id = route.get("upstream_id")
-    if route_id in {"llm-proxy", "llm-admin"} or upstream_id == "litellm":
-        return "/health/liveliness"
+    if route_id in {"llm-proxy", "llm-admin"} or upstream_id in {"bifrost", "litellm"}:
+        return "/health"
     return "/health"
 
 
@@ -223,7 +243,9 @@ def _inject_plugins(
             dict(existing_raw_headers) if isinstance(existing_raw_headers, dict) else {}
         )
         existing_raw_set = existing_headers.get("set")
-        existing_set = dict(existing_raw_set) if isinstance(existing_raw_set, dict) else {}
+        existing_set = (
+            dict(existing_raw_set) if isinstance(existing_raw_set, dict) else {}
+        )
         new_set: dict[str, str] = {}
         for sk in service_keys:
             if not isinstance(sk, dict):
@@ -785,6 +807,7 @@ async def delete_upstream(
     await db.commit()
 
     from app.routers import alerts as alerts_router
+
     if alerts_router._alert_state is not None:
         alerts_router._alert_state.discard("upstream_health", upstream_id)
 
@@ -868,15 +891,15 @@ def _tier_for_span(span: int) -> str:
 
 @dataclass
 class TimeWindow:
-    promql_window: str        # increase() window for summary-type instant queries
-    step: str                 # range_query step for non-volume series
-    volume_step: str          # range_query step for volume series
-    volume_window: str        # increase() window for volume series
-    eval_time: float | None   # custom → end epoch; preset → None (= now)
-    start: float | None       # custom → start epoch; preset → None
+    promql_window: str  # increase() window for summary-type instant queries
+    step: str  # range_query step for non-volume series
+    volume_step: str  # range_query step for volume series
+    volume_window: str  # increase() window for volume series
+    eval_time: float | None  # custom → end epoch; preset → None (= now)
+    start: float | None  # custom → start epoch; preset → None
     end: float | None
     is_custom: bool
-    bucket: str = "auto"      # calendar bucket for volume series: auto|hour|day|week
+    bucket: str = "auto"  # calendar bucket for volume series: auto|hour|day|week
 
 
 def _validate_custom_range(start: int, end: int) -> None:
@@ -999,7 +1022,7 @@ class _MonitoringScope:
     """Result of gateway-monitoring authorization + consumer scoping."""
 
     forced_consumer: str | None  # when restricted, the consumer to force-filter on
-    restricted: bool             # True when the caller may only see their own traffic
+    restricted: bool  # True when the caller may only see their own traffic
 
 
 # Sentinel consumer that matches no Prometheus series — used when a self-scoped
@@ -1025,10 +1048,16 @@ async def _gateway_monitoring_scope(
         return _MonitoringScope(forced_consumer=None, restricted=False)
     if "gateway.monitoring.self" in perms:
         owned = (
-            await db.execute(
-                select(ApiKeyAccess.consumer_name).where(ApiKeyAccess.owner == user.sub)
+            (
+                await db.execute(
+                    select(ApiKeyAccess.consumer_name).where(
+                        ApiKeyAccess.owner == user.sub
+                    )
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         return _MonitoringScope(forced_consumer=owned or _SELF_NO_KEY, restricted=True)
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -1036,7 +1065,9 @@ async def _gateway_monitoring_scope(
     )
 
 
-def _scope_consumer(scope: _MonitoringScope, route: str | None, consumer: str | None) -> str | None:
+def _scope_consumer(
+    scope: _MonitoringScope, route: str | None, consumer: str | None
+) -> str | None:
     """Validate the requested consumer, or override it for self-scoped callers.
 
     Self-scoped callers cannot widen their view: their consumer filter is forced
@@ -1080,7 +1111,7 @@ def _llm_labels(*extra: str) -> str:
     LLM requests pass through APISIX on the ``llm-proxy``/``llm-messages``/
     ``llm-responses`` routes, so ``apisix_http_status`` carries their real HTTP
     status codes — including gateway-layer errors (401/403/429) that never reach
-    LiteLLM and so are invisible to the ``litellm_*`` counters.
+    the LLM gateway and so are invisible to upstream token/cost counters.
     """
     parts = list(extra)
     parts.append('route=~"llm-proxy|llm-messages|llm-responses"')
@@ -1090,20 +1121,143 @@ def _llm_labels(*extra: str) -> str:
 def _llm_key_selector(api_key: str | None) -> str:
     """PromQL selector scoping ``litellm_*`` counters to one API key.
 
-    The proxy route stamps each LLM request with the UniBridge API-key name as
-    the LiteLLM ``end_user`` (``x-litellm-end-user-id: $consumer_name`` on the
-    ``llm-proxy`` route), so filtering on ``end_user`` scopes every litellm
-    metric to a single key. Returns an empty string (no selector) when unscoped.
+    Historical LiteLLM deployments stamped each request with the UniBridge
+    API-key name as LiteLLM ``end_user``. Keep reading that label so old
+    time-series data remains visible beside Bifrost metrics during/after
+    migration. Returns an empty string (no selector) when unscoped.
     """
     return f'{{end_user="{api_key}"}}' if api_key else ""
+
+
+def _bifrost_key_selector(api_key: str | None) -> str:
+    """PromQL selector scoping ``bifrost_*`` counters to one UniBridge API key.
+
+    Bifrost exposes caller-supplied dimensions as Prometheus labels when the
+    gateway forwards ``x-bf-dim-*`` headers and the label is configured in
+    Bifrost. UniBridge uses ``api_key`` as that runtime dimension so Bifrost
+    series can be added to the historical LiteLLM aggregates.
+    """
+    return f'{{api_key="{api_key}"}}' if api_key else ""
+
+
+def _prom_or_zero(expr: str) -> str:
+    """Make absent optional-provider metrics behave as 0 in PromQL arithmetic."""
+    return f"(({expr}) or vector(0))"
+
+
+def _prom_sum(*exprs: str) -> str:
+    return " + ".join(_prom_or_zero(expr) for expr in exprs)
+
+
+def _metric_increase(metric: str, selector: str, window: str) -> str:
+    return f"sum(increase({metric}{selector}[{window}]))"
+
+
+def _metric_increase_by(
+    metric: str,
+    selector: str,
+    window: str,
+    labels: tuple[str, ...],
+) -> str:
+    return f"sum by ({', '.join(labels)}) (increase({metric}{selector}[{window}]))"
+
+
+def _llm_metric_query(metric: str, window: str, api_key: str | None = None) -> str:
+    """Combined LiteLLM+Bifrost PromQL query for scalar/time-series LLM totals."""
+    litellm_sel = _llm_key_selector(api_key)
+    bifrost_sel = _bifrost_key_selector(api_key)
+    match metric:
+        case "total_tokens":
+            return _prom_sum(
+                _metric_increase(
+                    "litellm_total_tokens_metric_total", litellm_sel, window
+                ),
+                _metric_increase("bifrost_input_tokens_total", bifrost_sel, window),
+                _metric_increase("bifrost_output_tokens_total", bifrost_sel, window),
+            )
+        case "input_tokens":
+            return _prom_sum(
+                _metric_increase(
+                    "litellm_input_tokens_metric_total", litellm_sel, window
+                ),
+                _metric_increase("bifrost_input_tokens_total", bifrost_sel, window),
+            )
+        case "output_tokens":
+            return _prom_sum(
+                _metric_increase(
+                    "litellm_output_tokens_metric_total", litellm_sel, window
+                ),
+                _metric_increase("bifrost_output_tokens_total", bifrost_sel, window),
+            )
+        case "cost":
+            return _prom_sum(
+                _metric_increase("litellm_spend_metric_total", litellm_sel, window),
+                _metric_increase("bifrost_cost_total", bifrost_sel, window),
+            )
+        case "requests":
+            return _prom_sum(
+                _metric_increase(
+                    "litellm_proxy_total_requests_metric_total", litellm_sel, window
+                ),
+                _metric_increase(
+                    "bifrost_upstream_requests_total", bifrost_sel, window
+                ),
+            )
+        case "latency_sum":
+            return _prom_sum(
+                _metric_increase(
+                    "litellm_request_total_latency_metric_sum", litellm_sel, window
+                ),
+                _metric_increase(
+                    "bifrost_upstream_latency_seconds_sum", bifrost_sel, window
+                ),
+            )
+        case "latency_count":
+            return _prom_sum(
+                _metric_increase(
+                    "litellm_request_total_latency_metric_count", litellm_sel, window
+                ),
+                _metric_increase(
+                    "bifrost_upstream_latency_seconds_count", bifrost_sel, window
+                ),
+            )
+        case "cached_tokens":
+            # Bifrost exposes cache-hit counts, not cached-token volume. Keep this
+            # as the known LiteLLM cached-token total instead of fabricating units.
+            return _metric_increase(
+                "litellm_input_cached_tokens_metric_total", litellm_sel, window
+            )
+        case _:
+            raise ValueError(f"unknown LLM metric: {metric}")
+
+
+def _row_metric_value(row: dict[str, Any]) -> float:
+    value = row.get("value")
+    if not value:
+        return 0.0
+    try:
+        v = float(value[1])
+        return 0.0 if v != v else v
+    except (IndexError, ValueError, TypeError):
+        return 0.0
+
+
+def _add_grouped_metric(
+    dest: dict[str, float],
+    results: list[dict[str, Any]],
+    label_names: tuple[str, ...],
+) -> None:
+    for row in results:
+        key = _metric_label(row, *label_names)
+        dest[key] = dest.get(key, 0.0) + _row_metric_value(row)
 
 
 def _llm_consumer_extra(api_key: str | None) -> tuple[str, ...]:
     """APISIX ``consumer`` label extras for ``_llm_labels``, scoped to one key.
 
-    ``apisix_http_status`` carries the API-key name as ``consumer`` (the same
-    value the litellm ``end_user`` holds), so status/error series can be scoped
-    to the same key the litellm counters are filtered by.
+    ``apisix_http_status`` carries the API-key name as ``consumer``, so
+    status/error series can be scoped to the same key used by LiteLLM
+    ``end_user`` and Bifrost ``api_key`` token/cost metrics.
     """
     return (f'consumer="{api_key}"',) if api_key else ()
 
@@ -1376,11 +1530,103 @@ async def _grouped_volume_series(
     return _assemble_grouped_breakdown(per_key_points, buckets, unit)
 
 
+def _merge_grouped_points(
+    dest: dict[str, dict[int, float]],
+    grouped: dict[str, dict[int, float]],
+    *,
+    shift_seconds: int = 0,
+    min_timestamp: int | None = None,
+) -> set[int]:
+    """Merge grouped Prometheus points and return the bucket timestamps touched."""
+    touched: set[int] = set()
+    for key, ts_map in grouped.items():
+        key_points = dest.setdefault(key, {})
+        for ts, value in ts_map.items():
+            out_ts = ts - shift_seconds
+            if min_timestamp is not None and out_ts < min_timestamp:
+                continue
+            key_points[out_ts] = key_points.get(out_ts, 0.0) + value
+            touched.add(out_ts)
+    return touched
+
+
+async def _combined_grouped_volume_series(
+    query_specs: list[tuple[Callable[[str], str], tuple[str, ...]]],
+    tw: TimeWindow,
+    unit: str,
+) -> dict[str, Any]:
+    """Bucketed breakdown combining metrics whose grouping labels differ.
+
+    Used for LiteLLM+Bifrost LLM views: LiteLLM keys live in ``end_user`` while
+    Bifrost keys come from the configured ``api_key`` dimension, and model labels
+    also differ across providers.
+    """
+    if tw.bucket not in VALID_BUCKETS or tw.start is None or tw.end is None:
+        per_key_points: dict[str, dict[int, float]] = {}
+        for query_for_window, label_names in query_specs:
+            results = await prometheus_client.range_query(
+                query_for_window(tw.volume_window),
+                duration=tw.promql_window,
+                step=tw.volume_step,
+                start=tw.start,
+                end=tw.end,
+            )
+            _merge_grouped_points(
+                per_key_points,
+                _grouped_extract_timeseries(results, label_names),
+            )
+        buckets = sorted({ts for series in per_key_points.values() for ts in series})
+        return _assemble_grouped_breakdown(per_key_points, buckets, unit)
+
+    bsec = BUCKET_SECONDS[tw.bucket]
+    raw_end = float(tw.eval_time if tw.eval_time is not None else tw.end)
+    current_start = int(_align_down_kst(raw_end, tw.bucket))
+    start = int(tw.start)
+    per_key_points: dict[str, dict[int, float]] = {}
+    bucket_set: set[int] = set()
+
+    if float(current_start) > float(tw.start):
+        for query_for_window, label_names in query_specs:
+            completed = await prometheus_client.range_query(
+                query_for_window(tw.volume_window),
+                duration=tw.promql_window,
+                step=tw.volume_step,
+                start=tw.start,
+                end=float(current_start),
+            )
+            bucket_set.update(
+                _merge_grouped_points(
+                    per_key_points,
+                    _grouped_extract_timeseries(completed, label_names),
+                    shift_seconds=bsec,
+                    min_timestamp=start,
+                )
+            )
+
+    elapsed = int(raw_end - current_start)
+    if elapsed > 0:
+        partial_window = f"{min(max(elapsed, 1), bsec)}s"
+        for query_for_window, label_names in query_specs:
+            partial = await prometheus_client.instant_query(
+                query_for_window(partial_window),
+                eval_time=raw_end,
+            )
+            grouped = {
+                key: {current_start: value}
+                for key, value in _grouped_instant(partial, label_names).items()
+            }
+            bucket_set.update(_merge_grouped_points(per_key_points, grouped))
+
+    return _assemble_grouped_breakdown(per_key_points, sorted(bucket_set), unit)
+
+
 @router.get("/metrics/summary")
 async def metrics_summary(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
-    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
+    consumer: str | None = Query(
+        None, description="Filter by APISIX consumer name (API key)"
+    ),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> dict[str, Any]:
     _validate_route(route)
@@ -1418,7 +1664,9 @@ async def metrics_summary(
 async def metrics_requests(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
-    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
+    consumer: str | None = Query(
+        None, description="Filter by APISIX consumer name (API key)"
+    ),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> list[dict[str, Any]]:
     _validate_route(route)
@@ -1443,7 +1691,9 @@ async def metrics_requests(
 async def metrics_status_codes(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
-    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
+    consumer: str | None = Query(
+        None, description="Filter by APISIX consumer name (API key)"
+    ),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> list[dict[str, Any]]:
     _validate_route(route)
@@ -1477,7 +1727,9 @@ async def metrics_status_codes(
 async def metrics_latency(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
-    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
+    consumer: str | None = Query(
+        None, description="Filter by APISIX consumer name (API key)"
+    ),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> dict[str, list[dict[str, Any]]]:
     _validate_route(route)
@@ -1488,15 +1740,24 @@ async def metrics_latency(
         p50, p95, p99 = await asyncio.gather(
             prometheus_client.range_query(
                 f"histogram_quantile(0.5, sum(rate(apisix_http_latency_bucket{hs}[5m])) by (le))",
-                duration=tw.promql_window, step=step, start=tw.start, end=tw.end,
+                duration=tw.promql_window,
+                step=step,
+                start=tw.start,
+                end=tw.end,
             ),
             prometheus_client.range_query(
                 f"histogram_quantile(0.95, sum(rate(apisix_http_latency_bucket{hs}[5m])) by (le))",
-                duration=tw.promql_window, step=step, start=tw.start, end=tw.end,
+                duration=tw.promql_window,
+                step=step,
+                start=tw.start,
+                end=tw.end,
             ),
             prometheus_client.range_query(
                 f"histogram_quantile(0.99, sum(rate(apisix_http_latency_bucket{hs}[5m])) by (le))",
-                duration=tw.promql_window, step=step, start=tw.start, end=tw.end,
+                duration=tw.promql_window,
+                step=step,
+                start=tw.start,
+                end=tw.end,
             ),
         )
     except Exception as exc:
@@ -1514,7 +1775,9 @@ async def metrics_latency(
 @router.get("/metrics/top-routes")
 async def metrics_top_routes(
     tw: TimeWindow = Depends(resolve_time_window),
-    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
+    consumer: str | None = Query(
+        None, description="Filter by APISIX consumer name (API key)"
+    ),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> list[dict[str, Any]]:
     # No per-route filter here (aggregates across routes; llm-proxy excluded by _labels default).
@@ -1546,7 +1809,9 @@ async def metrics_top_routes(
 @router.get("/metrics/routes-comparison")
 async def metrics_routes_comparison(
     tw: TimeWindow = Depends(resolve_time_window),
-    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
+    consumer: str | None = Query(
+        None, description="Filter by APISIX consumer name (API key)"
+    ),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> dict[str, Any]:
     """Per-route comparison: requests, share, error_rate, p50/p95 latency in one payload."""
@@ -1623,15 +1888,21 @@ async def metrics_routes_comparison(
         error_rate = (err / req * 100) if req > 0 else 0.0
         p50 = p50_map.get(route)
         p95 = p95_map.get(route)
-        routes.append({
-            "route": route,
-            "name": name_map.get(route),
-            "requests": req_rounded,
-            "share": round(share, 2),
-            "error_rate": round(error_rate, 2),
-            "latency_p50_ms": round(p50, 2) if p50 is not None and not math.isnan(p50) else None,
-            "latency_p95_ms": round(p95, 2) if p95 is not None and not math.isnan(p95) else None,
-        })
+        routes.append(
+            {
+                "route": route,
+                "name": name_map.get(route),
+                "requests": req_rounded,
+                "share": round(share, 2),
+                "error_rate": round(error_rate, 2),
+                "latency_p50_ms": round(p50, 2)
+                if p50 is not None and not math.isnan(p50)
+                else None,
+                "latency_p95_ms": round(p95, 2)
+                if p95 is not None and not math.isnan(p95)
+                else None,
+            }
+        )
 
     routes.sort(key=lambda r: r["requests"], reverse=True)
     return {"total_requests": round(total), "routes": routes}
@@ -1713,14 +1984,20 @@ async def metrics_consumers_comparison(
         error_rate = (err / req * 100) if req > 0 else 0.0
         p50 = p50_map.get(consumer)
         p95 = p95_map.get(consumer)
-        consumers.append({
-            "consumer": consumer,
-            "requests": req_rounded,
-            "share": round(share, 2),
-            "error_rate": round(error_rate, 2),
-            "latency_p50_ms": round(p50, 2) if p50 is not None and not math.isnan(p50) else None,
-            "latency_p95_ms": round(p95, 2) if p95 is not None and not math.isnan(p95) else None,
-        })
+        consumers.append(
+            {
+                "consumer": consumer,
+                "requests": req_rounded,
+                "share": round(share, 2),
+                "error_rate": round(error_rate, 2),
+                "latency_p50_ms": round(p50, 2)
+                if p50 is not None and not math.isnan(p50)
+                else None,
+                "latency_p95_ms": round(p95, 2)
+                if p95 is not None and not math.isnan(p95)
+                else None,
+            }
+        )
 
     consumers.sort(key=lambda c: c["requests"], reverse=True)
     return {"total_requests": round(total), "consumers": consumers}
@@ -1729,7 +2006,9 @@ async def metrics_consumers_comparison(
 @router.get("/metrics/routes-comparison-series")
 async def metrics_routes_comparison_series(
     tw: TimeWindow = Depends(resolve_time_window),
-    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
+    consumer: str | None = Query(
+        None, description="Filter by APISIX consumer name (API key)"
+    ),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> dict[str, Any]:
     """Per-route request volume bucketed over time (stacked-bar breakdown)."""
@@ -1737,7 +2016,9 @@ async def metrics_routes_comparison_series(
     hs = _labels(None, consumer)
     try:
         return await _grouped_volume_series(
-            lambda window: f"sum by (route) (increase(apisix_http_status{hs}[{window}]))",
+            lambda window: (
+                f"sum by (route) (increase(apisix_http_status{hs}[{window}]))"
+            ),
             tw,
             ("route",),
             "requests",
@@ -1762,7 +2043,9 @@ async def metrics_consumers_comparison_series(
     hs = _labels(None, forced)
     try:
         breakdown = await _grouped_volume_series(
-            lambda window: f"sum by (consumer) (increase(apisix_http_status{hs}[{window}]))",
+            lambda window: (
+                f"sum by (consumer) (increase(apisix_http_status{hs}[{window}]))"
+            ),
             tw,
             ("consumer",),
             "requests",
@@ -1781,7 +2064,9 @@ async def metrics_consumers_comparison_series(
 async def metrics_requests_total(
     tw: TimeWindow = Depends(resolve_time_window),
     route: str | None = Query(None, description="Filter by route ID"),
-    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
+    consumer: str | None = Query(
+        None, description="Filter by APISIX consumer name (API key)"
+    ),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> list[dict[str, Any]]:
     """Request volume per time bucket (total count, not rate)."""
@@ -1805,11 +2090,10 @@ async def metrics_requests_total(
 @router.get("/metrics/llm/summary")
 async def llm_metrics_summary(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
+    api_key: str | None = Query(None, description="Filter to one UniBridge API key"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
     """LLM token usage summary: total tokens, cost, requests, latency."""
-    sel = _llm_key_selector(api_key)
     try:
         (
             tokens,
@@ -1822,35 +2106,35 @@ async def llm_metrics_summary(
             cached,
         ) = await asyncio.gather(
             prometheus_client.instant_query(
-                f"sum(increase(litellm_total_tokens_metric_total{sel}[{tw.promql_window}]))",
+                _llm_metric_query("total_tokens", tw.promql_window, api_key),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_input_tokens_metric_total{sel}[{tw.promql_window}]))",
+                _llm_metric_query("input_tokens", tw.promql_window, api_key),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_output_tokens_metric_total{sel}[{tw.promql_window}]))",
+                _llm_metric_query("output_tokens", tw.promql_window, api_key),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_spend_metric_total{sel}[{tw.promql_window}]))",
+                _llm_metric_query("cost", tw.promql_window, api_key),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_proxy_total_requests_metric_total{sel}[{tw.promql_window}]))",
+                _llm_metric_query("requests", tw.promql_window, api_key),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_request_total_latency_metric_sum{sel}[{tw.promql_window}]))",
+                _llm_metric_query("latency_sum", tw.promql_window, api_key),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_request_total_latency_metric_count{sel}[{tw.promql_window}]))",
+                _llm_metric_query("latency_count", tw.promql_window, api_key),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(litellm_input_cached_tokens_metric_total{sel}[{tw.promql_window}]))",
+                _llm_metric_query("cached_tokens", tw.promql_window, api_key),
                 eval_time=tw.eval_time,
             ),
         )
@@ -1874,30 +2158,31 @@ async def llm_metrics_summary(
         "total_requests": round(_extract_scalar(requests)),
         "avg_latency_ms": round(avg_latency, 2),
         "cached_tokens": round(cached_val),
-        "cache_hit_rate": round(min(cached_val / prompt_val, 1.0), 4) if prompt_val > 0 else 0.0,
+        "cache_hit_rate": round(min(cached_val / prompt_val, 1.0), 4)
+        if prompt_val > 0
+        else 0.0,
     }
 
 
 @router.get("/metrics/llm/tokens")
 async def llm_metrics_tokens(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
+    api_key: str | None = Query(None, description="Filter to one UniBridge API key"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, list[dict[str, Any]]]:
     """Token usage trend: prompt and completion tokens over time."""
-    sel = _llm_key_selector(api_key)
     try:
         prompt_points, completion_points, cached_points = await asyncio.gather(
             _volume_series(
-                lambda window: f"sum(increase(litellm_input_tokens_metric_total{sel}[{window}]))",
+                lambda window: _llm_metric_query("input_tokens", window, api_key),
                 tw,
             ),
             _volume_series(
-                lambda window: f"sum(increase(litellm_output_tokens_metric_total{sel}[{window}]))",
+                lambda window: _llm_metric_query("output_tokens", window, api_key),
                 tw,
             ),
             _volume_series(
-                lambda window: f"sum(increase(litellm_input_cached_tokens_metric_total{sel}[{window}]))",
+                lambda window: _llm_metric_query("cached_tokens", window, api_key),
                 tw,
             ),
         )
@@ -1916,42 +2201,115 @@ async def llm_metrics_tokens(
 @router.get("/metrics/llm/by-model")
 async def llm_metrics_by_model(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
+    api_key: str | None = Query(None, description="Filter to one UniBridge API key"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """Token usage, request count, and cost breakdown by model."""
-    sel = _llm_key_selector(api_key)
+    litellm_sel = _llm_key_selector(api_key)
+    bifrost_sel = _bifrost_key_selector(api_key)
+    litellm_model_labels = ("requested_model", "model")
+    bifrost_model_labels = ("alias", "model")
     try:
         (
-            token_results,
-            input_token_results,
-            output_token_results,
-            cost_results,
-            request_results,
-            cached_token_results,
+            litellm_token_results,
+            litellm_input_results,
+            litellm_output_results,
+            litellm_cost_results,
+            litellm_request_results,
+            litellm_cached_results,
+            bifrost_input_results,
+            bifrost_output_results,
+            bifrost_cost_results,
+            bifrost_request_results,
         ) = await asyncio.gather(
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_total_tokens_metric_total{sel}[{tw.promql_window}]))",
+                _metric_increase_by(
+                    "litellm_total_tokens_metric_total",
+                    litellm_sel,
+                    tw.promql_window,
+                    litellm_model_labels,
+                ),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_input_tokens_metric_total{sel}[{tw.promql_window}]))",
+                _metric_increase_by(
+                    "litellm_input_tokens_metric_total",
+                    litellm_sel,
+                    tw.promql_window,
+                    litellm_model_labels,
+                ),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_output_tokens_metric_total{sel}[{tw.promql_window}]))",
+                _metric_increase_by(
+                    "litellm_output_tokens_metric_total",
+                    litellm_sel,
+                    tw.promql_window,
+                    litellm_model_labels,
+                ),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_spend_metric_total{sel}[{tw.promql_window}]))",
+                _metric_increase_by(
+                    "litellm_spend_metric_total",
+                    litellm_sel,
+                    tw.promql_window,
+                    litellm_model_labels,
+                ),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_proxy_total_requests_metric_total{sel}[{tw.promql_window}]))",
+                _metric_increase_by(
+                    "litellm_proxy_total_requests_metric_total",
+                    litellm_sel,
+                    tw.promql_window,
+                    litellm_model_labels,
+                ),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (requested_model, model) (increase(litellm_input_cached_tokens_metric_total{sel}[{tw.promql_window}]))",
+                _metric_increase_by(
+                    "litellm_input_cached_tokens_metric_total",
+                    litellm_sel,
+                    tw.promql_window,
+                    litellm_model_labels,
+                ),
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                _metric_increase_by(
+                    "bifrost_input_tokens_total",
+                    bifrost_sel,
+                    tw.promql_window,
+                    bifrost_model_labels,
+                ),
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                _metric_increase_by(
+                    "bifrost_output_tokens_total",
+                    bifrost_sel,
+                    tw.promql_window,
+                    bifrost_model_labels,
+                ),
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                _metric_increase_by(
+                    "bifrost_cost_total",
+                    bifrost_sel,
+                    tw.promql_window,
+                    bifrost_model_labels,
+                ),
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                _metric_increase_by(
+                    "bifrost_upstream_requests_total",
+                    bifrost_sel,
+                    tw.promql_window,
+                    bifrost_model_labels,
+                ),
                 eval_time=tw.eval_time,
             ),
         )
@@ -1960,53 +2318,26 @@ async def llm_metrics_by_model(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
 
-    token_map: dict[str, int] = {}
-    for r in token_results:
-        model = _metric_label(r, "requested_model", "model")
-        try:
-            token_map[model] = round(float(r["value"][1]))
-        except (IndexError, ValueError, TypeError):
-            token_map[model] = 0
-
-    input_token_map: dict[str, int] = {}
-    for r in input_token_results:
-        model = _metric_label(r, "requested_model", "model")
-        try:
-            input_token_map[model] = round(float(r["value"][1]))
-        except (IndexError, ValueError, TypeError):
-            input_token_map[model] = 0
-
-    output_token_map: dict[str, int] = {}
-    for r in output_token_results:
-        model = _metric_label(r, "requested_model", "model")
-        try:
-            output_token_map[model] = round(float(r["value"][1]))
-        except (IndexError, ValueError, TypeError):
-            output_token_map[model] = 0
-
+    token_map: dict[str, float] = {}
+    input_token_map: dict[str, float] = {}
+    output_token_map: dict[str, float] = {}
     cost_map: dict[str, float] = {}
-    for r in cost_results:
-        model = _metric_label(r, "requested_model", "model")
-        try:
-            cost_map[model] = round(float(r["value"][1]), 4)
-        except (IndexError, ValueError, TypeError):
-            cost_map[model] = 0.0
+    request_map: dict[str, float] = {}
+    cached_map: dict[str, float] = {}
 
-    request_map: dict[str, int] = {}
-    for r in request_results:
-        model = _metric_label(r, "requested_model", "model")
-        try:
-            request_map[model] = round(float(r["value"][1]))
-        except (IndexError, ValueError, TypeError):
-            request_map[model] = 0
+    _add_grouped_metric(token_map, litellm_token_results, litellm_model_labels)
+    _add_grouped_metric(input_token_map, litellm_input_results, litellm_model_labels)
+    _add_grouped_metric(output_token_map, litellm_output_results, litellm_model_labels)
+    _add_grouped_metric(cost_map, litellm_cost_results, litellm_model_labels)
+    _add_grouped_metric(request_map, litellm_request_results, litellm_model_labels)
+    _add_grouped_metric(cached_map, litellm_cached_results, litellm_model_labels)
 
-    cached_map: dict[str, int] = {}
-    for r in cached_token_results:
-        model = _metric_label(r, "requested_model", "model")
-        try:
-            cached_map[model] = round(float(r["value"][1]))
-        except (IndexError, ValueError, TypeError):
-            cached_map[model] = 0
+    _add_grouped_metric(token_map, bifrost_input_results, bifrost_model_labels)
+    _add_grouped_metric(token_map, bifrost_output_results, bifrost_model_labels)
+    _add_grouped_metric(input_token_map, bifrost_input_results, bifrost_model_labels)
+    _add_grouped_metric(output_token_map, bifrost_output_results, bifrost_model_labels)
+    _add_grouped_metric(cost_map, bifrost_cost_results, bifrost_model_labels)
+    _add_grouped_metric(request_map, bifrost_request_results, bifrost_model_labels)
 
     models = []
     for model in (
@@ -2017,14 +2348,14 @@ async def llm_metrics_by_model(
         | request_map.keys()
         | cached_map.keys()
     ):
-        tokens = token_map.get(model, 0)
-        input_tokens = input_token_map.get(model, 0)
-        output_tokens = output_token_map.get(model, 0)
+        input_tokens = round(input_token_map.get(model, 0))
+        output_tokens = round(output_token_map.get(model, 0))
+        tokens = round(token_map.get(model, 0))
         if tokens == 0 and (input_tokens > 0 or output_tokens > 0):
             tokens = input_tokens + output_tokens
-        cost = cost_map.get(model, 0.0)
-        requests = request_map.get(model, 0)
-        cached_tokens = cached_map.get(model, 0)
+        cost = round(cost_map.get(model, 0.0), 4)
+        requests = round(request_map.get(model, 0))
+        cached_tokens = round(cached_map.get(model, 0))
         if (
             tokens > 0
             or input_tokens > 0
@@ -2051,23 +2382,48 @@ async def llm_metrics_by_model(
 @router.get("/metrics/llm/by-model-series")
 async def llm_metrics_by_model_series(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
+    api_key: str | None = Query(None, description="Filter to one UniBridge API key"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
     """Per-model token usage bucketed over time (stacked-bar breakdown).
 
-    Mirrors /metrics/llm/by-model: filters on ``end_user`` when scoped to one
-    API key (matching the instant sibling exactly).
+    Mirrors /metrics/llm/by-model: filters on the same UniBridge API-key
+    identity used by LiteLLM ``end_user`` and Bifrost ``api_key`` metrics.
     """
-    sel = _llm_key_selector(api_key)
+    litellm_sel = _llm_key_selector(api_key)
+    bifrost_sel = _bifrost_key_selector(api_key)
     try:
-        return await _grouped_volume_series(
-            lambda window: (
-                "sum by (requested_model, model) "
-                f"(increase(litellm_total_tokens_metric_total{sel}[{window}]))"
-            ),
+        return await _combined_grouped_volume_series(
+            [
+                (
+                    lambda window: _metric_increase_by(
+                        "litellm_total_tokens_metric_total",
+                        litellm_sel,
+                        window,
+                        ("requested_model", "model"),
+                    ),
+                    ("requested_model", "model"),
+                ),
+                (
+                    lambda window: _metric_increase_by(
+                        "bifrost_input_tokens_total",
+                        bifrost_sel,
+                        window,
+                        ("alias", "model"),
+                    ),
+                    ("alias", "model"),
+                ),
+                (
+                    lambda window: _metric_increase_by(
+                        "bifrost_output_tokens_total",
+                        bifrost_sel,
+                        window,
+                        ("alias", "model"),
+                    ),
+                    ("alias", "model"),
+                ),
+            ],
             tw,
-            ("requested_model", "model"),
             "tokens",
         )
     except Exception as exc:
@@ -2079,37 +2435,93 @@ async def llm_metrics_by_model_series(
 @router.get("/metrics/llm/top-keys")
 async def llm_metrics_top_keys(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
+    api_key: str | None = Query(None, description="Filter to one UniBridge API key"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """Top UniBridge API keys by token usage."""
-    sel = _llm_key_selector(api_key)
+    litellm_sel = _llm_key_selector(api_key)
+    bifrost_sel = _bifrost_key_selector(api_key)
     try:
         (
-            token_results,
-            input_token_results,
-            output_token_results,
-            req_results,
-            cached_token_results,
+            litellm_token_results,
+            litellm_input_results,
+            litellm_output_results,
+            litellm_req_results,
+            litellm_cached_results,
+            bifrost_input_results,
+            bifrost_output_results,
+            bifrost_req_results,
         ) = await asyncio.gather(
             prometheus_client.instant_query(
-                f"topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total{sel}[{tw.promql_window}])))",
+                _metric_increase_by(
+                    "litellm_total_tokens_metric_total",
+                    litellm_sel,
+                    tw.promql_window,
+                    ("end_user",),
+                ),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (end_user) (increase(litellm_input_tokens_metric_total{sel}[{tw.promql_window}]))",
+                _metric_increase_by(
+                    "litellm_input_tokens_metric_total",
+                    litellm_sel,
+                    tw.promql_window,
+                    ("end_user",),
+                ),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (end_user) (increase(litellm_output_tokens_metric_total{sel}[{tw.promql_window}]))",
+                _metric_increase_by(
+                    "litellm_output_tokens_metric_total",
+                    litellm_sel,
+                    tw.promql_window,
+                    ("end_user",),
+                ),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (end_user) (increase(litellm_proxy_total_requests_metric_total{sel}[{tw.promql_window}]))",
+                _metric_increase_by(
+                    "litellm_proxy_total_requests_metric_total",
+                    litellm_sel,
+                    tw.promql_window,
+                    ("end_user",),
+                ),
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum by (end_user) (increase(litellm_input_cached_tokens_metric_total{sel}[{tw.promql_window}]))",
+                _metric_increase_by(
+                    "litellm_input_cached_tokens_metric_total",
+                    litellm_sel,
+                    tw.promql_window,
+                    ("end_user",),
+                ),
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                _metric_increase_by(
+                    "bifrost_input_tokens_total",
+                    bifrost_sel,
+                    tw.promql_window,
+                    ("api_key",),
+                ),
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                _metric_increase_by(
+                    "bifrost_output_tokens_total",
+                    bifrost_sel,
+                    tw.promql_window,
+                    ("api_key",),
+                ),
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                _metric_increase_by(
+                    "bifrost_upstream_requests_total",
+                    bifrost_sel,
+                    tw.promql_window,
+                    ("api_key",),
+                ),
                 eval_time=tw.eval_time,
             ),
         )
@@ -2118,51 +2530,39 @@ async def llm_metrics_top_keys(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
 
-    input_token_map: dict[str, int] = {}
-    for r in input_token_results:
-        key = _metric_label(r, "end_user")
-        try:
-            input_token_map[key] = round(float(r["value"][1]))
-        except (IndexError, ValueError, TypeError):
-            input_token_map[key] = 0
+    token_map: dict[str, float] = {}
+    input_token_map: dict[str, float] = {}
+    output_token_map: dict[str, float] = {}
+    req_map: dict[str, float] = {}
+    cached_map: dict[str, float] = {}
 
-    output_token_map: dict[str, int] = {}
-    for r in output_token_results:
-        key = _metric_label(r, "end_user")
-        try:
-            output_token_map[key] = round(float(r["value"][1]))
-        except (IndexError, ValueError, TypeError):
-            output_token_map[key] = 0
+    _add_grouped_metric(token_map, litellm_token_results, ("end_user",))
+    _add_grouped_metric(input_token_map, litellm_input_results, ("end_user",))
+    _add_grouped_metric(output_token_map, litellm_output_results, ("end_user",))
+    _add_grouped_metric(req_map, litellm_req_results, ("end_user",))
+    _add_grouped_metric(cached_map, litellm_cached_results, ("end_user",))
 
-    req_map: dict[str, int] = {}
-    for r in req_results:
-        key = _metric_label(r, "end_user")
-        try:
-            req_map[key] = round(float(r["value"][1]))
-        except (IndexError, ValueError, TypeError):
-            req_map[key] = 0
-
-    cached_map: dict[str, int] = {}
-    for r in cached_token_results:
-        key = _metric_label(r, "end_user")
-        try:
-            cached_map[key] = round(float(r["value"][1]))
-        except (IndexError, ValueError, TypeError):
-            cached_map[key] = 0
+    _add_grouped_metric(token_map, bifrost_input_results, ("api_key",))
+    _add_grouped_metric(token_map, bifrost_output_results, ("api_key",))
+    _add_grouped_metric(input_token_map, bifrost_input_results, ("api_key",))
+    _add_grouped_metric(output_token_map, bifrost_output_results, ("api_key",))
+    _add_grouped_metric(req_map, bifrost_req_results, ("api_key",))
 
     keys = []
-    for r in token_results:
-        key = _metric_label(r, "end_user")
-        try:
-            tokens = round(float(r["value"][1]))
-        except (IndexError, ValueError, TypeError):
-            tokens = 0
-        input_tokens = input_token_map.get(key, 0)
-        output_tokens = output_token_map.get(key, 0)
+    for key in (
+        token_map.keys()
+        | input_token_map.keys()
+        | output_token_map.keys()
+        | req_map.keys()
+        | cached_map.keys()
+    ):
+        tokens = round(token_map.get(key, 0))
+        input_tokens = round(input_token_map.get(key, 0))
+        output_tokens = round(output_token_map.get(key, 0))
         if tokens == 0 and (input_tokens > 0 or output_tokens > 0):
             tokens = input_tokens + output_tokens
-        requests = req_map.get(key, 0)
-        cached_tokens = cached_map.get(key, 0)
+        requests = round(req_map.get(key, 0))
+        cached_tokens = round(cached_map.get(key, 0))
         if tokens > 0 or input_tokens > 0 or output_tokens > 0 or requests > 0:
             keys.append(
                 {
@@ -2174,29 +2574,56 @@ async def llm_metrics_top_keys(
                     "requests": requests,
                 }
             )
+    keys.sort(key=lambda x: (x["tokens"], x["requests"]), reverse=True)
+    keys = keys[:10]
     return keys
 
 
 @router.get("/metrics/llm/top-keys-series")
 async def llm_metrics_top_keys_series(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
+    api_key: str | None = Query(None, description="Filter to one UniBridge API key"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, Any]:
-    """Per-API-key (end_user) token usage bucketed over time.
+    """Per-API-key token usage bucketed over time.
 
-    Mirrors /metrics/llm/top-keys: filters on ``end_user`` when scoped to one
-    API key (matching the instant sibling exactly).
+    Mirrors /metrics/llm/top-keys: filters on the same UniBridge API-key
+    identity used by LiteLLM ``end_user`` and Bifrost ``api_key`` metrics.
     """
-    sel = _llm_key_selector(api_key)
+    litellm_sel = _llm_key_selector(api_key)
+    bifrost_sel = _bifrost_key_selector(api_key)
     try:
-        return await _grouped_volume_series(
-            lambda window: (
-                "sum by (end_user) "
-                f"(increase(litellm_total_tokens_metric_total{sel}[{window}]))"
-            ),
+        return await _combined_grouped_volume_series(
+            [
+                (
+                    lambda window: _metric_increase_by(
+                        "litellm_total_tokens_metric_total",
+                        litellm_sel,
+                        window,
+                        ("end_user",),
+                    ),
+                    ("end_user",),
+                ),
+                (
+                    lambda window: _metric_increase_by(
+                        "bifrost_input_tokens_total",
+                        bifrost_sel,
+                        window,
+                        ("api_key",),
+                    ),
+                    ("api_key",),
+                ),
+                (
+                    lambda window: _metric_increase_by(
+                        "bifrost_output_tokens_total",
+                        bifrost_sel,
+                        window,
+                        ("api_key",),
+                    ),
+                    ("api_key",),
+                ),
+            ],
             tw,
-            ("end_user",),
             "tokens",
         )
     except Exception as exc:
@@ -2208,7 +2635,9 @@ async def llm_metrics_top_keys_series(
 @router.get("/metrics/llm/status-codes")
 async def llm_metrics_status_codes(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one API key (APISIX consumer)"),
+    api_key: str | None = Query(
+        None, description="Filter to one API key (APISIX consumer)"
+    ),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """LLM HTTP status code distribution.
@@ -2245,7 +2674,9 @@ async def llm_metrics_status_codes(
 @router.get("/metrics/llm/errors")
 async def llm_metrics_errors(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one API key (APISIX consumer)"),
+    api_key: str | None = Query(
+        None, description="Filter to one API key (APISIX consumer)"
+    ),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """LLM request success/error rate over time.
@@ -2292,14 +2723,13 @@ async def llm_metrics_errors(
 @router.get("/metrics/llm/requests-total")
 async def llm_metrics_requests_total(
     tw: TimeWindow = Depends(resolve_time_window),
-    api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
+    api_key: str | None = Query(None, description="Filter to one UniBridge API key"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
     """LLM request volume per time bucket."""
-    sel = _llm_key_selector(api_key)
     try:
         return await _volume_series(
-            lambda window: f"sum(increase(litellm_proxy_total_requests_metric_total{sel}[{window}]))",
+            lambda window: _llm_metric_query("requests", window, api_key),
             tw,
         )
     except Exception as exc:

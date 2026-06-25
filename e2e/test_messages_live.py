@@ -1,7 +1,7 @@
 """Live E2E: Anthropic Messages endpoint through the deployed gateway.
 
-POST {LLM_BASE_URL}/v1/messages → APISIX (key-auth + master-key inject) →
-llm-converter (Anthropic→OpenAI) → LiteLLM /v1/chat/completions → back to
+POST {LLM_BASE_URL}/v1/messages → APISIX (key-auth + Bifrost headers) →
+llm-converter (Anthropic→OpenAI) → Bifrost /v1/chat/completions → back to
 Anthropic shape.
 """
 

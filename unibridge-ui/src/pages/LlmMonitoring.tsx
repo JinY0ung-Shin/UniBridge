@@ -27,7 +27,13 @@ import BucketSelector from '../components/BucketSelector';
 import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket } from '../utils/timeRange';
 import { formatChartTimestamp, formatBucketLabel } from '../utils/time';
 
-const LITELLM_ADMIN_URL = window.__RUNTIME_CONFIG__?.LITELLM_ADMIN_URL || import.meta.env.VITE_LITELLM_ADMIN_URL || 'https://localhost:4000/ui';
+const BIFROST_ADMIN_URL = (
+  window.__RUNTIME_CONFIG__?.BIFROST_ADMIN_URL ||
+  window.__RUNTIME_CONFIG__?.LITELLM_ADMIN_URL ||
+  import.meta.env.VITE_BIFROST_ADMIN_URL ||
+  import.meta.env.VITE_LITELLM_ADMIN_URL ||
+  'http://localhost:8080'
+);
 
 function formatCost(value: number): string {
   return `$${value.toFixed(2)}`;
@@ -168,7 +174,7 @@ function LlmMonitoring() {
         </div>
         <div className="page-header__filters">
           <a
-            href={LITELLM_ADMIN_URL}
+            href={BIFROST_ADMIN_URL}
             target="_blank"
             rel="noopener noreferrer"
             className="admin-link-btn"

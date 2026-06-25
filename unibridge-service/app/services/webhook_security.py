@@ -5,12 +5,21 @@ import socket
 from urllib.parse import urlparse
 
 
-_BLOCKED_HOSTNAMES = frozenset({
-    "localhost", "keycloak", "etcd", "apisix",
-    "litellm", "prometheus", "unibridge-service",
-    "keycloak-db", "litellm-db",
-    "metadata.google.internal",
-})
+_BLOCKED_HOSTNAMES = frozenset(
+    {
+        "localhost",
+        "keycloak",
+        "etcd",
+        "apisix",
+        "bifrost",
+        "litellm",
+        "prometheus",
+        "unibridge-service",
+        "keycloak-db",
+        "litellm-db",
+        "metadata.google.internal",
+    }
+)
 
 
 def _is_internal_ip(ip_text: str) -> bool:
@@ -50,7 +59,9 @@ def validate_webhook_url(url: str) -> str:
             raise
 
     try:
-        addr_infos = socket.getaddrinfo(hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+        addr_infos = socket.getaddrinfo(
+            hostname, parsed.port or 443, type=socket.SOCK_STREAM
+        )
     except socket.gaierror:
         return url
 

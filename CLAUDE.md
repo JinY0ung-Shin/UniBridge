@@ -1,7 +1,7 @@
 # UniBridge (API Hub)
 
 Internal API/DB gateway platform: register databases (Postgres/MSSQL/ClickHouse/Neo4j),
-run SQL through one endpoint, manage APISIX routes, proxy LLMs via LiteLLM, browse
+run SQL through one endpoint, manage APISIX routes, proxy LLMs via Bifrost, browse
 S3/NAS — all behind Keycloak OIDC + RBAC + API keys. See `README.md` for deployment.
 
 ## Repo layout (monorepo, 3 code services + infra config)
@@ -10,9 +10,9 @@ S3/NAS — all behind Keycloak OIDC + RBAC + API keys. See `README.md` for deplo
 - `unibridge-ui/`      — React 19 + TS + Vite, served by nginx. TanStack Query,
   react-router 7, keycloak-js, i18next, recharts. See its CLAUDE.md.
 - `llm-converter/`     — FastAPI sidecar: translates Anthropic `/v1/messages` and
-  OpenAI `/v1/responses` → chat/completions for LiteLLM. See its CLAUDE.md.
+  OpenAI `/v1/responses` → chat/completions for Bifrost. See its CLAUDE.md.
 - `e2e/`               — live end-to-end tests (skipped unless `LLM_API_KEY` set).
-- `apisix/ keycloak/ litellm/ prometheus/` — infra config. `docker-compose.yml` — full stack.
+- `apisix/ bifrost/ keycloak/ prometheus/` — infra config. `docker-compose.yml` — full stack.
 
 ## Commands
 Backend (`cd unibridge-service`):
@@ -47,7 +47,7 @@ requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
   + stamp head), so a missing migration passes tests but breaks deploys.
 - **Test env is set in `tests/conftest.py` before app import** (in-memory SQLite, dev JWT,
   `ENABLE_DEV_TOKEN_ENDPOINT=true`). Don't rely on a real `.env` in tests.
-- **Fail-fast secrets**: ENCRYPTION_KEY, APISIX_ADMIN_KEY, KC_*, LITELLM_* are required at
+- **Fail-fast secrets**: ENCRYPTION_KEY, APISIX_ADMIN_KEY, KC_*, BIFROST_ENCRYPTION_KEY are required at
   boot (compose `:?` + `validate_settings()`). Keycloak/CORS URLs auto-derive from `HOST_IP`;
   Keycloak URLs derive only when `KEYCLOAK_JWT_AUDIENCE` is set (empty = dev HS256 mode).
 - **RBAC**: flat string permissions in `app/auth.py::ALL_PERMISSIONS`; roles→permissions with

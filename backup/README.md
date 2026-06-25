@@ -11,7 +11,7 @@ Operator runbook for backing up and restoring UniBridge state.
 | etcd | volume `etcd-data` | `etcd.snap` | APISIX routes, consumers, plugin configs |
 | unibridge-service SQLite | volume `unibridge-data` (`meta.db`) | `unibridge-meta.db.gz` | API keys, encrypted credentials, user settings |
 | Keycloak Postgres | volume `keycloak-db-data` | `keycloak-db.sql.gz` | users, realms, clients |
-| LiteLLM Postgres | volume `litellm-db-data` | `litellm-db.sql.gz` | LLM keys, budgets, usage history |
+| Bifrost app data | volume `bifrost-data` (`/app/data`) | `bifrost-data.tar.gz` | LLM provider config, virtual keys, request logs |
 
 Prometheus time-series data is intentionally **not** backed up — retention is already configured in the Prometheus container and the data is regeneratable over time.
 
@@ -21,7 +21,7 @@ Prometheus time-series data is intentionally **not** backed up — retention is 
 <project-root>/snapshots/<YYYY-MM-DD_HHMMSSZ>/
   etcd.snap
   keycloak-db.sql.gz
-  litellm-db.sql.gz
+  bifrost-data.tar.gz
   unibridge-meta.db.gz
   manifest.json          # sizes + SHA256 of each file
 ```
@@ -62,13 +62,13 @@ Restore is **per-component and destructive**. Each `restore.sh` invocation:
 
 - Verifies the backup dir has a `manifest.json` and the needed file before doing anything.
 - Prints a plan of what will change.
-- Requires a typed confirmation phrase (`RESTORE ETCD`, `RESTORE PG`, `RESTORE META`).
-- Stops the consumer service (Keycloak / LiteLLM / unibridge-service / apisix) before touching its backing store, then restarts it.
+- Requires a typed confirmation phrase (`RESTORE ETCD`, `RESTORE PG`, `RESTORE VOLUME`, `RESTORE META`).
+- Stops the consumer service (Keycloak / Bifrost / unibridge-service / apisix) before touching its backing store, then restarts it.
 
 ```
 ./backup/restore.sh etcd           ./snapshots/2026-04-19_030000Z
 ./backup/restore.sh keycloak-db    ./snapshots/2026-04-19_030000Z
-./backup/restore.sh litellm-db     ./snapshots/2026-04-19_030000Z
+./backup/restore.sh bifrost-data   ./snapshots/2026-04-19_030000Z
 ./backup/restore.sh unibridge-meta ./snapshots/2026-04-19_030000Z
 ```
 
@@ -80,12 +80,12 @@ Correct order:
 
 1. **Bring up only the stateful stores**:
    ```
-   docker compose up -d --wait keycloak-db litellm-db etcd
+   docker compose up -d --wait keycloak-db bifrost etcd
    ```
 2. **Restore the data stores** (each script stops/starts the relevant consumer):
    ```
    ./backup/restore.sh keycloak-db    ./snapshots/<stamp>
-   ./backup/restore.sh litellm-db     ./snapshots/<stamp>
+   ./backup/restore.sh bifrost-data   ./snapshots/<stamp>
    ./backup/restore.sh etcd           ./snapshots/<stamp>
    ```
 3. **Bring up the rest** with restored data:

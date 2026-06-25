@@ -17,7 +17,7 @@ backup_postgres() {
 }
 
 # restore_postgres <service> <db> <user> <in.sql.gz> [consumer-service]
-# The consumer service (e.g. keycloak, litellm) holds a connection pool to the
+# The consumer service (e.g. keycloak) holds a connection pool to the
 # DB. It must be stopped before restoring or DROP TABLE in the dump will
 # deadlock on AccessExclusiveLock.
 restore_postgres() {

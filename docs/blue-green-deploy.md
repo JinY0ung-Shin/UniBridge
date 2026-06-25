@@ -3,7 +3,7 @@
 UniBridge can run blue/green deployments without Kubernetes by splitting the
 stack into three Compose files:
 
-- `docker-compose.infra.yml`: persistent services, APISIX, Keycloak, LiteLLM,
+- `docker-compose.infra.yml`: persistent services, APISIX, Keycloak, Bifrost,
   Prometheus, and databases.
 - `docker-compose.app.yml`: one color of the application tier:
   `unibridge-service`, `llm-converter`, and `unibridge-ui`.
@@ -33,12 +33,12 @@ Work through this before running `deploy-bluegreen.sh` on a real environment.
      `https://HOST_IP:UNIBRIDGE_EDGE_PORT`.
    - All host ports must be distinct: `UNIBRIDGE_EDGE_PORT`,
      `BLUEGREEN_BLUE_UI_PORT`, `BLUEGREEN_GREEN_UI_PORT`, `KEYCLOAK_PORT`,
-     `LITELLM_PORT`, `PROMETHEUS_PORT`, `APISIX_ADMIN_PORT`.
+     `BIFROST_PORT`, `PROMETHEUS_PORT`, `APISIX_ADMIN_PORT`.
    - If you changed the APISIX admin port, also set `APISIX_ADMIN_PORT` (or
      `APISIX_ADMIN_HOST_URL`) — promotion calls the admin API there.
 
 3. **Know what is and isn't zero-downtime.** Only UniBridge (the edge port) is
-   rotated blue/green. Keycloak, LiteLLM, APISIX and the databases live in the
+   rotated blue/green. Keycloak, Bifrost, APISIX and the databases live in the
    **infra** stack as single instances: they stay up *during* an app deploy, but
    updating/restarting them is a normal restart with downtime — blue/green does
    not cover them.
@@ -153,7 +153,7 @@ when this repo runs as project `unibridge`:
 - `unibridge_unibridge-db-data`
 - `unibridge_etcd-data`
 - `unibridge_keycloak-db-data`
-- `unibridge_litellm-db-data`
+- `unibridge_bifrost-data`
 - `unibridge_prometheus-data`
 - `unibridge_prometheus-file-sd`
 
@@ -165,7 +165,7 @@ UNIBRIDGE_DATA_VOLUME=<old-project>_unibridge-data
 UNIBRIDGE_DB_DATA_VOLUME=<old-project>_unibridge-db-data
 ETCD_DATA_VOLUME=<old-project>_etcd-data
 KEYCLOAK_DB_DATA_VOLUME=<old-project>_keycloak-db-data
-LITELLM_DB_DATA_VOLUME=<old-project>_litellm-db-data
+BIFROST_DATA_VOLUME=<old-project>_bifrost-data
 PROMETHEUS_DATA_VOLUME=<old-project>_prometheus-data
 PROMETHEUS_FILE_SD_VOLUME=<old-project>_prometheus-file-sd
 ```

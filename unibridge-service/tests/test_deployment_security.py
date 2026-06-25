@@ -27,8 +27,7 @@ COMPOSE_SERVICE_LIMITS = {
     "keycloak": {"memory": "2g", "cpus": "1.00"},
     "unibridge-service": {"memory": "512m", "cpus": "1.00"},
     "prometheus": {"memory": "512m", "cpus": "0.50"},
-    "litellm-db": {"memory": "512m", "cpus": "0.50"},
-    "litellm": {"memory": "1g", "cpus": "1.00"},
+    "bifrost": {"memory": "1g", "cpus": "1.00"},
     "unibridge-ui": {"memory": "128m", "cpus": "0.25"},
     "blackbox-exporter": {"memory": "128m", "cpus": "0.25"},
 }
@@ -43,7 +42,7 @@ REQUIRED_PROMETHEUS_ALERTS = {
     "UniBridgeServiceDown",
     "UniBridgeMetaDbDown",
     "KeycloakDbDown",
-    "LiteLLMDbDown",
+    "BifrostDown",
     "UniBridgeAuditWritesMissing",
 }
 
@@ -51,15 +50,13 @@ FORBIDDEN_COMPOSE_PATTERNS = [
     "KC_BOOTSTRAP_ADMIN_PASSWORD=${KC_ADMIN_PASSWORD:-admin}",
     "POSTGRES_PASSWORD=${KC_DB_PASSWORD:-keycloak}",
     "KC_DB_PASSWORD=${KC_DB_PASSWORD:-keycloak}",
-    "POSTGRES_PASSWORD=${LITELLM_DB_PASSWORD:-litellm}",
-    "DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:-litellm}@litellm-db:5432/litellm",
 ]
 
 REQUIRED_COMPOSE_SECRET_INTERPOLATIONS = {
     "ENCRYPTION_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}": 1,
     "APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:?APISIX_ADMIN_KEY is required}": 2,
     "KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:?KEYCLOAK_SERVICE_CLIENT_SECRET is required}": 2,
-    "LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}": 2,
+    "BIFROST_ENCRYPTION_KEY=${BIFROST_ENCRYPTION_KEY:?BIFROST_ENCRYPTION_KEY is required}": 1,
 }
 
 REQUIRED_BLANK_ENV_SECRETS = {
@@ -70,8 +67,7 @@ REQUIRED_BLANK_ENV_SECRETS = {
     "KC_ADMIN_PASSWORD",
     "KC_DB_PASSWORD",
     "KEYCLOAK_SERVICE_CLIENT_SECRET",
-    "LITELLM_DB_PASSWORD",
-    "LITELLM_MASTER_KEY",
+    "BIFROST_ENCRYPTION_KEY",
 }
 
 REQUIRED_REALM_USERNAMES = {"service-account-apihub-service"}
@@ -107,9 +103,7 @@ def test_docker_compose_applies_operational_defaults_to_all_services() -> None:
         assert service.get("mem_limit") == expected_limits["memory"], service_name
         assert service.get("cpus") == expected_limits["cpus"], service_name
         assert (
-            service.get("deploy", {})
-            .get("resources", {})
-            .get("limits", {})
+            service.get("deploy", {}).get("resources", {}).get("limits", {})
         ) == expected_limits, service_name
 
     assert services["unibridge-service"].get("init") is True
@@ -151,8 +145,7 @@ def test_bluegreen_compose_splits_stateful_infra_from_app_tier() -> None:
         "apisix",
         "keycloak-db",
         "keycloak",
-        "litellm-db",
-        "litellm",
+        "bifrost",
         "prometheus",
         "blackbox-exporter",
     } <= infra_services
@@ -161,7 +154,9 @@ def test_bluegreen_compose_splits_stateful_infra_from_app_tier() -> None:
     assert not {"unibridge-service", "llm-converter", "unibridge-ui"} & infra_services
 
 
-def test_bluegreen_app_uses_color_specific_targets_and_deferred_apisix_promotion() -> None:
+def test_bluegreen_app_uses_color_specific_targets_and_deferred_apisix_promotion() -> (
+    None
+):
     app_services = _load_yaml(BLUEGREEN_APP_COMPOSE_FILE)["services"]
     service_env = app_services["unibridge-service"]["environment"]
     ui_env = app_services["unibridge-ui"]["environment"]
@@ -178,6 +173,7 @@ def test_bluegreen_app_uses_color_specific_targets_and_deferred_apisix_promotion
         "APISIX_LLM_CONVERTER_NODE=${APISIX_LLM_CONVERTER_NODE:-llm-converter-${APP_COLOR}:4001}"
         in service_env
     )
+    assert "APISIX_BIFROST_NODE=${APISIX_BIFROST_NODE:-bifrost:8080}" in service_env
     assert (
         "UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service-${APP_COLOR}}"
         in ui_env
@@ -193,16 +189,15 @@ def test_readme_states_compose_v2_required_for_resource_limits() -> None:
 
 def test_prometheus_scrapes_service_and_loads_alert_rules() -> None:
     config = _load_yaml(PROMETHEUS_CONFIG_FILE)
-    scrape_jobs = {
-        job["job_name"]: job
-        for job in config.get("scrape_configs", [])
-    }
+    scrape_jobs = {job["job_name"]: job for job in config.get("scrape_configs", [])}
 
     assert "/etc/prometheus/rules/*.yml" in config.get("rule_files", [])
     assert scrape_jobs["unibridge-service"]["metrics_path"] == "/metrics"
     assert scrape_jobs["unibridge-service"]["static_configs"] == [
         {"targets": ["unibridge-service:8000"]}
     ]
+    assert scrape_jobs["bifrost"]["metrics_path"] == "/metrics"
+    assert scrape_jobs["bifrost"]["static_configs"] == [{"targets": ["bifrost:8080"]}]
     assert scrape_jobs["infra-db-tcp"]["metrics_path"] == "/probe"
     assert scrape_jobs["infra-db-tcp"]["params"] == {"module": ["tcp_connect"]}
 
@@ -220,8 +215,14 @@ def test_prometheus_alert_rules_cover_gateway_service_database_and_audit() -> No
 
     assert REQUIRED_PROMETHEUS_ALERTS <= set(alerts)
     assert "apisix_http_status" in alerts["APISIXHigh5xxRate"]["expr"]
-    assert "unibridge_query_duration_seconds_count" in alerts["UniBridgeAuditWritesMissing"]["expr"]
-    assert "unibridge_audit_log_write_total" in alerts["UniBridgeAuditWritesMissing"]["expr"]
+    assert (
+        "unibridge_query_duration_seconds_count"
+        in alerts["UniBridgeAuditWritesMissing"]["expr"]
+    )
+    assert (
+        "unibridge_audit_log_write_total"
+        in alerts["UniBridgeAuditWritesMissing"]["expr"]
+    )
 
 
 def test_docker_compose_does_not_contain_insecure_password_fallbacks() -> None:
@@ -267,17 +268,14 @@ def test_env_example_leaves_required_secrets_blank() -> None:
 def test_realm_export_keeps_only_service_account_user() -> None:
     realm_export = json.loads(REALM_EXPORT_FILE.read_text(encoding="utf-8"))
     usernames = {
-        user["username"]
-        for user in realm_export.get("users", [])
-        if "username" in user
+        user["username"] for user in realm_export.get("users", []) if "username" in user
     }
 
     missing_required = sorted(REQUIRED_REALM_USERNAMES - usernames)
     unexpected_users = sorted(FORBIDDEN_REALM_USERNAMES & usernames)
 
     assert missing_required == [], (
-        "keycloak/realm-export.json is missing required usernames: "
-        f"{missing_required}"
+        f"keycloak/realm-export.json is missing required usernames: {missing_required}"
     )
     assert unexpected_users == [], (
         "keycloak/realm-export.json still contains forbidden usernames: "

@@ -15,7 +15,10 @@ vi.mock('../api/client', () => ({
   getLlmTokens: vi.fn(),
   getLlmByModel: vi.fn(),
   getLlmTopKeys: vi.fn(),
+  getLlmByModelSeries: vi.fn(),
+  getLlmTopKeysSeries: vi.fn(),
   getLlmErrors: vi.fn(),
+  getLlmStatusCodes: vi.fn(),
   getLlmRequestsTotal: vi.fn(),
   getApiKeys: vi.fn(),
 }));
@@ -32,11 +35,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   getLlmByModel,
+  getLlmByModelSeries,
   getLlmErrors,
   getLlmRequestsTotal,
   getLlmSummary,
   getLlmTokens,
   getLlmTopKeys,
+  getLlmTopKeysSeries,
+  getLlmStatusCodes,
   getApiKeys,
 } from '../api/client';
 import { renderWithProviders } from './helpers';
@@ -45,9 +51,13 @@ const mockedGetLlmSummary = vi.mocked(getLlmSummary);
 const mockedGetLlmTokens = vi.mocked(getLlmTokens);
 const mockedGetLlmByModel = vi.mocked(getLlmByModel);
 const mockedGetLlmTopKeys = vi.mocked(getLlmTopKeys);
+const mockedGetLlmByModelSeries = vi.mocked(getLlmByModelSeries);
+const mockedGetLlmTopKeysSeries = vi.mocked(getLlmTopKeysSeries);
 const mockedGetLlmErrors = vi.mocked(getLlmErrors);
+const mockedGetLlmStatusCodes = vi.mocked(getLlmStatusCodes);
 const mockedGetLlmRequestsTotal = vi.mocked(getLlmRequestsTotal);
 const mockedGetApiKeys = vi.mocked(getApiKeys);
+const emptyBreakdown = { buckets: [], series: [], unit: 'tokens' as const };
 
 describe('LlmMonitoring', () => {
   beforeEach(() => {
@@ -64,12 +74,15 @@ describe('LlmMonitoring', () => {
     mockedGetLlmTokens.mockResolvedValue({ prompt: [], completion: [], cached: [] });
     mockedGetLlmByModel.mockResolvedValue([]);
     mockedGetLlmTopKeys.mockResolvedValue([]);
+    mockedGetLlmByModelSeries.mockResolvedValue(emptyBreakdown);
+    mockedGetLlmTopKeysSeries.mockResolvedValue(emptyBreakdown);
     mockedGetLlmErrors.mockResolvedValue([]);
+    mockedGetLlmStatusCodes.mockResolvedValue([]);
     mockedGetLlmRequestsTotal.mockResolvedValue([]);
     mockedGetApiKeys.mockResolvedValue([]);
     window.__RUNTIME_CONFIG__ = {
       ...window.__RUNTIME_CONFIG__,
-      LITELLM_ADMIN_URL: 'https://localhost:4000/ui',
+      BIFROST_ADMIN_URL: 'http://localhost:8080',
     };
   });
 
@@ -84,18 +97,18 @@ describe('LlmMonitoring', () => {
     expect(screen.getByTestId('custom-toggle')).toBeInTheDocument();
   });
 
-  it('links LiteLLM Admin to the separate-origin UI path', async () => {
+  it('links Bifrost Admin to the separate-origin UI path', async () => {
     const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
 
     renderWithProviders(<LlmMonitoring />);
 
     await waitFor(() => {
-      expect(screen.getByRole('link', { name: 'LiteLLM Admin opens in new tab' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Bifrost Admin opens in new tab' })).toBeInTheDocument();
     });
 
-    expect(screen.getByRole('link', { name: 'LiteLLM Admin opens in new tab' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Bifrost Admin opens in new tab' })).toHaveAttribute(
       'href',
-      'https://localhost:4000/ui',
+      'http://localhost:8080',
     );
   });
 

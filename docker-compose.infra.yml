@@ -199,31 +199,6 @@ services:
     networks:
       - apihub-net
 
-  litellm-db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    logging: *default-logging
-    mem_limit: 512m
-    cpus: "0.50"
-    deploy:
-      resources:
-        limits:
-          memory: 512m
-          cpus: "0.50"
-    environment:
-      - POSTGRES_DB=litellm
-      - POSTGRES_USER=litellm
-      - POSTGRES_PASSWORD=${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}
-    volumes:
-      - litellm-db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - apihub-net
-
   unibridge-db:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -249,8 +224,8 @@ services:
     networks:
       - apihub-net
 
-  litellm:
-    image: ghcr.io/berriai/litellm:main-v1.83.14-stable.patch.3
+  bifrost:
+    image: ${BIFROST_IMAGE:-maximhq/bifrost:latest}
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 1g
@@ -260,35 +235,22 @@ services:
         limits:
           memory: 1g
           cpus: "1.00"
-    entrypoint: ["sh", "-c"]
-    command:
-      - |
-        if [ -z "$$PROXY_BASE_URL" ]; then
-          export PROXY_BASE_URL="https://$$HOST_IP:$$LITELLM_PORT"
-        fi
-        exec litellm --config /app/config.yaml --port 4000 \
-          --ssl_certfile_path /etc/ssl/tls.crt --ssl_keyfile_path /etc/ssl/tls.key
     ports:
-      - "${LITELLM_PORT:-4000}:4000"
+      - "127.0.0.1:${BIFROST_PORT:-8080}:8080"
     environment:
-      - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}@litellm-db:5432/litellm
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
-      - LITELLM_LOG=ERROR
-      - STORE_MODEL_IN_DB=true
-      - FORWARDED_ALLOW_IPS=*
-      - SSL_VERIFY=${SSL_VERIFY:-true}
-      - HOST_IP=${HOST_IP:-localhost}
-      - LITELLM_PORT=${LITELLM_PORT:-4000}
-      - PROXY_BASE_URL=${PROXY_BASE_URL:-}
+      - APP_HOST=0.0.0.0
+      - APP_PORT=8080
+      - LOG_LEVEL=${BIFROST_LOG_LEVEL:-info}
+      - LOG_STYLE=${BIFROST_LOG_STYLE:-json}
+      - BIFROST_ENCRYPTION_KEY=${BIFROST_ENCRYPTION_KEY:?BIFROST_ENCRYPTION_KEY is required}
+      - BIFROST_VIRTUAL_KEY=${BIFROST_VIRTUAL_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     volumes:
-      - ./litellm/config.yaml:/app/config.yaml:ro
-      - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/ssl/tls.crt:ro
-      - ${TLS_KEY_PATH:-./certs/tls.key}:/etc/ssl/tls.key:ro
-    depends_on:
-      litellm-db:
-        condition: service_healthy
+      - bifrost-data:/app/data
+      - ./bifrost/config.json:/app/data/config.json:ro
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import ssl,urllib.request;urllib.request.urlopen('https://localhost:4000/health/liveliness', context=ssl._create_unverified_context())\""]
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/health >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -310,7 +272,7 @@ volumes:
     name: ${PROMETHEUS_FILE_SD_VOLUME:-unibridge_prometheus-file-sd}
   keycloak-db-data:
     name: ${KEYCLOAK_DB_DATA_VOLUME:-unibridge_keycloak-db-data}
-  litellm-db-data:
-    name: ${LITELLM_DB_DATA_VOLUME:-unibridge_litellm-db-data}
+  bifrost-data:
+    name: ${BIFROST_DATA_VOLUME:-unibridge_bifrost-data}
   unibridge-db-data:
     name: ${UNIBRIDGE_DB_DATA_VOLUME:-unibridge_unibridge-db-data}

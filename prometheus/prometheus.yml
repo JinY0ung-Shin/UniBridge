@@ -16,13 +16,10 @@ scrape_configs:
     static_configs:
       - targets: ['unibridge-service:8000']
 
-  - job_name: 'litellm'
-    scheme: https
-    tls_config:
-      insecure_skip_verify: true
-    static_configs:
-      - targets: ['litellm:4000']
+  - job_name: 'bifrost'
     metrics_path: '/metrics'
+    static_configs:
+      - targets: ['bifrost:8080']
     scrape_interval: 15s
 
   # Monitored servers (hosts) running node_exporter. Targets are written by
@@ -42,9 +39,6 @@ scrape_configs:
       - targets: ['keycloak-db:5432']
         labels:
           db: 'keycloak-db'
-      - targets: ['litellm-db:5432']
-        labels:
-          db: 'litellm-db'
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
