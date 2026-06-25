@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -85,12 +85,31 @@ async def _preserve_consumer_restriction(
     return new_body
 
 
-def _bifrost_request_headers() -> dict[str, str]:
-    headers = {"x-bf-dim-api_key": "$consumer_name"}
+def _bifrost_request_headers() -> dict[str, Any]:
+    """proxy-rewrite ``headers`` block for the Bifrost-facing routes.
+
+    The edge — not the caller — controls every credential Bifrost sees:
+
+    - ``x-bf-dim-api_key`` is force-set to the matched consumer name so Bifrost
+      attributes traffic to the right UniBridge API key.
+    - ``x-bf-vk`` (Bifrost virtual key) is force-set when configured; when it is
+      not configured it is *removed* so a caller can't smuggle one in to select
+      a governance/budget tier they weren't granted.
+    - inbound ``Authorization`` is always removed. Bifrost accepts
+      ``Authorization: Bearer sk-bf-*`` as a virtual-key selector, so letting a
+      caller-supplied value reach Bifrost would let any authenticated API key
+      authenticate as a different Bifrost identity than the edge assigned. This
+      restores the guarantee the old LiteLLM route had (it force-set
+      ``Authorization`` to the master key).
+    """
+    set_headers = {"x-bf-dim-api_key": "$consumer_name"}
+    remove_headers = ["Authorization"]
     virtual_key = getattr(settings, "BIFROST_VIRTUAL_KEY", "")
     if virtual_key:
-        headers["x-bf-vk"] = virtual_key
-    return headers
+        set_headers["x-bf-vk"] = virtual_key
+    else:
+        remove_headers.append("x-bf-vk")
+    return {"set": set_headers, "remove": remove_headers}
 
 
 @asynccontextmanager
@@ -319,7 +338,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                 "proxy-rewrite": {
                                     "regex_uri": ["^/api/llm(.*)", "$1"],
                                     "use_real_request_uri_unsafe": True,
-                                    "headers": {"set": bifrost_headers},
+                                    "headers": bifrost_headers,
                                 },
                             },
                             "status": 1,
@@ -409,7 +428,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                     "proxy-rewrite": {
                                         "regex_uri": ["^/api/llm(.*)", "$1"],
                                         "use_real_request_uri_unsafe": True,
-                                        "headers": {"set": bifrost_headers},
+                                        "headers": bifrost_headers,
                                     },
                                 },
                                 "status": 1,

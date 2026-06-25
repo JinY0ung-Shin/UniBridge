@@ -232,9 +232,9 @@ function LlmMonitoring() {
             <div className="metric-card__value">{formatTokens(summary.completion_tokens)}</div>
             <div className="metric-card__label">{t('llmMonitoring.outputTokens')}</div>
           </div>
-          <div className="metric-card">
+          <div className="metric-card" title={t('llmMonitoring.cachedHistoryNote')}>
             <div className="metric-card__value">{formatTokens(summary.cached_tokens)}</div>
-            <div className="metric-card__label">{t('llmMonitoring.cached')}</div>
+            <div className="metric-card__label">{t('llmMonitoring.cached')} ⓘ</div>
           </div>
           <div className="metric-card">
             <div className="metric-card__value">{formatCost(summary.estimated_cost)}</div>
@@ -248,9 +248,9 @@ function LlmMonitoring() {
             <div className="metric-card__value">{summary.avg_latency_ms}ms</div>
             <div className="metric-card__label">{t('llmMonitoring.avgLatency')}</div>
           </div>
-          <div className="metric-card">
+          <div className="metric-card" title={t('llmMonitoring.cachedHistoryNote')}>
             <div className="metric-card__value">{`${((summary.cache_hit_rate ?? 0) * 100).toFixed(1)}%`}</div>
-            <div className="metric-card__label">{t('llmMonitoring.cacheHitRate')}</div>
+            <div className="metric-card__label">{t('llmMonitoring.cacheHitRate')} ⓘ</div>
           </div>
         </div>
       )}

@@ -86,6 +86,32 @@ def test_non_streaming_translates_to_responses_object():
     assert data["id"].startswith("resp_")
 
 
+def test_responses_route_forwards_bifrost_attribution_headers():
+    """The converter must relay APISIX-injected x-bf-* headers to Bifrost so
+    per-key monitoring/governance keeps working on the responses path too.
+    """
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["dim"] = request.headers.get("x-bf-dim-api_key")
+        captured["vk"] = request.headers.get("x-bf-vk")
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=json.dumps(_chat_json()).encode(),
+        )
+
+    client = TestClient(_make_app(handler))
+    resp = client.post(
+        "/v1/responses",
+        headers={"x-bf-dim-api_key": "alice-key", "x-bf-vk": "sk-bf-test"},
+        json={"model": "m", "input": "hi"},
+    )
+    assert resp.status_code == 200
+    assert captured["dim"] == "alice-key"
+    assert captured["vk"] == "sk-bf-test"
+
+
 def test_previous_response_id_chaining_prepends_history():
     bodies = []
 

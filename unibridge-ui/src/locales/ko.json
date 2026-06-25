@@ -588,6 +588,7 @@
     "completion": "완성",
     "cached": "캐시됨",
     "cacheHitRate": "캐시 적중률",
+    "cachedHistoryNote": "캐시 토큰·적중률 지표는 과거 LiteLLM 데이터만 반영하며, Bifrost 트래픽은 집계되지 않습니다.",
     "noData": "데이터가 없습니다",
     "noTokenData": "토큰 사용 데이터가 없습니다",
     "noModelData": "모델별 사용 데이터가 없습니다",

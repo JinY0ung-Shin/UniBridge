@@ -588,6 +588,7 @@
     "completion": "Completion",
     "cached": "Cached",
     "cacheHitRate": "Cache Hit Rate",
+    "cachedHistoryNote": "Cached-token and cache-hit metrics reflect historical LiteLLM data only; Bifrost traffic is not counted here.",
     "noData": "No data available",
     "noTokenData": "No token usage data available",
     "noModelData": "No model usage data available",

@@ -88,10 +88,19 @@ async def test_lifespan_provisions_bifrost_llm_admin_route():
             ]
             is True
         )
-    llm_headers = route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]["headers"]["set"]
+    llm_pr = route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]
+    llm_headers = llm_pr["headers"]["set"]
     assert llm_headers["x-bf-dim-api_key"] == "$consumer_name"
     assert llm_headers["x-bf-vk"] == "sk-bf-test"
     assert "Authorization" not in llm_headers
+    # The edge, not the caller, controls the credentials Bifrost sees: a
+    # caller-supplied Authorization (a Bifrost virtual-key selector) is stripped.
+    # x-bf-vk is force-set above, so it is not also removed.
+    assert "Authorization" in llm_pr["headers"]["remove"]
+    assert "x-bf-vk" not in llm_pr["headers"]["remove"]
+    # llm-admin must NOT carry per-consumer attribution or the virtual key.
+    admin_pr = route_calls["llm-admin"]["plugins"]["proxy-rewrite"]
+    assert "headers" not in admin_pr
 
 
 @pytest.mark.asyncio
@@ -371,10 +380,12 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     assert route_calls["llm-admin"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["admin-consumer"]
     }
-    llm_headers = route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]["headers"]["set"]
+    llm_pr = route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]
+    llm_headers = llm_pr["headers"]["set"]
     assert llm_headers["x-bf-dim-api_key"] == "$consumer_name"
     assert llm_headers["x-bf-vk"] == "sk-bf-test"
     assert "Authorization" not in llm_headers
+    assert "Authorization" in llm_pr["headers"]["remove"]
 
     # The converter routes preserve their consumer-restriction and inject the
     # same Bifrost attribution/governance headers as llm-proxy.
@@ -385,10 +396,14 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
         assert route_calls[_route_id]["plugins"]["consumer-restriction"] == {
             "whitelist": [_consumer]
         }
-        _headers = route_calls[_route_id]["plugins"]["proxy-rewrite"]["headers"]["set"]
+        _pr = route_calls[_route_id]["plugins"]["proxy-rewrite"]
+        _headers = _pr["headers"]["set"]
         assert _headers["x-bf-dim-api_key"] == "$consumer_name"
         assert _headers["x-bf-vk"] == "sk-bf-test"
         assert "Authorization" not in _headers
+        # APISIX strips a caller Authorization before it reaches the converter,
+        # so the converter can never forward a smuggled credential to Bifrost.
+        assert "Authorization" in _pr["headers"]["remove"]
         assert route_calls[_route_id]["upstream_id"] == "llm-converter"
 
 
@@ -557,8 +572,12 @@ async def test_lifespan_provisions_bifrost_routes_without_virtual_key():
         for call in put_resource.await_args_list
         if call.args[0] == "routes"
     }
-    llm_headers = route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]["headers"]["set"]
-    assert llm_headers == {"x-bf-dim-api_key": "$consumer_name"}
+    llm_pr = route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]
+    assert llm_pr["headers"]["set"] == {"x-bf-dim-api_key": "$consumer_name"}
+    # With no virtual key configured, both Authorization and x-bf-vk are
+    # stripped so a caller can't supply either to reach Bifrost.
+    assert "Authorization" in llm_pr["headers"]["remove"]
+    assert "x-bf-vk" in llm_pr["headers"]["remove"]
 
 
 @pytest.mark.asyncio
