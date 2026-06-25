@@ -30,11 +30,13 @@ COMPOSE_PROJECT_NAME=${UNIBRIDGE_INFRA_PROJECT:-unibridge-infra}
 
 `BACKUP_COMPOSE_FILES` is `:`-separated (matches docker's `COMPOSE_FILE` convention) and is expanded into `-f` flags.
 
-**Restore note (`unibridge-db`).** The Postgres restore must quiesce the meta-DB consumer (`unibridge-service`) so the dump's `DROP` doesn't deadlock on its connection pool. In single-stack that consumer shares the compose project and is handled automatically. In blue/green it lives in the per-color app projects, which the infra-scoped compose can't reach — set `BACKUP_APP_COLORS` to the colors to stop/restart around the restore (their `unibridge-service-<color>` containers):
+**Restore note (`unibridge-db`).** The Postgres restore must quiesce the meta-DB consumer (`unibridge-service`) so the dump's `DROP` doesn't deadlock on its connection pool. In single-stack that consumer shares the compose project and is handled automatically. In blue/green it lives in the per-color app projects, which the infra-scoped compose can't reach — set `BACKUP_APP_COLORS` to the colors whose `unibridge-service-<color>` should be quiesced around the restore:
 
 ```env
-BACKUP_APP_COLORS=blue:green   # or just the active color, e.g. blue
+BACKUP_APP_COLORS=blue:green
 ```
+
+Only colors that are **actually running** are stopped, and only those are restarted afterward — a color you stopped on purpose (e.g. `STOP_OLD_AFTER_PROMOTE` or `deploy-bluegreen.sh stop <color>`) stays stopped. So listing both colors is safe regardless of which is active.
 
 ## Layout
 

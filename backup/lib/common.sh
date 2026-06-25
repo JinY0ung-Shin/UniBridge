@@ -52,24 +52,38 @@ _app_colors() {
 # Stop/start each app color's unibridge-service by container name. Container
 # names are deterministic (unibridge-service-<color>), so this works without
 # the full app-stack compose env, across whatever projects own them.
+#
+# Only containers this restore actually stopped are restarted afterward — a
+# color an operator had already stopped on purpose (STOP_OLD_AFTER_PROMOTE,
+# `deploy-bluegreen.sh stop <color>`) stays stopped, so listing both colors in
+# BACKUP_APP_COLORS never resurrects an inactive one or changes the topology.
+_STOPPED_APP_CONSUMERS=()
+
 stop_app_consumers() {
-  local c
+  _STOPPED_APP_CONSUMERS=()
+  local c name running
   while IFS= read -r c; do
     [[ -n "$c" ]] || continue
-    log "stopping app consumer unibridge-service-$c"
-    docker stop "unibridge-service-$c" >/dev/null 2>&1 || \
-      log "  (unibridge-service-$c not running)"
+    name="unibridge-service-$c"
+    running="$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || true)"
+    if [[ "$running" == "true" ]]; then
+      log "stopping app consumer $name"
+      docker stop "$name" >/dev/null 2>&1 || die "failed to stop $name"
+      _STOPPED_APP_CONSUMERS+=("$name")
+    else
+      log "app consumer $name not running — leaving it stopped"
+    fi
   done < <(_app_colors)
 }
 
 start_app_consumers() {
-  local c
-  while IFS= read -r c; do
-    [[ -n "$c" ]] || continue
-    log "starting app consumer unibridge-service-$c"
-    docker start "unibridge-service-$c" >/dev/null 2>&1 || \
-      log "  (could not start unibridge-service-$c — start it manually)"
-  done < <(_app_colors)
+  local name
+  for name in "${_STOPPED_APP_CONSUMERS[@]:-}"; do
+    [[ -n "$name" ]] || continue
+    log "starting app consumer $name"
+    docker start "$name" >/dev/null 2>&1 || \
+      log "  (could not start $name — start it manually)"
+  done
 }
 
 load_env() {
