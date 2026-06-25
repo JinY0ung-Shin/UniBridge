@@ -34,6 +34,44 @@ compose() {
   fi
 }
 
+# Colors whose app-tier unibridge-service must be quiesced before a
+# unibridge-db restore. Blue/green runs each color as a SEPARATE compose
+# project (unibridge-<color>, container unibridge-service-<color>) that the
+# infra-scoped compose() above cannot reach, so restore_postgres's
+# same-project consumer stop would silently miss them and the DROP in the dump
+# could deadlock on a live connection pool. Set BACKUP_APP_COLORS (e.g.
+# "blue:green") in .env for blue/green; leave it unset for single-stack.
+_app_colors() {
+  local raw="${BACKUP_APP_COLORS:-}"
+  [[ -n "$raw" ]] || return 0
+  local IFS=':, '
+  # shellcheck disable=SC2086
+  printf '%s\n' $raw
+}
+
+# Stop/start each app color's unibridge-service by container name. Container
+# names are deterministic (unibridge-service-<color>), so this works without
+# the full app-stack compose env, across whatever projects own them.
+stop_app_consumers() {
+  local c
+  while IFS= read -r c; do
+    [[ -n "$c" ]] || continue
+    log "stopping app consumer unibridge-service-$c"
+    docker stop "unibridge-service-$c" >/dev/null 2>&1 || \
+      log "  (unibridge-service-$c not running)"
+  done < <(_app_colors)
+}
+
+start_app_consumers() {
+  local c
+  while IFS= read -r c; do
+    [[ -n "$c" ]] || continue
+    log "starting app consumer unibridge-service-$c"
+    docker start "unibridge-service-$c" >/dev/null 2>&1 || \
+      log "  (could not start unibridge-service-$c — start it manually)"
+  done < <(_app_colors)
+}
+
 load_env() {
   local env_file="$PROJECT_ROOT/.env"
   [[ -f "$env_file" ]] || die ".env not found at $env_file"

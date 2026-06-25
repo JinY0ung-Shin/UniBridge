@@ -19,14 +19,22 @@ Prometheus time-series data is intentionally **not** backed up — retention is 
 
 ### Split / blue-green deployments
 
-The plain `docker compose` the scripts run sees only the root `docker-compose.yml`. In a split or blue-green deployment the infra services (Bifrost, Keycloak, APISIX, databases) live in `docker-compose.infra.yml` under their own project, so point the backup scripts at the right stack via `.env`:
+The plain `docker compose` the scripts run sees only the root `docker-compose.yml`. In a blue/green deployment (`scripts/deploy-bluegreen.sh`) the topology is **two separate compose projects**: the stateful/infra services (etcd, Keycloak + its DB, Bifrost, **`unibridge-db`**) run as project `unibridge-infra` from `docker-compose.infra.yml`, while each app color (`unibridge-service`, `llm-converter`, UI) runs as its own project `unibridge-<color>` from `docker-compose.app.yml`.
+
+**Everything that gets backed up lives in the infra project**, so point the backup scripts there — infra-only, not the app file (the app file requires `APP_COLOR` and belongs to a different project):
 
 ```env
-BACKUP_COMPOSE_FILES=docker-compose.infra.yml:docker-compose.app.yml
-COMPOSE_PROJECT_NAME=<the infra project name>   # only if customized
+BACKUP_COMPOSE_FILES=docker-compose.infra.yml
+COMPOSE_PROJECT_NAME=${UNIBRIDGE_INFRA_PROJECT:-unibridge-infra}
 ```
 
 `BACKUP_COMPOSE_FILES` is `:`-separated (matches docker's `COMPOSE_FILE` convention) and is expanded into `-f` flags.
+
+**Restore note (`unibridge-db`).** The Postgres restore must quiesce the meta-DB consumer (`unibridge-service`) so the dump's `DROP` doesn't deadlock on its connection pool. In single-stack that consumer shares the compose project and is handled automatically. In blue/green it lives in the per-color app projects, which the infra-scoped compose can't reach — set `BACKUP_APP_COLORS` to the colors to stop/restart around the restore (their `unibridge-service-<color>` containers):
+
+```env
+BACKUP_APP_COLORS=blue:green   # or just the active color, e.g. blue
+```
 
 ## Layout
 

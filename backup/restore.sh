@@ -97,8 +97,19 @@ main() {
       verify_backup_dir "$dir" "unibridge-db.sql.gz"
       # unibridge-service holds a connection pool to unibridge-db; stop it
       # first or DROP ... in the dump deadlocks on AccessExclusiveLock.
-      restore_postgres unibridge-db unibridge unibridge \
-        "$dir/unibridge-db.sql.gz" unibridge-service
+      if [[ -n "${BACKUP_APP_COLORS:-}" ]]; then
+        # Blue/green: the app tier lives in separate compose projects, so
+        # restore_postgres's same-project consumer stop can't reach it. Quiesce
+        # each color's container ourselves around the restore.
+        stop_app_consumers
+        restore_postgres unibridge-db unibridge unibridge \
+          "$dir/unibridge-db.sql.gz"
+        start_app_consumers
+      else
+        # Single-stack: unibridge-service shares this compose project.
+        restore_postgres unibridge-db unibridge unibridge \
+          "$dir/unibridge-db.sql.gz" unibridge-service
+      fi
       ;;
     unibridge-meta)
       verify_backup_dir "$dir" "unibridge-meta.db.gz"
