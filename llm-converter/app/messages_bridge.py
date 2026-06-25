@@ -2,9 +2,11 @@
 
 Background
 ----------
-The default sanitizer path forwards Anthropic SSE through an upstream LiteLLM
-proxy that converts the upstream model's native OpenAI-format stream into
-Anthropic SSE. That conversion has confirmed bugs in the field:
+Rather than rely on a gateway-provided Anthropic adapter to turn a model's
+native OpenAI-format stream into Anthropic SSE, this module translates between
+the two formats in-process. That indirection has confirmed bugs in the field
+(originally observed behind LiteLLM, but they originate in the model/provider
+stream, not the gateway):
 
 * ``hosted_vllm`` provider: when ``tools`` are defined and the model emits
   ``delta.reasoning_content`` followed by ``delta.content``, the content is
@@ -14,11 +16,12 @@ Anthropic SSE. That conversion has confirmed bugs in the field:
   with the proper ``name``/``id``, but the trailing ``input_json_delta``
   stream is truncated — the SDK sees a tool_use block with no arguments.
 
-The underlying OpenAI route (``/v1/chat/completions``) on the same LiteLLM
-instance is correct and matches what the upstream vLLM emits verbatim. This
-module bypasses LiteLLM's broken Anthropic adapter by translating in-process
-between the two formats so the rest of the gateway (and any downstream
-``claude_agent_sdk`` consumer) keeps speaking Anthropic.
+The model's own OpenAI route (``/v1/chat/completions``, served through the
+upstream gateway — now Bifrost) is correct and matches what the upstream
+vLLM/SGLang model emits verbatim. This module consumes that OpenAI stream and
+translates it in-process so the rest of the gateway (and any downstream
+``claude_agent_sdk`` consumer) keeps speaking Anthropic, regardless of which
+gateway sits in front of the model.
 
 Public surface
 --------------
@@ -151,11 +154,12 @@ def _convert_assistant_message(content: Any) -> Dict[str, Any]:
 
     msg: Dict[str, Any] = {"role": "assistant"}
     # OpenAI requires ``content`` to be present even when ``tool_calls`` is
-    # set. ``null`` is allowed in spec but the LiteLLM ``hosted_vllm`` adapter
-    # serializes assistant messages through a Pydantic model that drops the
-    # key entirely when the value is ``None``; vLLM then rejects the request
-    # with a 422 "content field required". An empty string survives that
-    # round-trip and is equally valid under the OpenAI schema.
+    # set. ``null`` is allowed in spec but a gateway can serialize assistant
+    # messages through a Pydantic model that drops the key entirely when the
+    # value is ``None`` (originally observed with LiteLLM's ``hosted_vllm``
+    # adapter); vLLM then rejects the request with a 422 "content field
+    # required". An empty string survives that round-trip and is equally valid
+    # under the OpenAI schema.
     msg["content"] = "".join(text_parts) if text_parts else ""
     if tool_calls:
         msg["tool_calls"] = tool_calls

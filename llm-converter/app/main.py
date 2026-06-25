@@ -7,9 +7,11 @@ shape, then forwards to the upstream LLM gateway.
 Phase 1 implements ``POST /v1/messages`` (Anthropic Messages). The request is
 translated to an OpenAI chat-completions body, sent to
 ``{LLM_GATEWAY_URL}/v1/chat/completions``, and the response (streaming SSE or
-one-shot JSON) is translated back to the Anthropic shape — bypassing LiteLLM's
-old Anthropic adapter behavior, which mis-serialized tool calls and reasoning
-content for ``hosted_vllm``/``openai`` providers.
+one-shot JSON) is translated back to the Anthropic shape in-process — instead
+of relying on a gateway-provided Anthropic adapter, which mis-serialized tool
+calls and reasoning content for ``hosted_vllm``/``openai`` providers (the
+quirk originates in the model stream, so translating here is gateway-agnostic
+and survived the move from LiteLLM to Bifrost).
 
 Authentication is handled upstream by APISIX (key-auth plus Bifrost
 attribution/governance header injection); this service trusts its private
