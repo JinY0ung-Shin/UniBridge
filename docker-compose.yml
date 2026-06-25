@@ -329,7 +329,7 @@ services:
       - apihub-net
 
   bifrost:
-    image: ${BIFROST_IMAGE:-maximhq/bifrost:latest}
+    image: maximhq/bifrost:v1.5.16
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 1g
