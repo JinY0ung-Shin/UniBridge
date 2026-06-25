@@ -79,9 +79,7 @@ class TestExtractServiceKeys:
         assert _extract_service_keys({"plugins": None}) == []
         assert _extract_service_keys({"plugins": {"proxy-rewrite": None}}) == []
         assert (
-            _extract_service_keys(
-                {"plugins": {"proxy-rewrite": {"headers": "bad"}}}
-            )
+            _extract_service_keys({"plugins": {"proxy-rewrite": {"headers": "bad"}}})
             == []
         )
 
@@ -93,7 +91,9 @@ class TestExtractServiceKeys:
 
     def test_route_with_proxy_rewrite_empty_headers_set(self):
         assert (
-            _extract_service_keys({"plugins": {"proxy-rewrite": {"headers": {"set": {}}}}})
+            _extract_service_keys(
+                {"plugins": {"proxy-rewrite": {"headers": {"set": {}}}}}
+            )
             == []
         )
 
@@ -152,9 +152,7 @@ class TestInjectPlugins:
                 {"header_name": "Authorization", "header_value": "Bearer new"},
             ],
         }
-        existing = {
-            "proxy-rewrite": {"headers": {"set": {"X-Api-Key": "old-secret"}}}
-        }
+        existing = {"proxy-rewrite": {"headers": {"set": {"X-Api-Key": "old-secret"}}}}
         result = _inject_plugins(body, existing_plugins=existing)
         headers_set = result["plugins"]["proxy-rewrite"]["headers"]["set"]
         assert headers_set == {
@@ -174,14 +172,11 @@ class TestInjectPlugins:
 
     def test_omitted_service_keys_preserves_existing_headers(self):
         body = {"uri": "/test"}
-        existing = {
-            "proxy-rewrite": {"headers": {"set": {"X-Api-Key": "keep-me"}}}
-        }
+        existing = {"proxy-rewrite": {"headers": {"set": {"X-Api-Key": "keep-me"}}}}
         result = _inject_plugins(body, existing_plugins=existing)
-        assert (
-            result["plugins"]["proxy-rewrite"]["headers"]["set"]
-            == {"X-Api-Key": "keep-me"}
-        )
+        assert result["plugins"]["proxy-rewrite"]["headers"]["set"] == {
+            "X-Api-Key": "keep-me"
+        }
 
     def test_malformed_existing_proxy_rewrite_is_ignored(self):
         body = {
@@ -295,7 +290,9 @@ class TestInjectPlugins:
                 }
             }
         }
-        pr = _inject_plugins(body, existing_plugins=existing)["plugins"]["proxy-rewrite"]
+        pr = _inject_plugins(body, existing_plugins=existing)["plugins"][
+            "proxy-rewrite"
+        ]
         assert pr["headers"]["set"] == {"X-Set": "v"}
         assert pr["headers"]["add"] == {"X-Trace": "1"}
         assert pr["headers"]["remove"] == ["X-Internal"]
@@ -310,7 +307,9 @@ class TestInjectPlugins:
                 }
             }
         }
-        pr = _inject_plugins(body, existing_plugins=existing)["plugins"]["proxy-rewrite"]
+        pr = _inject_plugins(body, existing_plugins=existing)["plugins"][
+            "proxy-rewrite"
+        ]
         assert "set" not in pr["headers"]
         assert pr["headers"]["add"] == {"X-Trace": "1"}
 
@@ -776,9 +775,7 @@ class TestSaveRouteExistingLookup:
             )
         assert resp.status_code == 200
 
-    async def test_non_404_http_error_returns_502_before_put(
-        self, client, admin_token
-    ):
+    async def test_non_404_http_error_returns_502_before_put(self, client, admin_token):
         put_mock = AsyncMock(return_value={"id": "r1", "plugins": {}})
         with (
             patch(
@@ -801,9 +798,7 @@ class TestSaveRouteExistingLookup:
         # otherwise we'd silently drop preserved service-key values.
         assert put_mock.await_count == 0
 
-    async def test_connection_error_returns_502_before_put(
-        self, client, admin_token
-    ):
+    async def test_connection_error_returns_502_before_put(self, client, admin_token):
         put_mock = AsyncMock(return_value={"id": "r1", "plugins": {}})
         with (
             patch(
@@ -905,7 +900,9 @@ class TestRouteTest:
         assert resp.json()["reachable"] is True
         assert capture["url"] == "http://unibridge-service:8000/health"
 
-    async def test_forwards_service_headers_to_upstream_probe(self, client, admin_token):
+    async def test_forwards_service_headers_to_upstream_probe(
+        self, client, admin_token
+    ):
         route = {
             "id": "external-api",
             "upstream_id": "external",
@@ -949,9 +946,9 @@ class TestRouteTest:
             "Host": "localhost",
         }
 
-    async def test_uses_litellm_liveliness_for_llm_proxy(self, client, admin_token):
-        route = {"id": "llm-proxy", "upstream_id": "litellm"}
-        upstream = {"id": "litellm", "scheme": "https", "nodes": {"litellm:4000": 1}}
+    async def test_uses_bifrost_health_for_llm_proxy(self, client, admin_token):
+        route = {"id": "llm-proxy", "upstream_id": "bifrost"}
+        upstream = {"id": "bifrost", "scheme": "http", "nodes": {"bifrost:8080": 1}}
         response = SimpleNamespace(
             status_code=200, json=lambda: {"status": "ok"}, text="ok"
         )
@@ -974,11 +971,11 @@ class TestRouteTest:
 
         assert resp.status_code == 200
         assert resp.json()["reachable"] is True
-        assert capture["url"] == "https://litellm:4000/health/liveliness"
+        assert capture["url"] == "http://bifrost:8080/health"
 
-    async def test_uses_litellm_liveliness_for_llm_admin(self, client, admin_token):
-        route = {"id": "llm-admin", "upstream_id": "litellm"}
-        upstream = {"id": "litellm", "scheme": "https", "nodes": {"litellm:4000": 1}}
+    async def test_uses_bifrost_health_for_llm_admin(self, client, admin_token):
+        route = {"id": "llm-admin", "upstream_id": "bifrost"}
+        upstream = {"id": "bifrost", "scheme": "http", "nodes": {"bifrost:8080": 1}}
         response = SimpleNamespace(
             status_code=200, json=lambda: {"status": "ok"}, text="ok"
         )
@@ -1001,7 +998,7 @@ class TestRouteTest:
 
         assert resp.status_code == 200
         assert resp.json()["reachable"] is True
-        assert capture["url"] == "https://litellm:4000/health/liveliness"
+        assert capture["url"] == "http://bifrost:8080/health"
 
 
 # ---------------------------------------------------------------------------
@@ -1285,7 +1282,9 @@ class TestMetricsRoutesComparison:
             {"metric": {"route": "route-b"}, "value": [0, "60.0"]},
         ]
 
-        mock = AsyncMock(side_effect=[requests_result, errors_result, p50_result, p95_result])
+        mock = AsyncMock(
+            side_effect=[requests_result, errors_result, p50_result, p95_result]
+        )
         with patch("app.routers.gateway.prometheus_client.instant_query", mock):
             resp = await client.get(
                 "/admin/gateway/metrics/routes-comparison?range=1h",
@@ -1355,7 +1354,9 @@ class TestMetricsRoutesComparison:
         data = resp.json()
         assert data["routes"][0]["latency_p50_ms"] is None
 
-    async def test_latency_entry_without_value_treated_as_null(self, client, admin_token):
+    async def test_latency_entry_without_value_treated_as_null(
+        self, client, admin_token
+    ):
         requests_result = [
             {"metric": {"route": "x"}, "value": [0, "100"]},
         ]
@@ -1426,8 +1427,10 @@ class TestMetricsRoutesComparison:
         }
         prom_mock = AsyncMock(side_effect=[requests_result, [], [], []])
         list_mock = AsyncMock(return_value=listing)
-        with patch("app.routers.gateway.prometheus_client.instant_query", prom_mock), \
-             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+        with (
+            patch("app.routers.gateway.prometheus_client.instant_query", prom_mock),
+            patch("app.routers.gateway.apisix_client.list_resources", list_mock),
+        ):
             resp = await client.get(
                 "/admin/gateway/metrics/routes-comparison?range=1h",
                 headers=auth_header(admin_token),
@@ -1442,8 +1445,10 @@ class TestMetricsRoutesComparison:
         requests_result = [{"metric": {"route": "x"}, "value": [0, "10"]}]
         prom_mock = AsyncMock(side_effect=[requests_result, [], [], []])
         list_mock = AsyncMock(side_effect=RuntimeError("apisix down"))
-        with patch("app.routers.gateway.prometheus_client.instant_query", prom_mock), \
-             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+        with (
+            patch("app.routers.gateway.prometheus_client.instant_query", prom_mock),
+            patch("app.routers.gateway.apisix_client.list_resources", list_mock),
+        ):
             resp = await client.get(
                 "/admin/gateway/metrics/routes-comparison?range=1h",
                 headers=auth_header(admin_token),
@@ -1620,6 +1625,29 @@ class TestConsumerFilter:
         )
         assert resp.status_code == 400
 
+    async def test_invalid_llm_api_key_filter_returns_400(self, client, admin_token):
+        # api_key is interpolated into PromQL selectors; a malformed value must
+        # be rejected at the edge (400), not flow through to a broken query/502.
+        resp = await client.get(
+            '/admin/gateway/metrics/llm/summary?range=1h&api_key="; drop',
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_valid_llm_api_key_filter_scopes_query(self, client, admin_token):
+        scalar = [{"value": [0, "1"]}]
+        mock = AsyncMock(return_value=scalar)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/llm/summary?range=1h&api_key=alice",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        joined = " ".join(call.args[0] for call in mock.call_args_list)
+        # Scopes both the historical LiteLLM (end_user) and Bifrost (api_key) series.
+        assert 'end_user="alice"' in joined
+        assert 'api_key="alice"' in joined
+
     async def test_no_consumer_excludes_llm_proxy(self, client, admin_token):
         total = [{"value": [0, "10"]}]
         err = [{"value": [0, "0"]}]
@@ -1634,12 +1662,16 @@ class TestConsumerFilter:
         for call in mock.call_args_list:
             assert 'route!="llm-proxy"' in call.args[0]
 
-    async def test_routes_comparison_excludes_llm_proxy_by_default(self, client, admin_token):
+    async def test_routes_comparison_excludes_llm_proxy_by_default(
+        self, client, admin_token
+    ):
         requests_result = [{"metric": {"route": "x"}, "value": [0, "10"]}]
         mock = AsyncMock(side_effect=[requests_result, [], [], []])
         list_mock = AsyncMock(return_value={"items": [], "total": 0})
-        with patch("app.routers.gateway.prometheus_client.instant_query", mock), \
-             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+        with (
+            patch("app.routers.gateway.prometheus_client.instant_query", mock),
+            patch("app.routers.gateway.apisix_client.list_resources", list_mock),
+        ):
             resp = await client.get(
                 "/admin/gateway/metrics/routes-comparison?range=1h",
                 headers=auth_header(admin_token),
@@ -1653,8 +1685,10 @@ class TestConsumerFilter:
         requests_result = [{"metric": {"route": "x"}, "value": [0, "10"]}]
         mock = AsyncMock(side_effect=[requests_result, [], [], []])
         list_mock = AsyncMock(return_value={"items": [], "total": 0})
-        with patch("app.routers.gateway.prometheus_client.instant_query", mock), \
-             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+        with (
+            patch("app.routers.gateway.prometheus_client.instant_query", mock),
+            patch("app.routers.gateway.apisix_client.list_resources", list_mock),
+        ):
             resp = await client.get(
                 "/admin/gateway/metrics/routes-comparison?range=1h&consumer=alice",
                 headers=auth_header(admin_token),
@@ -1665,9 +1699,11 @@ class TestConsumerFilter:
             assert 'consumer="alice"' in q
             assert 'route!="llm-proxy"' in q
 
-    async def test_routes_comparison_invalid_consumer_returns_400(self, client, admin_token):
+    async def test_routes_comparison_invalid_consumer_returns_400(
+        self, client, admin_token
+    ):
         resp = await client.get(
-            '/admin/gateway/metrics/routes-comparison?range=1h&consumer=bad name',
+            "/admin/gateway/metrics/routes-comparison?range=1h&consumer=bad name",
             headers=auth_header(admin_token),
         )
         assert resp.status_code == 400
@@ -1698,7 +1734,7 @@ class TestConsumerFilter:
 
     async def test_top_routes_invalid_consumer_returns_400(self, client, admin_token):
         resp = await client.get(
-            '/admin/gateway/metrics/top-routes?range=1h&consumer=bad name',
+            "/admin/gateway/metrics/top-routes?range=1h&consumer=bad name",
             headers=auth_header(admin_token),
         )
         assert resp.status_code == 400
@@ -1750,7 +1786,9 @@ class TestMetricsRequestsTotal:
         assert kwargs["step"] == "86400s"
         assert "[1d]" in mock.call_args.args[0]
 
-    async def test_day_bucket_uses_completed_range_and_partial_instant(self, client, admin_token):
+    async def test_day_bucket_uses_completed_range_and_partial_instant(
+        self, client, admin_token
+    ):
         from datetime import datetime, timedelta, timezone
 
         kst = timezone(timedelta(hours=9))
@@ -1758,19 +1796,23 @@ class TestMetricsRequestsTotal:
         end = int(datetime(2026, 6, 12, 12, 0, tzinfo=kst).timestamp())
         aligned_start = int(datetime(2026, 6, 10, 0, 0, tzinfo=kst).timestamp())
         current_start = int(datetime(2026, 6, 12, 0, 0, tzinfo=kst).timestamp())
-        completed = [{
-            "values": [
-                [aligned_start, "1"],
-                [aligned_start + 86400, "2"],
-                [current_start, "3"],
-            ],
-        }]
+        completed = [
+            {
+                "values": [
+                    [aligned_start, "1"],
+                    [aligned_start + 86400, "2"],
+                    [current_start, "3"],
+                ],
+            }
+        ]
         partial = [{"value": [end, "4"]}]
         range_mock = AsyncMock(return_value=completed)
         instant_mock = AsyncMock(return_value=partial)
 
-        with patch("app.routers.gateway.prometheus_client.range_query", range_mock), \
-             patch("app.routers.gateway.prometheus_client.instant_query", instant_mock):
+        with (
+            patch("app.routers.gateway.prometheus_client.range_query", range_mock),
+            patch("app.routers.gateway.prometheus_client.instant_query", instant_mock),
+        ):
             resp = await client.get(
                 f"/admin/gateway/metrics/requests-total?start={start}&end={end}&bucket=day",
                 headers=auth_header(admin_token),
@@ -1894,10 +1936,14 @@ class TestPermissions:
             )
         assert resp.status_code == 200
 
-    async def test_user_monitoring_forced_to_own_consumer(self, client, user_token, seeded_db):
+    async def test_user_monitoring_forced_to_own_consumer(
+        self, client, user_token, seeded_db
+    ):
         """A self-scoped user's PromQL is locked to their own consumer; a
         ?consumer= naming someone else is ignored (no cross-tenant leak)."""
-        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        session_factory = async_sessionmaker(
+            seeded_db, class_=AsyncSession, expire_on_commit=False
+        )
         async with session_factory() as db:
             db.add(ApiKeyAccess(consumer_name="self_testuser", owner="testuser"))
             await db.commit()
@@ -1916,7 +1962,9 @@ class TestPermissions:
         assert 'consumer="self_testuser"' in queries
         assert "attacker-key" not in queries
 
-    async def test_user_with_no_key_is_scoped_to_no_match_sentinel(self, client, user_token):
+    async def test_user_with_no_key_is_scoped_to_no_match_sentinel(
+        self, client, user_token
+    ):
         """A self-scoped user with no API key is force-scoped to the no-match
         sentinel, never to all traffic."""
         empty = [{"value": [0, "0"]}]
@@ -1950,7 +1998,9 @@ class TestPermissions:
         assert resp.status_code == 403
 
     @pytest.mark.parametrize("llm_route", ["llm-messages", "llm-responses"])
-    async def test_user_cannot_read_llm_converter_routes(self, client, user_token, llm_route):
+    async def test_user_cannot_read_llm_converter_routes(
+        self, client, user_token, llm_route
+    ):
         # The converter routes are admin-scope only, same as llm-proxy.
         resp = await client.get(
             f"/admin/gateway/metrics/summary?range=1h&route={llm_route}",
@@ -2006,7 +2056,7 @@ class TestResolveTimeWindow:
         tw = resolve_time_window(time_range="6h", start=None, end=None)
         assert tw.is_custom is False
         assert tw.promql_window == "6h"
-        assert tw.step == "300s"          # RANGE_STEPS["6h"]
+        assert tw.step == "300s"  # RANGE_STEPS["6h"]
         assert tw.volume_window == "30m"  # RANGE_VOLUME["6h"][1]
         assert tw.volume_step == "1800s"  # RANGE_VOLUME["6h"][0]
         assert tw.eval_time is None and tw.start is None and tw.end is None
@@ -2026,8 +2076,8 @@ class TestResolveTimeWindow:
         tw = resolve_time_window(time_range="1h", start=start, end=end)
         assert tw.is_custom is True
         assert tw.promql_window == f"{2 * 86400}s"
-        assert tw.step == "3600s"          # RANGE_STEPS["7d"]
-        assert tw.volume_window == "1h"    # RANGE_VOLUME["7d"][1]
+        assert tw.step == "3600s"  # RANGE_STEPS["7d"]
+        assert tw.volume_window == "1h"  # RANGE_VOLUME["7d"][1]
         assert tw.eval_time == float(end)
         assert tw.start == float(start) and tw.end == float(end)
 
@@ -2081,7 +2131,10 @@ class TestBucketWindow:
 
         day = _align_down_kst(t, "day")
         assert (day + _KST_OFFSET) % 86400 == 0  # KST midnight
-        assert datetime.fromtimestamp(day, kst).strftime("%Y-%m-%d %H:%M") == "2026-06-17 00:00"
+        assert (
+            datetime.fromtimestamp(day, kst).strftime("%Y-%m-%d %H:%M")
+            == "2026-06-17 00:00"
+        )
 
         week = _align_down_kst(t, "week")
         wk = datetime.fromtimestamp(week, kst)
@@ -2109,7 +2162,7 @@ class TestBucketWindow:
 
         kst = timezone(timedelta(hours=9))
         start = int(datetime(2026, 5, 6, 12, 0, tzinfo=kst).timestamp())  # Wed
-        end = int(datetime(2026, 6, 3, 12, 0, tzinfo=kst).timestamp())    # Wed
+        end = int(datetime(2026, 6, 3, 12, 0, tzinfo=kst).timestamp())  # Wed
         tw = resolve_time_window(time_range="1h", start=start, end=end, bucket="week")
         assert tw.bucket == "week"
         assert tw.volume_step == "604800s"
@@ -2129,9 +2182,15 @@ class TestBucketWindow:
         tw = _bucketed_window(1_700_000_000.0, 1_700_000_000.0 + 3 * 86400, "day")
         start = int(tw.start)
         raw = [
-            {"timestamp": start, "value": 1.0},               # leading: window before range → dropped
-            {"timestamp": start + 86400, "value": 2.0},       # → bucket starting at `start`
-            {"timestamp": start + 2 * 86400, "value": 3.0},   # → bucket starting at start+1d
+            {
+                "timestamp": start,
+                "value": 1.0,
+            },  # leading: window before range → dropped
+            {"timestamp": start + 86400, "value": 2.0},  # → bucket starting at `start`
+            {
+                "timestamp": start + 2 * 86400,
+                "value": 3.0,
+            },  # → bucket starting at start+1d
         ]
         out = _bucket_points(raw, tw)
         assert out == [
@@ -2192,6 +2251,122 @@ class TestLlmMetricsCustomRange:
         assert resp.status_code == 200
         for call in mock.call_args_list:
             assert call.kwargs.get("eval_time") == 1003600.0
+        queries = " ".join(str(call.args[0]) for call in mock.call_args_list)
+        assert "litellm_total_tokens_metric_total" in queries
+        assert "bifrost_input_tokens_total" in queries
+        assert "bifrost_output_tokens_total" in queries
+        assert "bifrost_cost_total" in queries
+        assert "or vector(0)" in queries
+
+    async def test_llm_by_model_merges_litellm_and_bifrost(self, client, admin_token):
+        def row(metric: dict[str, str], value: str) -> dict:
+            return {"metric": metric, "value": [1000, value]}
+
+        side_effect = [
+            [row({"requested_model": "gpt-4"}, "100")],
+            [row({"requested_model": "gpt-4"}, "60")],
+            [row({"requested_model": "gpt-4"}, "40")],
+            [row({"requested_model": "gpt-4"}, "0.12")],
+            [row({"requested_model": "gpt-4"}, "2")],
+            [row({"requested_model": "gpt-4"}, "5")],
+            [
+                row({"alias": "gpt-4", "model": "openai/gpt-4"}, "10"),
+                row({"model": "claude-3"}, "30"),
+            ],
+            [
+                row({"alias": "gpt-4", "model": "openai/gpt-4"}, "20"),
+                row({"model": "claude-3"}, "40"),
+            ],
+            [
+                row({"alias": "gpt-4", "model": "openai/gpt-4"}, "0.03"),
+                row({"model": "claude-3"}, "0.2"),
+            ],
+            [
+                row({"alias": "gpt-4", "model": "openai/gpt-4"}, "1"),
+                row({"model": "claude-3"}, "3"),
+            ],
+        ]
+        mock = AsyncMock(side_effect=side_effect)
+
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/llm/by-model?range=1h&api_key=customer-portal",
+                headers=auth_header(admin_token),
+            )
+
+        assert resp.status_code == 200
+        by_model = {item["model"]: item for item in resp.json()}
+        assert by_model["gpt-4"] == {
+            "model": "gpt-4",
+            "tokens": 130,
+            "input_tokens": 70,
+            "output_tokens": 60,
+            "cost": 0.15,
+            "requests": 3,
+            "cached_tokens": 5,
+        }
+        assert by_model["claude-3"] == {
+            "model": "claude-3",
+            "tokens": 70,
+            "input_tokens": 30,
+            "output_tokens": 40,
+            "cost": 0.2,
+            "requests": 3,
+            "cached_tokens": 0,
+        }
+        queries = " ".join(str(call.args[0]) for call in mock.call_args_list)
+        assert 'end_user="customer-portal"' in queries
+        assert 'api_key="customer-portal"' in queries
+
+    async def test_llm_top_keys_merges_litellm_and_bifrost(self, client, admin_token):
+        def row(metric: dict[str, str], value: str) -> dict:
+            return {"metric": metric, "value": [1000, value]}
+
+        side_effect = [
+            [row({"end_user": "customer-portal"}, "100")],
+            [row({"end_user": "customer-portal"}, "60")],
+            [row({"end_user": "customer-portal"}, "40")],
+            [row({"end_user": "customer-portal"}, "2")],
+            [row({"end_user": "customer-portal"}, "5")],
+            [
+                row({"api_key": "customer-portal"}, "10"),
+                row({"api_key": "ops-agent"}, "30"),
+            ],
+            [
+                row({"api_key": "customer-portal"}, "20"),
+                row({"api_key": "ops-agent"}, "40"),
+            ],
+            [
+                row({"api_key": "customer-portal"}, "1"),
+                row({"api_key": "ops-agent"}, "3"),
+            ],
+        ]
+        mock = AsyncMock(side_effect=side_effect)
+
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/llm/top-keys?range=1h",
+                headers=auth_header(admin_token),
+            )
+
+        assert resp.status_code == 200
+        by_key = {item["api_key"]: item for item in resp.json()}
+        assert by_key["customer-portal"] == {
+            "api_key": "customer-portal",
+            "input_tokens": 70,
+            "output_tokens": 60,
+            "cached_tokens": 5,
+            "tokens": 130,
+            "requests": 3,
+        }
+        assert by_key["ops-agent"] == {
+            "api_key": "ops-agent",
+            "input_tokens": 30,
+            "output_tokens": 40,
+            "cached_tokens": 0,
+            "tokens": 70,
+            "requests": 3,
+        }
 
     async def test_llm_tokens_custom_start_end(self, client, admin_token):
         mock = AsyncMock(return_value=[{"values": [[1000000, "2"]]}])
@@ -2204,7 +2379,9 @@ class TestLlmMetricsCustomRange:
         assert mock.call_args.kwargs.get("start") == 1000000.0
         assert mock.call_args.kwargs.get("end") == 1003600.0
 
-    async def test_llm_tokens_day_bucket_appends_partial_bucket(self, client, admin_token):
+    async def test_llm_tokens_day_bucket_appends_partial_bucket(
+        self, client, admin_token
+    ):
         from datetime import datetime, timedelta, timezone
 
         kst = timezone(timedelta(hours=9))
@@ -2212,19 +2389,23 @@ class TestLlmMetricsCustomRange:
         end = int(datetime(2026, 6, 12, 12, 0, tzinfo=kst).timestamp())
         aligned_start = int(datetime(2026, 6, 10, 0, 0, tzinfo=kst).timestamp())
         current_start = int(datetime(2026, 6, 12, 0, 0, tzinfo=kst).timestamp())
-        completed = [{
-            "values": [
-                [aligned_start, "1"],
-                [aligned_start + 86400, "2"],
-                [current_start, "3"],
-            ],
-        }]
+        completed = [
+            {
+                "values": [
+                    [aligned_start, "1"],
+                    [aligned_start + 86400, "2"],
+                    [current_start, "3"],
+                ],
+            }
+        ]
         partial = [{"value": [end, "4"]}]
         range_mock = AsyncMock(return_value=completed)
         instant_mock = AsyncMock(return_value=partial)
 
-        with patch("app.routers.gateway.prometheus_client.range_query", range_mock), \
-             patch("app.routers.gateway.prometheus_client.instant_query", instant_mock):
+        with (
+            patch("app.routers.gateway.prometheus_client.range_query", range_mock),
+            patch("app.routers.gateway.prometheus_client.instant_query", instant_mock),
+        ):
             resp = await client.get(
                 f"/admin/gateway/metrics/llm/tokens?start={start}&end={end}&bucket=day",
                 headers=auth_header(admin_token),
@@ -2236,7 +2417,11 @@ class TestLlmMetricsCustomRange:
             {"timestamp": aligned_start + 86400, "value": 3.0},
             {"timestamp": current_start, "value": 4.0},
         ]
-        assert resp.json() == {"prompt": expected, "completion": expected, "cached": expected}
+        assert resp.json() == {
+            "prompt": expected,
+            "completion": expected,
+            "cached": expected,
+        }
         assert range_mock.call_count == 3
         assert instant_mock.call_count == 3
         for call in range_mock.call_args_list:
@@ -2251,26 +2436,34 @@ class TestLabelsHelper:
     """_labels() builds PromQL label selectors with llm-proxy exclusion default."""
 
     def test_no_args_excludes_llm_proxy(self):
-        assert _labels(None, None) == \
-            '{route!="llm-proxy",route!="llm-messages",route!="llm-responses"}'
+        assert (
+            _labels(None, None)
+            == '{route!="llm-proxy",route!="llm-messages",route!="llm-responses"}'
+        )
 
     def test_route_replaces_llm_proxy_exclusion(self):
         # Explicit route filter should not include the LLM exclusions
         assert _labels("query-api", None) == '{route="query-api"}'
 
     def test_consumer_adds_label(self):
-        assert _labels(None, "alice") == \
-            '{route!="llm-proxy",route!="llm-messages",route!="llm-responses",consumer="alice"}'
+        assert (
+            _labels(None, "alice")
+            == '{route!="llm-proxy",route!="llm-messages",route!="llm-responses",consumer="alice"}'
+        )
 
     def test_route_and_consumer(self):
         assert _labels("query-api", "alice") == '{route="query-api",consumer="alice"}'
 
     def test_extra_labels_prepended(self):
         # Existing usage: _labels(route, None, 'code=~"5.."')
-        assert _labels(None, None, 'code=~"5.."') == \
-            '{code=~"5..",route!="llm-proxy",route!="llm-messages",route!="llm-responses"}'
-        assert _labels("query-api", "alice", 'code=~"5.."') == \
-            '{code=~"5..",route="query-api",consumer="alice"}'
+        assert (
+            _labels(None, None, 'code=~"5.."')
+            == '{code=~"5..",route!="llm-proxy",route!="llm-messages",route!="llm-responses"}'
+        )
+        assert (
+            _labels("query-api", "alice", 'code=~"5.."')
+            == '{code=~"5..",route="query-api",consumer="alice"}'
+        )
 
 
 class TestValidateConsumer:
@@ -2286,7 +2479,7 @@ class TestValidateConsumer:
         _validate_consumer("")
 
     def test_rejects_unsafe_names(self):
-        for bad in ('alice"; drop', "a b", "name/etc", "x\"y", "name;"):
+        for bad in ('alice"; drop', "a b", "name/etc", 'x"y', "name;"):
             with pytest.raises(HTTPException) as ei:
                 _validate_consumer(bad)
             assert ei.value.status_code == 400

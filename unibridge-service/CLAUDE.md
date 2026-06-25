@@ -1,7 +1,9 @@
 # unibridge-service (FastAPI backend)
 
 See the repo-root `CLAUDE.md` for cross-service context and the boot/migration gotchas.
-Python 3.12, SQLAlchemy async + Alembic, meta store = SQLite.
+Python 3.12, SQLAlchemy async + Alembic. Meta store: app default is SQLite (`data/meta.db`),
+but the bundled compose sets `META_DB_URL` to the bundled `unibridge-db` Postgres (blue/green
+requires a networked DB). Backups dispatch on `META_DB_URL` — see `backup/`.
 
 ## Layout
 - `app/main.py`        — FastAPI app + lifespan (validates settings, runs `init_db()`,

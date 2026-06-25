@@ -12,21 +12,21 @@ Browser ──HTTPS──> unibridge-ui (nginx)
                                           │
                                           ├── /api/query/*     → Registered databases (Postgres, MSSQL, ClickHouse)
                                           ├── /api/llm/v1/messages
-                                          │                  → llm-converter → LiteLLM
+                                          │                  → llm-converter → Bifrost
                                           ├── /api/llm/v1/responses
-                                          │                  → llm-converter → LiteLLM
-                                          ├── /api/llm/*       → LiteLLM (LLM proxy)
-                                          ├── /api/llm-admin/* → LiteLLM Admin UI/API
+                                          │                  → llm-converter → Bifrost
+                                          ├── /api/llm/*       → Bifrost (LLM gateway)
+                                          ├── /api/llm-admin/* → Bifrost Admin UI/API
                                           ├── /api/s3/*        → S3 connections
                                           ├── /api/nas/*       → Mounted NAS/local files
                                           └── Custom upstream services
 
 Keycloak   ── OIDC auth
-Prometheus ── APISIX/LiteLLM/FastAPI metrics + DB TCP probes
-LiteLLM    ── Unified LLM proxy (+ Postgres)
+Prometheus ── APISIX/Bifrost/FastAPI metrics + DB TCP probes
+Bifrost    ── Unified LLM gateway (+ app-dir SQLite)
 ```
 
-**Services (10):** etcd, APISIX, Keycloak + Postgres, unibridge-service, Prometheus, Blackbox Exporter, LiteLLM + Postgres, unibridge-ui
+**Services (11):** etcd, APISIX, Keycloak + Postgres, unibridge-service + Postgres, Prometheus, Blackbox Exporter, Bifrost, llm-converter, unibridge-ui
 
 ## Prerequisites
 
@@ -56,8 +56,7 @@ cp .env.example .env
 | `KC_DB_PASSWORD` | Fail-fast secret for the Keycloak database |
 | `APISIX_ADMIN_KEY` | Fail-fast secret for the APISIX admin API |
 | `KEYCLOAK_SERVICE_CLIENT_SECRET` | Fail-fast shared secret used by Keycloak and unibridge-service |
-| `LITELLM_DB_PASSWORD` | Fail-fast secret for the LiteLLM database |
-| `LITELLM_MASTER_KEY` | Fail-fast secret for LiteLLM admin/API access |
+| `BIFROST_ENCRYPTION_KEY` | Fail-fast secret used by Bifrost to encrypt gateway configuration |
 | `ETCD_ROOT_PASSWORD` | Set this unless `ETCD_ALLOW_NONE_AUTH=yes` for dev-only etcd without auth |
 | `HOST_IP` | Server IP or hostname that browsers access (not `localhost` in production) |
 | `JWT_SECRET` | Required when not using Keycloak-issued tokens; generate a separate strong value |
@@ -80,6 +79,7 @@ cp .env.example .env
 | `NAS_ALLOWED_ROOTS` | `NAS_CONTAINER_PATH` | Comma-separated container paths allowed as NAS connection `base_path` roots |
 | `NODE_EXPORTER_DISK_MOUNTPOINTS` | empty | Optional global comma-separated disk mountpoint default for server monitoring; per-server settings override it |
 | `S3_OP_TIMEOUT_SECONDS` | 30 | Per-operation timeout for S3-compatible storage calls |
+| `BIFROST_VIRTUAL_KEY` | empty | Optional Bifrost virtual key injected as `x-bf-vk`; APISIX `key-auth` still protects `/api/llm/*` when empty |
 
 ### 3. TLS certificates
 
@@ -126,20 +126,33 @@ details.
 | Web UI | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>` |
 | Keycloak Admin | `https://<HOST_IP>:<KEYCLOAK_PORT>/admin` |
 | API Gateway | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/*` |
-| LiteLLM | `https://<HOST_IP>:<LITELLM_PORT>` |
+| Bifrost Admin | `http://localhost:<BIFROST_PORT>` by default, or `BIFROST_ADMIN_URL` if published elsewhere |
 | Prometheus | `http://<HOST_IP>:9090` (localhost only) |
 
 Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`). No human users are seeded into the `apihub` realm by default. After first boot, sign in to the admin console and create the first `admin` user in the `apihub` realm (assign the `admin` realm role), then manage further users from the UI **Users** page.
 
+### Bifrost LLM gateway setup
+
+Bifrost starts with the DB-backed `bifrost/config.json` seed in this repo, then stores provider config, virtual keys, and logs in the `bifrost-data` Docker volume.
+
+For a new install:
+
+1. Set `BIFROST_ENCRYPTION_KEY` in `.env`.
+2. Start the stack and open the Bifrost Admin URL from the LLM Monitoring page, or use `http://localhost:<BIFROST_PORT>` on the deploy host.
+3. Configure model providers in Bifrost. The optional `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` env vars are passed through for env-referenced provider keys.
+4. Create a Bifrost virtual key if you want Bifrost governance/budgets, set `BIFROST_VIRTUAL_KEY`, and recreate `unibridge-service` so APISIX injects it as `x-bf-vk`.
+
+For an existing LiteLLM deployment, use Bifrost's migration CLI against the old LiteLLM proxy before removing the old volumes. Run a dry run first, then verify providers and virtual keys in the Bifrost UI. UniBridge itself keeps the same public `/api/llm/*` routes; only the internal upstream changes to Bifrost.
+
 ### Codex through UniBridge
 
-Codex can use UniBridge through the OpenAI-compatible Responses endpoint exposed at `/api/llm/v1/responses`. The gateway authenticates the caller with APISIX `key-auth`, injects the LiteLLM master key internally, and sends the request through `llm-converter`, which translates Responses API traffic to LiteLLM's `/v1/chat/completions` shape and translates the result back.
+Codex can use UniBridge through the OpenAI-compatible Responses endpoint exposed at `/api/llm/v1/responses`. The gateway authenticates the caller with APISIX `key-auth`, injects Bifrost attribution headers internally, and sends the request through `llm-converter`, which translates Responses API traffic to Bifrost's `/v1/chat/completions` shape and translates the result back.
 
 Configure Codex in your user-level `~/.codex/config.toml`:
 
 ```toml
 model_provider = "unibridge"
-model = "<LiteLLM model id>"
+model = "<Bifrost model id>"
 
 [model_providers.unibridge]
 name = "UniBridge"
@@ -221,7 +234,7 @@ The helper authenticates as the Keycloak master admin (the service account lacks
 |------|---------|---------|
 | 3000 | unibridge-ui (HTTPS) | public |
 | 8443 | Keycloak (HTTPS) | public |
-| 4000 | LiteLLM (HTTPS) | public |
+| 8080 | Bifrost Admin/API (HTTP) | localhost only |
 | 8000 | unibridge-service | localhost only |
 | 9180 | APISIX admin | localhost only |
 | 9090 | Prometheus | localhost only |
@@ -290,7 +303,7 @@ Operational defaults in `docker-compose.yml`:
 - Docker `json-file` logs rotate at `50m` with `5` retained files per service.
 - Each service has an initial `deploy.resources.limits` CPU/memory cap for Docker Compose v2, plus `mem_limit`/`cpus` fallbacks for older Compose compatibility. Treat these as conservative starting values and tune from `docker stats` on the deploy host.
 - `unibridge-service` and `unibridge-ui` run with `init: true` for PID 1 signal handling and child process reaping.
-- Prometheus scrapes APISIX, LiteLLM, unibridge-service `/metrics`, and Blackbox TCP probes for the Postgres-backed services. Alert rules live under `prometheus/rules/`.
+- Prometheus scrapes APISIX, Bifrost, unibridge-service `/metrics`, and Blackbox TCP probes for the Postgres-backed services. Alert rules live under `prometheus/rules/`.
 
 ### Server (host) monitoring
 
@@ -306,7 +319,7 @@ separate lines. Full guide: [`docs/server-monitoring.md`](./docs/server-monitori
 
 ## Backups
 
-Stateful components (etcd, Keycloak DB, LiteLLM DB, unibridge-service meta DB) are backed up by scripts in [`backup/`](./backup/README.md). Snapshots land in `./snapshots/` (gitignored) with 14-day retention, and manifest SHA256s are verified before any destructive restore.
+Stateful components (etcd, Keycloak DB, Bifrost app data, unibridge-service meta DB) are backed up by scripts in [`backup/`](./backup/README.md). Snapshots land in `./snapshots/` (gitignored) with 14-day retention, and manifest SHA256s are verified before any destructive restore.
 
 ### Deploy-time setup
 
@@ -388,7 +401,7 @@ ETCD_ALLOW_NONE_AUTH=yes
 ## Key Features
 
 - **Multi-DB support** — PostgreSQL, MSSQL, ClickHouse via a single query endpoint
-- **LLM Proxy** — Unified LiteLLM gateway with centralized auth, usage metrics, and per-model analytics
+- **LLM Gateway** — Unified Bifrost gateway with APISIX auth, usage metrics, and per-model analytics
 - **S3 Connections** — Register S3-compatible storage and browse objects through the gateway
 - **Alerts** — Rule-based alerting with webhook delivery and history
 - **APISIX Gateway** — Route management, upstream config, API key auth

@@ -9,6 +9,7 @@ source "$HERE/lib/common.sh"
 source "$HERE/lib/etcd.sh"
 source "$HERE/lib/postgres.sh"
 source "$HERE/lib/sqlite.sh"
+source "$HERE/lib/volume.sh"
 
 usage() {
   cat <<EOF
@@ -17,8 +18,12 @@ Usage: $0 <component> <backup-dir>
 components:
   etcd              restore APISIX config store from etcd.snap
   keycloak-db       restore Keycloak Postgres from keycloak-db.sql.gz
-  litellm-db        restore LiteLLM Postgres from litellm-db.sql.gz
+  bifrost-data      restore Bifrost app data from bifrost-data.tar.gz
+  unibridge-db      restore unibridge-service Postgres from unibridge-db.sql.gz
   unibridge-meta    restore unibridge-service SQLite from unibridge-meta.db.gz
+
+Pick unibridge-db or unibridge-meta to match the file present in the backup dir
+(the default deployment backs up the bundled unibridge-db Postgres).
 
 example:
   $0 etcd ./snapshots/2026-04-19_030000Z
@@ -84,10 +89,27 @@ main() {
       restore_postgres keycloak-db keycloak "${KC_DB_USER:-keycloak}" \
         "$dir/keycloak-db.sql.gz" keycloak
       ;;
-    litellm-db)
-      verify_backup_dir "$dir" "litellm-db.sql.gz"
-      restore_postgres litellm-db litellm litellm \
-        "$dir/litellm-db.sql.gz" litellm
+    bifrost-data)
+      verify_backup_dir "$dir" "bifrost-data.tar.gz"
+      restore_volume bifrost /app/data "$dir/bifrost-data.tar.gz" bifrost
+      ;;
+    unibridge-db)
+      verify_backup_dir "$dir" "unibridge-db.sql.gz"
+      # unibridge-service holds a connection pool to unibridge-db; stop it
+      # first or DROP ... in the dump deadlocks on AccessExclusiveLock.
+      if [[ -n "${BACKUP_APP_COLORS:-}" ]]; then
+        # Blue/green: the app tier lives in separate compose projects, so
+        # restore_postgres's same-project consumer stop can't reach it. Quiesce
+        # each color's container ourselves around the restore.
+        stop_app_consumers
+        restore_postgres unibridge-db unibridge unibridge \
+          "$dir/unibridge-db.sql.gz"
+        start_app_consumers
+      else
+        # Single-stack: unibridge-service shares this compose project.
+        restore_postgres unibridge-db unibridge unibridge \
+          "$dir/unibridge-db.sql.gz" unibridge-service
+      fi
       ;;
     unibridge-meta)
       verify_backup_dir "$dir" "unibridge-meta.db.gz"

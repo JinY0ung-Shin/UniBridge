@@ -49,10 +49,11 @@ services:
       - APISIX_PROVISION_ON_START=${APISIX_PROVISION_ON_START:-true}
       - APISIX_UNIBRIDGE_SERVICE_NODE=${APISIX_UNIBRIDGE_SERVICE_NODE:-unibridge-service-${APP_COLOR}:8000}
       - APISIX_LLM_CONVERTER_NODE=${APISIX_LLM_CONVERTER_NODE:-llm-converter-${APP_COLOR}:4001}
+      - APISIX_BIFROST_NODE=${APISIX_BIFROST_NODE:-bifrost:8080}
       - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
       - NODE_EXPORTER_JOB=${NODE_EXPORTER_JOB:-nodes}
       - PROMETHEUS_FILE_SD_PATH=${PROMETHEUS_FILE_SD_PATH:-/etc/prometheus/file_sd/nodes.json}
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
+      - BIFROST_VIRTUAL_KEY=${BIFROST_VIRTUAL_KEY:-}
       - KEYCLOAK_ISSUER_URL=${KEYCLOAK_ISSUER_URL:-}
       - KEYCLOAK_JWKS_URL=${KEYCLOAK_JWKS_URL:-}
       - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
@@ -124,8 +125,8 @@ services:
           memory: 256m
           cpus: "0.50"
     environment:
-      - LITELLM_URL=${LITELLM_CONVERTER_UPSTREAM:-https://litellm:4000}
-      - CONVERTER_TLS_CA=${CONVERTER_TLS_CA-/etc/ssl/litellm-ca.crt}
+      - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://bifrost:8080}
+      - CONVERTER_TLS_CA=${CONVERTER_TLS_CA-}
       - CONVERTER_TLS_VERIFY=${CONVERTER_TLS_VERIFY:-false}
       - CONVERTER_REQUEST_TIMEOUT=${CONVERTER_REQUEST_TIMEOUT:-0}
       - CONVERTER_CONNECT_TIMEOUT=${CONVERTER_CONNECT_TIMEOUT:-10}
@@ -141,8 +142,6 @@ services:
       - CONVERTER_TRACE=${CONVERTER_TRACE:-false}
     expose:
       - "4001"
-    volumes:
-      - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/ssl/litellm-ca.crt:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4001/health')"]
       interval: 10s
@@ -186,7 +185,8 @@ services:
       - KEYCLOAK_PORT=${KEYCLOAK_PORT:-8443}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-apihub}
       - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
-      - LITELLM_PORT=${LITELLM_PORT:-4000}
+      - BIFROST_PORT=${BIFROST_PORT:-8080}
+      - BIFROST_ADMIN_URL=${BIFROST_ADMIN_URL:-}
       - UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service-${APP_COLOR}}
       - APISIX_UPSTREAM=${APISIX_UPSTREAM:-apisix}
     ports:

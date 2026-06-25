@@ -9,11 +9,34 @@ Operator runbook for backing up and restoring UniBridge state.
 | Component | Source | Output | Why critical |
 |---|---|---|---|
 | etcd | volume `etcd-data` | `etcd.snap` | APISIX routes, consumers, plugin configs |
-| unibridge-service SQLite | volume `unibridge-data` (`meta.db`) | `unibridge-meta.db.gz` | API keys, encrypted credentials, user settings |
+| unibridge-service meta | `unibridge-db` Postgres (default) **or** SQLite `meta.db` | `unibridge-db.sql.gz` **or** `unibridge-meta.db.gz` | API keys, encrypted credentials, user settings |
 | Keycloak Postgres | volume `keycloak-db-data` | `keycloak-db.sql.gz` | users, realms, clients |
-| LiteLLM Postgres | volume `litellm-db-data` | `litellm-db.sql.gz` | LLM keys, budgets, usage history |
+| Bifrost app data | volume `bifrost-data` (`/app/data`) | `bifrost-data.tar.gz` | LLM provider config, virtual keys, request logs |
+
+The metadata store is chosen by `META_DB_URL`: the bundled compose **defaults to the `unibridge-db` Postgres** (`META_DB_URL` unset → resolved to `…@unibridge-db:5432/unibridge`), so `backup.sh` dumps `unibridge-db.sql.gz`. Only an explicit `sqlite` URL selects the legacy file store (`unibridge-meta.db.gz`). An external (non-bundled) Postgres host is skipped with a log line — back that database up separately.
 
 Prometheus time-series data is intentionally **not** backed up — retention is already configured in the Prometheus container and the data is regeneratable over time.
+
+### Split / blue-green deployments
+
+The plain `docker compose` the scripts run sees only the root `docker-compose.yml`. In a blue/green deployment (`scripts/deploy-bluegreen.sh`) the topology is **two separate compose projects**: the stateful/infra services (etcd, Keycloak + its DB, Bifrost, **`unibridge-db`**) run as project `unibridge-infra` from `docker-compose.infra.yml`, while each app color (`unibridge-service`, `llm-converter`, UI) runs as its own project `unibridge-<color>` from `docker-compose.app.yml`.
+
+**Everything that gets backed up lives in the infra project**, so point the backup scripts there — infra-only, not the app file (the app file requires `APP_COLOR` and belongs to a different project):
+
+```env
+BACKUP_COMPOSE_FILES=docker-compose.infra.yml
+COMPOSE_PROJECT_NAME=${UNIBRIDGE_INFRA_PROJECT:-unibridge-infra}
+```
+
+`BACKUP_COMPOSE_FILES` is `:`-separated (matches docker's `COMPOSE_FILE` convention) and is expanded into `-f` flags.
+
+**Restore note (`unibridge-db`).** The Postgres restore must quiesce the meta-DB consumer (`unibridge-service`) so the dump's `DROP` doesn't deadlock on its connection pool. In single-stack that consumer shares the compose project and is handled automatically. In blue/green it lives in the per-color app projects, which the infra-scoped compose can't reach — set `BACKUP_APP_COLORS` to the colors whose `unibridge-service-<color>` should be quiesced around the restore:
+
+```env
+BACKUP_APP_COLORS=blue:green
+```
+
+Only colors that are **actually running** are stopped, and only those are restarted afterward — a color you stopped on purpose (e.g. `STOP_OLD_AFTER_PROMOTE` or `deploy-bluegreen.sh stop <color>`) stays stopped. So listing both colors is safe regardless of which is active.
 
 ## Layout
 
@@ -21,8 +44,8 @@ Prometheus time-series data is intentionally **not** backed up — retention is 
 <project-root>/snapshots/<YYYY-MM-DD_HHMMSSZ>/
   etcd.snap
   keycloak-db.sql.gz
-  litellm-db.sql.gz
-  unibridge-meta.db.gz
+  bifrost-data.tar.gz
+  unibridge-db.sql.gz    # default (Postgres); unibridge-meta.db.gz on a SQLite store
   manifest.json          # sizes + SHA256 of each file
 ```
 
@@ -62,15 +85,18 @@ Restore is **per-component and destructive**. Each `restore.sh` invocation:
 
 - Verifies the backup dir has a `manifest.json` and the needed file before doing anything.
 - Prints a plan of what will change.
-- Requires a typed confirmation phrase (`RESTORE ETCD`, `RESTORE PG`, `RESTORE META`).
-- Stops the consumer service (Keycloak / LiteLLM / unibridge-service / apisix) before touching its backing store, then restarts it.
+- Requires a typed confirmation phrase (`RESTORE ETCD`, `RESTORE PG`, `RESTORE VOLUME`, `RESTORE META`).
+- Stops the consumer service (Keycloak / Bifrost / unibridge-service / apisix) before touching its backing store, then restarts it.
 
 ```
 ./backup/restore.sh etcd           ./snapshots/2026-04-19_030000Z
 ./backup/restore.sh keycloak-db    ./snapshots/2026-04-19_030000Z
-./backup/restore.sh litellm-db     ./snapshots/2026-04-19_030000Z
-./backup/restore.sh unibridge-meta ./snapshots/2026-04-19_030000Z
+./backup/restore.sh bifrost-data   ./snapshots/2026-04-19_030000Z
+./backup/restore.sh unibridge-db   ./snapshots/2026-04-19_030000Z   # default (Postgres)
+./backup/restore.sh unibridge-meta ./snapshots/2026-04-19_030000Z   # legacy SQLite store
 ```
+
+Use `unibridge-db` or `unibridge-meta` to match the file actually present in the backup dir.
 
 ### Full-disaster recovery order
 
@@ -80,21 +106,21 @@ Correct order:
 
 1. **Bring up only the stateful stores**:
    ```
-   docker compose up -d --wait keycloak-db litellm-db etcd
+   docker compose up -d --wait keycloak-db bifrost etcd
    ```
 2. **Restore the data stores** (each script stops/starts the relevant consumer):
    ```
    ./backup/restore.sh keycloak-db    ./snapshots/<stamp>
-   ./backup/restore.sh litellm-db     ./snapshots/<stamp>
+   ./backup/restore.sh bifrost-data   ./snapshots/<stamp>
    ./backup/restore.sh etcd           ./snapshots/<stamp>
    ```
 3. **Bring up the rest** with restored data:
    ```
    docker compose up -d --wait
    ```
-4. **Restore unibridge-service metadata** (this stops/starts the service on its own):
+4. **Restore unibridge-service metadata** (this stops/starts the service on its own). Use the component matching your store — `unibridge-db` for the default Postgres, `unibridge-meta` for the legacy SQLite file:
    ```
-   ./backup/restore.sh unibridge-meta ./snapshots/<stamp>
+   ./backup/restore.sh unibridge-db   ./snapshots/<stamp>
    ```
 5. **Smoke test**: log in via Keycloak, call a known API key endpoint, verify a dynamic route works, hit `/metrics` on APISIX.
 

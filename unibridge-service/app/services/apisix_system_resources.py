@@ -9,5 +9,4 @@ PROTECTED_ROUTE_IDS = {
     "llm-responses",
     "nas-api",
 }
-PROTECTED_UPSTREAM_IDS = {"unibridge-service", "litellm", "llm-converter"}
-
+PROTECTED_UPSTREAM_IDS = {"unibridge-service", "bifrost", "litellm", "llm-converter"}

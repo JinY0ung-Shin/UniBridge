@@ -1,10 +1,10 @@
 """Runtime configuration for the LLM endpoint converter.
 
 The converter sits behind APISIX (which already performed key-auth and injected
-the LiteLLM master key + ``x-litellm-end-user-id`` header) and forwards the
-translated request to the upstream LiteLLM proxy's ``/v1/chat/completions``
-route. All settings are read from the environment so they can be overridden in
-``docker-compose.yml`` without rebuilding the image.
+Bifrost attribution/governance headers) and forwards the translated request to
+the upstream LLM gateway's ``/v1/chat/completions`` route. All settings are read
+from the environment so they can be overridden in ``docker-compose.yml`` without
+rebuilding the image.
 """
 
 from __future__ import annotations
@@ -15,14 +15,17 @@ import ssl
 import httpx
 
 
-def _get_litellm_url() -> str:
-    """Base URL of the upstream LiteLLM proxy (no trailing slash).
+def _get_llm_gateway_url() -> str:
+    """Base URL of the upstream OpenAI-compatible LLM gateway (no trailing slash).
 
-    Required. The converter targets ``{LITELLM_URL}/v1/chat/completions``.
+    Required. The converter targets ``{LLM_GATEWAY_URL}/v1/chat/completions``.
+    ``LITELLM_URL`` is accepted as a deprecated compatibility alias.
     """
-    raw = os.getenv("LITELLM_URL", "").strip()
+    raw = os.getenv("LLM_GATEWAY_URL", "").strip()
     if not raw:
-        raise RuntimeError("LITELLM_URL is required")
+        raw = os.getenv("LITELLM_URL", "").strip()
+    if not raw:
+        raise RuntimeError("LLM_GATEWAY_URL is required")
     return raw.rstrip("/")
 
 
@@ -31,11 +34,9 @@ def _get_tls_verify() -> bool | str | ssl.SSLContext:
 
     Resolution order:
     1. ``CONVERTER_TLS_CA`` (a CA bundle file path) — verify the chain against
-       that CA with hostname checking DISABLED. This is the recommended setting:
-       LiteLLM serves a self-signed cert bound to ``HOST_IP`` but the converter
-       dials it by the internal Docker name ``litellm``, so hostname verification
-       would fail deterministically; pinning the CA still rejects any other cert
-       a co-tenant container might present.
+       that CA with hostname checking DISABLED. This is useful for older
+       LiteLLM deployments that served a self-signed cert bound to ``HOST_IP``
+       while the converter dialed it by Docker service name.
     2. ``CONVERTER_TLS_VERIFY`` — ``true``/``1``/``yes``/``on`` → verify with
        system CAs; any other non-empty non-boolean value → treat as a CA bundle
        path (with hostname checking ON).
@@ -45,7 +46,7 @@ def _get_tls_verify() -> bool | str | ssl.SSLContext:
     ca = os.getenv("CONVERTER_TLS_CA", "").strip()
     if ca:
         ctx = ssl.create_default_context(cafile=ca)
-        # The LiteLLM cert's SAN is HOST_IP, not the Docker service name we dial.
+        # Some legacy gateway certs use HOST_IP rather than the Docker service name.
         ctx.check_hostname = False
         return ctx
 
@@ -80,7 +81,7 @@ def _get_timeout() -> httpx.Timeout:
     """httpx timeout for the upstream client.
 
     ``connect``/``write``/``pool`` are always bounded so an unreachable or
-    wedged LiteLLM fails fast instead of pinning a worker forever. ``read`` is
+    wedged upstream fails fast instead of pinning a worker forever. ``read`` is
     left unbounded by default (``CONVERTER_REQUEST_TIMEOUT`` <= 0) because LLM
     completions — and especially SSE streams — are legitimately long-lived; set
     ``CONVERTER_REQUEST_TIMEOUT`` to a positive integer to cap it.
@@ -99,8 +100,12 @@ class _Settings:
     """Lazy env-backed settings; properties re-read so tests can monkeypatch."""
 
     @property
+    def LLM_GATEWAY_URL(self) -> str:
+        return _get_llm_gateway_url()
+
+    @property
     def LITELLM_URL(self) -> str:
-        return _get_litellm_url()
+        return self.LLM_GATEWAY_URL
 
     @property
     def tls_verify(self) -> bool | str | ssl.SSLContext:
@@ -118,7 +123,7 @@ class _Settings:
         non-streaming completion's body arrives atomically only after generation
         finishes, so a per-chunk read timeout tight enough to catch a stall would
         also cut off legitimately slow completions. This is a generous *total*
-        ceiling instead, so a LiteLLM that accepts the connection and then stalls
+        ceiling instead, so a gateway that accepts the connection and then stalls
         (or trickles) the body cannot pin a worker forever. Default 600s; set
         ``CONVERTER_NONSTREAM_TIMEOUT`` <= 0 to disable (restore unbounded)."""
         raw = _int_env("CONVERTER_NONSTREAM_TIMEOUT", 600)

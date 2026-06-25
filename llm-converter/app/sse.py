@@ -72,6 +72,7 @@ async def with_heartbeat(
             with contextlib.suppress(BaseException):
                 await aclose()
 
+
 # Hop-by-hop headers (RFC 7230 §6.1) plus transport-framing headers set by
 # httpx/Starlette automatically. Never forwarded in either direction.
 _HOP_BY_HOP = frozenset(
@@ -89,12 +90,12 @@ _HOP_BY_HOP = frozenset(
     }
 )
 
-# Stripped from the request before forwarding to LiteLLM:
+# Stripped from the request before forwarding to the upstream gateway:
 # - ``accept-encoding``: httpx negotiates and auto-decompresses internally; if
 #   we forwarded the client's value, upstream would compress and we'd decode
 #   anyway — wasted upstream CPU.
-# NOTE: ``authorization`` is intentionally NOT dropped — APISIX injects the
-# LiteLLM master key there via proxy-rewrite, and we must pass it through.
+# NOTE: ``authorization`` is intentionally NOT dropped; callers or APISIX may
+# still use it for upstream-compatible auth.
 DROP_FROM_REQUEST = _HOP_BY_HOP | frozenset({"accept-encoding"})
 
 # Stripped from the upstream response before returning to the client:
@@ -147,7 +148,9 @@ async def iter_openai_sse_chunks(
             try:
                 evt = json.loads(payload)
             except json.JSONDecodeError:
-                logger.warning("bridge: skipping non-JSON OpenAI SSE payload: %r", payload[:200])
+                logger.warning(
+                    "bridge: skipping non-JSON OpenAI SSE payload: %r", payload[:200]
+                )
                 continue
             if isinstance(evt, dict):
                 yield evt

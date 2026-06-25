@@ -14,7 +14,7 @@ from app.responses_state import conversation_store
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    monkeypatch.setenv("LITELLM_URL", "http://upstream.test")
+    monkeypatch.setenv("LLM_GATEWAY_URL", "http://upstream.test")
     monkeypatch.setenv("CONVERTER_TLS_VERIFY", "false")
     conversation_store.clear()
     yield
@@ -36,7 +36,10 @@ def _chat_json(content="Hi there", tool_calls=None, finish="stop"):
     if tool_calls:
         msg["tool_calls"] = tool_calls
     return {
-        "id": "chatcmpl-1", "object": "chat.completion", "created": 1741569952, "model": "m",
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "created": 1741569952,
+        "model": "m",
         "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
         "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
     }
@@ -58,8 +61,11 @@ def test_non_streaming_translates_to_responses_object():
         captured["url"] = str(request.url)
         captured["auth"] = request.headers.get("authorization")
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, headers={"content-type": "application/json"},
-                              content=json.dumps(_chat_json()).encode())
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=json.dumps(_chat_json()).encode(),
+        )
 
     client = TestClient(_make_app(handler))
     resp = client.post(
@@ -80,6 +86,32 @@ def test_non_streaming_translates_to_responses_object():
     assert data["id"].startswith("resp_")
 
 
+def test_responses_route_forwards_bifrost_attribution_headers():
+    """The converter must relay APISIX-injected x-bf-* headers to Bifrost so
+    per-key monitoring/governance keeps working on the responses path too.
+    """
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["dim"] = request.headers.get("x-bf-dim-api_key")
+        captured["vk"] = request.headers.get("x-bf-vk")
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=json.dumps(_chat_json()).encode(),
+        )
+
+    client = TestClient(_make_app(handler))
+    resp = client.post(
+        "/v1/responses",
+        headers={"x-bf-dim-api_key": "alice-key", "x-bf-vk": "sk-bf-test"},
+        json={"model": "m", "input": "hi"},
+    )
+    assert resp.status_code == 200
+    assert captured["dim"] == "alice-key"
+    assert captured["vk"] == "sk-bf-test"
+
+
 def test_previous_response_id_chaining_prepends_history():
     bodies = []
 
@@ -87,17 +119,23 @@ def test_previous_response_id_chaining_prepends_history():
         bodies.append(json.loads(request.content))
         # First reply has content "first answer"; second is "second answer".
         n = len(bodies)
-        return httpx.Response(200, headers={"content-type": "application/json"},
-                              content=json.dumps(_chat_json(content=f"answer {n}")).encode())
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=json.dumps(_chat_json(content=f"answer {n}")).encode(),
+        )
 
     client = TestClient(_make_app(handler))
 
-    r1 = client.post("/v1/responses", json={"model": "m", "instructions": "sys", "input": "q1"})
+    r1 = client.post(
+        "/v1/responses", json={"model": "m", "instructions": "sys", "input": "q1"}
+    )
     rid = r1.json()["id"]
     assert len(bodies[0]["messages"]) == 2  # system + user
 
-    r2 = client.post("/v1/responses",
-                     json={"model": "m", "input": "q2", "previous_response_id": rid})
+    r2 = client.post(
+        "/v1/responses", json={"model": "m", "input": "q2", "previous_response_id": rid}
+    )
     assert r2.status_code == 200
     # Second upstream call must carry the full prior transcript + new input.
     msgs = bodies[1]["messages"]
@@ -109,45 +147,71 @@ def test_previous_response_id_chaining_prepends_history():
 
 def test_unknown_previous_response_id_returns_400():
     client = TestClient(_make_app(lambda r: httpx.Response(200)))
-    resp = client.post("/v1/responses",
-                       json={"model": "m", "input": "hi", "previous_response_id": "resp_nope"})
+    resp = client.post(
+        "/v1/responses",
+        json={"model": "m", "input": "hi", "previous_response_id": "resp_nope"},
+    )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "previous_response_not_found"
 
 
 def test_empty_previous_response_id_returns_400():
     client = TestClient(_make_app(lambda r: httpx.Response(200)))
-    resp = client.post("/v1/responses",
-                       json={"model": "m", "input": "hi", "previous_response_id": ""})
+    resp = client.post(
+        "/v1/responses", json={"model": "m", "input": "hi", "previous_response_id": ""}
+    )
     assert resp.status_code == 400
 
 
 def test_store_false_is_not_persisted():
-    client = TestClient(_make_app(
-        lambda r: httpx.Response(200, headers={"content-type": "application/json"},
-                                 content=json.dumps(_chat_json()).encode())))
-    r1 = client.post("/v1/responses", json={"model": "m", "input": "q1", "store": False})
+    client = TestClient(
+        _make_app(
+            lambda r: httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                content=json.dumps(_chat_json()).encode(),
+            )
+        )
+    )
+    r1 = client.post(
+        "/v1/responses", json={"model": "m", "input": "q1", "store": False}
+    )
     rid = r1.json()["id"]
     # Chaining off a non-stored response must fail.
-    r2 = client.post("/v1/responses",
-                     json={"model": "m", "input": "q2", "previous_response_id": rid})
+    r2 = client.post(
+        "/v1/responses", json={"model": "m", "input": "q2", "previous_response_id": rid}
+    )
     assert r2.status_code == 400
 
 
 def test_streaming_emits_responses_events():
     sse = (
         "data: " + json.dumps({"choices": [{"delta": {"content": "Hello"}}]}) + "\n\n"
-        "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}],
-                               "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}) + "\n\n"
+        "data: "
+        + json.dumps(
+            {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+        )
+        + "\n\n"
         "data: [DONE]\n\n"
     ).encode()
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert json.loads(request.content)["stream"] is True
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=sse
+        )
 
     client = TestClient(_make_app(handler))
-    resp = client.post("/v1/responses", json={"model": "m", "stream": True, "input": "hi"})
+    resp = client.post(
+        "/v1/responses", json={"model": "m", "stream": True, "input": "hi"}
+    )
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
 
@@ -163,15 +227,21 @@ def test_streaming_emits_responses_events():
 def test_streaming_upstream_error_chunk_emits_failed_and_is_not_persisted():
     sse = (
         "data: " + json.dumps({"choices": [{"delta": {"content": "Hello"}}]}) + "\n\n"
-        "data: " + json.dumps({"error": {"code": "rate_limit_exceeded", "message": "slow"}}) + "\n\n"
+        "data: "
+        + json.dumps({"error": {"code": "rate_limit_exceeded", "message": "slow"}})
+        + "\n\n"
         "data: [DONE]\n\n"
     ).encode()
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=sse
+        )
 
     client = TestClient(_make_app(handler))
-    resp = client.post("/v1/responses", json={"model": "m", "stream": True, "input": "hi"})
+    resp = client.post(
+        "/v1/responses", json={"model": "m", "stream": True, "input": "hi"}
+    )
     assert resp.status_code == 200
     events = _parse_sse(resp.text)
     assert events[-1]["type"] == "response.failed"
@@ -180,8 +250,9 @@ def test_streaming_upstream_error_chunk_emits_failed_and_is_not_persisted():
     assert [e["sequence_number"] for e in events] == list(range(len(events)))
     # The failed turn was not stored: chaining off its id must 400.
     rid = events[-1]["response"]["id"]
-    r2 = client.post("/v1/responses",
-                     json={"model": "m", "input": "q2", "previous_response_id": rid})
+    r2 = client.post(
+        "/v1/responses", json={"model": "m", "input": "q2", "previous_response_id": rid}
+    )
     assert r2.status_code == 400
 
 
@@ -195,10 +266,14 @@ def test_streaming_bridge_crash_failed_event_has_sequence_number():
     ).encode()
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=sse
+        )
 
     client = TestClient(_make_app(handler))
-    resp = client.post("/v1/responses", json={"model": "m", "stream": True, "input": "hi"})
+    resp = client.post(
+        "/v1/responses", json={"model": "m", "stream": True, "input": "hi"}
+    )
     assert resp.status_code == 200
     events = _parse_sse(resp.text)
     assert events[-1]["type"] == "response.failed"
@@ -213,8 +288,11 @@ def test_non_streaming_malformed_2xx_body_is_forwarded_not_500():
     raw = {"choices": {"0": {"message": {"content": "x"}}}, "id": "weird"}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "application/json"},
-                              content=json.dumps(raw).encode())
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=json.dumps(raw).encode(),
+        )
 
     client = TestClient(_make_app(handler))
     resp = client.post("/v1/responses", json={"model": "m", "input": "hi"})
@@ -225,13 +303,20 @@ def test_non_streaming_malformed_2xx_body_is_forwarded_not_500():
 def test_empty_assistant_turn_is_not_persisted():
     # An empty assistant turn (no content, no tool_calls) must not be stored —
     # matching the streaming path — so chaining off its id 400s.
-    client = TestClient(_make_app(
-        lambda r: httpx.Response(200, headers={"content-type": "application/json"},
-                                 content=json.dumps(_chat_json(content="")).encode())))
+    client = TestClient(
+        _make_app(
+            lambda r: httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                content=json.dumps(_chat_json(content="")).encode(),
+            )
+        )
+    )
     r1 = client.post("/v1/responses", json={"model": "m", "input": "hi"})
     rid = r1.json()["id"]
-    r2 = client.post("/v1/responses",
-                     json={"model": "m", "input": "q2", "previous_response_id": rid})
+    r2 = client.post(
+        "/v1/responses", json={"model": "m", "input": "q2", "previous_response_id": rid}
+    )
     assert r2.status_code == 400
 
 
@@ -244,42 +329,59 @@ def test_chaining_supersedes_parent_so_reuse_400s():
     def handler(request: httpx.Request) -> httpx.Response:
         bodies.append(json.loads(request.content))
         n = len(bodies)
-        return httpx.Response(200, headers={"content-type": "application/json"},
-                              content=json.dumps(_chat_json(content=f"a{n}")).encode())
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=json.dumps(_chat_json(content=f"a{n}")).encode(),
+        )
 
     client = TestClient(_make_app(handler))
     rid1 = client.post("/v1/responses", json={"model": "m", "input": "q1"}).json()["id"]
-    r2 = client.post("/v1/responses",
-                     json={"model": "m", "input": "q2", "previous_response_id": rid1})
+    r2 = client.post(
+        "/v1/responses",
+        json={"model": "m", "input": "q2", "previous_response_id": rid1},
+    )
     rid2 = r2.json()["id"]
     assert r2.status_code == 200
     # parent rid1 superseded → reuse 400s (branching deliberately traded away)
-    r3 = client.post("/v1/responses",
-                     json={"model": "m", "input": "q3", "previous_response_id": rid1})
+    r3 = client.post(
+        "/v1/responses",
+        json={"model": "m", "input": "q3", "previous_response_id": rid1},
+    )
     assert r3.status_code == 400
     # chaining off the latest still works
-    r4 = client.post("/v1/responses",
-                     json={"model": "m", "input": "q4", "previous_response_id": rid2})
+    r4 = client.post(
+        "/v1/responses",
+        json={"model": "m", "input": "q4", "previous_response_id": rid2},
+    )
     assert r4.status_code == 200
 
 
 def test_streaming_strips_upstream_cache_headers_so_route_values_win():
     sse = (
         "data: " + json.dumps({"choices": [{"delta": {"content": "hi"}}]}) + "\n\n"
-        "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]}) + "\n\n"
+        "data: "
+        + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        + "\n\n"
         "data: [DONE]\n\n"
     ).encode()
 
     def handler(request: httpx.Request) -> httpx.Response:
         # Upstream sets case-variant copies that previously survived as duplicates.
-        return httpx.Response(200, headers={
-            "content-type": "text/event-stream",
-            "cache-control": "public, max-age=60",
-            "x-accel-buffering": "yes",
-        }, content=sse)
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "text/event-stream",
+                "cache-control": "public, max-age=60",
+                "x-accel-buffering": "yes",
+            },
+            content=sse,
+        )
 
     client = TestClient(_make_app(handler))
-    resp = client.post("/v1/responses", json={"model": "m", "stream": True, "input": "hi"})
+    resp = client.post(
+        "/v1/responses", json={"model": "m", "stream": True, "input": "hi"}
+    )
     assert resp.status_code == 200
     assert resp.headers["cache-control"] == "no-cache"
     assert resp.headers["x-accel-buffering"] == "no"

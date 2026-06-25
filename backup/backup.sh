@@ -9,6 +9,25 @@ source "$HERE/lib/common.sh"
 source "$HERE/lib/etcd.sh"
 source "$HERE/lib/postgres.sh"
 source "$HERE/lib/sqlite.sh"
+source "$HERE/lib/volume.sh"
+
+# Back up the unibridge-service metadata store, dispatching on META_DB_URL.
+# The bundled compose defaults the meta store to the ``unibridge-db`` Postgres
+# (META_DB_URL unset → compose resolves it to ...@unibridge-db:5432/unibridge),
+# so an unset value means "bundled Postgres", NOT SQLite. Only an explicit
+# sqlite URL selects the legacy file store. An external Postgres (a non-bundled
+# host) is the operator's to back up; we skip it loudly rather than fail.
+backup_meta() {
+  local dest="$1"
+  case "${META_DB_URL:-}" in
+    *sqlite*)
+      backup_unibridge_meta "$dest/unibridge-meta.db.gz" ;;
+    "" | *@unibridge-db:*)
+      backup_postgres unibridge-db unibridge unibridge "$dest/unibridge-db.sql.gz" ;;
+    *)
+      log "meta: META_DB_URL points at an external Postgres host; skipping bundled meta backup — back up that database separately" ;;
+  esac
+}
 
 main() {
   acquire_lock
@@ -26,8 +45,8 @@ main() {
 
   backup_etcd "$dest/etcd.snap"
   backup_postgres keycloak-db keycloak "${KC_DB_USER:-keycloak}"   "$dest/keycloak-db.sql.gz"
-  backup_postgres litellm-db  litellm  litellm                     "$dest/litellm-db.sql.gz"
-  backup_unibridge_meta "$dest/unibridge-meta.db.gz"
+  backup_volume bifrost /app/data "$dest/bifrost-data.tar.gz"
+  backup_meta "$dest"
 
   write_manifest "$dest" "$stamp"
 

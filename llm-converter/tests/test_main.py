@@ -1,7 +1,7 @@
 """Route-level tests for the converter.
 
 Verifies that ``POST /v1/messages`` translates the Anthropic request to an
-OpenAI chat-completions body, targets ``{LITELLM_URL}/v1/chat/completions``,
+OpenAI chat-completions body, targets ``{LLM_GATEWAY_URL}/v1/chat/completions``,
 forwards the APISIX-injected ``Authorization`` header, and translates the
 response (streaming SSE and one-shot JSON) back to the Anthropic shape.
 """
@@ -21,7 +21,7 @@ import app.main as converter_main
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    monkeypatch.setenv("LITELLM_URL", "http://upstream.test")
+    monkeypatch.setenv("LLM_GATEWAY_URL", "http://upstream.test")
     monkeypatch.setenv("CONVERTER_TLS_VERIFY", "false")
     yield
 
@@ -68,17 +68,37 @@ def test_streaming_translates_openai_to_anthropic():
         {"choices": [{"delta": {"content": "Hello!"}}]},
         {
             "choices": [
-                {"delta": {"tool_calls": [
-                    {"index": 0, "id": "call_1",
-                     "function": {"name": "get_weather", "arguments": "{\"city\""}}
-                ]}}
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {
+                                    "name": "get_weather",
+                                    "arguments": '{"city"',
+                                },
+                            }
+                        ]
+                    }
+                }
             ]
         },
-        {"choices": [{"delta": {"tool_calls": [
-            {"index": 0, "function": {"arguments": ":\"SF\"}"}}
-        ]}}]},
-        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}],
-         "usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {"index": 0, "function": {"arguments": ':"SF"}'}}
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        },
     ]
     body = _openai_sse(chunks)
 
@@ -142,7 +162,8 @@ def test_non_streaming_translates_openai_to_anthropic():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/chat/completions"
         return httpx.Response(
-            200, headers={"content-type": "application/json"},
+            200,
+            headers={"content-type": "application/json"},
             content=json.dumps(openai_resp).encode(),
         )
 
@@ -158,6 +179,39 @@ def test_non_streaming_translates_openai_to_anthropic():
     assert data["content"] == [{"type": "text", "text": "Hi there"}]
     assert data["stop_reason"] == "end_turn"
     assert data["usage"] == {"input_tokens": 3, "output_tokens": 2}
+
+
+def test_messages_route_forwards_bifrost_attribution_headers():
+    """APISIX injects x-bf-* on the converter route; the converter must relay
+    them to Bifrost unchanged or per-key monitoring/governance silently breaks.
+    """
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["dim"] = request.headers.get("x-bf-dim-api_key")
+        captured["vk"] = request.headers.get("x-bf-vk")
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            content=json.dumps(
+                {
+                    "choices": [
+                        {"message": {"content": "ok"}, "finish_reason": "stop"}
+                    ],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }
+            ).encode(),
+        )
+
+    client = TestClient(_make_app(handler))
+    resp = client.post(
+        "/v1/messages",
+        headers={"x-bf-dim-api_key": "alice-key", "x-bf-vk": "sk-bf-test"},
+        json={"model": "GLM-4.6", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert resp.status_code == 200
+    assert captured["dim"] == "alice-key"
+    assert captured["vk"] == "sk-bf-test"
 
 
 def test_messages_route_forwards_anthropic_image_as_openai_image_url():
@@ -221,7 +275,8 @@ def test_upstream_error_forwarded_verbatim():
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            429, headers={"content-type": "application/json"},
+            429,
+            headers={"content-type": "application/json"},
             content=json.dumps(err).encode(),
         )
 
@@ -246,7 +301,9 @@ def test_streaming_bridge_error_emits_terminal_error_event():
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, headers={"content-type": "text/event-stream"}, content=_openai_sse(chunks)
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=_openai_sse(chunks),
         )
 
     client = TestClient(_make_app(handler))
@@ -307,7 +364,8 @@ def test_non_streaming_200_error_body_forwarded_verbatim():
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, headers={"content-type": "application/json"},
+            200,
+            headers={"content-type": "application/json"},
             content=json.dumps(err).encode(),
         )
 
@@ -327,7 +385,8 @@ def test_responses_200_error_body_forwarded_verbatim():
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, headers={"content-type": "application/json"},
+            200,
+            headers={"content-type": "application/json"},
             content=json.dumps(err).encode(),
         )
 
@@ -353,7 +412,8 @@ def test_non_streaming_upstream_stall_times_out_504(monkeypatch):
     async def handler(request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(2)
         return httpx.Response(
-            200, headers={"content-type": "application/json"},
+            200,
+            headers={"content-type": "application/json"},
             content=json.dumps({"choices": []}).encode(),
         )
 

@@ -9,8 +9,81 @@ RETENTION_DAYS="${RETENTION_DAYS:-14}"
 log()  { printf '[%s] %s\n' "$(date -Iseconds)" "$*"; }
 die()  { printf '[%s] ERROR: %s\n' "$(date -Iseconds)" "$*" >&2; exit 1; }
 
+# Run docker compose against the deployment's stack. Single-stack deployments
+# need no configuration (the root docker-compose.yml is picked up by default).
+# Split / blue-green deployments put infra services (Bifrost, Keycloak, APISIX,
+# the databases) in docker-compose.infra.yml under their own project, so plain
+# `docker compose` at the repo root would not see them. Operators point backups
+# at the right stack via .env (sourced by load_env):
+#   BACKUP_COMPOSE_FILES=docker-compose.infra.yml:docker-compose.app.yml
+#   COMPOSE_PROJECT_NAME=<the infra project name>   # if customized
+# BACKUP_COMPOSE_FILES is ':'-separated to match docker's COMPOSE_FILE convention.
 compose() {
-  (cd "$PROJECT_ROOT" && docker compose "$@")
+  local -a files=()
+  if [[ -n "${BACKUP_COMPOSE_FILES:-}" ]]; then
+    local IFS=':'
+    local f
+    for f in $BACKUP_COMPOSE_FILES; do
+      [[ -n "$f" ]] && files+=("-f" "$f")
+    done
+  fi
+  if [[ ${#files[@]} -gt 0 ]]; then
+    (cd "$PROJECT_ROOT" && docker compose "${files[@]}" "$@")
+  else
+    (cd "$PROJECT_ROOT" && docker compose "$@")
+  fi
+}
+
+# Colors whose app-tier unibridge-service must be quiesced before a
+# unibridge-db restore. Blue/green runs each color as a SEPARATE compose
+# project (unibridge-<color>, container unibridge-service-<color>) that the
+# infra-scoped compose() above cannot reach, so restore_postgres's
+# same-project consumer stop would silently miss them and the DROP in the dump
+# could deadlock on a live connection pool. Set BACKUP_APP_COLORS (e.g.
+# "blue:green") in .env for blue/green; leave it unset for single-stack.
+_app_colors() {
+  local raw="${BACKUP_APP_COLORS:-}"
+  [[ -n "$raw" ]] || return 0
+  local IFS=':, '
+  # shellcheck disable=SC2086
+  printf '%s\n' $raw
+}
+
+# Stop/start each app color's unibridge-service by container name. Container
+# names are deterministic (unibridge-service-<color>), so this works without
+# the full app-stack compose env, across whatever projects own them.
+#
+# Only containers this restore actually stopped are restarted afterward — a
+# color an operator had already stopped on purpose (STOP_OLD_AFTER_PROMOTE,
+# `deploy-bluegreen.sh stop <color>`) stays stopped, so listing both colors in
+# BACKUP_APP_COLORS never resurrects an inactive one or changes the topology.
+_STOPPED_APP_CONSUMERS=()
+
+stop_app_consumers() {
+  _STOPPED_APP_CONSUMERS=()
+  local c name running
+  while IFS= read -r c; do
+    [[ -n "$c" ]] || continue
+    name="unibridge-service-$c"
+    running="$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || true)"
+    if [[ "$running" == "true" ]]; then
+      log "stopping app consumer $name"
+      docker stop "$name" >/dev/null 2>&1 || die "failed to stop $name"
+      _STOPPED_APP_CONSUMERS+=("$name")
+    else
+      log "app consumer $name not running — leaving it stopped"
+    fi
+  done < <(_app_colors)
+}
+
+start_app_consumers() {
+  local name
+  for name in "${_STOPPED_APP_CONSUMERS[@]:-}"; do
+    [[ -n "$name" ]] || continue
+    log "starting app consumer $name"
+    docker start "$name" >/dev/null 2>&1 || \
+      log "  (could not start $name — start it manually)"
+  done
 }
 
 load_env() {

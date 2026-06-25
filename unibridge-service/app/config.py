@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     APISIX_GATEWAY_ROUTE_CONNECT_TIMEOUT: int = 10
     APISIX_UNIBRIDGE_SERVICE_NODE: str = "unibridge-service:8000"
     APISIX_LLM_CONVERTER_NODE: str = "llm-converter:4001"
+    APISIX_BIFROST_NODE: str = "bifrost:8080"
     PROMETHEUS_URL: str = "http://prometheus:9090"
     # Server (host) monitoring: Prometheus scrape job for node_exporter agents,
     # and the file-based service-discovery targets file the service writes from
@@ -46,6 +47,9 @@ class Settings(BaseSettings):
     # override this. Empty at both levels → every real (non-pseudo) filesystem is
     # considered, taking the most-full one per host.
     NODE_EXPORTER_DISK_MOUNTPOINTS: str = ""
+    BIFROST_VIRTUAL_KEY: str = ""
+    # Deprecated compatibility field for old .env files/tests. New deployments
+    # should use BIFROST_VIRTUAL_KEY when enabling Bifrost governance.
     LITELLM_MASTER_KEY: str = ""
 
     # CORS — comma-separated allowed origins (e.g. "http://localhost:3001,https://app.example.com")
@@ -74,13 +78,19 @@ class Settings(BaseSettings):
     GRAPHDB_MAX_RESPONSE_BYTES: int = 10 * 1024 * 1024  # 10 MiB
 
     # NAS / local-filesystem read-only provider
-    NAS_ALLOWED_ROOTS: str = "/mnt"                  # comma-separated absolute prefixes a base_path MUST sit under
-    NAS_MAX_DOWNLOAD_BYTES: int = 500 * 1024 * 1024  # 500 MiB hard ceiling for proxy streaming
-    NAS_MAX_LIST_ENTRIES: int = 5000                 # hard cap on entries scanned per listing
+    NAS_ALLOWED_ROOTS: str = (
+        "/mnt"  # comma-separated absolute prefixes a base_path MUST sit under
+    )
+    NAS_MAX_DOWNLOAD_BYTES: int = (
+        500 * 1024 * 1024
+    )  # 500 MiB hard ceiling for proxy streaming
+    NAS_MAX_LIST_ENTRIES: int = 5000  # hard cap on entries scanned per listing
     NAS_LIST_DEFAULT_LIMIT: int = 500
     NAS_STREAM_CHUNK_BYTES: int = 1024 * 1024
     NAS_MAX_PATH_BYTES: int = 4096
-    NAS_FS_OP_TIMEOUT_SECONDS: float = 10.0          # per-op timeout so a hung NFS/FIFO syscall cannot wedge the service
+    NAS_FS_OP_TIMEOUT_SECONDS: float = (
+        10.0  # per-op timeout so a hung NFS/FIFO syscall cannot wedge the service
+    )
 
     # S3 / S3-compatible object storage blocking-call isolation
     S3_MAX_WORKERS: int = 8
@@ -134,13 +144,14 @@ def validate_settings() -> None:
     if settings.ENCRYPTION_KEY in _INSECURE_DEFAULTS:
         raise RuntimeError(
             "ENCRYPTION_KEY is not set or uses an insecure default. "
-            "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+            'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))"'
         )
     # Validate ENCRYPTION_KEY produces a usable Fernet key
     try:
         from cryptography.fernet import Fernet
         import base64
         import hashlib
+
         key = settings.ENCRYPTION_KEY
         if len(key) != 44:
             digest = hashlib.sha256(key.encode()).digest()
@@ -149,7 +160,7 @@ def validate_settings() -> None:
     except Exception:
         raise RuntimeError(
             "ENCRYPTION_KEY is invalid. "
-            "Generate one with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+            'Generate one with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
         )
     # JWT_SECRET is only required when Keycloak is not configured (dev HS256 mode)
     if not settings.KEYCLOAK_ISSUER_URL and settings.JWT_SECRET in _INSECURE_DEFAULTS:
@@ -160,6 +171,5 @@ def validate_settings() -> None:
     # APISIX_ADMIN_KEY is required for gateway management
     if not settings.APISIX_ADMIN_KEY:
         raise RuntimeError(
-            "APISIX_ADMIN_KEY is not set. "
-            "Set it to your APISIX admin API key in .env."
+            "APISIX_ADMIN_KEY is not set. Set it to your APISIX admin API key in .env."
         )
