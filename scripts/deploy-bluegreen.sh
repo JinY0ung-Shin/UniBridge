@@ -24,6 +24,7 @@ fi
 STATE_DIR="${BLUEGREEN_STATE_DIR:-$ROOT_DIR/.deploy}"
 STATE_FILE="${BLUEGREEN_STATE_FILE:-$STATE_DIR/bluegreen-active}"
 LOCK_FILE="${BLUEGREEN_LOCK_FILE:-$STATE_DIR/bluegreen.lock}"
+LLM_GATEWAY_ROLLBACK_FILE="${BLUEGREEN_LLM_GATEWAY_ROLLBACK_FILE:-$STATE_DIR/llm-gateway-rollback}"
 EDGE_TEMPLATE="$ROOT_DIR/deploy/edge/default.conf.template"
 EDGE_CONFIG="$ROOT_DIR/deploy/edge/generated/default.conf"
 
@@ -69,6 +70,8 @@ Environment:
                                         at the LLM gateway upstream below.
   APISIX_LLM_GATEWAY_UPSTREAM=bifrost   Gateway upstream id to ensure/point to.
   APISIX_BIFROST_NODE=bifrost:8080      host:port for that upstream's node.
+  BLUEGREEN_LLM_GATEWAY_ROLLBACK_FILE   Saved previous llm-proxy/llm-admin
+                                        upstreams, used by rollback.
 USAGE
 }
 
@@ -269,14 +272,76 @@ apisix_patch() {
   return 1
 }
 
-# 0 only when the named route already exists in etcd (so we don't PATCH a route
-# the app hasn't provisioned yet).
-apisix_route_exists() {
+# GET an APISIX admin resource with retry. Return codes:
+#   0: success, body printed to stdout
+#   1: resource is absent (HTTP 404)
+#   2: admin API/curl/server error after retries
+apisix_get() {
+  local path="$1"
   local base_url
   base_url="$(admin_url)"
-  curl -fsS -o /dev/null \
-    -H "X-API-KEY: $APISIX_ADMIN_KEY" \
-    "$base_url/apisix/admin/routes/$1" 2>/dev/null
+  local attempts=5 delay=2 i
+  local tmp http_code curl_rc
+  tmp="$(mktemp)"
+
+  for ((i = 1; i <= attempts; i++)); do
+    if http_code="$(curl -sS -o "$tmp" -w '%{http_code}' \
+      -H "X-API-KEY: $APISIX_ADMIN_KEY" \
+      "$base_url/apisix/admin/$path" 2>/dev/null)"; then
+      case "$http_code" in
+        2*)
+          cat "$tmp"
+          rm -f "$tmp"
+          return 0
+          ;;
+        404)
+          rm -f "$tmp"
+          return 1
+          ;;
+        *)
+          echo "APISIX admin GET $path returned HTTP $http_code (attempt $i/$attempts)" >&2
+          ;;
+      esac
+    else
+      curl_rc=$?
+      echo "APISIX admin GET $path failed (curl rc=$curl_rc, attempt $i/$attempts)" >&2
+    fi
+    [[ $i -lt $attempts ]] && sleep "$delay"
+  done
+
+  rm -f "$tmp"
+  echo "APISIX admin GET $path failed after $attempts attempts" >&2
+  return 2
+}
+
+# Return codes mirror apisix_get: 0 exists, 1 absent, 2 failed to check.
+apisix_route_exists() {
+  apisix_get "routes/$1" >/dev/null
+}
+
+apisix_route_upstream_id() {
+  local route="$1"
+  local body status
+  if body="$(apisix_get "routes/$route")"; then
+    if printf '%s' "$body" | python3 -c '
+import json
+import sys
+
+data = json.load(sys.stdin)
+value = data.get("value", data) if isinstance(data, dict) else {}
+upstream = value.get("upstream_id") if isinstance(value, dict) else None
+if isinstance(upstream, str) and upstream:
+    print(upstream)
+else:
+    sys.exit(3)
+'; then
+      return 0
+    fi
+    return 3
+  else
+    status=$?
+    return "$status"
+  fi
 }
 
 # Wait until the APISIX admin API answers (any successful auth'd response),
@@ -314,6 +379,7 @@ apisix_has_core_routes() {
 promote_apisix() {
   local color="$1"
   local prev_color="${2:-}"
+  local llm_gateway_mode="${3:-promote}"
   validate_color "$color"
 
   if [[ -z "${APISIX_ADMIN_KEY:-}" ]]; then
@@ -351,9 +417,76 @@ promote_apisix() {
   # (e.g. LiteLLM->Bifrost). Best-effort: a failure here does NOT undo the color
   # switch (which already succeeded), so it must not abort promote — but it is
   # surfaced loudly so the operator can finish the gateway cutover by hand.
-  if ! reconcile_llm_gateway; then
+  if ! reconcile_llm_gateway "$llm_gateway_mode"; then
     echo "WARNING: LLM gateway reconcile incomplete — /api/llm/v1/chat/completions and /v1/models may still route to the previous engine. Re-run 'scripts/deploy-bluegreen.sh promote $color' once APISIX admin is healthy, or repoint the llm-proxy/llm-admin routes manually." >&2
   fi
+}
+
+save_llm_gateway_rollback_state() {
+  local gw="$1"
+  mkdir -p "$STATE_DIR"
+
+  local tmp
+  tmp="${LLM_GATEWAY_ROLLBACK_FILE}.tmp"
+  : > "$tmp"
+
+  local rc=0 saved=0 route upstream status
+  for route in llm-proxy llm-admin; do
+    if upstream="$(apisix_route_upstream_id "$route")"; then
+      if [[ "$upstream" != "$gw" ]]; then
+        printf '%s=%s\n' "$route" "$upstream" >> "$tmp"
+        saved=1
+      fi
+    else
+      status=$?
+      if [[ "$status" == 1 ]]; then
+        # Route not provisioned yet; reconcile will skip it too.
+        continue
+      fi
+      echo "Failed to read current upstream_id for route '$route' before LLM gateway reconcile." >&2
+      rc=1
+    fi
+  done
+
+  if [[ "$rc" != 0 ]]; then
+    rm -f "$tmp"
+    return "$rc"
+  fi
+
+  if [[ "$saved" == 1 ]]; then
+    if [[ -s "$LLM_GATEWAY_ROLLBACK_FILE" ]]; then
+      echo "Keeping existing LLM gateway rollback state at $LLM_GATEWAY_ROLLBACK_FILE." >&2
+      rm -f "$tmp"
+    else
+      mv "$tmp" "$LLM_GATEWAY_ROLLBACK_FILE"
+      echo "Saved LLM gateway rollback state to $LLM_GATEWAY_ROLLBACK_FILE." >&2
+    fi
+  else
+    rm -f "$tmp"
+  fi
+}
+
+restore_llm_gateway_rollback_state() {
+  if [[ ! -s "$LLM_GATEWAY_ROLLBACK_FILE" ]]; then
+    echo "No LLM gateway rollback state found; leaving llm-proxy/llm-admin upstreams unchanged." >&2
+    return 0
+  fi
+
+  local rc=0 route upstream
+  while IFS='=' read -r route upstream; do
+    [[ -n "$route" && -n "$upstream" ]] || continue
+    if apisix_patch "routes/$route" "$(printf '{"upstream_id":"%s"}' "$upstream")"; then
+      echo "Restored route '$route' to previous LLM gateway upstream '$upstream'." >&2
+    else
+      echo "Failed to restore route '$route' to previous LLM gateway upstream '$upstream'." >&2
+      rc=1
+    fi
+  done < "$LLM_GATEWAY_ROLLBACK_FILE"
+
+  if [[ "$rc" == 0 ]]; then
+    rm -f "$LLM_GATEWAY_ROLLBACK_FILE"
+  fi
+  return "$rc"
 }
 
 # Ensure the LLM gateway upstream exists and the llm-proxy / llm-admin routes
@@ -361,11 +494,17 @@ promote_apisix() {
 # upgrades just re-assert the existing wiring). Skipped when PROMOTE_LLM_GATEWAY
 # is not "true". Routes that the app has not provisioned yet are left untouched.
 reconcile_llm_gateway() {
+  local mode="${1:-promote}"
   [[ "$PROMOTE_LLM_GATEWAY" == "true" ]] || return 0
 
   if [[ -z "${APISIX_ADMIN_KEY:-}" ]]; then
     echo "APISIX_ADMIN_KEY is required to reconcile the LLM gateway" >&2
     return 1
+  fi
+
+  if [[ "$mode" == "rollback" ]]; then
+    restore_llm_gateway_rollback_state
+    return $?
   fi
 
   local gw="$APISIX_LLM_GATEWAY_UPSTREAM"
@@ -377,16 +516,24 @@ reconcile_llm_gateway() {
     return 1
   fi
 
-  local rc=0 route
+  save_llm_gateway_rollback_state "$gw" || return 1
+
+  local rc=0 route status
   for route in llm-proxy llm-admin; do
-    if ! apisix_route_exists "$route"; then
-      # Not provisioned yet (e.g. first deploy still booting) — nothing to repoint.
-      continue
-    fi
-    if apisix_patch "routes/$route" "$(printf '{"upstream_id":"%s"}' "$gw")"; then
-      echo "Repointed route '$route' at LLM gateway upstream '$gw'." >&2
+    if apisix_route_exists "$route"; then
+      if apisix_patch "routes/$route" "$(printf '{"upstream_id":"%s"}' "$gw")"; then
+        echo "Repointed route '$route' at LLM gateway upstream '$gw'." >&2
+      else
+        echo "Failed to repoint route '$route' at LLM gateway upstream '$gw'." >&2
+        rc=1
+      fi
     else
-      echo "Failed to repoint route '$route' at LLM gateway upstream '$gw'." >&2
+      status=$?
+      if [[ "$status" == 1 ]]; then
+        # Not provisioned yet (e.g. first deploy still booting) — nothing to repoint.
+        continue
+      fi
+      echo "Failed to confirm whether route '$route' exists before LLM gateway reconcile." >&2
       rc=1
     fi
   done
@@ -496,6 +643,7 @@ deploy_color() {
 
 promote_color() {
   local target="$1"
+  local llm_gateway_mode="${2:-promote}"
   validate_color "$target"
 
   local old
@@ -510,7 +658,7 @@ promote_color() {
 
   wait_color "$target"
   prepare_edge "$target"
-  promote_apisix "$target" "$old"
+  promote_apisix "$target" "$old" "$llm_gateway_mode"
   reload_edge
   write_active_color "$target"
   echo "Active color: $target"
@@ -549,7 +697,7 @@ rollback() {
   echo "Ensuring $target stack is running before rollback..."
   compose_app "$target" "$(color_port "$target")" "false" up -d --wait
 
-  promote_color "$target"
+  promote_color "$target" "rollback"
 }
 
 status() {

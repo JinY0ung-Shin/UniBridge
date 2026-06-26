@@ -180,6 +180,18 @@ def test_bluegreen_app_uses_color_specific_targets_and_deferred_apisix_promotion
     )
 
 
+def test_bluegreen_script_reconciles_llm_gateway_safely() -> None:
+    script = DEPLOY_SCRIPT_FILE.read_text(encoding="utf-8")
+
+    assert "apisix_get()" in script
+    assert "resource is absent (HTTP 404)" in script
+    assert "return 2" in script
+    assert "Failed to confirm whether route '$route' exists" in script
+    assert "save_llm_gateway_rollback_state \"$gw\"" in script
+    assert "restore_llm_gateway_rollback_state" in script
+    assert "promote_color \"$target\" \"rollback\"" in script
+
+
 def test_readme_states_compose_v2_required_for_resource_limits() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 

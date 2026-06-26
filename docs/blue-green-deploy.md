@@ -54,6 +54,9 @@ Work through this before running `deploy-bluegreen.sh` on a real environment.
 6. **One operation at a time.** `deploy`/`promote`/`rollback`/`stop` take a lock
    (`.deploy/bluegreen.lock`) — do not run two in parallel.
 
+7. **Host prerequisites include `python3`.** The deploy script uses it to parse
+   APISIX Admin API JSON when saving LLM gateway rollback state.
+
 ## Runtime Model
 
 Public traffic should enter through `unibridge-edge` on `UNIBRIDGE_EDGE_PORT`
@@ -220,6 +223,13 @@ STOP_OLD_AFTER_PROMOTE=true DRAIN_SECONDS=30 scripts/deploy-bluegreen.sh deploy
 `STOP_OLD_AFTER_PROMOTE=true` or a manual `stop`), `rollback` brings its
 containers back up first, then waits for health and promotes. Rollback only
 works to a color whose image still exists — it does not rebuild.
+
+When promotion changes the singleton LLM gateway routes (`llm-proxy` and
+`llm-admin`, for example LiteLLM -> Bifrost), the script saves their previous
+`upstream_id` values in `.deploy/llm-gateway-rollback` before patching them.
+`rollback` restores those saved route upstreams and deletes the state file after
+a successful restore. If that file is absent, rollback leaves the LLM gateway
+routes unchanged because there is no prior engine target to infer.
 
 Only one mutating command (`deploy`/`promote`/`rollback`/`stop`) can run at a
 time; the script takes a lock (`.deploy/bluegreen.lock`) and aborts if another
