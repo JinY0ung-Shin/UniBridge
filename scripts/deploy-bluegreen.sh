@@ -24,6 +24,7 @@ fi
 STATE_DIR="${BLUEGREEN_STATE_DIR:-$ROOT_DIR/.deploy}"
 STATE_FILE="${BLUEGREEN_STATE_FILE:-$STATE_DIR/bluegreen-active}"
 LOCK_FILE="${BLUEGREEN_LOCK_FILE:-$STATE_DIR/bluegreen.lock}"
+LLM_GATEWAY_ROLLBACK_FILE="${BLUEGREEN_LLM_GATEWAY_ROLLBACK_FILE:-$STATE_DIR/llm-gateway-rollback}"
 EDGE_TEMPLATE="$ROOT_DIR/deploy/edge/default.conf.template"
 EDGE_CONFIG="$ROOT_DIR/deploy/edge/generated/default.conf"
 
@@ -32,6 +33,21 @@ EDGE_PROJECT="${UNIBRIDGE_EDGE_PROJECT:-unibridge-edge}"
 NETWORK_NAME="${UNIBRIDGE_NETWORK_NAME:-unibridge-net}"
 STOP_OLD_AFTER_PROMOTE="${STOP_OLD_AFTER_PROMOTE:-false}"
 DRAIN_SECONDS="${DRAIN_SECONDS:-15}"
+
+# LLM gateway engine reconcile during promote. Blue/green promote only rotates
+# the color-specific upstreams (unibridge-service, llm-converter). The LLM
+# gateway engine is a singleton infra upstream that the new-color app provisions
+# only when APISIX_PROVISION_ON_START=true — which is false for a new color over
+# an existing one. Without this, a LiteLLM->Bifrost cutover would promote the app
+# tier but leave the llm-proxy / llm-admin routes pointed at the old engine
+# upstream (so /api/llm/v1/chat/completions and /v1/models keep hitting LiteLLM).
+# When enabled, promote ensures the gateway upstream exists and repoints those
+# routes at it via PATCH (which preserves each route's consumer-restriction and
+# other fields). Set PROMOTE_LLM_GATEWAY=false to leave the routes untouched
+# (e.g. rolling back to an older engine, where you'd run the old code's script).
+PROMOTE_LLM_GATEWAY="${PROMOTE_LLM_GATEWAY:-true}"
+APISIX_LLM_GATEWAY_UPSTREAM="${APISIX_LLM_GATEWAY_UPSTREAM:-bifrost}"
+APISIX_BIFROST_NODE="${APISIX_BIFROST_NODE:-bifrost:8080}"
 
 usage() {
   cat <<'USAGE'
@@ -50,6 +66,12 @@ Environment:
   APISIX_ADMIN_HOST_URL=http://127.0.0.1:${APISIX_ADMIN_PORT:-9180}
   STOP_OLD_AFTER_PROMOTE=false          Stop old color after promotion.
   DRAIN_SECONDS=15                      Delay before stopping old color.
+  PROMOTE_LLM_GATEWAY=true              On promote, repoint llm-proxy/llm-admin
+                                        at the LLM gateway upstream below.
+  APISIX_LLM_GATEWAY_UPSTREAM=bifrost   Gateway upstream id to ensure/point to.
+  APISIX_BIFROST_NODE=bifrost:8080      host:port for that upstream's node.
+  BLUEGREEN_LLM_GATEWAY_ROLLBACK_FILE   Saved previous llm-proxy/llm-admin
+                                        upstreams, used by rollback.
 USAGE
 }
 
@@ -226,6 +248,102 @@ apisix_put() {
   return 1
 }
 
+# PATCH an APISIX admin resource with retry. Unlike PUT, this is a partial
+# update: only the fields in $body change and APISIX preserves the rest of the
+# resource (notably a route's consumer-restriction whitelist). Used to repoint a
+# route's upstream_id without re-sending — and risking clobbering — its plugins.
+apisix_patch() {
+  local path="$1"
+  local body="$2"
+  local base_url
+  base_url="$(admin_url)"
+  local attempts=5 delay=2 i
+  for ((i = 1; i <= attempts; i++)); do
+    if curl -fsS -X PATCH "$base_url/apisix/admin/$path" \
+      -H "X-API-KEY: $APISIX_ADMIN_KEY" \
+      -H "Content-Type: application/json" \
+      --data "$body" >/dev/null; then
+      return 0
+    fi
+    echo "APISIX admin PATCH $path failed (attempt $i/$attempts)" >&2
+    [[ $i -lt $attempts ]] && sleep "$delay"
+  done
+  echo "APISIX admin PATCH $path failed after $attempts attempts" >&2
+  return 1
+}
+
+# GET an APISIX admin resource with retry. Return codes:
+#   0: success, body printed to stdout
+#   1: resource is absent (HTTP 404)
+#   2: admin API/curl/server error after retries
+apisix_get() {
+  local path="$1"
+  local base_url
+  base_url="$(admin_url)"
+  local attempts=5 delay=2 i
+  local tmp http_code curl_rc
+  tmp="$(mktemp)"
+
+  for ((i = 1; i <= attempts; i++)); do
+    if http_code="$(curl -sS -o "$tmp" -w '%{http_code}' \
+      -H "X-API-KEY: $APISIX_ADMIN_KEY" \
+      "$base_url/apisix/admin/$path" 2>/dev/null)"; then
+      case "$http_code" in
+        2*)
+          cat "$tmp"
+          rm -f "$tmp"
+          return 0
+          ;;
+        404)
+          rm -f "$tmp"
+          return 1
+          ;;
+        *)
+          echo "APISIX admin GET $path returned HTTP $http_code (attempt $i/$attempts)" >&2
+          ;;
+      esac
+    else
+      curl_rc=$?
+      echo "APISIX admin GET $path failed (curl rc=$curl_rc, attempt $i/$attempts)" >&2
+    fi
+    [[ $i -lt $attempts ]] && sleep "$delay"
+  done
+
+  rm -f "$tmp"
+  echo "APISIX admin GET $path failed after $attempts attempts" >&2
+  return 2
+}
+
+# Return codes mirror apisix_get: 0 exists, 1 absent, 2 failed to check.
+apisix_route_exists() {
+  apisix_get "routes/$1" >/dev/null
+}
+
+apisix_route_upstream_id() {
+  local route="$1"
+  local body status
+  if body="$(apisix_get "routes/$route")"; then
+    if printf '%s' "$body" | python3 -c '
+import json
+import sys
+
+data = json.load(sys.stdin)
+value = data.get("value", data) if isinstance(data, dict) else {}
+upstream = value.get("upstream_id") if isinstance(value, dict) else None
+if isinstance(upstream, str) and upstream:
+    print(upstream)
+else:
+    sys.exit(3)
+'; then
+      return 0
+    fi
+    return 3
+  else
+    status=$?
+    return "$status"
+  fi
+}
+
 # Wait until the APISIX admin API answers (any successful auth'd response),
 # tolerating the warmup window right after the infra stack starts.
 wait_apisix_admin() {
@@ -261,6 +379,7 @@ apisix_has_core_routes() {
 promote_apisix() {
   local color="$1"
   local prev_color="${2:-}"
+  local llm_gateway_mode="${3:-promote}"
   validate_color "$color"
 
   if [[ -z "${APISIX_ADMIN_KEY:-}" ]]; then
@@ -292,6 +411,133 @@ promote_apisix() {
     fi
     return 1
   fi
+
+  # Color rotation done. Now reconcile the singleton LLM gateway engine so the
+  # llm-proxy / llm-admin routes follow the engine the deployed code expects
+  # (e.g. LiteLLM->Bifrost). Best-effort: a failure here does NOT undo the color
+  # switch (which already succeeded), so it must not abort promote — but it is
+  # surfaced loudly so the operator can finish the gateway cutover by hand.
+  if ! reconcile_llm_gateway "$llm_gateway_mode"; then
+    echo "WARNING: LLM gateway reconcile incomplete — /api/llm/v1/chat/completions and /v1/models may still route to the previous engine. Re-run 'scripts/deploy-bluegreen.sh promote $color' once APISIX admin is healthy, or repoint the llm-proxy/llm-admin routes manually." >&2
+  fi
+}
+
+save_llm_gateway_rollback_state() {
+  local gw="$1"
+  mkdir -p "$STATE_DIR"
+
+  local tmp
+  tmp="${LLM_GATEWAY_ROLLBACK_FILE}.tmp"
+  : > "$tmp"
+
+  local rc=0 saved=0 route upstream status
+  for route in llm-proxy llm-admin; do
+    if upstream="$(apisix_route_upstream_id "$route")"; then
+      if [[ "$upstream" != "$gw" ]]; then
+        printf '%s=%s\n' "$route" "$upstream" >> "$tmp"
+        saved=1
+      fi
+    else
+      status=$?
+      if [[ "$status" == 1 ]]; then
+        # Route not provisioned yet; reconcile will skip it too.
+        continue
+      fi
+      echo "Failed to read current upstream_id for route '$route' before LLM gateway reconcile." >&2
+      rc=1
+    fi
+  done
+
+  if [[ "$rc" != 0 ]]; then
+    rm -f "$tmp"
+    return "$rc"
+  fi
+
+  if [[ "$saved" == 1 ]]; then
+    if [[ -s "$LLM_GATEWAY_ROLLBACK_FILE" ]]; then
+      echo "Keeping existing LLM gateway rollback state at $LLM_GATEWAY_ROLLBACK_FILE." >&2
+      rm -f "$tmp"
+    else
+      mv "$tmp" "$LLM_GATEWAY_ROLLBACK_FILE"
+      echo "Saved LLM gateway rollback state to $LLM_GATEWAY_ROLLBACK_FILE." >&2
+    fi
+  else
+    rm -f "$tmp"
+  fi
+}
+
+restore_llm_gateway_rollback_state() {
+  if [[ ! -s "$LLM_GATEWAY_ROLLBACK_FILE" ]]; then
+    echo "No LLM gateway rollback state found; leaving llm-proxy/llm-admin upstreams unchanged." >&2
+    return 0
+  fi
+
+  local rc=0 route upstream
+  while IFS='=' read -r route upstream; do
+    [[ -n "$route" && -n "$upstream" ]] || continue
+    if apisix_patch "routes/$route" "$(printf '{"upstream_id":"%s"}' "$upstream")"; then
+      echo "Restored route '$route' to previous LLM gateway upstream '$upstream'." >&2
+    else
+      echo "Failed to restore route '$route' to previous LLM gateway upstream '$upstream'." >&2
+      rc=1
+    fi
+  done < "$LLM_GATEWAY_ROLLBACK_FILE"
+
+  if [[ "$rc" == 0 ]]; then
+    rm -f "$LLM_GATEWAY_ROLLBACK_FILE"
+  fi
+  return "$rc"
+}
+
+# Ensure the LLM gateway upstream exists and the llm-proxy / llm-admin routes
+# point at it. Idempotent, so it is safe on every promote (same-engine app
+# upgrades just re-assert the existing wiring). Skipped when PROMOTE_LLM_GATEWAY
+# is not "true". Routes that the app has not provisioned yet are left untouched.
+reconcile_llm_gateway() {
+  local mode="${1:-promote}"
+  [[ "$PROMOTE_LLM_GATEWAY" == "true" ]] || return 0
+
+  if [[ -z "${APISIX_ADMIN_KEY:-}" ]]; then
+    echo "APISIX_ADMIN_KEY is required to reconcile the LLM gateway" >&2
+    return 1
+  fi
+
+  if [[ "$mode" == "rollback" ]]; then
+    restore_llm_gateway_rollback_state
+    return $?
+  fi
+
+  local gw="$APISIX_LLM_GATEWAY_UPSTREAM"
+  local up_body
+  up_body="$(printf '{"name":"%s","type":"roundrobin","scheme":"http","nodes":{"%s":1}}' "$gw" "$APISIX_BIFROST_NODE")"
+
+  if ! apisix_put "upstreams/$gw" "$up_body"; then
+    echo "Failed to ensure LLM gateway upstream '$gw' (node $APISIX_BIFROST_NODE)." >&2
+    return 1
+  fi
+
+  save_llm_gateway_rollback_state "$gw" || return 1
+
+  local rc=0 route status
+  for route in llm-proxy llm-admin; do
+    if apisix_route_exists "$route"; then
+      if apisix_patch "routes/$route" "$(printf '{"upstream_id":"%s"}' "$gw")"; then
+        echo "Repointed route '$route' at LLM gateway upstream '$gw'." >&2
+      else
+        echo "Failed to repoint route '$route' at LLM gateway upstream '$gw'." >&2
+        rc=1
+      fi
+    else
+      status=$?
+      if [[ "$status" == 1 ]]; then
+        # Not provisioned yet (e.g. first deploy still booting) — nothing to repoint.
+        continue
+      fi
+      echo "Failed to confirm whether route '$route' exists before LLM gateway reconcile." >&2
+      rc=1
+    fi
+  done
+  return $rc
 }
 
 # Render and validate the edge config for $color WITHOUT switching live traffic.
@@ -397,6 +643,7 @@ deploy_color() {
 
 promote_color() {
   local target="$1"
+  local llm_gateway_mode="${2:-promote}"
   validate_color "$target"
 
   local old
@@ -411,7 +658,7 @@ promote_color() {
 
   wait_color "$target"
   prepare_edge "$target"
-  promote_apisix "$target" "$old"
+  promote_apisix "$target" "$old" "$llm_gateway_mode"
   reload_edge
   write_active_color "$target"
   echo "Active color: $target"
@@ -450,7 +697,7 @@ rollback() {
   echo "Ensuring $target stack is running before rollback..."
   compose_app "$target" "$(color_port "$target")" "false" up -d --wait
 
-  promote_color "$target"
+  promote_color "$target" "rollback"
 }
 
 status() {

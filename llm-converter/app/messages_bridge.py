@@ -418,6 +418,7 @@ class _StreamState:
         "message_id",
         "input_tokens",
         "output_tokens",
+        "cached_tokens",
         "finish_reason",
         "started",
         "last_tool_index",
@@ -440,6 +441,7 @@ class _StreamState:
         self.message_id = f"msg_{uuid.uuid4().hex[:24]}"
         self.input_tokens = 0
         self.output_tokens = 0
+        self.cached_tokens = 0
         self.finish_reason: Optional[str] = None
         self.started = False
 
@@ -503,6 +505,46 @@ class _PendingToolCall:
         self.argument_parts.append(arguments)
 
 
+def _cached_tokens(usage: Dict[str, Any]) -> int:
+    """Prefix-cache hit count from an OpenAI chat-completions ``usage`` block.
+
+    OpenAI reports it under ``prompt_tokens_details.cached_tokens`` (a *subset*
+    of ``prompt_tokens``). Returns 0 when absent or malformed.
+    """
+    pd = usage.get("prompt_tokens_details")
+    if isinstance(pd, dict):
+        c = pd.get("cached_tokens")
+        if isinstance(c, int) and c > 0:
+            return c
+    return 0
+
+
+def _anthropic_usage(
+    prompt_tokens: Any, completion_tokens: Any, cached_tokens: int = 0
+) -> Dict[str, int]:
+    """Build an Anthropic ``usage`` block from OpenAI token counts.
+
+    OpenAI's ``prompt_tokens`` INCLUDES prefix-cache hits. Anthropic instead
+    reports the cached portion in its own ``cache_read_input_tokens`` field and
+    keeps ``input_tokens`` to the *uncached* remainder, so the two are disjoint
+    (``input_tokens + cache_read_input_tokens == prompt_tokens``). Mirror that
+    here so cost-aware clients can price cache reads at the cheaper rate.
+
+    ``cache_read_input_tokens`` is omitted entirely when there is no cache hit,
+    keeping non-cached responses byte-identical to the previous output.
+    """
+    pt = prompt_tokens if isinstance(prompt_tokens, int) else 0
+    ct = completion_tokens if isinstance(completion_tokens, int) else 0
+    cached = cached_tokens if cached_tokens > 0 else 0
+    usage: Dict[str, int] = {
+        "input_tokens": max(pt - cached, 0),
+        "output_tokens": ct,
+    }
+    if cached:
+        usage["cache_read_input_tokens"] = cached
+    return usage
+
+
 def _message_start_event(state: _StreamState) -> Dict[str, Any]:
     return {
         "type": "message_start",
@@ -514,10 +556,7 @@ def _message_start_event(state: _StreamState) -> Dict[str, Any]:
             "content": [],
             "stop_reason": None,
             "stop_sequence": None,
-            "usage": {
-                "input_tokens": state.input_tokens,
-                "output_tokens": 0,
-            },
+            "usage": _anthropic_usage(state.input_tokens, 0, state.cached_tokens),
         },
     }
 
@@ -642,6 +681,9 @@ async def openai_stream_to_anthropic_events(
             ct = usage.get("completion_tokens")
             if isinstance(ct, int):
                 state.output_tokens = ct
+            cached = _cached_tokens(usage)
+            if cached:
+                state.cached_tokens = cached
 
         choices = chunk.get("choices") or []
         if not choices:
@@ -750,10 +792,9 @@ async def openai_stream_to_anthropic_events(
     yield {
         "type": "message_delta",
         "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-        "usage": {
-            "input_tokens": state.input_tokens,
-            "output_tokens": state.output_tokens,
-        },
+        "usage": _anthropic_usage(
+            state.input_tokens, state.output_tokens, state.cached_tokens
+        ),
     }
     yield {"type": "message_stop"}
 
@@ -811,8 +852,9 @@ def openai_response_to_anthropic_body(body: Dict[str, Any]) -> Dict[str, Any]:
         "content": content_blocks,
         "stop_reason": stop_reason,
         "stop_sequence": None,
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens", 0),
-            "output_tokens": usage.get("completion_tokens", 0),
-        },
+        "usage": _anthropic_usage(
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+            _cached_tokens(usage),
+        ),
     }
