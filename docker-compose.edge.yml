@@ -31,7 +31,7 @@ services:
       - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/nginx/ssl/tls.crt:ro
       - ${TLS_KEY_PATH:-./certs/tls.key}:/etc/nginx/ssl/tls.key:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-check-certificate -q -O- https://localhost/healthz | grep -q '^ok$'"]
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O- https://127.0.0.1/healthz | grep -q '^ok$'"]
       interval: 10s
       timeout: 5s
       retries: 5

@@ -33,6 +33,21 @@ NETWORK_NAME="${UNIBRIDGE_NETWORK_NAME:-unibridge-net}"
 STOP_OLD_AFTER_PROMOTE="${STOP_OLD_AFTER_PROMOTE:-false}"
 DRAIN_SECONDS="${DRAIN_SECONDS:-15}"
 
+# LLM gateway engine reconcile during promote. Blue/green promote only rotates
+# the color-specific upstreams (unibridge-service, llm-converter). The LLM
+# gateway engine is a singleton infra upstream that the new-color app provisions
+# only when APISIX_PROVISION_ON_START=true — which is false for a new color over
+# an existing one. Without this, a LiteLLM->Bifrost cutover would promote the app
+# tier but leave the llm-proxy / llm-admin routes pointed at the old engine
+# upstream (so /api/llm/v1/chat/completions and /v1/models keep hitting LiteLLM).
+# When enabled, promote ensures the gateway upstream exists and repoints those
+# routes at it via PATCH (which preserves each route's consumer-restriction and
+# other fields). Set PROMOTE_LLM_GATEWAY=false to leave the routes untouched
+# (e.g. rolling back to an older engine, where you'd run the old code's script).
+PROMOTE_LLM_GATEWAY="${PROMOTE_LLM_GATEWAY:-true}"
+APISIX_LLM_GATEWAY_UPSTREAM="${APISIX_LLM_GATEWAY_UPSTREAM:-bifrost}"
+APISIX_BIFROST_NODE="${APISIX_BIFROST_NODE:-bifrost:8080}"
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -50,6 +65,10 @@ Environment:
   APISIX_ADMIN_HOST_URL=http://127.0.0.1:${APISIX_ADMIN_PORT:-9180}
   STOP_OLD_AFTER_PROMOTE=false          Stop old color after promotion.
   DRAIN_SECONDS=15                      Delay before stopping old color.
+  PROMOTE_LLM_GATEWAY=true              On promote, repoint llm-proxy/llm-admin
+                                        at the LLM gateway upstream below.
+  APISIX_LLM_GATEWAY_UPSTREAM=bifrost   Gateway upstream id to ensure/point to.
+  APISIX_BIFROST_NODE=bifrost:8080      host:port for that upstream's node.
 USAGE
 }
 
@@ -226,6 +245,40 @@ apisix_put() {
   return 1
 }
 
+# PATCH an APISIX admin resource with retry. Unlike PUT, this is a partial
+# update: only the fields in $body change and APISIX preserves the rest of the
+# resource (notably a route's consumer-restriction whitelist). Used to repoint a
+# route's upstream_id without re-sending — and risking clobbering — its plugins.
+apisix_patch() {
+  local path="$1"
+  local body="$2"
+  local base_url
+  base_url="$(admin_url)"
+  local attempts=5 delay=2 i
+  for ((i = 1; i <= attempts; i++)); do
+    if curl -fsS -X PATCH "$base_url/apisix/admin/$path" \
+      -H "X-API-KEY: $APISIX_ADMIN_KEY" \
+      -H "Content-Type: application/json" \
+      --data "$body" >/dev/null; then
+      return 0
+    fi
+    echo "APISIX admin PATCH $path failed (attempt $i/$attempts)" >&2
+    [[ $i -lt $attempts ]] && sleep "$delay"
+  done
+  echo "APISIX admin PATCH $path failed after $attempts attempts" >&2
+  return 1
+}
+
+# 0 only when the named route already exists in etcd (so we don't PATCH a route
+# the app hasn't provisioned yet).
+apisix_route_exists() {
+  local base_url
+  base_url="$(admin_url)"
+  curl -fsS -o /dev/null \
+    -H "X-API-KEY: $APISIX_ADMIN_KEY" \
+    "$base_url/apisix/admin/routes/$1" 2>/dev/null
+}
+
 # Wait until the APISIX admin API answers (any successful auth'd response),
 # tolerating the warmup window right after the infra stack starts.
 wait_apisix_admin() {
@@ -292,6 +345,52 @@ promote_apisix() {
     fi
     return 1
   fi
+
+  # Color rotation done. Now reconcile the singleton LLM gateway engine so the
+  # llm-proxy / llm-admin routes follow the engine the deployed code expects
+  # (e.g. LiteLLM->Bifrost). Best-effort: a failure here does NOT undo the color
+  # switch (which already succeeded), so it must not abort promote — but it is
+  # surfaced loudly so the operator can finish the gateway cutover by hand.
+  if ! reconcile_llm_gateway; then
+    echo "WARNING: LLM gateway reconcile incomplete — /api/llm/v1/chat/completions and /v1/models may still route to the previous engine. Re-run 'scripts/deploy-bluegreen.sh promote $color' once APISIX admin is healthy, or repoint the llm-proxy/llm-admin routes manually." >&2
+  fi
+}
+
+# Ensure the LLM gateway upstream exists and the llm-proxy / llm-admin routes
+# point at it. Idempotent, so it is safe on every promote (same-engine app
+# upgrades just re-assert the existing wiring). Skipped when PROMOTE_LLM_GATEWAY
+# is not "true". Routes that the app has not provisioned yet are left untouched.
+reconcile_llm_gateway() {
+  [[ "$PROMOTE_LLM_GATEWAY" == "true" ]] || return 0
+
+  if [[ -z "${APISIX_ADMIN_KEY:-}" ]]; then
+    echo "APISIX_ADMIN_KEY is required to reconcile the LLM gateway" >&2
+    return 1
+  fi
+
+  local gw="$APISIX_LLM_GATEWAY_UPSTREAM"
+  local up_body
+  up_body="$(printf '{"name":"%s","type":"roundrobin","scheme":"http","nodes":{"%s":1}}' "$gw" "$APISIX_BIFROST_NODE")"
+
+  if ! apisix_put "upstreams/$gw" "$up_body"; then
+    echo "Failed to ensure LLM gateway upstream '$gw' (node $APISIX_BIFROST_NODE)." >&2
+    return 1
+  fi
+
+  local rc=0 route
+  for route in llm-proxy llm-admin; do
+    if ! apisix_route_exists "$route"; then
+      # Not provisioned yet (e.g. first deploy still booting) — nothing to repoint.
+      continue
+    fi
+    if apisix_patch "routes/$route" "$(printf '{"upstream_id":"%s"}' "$gw")"; then
+      echo "Repointed route '$route' at LLM gateway upstream '$gw'." >&2
+    else
+      echo "Failed to repoint route '$route' at LLM gateway upstream '$gw'." >&2
+      rc=1
+    fi
+  done
+  return $rc
 }
 
 # Render and validate the edge config for $color WITHOUT switching live traffic.
