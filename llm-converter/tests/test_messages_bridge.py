@@ -734,6 +734,32 @@ class TestStreamConversion:
         md = next(e for e in out if e["type"] == "message_delta")
         assert md["usage"]["input_tokens"] == 42
         assert md["usage"]["output_tokens"] == 7
+        # No prefix-cache hit reported → field omitted entirely.
+        assert "cache_read_input_tokens" not in md["usage"]
+
+    async def test_streaming_surfaces_cached_tokens(self):
+        """OpenAI ``prompt_tokens_details.cached_tokens`` becomes Anthropic's
+        ``cache_read_input_tokens``, with ``input_tokens`` holding the uncached
+        remainder (the two are disjoint, summing to OpenAI's prompt_tokens)."""
+        chunks = [
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 30,
+                    "prompt_tokens_details": {"cached_tokens": 40},
+                },
+            },
+        ]
+        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        md = next(e for e in out if e["type"] == "message_delta")
+        assert md["usage"] == {
+            "input_tokens": 60,
+            "output_tokens": 30,
+            "cache_read_input_tokens": 40,
+        }
 
     async def test_empty_content_chunks_do_not_split(self):
         """An empty ``delta.content`` arriving mid-reasoning must not open a
@@ -1055,6 +1081,28 @@ class TestNonStreamingResponseConversion:
         assert out["stop_reason"] == "end_turn"
         assert out["content"] == [{"type": "text", "text": "Hello!"}]
         assert out["usage"] == {"input_tokens": 10, "output_tokens": 5}
+        # No cache details on the upstream usage → no cache field added.
+        assert "cache_read_input_tokens" not in out["usage"]
+
+    def test_non_streaming_surfaces_cached_tokens(self):
+        """``prompt_tokens_details.cached_tokens`` maps to Anthropic's
+        ``cache_read_input_tokens``; ``input_tokens`` holds the uncached part."""
+        body = {
+            "id": "chatcmpl-1",
+            "model": "m",
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 40},
+            },
+        }
+        out = openai_response_to_anthropic_body(body)
+        assert out["usage"] == {
+            "input_tokens": 60,
+            "output_tokens": 5,
+            "cache_read_input_tokens": 40,
+        }
 
     def test_reasoning_plus_text_plus_tool(self):
         body = {
