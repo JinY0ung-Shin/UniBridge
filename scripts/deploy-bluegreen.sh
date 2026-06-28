@@ -404,7 +404,7 @@ promote_apisix() {
       local revert_body
       revert_body="$(printf '{"name":"unibridge-service","type":"roundrobin","nodes":{"unibridge-service-%s:8000":1}}' "$prev_color")"
       if ! apisix_put "upstreams/unibridge-service" "$revert_body"; then
-        echo "WARNING: failed to roll unibridge-service back to $prev_color; APISIX upstreams may be half-switched. Re-run 'deploy-bluegreen.sh promote $prev_color' to restore." >&2
+        echo "FATAL: APISIX upstreams are half-switched (unibridge-service=$color, llm-converter=$prev_color) and the rollback PUT also failed. Live LLM/converter routing is inconsistent. Once the APISIX admin API is healthy, run 'deploy-bluegreen.sh promote $prev_color' to restore." >&2
       fi
     else
       echo "WARNING: unibridge-service now points at $color but llm-converter does not, and no previous color is known to revert to — APISIX upstreams are half-switched." >&2
@@ -426,16 +426,35 @@ save_llm_gateway_rollback_state() {
   local gw="$1"
   mkdir -p "$STATE_DIR"
 
-  local tmp
-  tmp="${LLM_GATEWAY_ROLLBACK_FILE}.tmp"
-  : > "$tmp"
+  # Merge semantics, keyed per route: record a route's CURRENT upstream the
+  # first time we see it diverge from the gateway target, and NEVER overwrite an
+  # already-recorded route. This preserves the original pre-cutover target
+  # across re-runs of the same promote — including partial-failure retries where
+  # some routes are already repointed (the old "keep the whole existing file"
+  # branch dropped routes that only diverged on a later attempt). rollback
+  # consumes and deletes the file, so a fresh cutover after a completed rollback
+  # starts from an empty map again.
+  #
+  # Known limit: chaining two DISTINCT gateway cutovers without an intervening
+  # rollback (A->B->C) still rolls back to A, not B, because B's routes are
+  # already recorded as A. That path is intentionally out of scope — undo always
+  # targets the most recent *un-rolled-back* cutover's origin.
+  declare -A saved_map=()
+  if [[ -s "$LLM_GATEWAY_ROLLBACK_FILE" ]]; then
+    local k v
+    while IFS='=' read -r k v; do
+      [[ -n "$k" && -n "$v" ]] && saved_map["$k"]="$v"
+    done < "$LLM_GATEWAY_ROLLBACK_FILE"
+  fi
 
-  local rc=0 saved=0 route upstream status
+  local rc=0 changed=0 route upstream status
   for route in llm-proxy llm-admin; do
+    # Already recorded — keep the original, do not overwrite.
+    [[ -n "${saved_map[$route]:-}" ]] && continue
     if upstream="$(apisix_route_upstream_id "$route")"; then
       if [[ "$upstream" != "$gw" ]]; then
-        printf '%s=%s\n' "$route" "$upstream" >> "$tmp"
-        saved=1
+        saved_map["$route"]="$upstream"
+        changed=1
       fi
     else
       status=$?
@@ -449,20 +468,17 @@ save_llm_gateway_rollback_state() {
   done
 
   if [[ "$rc" != 0 ]]; then
-    rm -f "$tmp"
     return "$rc"
   fi
 
-  if [[ "$saved" == 1 ]]; then
-    if [[ -s "$LLM_GATEWAY_ROLLBACK_FILE" ]]; then
-      echo "Keeping existing LLM gateway rollback state at $LLM_GATEWAY_ROLLBACK_FILE." >&2
-      rm -f "$tmp"
-    else
-      mv "$tmp" "$LLM_GATEWAY_ROLLBACK_FILE"
-      echo "Saved LLM gateway rollback state to $LLM_GATEWAY_ROLLBACK_FILE." >&2
-    fi
-  else
-    rm -f "$tmp"
+  if [[ "$changed" == 1 ]]; then
+    local tmp="${LLM_GATEWAY_ROLLBACK_FILE}.tmp"
+    : > "$tmp"
+    for route in "${!saved_map[@]}"; do
+      printf '%s=%s\n' "$route" "${saved_map[$route]}" >> "$tmp"
+    done
+    mv "$tmp" "$LLM_GATEWAY_ROLLBACK_FILE"
+    echo "Saved LLM gateway rollback state to $LLM_GATEWAY_ROLLBACK_FILE." >&2
   fi
 }
 
@@ -563,7 +579,11 @@ reload_edge() {
 write_active_color() {
   local color="$1"
   mkdir -p "$STATE_DIR"
-  printf '%s\n' "$color" > "$STATE_FILE"
+  # Atomic write (temp + rename) so a crash mid-write can't leave a truncated or
+  # empty state file that the next deploy/rollback would choke on.
+  local tmp="${STATE_FILE}.tmp"
+  printf '%s\n' "$color" > "$tmp"
+  mv "$tmp" "$STATE_FILE"
 }
 
 wait_color() {
@@ -632,10 +652,28 @@ deploy_color() {
   reload_edge
   write_active_color "$target"
 
-  if [[ -n "$old" && "$old" != "$target" && "$STOP_OLD_AFTER_PROMOTE" == "true" ]]; then
-    echo "Waiting ${DRAIN_SECONDS}s before stopping old $old stack..."
-    sleep "$DRAIN_SECONDS"
-    compose_app "$old" "$(color_port "$old")" "false" stop
+  if [[ -n "$old" && "$old" != "$target" ]]; then
+    if [[ "$STOP_OLD_AFTER_PROMOTE" == "true" ]]; then
+      echo "Waiting ${DRAIN_SECONDS}s before stopping old $old stack..."
+      sleep "$DRAIN_SECONDS"
+      # 'down' (not 'stop') so 'restart: unless-stopped' cannot resurrect the
+      # retired color on a host/daemon reboot. A revived old color whose baked
+      # APISIX_PROVISION_ON_START is still 'true' (e.g. the first-ever color)
+      # would re-provision APISIX on boot and repoint the shared
+      # unibridge-service / llm-converter upstreams back at itself — silently
+      # hijacking live traffic to the old version.
+      compose_app "$old" "$(color_port "$old")" "false" down
+    else
+      # Keep the old color warm for rollback, but recreate it with provisioning
+      # DISABLED to close the same reboot-hijack window. Recreates only if its
+      # baked APISIX_PROVISION_ON_START actually changes (a no-op once already
+      # false), and the old color serves no public traffic (edge already points
+      # at $target), so this is invisible to users. Best-effort: a failure here
+      # must not fail an otherwise-successful promote.
+      echo "Disabling APISIX auto-provision on the retired $old stack..."
+      compose_app "$old" "$(color_port "$old")" "false" up -d --no-build --wait \
+        || echo "WARNING: could not recreate $old with provisioning disabled. A reboot of $old before its next deploy could re-provision APISIX and hijack traffic. Mitigate with: scripts/deploy-bluegreen.sh stop $old" >&2
+    fi
   fi
 
   echo "Active color: $target"

@@ -58,6 +58,7 @@ async def test_post_me_creates_key(app, client):
     _override_user(app, sub="alice-sub-1", username="alice")
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.delete_resource = AsyncMock()
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
@@ -80,6 +81,7 @@ async def test_post_me_second_time_409(app, client):
     _override_user(app, sub="alice-sub-1")
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.delete_resource = AsyncMock()
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
@@ -96,6 +98,7 @@ async def test_regenerate_changes_key(app, client):
     _override_user(app, sub="alice-sub-1")
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.patch_resource = mock_apisix.put_resource
         # get_resource 404s → regenerate uses minimal limit-count fallback
         mock_apisix.get_resource = AsyncMock(side_effect=_http_status_error(404))
         mock_apisix.delete_resource = AsyncMock()
@@ -127,6 +130,7 @@ async def test_regenerate_non_404_apisix_error_returns_502(app, client):
     _override_user(app, sub="alice-sub-1")
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.delete_resource = AsyncMock()
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not called on create"))
@@ -152,6 +156,7 @@ async def test_delete_me(app, client):
     _override_user(app, sub="alice-sub-1")
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.delete_resource = AsyncMock()
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
@@ -190,6 +195,7 @@ async def test_regenerate_preserves_other_plugins(app, client):
     _override_user(app, sub="alice-sub-1")
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.delete_resource = AsyncMock()
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
         # create path: does not call get_resource
@@ -244,6 +250,7 @@ async def test_post_me_cleans_up_consumer_on_sync_failure(app, client):
     _override_user(app, sub="alice-sub-1")
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.delete_resource = AsyncMock()
         # list_resources fails → _sync_consumer_restriction raises HTTPException(502)
@@ -272,6 +279,7 @@ async def test_self_wildcard_allows_arbitrary_s3_alias(app, client):
     _override_user(app, sub=sub)
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.delete_resource = AsyncMock()
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
@@ -335,6 +343,7 @@ async def test_post_me_integrity_error_returns_409_without_apisix_clobber(
     _override_user(app, sub=sub, username="alice")
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.delete_resource = AsyncMock()
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
@@ -359,6 +368,7 @@ async def test_post_me_rolls_back_db_on_apisix_failure(app, client):
     consumer_name = _self_consumer_name("alice-sub-1")
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(side_effect=Exception("APISIX down"))
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.delete_resource = AsyncMock()
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
@@ -394,6 +404,7 @@ async def test_post_me_sets_30_day_expiry(app, client):
     _override_user(app, sub="alice-sub-1", username="alice")
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.delete_resource = AsyncMock()
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
@@ -417,6 +428,7 @@ async def test_regenerate_resets_expiry(app, client, seeded_db):
     _override_user(app, sub="alice-sub-1")
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=_http_status_error(404))
         mock_apisix.delete_resource = AsyncMock()
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
@@ -453,6 +465,7 @@ async def test_renew_keeps_key_value_and_extends_expiry(app, client, seeded_db):
     _override_user(app, sub="alice-sub-1", username="alice")
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.delete_resource = AsyncMock()
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
@@ -510,6 +523,7 @@ async def test_renew_writes_admin_audit_log(app, client, seeded_db):
     _override_user(app, sub="alice-sub-1", username="alice")
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.delete_resource = AsyncMock()
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
@@ -545,6 +559,7 @@ async def test_expired_self_key_rejected_on_query_api(app, client, seeded_db):
     _override_user(app, sub="alice-sub-1")
     with _patch_apisix() as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.delete_resource = AsyncMock()
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})

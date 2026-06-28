@@ -187,6 +187,7 @@ async def test_save_route_apisix_http_and_generic_errors(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.get_resource = AsyncMock(side_effect=_http_status(404, "no"))
         mock.put_resource = AsyncMock(side_effect=_http_status(500, "boom"))
+        mock.patch_resource = mock.put_resource
         resp = await client.put(
             "/admin/gateway/routes/r1",
             json=body,
@@ -197,6 +198,7 @@ async def test_save_route_apisix_http_and_generic_errors(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.get_resource = AsyncMock(side_effect=_http_status(404, "no"))
         mock.put_resource = AsyncMock(side_effect=RuntimeError("fail"))
+        mock.patch_resource = mock.put_resource
         resp = await client.put(
             "/admin/gateway/routes/r1",
             json=body,
@@ -213,6 +215,7 @@ async def test_save_route_success(client, admin_token):
         mock.put_resource = AsyncMock(return_value={
             "uri": "/api/x", "upstream_id": "u1", "plugins": {},
         })
+        mock.patch_resource = mock.put_resource
         resp = await client.put(
             "/admin/gateway/routes/r1",
             json=body,
@@ -237,6 +240,7 @@ async def test_save_keyauth_route_defaults_to_deny_all_when_no_master(client, ad
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.get_resource = AsyncMock(side_effect=_http_status(404, "missing"))
         mock.put_resource = AsyncMock(side_effect=put_resource)
+        mock.patch_resource = mock.put_resource
         resp = await client.put(
             "/admin/gateway/routes/secure",
             json={"uri": "/api/secure/*", "upstream_id": "u1", "require_auth": True},
@@ -253,6 +257,7 @@ async def test_save_keyauth_route_defaults_to_deny_all_when_no_master(client, ad
 async def test_save_keyauth_route_whitelists_master_consumers(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as api_keys_apisix:
         api_keys_apisix.put_resource = AsyncMock(return_value={"username": "master-app"})
+        api_keys_apisix.patch_resource = api_keys_apisix.put_resource
         api_keys_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         api_keys_apisix.list_resources = AsyncMock(return_value={"items": []})
         create_resp = await client.post(
@@ -271,6 +276,7 @@ async def test_save_keyauth_route_whitelists_master_consumers(client, admin_toke
     with patch("app.routers.gateway.apisix_client") as gateway_apisix:
         gateway_apisix.get_resource = AsyncMock(side_effect=_http_status(404, "missing"))
         gateway_apisix.put_resource = AsyncMock(side_effect=put_resource)
+        gateway_apisix.patch_resource = gateway_apisix.put_resource
         resp = await client.put(
             "/admin/gateway/routes/secure",
             json={"uri": "/api/secure/*", "upstream_id": "u1", "require_auth": True},
@@ -553,6 +559,7 @@ async def test_get_upstream_paths(client, admin_token):
 async def test_save_upstream_paths(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.put_resource = AsyncMock(return_value={"id": "u1"})
+        mock.patch_resource = mock.put_resource
         resp = await client.put(
             "/admin/gateway/upstreams/u1",
             json={"type": "roundrobin", "nodes": {"x:1": 1}},
@@ -562,6 +569,7 @@ async def test_save_upstream_paths(client, admin_token):
 
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.put_resource = AsyncMock(side_effect=_http_status(500))
+        mock.patch_resource = mock.put_resource
         resp = await client.put(
             "/admin/gateway/upstreams/u1",
             json={"type": "roundrobin"},
@@ -571,6 +579,7 @@ async def test_save_upstream_paths(client, admin_token):
 
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.put_resource = AsyncMock(side_effect=RuntimeError("?"))
+        mock.patch_resource = mock.put_resource
         resp = await client.put(
             "/admin/gateway/upstreams/u1",
             json={"type": "roundrobin"},
@@ -896,7 +905,11 @@ async def test_llm_metrics_by_model(client, admin_token):
         },
     ]
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
-               side_effect=[tokens, input_tokens, output_tokens, cost, requests, cached]) as prom_query:
+               # by-model now fans out to 10 queries: 6 LiteLLM + 4 Bifrost
+               # (input/output/cost/requests). This fixture exercises the LiteLLM
+               # path; the 4 Bifrost queries return empty so totals are unchanged.
+               side_effect=[tokens, input_tokens, output_tokens, cost, requests, cached,
+                            [], [], [], []]) as prom_query:
         resp = await client.get(
             "/admin/gateway/metrics/llm/by-model?range=1h",
             headers=auth_header(admin_token),
@@ -929,7 +942,10 @@ async def test_llm_metrics_by_model(client, admin_token):
         "requests": 3,
         "cached_tokens": 0,
     }
-    assert all("sum by (requested_model, model)" in call.args[0] for call in prom_query.call_args_list)
+    calls = [call.args[0] for call in prom_query.call_args_list]
+    # 6 LiteLLM queries group by (requested_model, model); 4 Bifrost by (alias, model).
+    assert sum("sum by (requested_model, model)" in c for c in calls) == 6
+    assert sum("sum by (alias, model)" in c for c in calls) == 4
 
 
 @pytest.mark.asyncio
@@ -966,7 +982,10 @@ async def test_llm_metrics_top_keys(client, admin_token):
         {"metric": {"end_user": "bad-key"}, "value": [0, "bogus"]},
     ]
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
-               side_effect=[tokens, input_tokens, output_tokens, requests, cached]) as prom_query:
+               # top-keys now fans out to 8 queries: 5 LiteLLM (by end_user) +
+               # 3 Bifrost (by api_key). The Bifrost queries return empty here.
+               side_effect=[tokens, input_tokens, output_tokens, requests, cached,
+                            [], [], []]) as prom_query:
         resp = await client.get(
             "/admin/gateway/metrics/llm/top-keys?range=1h",
             headers=auth_header(admin_token),
@@ -982,7 +1001,10 @@ async def test_llm_metrics_top_keys(client, admin_token):
         "tokens": 1000,
         "requests": 50,
     }
-    assert all("sum by (end_user)" in call.args[0] for call in prom_query.call_args_list)
+    calls = [call.args[0] for call in prom_query.call_args_list]
+    # 5 LiteLLM queries group by (end_user); 3 Bifrost by (api_key).
+    assert sum("sum by (end_user)" in c for c in calls) == 5
+    assert sum("sum by (api_key)" in c for c in calls) == 3
 
 
 @pytest.mark.asyncio

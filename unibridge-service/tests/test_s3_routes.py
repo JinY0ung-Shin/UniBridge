@@ -16,6 +16,7 @@ async def test_s3_browse_apikey_rejects_unallowed_alias(client, admin_token):
             "username": "s3-app",
             "plugins": {"key-auth": {"key": "s3-key"}},
         })
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
 
@@ -52,6 +53,7 @@ async def test_s3_browse_apikey_allows_configured_alias(client, admin_token):
             "username": "s3-allowed-app",
             "plugins": {"key-auth": {"key": "s3-key-allowed"}},
         })
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
 

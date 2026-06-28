@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from sqlalchemy import select
+from sqlalchemy import select, text
 
-from app.database import async_session
+from app.database import async_session, engine
 from app.models import AlertSettings, MonitoredHost
 from app.services import server_monitor
 from app.services.alert_owner_dispatcher import dispatch_alert
@@ -449,19 +449,90 @@ async def run_single_check(state: AlertStateManager, *, trigger_after_failures: 
         )
 
 
+# Postgres advisory-lock key used to elect a single alert-checker leader across
+# blue/green colors. Both colors run this background task, but only the holder
+# of this lock evaluates rules and dispatches alerts — otherwise every webhook /
+# email fires twice (once per live color) for the whole window both colors run.
+# Arbitrary stable constant within int64.
+_ALERT_LEADER_LOCK_KEY = 0x554E49425247  # "UNIBRG"
+
+
+async def _acquire_leadership() -> "object | None":
+    """Try to become the sole alert-checker leader.
+
+    Returns a held resource on success, or None if another instance is leader.
+
+    - Postgres (blue/green): grabs a session-level ``pg_try_advisory_lock`` on a
+      dedicated connection and returns that connection. The lock is held for the
+      connection's lifetime and auto-released when it closes (clean shutdown, or
+      the container dying — which is exactly when the surviving color should take
+      over).
+    - Anything else (e.g. single-stack SQLite, tests): no cross-process sharing,
+      so this instance always leads; returns a sentinel.
+    """
+    if engine.dialect.name != "postgresql":
+        return _SINGLE_STACK_LEADER
+
+    conn = await engine.connect()
+    try:
+        got = (
+            await conn.execute(
+                text("SELECT pg_try_advisory_lock(:k)"),
+                {"k": _ALERT_LEADER_LOCK_KEY},
+            )
+        ).scalar()
+    except Exception:
+        await conn.close()
+        raise
+    if got:
+        return conn
+    await conn.close()
+    return None
+
+
+_SINGLE_STACK_LEADER = object()
+
+
 async def start_checker(state: AlertStateManager) -> asyncio.Task:
-    """Start the periodic health check loop as a background task."""
+    """Start the periodic health check loop as a background task.
+
+    Across blue/green colors only one instance (the advisory-lock leader) runs
+    the loop; the others stand by and retry acquiring leadership each interval so
+    a surviving color takes over when the current leader shuts down.
+    """
     async def _loop():
-        logger.info("Alert checker started")
-        while True:
-            cycle_start = _monotonic()
-            check_interval = await _get_check_interval_seconds()
-            trigger_after_failures = await _get_trigger_after_failures()
-            try:
-                await run_single_check(state, trigger_after_failures=trigger_after_failures)
-            except Exception:
-                logger.exception("Alert checker cycle failed")
-            elapsed = _monotonic() - cycle_start
-            await asyncio.sleep(max(0.0, check_interval - elapsed))
+        leader: object | None = None
+        try:
+            # Elect a leader before doing any work; stand by until we win.
+            while leader is None:
+                try:
+                    leader = await _acquire_leadership()
+                except Exception as exc:
+                    logger.warning("Alert checker leader election failed: %s", exc)
+                if leader is None:
+                    logger.info(
+                        "Alert checker standing by (another color holds leadership)"
+                    )
+                    await asyncio.sleep(await _get_check_interval_seconds())
+
+            logger.info("Alert checker started (leader)")
+            while True:
+                cycle_start = _monotonic()
+                check_interval = await _get_check_interval_seconds()
+                trigger_after_failures = await _get_trigger_after_failures()
+                try:
+                    await run_single_check(state, trigger_after_failures=trigger_after_failures)
+                except Exception:
+                    logger.exception("Alert checker cycle failed")
+                elapsed = _monotonic() - cycle_start
+                await asyncio.sleep(max(0.0, check_interval - elapsed))
+        finally:
+            # Release the advisory lock on shutdown so the surviving color can
+            # take over promptly (sentinel leader holds nothing to close).
+            if leader is not None and leader is not _SINGLE_STACK_LEADER:
+                try:
+                    await leader.close()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
 
     return asyncio.create_task(_loop())

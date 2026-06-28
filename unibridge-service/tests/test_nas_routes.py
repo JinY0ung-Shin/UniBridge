@@ -24,6 +24,7 @@ async def _create_apikey(client, admin_token, *, name, key, allowed_databases, a
             "username": name,
             "plugins": {"key-auth": {"key": key}},
         })
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value={"items": []})
 

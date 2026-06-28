@@ -224,6 +224,7 @@ class TestApiKeyAuditing:
             mock_apisix.put_resource = AsyncMock(
                 return_value={"username": "audit-app", "plugins": {"key-auth": {"key": "key-secret9999"}}}
             )
+            mock_apisix.patch_resource = mock_apisix.put_resource
             mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
             mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
             resp = await client.post(
@@ -254,6 +255,7 @@ class TestApiKeyAuditing:
             mock_apisix.put_resource = AsyncMock(
                 return_value={"username": "del-audit", "plugins": {"key-auth": {"key": "key-d2"}}}
             )
+            mock_apisix.patch_resource = mock_apisix.put_resource
             mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
             mock_apisix.delete_resource = AsyncMock()
             mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)

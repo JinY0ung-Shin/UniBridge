@@ -440,6 +440,7 @@ class TestQueryExecute:
                     "plugins": {"key-auth": {"key": "graph-key"}},
                 }
             )
+            mock_apisix.patch_resource = mock_apisix.put_resource
             mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
             mock_apisix.list_resources = AsyncMock(
                 return_value={

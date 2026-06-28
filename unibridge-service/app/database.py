@@ -111,6 +111,15 @@ async def _seed_alert_settings_singleton(target_engine: AsyncEngine) -> None:
         ))
 
 
+# Postgres advisory-lock key serializing the boot-time stamp+upgrade. Under
+# blue/green both colors run init_db() against the SAME shared database; if they
+# boot near-simultaneously (e.g. manual `docker compose up` of both colors, or a
+# host reboot bringing both back at once) they would otherwise race to create
+# and stamp the alembic_version table. A blocking pg_advisory_lock makes the
+# second booter wait, then find head already applied (a no-op upgrade).
+_MIGRATION_LOCK_KEY = 0x554E494247524D  # "UNIBGRM"
+
+
 async def _run_alembic_upgrade(target_engine: AsyncEngine) -> None:
     _ensure_sqlite_foreign_key_listener(target_engine)
 
@@ -121,6 +130,24 @@ async def _run_alembic_upgrade(target_engine: AsyncEngine) -> None:
         await _stamp_metadata_schema(target_engine, ALEMBIC_HEAD_REVISION)
         return
 
+    if target_engine.dialect.name == "postgresql":
+        # Serialize concurrent boots against the shared meta DB (see note above).
+        async with target_engine.connect() as lock_conn:
+            await lock_conn.execute(
+                text("SELECT pg_advisory_lock(:k)"), {"k": _MIGRATION_LOCK_KEY}
+            )
+            try:
+                await _do_alembic_upgrade(target_engine)
+            finally:
+                await lock_conn.execute(
+                    text("SELECT pg_advisory_unlock(:k)"), {"k": _MIGRATION_LOCK_KEY}
+                )
+        return
+
+    await _do_alembic_upgrade(target_engine)
+
+
+async def _do_alembic_upgrade(target_engine: AsyncEngine) -> None:
     tables = await _table_names(target_engine)
     has_existing_schema = bool(tables - {"alembic_version"})
     has_alembic_version = "alembic_version" in tables

@@ -198,7 +198,9 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
     if "llm-proxy" in allowed_route_ids:
         allowed_route_ids.update({"llm-messages", "llm-responses"})
 
-    # Collect changes needed: [(route_id, old_body, new_body)]
+    # Collect changes needed: [(route_id, old_plugins, new_plugins)]. We track
+    # only the ``plugins`` block (not the whole route) because we apply changes
+    # with PATCH below, which leaves every other route field untouched.
     changes: list[tuple[str, dict, dict]] = []
     for route in result.get("items", []):
         route_id = route.get("id")
@@ -208,9 +210,7 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
         if "key-auth" not in plugins:
             continue
 
-        old_body = {
-            k: v for k, v in route.items() if k not in ("id", "create_time", "update_time")
-        }
+        old_plugins = plugins
 
         new_plugins = dict(plugins)
         cr = new_plugins.get("consumer-restriction", {})
@@ -227,21 +227,29 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
 
         new_plugins["consumer-restriction"] = {"whitelist": sorted(whitelist)}
 
-        new_body = dict(old_body)
-        new_body["plugins"] = new_plugins
-        changes.append((route_id, old_body, new_body))
+        changes.append((route_id, old_plugins, new_plugins))
 
-    # Apply changes, tracking which succeeded for rollback
-    applied: list[tuple[str, dict]] = []  # [(route_id, old_body)]
-    for route_id, old_body, new_body in changes:
+    # Apply changes, tracking which succeeded for rollback. We PATCH only the
+    # ``plugins`` block rather than PUTting the whole route: under blue/green the
+    # inactive new color runs this replay at boot while the active color is live,
+    # and a full PUT would revert any route field (upstream_id, timeout, uri) the
+    # active color changed concurrently (e.g. the settings UI live-patching a
+    # route timeout) back to the value we read at the top of this function.
+    # PATCH merges at the top level, so only ``plugins`` is touched.
+    applied: list[tuple[str, dict]] = []  # [(route_id, old_plugins)]
+    for route_id, old_plugins, new_plugins in changes:
         try:
-            await apisix_client.put_resource("routes", route_id, new_body)
-            applied.append((route_id, old_body))
+            await apisix_client.patch_resource(
+                "routes", route_id, {"plugins": new_plugins}
+            )
+            applied.append((route_id, old_plugins))
         except Exception as exc:
             # Best-effort rollback of already-applied changes
-            for rb_route_id, rb_old_body in applied:
+            for rb_route_id, rb_old_plugins in applied:
                 try:
-                    await apisix_client.put_resource("routes", rb_route_id, rb_old_body)
+                    await apisix_client.patch_resource(
+                        "routes", rb_route_id, {"plugins": rb_old_plugins}
+                    )
                 except Exception:
                     logger.error(
                         "Rollback failed for route %s during consumer-restriction sync",

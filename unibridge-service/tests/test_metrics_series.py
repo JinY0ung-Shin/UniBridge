@@ -148,8 +148,11 @@ class TestByModelSeries:
             _series("model", "claude", [(b1, "50")]),
         ]
         partial = [_instant("model", "gpt-4", "7")]
-        range_mock = AsyncMock(return_value=completed)
-        instant_mock = AsyncMock(return_value=partial)
+        # by-model-series fans out to 3 specs (1 LiteLLM + 2 Bifrost). This
+        # fixture drives the LiteLLM spec; the 2 Bifrost specs return empty so
+        # the same data isn't triple-counted across providers.
+        range_mock = AsyncMock(side_effect=[completed, [], []])
+        instant_mock = AsyncMock(side_effect=[partial, [], []])
         with patch(
             "app.routers.gateway.prometheus_client.range_query", range_mock
         ), patch(
@@ -180,7 +183,10 @@ class TestByModelSeries:
                 "values": [(1000, "12")],
             }
         ]
-        mock = AsyncMock(return_value=results)
+        # Only the LiteLLM spec (1st of 3) returns the row; the 2 Bifrost specs
+        # return empty. Otherwise the same row, grouped by the Bifrost labels
+        # (alias, model), would also surface as a separate "azure/gpt-4o" key.
+        mock = AsyncMock(side_effect=[results, [], []])
         with patch("app.routers.gateway.prometheus_client.range_query", mock):
             resp = await client.get(
                 "/admin/gateway/metrics/llm/by-model-series?range=1h",

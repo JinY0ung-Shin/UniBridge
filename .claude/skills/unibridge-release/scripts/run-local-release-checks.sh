@@ -45,6 +45,41 @@ step "Backend migration check"
   rm -f ci-alembic.db
 )
 
+step "Backend migration backward-compatibility scan"
+(
+  # Blue/green runs the OLD color against the NEW schema (the new color applies
+  # 'alembic upgrade head' at boot while the old one still serves traffic). A
+  # contract operation (drop column/table, SET NOT NULL, rename) in a migration
+  # that ships in the SAME release as the code removing those fields breaks the
+  # still-live old color. Expand/contract must span releases. This is a warning,
+  # not a hard gate, because the split is sometimes intentional across versions.
+  base_ref="${RELEASE_DIFF_BASE:-origin/main}"
+  if git rev-parse --verify --quiet "$base_ref" >/dev/null; then
+    new_migrations="$(git diff --name-only --diff-filter=A "$base_ref"...HEAD \
+      -- unibridge-service/alembic/versions/ 2>/dev/null || true)"
+  else
+    new_migrations=""
+    printf '   (skipped: base ref %s not found; set RELEASE_DIFF_BASE)\n' "$base_ref"
+  fi
+  risky=0
+  for f in $new_migrations; do
+    [ -f "$f" ] || continue
+    # Only inspect the upgrade() body; downgrade() is never run by the deploy.
+    up_body="$(awk '/^def upgrade\(/{p=1} /^def downgrade\(/{p=0} p' "$f")"
+    hits="$(printf '%s\n' "$up_body" | grep -nE 'drop_column|drop_table|drop_constraint|\.alter_column\(.*nullable=False|rename' || true)"
+    if [ -n "$hits" ]; then
+      risky=1
+      printf '   ⚠ %s contains potentially backward-INCOMPATIBLE DDL:\n' "$f"
+      printf '%s\n' "$hits" | sed 's/^/       /'
+    fi
+  done
+  if [ "$risky" = 1 ]; then
+    printf '   Confirm the OLD code still runs against this schema, or split into expand (this release) + contract (a later release).\n'
+  else
+    printf '   No backward-incompatible DDL detected in new migrations.\n'
+  fi
+)
+
 step "Backend tests"
 (
   cd unibridge-service

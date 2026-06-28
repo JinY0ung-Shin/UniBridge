@@ -6,7 +6,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from app.routers.api_keys import DENY_ALL_CONSUMER, MASTER_ACCESS, sync_all_consumer_route_restrictions
+from app.routers.api_keys import (
+    DENY_ALL_CONSUMER,
+    MASTER_ACCESS,
+    _sync_consumer_restriction,
+    sync_all_consumer_route_restrictions,
+)
 from app.schemas import QueryResponse
 from tests.conftest import auth_header
 
@@ -60,6 +65,7 @@ async def test_sync_all_consumer_route_restrictions_replays_stored_allowed_route
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
         mock_apisix.put_resource = AsyncMock(side_effect=put_resource)
+        mock_apisix.patch_resource = mock_apisix.put_resource
 
         await sync_all_consumer_route_restrictions(db)
 
@@ -117,6 +123,7 @@ async def test_sync_consumer_restriction_grants_llm_messages_alongside_llm_proxy
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
         mock_apisix.put_resource = AsyncMock(side_effect=put_resource)
+        mock_apisix.patch_resource = mock_apisix.put_resource
 
         await _sync_consumer_restriction(["llm-proxy"], "llm-user")
 
@@ -168,6 +175,7 @@ async def test_sync_consumer_restriction_wildcard_grants_all_keyauth_routes():
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
         mock_apisix.put_resource = AsyncMock(side_effect=put_resource)
+        mock_apisix.patch_resource = mock_apisix.put_resource
 
         await _sync_consumer_restriction([MASTER_ACCESS], "master-app")
 
@@ -228,6 +236,7 @@ async def test_sync_all_consumer_route_restrictions_skips_malformed_allowed_rout
     ):
         mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
         mock_apisix.put_resource = AsyncMock(side_effect=put_resource)
+        mock_apisix.patch_resource = mock_apisix.put_resource
 
         await sync_all_consumer_route_restrictions(db)
 
@@ -263,6 +272,7 @@ async def test_create_api_key(client, admin_token):
             "username": "test-app",
             "plugins": {"key-auth": {"key": "key-abc123"}},
         })
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
 
@@ -305,6 +315,7 @@ async def test_create_master_api_key_stores_wildcards_and_grants_all_routes(clie
             "username": "master-app",
             "plugins": {"key-auth": {"key": "master-key"}},
         })
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
 
@@ -363,6 +374,7 @@ async def test_create_api_key_partial_routes_excludes_consumer_from_other_routes
             "username": "partial-app",
             "plugins": {"key-auth": {"key": "pk-123"}},
         })
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
 
@@ -397,6 +409,7 @@ async def test_create_api_key_duplicate(client, admin_token):
             "username": "dup-app",
             "plugins": {"key-auth": {"key": "key-1"}},
         })
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
 
@@ -434,6 +447,7 @@ async def test_update_api_key_access(client, admin_token):
             "username": "update-app",
             "plugins": {"key-auth": {"key": "key-u1"}},
         })
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
 
@@ -465,6 +479,7 @@ async def test_update_api_key_empty_allowed_routes_uses_deny_all_sentinel(client
             "username": "deny-update-app",
             "plugins": {"key-auth": {"key": "key-du1"}},
         })
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value={
             "items": [
@@ -536,6 +551,7 @@ async def test_update_api_key_moves_consumer_between_allowed_routes(client, admi
 
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(side_effect=put_resource)
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
 
@@ -576,6 +592,7 @@ async def test_delete_api_key(client, admin_token):
             "username": "del-app",
             "plugins": {"key-auth": {"key": "key-d1"}},
         })
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.delete_resource = AsyncMock()
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
@@ -603,6 +620,7 @@ async def test_query_execute_via_apikey_header(client, admin_token):
             "username": "query-app",
             "plugins": {"key-auth": {"key": "qk-123"}},
         })
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
         await client.post(
@@ -629,6 +647,7 @@ async def test_query_execute_apikey_allowed_db_select_returns_200(client, admin_
             "username": "allowed-app",
             "plugins": {"key-auth": {"key": "ak-123"}},
         })
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
         create_resp = await client.post(
@@ -683,6 +702,7 @@ async def test_query_execute_apikey_allowed_db_rejects_insert(client, admin_toke
             "username": "readonly-app",
             "plugins": {"key-auth": {"key": "ro-123"}},
         })
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
         create_resp = await client.post(
@@ -723,6 +743,7 @@ async def test_query_execute_apikey_db_not_allowed(client, admin_token):
             "username": "restricted-app",
             "plugins": {"key-auth": {"key": "rk-123"}},
         })
+        mock_apisix.patch_resource = mock_apisix.put_resource
         mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
         await client.post(
@@ -747,6 +768,7 @@ async def _create_key(client, admin_token, mock_apisix, body: dict):
         "username": body["name"],
         "plugins": {"key-auth": {"key": body.get("api_key", "k")}},
     })
+    mock_apisix.patch_resource = mock_apisix.put_resource
     mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
     mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
     resp = await client.post("/admin/api-keys", json=body, headers=auth_header(admin_token))
@@ -1042,3 +1064,48 @@ async def test_list_api_keys_includes_expires_at(client, admin_token):
     entry = next(k for k in resp.json() if k["name"] == "listed-app")
     assert "expires_at" in entry
     assert entry["expires_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_sync_consumer_restriction_patches_only_plugins_block():
+    """Replay must PATCH only the plugins block, never PUT the whole route.
+
+    Under blue/green the inactive new color runs this replay at boot while the
+    active color is live; a full PUT would revert any route field the active
+    color changed concurrently (upstream_id, timeout, uri). Verify we PATCH and
+    that the body carries nothing but ``plugins``.
+    """
+    route = {
+        "id": "query-api",
+        "uri": "/query/*",
+        "upstream_id": "unibridge-service",
+        "timeout": {"connect": 10, "send": 310, "read": 310},
+        "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}},
+    }
+
+    patch_calls = []
+
+    async def list_resources(resource_type):
+        assert resource_type == "routes"
+        return {"items": [json.loads(json.dumps(route))]}
+
+    async def patch_resource(resource_type, resource_id, body):
+        patch_calls.append((resource_type, resource_id, body))
+
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
+        # put_resource must NOT be used by the replay anymore.
+        mock_apisix.put_resource = AsyncMock(side_effect=AssertionError("must PATCH"))
+        mock_apisix.patch_resource = AsyncMock(side_effect=patch_resource)
+
+        await _sync_consumer_restriction(["query-api"], "c1")
+
+    assert mock_apisix.put_resource.await_count == 0
+    assert len(patch_calls) == 1
+    resource_type, resource_id, body = patch_calls[0]
+    assert (resource_type, resource_id) == ("routes", "query-api")
+    # Only the plugins block is sent; route fields are left for APISIX to keep.
+    assert set(body.keys()) == {"plugins"}
+    assert "uri" not in body and "upstream_id" not in body and "timeout" not in body
+    assert body["plugins"]["consumer-restriction"] == {"whitelist": ["c1"]}
+    assert "key-auth" in body["plugins"]
