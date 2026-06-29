@@ -243,39 +243,8 @@
   color: var(--text-primary);
 }
 
-.modal--sm {
-  max-width: 560px;
-}
-
-.curl-block {
-  position: relative;
-  padding: 16px;
-}
-
-.curl-route-name {
-  margin-bottom: 8px;
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
-.curl-code {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: 12px 16px;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--text-primary);
-  white-space: pre-wrap;
-  word-break: break-all;
-  margin: 0 0 12px;
-}
-
-.curl-copy-btn {
-  float: right;
-}
+/* curl modal widget (.modal--sm/.curl-*) now lives in styles/shared.css —
+   it is reused by Connections & S3Connections, which don't load this chunk. */
 
 @media (max-width: 720px) {
   .gateway-routes .page-header-actions {

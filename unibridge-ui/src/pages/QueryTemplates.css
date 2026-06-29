@@ -237,6 +237,9 @@
   color: var(--text-tertiary);
   font-family: var(--font-mono);
   font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .template-detail-actions {

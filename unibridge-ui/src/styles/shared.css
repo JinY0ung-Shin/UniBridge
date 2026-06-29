@@ -596,6 +596,141 @@
   margin-top: 16px;
 }
 
+/* ── Shared cross-page widgets ──
+   These classes are used by multiple lazy-loaded routes (curl modal:
+   GatewayRoutes / Connections / S3Connections; query result + editor:
+   QueryPlayground / QueryTemplates). They MUST live here (always-loaded
+   global bundle) rather than in a single page's code-split CSS chunk —
+   otherwise a route reusing them renders unstyled when its origin chunk
+   was never loaded, and long curl/result content overflows the right edge. */
+
+/* cURL command modal */
+.modal--sm {
+  max-width: 560px;
+}
+
+.curl-block {
+  position: relative;
+  padding: 16px;
+}
+
+.curl-route-name {
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.curl-code {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-width: 100%;
+  margin: 0 0 12px;
+}
+
+.curl-copy-btn {
+  float: right;
+}
+
+/* Query result table + editor topbar (shared by QueryPlayground & QueryTemplates) */
+.editor-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.editor-topbar-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.editor-topbar-dots {
+  display: flex;
+  gap: 6px;
+}
+
+.editor-topbar-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+}
+
+.results-table-container {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  overflow-x: auto;
+  max-width: 100%;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.results-table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+}
+
+.results-table thead {
+  background: var(--bg-secondary);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.results-table th {
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  border-bottom: 1px solid var(--border-default);
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.results-table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.results-table tbody tr {
+  transition: background 0.1s;
+}
+
+.results-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.results-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .loading-message::before,
   .page-status__spinner {
