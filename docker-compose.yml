@@ -340,7 +340,10 @@ services:
           memory: 1g
           cpus: "1.00"
     ports:
-      - "127.0.0.1:${BIFROST_PORT:-8080}:8080"
+      # Exposed on all interfaces like the former LiteLLM gateway. BIFROST_PORT
+      # falls back to the legacy LITELLM_PORT so existing .env files migrate with
+      # no edit. To restrict to loopback, prefix the value with 127.0.0.1: in .env.
+      - "${BIFROST_PORT:-${LITELLM_PORT:-8080}}:8080"
     environment:
       - APP_HOST=0.0.0.0
       - APP_PORT=8080
@@ -452,8 +455,8 @@ services:
       - KEYCLOAK_PORT=${KEYCLOAK_PORT:-8443}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-apihub}
       - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
-      - BIFROST_PORT=${BIFROST_PORT:-8080}
-      - BIFROST_ADMIN_URL=${BIFROST_ADMIN_URL:-}
+      - BIFROST_PORT=${BIFROST_PORT:-${LITELLM_PORT:-8080}}
+      - BIFROST_ADMIN_URL=${BIFROST_ADMIN_URL:-${LITELLM_ADMIN_URL:-}}
       - UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service}
       - APISIX_UPSTREAM=${APISIX_UPSTREAM:-apisix}
     ports:
