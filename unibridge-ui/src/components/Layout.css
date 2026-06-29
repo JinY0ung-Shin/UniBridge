@@ -305,6 +305,11 @@
 
 .main-content {
   flex: 1;
+  /* min-width:0 is required: as a flex item its default min-width:auto refuses
+     to shrink below the content's min-content size, so wide tables / fixed-width
+     children make it fill the full viewport and the margin-left:220px then pushes
+     it 220px past the right edge (clipping on narrow/portrait monitors). */
+  min-width: 0;
   margin-left: 220px;
   padding: 32px 40px;
   min-height: 100vh;
