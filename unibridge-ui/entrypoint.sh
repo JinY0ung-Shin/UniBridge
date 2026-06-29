@@ -5,12 +5,12 @@
 set -eu
 
 # Generate runtime config from environment variables
-# Bifrost is published on all interfaces (see compose), so default the admin link
-# to the host's external address rather than localhost — a remote operator
-# browsing the UI can't reach the server's loopback. BIFROST_PORT already carries
-# the legacy LITELLM_PORT fallback from compose. The old LiteLLM admin URL is
-# deliberately NOT reused: Bifrost's console is a different app.
-BIFROST_ADMIN_URL="${BIFROST_ADMIN_URL:-http://${HOST_IP:-localhost}:${BIFROST_PORT:-8080}}"
+# The bifrost-tls sidecar terminates HTTPS on the published port, so default the
+# admin link to https at the host's external address (a remote operator can't
+# reach the server's loopback). BIFROST_PORT already carries the legacy
+# LITELLM_PORT fallback from compose. The old LiteLLM admin URL is deliberately
+# NOT reused: Bifrost's console is a different app.
+BIFROST_ADMIN_URL="${BIFROST_ADMIN_URL:-https://${HOST_IP:-localhost}:${BIFROST_PORT:-8080}}"
 KEYCLOAK_URL="${KEYCLOAK_EXTERNAL_URL:-https://${HOST_IP:-localhost}:${KEYCLOAK_PORT:-8443}}"
 KEYCLOAK_REALM_VALUE="${KEYCLOAK_REALM:-apihub}"
 KEYCLOAK_CLIENT_ID="${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}"

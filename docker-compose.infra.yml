@@ -237,11 +237,9 @@ services:
           cpus: "1.00"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    ports:
-      # Exposed on all interfaces like the former LiteLLM gateway. BIFROST_PORT
-      # falls back to the legacy LITELLM_PORT so existing .env files migrate with
-      # no edit. To restrict to loopback, prefix the value with 127.0.0.1: in .env.
-      - "${BIFROST_PORT:-${LITELLM_PORT:-8080}}:8080"
+    # No host port: Bifrost speaks plain HTTP only. The bifrost-tls sidecar below
+    # terminates HTTPS and publishes the host port. Internal consumers (APISIX,
+    # llm-converter) still reach it directly at bifrost:8080 on apihub-net.
     environment:
       - APP_HOST=0.0.0.0
       - APP_PORT=8080
@@ -265,6 +263,40 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    networks:
+      - apihub-net
+
+  # HTTPS termination for Bifrost (which serves plain HTTP only), mirroring the
+  # former LiteLLM self-HTTPS exposure. Publishes the gateway's host port and
+  # proxies to bifrost:8080 over the internal network. BIFROST_PORT falls back to
+  # the legacy LITELLM_PORT so existing .env files migrate untouched; prefix the
+  # value with 127.0.0.1: in .env to restrict to loopback.
+  bifrost-tls:
+    image: nginx:alpine
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 128m
+    cpus: "0.25"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.25"
+    depends_on:
+      bifrost:
+        condition: service_healthy
+    ports:
+      - "${BIFROST_PORT:-${LITELLM_PORT:-8080}}:443"
+    volumes:
+      - ./bifrost/tls-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/nginx/ssl/tls.crt:ro
+      - ${TLS_KEY_PATH:-./certs/tls.key}:/etc/nginx/ssl/tls.key:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O- https://127.0.0.1/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks:
       - apihub-net
 
