@@ -14,5 +14,12 @@
     "config": {
       "path": "./config.db"
     }
+  },
+  "framework": {
+    "pricing": {
+      "pricing_url": "file:///app/data/datasheet.json",
+      "model_parameters_url": "file:///app/data/model-parameters.json",
+      "mcp_library_url": "file:///app/data/mcp-library.json"
+    }
   }
 }

@@ -251,6 +251,11 @@ services:
     volumes:
       - bifrost-data:/app/data
       - ./bifrost/config.json:/app/data/config.json:ro
+      # Air-gapped pricing/catalog data served via file:// in config.json so
+      # bifrost never needs to reach getbifrost.ai at boot (see config.json).
+      - ./bifrost/datasheet.json:/app/data/datasheet.json:ro
+      - ./bifrost/model-parameters.json:/app/data/model-parameters.json:ro
+      - ./bifrost/mcp-library.json:/app/data/mcp-library.json:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8080/health >/dev/null 2>&1 || exit 1"]
       interval: 10s
