@@ -596,7 +596,10 @@ wait_color() {
 }
 
 up_infra() {
-  compose_infra up -d --wait
+  # --remove-orphans clears containers from services no longer in the infra
+  # compose (e.g. the old litellm / litellm-db after the Bifrost migration), so a
+  # stale gateway can't keep serving or holding its old host port.
+  compose_infra up -d --wait --remove-orphans
 }
 
 deploy_color() {

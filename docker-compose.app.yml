@@ -186,7 +186,10 @@ services:
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-apihub}
       - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
       - BIFROST_PORT=${BIFROST_PORT:-${LITELLM_PORT:-8080}}
-      - BIFROST_ADMIN_URL=${BIFROST_ADMIN_URL:-${LITELLM_ADMIN_URL:-}}
+      # No LITELLM_ADMIN_URL fallback: Bifrost's admin UI is a different app than
+      # LiteLLM's, so reusing the old URL opens the wrong (often still-running)
+      # console. Unset => entrypoint derives http://HOST_IP:BIFROST_PORT.
+      - BIFROST_ADMIN_URL=${BIFROST_ADMIN_URL:-}
       - UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service-${APP_COLOR}}
       - APISIX_UPSTREAM=${APISIX_UPSTREAM:-apisix}
     ports:
