@@ -16,7 +16,7 @@ from app import metrics
 from app.config import settings, validate_settings
 from app.database import get_db, init_db
 from app.models import DBConnection, MonitoredHost, NASConnection
-from app.routers import admin, alerts, api_keys, gateway, nas, query, query_history, roles, s3, servers, users
+from app.routers import admin, alerts, api_keys, gateway, nas, query, query_history, roles, s3, servers, usages, users
 from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
 from app.services.connection_manager import connection_manager
 from app.services.s3_manager import s3_manager
@@ -41,7 +41,7 @@ def _is_missing_route_error(exc: Exception) -> bool:
 async def _preserve_consumer_restriction(
     route_id: str, body: dict[str, object]
 ) -> dict[str, object]:
-    if route_id not in {"query-api", "llm-proxy", "s3-api", "llm-messages", "llm-responses", "nas-api"}:
+    if route_id not in {"query-api", "llm-proxy", "s3-api", "llm-messages", "llm-responses", "nas-api", "usages-api"}:
         return body
 
     from app.services import apisix_client
@@ -246,6 +246,36 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     ),
                 )
                 logger.info("APISIX NAS route provisioned successfully")
+
+                # Ensure /api/usages route exists with key-auth. Self-scoped
+                # usage metrics (each consumer only ever sees its own traffic),
+                # but access still follows the per-key route-grant model: ships
+                # inline deny-all like nas-api so it is never callable by an
+                # arbitrary key between this PUT and the consumer-restriction
+                # replay below.
+                await apisix_client.put_resource(
+                    "routes",
+                    "usages-api",
+                    await _preserve_consumer_restriction(
+                        "usages-api",
+                        {
+                            "name": "usages-api",
+                            "uri": "/api/usages",
+                            "methods": ["GET"],
+                            "upstream_id": "unibridge-service",
+                            "plugins": {
+                                "key-auth": {},
+                                "consumer-restriction": {"whitelist": [api_keys.DENY_ALL_CONSUMER]},
+                                "proxy-rewrite": {
+                                    "regex_uri": ["^/api/usages(.*)", "/usages$1"],
+                                    "use_real_request_uri_unsafe": True,
+                                },
+                            },
+                            "status": 1,
+                        },
+                    ),
+                )
+                logger.info("APISIX usages route provisioned successfully")
 
                 # ── LiteLLM upstream and routes ──
                 if settings.LITELLM_MASTER_KEY:
@@ -616,6 +646,7 @@ app.include_router(s3.router)
 app.include_router(nas.router)
 app.include_router(servers.router)
 app.include_router(roles.router)
+app.include_router(usages.router)
 app.include_router(users.router)
 
 

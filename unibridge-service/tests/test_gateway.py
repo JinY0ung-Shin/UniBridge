@@ -1455,6 +1455,153 @@ class TestMetricsRoutesComparison:
         assert row["requests"] == 10
 
 
+class TestMetricsUsages:
+    # 2026-06-15 00:00 KST / 24:00 KST as epoch seconds (KST = UTC+9).
+    DAY_START = 1781449200
+    DAY_END = 1781535600
+
+    @pytest.fixture(autouse=True)
+    def _patch_routes_listing(self):
+        """Default empty routes listing so tests don't hit a real APISIX."""
+        with patch(
+            "app.routers.gateway.apisix_client.list_resources",
+            new=AsyncMock(return_value={"items": [], "total": 0}),
+        ):
+            yield
+
+    async def test_returns_per_route_counts_for_full_day(self, client, admin_token):
+        results = [
+            {"metric": {"route": "route-b"}, "value": [0, "500"]},
+            {"metric": {"route": "route-a"}, "value": [0, "1000"]},
+        ]
+        mock = AsyncMock(return_value=results)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/usages?date=2026-06-15",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["date"] == "2026-06-15"
+        assert data["consumer"] is None
+        assert data["total_requests"] == 1500
+        # Sorted by requests, descending.
+        assert [r["route"] for r in data["routes"]] == ["route-a", "route-b"]
+
+        query = mock.call_args.args[0]
+        assert "[86400s]" in query
+        assert "sum by (route)" in query
+        assert mock.call_args.kwargs["eval_time"] == self.DAY_END
+
+    async def test_consumer_filter_in_query(self, client, admin_token):
+        mock = AsyncMock(return_value=[])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/usages?date=2026-06-15&consumer=k1",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert resp.json()["consumer"] == "k1"
+        assert 'consumer="k1"' in mock.call_args.args[0]
+
+    async def test_llm_routes_excluded_by_default(self, client, admin_token):
+        mock = AsyncMock(return_value=[])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/usages?date=2026-06-15",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert 'route!="llm-proxy"' in mock.call_args.args[0]
+
+    async def test_include_llm_drops_route_exclusion(self, client, admin_token):
+        mock = AsyncMock(return_value=[])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/usages?date=2026-06-15&include_llm=true",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert "route!=" not in mock.call_args.args[0]
+
+    async def test_defaults_to_today(self, client, admin_token):
+        mock = AsyncMock(return_value=[])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/usages",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        # Partial day: window never exceeds a full day.
+        query = mock.call_args.args[0]
+        span = int(query.split("[")[1].split("s]")[0])
+        assert 1 <= span <= 86400
+
+    async def test_future_date_rejected(self, client, admin_token):
+        resp = await client.get(
+            "/admin/gateway/metrics/usages?date=2999-01-01",
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_invalid_date_rejected(self, client, admin_token):
+        resp = await client.get(
+            "/admin/gateway/metrics/usages?date=not-a-date",
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_prometheus_error_returns_502(self, client, admin_token):
+        mock = AsyncMock(side_effect=RuntimeError("boom"))
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/usages?date=2026-06-15",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 502
+
+    async def test_forbidden_without_token(self, client):
+        resp = await client.get("/admin/gateway/metrics/usages?date=2026-06-15")
+        assert resp.status_code in (401, 403)
+
+    async def test_self_scoped_user_forced_to_own_consumer(self, client, user_token, seeded_db):
+        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        async with session_factory() as db:
+            db.add(ApiKeyAccess(consumer_name="self_testuser", owner="testuser"))
+            await db.commit()
+        mock = AsyncMock(return_value=[])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/usages?date=2026-06-15&consumer=attacker-key",
+                headers=auth_header(user_token),
+            )
+        assert resp.status_code == 200
+        query = mock.call_args.args[0]
+        assert 'consumer="self_testuser"' in query
+        assert "attacker-key" not in query
+        assert resp.json()["consumer"] == "self_testuser"
+
+    async def test_self_scoped_user_cannot_include_llm(self, client, user_token):
+        resp = await client.get(
+            "/admin/gateway/metrics/usages?date=2026-06-15&include_llm=true",
+            headers=auth_header(user_token),
+        )
+        assert resp.status_code == 403
+
+    async def test_self_scoped_user_without_key_gets_sentinel_and_null_consumer(
+        self, client, user_token
+    ):
+        mock = AsyncMock(return_value=[])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/usages?date=2026-06-15",
+                headers=auth_header(user_token),
+            )
+        assert resp.status_code == 200
+        assert 'consumer="__no_self_api_key__"' in mock.call_args.args[0]
+        assert resp.json()["consumer"] is None
+
+
 # ---------------------------------------------------------------------------
 # Route filter tests
 # ---------------------------------------------------------------------------

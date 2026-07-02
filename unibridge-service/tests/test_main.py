@@ -263,6 +263,18 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 "status": 1,
             },
             {
+                "id": "usages-api",
+                "name": "usages-api",
+                "uri": "/api/usages",
+                "methods": ["GET"],
+                "upstream_id": "unibridge-service",
+                "plugins": {
+                    "key-auth": {},
+                    "consumer-restriction": {"whitelist": ["usages-consumer"]},
+                },
+                "status": 1,
+            },
+            {
                 "id": "llm-proxy",
                 "name": "llm-proxy",
                 "uri": "/api/llm/*",
@@ -339,6 +351,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     assert route_calls["nas-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["nas-consumer"]
     }
+    assert route_calls["usages-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["usages-consumer"]
+    }
     assert route_calls["llm-proxy"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["llm-consumer"]
     }
@@ -367,6 +382,7 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
             RuntimeError("route not found"),
             RuntimeError("404 s3 route missing"),
             RuntimeError("404 nas route missing"),
+            RuntimeError("404 usages route missing"),
             RuntimeError("404 route missing"),
             RuntimeError("404 messages route missing"),
             RuntimeError("404 responses route missing"),
@@ -409,6 +425,10 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
     # nas-api ships deny-all by default so it is never callable by an arbitrary
     # key in the window before the consumer-restriction replay runs.
     assert route_calls["nas-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["__deny_all__"]
+    }
+    # usages-api ships deny-all by default, same as nas-api.
+    assert route_calls["usages-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["__deny_all__"]
     }
     # The converter routes ship deny-all by default so they are never callable by
@@ -600,5 +620,6 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     assert events[-1] == ("replay", "_ReplayDb")
     assert events.index(("routes", "query-api")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "s3-api")) < events.index(("replay", "_ReplayDb"))
+    assert events.index(("routes", "usages-api")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "llm-proxy")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "llm-admin")) < events.index(("replay", "_ReplayDb"))

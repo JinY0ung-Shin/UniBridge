@@ -8,6 +8,7 @@ PROTECTED_ROUTE_IDS = {
     "llm-messages",
     "llm-responses",
     "nas-api",
+    "usages-api",
 }
 PROTECTED_UPSTREAM_IDS = {"unibridge-service", "litellm", "llm-converter"}
 

@@ -6,6 +6,7 @@ import math
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -1009,10 +1010,7 @@ class _MonitoringScope:
 _SELF_NO_KEY = "__no_self_api_key__"
 
 
-async def _gateway_monitoring_scope(
-    user: CurrentUser = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> _MonitoringScope:
+async def _monitoring_scope_for(user: CurrentUser, db: AsyncSession) -> _MonitoringScope:
     """Authorize gateway monitoring and decide consumer scoping.
 
     - ``gateway.monitoring.read`` → full access (no forced consumer filter).
@@ -1034,6 +1032,14 @@ async def _gateway_monitoring_scope(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Required permission: gateway.monitoring.read or gateway.monitoring.self",
     )
+
+
+async def _gateway_monitoring_scope(
+    user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> _MonitoringScope:
+    """Depends wrapper around :func:`_monitoring_scope_for` for JWT callers."""
+    return await _monitoring_scope_for(user, db)
 
 
 def _scope_consumer(scope: _MonitoringScope, route: str | None, consumer: str | None) -> str | None:
@@ -1117,6 +1123,22 @@ def _metric_label(row: dict[str, Any], *names: str) -> str:
         if isinstance(value, str) and value:
             return value
     return "unknown"
+
+
+async def _route_name_map() -> dict[str, str]:
+    """Route id → friendly name from APISIX. Failure here is non-fatal: callers
+    still return Prometheus data, just without the friendly name."""
+    name_map: dict[str, str] = {}
+    try:
+        routes_listing = await apisix_client.list_resources("routes")
+        for item in routes_listing.get("items", []):
+            rid = item.get("id")
+            rname = item.get("name")
+            if rid and rname:
+                name_map[str(rid)] = rname
+    except Exception as exc:
+        logger.warning("Failed to fetch route names from APISIX: %s", exc)
+    return name_map
 
 
 def _extract_scalar(results: list[dict[str, Any]]) -> float:
@@ -1543,6 +1565,107 @@ async def metrics_top_routes(
     return routes
 
 
+async def usages_payload(
+    scope: _MonitoringScope,
+    date: str | None,
+    consumer: str | None,
+    include_llm: bool,
+) -> dict[str, Any]:
+    """Per-route request counts for one KST calendar day (shared implementation).
+
+    Backs both the JWT admin endpoint (``/admin/gateway/metrics/usages``) and
+    the API-key-facing ``/usages`` route. Counts come from the same
+    ``apisix_http_status`` counter the routes-comparison endpoint uses; they
+    are ``increase()`` estimates from Prometheus (15s scrapes), not exact
+    integers, and only dates within the Prometheus retention window (60d)
+    return data — older dates yield zero rows.
+    """
+    if include_llm and scope.restricted:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="LLM metrics are not available",
+        )
+    consumer = _scope_consumer(scope, None, consumer)
+
+    now = time.time()
+    if date is None:
+        start = _align_down_kst(now, "day")
+    else:
+        try:
+            parsed = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid date format. Use YYYY-MM-DD.",
+            )
+        # Midnight KST for that calendar day (KST = UTC+9, no DST).
+        start = int(parsed.timestamp()) - _KST_OFFSET
+    if start >= now:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="date must not be in the future",
+        )
+    end = min(start + 86400, now)
+    span = max(int(end - start), 1)
+
+    if include_llm:
+        hs = f'{{consumer="{consumer}"}}' if consumer else ""
+    else:
+        hs = _labels(None, consumer)
+    try:
+        results = await prometheus_client.instant_query(
+            f"sum by (route) (increase(apisix_http_status{hs}[{span}s]))",
+            eval_time=end,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
+
+    name_map = await _route_name_map()
+
+    routes: list[dict[str, Any]] = []
+    total = 0
+    for r in results:
+        route = r.get("metric", {}).get("route", "unknown")
+        value = r.get("value", [0, "0"])
+        try:
+            requests = round(float(value[1]))
+        except (IndexError, ValueError, TypeError):
+            requests = 0
+        if requests <= 0:
+            continue
+        total += requests
+        routes.append({"route": route, "name": name_map.get(route), "requests": requests})
+    routes.sort(key=lambda r: r["requests"], reverse=True)
+
+    resolved_date = datetime.fromtimestamp(start + _KST_OFFSET, tz=timezone.utc).strftime(
+        "%Y-%m-%d"
+    )
+    return {
+        "date": resolved_date,
+        "consumer": None if consumer == _SELF_NO_KEY else consumer,
+        "total_requests": total,
+        "routes": routes,
+    }
+
+
+@router.get("/metrics/usages")
+async def metrics_usages(
+    date: str | None = Query(
+        None,
+        description="KST calendar date (YYYY-MM-DD). Defaults to today (KST).",
+    ),
+    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
+    include_llm: bool = Query(
+        False, description="Include llm-proxy/llm-messages/llm-responses routes"
+    ),
+    scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
+) -> dict[str, Any]:
+    """Per-route request counts for one KST calendar day (JWT callers)."""
+    return await usages_payload(scope, date=date, consumer=consumer, include_llm=include_llm)
+
+
 @router.get("/metrics/routes-comparison")
 async def metrics_routes_comparison(
     tw: TimeWindow = Depends(resolve_time_window),
@@ -1599,18 +1722,7 @@ async def metrics_routes_comparison(
     p50_map = _map_route_value(p50_res)
     p95_map = _map_route_value(p95_res)
 
-    # Build id → name map from APISIX. Failure here is non-fatal: we still
-    # return Prometheus data, just without the friendly name.
-    name_map: dict[str, str] = {}
-    try:
-        routes_listing = await apisix_client.list_resources("routes")
-        for item in routes_listing.get("items", []):
-            rid = item.get("id")
-            rname = item.get("name")
-            if rid and rname:
-                name_map[str(rid)] = rname
-    except Exception as exc:
-        logger.warning("Failed to fetch route names from APISIX: %s", exc)
+    name_map = await _route_name_map()
 
     total = sum(requests_map.values())
     routes: list[dict[str, Any]] = []
