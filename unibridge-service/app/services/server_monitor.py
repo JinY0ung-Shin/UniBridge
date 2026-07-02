@@ -318,6 +318,18 @@ def metric_query(
     return None
 
 
+def disk_capacity_query(
+    host_name: str,
+    *,
+    disk_mountpoints: str | None = None,
+) -> str:
+    """PromQL for current filesystem capacity by mountpoint."""
+    j = _job()
+    sel = f'job="{j}",host="{_escape_label(host_name)}"'
+    mp = _mountpoint_selector(disk_mountpoints)
+    return f'max by (host, mountpoint) (node_filesystem_size_bytes{{{sel},fstype!~"{_FS_EXCLUDE}"{mp}}})'
+
+
 async def host_up_map() -> dict[str, bool] | None:
     """Return {host_name: is_up} from Prometheus, or None if it is unreachable."""
     try:

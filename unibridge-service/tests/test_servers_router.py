@@ -145,7 +145,17 @@ async def test_metrics_returns_disk_series_per_mountpoint(client, admin_token):
             ]
         return []
 
-    with patch("app.routers.servers.prometheus_client.range_query", new=fake_range_query):
+    async def fake_instant_query(query, **_kwargs):
+        if "node_filesystem_size_bytes" in query:
+            assert "max by (host, mountpoint)" in query
+            return [
+                {"metric": {"host": "web-metrics", "mountpoint": "/"}, "value": [2, "1073741824"]},
+                {"metric": {"host": "web-metrics", "mountpoint": "/data"}, "value": [2, "2147483648"]},
+            ]
+        return []
+
+    with patch("app.routers.servers.prometheus_client.range_query", new=fake_range_query), \
+         patch("app.routers.servers.prometheus_client.instant_query", new=fake_instant_query):
         resp = await client.get(f"/admin/servers/{host_id}/metrics", headers=h)
 
     assert resp.status_code == 200, resp.text
@@ -156,8 +166,32 @@ async def test_metrics_returns_disk_series_per_mountpoint(client, admin_token):
         ("disk", "/"),
         ("disk", "/data"),
     ]
-    assert body[2]["points"] == [{"t": 1.0, "v": 55.0}, {"t": 2.0, "v": 56.0}]
-    assert body[3]["points"] == [{"t": 1.0, "v": 75.0}, {"t": 2.0, "v": None}]
+    assert body[2]["points"] == [
+        {
+            "t": 1.0,
+            "v": 55.0,
+            "total_bytes": 1073741824.0,
+            "used_bytes": 590558003.0,
+            "available_bytes": 483183821.0,
+        },
+        {
+            "t": 2.0,
+            "v": 56.0,
+            "total_bytes": 1073741824.0,
+            "used_bytes": 601295421.0,
+            "available_bytes": 472446403.0,
+        },
+    ]
+    assert body[3]["points"] == [
+        {
+            "t": 1.0,
+            "v": 75.0,
+            "total_bytes": 2147483648.0,
+            "used_bytes": 1610612736.0,
+            "available_bytes": 536870912.0,
+        },
+        {"t": 2.0, "v": None, "total_bytes": 2147483648.0},
+    ]
 
 
 @pytest.mark.asyncio

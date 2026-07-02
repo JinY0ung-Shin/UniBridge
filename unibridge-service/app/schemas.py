@@ -4,7 +4,7 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_serializer, model_validator
 
 from app.services.webhook_security import validate_webhook_url
 
@@ -851,6 +851,17 @@ class MonitoredHostResponse(BaseModel):
 class ServerMetricPoint(BaseModel):
     t: float  # epoch seconds
     v: float | None = None
+    total_bytes: float | None = None
+    used_bytes: float | None = None
+    available_bytes: float | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_model(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        for key in ("total_bytes", "used_bytes", "available_bytes"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class ServerMetricSeries(BaseModel):

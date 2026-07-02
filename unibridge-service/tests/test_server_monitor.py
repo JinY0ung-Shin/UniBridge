@@ -63,6 +63,8 @@ async def test_write_targets_file_is_world_readable(tmp_path):
 def test_metric_query_escapes_and_covers_metrics():
     assert metric_query("cpu", "web1") is not None
     assert 'host="web1"' in metric_query("disk", "web1")
+    assert 'host="web1"' in server_monitor.disk_capacity_query("web1")
+    assert "node_filesystem_size_bytes" in server_monitor.disk_capacity_query("web1")
     assert metric_query("unknown", "web1") is None
     assert '\\"' in metric_query("mem", 'a"b')
 

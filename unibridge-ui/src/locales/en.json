@@ -1006,6 +1006,9 @@
     "metric_cpu": "CPU usage (%)",
     "metric_mem": "Memory usage (%)",
     "metric_disk": "Disk usage (%)",
+    "diskCapacity": "Disk capacity",
+    "diskCapacityValue": "{{used}} / {{total}}",
+    "diskTotal": "total {{total}}",
     "noMetricData": "No metric data in this window."
   }
 }

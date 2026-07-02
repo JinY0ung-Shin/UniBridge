@@ -32,7 +32,35 @@
   border-radius: 8px;
   padding: 1rem;
 }
-.server-chart-card h3 { margin: 0 0 0.75rem; font-size: 0.95rem; }
+.server-chart-card h3 { margin: 0; font-size: 0.95rem; }
+.server-chart-card__heading {
+  display: grid;
+  gap: 0.65rem;
+  margin-bottom: 0.75rem;
+}
+.server-disk-capacity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  color: var(--text-secondary, #cfcfcf);
+  font-size: 0.8rem;
+}
+.server-disk-capacity__item {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 0.35rem;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 6px;
+  background: var(--bg-tertiary, #242424);
+}
+.server-disk-capacity__swatch {
+  width: 0.55rem;
+  height: 0.55rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
 .server-chart-body { width: 100%; height: 220px; }
 
 .server-detail-empty {

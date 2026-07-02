@@ -37,6 +37,40 @@ router = APIRouter(prefix="/admin/servers", tags=["Servers"])
 _METRICS = {"cpu", "mem", "disk"}
 
 
+def _finite_float(raw: Any) -> float | None:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value != value:  # NaN
+        return None
+    return value
+
+
+def _prometheus_value(result: dict[str, Any]) -> float | None:
+    value_pair = result.get("value") or []
+    raw = value_pair[1] if len(value_pair) > 1 else None
+    return _finite_float(raw)
+
+
+async def _disk_capacity_by_mountpoint(host: MonitoredHost) -> dict[str | None, float]:
+    query = server_monitor.disk_capacity_query(host.name, disk_mountpoints=host.disk_mountpoints)
+    try:
+        results = await prometheus_client.instant_query(query)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Server disk capacity query failed (%s): %s", host.name, exc)
+        return {}
+
+    capacities: dict[str | None, float] = {}
+    for result in results:
+        value = _prometheus_value(result)
+        if value is None:
+            continue
+        mountpoint = result.get("metric", {}).get("mountpoint")
+        capacities[str(mountpoint) if mountpoint else None] = value
+    return capacities
+
+
 def _reject_invalid_disk_thresholds(warn: float, crit: float) -> None:
     if warn > crit:
         raise HTTPException(
@@ -281,16 +315,21 @@ async def server_metrics(
     if host is None:
         raise HTTPException(status_code=404, detail="Server not found")
 
-    def points_from_result(result: dict[str, Any] | None) -> list[ServerMetricPoint]:
+    def points_from_result(
+        result: dict[str, Any] | None,
+        *,
+        total_bytes: float | None = None,
+    ) -> list[ServerMetricPoint]:
         points: list[ServerMetricPoint] = []
         for ts, raw in (result or {}).get("values", []):
-            try:
-                value = float(raw)
-            except (TypeError, ValueError):
-                value = None
-            if value is not None and value != value:  # NaN
-                value = None
-            points.append(ServerMetricPoint(t=float(ts), v=value))
+            value = _finite_float(raw)
+            point = ServerMetricPoint(t=float(ts), v=value)
+            if total_bytes is not None:
+                point.total_bytes = total_bytes
+                if value is not None:
+                    point.used_bytes = float(round(total_bytes * value / 100.0))
+                    point.available_bytes = max(total_bytes - point.used_bytes, 0.0)
+            points.append(point)
         return points
 
     series: list[ServerMetricSeries] = []
@@ -307,13 +346,18 @@ async def server_metrics(
             if not results:
                 series.append(ServerMetricSeries(metric=metric))
                 continue
+            capacity_by_mountpoint = await _disk_capacity_by_mountpoint(host)
             for result in sorted(results, key=lambda item: str(item.get("metric", {}).get("mountpoint") or "")):
                 mountpoint = result.get("metric", {}).get("mountpoint")
+                mountpoint_key = str(mountpoint) if mountpoint else None
                 series.append(
                     ServerMetricSeries(
                         metric=metric,
-                        mountpoint=str(mountpoint) if mountpoint else None,
-                        points=points_from_result(result),
+                        mountpoint=mountpoint_key,
+                        points=points_from_result(
+                            result,
+                            total_bytes=capacity_by_mountpoint.get(mountpoint_key),
+                        ),
                     )
                 )
             continue

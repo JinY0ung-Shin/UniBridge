@@ -1006,6 +1006,9 @@
     "metric_cpu": "CPU 사용률 (%)",
     "metric_mem": "메모리 사용률 (%)",
     "metric_disk": "디스크 사용률 (%)",
+    "diskCapacity": "디스크 용량",
+    "diskCapacityValue": "{{used}} / {{total}}",
+    "diskTotal": "전체 {{total}}",
     "noMetricData": "이 구간에 메트릭 데이터가 없습니다."
   }
 }

@@ -1258,7 +1258,13 @@ export interface MonitoredServerInput {
 export interface ServerMetricSeries {
   metric: 'cpu' | 'mem' | 'disk';
   mountpoint?: string | null;
-  points: Array<{ t: number; v: number | null }>;
+  points: Array<{
+    t: number;
+    v: number | null;
+    total_bytes?: number | null;
+    used_bytes?: number | null;
+    available_bytes?: number | null;
+  }>;
 }
 
 export async function getServers(): Promise<MonitoredServer[]> {
