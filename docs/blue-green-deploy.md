@@ -244,12 +244,15 @@ then remove old fields in a later release.
 
 The inactive color starts with `APISIX_PROVISION_ON_START=false` during normal
 updates. This prevents a warming container from changing APISIX before health
-checks pass. If a release changes built-in APISIX route definitions, bootstrap
-the route change intentionally before relying on normal blue/green promotion.
+checks pass. Before each deploy, the script verifies the built-in APISIX route
+shape, including the LLM routes. If those routes are missing or stale, for
+example `llm-proxy` still points at an older gateway upstream, it forces
+re-provisioning on the new color instead of promoting broken routing.
 
 Stored API-key route restrictions are replayed from the database on **every**
 boot regardless of `APISIX_PROVISION_ON_START`, so the database stays the source
 of truth even on inactive colors. Route/upstream *provisioning* stays gated by
-the flag, but if the script detects that APISIX has lost its core routes (e.g.
-an etcd reset) it forces re-provisioning on the next `deploy` so the system
-cannot silently come up with no routes.
+the flag, but if the script detects that APISIX has lost or drifted from its
+core routes (e.g. an etcd reset or a stale LLM route after gateway migration) it
+forces re-provisioning on the next `deploy` so the system cannot silently come
+up with no or broken routes.

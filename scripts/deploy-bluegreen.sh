@@ -204,6 +204,24 @@ admin_url() {
   printf '%s' "${url%/}"
 }
 
+apisix_get() {
+  local path="$1"
+  local base_url
+  base_url="$(admin_url)"
+  curl -fsS \
+    -H "X-API-KEY: $APISIX_ADMIN_KEY" \
+    "$base_url/apisix/admin/$path" 2>/dev/null
+}
+
+json_contains_pair() {
+  local json="$1"
+  local key="$2"
+  local value="$3"
+  local compact
+  compact="${json//[[:space:]]/}"
+  [[ "$compact" == *"\"$key\":\"$value\""* ]]
+}
+
 # PUT an APISIX admin resource with retry, so a transient admin 503/timeout in
 # the middle of a multi-resource promotion does not leave colors half-switched.
 apisix_put() {
@@ -243,14 +261,30 @@ wait_apisix_admin() {
   return 1
 }
 
-# True only when the core route already exists in etcd. A 404 (etcd reset /
-# fresh APISIX) returns non-zero so the caller can force re-provisioning.
+# True only when the core routes already exist in etcd and still match the
+# built-in LiteLLM topology. A 404 or stale route shape (for example, llm-proxy
+# still pointing at an older gateway upstream) returns non-zero so the caller can
+# force re-provisioning.
 apisix_has_core_routes() {
-  local base_url
-  base_url="$(admin_url)"
-  curl -fsS -o /dev/null \
-    -H "X-API-KEY: $APISIX_ADMIN_KEY" \
-    "$base_url/apisix/admin/routes/query-api" 2>/dev/null
+  local query_route llm_proxy_route llm_admin_route messages_route responses_route litellm_upstream
+  query_route="$(apisix_get "routes/query-api")" || return 1
+  [[ -n "$query_route" ]] || return 1
+
+  llm_proxy_route="$(apisix_get "routes/llm-proxy")" || return 1
+  json_contains_pair "$llm_proxy_route" "upstream_id" "litellm" || return 1
+
+  llm_admin_route="$(apisix_get "routes/llm-admin")" || return 1
+  json_contains_pair "$llm_admin_route" "upstream_id" "litellm" || return 1
+
+  messages_route="$(apisix_get "routes/llm-messages")" || return 1
+  json_contains_pair "$messages_route" "upstream_id" "llm-converter" || return 1
+
+  responses_route="$(apisix_get "routes/llm-responses")" || return 1
+  json_contains_pair "$responses_route" "upstream_id" "llm-converter" || return 1
+
+  litellm_upstream="$(apisix_get "upstreams/litellm")" || return 1
+  json_contains_pair "$litellm_upstream" "scheme" "https" || return 1
+  [[ "${litellm_upstream//[[:space:]]/}" == *"\"litellm:4000\""* ]] || return 1
 }
 
 # Switch both APISIX upstreams (unibridge-service + llm-converter) to $color as a
