@@ -13,7 +13,7 @@ import pytest
 from tests.conftest import auth_header
 
 
-async def _create_apikey(client, admin_token, *, name, key, allowed_routes):
+async def _create_apikey(client, admin_token, *, name, key, allowed_routes, is_master=False):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
             "username": name,
@@ -27,6 +27,7 @@ async def _create_apikey(client, admin_token, *, name, key, allowed_routes):
             json={
                 "name": name,
                 "api_key": key,
+                "is_master": is_master,
                 "allowed_databases": [],
                 "allowed_routes": allowed_routes,
             },
@@ -91,6 +92,49 @@ async def test_apikey_caller_llm_routes_hidden(client, admin_token):
         headers={"X-Consumer-Username": "usage-app2"},
     )
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_master_key_sees_all_consumers_combined(client, admin_token):
+    await _create_apikey(
+        client, admin_token, name="master-app", key="master-key",
+        allowed_routes=[], is_master=True,
+    )
+    results = [
+        {"metric": {"route": "query-api"}, "value": [0, "1000"]},
+        {"metric": {"route": "s3-api"}, "value": [0, "500"]},
+    ]
+    mock = AsyncMock(return_value=results)
+    with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+        resp = await client.get(
+            "/usages?date=2026-06-15",
+            headers={"X-Consumer-Username": "master-app"},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    # No consumer filter → all keys' traffic combined.
+    assert data["consumer"] is None
+    assert data["total_requests"] == 1500
+    assert "consumer=" not in mock.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_master_key_can_filter_specific_consumer_and_include_llm(client, admin_token):
+    await _create_apikey(
+        client, admin_token, name="master-app2", key="master-key2",
+        allowed_routes=[], is_master=True,
+    )
+    mock = AsyncMock(return_value=[])
+    with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+        resp = await client.get(
+            "/usages?date=2026-06-15&consumer=other-key&include_llm=true",
+            headers={"X-Consumer-Username": "master-app2"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["consumer"] == "other-key"
+    query = mock.call_args.args[0]
+    assert 'consumer="other-key"' in query
+    assert "route!=" not in query  # include_llm honored for master keys
 
 
 @pytest.mark.asyncio
