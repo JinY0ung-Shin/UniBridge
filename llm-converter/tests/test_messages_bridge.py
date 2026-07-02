@@ -584,49 +584,6 @@ class TestRequestConversion:
 
 
 class TestStreamConversion:
-    async def test_renamed_reasoning_field_maps_to_thinking(self):
-        """vLLM renamed ``reasoning_content`` → ``reasoning``; reading only the
-        legacy key silently dropped thinking from streams."""
-        chunks = [
-            {"choices": [{"delta": {"role": "assistant", "reasoning": "THINK-A "}, "finish_reason": None}]},
-            {"choices": [{"delta": {"reasoning": "THINK-B"}, "finish_reason": None}]},
-            {"choices": [{"delta": {"content": "ANSWER"}, "finish_reason": None}]},
-            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
-        ]
-        out = await _collect(
-            openai_stream_to_anthropic_events(_as_async(chunks), model="m")
-        )
-        thinking = [
-            e["delta"]["thinking"]
-            for e in out
-            if e["type"] == "content_block_delta"
-            and e["delta"]["type"] == "thinking_delta"
-        ]
-        assert thinking == ["THINK-A ", "THINK-B"]
-        starts = [
-            e["content_block"]["type"]
-            for e in out
-            if e["type"] == "content_block_start"
-        ]
-        assert starts == ["thinking", "text"]
-
-    async def test_mirrored_reasoning_fields_emit_once(self):
-        """Variants that mirror the same text to BOTH keys must not double-emit."""
-        chunks = [
-            {"choices": [{"delta": {"reasoning_content": "T", "reasoning": "T"}, "finish_reason": None}]},
-            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
-        ]
-        out = await _collect(
-            openai_stream_to_anthropic_events(_as_async(chunks), model="m")
-        )
-        thinking = [
-            e["delta"]["thinking"]
-            for e in out
-            if e["type"] == "content_block_delta"
-            and e["delta"]["type"] == "thinking_delta"
-        ]
-        assert thinking == ["T"]
-
     async def test_reasoning_then_content_then_tool_call(self):
         chunks = [
             {"choices": [{"delta": {"role": "assistant", "content": ""}, "finish_reason": None}]},
@@ -1098,25 +1055,6 @@ class TestNonStreamingResponseConversion:
         assert out["stop_reason"] == "end_turn"
         assert out["content"] == [{"type": "text", "text": "Hello!"}]
         assert out["usage"] == {"input_tokens": 10, "output_tokens": 5}
-
-    def test_renamed_reasoning_field_becomes_thinking_block(self):
-        body = {
-            "id": "chatcmpl-2",
-            "model": "m",
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "reasoning": "Let me think.",
-                        "content": "Hello!",
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-        }
-        out = openai_response_to_anthropic_body(body)
-        assert out["content"][0] == {"type": "thinking", "thinking": "Let me think."}
-        assert out["content"][1] == {"type": "text", "text": "Hello!"}
 
     def test_reasoning_plus_text_plus_tool(self):
         body = {

@@ -184,15 +184,6 @@ def test_response_length_finish_is_incomplete():
     assert out["incomplete_details"] == {"reason": "max_output_tokens"}
 
 
-def test_response_renamed_reasoning_field_becomes_reasoning_item():
-    # vLLM renamed ``reasoning_content`` → ``reasoning`` in non-streaming too.
-    chat = {"model": "m", "choices": [{"message": {"content": "hi", "reasoning": "why"},
-                                       "finish_reason": "stop"}]}
-    out = chat_response_to_responses_body(chat, {"model": "m"}, "resp_1")
-    assert [it["type"] for it in out["output"]] == ["reasoning", "message"]
-    assert out["output"][0]["content"] == [{"type": "reasoning_text", "text": "why"}]
-
-
 def test_assistant_message_from_chat():
     msg = {"role": "assistant", "content": "hi", "tool_calls": [{"id": "c", "type": "function",
                                                                   "function": {"name": "f", "arguments": "{}"}}]}
@@ -268,20 +259,6 @@ async def test_stream_text_then_tool_call():
 async def test_stream_reasoning_precedes_text():
     chunks = [
         {"choices": [{"delta": {"reasoning_content": "thinking"}}]},
-        {"choices": [{"delta": {"content": "answer"}}]},
-        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
-    ]
-    events, _ = await _run_stream(chunks)
-    final = events[-1]["response"]
-    assert [it["type"] for it in final["output"]] == ["reasoning", "message"]
-    assert any(e["type"] == "response.reasoning_text.delta" for e in events)
-
-
-async def test_stream_renamed_reasoning_field_precedes_text():
-    # vLLM renamed ``reasoning_content`` → ``reasoning``; both keys must open
-    # a reasoning item.
-    chunks = [
-        {"choices": [{"delta": {"reasoning": "thinking"}}]},
         {"choices": [{"delta": {"content": "answer"}}]},
         {"choices": [{"delta": {}, "finish_reason": "stop"}]},
     ]

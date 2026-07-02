@@ -421,8 +421,7 @@ def chat_response_to_responses_body(
 
     output: list[dict] = []
 
-    # SGLang/legacy vLLM: ``reasoning_content``; renamed vLLM: ``reasoning``.
-    reasoning_text = message.get("reasoning_content") or message.get("reasoning")
+    reasoning_text = message.get("reasoning_content")
     if emit_reasoning and isinstance(reasoning_text, str) and reasoning_text:
         output.append(
             {
@@ -728,12 +727,10 @@ async def chat_stream_to_responses_events(
             if not isinstance(delta, dict):
                 delta = {}
 
-            # Reasoning (vendor extension — ``reasoning_content`` from
-            # SGLang/legacy vLLM, ``reasoning`` after the vLLM rename). Only
-            # opened when it genuinely precedes any text/tool output;
-            # late-arriving reasoning is dropped so the reasoning→text→tools
-            # ordering of output[] is never violated.
-            rc = delta.get("reasoning_content") or delta.get("reasoning")
+            # Reasoning (vendor extension). Only opened when it genuinely precedes
+            # any text/tool output; late-arriving reasoning is dropped so the
+            # reasoning→text→tools ordering of output[] is never violated.
+            rc = delta.get("reasoning_content")
             if emit_reasoning and isinstance(rc, str) and rc:
                 if s.reasoning is None and s.text is None and not s.tools:
                     s.reasoning = {"id": _new_reasoning_id(), "oi": s.next_oi, "buf": []}
