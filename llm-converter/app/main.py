@@ -211,7 +211,7 @@ async def _trace_upstream_chunks(
                     if content_len < _TRACE_ARGS_MAX:
                         content_buf.append(c)
                         content_len += len(c)
-                r = delta.get("reasoning_content")
+                r = delta.get("reasoning_content") or delta.get("reasoning")
                 if isinstance(r, str) and r:
                     reasoning_chunks += 1
                     if reasoning_len < _TRACE_ARGS_MAX:
@@ -227,7 +227,7 @@ async def _trace_upstream_chunks(
                         fr,
                         _summarize_tool_calls(tc),
                         bool(delta.get("content")),
-                        bool(delta.get("reasoning_content")),
+                        bool(delta.get("reasoning_content") or delta.get("reasoning")),
                     )
             err = chunk.get("error")
             if err:

@@ -653,10 +653,12 @@ async def openai_stream_to_anthropic_events(
             yield _message_start_event(state)
             state.started = True
 
-        # Reasoning (thinking) — vLLM uses ``reasoning_content``; some
-        # variants additionally mirror to ``reasoning``. Treat the former
-        # as canonical and ignore the duplicate to avoid double-emitting.
-        reasoning = delta.get("reasoning_content")
+        # Reasoning (thinking) — SGLang and pre-rename vLLM emit
+        # ``reasoning_content``; newer vLLM renamed the field to ``reasoning``
+        # ("reasoning used to be called reasoning_content" — vLLM docs).
+        # Prefer the legacy key so variants that mirror the same text to both
+        # are read exactly once and never double-emitted.
+        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
         if isinstance(reasoning, str) and reasoning:
             # Flush any buffered tool_calls before opening a new reasoning
             # block. This is intentional: tool_use blocks always precede the
@@ -769,7 +771,8 @@ def openai_response_to_anthropic_body(body: Dict[str, Any]) -> Dict[str, Any]:
     message = body.get("choices", [{}])[0].get("message", {}) if body.get("choices") else {}
     content_blocks: List[Dict[str, Any]] = []
 
-    reasoning = message.get("reasoning_content")
+    # SGLang/legacy vLLM: ``reasoning_content``; renamed vLLM: ``reasoning``.
+    reasoning = message.get("reasoning_content") or message.get("reasoning")
     if isinstance(reasoning, str) and reasoning:
         content_blocks.append({"type": "thinking", "thinking": reasoning})
 
