@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend, Cell,
+  Tooltip, ResponsiveContainer, Legend, Cell, LabelList,
 } from 'recharts';
 import {
   getLlmSummary,
@@ -20,12 +20,18 @@ import {
 import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
 import { usePermissions } from '../components/usePermissions';
 import BucketedBreakdownView from '../components/BucketedBreakdownView';
+import PanelStatus from '../components/PanelStatus';
+import SortableHeader from '../components/SortableHeader';
+import { type SortState, toggleSortState, sortRows } from '../utils/tableSort';
 import './Monitoring.css';
 import './LlmMonitoring.css';
 import TimeRangeSelector from '../components/TimeRangeSelector';
 import BucketSelector from '../components/BucketSelector';
-import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket } from '../utils/timeRange';
+import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket, bucketTooCoarse } from '../utils/timeRange';
 import { formatChartTimestamp, formatBucketLabel } from '../utils/time';
+
+type ModelSortColumn = 'model' | 'input_tokens' | 'output_tokens' | 'cached_tokens' | 'tokens' | 'requests' | 'cost';
+type KeySortColumn = 'api_key' | 'input_tokens' | 'output_tokens' | 'cached_tokens' | 'tokens' | 'requests';
 
 const LITELLM_ADMIN_URL = window.__RUNTIME_CONFIG__?.LITELLM_ADMIN_URL || import.meta.env.VITE_LITELLM_ADMIN_URL || 'https://localhost:4000/ui';
 
@@ -49,9 +55,31 @@ function LlmMonitoring() {
   const rangeLabel = selection.kind === 'preset' ? selection.value : t('llmMonitoring.customRange');
   const [selectedKey, setSelectedKey] = useState<string>('');
   const [bucket, setBucket] = useState<Bucket>('auto');
+  const [modelSort, setModelSort] = useState<SortState<ModelSortColumn>>({ column: 'tokens', dir: 'desc' });
+  const [keySort, setKeySort] = useState<SortState<KeySortColumn>>({ column: 'tokens', dir: 'desc' });
   const volumeLabel = (ts: number) =>
     bucket === 'auto' ? formatChartTimestamp(ts, span) : formatBucketLabel(ts, bucket);
   const chartColors = useChartTheme();
+
+  const toggleModelSort = (column: ModelSortColumn) => setModelSort((prev) => toggleSortState(prev, column));
+  const toggleKeySort = (column: KeySortColumn) => setKeySort((prev) => toggleSortState(prev, column));
+
+  // Shrinking the range under the current calendar bucket would leave a
+  // one-bar chart; fall back to auto stepping instead.
+  const handleSelectionChange = (next: TimeSelection) => {
+    setSelection(next);
+    if (bucketTooCoarse(next, bucket)) setBucket('auto');
+  };
+
+  // Picking day/week nudges the preset period to a matching span, but an
+  // explicitly chosen custom range is never overridden.
+  const handleBucketChange = (b: Bucket) => {
+    setBucket(b);
+    if (selection.kind !== 'custom') {
+      const p = periodForBucket(b);
+      if (p) setSelection(p);
+    }
+  };
 
   const keyFilter = selectedKey || undefined;
 
@@ -135,6 +163,16 @@ function LlmMonitoring() {
     return [...items].sort((a, b) => a.name.localeCompare(b.name));
   }, [apiKeysQuery.data]);
 
+  const sortedModels = useMemo(() => {
+    const rows = byModelQuery.data ?? [];
+    return sortRows(rows, modelSort, (row, column) => (column === 'model' ? row.model : row[column]));
+  }, [byModelQuery.data, modelSort]);
+
+  const sortedKeys = useMemo(() => {
+    const rows = topKeysQuery.data ?? [];
+    return sortRows(rows, keySort, (row, column) => (column === 'api_key' ? row.api_key : row[column]));
+  }, [topKeysQuery.data, keySort]);
+
   const summary = summaryQuery.data;
   const tokenData = tokensQuery.data;
   const tokenChartData = (tokenData?.prompt ?? []).map((p, i) => ({
@@ -165,6 +203,7 @@ function LlmMonitoring() {
         <div>
           <h1>{t('llmMonitoring.title')}</h1>
           <p className="page-subtitle">{t('llmMonitoring.subtitle')}</p>
+          <p className="page-meta">{t('monitoring.headerNote')}</p>
         </div>
         <div className="page-header__filters">
           <a
@@ -195,15 +234,8 @@ function LlmMonitoring() {
               </select>
             </label>
           )}
-          <TimeRangeSelector value={selection} onChange={setSelection} />
-          <BucketSelector
-            value={bucket}
-            onChange={(b) => {
-              setBucket(b);
-              const p = periodForBucket(b);
-              if (p) setSelection(p);
-            }}
-          />
+          <TimeRangeSelector value={selection} onChange={handleSelectionChange} />
+          <BucketSelector value={bucket} onChange={handleBucketChange} />
         </div>
       </div>
 
@@ -228,7 +260,7 @@ function LlmMonitoring() {
           </div>
           <div className="metric-card">
             <div className="metric-card__value">{formatTokens(summary.cached_tokens)}</div>
-            <div className="metric-card__label">{t('llmMonitoring.cached')}</div>
+            <div className="metric-card__label">{t('llmMonitoring.cachedCard')}</div>
           </div>
           <div className="metric-card">
             <div className="metric-card__value">{formatCost(summary.estimated_cost)}</div>
@@ -252,6 +284,7 @@ function LlmMonitoring() {
       {/* Token Usage Trend */}
       <div className="chart-panel">
         <div className="chart-panel__title">{t('llmMonitoring.tokenTrend')}</div>
+        <p className="chart-panel__caption">{t('llmMonitoring.tokenChartCaption')}</p>
         {tokenChartData.length > 0 ? (
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%">
@@ -267,12 +300,16 @@ function LlmMonitoring() {
                 <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
                 <Bar dataKey="prompt" stackId="tokens" fill={chartColors.blue} name={t('llmMonitoring.prompt')} />
                 <Bar dataKey="completion" stackId="tokens" fill={chartColors.green} name={t('llmMonitoring.completion')} />
-                <Bar dataKey="cached" stackId="cached" fill={chartColors.yellow} name={t('llmMonitoring.cached')} />
+                <Bar dataKey="cached" stackId="cached" fill={chartColors.yellow} name={t('llmMonitoring.cachedOfPrompt')} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         ) : (
-          <div className="no-data">{t('llmMonitoring.noTokenData')}</div>
+          <PanelStatus
+            loading={tokensQuery.isLoading}
+            error={tokensQuery.isError}
+            emptyText={t('llmMonitoring.noTokenData')}
+          />
         )}
       </div>
 
@@ -296,7 +333,11 @@ function LlmMonitoring() {
             </ResponsiveContainer>
           </div>
         ) : (
-          <div className="no-data">{t('llmMonitoring.noData')}</div>
+          <PanelStatus
+            loading={requestsTotalQuery.isLoading}
+            error={requestsTotalQuery.isError}
+            emptyText={t('llmMonitoring.noData')}
+          />
         )}
       </div>
 
@@ -305,20 +346,20 @@ function LlmMonitoring() {
         <div className="chart-panel__title">{t('llmMonitoring.byModel')}</div>
         {(byModelQuery.data ?? []).length > 0 ? (
           <div className="table-container" style={{ border: 'none' }}>
-            <table className="data-table">
+            <table className="data-table comparison-table">
               <thead>
                 <tr>
-                  <th scope="col">{t('llmMonitoring.model')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.inputTokens')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.outputTokens')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.cached')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.totalTokenShort')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.requests')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.cost')}</th>
+                  <SortableHeader column="model"         label={t('llmMonitoring.model')}           activeColumn={modelSort.column} dir={modelSort.dir} onToggle={toggleModelSort} />
+                  <SortableHeader column="input_tokens"  label={t('llmMonitoring.inputTokens')}     align="right" activeColumn={modelSort.column} dir={modelSort.dir} onToggle={toggleModelSort} />
+                  <SortableHeader column="output_tokens" label={t('llmMonitoring.outputTokens')}    align="right" activeColumn={modelSort.column} dir={modelSort.dir} onToggle={toggleModelSort} />
+                  <SortableHeader column="cached_tokens" label={t('llmMonitoring.cached')}          align="right" activeColumn={modelSort.column} dir={modelSort.dir} onToggle={toggleModelSort} />
+                  <SortableHeader column="tokens"        label={t('llmMonitoring.totalTokenShort')} align="right" activeColumn={modelSort.column} dir={modelSort.dir} onToggle={toggleModelSort} />
+                  <SortableHeader column="requests"      label={t('llmMonitoring.requests')}        align="right" activeColumn={modelSort.column} dir={modelSort.dir} onToggle={toggleModelSort} />
+                  <SortableHeader column="cost"          label={t('llmMonitoring.cost')}            align="right" activeColumn={modelSort.column} dir={modelSort.dir} onToggle={toggleModelSort} />
                 </tr>
               </thead>
               <tbody>
-                {(byModelQuery.data ?? []).map((m) => (
+                {sortedModels.map((m) => (
                   <tr key={m.model}>
                     <td className="cell-alias">{m.model}</td>
                     <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
@@ -345,7 +386,11 @@ function LlmMonitoring() {
             </table>
           </div>
         ) : (
-          <div className="no-data">{t('llmMonitoring.noModelData')}</div>
+          <PanelStatus
+            loading={byModelQuery.isLoading}
+            error={byModelQuery.isError}
+            emptyText={t('llmMonitoring.noModelData')}
+          />
         )}
       </div>
 
@@ -354,30 +399,41 @@ function LlmMonitoring() {
         title={t('breakdown.byModelOverTime')}
         data={byModelSeriesQuery.data}
         loading={byModelSeriesQuery.isLoading}
+        error={byModelSeriesQuery.isError}
         bucket={bucket}
         unit="tokens"
         valueFmt={formatTokens}
       />
 
-      {/* Top API Keys — cross-key overview; hidden when scoped to a single key. */}
-      {!selectedKey && (
+      {/* Top API Keys — cross-key overview. When scoped to a single key, a
+          compact note explains why the comparison is gone instead of the
+          panels silently disappearing. */}
+      {selectedKey ? (
+        <div className="chart-panel chart-panel--note">
+          <div className="chart-panel__title">{t('llmMonitoring.topKeys')}</div>
+          <div className="no-data no-data--compact">
+            {t('llmMonitoring.filteredNote', { key: selectedKey })}
+          </div>
+        </div>
+      ) : (
+        <>
       <div className="chart-panel">
         <div className="chart-panel__title">{t('llmMonitoring.topKeys')}</div>
         {(topKeysQuery.data ?? []).length > 0 ? (
           <div className="table-container" style={{ border: 'none' }}>
-            <table className="data-table">
+            <table className="data-table comparison-table">
               <thead>
                 <tr>
-                  <th scope="col">{t('llmMonitoring.apiKey')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.inputTokens')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.outputTokens')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.cached')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.totalTokenShort')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('llmMonitoring.requests')}</th>
+                  <SortableHeader column="api_key"       label={t('llmMonitoring.apiKey')}          activeColumn={keySort.column} dir={keySort.dir} onToggle={toggleKeySort} />
+                  <SortableHeader column="input_tokens"  label={t('llmMonitoring.inputTokens')}     align="right" activeColumn={keySort.column} dir={keySort.dir} onToggle={toggleKeySort} />
+                  <SortableHeader column="output_tokens" label={t('llmMonitoring.outputTokens')}    align="right" activeColumn={keySort.column} dir={keySort.dir} onToggle={toggleKeySort} />
+                  <SortableHeader column="cached_tokens" label={t('llmMonitoring.cached')}          align="right" activeColumn={keySort.column} dir={keySort.dir} onToggle={toggleKeySort} />
+                  <SortableHeader column="tokens"        label={t('llmMonitoring.totalTokenShort')} align="right" activeColumn={keySort.column} dir={keySort.dir} onToggle={toggleKeySort} />
+                  <SortableHeader column="requests"      label={t('llmMonitoring.requests')}        align="right" activeColumn={keySort.column} dir={keySort.dir} onToggle={toggleKeySort} />
                 </tr>
               </thead>
               <tbody>
-                {(topKeysQuery.data ?? []).map((k) => (
+                {sortedKeys.map((k) => (
                   <tr key={k.api_key}>
                     <td className="cell-alias" title={apiKeyDescriptions[k.api_key] || undefined}>
                       {k.api_key}
@@ -403,26 +459,31 @@ function LlmMonitoring() {
             </table>
           </div>
         ) : (
-          <div className="no-data">{t('llmMonitoring.noKeyData')}</div>
+          <PanelStatus
+            loading={topKeysQuery.isLoading}
+            error={topKeysQuery.isError}
+            emptyText={t('llmMonitoring.noKeyData')}
+          />
         )}
       </div>
-      )}
 
       {/* Top API Keys over time — same cross-key scope */}
-      {!selectedKey && (
-        <BucketedBreakdownView
-          title={t('breakdown.byKeyOverTime')}
-          data={topKeysSeriesQuery.data}
-          loading={topKeysSeriesQuery.isLoading}
-          bucket={bucket}
-          unit="tokens"
-          valueFmt={formatTokens}
-        />
+      <BucketedBreakdownView
+        title={t('breakdown.byKeyOverTime')}
+        data={topKeysSeriesQuery.data}
+        loading={topKeysSeriesQuery.isLoading}
+        error={topKeysSeriesQuery.isError}
+        bucket={bucket}
+        unit="tokens"
+        valueFmt={formatTokens}
+      />
+        </>
       )}
 
       {/* Status Code Distribution */}
       <div className="chart-panel">
         <div className="chart-panel__title">{t('llmMonitoring.statusCodeDist')}</div>
+        <p className="chart-panel__caption">{t('llmMonitoring.statusSourceCaption')}</p>
         {(statusCodesQuery.data ?? []).length > 0 ? (
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%">
@@ -439,12 +500,17 @@ function LlmMonitoring() {
                   {(statusCodesQuery.data ?? []).map((entry, index) => (
                     <Cell key={index} fill={statusCodeColor(entry.code, chartColors)} />
                   ))}
+                  <LabelList dataKey="count" position="top" style={{ fontSize: 10, fill: chartColors.axis }} />
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
         ) : (
-          <div className="no-data">{t('llmMonitoring.noStatusData')}</div>
+          <PanelStatus
+            loading={statusCodesQuery.isLoading}
+            error={statusCodesQuery.isError}
+            emptyText={t('llmMonitoring.noStatusData')}
+          />
         )}
       </div>
 
@@ -470,7 +536,11 @@ function LlmMonitoring() {
             </ResponsiveContainer>
           </div>
         ) : (
-          <div className="no-data">{t('llmMonitoring.noErrorData')}</div>
+          <PanelStatus
+            loading={errorsQuery.isLoading}
+            error={errorsQuery.isError}
+            emptyText={t('llmMonitoring.noErrorData')}
+          />
         )}
       </div>
     </div>

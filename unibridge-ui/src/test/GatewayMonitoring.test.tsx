@@ -10,6 +10,7 @@ vi.mock('recharts', () => ({
   Tooltip: () => null,
   Legend: () => null,
   Cell: () => null,
+  LabelList: () => null,
 }));
 
 vi.mock('../api/client', () => ({
@@ -122,10 +123,50 @@ describe('GatewayMonitoring', () => {
       expect(screen.getByText('Total Requests (1h)')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('Request Trend')).toBeInTheDocument();
+    expect(screen.getByText('Request Rate (req/s)')).toBeInTheDocument();
+    expect(screen.getByText('Request Count (per interval)')).toBeInTheDocument();
     expect(screen.getByText('Status Code Distribution')).toBeInTheDocument();
     expect(screen.getByText('Latency (ms)')).toBeInTheDocument();
     expect(screen.getByText('Route Comparison')).toBeInTheDocument();
+  });
+
+  it('keeps a custom range when picking a day bucket, but nudges presets', async () => {
+    const userEvent = (await import('@testing-library/user-event')).default;
+    const user = userEvent.setup();
+
+    renderWithProviders(<GatewayMonitoring />);
+
+    // Preset selection: picking Daily nudges the range to 7d.
+    await user.click(screen.getByRole('button', { name: 'Daily' }));
+    expect(screen.getByRole('button', { name: '7d' })).toHaveAttribute('aria-pressed', 'true');
+
+    // Custom selection: picking Daily again must NOT clobber the custom range.
+    await user.click(screen.getByTestId('custom-toggle'));
+    await user.click(screen.getByTestId('custom-apply'));
+    expect(screen.getByTestId('custom-clear')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Weekly' }));
+    expect(screen.getByTestId('custom-clear')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '30d' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('explains the hidden API key comparison while a key filter is active', async () => {
+    const userEvent = (await import('@testing-library/user-event')).default;
+    const user = userEvent.setup();
+
+    mockedGetApiKeys.mockResolvedValue([
+      { name: 'alice', description: '', api_key: null, key_created: true, allowed_databases: [], allowed_routes: [], rate_limit_per_minute: null, owner: null, created_at: null },
+    ]);
+
+    renderWithProviders(<GatewayMonitoring />);
+
+    const select = await screen.findByLabelText(/API Key/i) as HTMLSelectElement;
+    await screen.findByRole('option', { name: 'alice' });
+    await user.selectOptions(select, 'alice');
+
+    expect(
+      screen.getByText("Filtered to 'alice'. Clear the API key filter to compare all keys."),
+    ).toBeInTheDocument();
   });
 
   it('shows partial load feedback when bucketed comparison series fail', async () => {

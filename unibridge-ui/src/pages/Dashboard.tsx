@@ -12,20 +12,18 @@ import { useChartTheme } from '../components/useChartTheme';
 import UniBridgeLogo from '../components/UniBridgeLogo';
 import BucketSelector from '../components/BucketSelector';
 import { type Bucket, type TimeSelection, bucketKey } from '../utils/timeRange';
-import { formatBucketLabel } from '../utils/time';
+import { formatBucketLabel, formatChartTime } from '../utils/time';
+import { errorRateColor } from '../utils/monitoring';
 import './Dashboard.css';
 
 const BUCKET_RANGE: Record<Exclude<Bucket, 'auto'>, string> = { hour: '24h', day: '30d', week: '60d' };
 const dashSel = (b: Bucket): TimeSelection => ({ kind: 'preset', value: b === 'auto' ? '1h' : BUCKET_RANGE[b] });
+/** Range label matching what dashSel actually queries, for the summary cards. */
+const dashRange = (b: Bucket): string => (b === 'auto' ? '1h' : BUCKET_RANGE[b]);
 
 interface DashboardDbEntry {
   alias: string;
   status: 'connected' | 'error';
-}
-
-function formatTime(ts: number): string {
-  const d = new Date(ts * 1000);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 function MiniChartState({ children }: { children: React.ReactNode }) {
@@ -55,9 +53,11 @@ function Dashboard() {
     queryFn: getAdminDatabases,
   });
 
+  // Summary cards follow the chart's bucket-derived span so cards and chart
+  // always describe the same window.
   const gwSummaryQuery = useQuery({
-    queryKey: ['dashboard-gw-summary'],
-    queryFn: () => getMetricsSummary(),
+    queryKey: ['dashboard-gw-summary', bucketKey(gwBucket)],
+    queryFn: () => getMetricsSummary(dashSel(gwBucket)),
     refetchInterval: 30_000,
     enabled: canViewMonitoring,
   });
@@ -77,8 +77,8 @@ function Dashboard() {
   });
 
   const llmSummaryQuery = useQuery({
-    queryKey: ['dashboard-llm-summary'],
-    queryFn: () => getLlmSummary(),
+    queryKey: ['dashboard-llm-summary', bucketKey(llmBucket)],
+    queryFn: () => getLlmSummary(dashSel(llmBucket)),
     refetchInterval: 30_000,
     enabled: canViewMonitoring,
   });
@@ -105,7 +105,7 @@ function Dashboard() {
   const isLoading = healthQuery.isLoading || dbsQuery.isLoading;
   const isError = healthQuery.isError || dbsQuery.isError;
   const gwTrendData = (gwRequestsQuery.data ?? []).map((p) => ({
-    time: formatTime(p.timestamp),
+    time: formatChartTime(p.timestamp),
     rps: p.value,
   }));
   const gwVolumeData = gwBucket === 'auto'
@@ -118,7 +118,7 @@ function Dashboard() {
   const gwChartError = gwBucket === 'auto' ? gwRequestsQuery.isError : gwVolumeQuery.isError;
   const gwChartHasData = gwBucket === 'auto' ? gwTrendData.length > 0 : gwVolumeData.length > 0;
   const llmTokenChartData = (llmTokensQuery.data?.prompt ?? []).map((p, i) => ({
-    time: llmBucket === 'auto' ? formatTime(p.timestamp) : formatBucketLabel(p.timestamp, llmBucket),
+    time: llmBucket === 'auto' ? formatChartTime(p.timestamp) : formatBucketLabel(p.timestamp, llmBucket),
     prompt: Math.round(p.value),
     completion: Math.round(llmTokensQuery.data?.completion?.[i]?.value ?? 0),
   }));
@@ -203,10 +203,10 @@ function Dashboard() {
               <div className="summary-cards">
                 <div className="summary-card">
                   <div className="summary-card__value">{gwSummaryQuery.data.total_requests.toLocaleString()}</div>
-                  <div className="summary-card__label">{t('gatewayMonitoring.totalRequests', { range: '1h' })}</div>
+                  <div className="summary-card__label">{t('gatewayMonitoring.totalRequests', { range: dashRange(gwBucket) })}</div>
                 </div>
                 <div className="summary-card">
-                  <div className="summary-card__value" style={{ color: gwSummaryQuery.data.error_rate > 5 ? 'var(--accent-red)' : 'var(--accent-green)' }}>
+                  <div className="summary-card__value" style={{ color: errorRateColor(gwSummaryQuery.data.error_rate) }}>
                     {gwSummaryQuery.data.error_rate}%
                   </div>
                   <div className="summary-card__label">{t('gatewayMonitoring.errorRate')}</div>
@@ -233,7 +233,7 @@ function Dashboard() {
                           labelStyle={{ color: chartColors.axis }}
                           itemStyle={{ color: chartColors.textSecondary }}
                         />
-                        <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name="req/s" />
+                        <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name={t('gatewayMonitoring.rps')} />
                       </LineChart>
                     </ResponsiveContainer>
                   ) : (
@@ -251,7 +251,7 @@ function Dashboard() {
                           labelStyle={{ color: chartColors.axis }}
                           itemStyle={{ color: chartColors.textSecondary }}
                         />
-                        <Bar dataKey="requests" fill={chartColors.blue} name="Requests" />
+                        <Bar dataKey="requests" fill={chartColors.blue} name={t('gatewayMonitoring.requests')} />
                       </BarChart>
                     </ResponsiveContainer>
                   ) : (
@@ -289,7 +289,7 @@ function Dashboard() {
                       ? `${(llmSummaryQuery.data.total_tokens / 1000).toFixed(1)}K`
                       : llmSummaryQuery.data.total_tokens.toLocaleString()}
                   </div>
-                  <div className="summary-card__label">{t('llmMonitoring.totalTokens', { range: '1h' })}</div>
+                  <div className="summary-card__label">{t('llmMonitoring.totalTokens', { range: dashRange(llmBucket) })}</div>
                 </div>
                 <div className="summary-card">
                   <div className="summary-card__value">${llmSummaryQuery.data.estimated_cost.toFixed(2)}</div>
@@ -297,7 +297,7 @@ function Dashboard() {
                 </div>
                 <div className="summary-card">
                   <div className="summary-card__value">{llmSummaryQuery.data.total_requests.toLocaleString()}</div>
-                  <div className="summary-card__label">{t('llmMonitoring.totalRequests', { range: '1h' })}</div>
+                  <div className="summary-card__label">{t('llmMonitoring.totalRequests', { range: dashRange(llmBucket) })}</div>
                 </div>
               </div>
               <div className={`dashboard-mini-chart ${llmChartHasData ? '' : 'dashboard-mini-chart--empty'}`}>
@@ -317,8 +317,9 @@ function Dashboard() {
                           labelStyle={{ color: chartColors.axis }}
                           itemStyle={{ color: chartColors.textSecondary }}
                         />
-                        <Line type="monotone" dataKey="prompt" stroke={chartColors.blue} strokeWidth={2} dot={false} name="Prompt" />
-                        <Line type="monotone" dataKey="completion" stroke={chartColors.green} strokeWidth={2} dot={false} name="Completion" />
+                        <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
+                        <Line type="monotone" dataKey="prompt" stroke={chartColors.blue} strokeWidth={2} dot={false} name={t('llmMonitoring.prompt')} />
+                        <Line type="monotone" dataKey="completion" stroke={chartColors.green} strokeWidth={2} dot={false} name={t('llmMonitoring.completion')} />
                       </LineChart>
                     ) : (
                       <BarChart data={llmTokenChartData}>
@@ -331,8 +332,8 @@ function Dashboard() {
                           itemStyle={{ color: chartColors.textSecondary }}
                         />
                         <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
-                        <Bar dataKey="prompt" stackId="tokens" fill={chartColors.blue} name="Prompt" />
-                        <Bar dataKey="completion" stackId="tokens" fill={chartColors.green} name="Completion" />
+                        <Bar dataKey="prompt" stackId="tokens" fill={chartColors.blue} name={t('llmMonitoring.prompt')} />
+                        <Bar dataKey="completion" stackId="tokens" fill={chartColors.green} name={t('llmMonitoring.completion')} />
                       </BarChart>
                     )}
                   </ResponsiveContainer>

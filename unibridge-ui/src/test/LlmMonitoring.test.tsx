@@ -7,6 +7,8 @@ vi.mock('recharts', () => ({
   CartesianGrid: () => null,
   Tooltip: () => null,
   Legend: () => null,
+  Cell: () => null,
+  LabelList: () => null,
 }));
 
 vi.mock('../api/client', () => ({
@@ -16,7 +18,10 @@ vi.mock('../api/client', () => ({
   getLlmByModel: vi.fn(),
   getLlmTopKeys: vi.fn(),
   getLlmErrors: vi.fn(),
+  getLlmStatusCodes: vi.fn(),
   getLlmRequestsTotal: vi.fn(),
+  getLlmByModelSeries: vi.fn(),
+  getLlmTopKeysSeries: vi.fn(),
   getApiKeys: vi.fn(),
 }));
 
@@ -32,11 +37,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   getLlmByModel,
+  getLlmByModelSeries,
   getLlmErrors,
   getLlmRequestsTotal,
+  getLlmStatusCodes,
   getLlmSummary,
   getLlmTokens,
   getLlmTopKeys,
+  getLlmTopKeysSeries,
   getApiKeys,
 } from '../api/client';
 import { renderWithProviders } from './helpers';
@@ -46,8 +54,12 @@ const mockedGetLlmTokens = vi.mocked(getLlmTokens);
 const mockedGetLlmByModel = vi.mocked(getLlmByModel);
 const mockedGetLlmTopKeys = vi.mocked(getLlmTopKeys);
 const mockedGetLlmErrors = vi.mocked(getLlmErrors);
+const mockedGetLlmStatusCodes = vi.mocked(getLlmStatusCodes);
 const mockedGetLlmRequestsTotal = vi.mocked(getLlmRequestsTotal);
+const mockedGetLlmByModelSeries = vi.mocked(getLlmByModelSeries);
+const mockedGetLlmTopKeysSeries = vi.mocked(getLlmTopKeysSeries);
 const mockedGetApiKeys = vi.mocked(getApiKeys);
+const emptyBucketedTokens = { buckets: [], series: [], unit: 'tokens' as const };
 
 describe('LlmMonitoring', () => {
   beforeEach(() => {
@@ -65,7 +77,10 @@ describe('LlmMonitoring', () => {
     mockedGetLlmByModel.mockResolvedValue([]);
     mockedGetLlmTopKeys.mockResolvedValue([]);
     mockedGetLlmErrors.mockResolvedValue([]);
+    mockedGetLlmStatusCodes.mockResolvedValue([]);
     mockedGetLlmRequestsTotal.mockResolvedValue([]);
+    mockedGetLlmByModelSeries.mockResolvedValue(emptyBucketedTokens);
+    mockedGetLlmTopKeysSeries.mockResolvedValue(emptyBucketedTokens);
     mockedGetApiKeys.mockResolvedValue([]);
     window.__RUNTIME_CONFIG__ = {
       ...window.__RUNTIME_CONFIG__,
@@ -147,7 +162,7 @@ describe('LlmMonitoring', () => {
       expect(screen.getByText('customer-portal')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('API Key Name')).toBeInTheDocument();
+    expect(screen.getAllByText('API Key').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Input Tokens').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Output Tokens').length).toBeGreaterThan(0);
     expect(screen.getAllByText('3.0K').length).toBeGreaterThan(0);

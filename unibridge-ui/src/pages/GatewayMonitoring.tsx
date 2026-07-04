@@ -1,10 +1,10 @@
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend, Cell,
+  Tooltip, ResponsiveContainer, Legend, Cell, LabelList,
 } from 'recharts';
 import {
   getMetricsSummary,
@@ -22,12 +22,16 @@ import {
 import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
 import { usePermissions } from '../components/usePermissions';
 import BucketedBreakdownView from '../components/BucketedBreakdownView';
+import PanelStatus from '../components/PanelStatus';
+import SortableHeader from '../components/SortableHeader';
+import { type SortState, toggleSortState, sortRows } from '../utils/tableSort';
 import './Monitoring.css';
 import './GatewayMonitoring.css';
 import TimeRangeSelector from '../components/TimeRangeSelector';
 import BucketSelector from '../components/BucketSelector';
-import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket } from '../utils/timeRange';
+import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket, bucketTooCoarse } from '../utils/timeRange';
 import { formatChartTime, formatChartTimestamp, formatBucketLabel } from '../utils/time';
+import { errorRateColor } from '../utils/monitoring';
 
 function BarCell({ value, max, suffix = '' }: { value: number; max: number; suffix?: string }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
@@ -45,56 +49,8 @@ function errorRateClass(v: number): string {
   return 'heatmap-cell';
 }
 
-function latencyClass(v: number | null, max: number): string {
-  if (v == null || max <= 0) return 'heatmap-cell';
-  const ratio = v / max;
-  if (ratio >= 0.8) return 'heatmap-cell heatmap-cell--red';
-  if (ratio >= 0.5) return 'heatmap-cell heatmap-cell--yellow';
-  return 'heatmap-cell';
-}
-
-type SortColumn = 'route' | 'requests' | 'share' | 'error_rate' | 'latency_p50_ms' | 'latency_p95_ms';
-type SortDir = 'asc' | 'desc';
-
-function SortableHeader({
-  column,
-  label,
-  align = 'left',
-  activeColumn,
-  dir,
-  onToggle,
-}: {
-  column: SortColumn;
-  label: string;
-  align?: 'left' | 'right';
-  activeColumn: SortColumn;
-  dir: SortDir;
-  onToggle: (c: SortColumn) => void;
-}) {
-  const active = activeColumn === column;
-  const ariaSort: 'none' | 'ascending' | 'descending' =
-    active ? (dir === 'asc' ? 'ascending' : 'descending') : 'none';
-  const classes = `sortable-header${align === 'right' ? ' sortable-header--right' : ''}`;
-  const handleKey = (e: KeyboardEvent<HTMLTableCellElement>) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      onToggle(column);
-    }
-  };
-  return (
-    <th
-      className={classes}
-      onClick={() => onToggle(column)}
-      onKeyDown={handleKey}
-      tabIndex={0}
-      role="button"
-      aria-sort={ariaSort}
-    >
-      {label}
-      {active && <span className="sort-indicator">{dir === 'asc' ? '▲' : '▼'}</span>}
-    </th>
-  );
-}
+type RouteSortColumn = 'route' | 'requests' | 'share' | 'error_rate' | 'latency_p50_ms' | 'latency_p95_ms';
+type ConsumerSortColumn = 'consumer' | 'requests' | 'share' | 'error_rate' | 'latency_p50_ms' | 'latency_p95_ms';
 
 function GatewayMonitoring() {
   const { t } = useTranslation();
@@ -105,23 +61,46 @@ function GatewayMonitoring() {
   const refetchInterval = selection.kind === 'custom' ? false : 30_000;
   const rangeLabel = selection.kind === 'preset' ? selection.value : t('gatewayMonitoring.customRange');
   const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
-  const [sort, setSort] = useState<{ column: SortColumn; dir: SortDir }>({ column: 'requests', dir: 'desc' });
+  const [sort, setSort] = useState<SortState<RouteSortColumn>>({ column: 'requests', dir: 'desc' });
+  const [consumerSort, setConsumerSort] = useState<SortState<ConsumerSortColumn>>({ column: 'requests', dir: 'desc' });
   const [selectedConsumer, setSelectedConsumer] = useState<string>('');
   const [bucket, setBucket] = useState<Bucket>('auto');
+  const routeDetailRef = useRef<HTMLDivElement | null>(null);
   const volumeLabel = (ts: number) =>
     bucket === 'auto' ? formatChartTimestamp(ts, span) : formatBucketLabel(ts, bucket);
 
-  const toggleSort = (column: SortColumn) => {
-    setSort((prev) =>
-      prev.column === column
-        ? { column, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
-        : { column, dir: 'desc' }
-    );
+  const toggleSort = (column: RouteSortColumn) => setSort((prev) => toggleSortState(prev, column));
+  const toggleConsumerSort = (column: ConsumerSortColumn) =>
+    setConsumerSort((prev) => toggleSortState(prev, column));
+
+  // Shrinking the range under the current calendar bucket would leave a
+  // one-bar chart; fall back to auto stepping instead.
+  const handleSelectionChange = (next: TimeSelection) => {
+    setSelection(next);
+    if (bucketTooCoarse(next, bucket)) setBucket('auto');
   };
 
+  // Picking day/week nudges the preset period to a matching span, but an
+  // explicitly chosen custom range is never overridden.
+  const handleBucketChange = (b: Bucket) => {
+    setBucket(b);
+    if (selection.kind !== 'custom') {
+      const p = periodForBucket(b);
+      if (p) setSelection(p);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedRoute) {
+      routeDetailRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [selectedRoute]);
 
   const chartColors = useChartTheme();
   const canReadApiKeys = permissionsLoaded && permissions.includes('apikeys.read');
+  const selfScopeOnly = permissionsLoaded
+    && !permissions.includes('gateway.monitoring.read')
+    && permissions.includes('gateway.monitoring.self');
 
   const apiKeysQuery = useQuery({
     queryKey: ['api-keys', 'gateway-monitoring-filter'],
@@ -200,23 +179,29 @@ function GatewayMonitoring() {
     return rows.reduce((m, c) => (c.requests > m ? c.requests : m), 0);
   }, [consumersComparisonQuery.data]);
 
+  const { maxConsumerP50, maxConsumerP95 } = useMemo(() => {
+    const rows = consumersComparisonQuery.data?.consumers ?? [];
+    return {
+      maxConsumerP50: rows.reduce((m, c) => (c.latency_p50_ms != null && c.latency_p50_ms > m ? c.latency_p50_ms : m), 0),
+      maxConsumerP95: rows.reduce((m, c) => (c.latency_p95_ms != null && c.latency_p95_ms > m ? c.latency_p95_ms : m), 0),
+    };
+  }, [consumersComparisonQuery.data]);
+
   const routeLabel = (r: RouteComparisonRow) => r.name || r.route;
 
   const sortedRoutes = useMemo<RouteComparisonRow[]>(() => {
     const rows = routesComparisonQuery.data?.routes ?? [];
-    const multiplier = sort.dir === 'asc' ? 1 : -1;
-    return [...rows].sort((a, b) => {
-      if (sort.column === 'route') {
-        return routeLabel(a).localeCompare(routeLabel(b)) * multiplier;
-      }
-      const av = a[sort.column];
-      const bv = b[sort.column];
-      if (av == null && bv == null) return 0;
-      if (av == null) return 1;
-      if (bv == null) return -1;
-      return ((av as number) - (bv as number)) * multiplier;
-    });
+    return sortRows(rows, sort, (row, column) =>
+      column === 'route' ? routeLabel(row) : row[column],
+    );
   }, [routesComparisonQuery.data, sort]);
+
+  const sortedConsumers = useMemo(() => {
+    const rows = consumersComparisonQuery.data?.consumers ?? [];
+    return sortRows(rows, consumerSort, (row, column) =>
+      column === 'consumer' ? row.consumer : row[column],
+    );
+  }, [consumersComparisonQuery.data, consumerSort]);
 
   const selectedRouteLabel = useMemo(() => {
     if (!selectedRoute) return null;
@@ -280,11 +265,13 @@ function GatewayMonitoring() {
   }));
 
   const latencyData = latencyQuery.data;
+  // Missing percentile points stay null so the lines show gaps instead of
+  // misleading dips to zero.
   const latencyChartData = (latencyData?.p50 ?? []).map((p, i) => ({
     time: formatChartTime(p.timestamp),
     p50: p.value,
-    p95: latencyData?.p95?.[i]?.value ?? 0,
-    p99: latencyData?.p99?.[i]?.value ?? 0,
+    p95: latencyData?.p95?.[i]?.value ?? null,
+    p99: latencyData?.p99?.[i]?.value ?? null,
   }));
 
   const isLoading = summaryQuery.isLoading;
@@ -316,6 +303,8 @@ function GatewayMonitoring() {
         <div>
           <h1>{t('gatewayMonitoring.title')}</h1>
           <p className="page-subtitle">{t('gatewayMonitoring.subtitle')}</p>
+          <p className="page-meta">{t('monitoring.headerNote')}</p>
+          {selfScopeOnly && <span className="scope-note">{t('gatewayMonitoring.selfScopeNote')}</span>}
         </div>
         <div className="page-header__filters">
           {canReadApiKeys && (
@@ -333,15 +322,8 @@ function GatewayMonitoring() {
               </select>
             </label>
           )}
-          <TimeRangeSelector value={selection} onChange={setSelection} />
-          <BucketSelector
-            value={bucket}
-            onChange={(b) => {
-              setBucket(b);
-              const p = periodForBucket(b);
-              if (p) setSelection(p);
-            }}
-          />
+          <TimeRangeSelector value={selection} onChange={handleSelectionChange} />
+          <BucketSelector value={bucket} onChange={handleBucketChange} />
         </div>
       </div>
 
@@ -357,7 +339,7 @@ function GatewayMonitoring() {
             <div className="metric-card__label">{t('gatewayMonitoring.totalRequests', { range: rangeLabel })}</div>
           </div>
           <div className="metric-card">
-            <div className="metric-card__value" style={{ color: summary.error_rate > 5 ? 'var(--accent-red)' : 'var(--accent-green)' }}>
+            <div className="metric-card__value" style={{ color: errorRateColor(summary.error_rate) }}>
               {summary.error_rate}%
             </div>
             <div className="metric-card__label">{t('gatewayMonitoring.errorRate')}</div>
@@ -384,12 +366,16 @@ function GatewayMonitoring() {
                   labelStyle={{ color: chartColors.axis }}
                   itemStyle={{ color: chartColors.textSecondary }}
                 />
-                <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name="req/s" />
+                <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name={t('gatewayMonitoring.rps')} />
               </LineChart>
             </ResponsiveContainer>
           </div>
         ) : (
-          <div className="no-data">{t('gatewayMonitoring.noRequestData')}</div>
+          <PanelStatus
+            loading={requestsQuery.isLoading}
+            error={requestsQuery.isError}
+            emptyText={t('gatewayMonitoring.noRequestData')}
+          />
         )}
       </div>
 
@@ -408,12 +394,16 @@ function GatewayMonitoring() {
                   labelStyle={{ color: chartColors.axis }}
                   itemStyle={{ color: chartColors.textSecondary }}
                 />
-                <Bar dataKey="requests" fill={chartColors.green} name="Requests" />
+                <Bar dataKey="requests" fill={chartColors.green} name={t('gatewayMonitoring.requests')} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         ) : (
-          <div className="no-data">{t('gatewayMonitoring.noRequestData')}</div>
+          <PanelStatus
+            loading={requestsTotalQuery.isLoading}
+            error={requestsTotalQuery.isError}
+            emptyText={t('gatewayMonitoring.noRequestData')}
+          />
         )}
       </div>
 
@@ -432,16 +422,21 @@ function GatewayMonitoring() {
                   labelStyle={{ color: chartColors.axis }}
                   itemStyle={{ color: chartColors.textSecondary }}
                 />
-                <Bar dataKey="count" name="Requests">
+                <Bar dataKey="count" name={t('gatewayMonitoring.requests')}>
                   {(statusQuery.data ?? []).map((entry, index) => (
                     <Cell key={index} fill={statusCodeColor(entry.code, chartColors)} />
                   ))}
+                  <LabelList dataKey="count" position="top" style={{ fontSize: 10, fill: chartColors.axis }} />
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
         ) : (
-          <div className="no-data">{t('gatewayMonitoring.noStatusData')}</div>
+          <PanelStatus
+            loading={statusQuery.isLoading}
+            error={statusQuery.isError}
+            emptyText={t('gatewayMonitoring.noStatusData')}
+          />
         )}
       </div>
 
@@ -468,7 +463,11 @@ function GatewayMonitoring() {
             </ResponsiveContainer>
           </div>
         ) : (
-          <div className="no-data">{t('gatewayMonitoring.noLatencyData')}</div>
+          <PanelStatus
+            loading={latencyQuery.isLoading}
+            error={latencyQuery.isError}
+            emptyText={t('gatewayMonitoring.noLatencyData')}
+          />
         )}
       </div>
 
@@ -504,81 +503,26 @@ function GatewayMonitoring() {
                     <td className="cell-metric"><BarCell value={r.requests} max={maxRequests} /></td>
                     <td className="cell-metric"><BarCell value={r.share} max={100} suffix="%" /></td>
                     <td className={`cell-metric ${errorRateClass(r.error_rate)}`}>{r.error_rate.toFixed(2)}%</td>
-                    <td className={`cell-metric ${latencyClass(r.latency_p50_ms, maxP50)}`}>{r.latency_p50_ms == null ? '—' : r.latency_p50_ms.toFixed(1)}</td>
-                    <td className={`cell-metric ${latencyClass(r.latency_p95_ms, maxP95)}`}>{r.latency_p95_ms == null ? '—' : r.latency_p95_ms.toFixed(1)}</td>
+                    <td className="cell-metric">{r.latency_p50_ms == null ? '—' : <BarCell value={r.latency_p50_ms} max={maxP50} />}</td>
+                    <td className="cell-metric">{r.latency_p95_ms == null ? '—' : <BarCell value={r.latency_p95_ms} max={maxP95} />}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         ) : (
-          <div className="no-data">{t('gatewayMonitoring.noRouteData')}</div>
+          <PanelStatus
+            loading={routesComparisonQuery.isLoading}
+            error={routesComparisonQuery.isError}
+            emptyText={t('gatewayMonitoring.noRouteData')}
+          />
         )}
       </div>
 
-      {/* Per-route requests over time (bucketed) */}
-      <BucketedBreakdownView
-        title={t('breakdown.byRouteOverTime')}
-        data={routesSeriesQuery.data}
-        bucket={bucket}
-        loading={routesSeriesQuery.isLoading}
-        unit="requests"
-        valueFmt={(n) => Math.round(n).toLocaleString()}
-      />
-
-      {/* API Key Comparison — cross-key overview; hidden when the page is
-          already scoped to a single key via the filter. */}
-      {!selectedConsumer && (
-      <div className="chart-panel">
-        <div className="chart-panel__title">{t('gatewayMonitoring.apiKeyComparison')}</div>
-        {(consumersComparisonQuery.data?.consumers ?? []).length > 0 ? (
-          <div className="table-container" style={{ border: 'none' }}>
-            <table className="data-table comparison-table">
-              <thead>
-                <tr>
-                  <th scope="col">{t('gatewayMonitoring.apiKey')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('gatewayMonitoring.requests')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('gatewayMonitoring.share')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('gatewayMonitoring.errorRate')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('gatewayMonitoring.latencyP50')}</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>{t('gatewayMonitoring.latencyP95')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(consumersComparisonQuery.data?.consumers ?? []).map((c) => (
-                  <tr key={c.consumer}>
-                    <td className="cell-alias" title={apiKeyDescriptions[c.consumer] || undefined}>{c.consumer}</td>
-                    <td className="cell-metric"><BarCell value={c.requests} max={maxConsumerRequests} /></td>
-                    <td className="cell-metric"><BarCell value={c.share} max={100} suffix="%" /></td>
-                    <td className={`cell-metric ${errorRateClass(c.error_rate)}`}>{c.error_rate.toFixed(2)}%</td>
-                    <td className="cell-metric">{c.latency_p50_ms == null ? '—' : c.latency_p50_ms.toFixed(1)}</td>
-                    <td className="cell-metric">{c.latency_p95_ms == null ? '—' : c.latency_p95_ms.toFixed(1)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="no-data">{t('gatewayMonitoring.noApiKeyData')}</div>
-        )}
-      </div>
-      )}
-
-      {/* Per-API-key requests over time (bucketed) — same cross-key scope */}
-      {!selectedConsumer && (
-        <BucketedBreakdownView
-          title={t('breakdown.byConsumerOverTime')}
-          data={consumersSeriesQuery.data}
-          bucket={bucket}
-          loading={consumersSeriesQuery.isLoading}
-          unit="requests"
-          valueFmt={(n) => Math.round(n).toLocaleString()}
-        />
-      )}
-
-      {/* Route Detail Panel */}
+      {/* Route Detail Panel — rendered directly under the table it drills
+          into, and scrolled into view on open. */}
       {selectedRoute && (
-        <div className="route-detail-panel">
+        <div className="route-detail-panel" ref={routeDetailRef}>
           <div className="route-detail-header">
             <span className="route-detail-title">{selectedRouteLabel}</span>
             <button
@@ -610,7 +554,7 @@ function GatewayMonitoring() {
                   <div className="metric-card__label">{t('gatewayMonitoring.totalRequests', { range: rangeLabel })}</div>
                 </div>
                 <div className="metric-card">
-                  <div className="metric-card__value" style={{ color: routeSummaryQuery.data.error_rate > 5 ? 'var(--accent-red)' : 'var(--accent-green)' }}>
+                  <div className="metric-card__value" style={{ color: errorRateColor(routeSummaryQuery.data.error_rate) }}>
                     {routeSummaryQuery.data.error_rate}%
                   </div>
                   <div className="metric-card__label">{t('gatewayMonitoring.errorRate')}</div>
@@ -636,12 +580,16 @@ function GatewayMonitoring() {
                           labelStyle={{ color: chartColors.axis }}
                           itemStyle={{ color: chartColors.textSecondary }}
                         />
-                        <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name="req/s" />
+                        <Line type="monotone" dataKey="rps" stroke={chartColors.blue} strokeWidth={2} dot={false} name={t('gatewayMonitoring.rps')} />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
                 ) : (
-                  <div className="no-data">{t('gatewayMonitoring.noRequestData')}</div>
+                  <PanelStatus
+                    loading={routeRequestsQuery.isLoading}
+                    error={routeRequestsQuery.isError}
+                    emptyText={t('gatewayMonitoring.noRequestData')}
+                  />
                 )}
               </div>
 
@@ -660,12 +608,16 @@ function GatewayMonitoring() {
                           labelStyle={{ color: chartColors.axis }}
                           itemStyle={{ color: chartColors.textSecondary }}
                         />
-                        <Bar dataKey="requests" fill={chartColors.green} name="Requests" />
+                        <Bar dataKey="requests" fill={chartColors.green} name={t('gatewayMonitoring.requests')} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
                 ) : (
-                  <div className="no-data">{t('gatewayMonitoring.noRequestData')}</div>
+                  <PanelStatus
+                    loading={routeVolumQuery.isLoading}
+                    error={routeVolumQuery.isError}
+                    emptyText={t('gatewayMonitoring.noRequestData')}
+                  />
                 )}
               </div>
 
@@ -684,16 +636,21 @@ function GatewayMonitoring() {
                           labelStyle={{ color: chartColors.axis }}
                           itemStyle={{ color: chartColors.textSecondary }}
                         />
-                        <Bar dataKey="count" name="Requests">
+                        <Bar dataKey="count" name={t('gatewayMonitoring.requests')}>
                           {(routeStatusQuery.data ?? []).map((entry, index) => (
                             <Cell key={index} fill={statusCodeColor(entry.code, chartColors)} />
                           ))}
+                          <LabelList dataKey="count" position="top" style={{ fontSize: 10, fill: chartColors.axis }} />
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
                 ) : (
-                  <div className="no-data">{t('gatewayMonitoring.noStatusData')}</div>
+                  <PanelStatus
+                    loading={routeStatusQuery.isLoading}
+                    error={routeStatusQuery.isError}
+                    emptyText={t('gatewayMonitoring.noStatusData')}
+                  />
                 )}
               </div>
             </>
@@ -702,6 +659,81 @@ function GatewayMonitoring() {
           )}
         </div>
       )}
+
+      {/* Per-route requests over time (bucketed) */}
+      <BucketedBreakdownView
+        title={t('breakdown.byRouteOverTime')}
+        data={routesSeriesQuery.data}
+        bucket={bucket}
+        loading={routesSeriesQuery.isLoading}
+        error={routesSeriesQuery.isError}
+        unit="requests"
+        valueFmt={(n) => Math.round(n).toLocaleString()}
+      />
+
+      {/* API Key Comparison — cross-key overview. When the page is scoped to
+          a single key, a compact note explains why the comparison is gone
+          instead of the panels silently disappearing. */}
+      {selectedConsumer ? (
+        <div className="chart-panel chart-panel--note">
+          <div className="chart-panel__title">{t('gatewayMonitoring.apiKeyComparison')}</div>
+          <div className="no-data no-data--compact">
+            {t('gatewayMonitoring.filteredNote', { key: selectedConsumer })}
+          </div>
+        </div>
+      ) : (
+        <>
+      <div className="chart-panel">
+        <div className="chart-panel__title">{t('gatewayMonitoring.apiKeyComparison')}</div>
+        {(consumersComparisonQuery.data?.consumers ?? []).length > 0 ? (
+          <div className="table-container" style={{ border: 'none' }}>
+            <table className="data-table comparison-table">
+              <thead>
+                <tr>
+                  <SortableHeader column="consumer"        label={t('gatewayMonitoring.apiKey')}     activeColumn={consumerSort.column} dir={consumerSort.dir} onToggle={toggleConsumerSort} />
+                  <SortableHeader column="requests"        label={t('gatewayMonitoring.requests')}   align="right" activeColumn={consumerSort.column} dir={consumerSort.dir} onToggle={toggleConsumerSort} />
+                  <SortableHeader column="share"           label={t('gatewayMonitoring.share')}      align="right" activeColumn={consumerSort.column} dir={consumerSort.dir} onToggle={toggleConsumerSort} />
+                  <SortableHeader column="error_rate"      label={t('gatewayMonitoring.errorRate')}  align="right" activeColumn={consumerSort.column} dir={consumerSort.dir} onToggle={toggleConsumerSort} />
+                  <SortableHeader column="latency_p50_ms"  label={t('gatewayMonitoring.latencyP50')} align="right" activeColumn={consumerSort.column} dir={consumerSort.dir} onToggle={toggleConsumerSort} />
+                  <SortableHeader column="latency_p95_ms"  label={t('gatewayMonitoring.latencyP95')} align="right" activeColumn={consumerSort.column} dir={consumerSort.dir} onToggle={toggleConsumerSort} />
+                </tr>
+              </thead>
+              <tbody>
+                {sortedConsumers.map((c) => (
+                  <tr key={c.consumer}>
+                    <td className="cell-alias" title={apiKeyDescriptions[c.consumer] || undefined}>{c.consumer}</td>
+                    <td className="cell-metric"><BarCell value={c.requests} max={maxConsumerRequests} /></td>
+                    <td className="cell-metric"><BarCell value={c.share} max={100} suffix="%" /></td>
+                    <td className={`cell-metric ${errorRateClass(c.error_rate)}`}>{c.error_rate.toFixed(2)}%</td>
+                    <td className="cell-metric">{c.latency_p50_ms == null ? '—' : <BarCell value={c.latency_p50_ms} max={maxConsumerP50} />}</td>
+                    <td className="cell-metric">{c.latency_p95_ms == null ? '—' : <BarCell value={c.latency_p95_ms} max={maxConsumerP95} />}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <PanelStatus
+            loading={consumersComparisonQuery.isLoading}
+            error={consumersComparisonQuery.isError}
+            emptyText={t('gatewayMonitoring.noApiKeyData')}
+          />
+        )}
+      </div>
+
+      {/* Per-API-key requests over time (bucketed) — same cross-key scope */}
+      <BucketedBreakdownView
+        title={t('breakdown.byConsumerOverTime')}
+        data={consumersSeriesQuery.data}
+        bucket={bucket}
+        loading={consumersSeriesQuery.isLoading}
+        error={consumersSeriesQuery.isError}
+        unit="requests"
+        valueFmt={(n) => Math.round(n).toLocaleString()}
+      />
+        </>
+      )}
+
     </div>
   );
 }

@@ -24,7 +24,7 @@ describe('BucketedBreakdownView', () => {
       />,
     );
 
-    expect(screen.getByText('Select Daily or Weekly to see usage over time.')).toBeInTheDocument();
+    expect(screen.getByText('Select Hourly, Daily or Weekly to see usage over time.')).toBeInTheDocument();
   });
 
   it('shows an explicit loading state after a bucket is selected', () => {
@@ -51,7 +51,7 @@ describe('BucketedBreakdownView', () => {
     );
 
     expect(screen.getByText('No bucketed data available')).toBeInTheDocument();
-    expect(screen.queryByText('Select Daily or Weekly to see usage over time.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Select Hourly, Daily or Weekly to see usage over time.')).not.toBeInTheDocument();
   });
 
   it('renders bucketed series data with table affordance classes', () => {

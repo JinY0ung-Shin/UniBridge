@@ -64,9 +64,27 @@ export const BUCKET_PERIOD: Record<Bucket, string | null> = {
 /**
  * Suggested time selection for a freshly picked bucket, or `null` when the
  * bucket carries no opinion (auto/hour). Pages apply this once on bucket
- * change; the period selector remains independently adjustable afterward.
+ * change — but only for preset selections; an explicit custom range is never
+ * overridden. The period selector remains independently adjustable afterward.
  */
 export function periodForBucket(bucket: Bucket): TimeSelection | null {
   const value = BUCKET_PERIOD[bucket];
   return value ? { kind: 'preset', value } : null;
+}
+
+/** Approximate seconds covered by one calendar bucket. */
+export const BUCKET_SECONDS: Record<Exclude<Bucket, 'auto'>, number> = {
+  hour: 3600,
+  day: 86400,
+  week: 604800,
+};
+
+/**
+ * True when the selection is too narrow for the bucket to draw a useful chart
+ * (fewer than ~2 bars). Pages reset the bucket to 'auto' in that case when the
+ * user shrinks the time range.
+ */
+export function bucketTooCoarse(sel: TimeSelection, bucket: Bucket): boolean {
+  if (bucket === 'auto') return false;
+  return selectionSpanSeconds(sel) < BUCKET_SECONDS[bucket] * 2;
 }

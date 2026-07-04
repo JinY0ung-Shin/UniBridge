@@ -177,6 +177,55 @@
   font-size: 13px;
 }
 
+/* Single-line variant for hints/notes so placeholder panels don't reserve
+   a full chart's height. */
+.no-data--compact {
+  height: auto;
+  padding: 12px 16px;
+}
+
+/* A panel whose query failed — distinct from genuinely empty data. */
+.no-data--error {
+  color: var(--accent-red);
+}
+
+/* Compact panel used to explain hidden cross-key comparisons while an API
+   key filter is active. */
+.chart-panel--note {
+  padding-bottom: 12px;
+}
+
+.chart-panel--note .chart-panel__title {
+  margin-bottom: 4px;
+}
+
+/* Small explanatory line under a chart panel title (data-source notes etc.) */
+.chart-panel__caption {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin: -8px 0 12px;
+  line-height: 1.5;
+}
+
+/* Muted metadata line under the page subtitle (KST notice, estimate notice) */
+.page-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+}
+
+/* "Scoped to my API key" badge for self-permission-only viewers */
+.scope-note {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 2px 10px;
+  border: 1px solid var(--accent-blue);
+  border-radius: 999px;
+  color: var(--accent-blue);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 /* Header filter group (shared by gateway + LLM monitoring). Wraps and stays
    right-aligned so controls drop to a new line instead of being clipped off
    the right edge when the content area is narrow. */

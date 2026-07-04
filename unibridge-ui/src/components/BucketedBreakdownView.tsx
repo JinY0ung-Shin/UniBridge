@@ -14,6 +14,7 @@ interface BucketedBreakdownViewProps {
   data?: BucketedBreakdown;
   bucket: Bucket;
   loading?: boolean;
+  error?: boolean;
   unit: 'tokens' | 'requests';
   valueFmt?: (n: number) => string;
 }
@@ -45,12 +46,20 @@ function BucketedBreakdownView({
   data,
   bucket,
   loading,
+  error,
   unit,
   valueFmt,
 }: BucketedBreakdownViewProps) {
   const { t } = useTranslation();
   const chartColors = useChartTheme();
   const fmt = valueFmt ?? compactNumber;
+
+  // Backend sentinel keys → translated display labels.
+  const seriesLabel = (key: string) => {
+    if (key === '(others)') return t('breakdown.others');
+    if (key === '(no api key)') return t('breakdown.noApiKey');
+    return key;
+  };
 
   const bucketLabels = useMemo(() => {
     if (bucket === 'auto') return [];
@@ -73,7 +82,7 @@ function BucketedBreakdownView({
     return (
       <div className="chart-panel">
         <div className="chart-panel__title">{title}</div>
-        <div className="no-data">{t('breakdown.selectBucketHint')}</div>
+        <div className="no-data no-data--compact">{t('breakdown.selectBucketHint')}</div>
       </div>
     );
   }
@@ -85,6 +94,8 @@ function BucketedBreakdownView({
       <div className="chart-panel__title">{title}</div>
       {loading ? (
         <div className="no-data" role="status">{t('breakdown.loading')}</div>
+      ) : error ? (
+        <div className="no-data no-data--error" role="alert">{t('monitoring.panelLoadFailed')}</div>
       ) : hasData ? (
         <>
           <div className="chart-container">
@@ -109,7 +120,7 @@ function BucketedBreakdownView({
                     dataKey={s.key}
                     stackId="a"
                     fill={SERIES_PALETTE[i % SERIES_PALETTE.length]}
-                    name={s.key}
+                    name={seriesLabel(s.key)}
                   />
                 ))}
               </BarChart>
@@ -134,7 +145,7 @@ function BucketedBreakdownView({
                       <span
                         className={`breakdown-swatch breakdown-swatch--${si % SERIES_PALETTE.length}`}
                       />
-                      {s.key}
+                      {seriesLabel(s.key)}
                     </th>
                     {data!.buckets.map((_, bi) => (
                       <td
