@@ -1405,6 +1405,13 @@ async def metrics_summary(
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> dict[str, Any]:
+    """Aggregate request count, error rate, and average latency for the window.
+
+    All three values are computed over the full resolved window (``promql_window``)
+    with ``increase()`` and evaluated at the window end, so they describe the whole
+    selected range rather than a trailing 5-minute snapshot. ``error_rate`` is
+    5xx-only; empty results fall back to 0 via ``_extract_scalar``.
+    """
     _validate_route(route)
     consumer = _scope_consumer(scope, route, consumer)
     hs = _labels(route, consumer)
@@ -1416,11 +1423,13 @@ async def metrics_summary(
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(rate(apisix_http_status{hs5}[5m])) / sum(rate(apisix_http_status{hs}[5m])) * 100",
+                f"sum(increase(apisix_http_status{hs5}[{tw.promql_window}])) "
+                f"/ sum(increase(apisix_http_status{hs}[{tw.promql_window}])) * 100",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(rate(apisix_http_latency_sum{hs}[5m])) / sum(rate(apisix_http_latency_count{hs}[5m]))",
+                f"sum(increase(apisix_http_latency_sum{hs}[{tw.promql_window}])) "
+                f"/ sum(increase(apisix_http_latency_count{hs}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
         )
@@ -1672,14 +1681,21 @@ async def metrics_routes_comparison(
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> dict[str, Any]:
-    """Per-route comparison: requests, share, error_rate, p50/p95 latency in one payload."""
+    """Per-route comparison: requests, share, error_rate, p50/p95 latency in one payload.
+
+    Every value is computed over the full resolved window (``promql_window``):
+    counts/errors via ``increase()``, and p50/p95 via ``histogram_quantile`` over
+    the whole-window bucket rate — not a trailing 5-minute snapshot. ``share`` uses
+    the grand total across all routes as denominator (same as consumers-comparison),
+    so it stays accurate even though only the top-10 rows are returned.
+    """
     consumer = _scope_consumer(scope, None, consumer)
     # Routes-comparison never targets a single route — it groups by route.
     # Default selector hides llm-proxy (LLM monitoring page covers that).
     hs = _labels(None, consumer)
     hs5 = _labels(None, consumer, 'code=~"5.."')
     try:
-        requests_res, errors_res, p50_res, p95_res = await asyncio.gather(
+        requests_res, errors_res, p50_res, p95_res, total_res = await asyncio.gather(
             prometheus_client.instant_query(
                 f"topk(10, sum by (route) (increase(apisix_http_status{hs}[{tw.promql_window}])))",
                 eval_time=tw.eval_time,
@@ -1689,11 +1705,17 @@ async def metrics_routes_comparison(
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"histogram_quantile(0.5, sum by (route, le) (rate(apisix_http_latency_bucket{hs}[5m])))",
+                f"histogram_quantile(0.5, sum by (route, le) "
+                f"(rate(apisix_http_latency_bucket{hs}[{tw.promql_window}])))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"histogram_quantile(0.95, sum by (route, le) (rate(apisix_http_latency_bucket{hs}[5m])))",
+                f"histogram_quantile(0.95, sum by (route, le) "
+                f"(rate(apisix_http_latency_bucket{hs}[{tw.promql_window}])))",
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                f"sum(increase(apisix_http_status{hs}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
         )
@@ -1724,7 +1746,10 @@ async def metrics_routes_comparison(
 
     name_map = await _route_name_map()
 
-    total = sum(requests_map.values())
+    # Denominator for share is the true total across all routes (respecting the
+    # consumer filter), not just the top-10 rows, so shares stay accurate when
+    # more than 10 routes are active. Mirrors consumers-comparison.
+    total = _extract_scalar(total_res)
     routes: list[dict[str, Any]] = []
     for route, req in requests_map.items():
         req_rounded = round(req)
@@ -1774,11 +1799,13 @@ async def metrics_consumers_comparison(
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"histogram_quantile(0.5, sum by (consumer, le) (rate(apisix_http_latency_bucket{hs}[5m])))",
+                f"histogram_quantile(0.5, sum by (consumer, le) "
+                f"(rate(apisix_http_latency_bucket{hs}[{tw.promql_window}])))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"histogram_quantile(0.95, sum by (consumer, le) (rate(apisix_http_latency_bucket{hs}[5m])))",
+                f"histogram_quantile(0.95, sum by (consumer, le) "
+                f"(rate(apisix_http_latency_bucket{hs}[{tw.promql_window}])))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(

@@ -1284,8 +1284,13 @@ class TestMetricsRoutesComparison:
             {"metric": {"route": "route-a"}, "value": [0, "180.0"]},
             {"metric": {"route": "route-b"}, "value": [0, "60.0"]},
         ]
+        # Grand total equals the visible rows' sum here (1000 + 500); a separate
+        # test covers the case where the grand total exceeds the top-10 rows.
+        total_result = [{"value": [0, "1500"]}]
 
-        mock = AsyncMock(side_effect=[requests_result, errors_result, p50_result, p95_result])
+        mock = AsyncMock(
+            side_effect=[requests_result, errors_result, p50_result, p95_result, total_result]
+        )
         with patch("app.routers.gateway.prometheus_client.instant_query", mock):
             resp = await client.get(
                 "/admin/gateway/metrics/routes-comparison?range=1h",
@@ -1310,12 +1315,38 @@ class TestMetricsRoutesComparison:
         assert b["error_rate"] == 0.0
         assert b["latency_p50_ms"] == pytest.approx(30.0)
 
+    async def test_share_uses_grand_total_not_top10(self, client, admin_token):
+        # Only the top-10 rows are returned, but far more traffic exists. Share and
+        # total_requests must use the grand-total query, not the visible-row sum.
+        requests_result = [
+            {"metric": {"route": "route-a"}, "value": [0, "1000"]},
+            {"metric": {"route": "route-b"}, "value": [0, "500"]},
+        ]
+        total_result = [{"value": [0, "4000"]}]
+        mock = AsyncMock(side_effect=[requests_result, [], [], [], total_result])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/routes-comparison?range=1h",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        # Grand total from the dedicated query, not the 1500 visible across two rows.
+        assert data["total_requests"] == 4000
+        by_route = {r["route"]: r for r in data["routes"]}
+        assert by_route["route-a"]["share"] == pytest.approx(25.0)  # 1000 / 4000
+        assert by_route["route-b"]["share"] == pytest.approx(12.5)  # 500 / 4000
+        # The grand-total denominator is the 5th call: a plain sum without by (route).
+        total_query = mock.call_args_list[4].args[0]
+        assert total_query.startswith("sum(increase(apisix_http_status")
+        assert "by (route)" not in total_query
+
     async def test_routes_sorted_by_requests_desc(self, client, admin_token):
         requests_result = [
             {"metric": {"route": "small"}, "value": [0, "100"]},
             {"metric": {"route": "big"}, "value": [0, "900"]},
         ]
-        mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        mock = AsyncMock(side_effect=[requests_result, [], [], [], []])
         with patch("app.routers.gateway.prometheus_client.instant_query", mock):
             resp = await client.get(
                 "/admin/gateway/metrics/routes-comparison?range=1h",
@@ -1328,7 +1359,7 @@ class TestMetricsRoutesComparison:
         requests_result = [
             {"metric": {"route": "only-a"}, "value": [0, "200"]},
         ]
-        mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        mock = AsyncMock(side_effect=[requests_result, [], [], [], []])
         with patch("app.routers.gateway.prometheus_client.instant_query", mock):
             resp = await client.get(
                 "/admin/gateway/metrics/routes-comparison?range=1h",
@@ -1346,7 +1377,7 @@ class TestMetricsRoutesComparison:
         p50_result = [
             {"metric": {"route": "x"}, "value": [0, "NaN"]},
         ]
-        mock = AsyncMock(side_effect=[requests_result, [], p50_result, []])
+        mock = AsyncMock(side_effect=[requests_result, [], p50_result, [], []])
         with patch("app.routers.gateway.prometheus_client.instant_query", mock):
             resp = await client.get(
                 "/admin/gateway/metrics/routes-comparison?range=1h",
@@ -1363,7 +1394,7 @@ class TestMetricsRoutesComparison:
         p50_result = [
             {"metric": {"route": "x"}},
         ]
-        mock = AsyncMock(side_effect=[requests_result, [], p50_result, []])
+        mock = AsyncMock(side_effect=[requests_result, [], p50_result, [], []])
         with patch("app.routers.gateway.prometheus_client.instant_query", mock):
             resp = await client.get(
                 "/admin/gateway/metrics/routes-comparison?range=1h",
@@ -1376,7 +1407,7 @@ class TestMetricsRoutesComparison:
         requests_result = [
             {"metric": {"route": "route-a"}, "value": [0, "0"]},
         ]
-        mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        mock = AsyncMock(side_effect=[requests_result, [], [], [], []])
         with patch("app.routers.gateway.prometheus_client.instant_query", mock):
             resp = await client.get(
                 "/admin/gateway/metrics/routes-comparison?range=1h",
@@ -1387,7 +1418,7 @@ class TestMetricsRoutesComparison:
         assert data["routes"] == []
 
     async def test_invalid_range_falls_back_to_1h(self, client, admin_token):
-        mock = AsyncMock(side_effect=[[], [], [], []])
+        mock = AsyncMock(side_effect=[[], [], [], [], []])
         with patch("app.routers.gateway.prometheus_client.instant_query", mock):
             resp = await client.get(
                 "/admin/gateway/metrics/routes-comparison?range=bogus",
@@ -1424,7 +1455,7 @@ class TestMetricsRoutesComparison:
             ],
             "total": 3,
         }
-        prom_mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        prom_mock = AsyncMock(side_effect=[requests_result, [], [], [], []])
         list_mock = AsyncMock(return_value=listing)
         with patch("app.routers.gateway.prometheus_client.instant_query", prom_mock), \
              patch("app.routers.gateway.apisix_client.list_resources", list_mock):
@@ -1440,7 +1471,7 @@ class TestMetricsRoutesComparison:
 
     async def test_apisix_failure_does_not_break_metrics(self, client, admin_token):
         requests_result = [{"metric": {"route": "x"}, "value": [0, "10"]}]
-        prom_mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        prom_mock = AsyncMock(side_effect=[requests_result, [], [], [], []])
         list_mock = AsyncMock(side_effect=RuntimeError("apisix down"))
         with patch("app.routers.gateway.prometheus_client.instant_query", prom_mock), \
              patch("app.routers.gateway.apisix_client.list_resources", list_mock):
@@ -1783,7 +1814,7 @@ class TestConsumerFilter:
 
     async def test_routes_comparison_excludes_llm_proxy_by_default(self, client, admin_token):
         requests_result = [{"metric": {"route": "x"}, "value": [0, "10"]}]
-        mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        mock = AsyncMock(side_effect=[requests_result, [], [], [], []])
         list_mock = AsyncMock(return_value={"items": [], "total": 0})
         with patch("app.routers.gateway.prometheus_client.instant_query", mock), \
              patch("app.routers.gateway.apisix_client.list_resources", list_mock):
@@ -1792,13 +1823,14 @@ class TestConsumerFilter:
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 200
-        # All 4 PromQL queries should include the llm-proxy exclusion
+        # All 5 PromQL queries (incl. the grand-total denominator) should include
+        # the llm-proxy exclusion.
         for call in mock.call_args_list:
             assert 'route!="llm-proxy"' in call.args[0]
 
     async def test_routes_comparison_with_consumer(self, client, admin_token):
         requests_result = [{"metric": {"route": "x"}, "value": [0, "10"]}]
-        mock = AsyncMock(side_effect=[requests_result, [], [], []])
+        mock = AsyncMock(side_effect=[requests_result, [], [], [], []])
         list_mock = AsyncMock(return_value={"items": [], "total": 0})
         with patch("app.routers.gateway.prometheus_client.instant_query", mock), \
              patch("app.routers.gateway.apisix_client.list_resources", list_mock):
