@@ -22,6 +22,7 @@ vi.mock('../api/client', () => ({
   getExternalLatency: vi.fn(),
   getExternalServicesComparison: vi.fn(),
   getExternalServicesComparisonSeries: vi.fn(),
+  getExternalHandlersComparison: vi.fn(),
 }));
 
 import { screen, waitFor } from '@testing-library/react';
@@ -34,6 +35,7 @@ import {
   getExternalLatency,
   getExternalServicesComparison,
   getExternalServicesComparisonSeries,
+  getExternalHandlersComparison,
 } from '../api/client';
 import ExternalMonitoring from '../pages/ExternalMonitoring';
 import { renderWithProviders } from './helpers';
@@ -45,6 +47,7 @@ const mockedStatusCodes = vi.mocked(getExternalStatusCodes);
 const mockedLatency = vi.mocked(getExternalLatency);
 const mockedComparison = vi.mocked(getExternalServicesComparison);
 const mockedComparisonSeries = vi.mocked(getExternalServicesComparisonSeries);
+const mockedHandlers = vi.mocked(getExternalHandlersComparison);
 
 describe('ExternalMonitoring', () => {
   beforeEach(() => {
@@ -56,6 +59,7 @@ describe('ExternalMonitoring', () => {
     mockedLatency.mockResolvedValue({ p50: [], p95: [], p99: [] });
     mockedComparison.mockResolvedValue({ total_requests: 0, services: [] });
     mockedComparisonSeries.mockResolvedValue({ buckets: [], series: [], unit: 'requests' });
+    mockedHandlers.mockResolvedValue({ total_requests: 0, handlers: [] });
   });
 
   it('renders loading state', () => {
@@ -125,5 +129,39 @@ describe('ExternalMonitoring', () => {
     expect(
       screen.getByText("Filtered to 'order-api'. Clear the service filter to compare all services."),
     ).toBeInTheDocument();
+  });
+
+  it('opens the endpoint drill-down when a service row is clicked', async () => {
+    const userEvent = (await import('@testing-library/user-event')).default;
+    const user = userEvent.setup();
+    mockedComparison.mockResolvedValue({
+      total_requests: 100,
+      services: [
+        { service: 'order-api', requests: 100, share: 100, error_rate: 0, latency_p50_ms: 10, latency_p95_ms: 20 },
+      ],
+    });
+    mockedHandlers.mockResolvedValue({
+      total_requests: 100,
+      handlers: [
+        { handler: '/orders/{id}', requests: 80, share: 80, error_rate: 0.5, latency_p50_ms: 12, latency_p95_ms: 30 },
+        { handler: '/orders', requests: 20, share: 20, error_rate: 0, latency_p50_ms: null, latency_p95_ms: null },
+      ],
+    });
+
+    renderWithProviders(<ExternalMonitoring />);
+
+    const row = await screen.findByRole('button', { name: 'Open endpoint details for order-api' });
+    await user.click(row);
+
+    expect(await screen.findByText('Endpoint breakdown — order-api')).toBeInTheDocument();
+    expect(screen.getByText('/orders/{id}')).toBeInTheDocument();
+    expect(screen.getByText('/orders')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(mockedHandlers).toHaveBeenCalledWith(expect.anything(), 'order-api');
+    });
+
+    // Clicking again closes the panel.
+    await user.click(row);
+    expect(screen.queryByText('Endpoint breakdown — order-api')).not.toBeInTheDocument();
   });
 });

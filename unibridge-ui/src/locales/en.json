@@ -538,7 +538,13 @@
     "service": "Service",
     "serviceComparison": "Service Comparison ({{range}} total)",
     "noServiceData": "No service traffic data available. Register services on the Servers page and expose the metric convention.",
-    "filteredNote": "Filtered to '{{key}}'. Clear the service filter to compare all services."
+    "filteredNote": "Filtered to '{{key}}'. Clear the service filter to compare all services.",
+    "endpointDetail": "Endpoint breakdown — {{service}}",
+    "endpointComparison": "Endpoint Comparison ({{range}} total, top 10)",
+    "endpoint": "Endpoint",
+    "noEndpointData": "No endpoint data available. The service must label requests with a route pattern (handler).",
+    "openEndpointDetail": "Open endpoint details for {{service}}",
+    "closeEndpointDetail": "Close endpoint details"
   },
   "externalServices": {
     "title": "External services",

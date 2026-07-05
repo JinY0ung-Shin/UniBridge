@@ -1425,6 +1425,30 @@ export async function getExternalServicesComparisonSeries(
   return data;
 }
 
+export type HandlerComparisonRow = {
+  handler: string;
+  requests: number;
+  share: number;
+  error_rate: number;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+};
+
+export type HandlerComparisonResponse = {
+  total_requests: number;
+  handlers: HandlerComparisonRow[];
+};
+
+export async function getExternalHandlersComparison(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  service: string,
+): Promise<HandlerComparisonResponse> {
+  const { data } = await client.get('/admin/external/metrics/handlers-comparison', {
+    params: { ...timeParams(sel), service },
+  });
+  return data;
+}
+
 /* ── S3 Types ── */
 
 export interface S3ConnectionConfig {

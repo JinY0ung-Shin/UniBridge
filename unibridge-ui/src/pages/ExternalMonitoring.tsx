@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -13,6 +14,7 @@ import {
   getExternalLatency,
   getExternalServicesComparison,
   getExternalServicesComparisonSeries,
+  getExternalHandlersComparison,
 } from '../api/client';
 import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
 import BucketedBreakdownView from '../components/BucketedBreakdownView';
@@ -44,6 +46,7 @@ function errorRateClass(v: number): string {
 }
 
 type ServiceSortColumn = 'service' | 'requests' | 'share' | 'error_rate' | 'latency_p50_ms' | 'latency_p95_ms';
+type HandlerSortColumn = 'handler' | 'requests' | 'share' | 'error_rate' | 'latency_p50_ms' | 'latency_p95_ms';
 
 /**
  * Traffic stats for API services monitored WITHOUT gateway onboarding —
@@ -61,11 +64,37 @@ function ExternalMonitoring() {
   const [selectedService, setSelectedService] = useState<string>('');
   const [bucket, setBucket] = useState<Bucket>('auto');
   const [sort, setSort] = useState<SortState<ServiceSortColumn>>({ column: 'requests', dir: 'desc' });
+  const [handlerSort, setHandlerSort] = useState<SortState<HandlerSortColumn>>({ column: 'requests', dir: 'desc' });
+  // Endpoint drill-down opened by clicking a comparison row; the page-level
+  // service filter takes precedence and shows the same panel without a close.
+  const [drillService, setDrillService] = useState<string | null>(null);
+  const detailRef = useRef<HTMLDivElement | null>(null);
   const chartColors = useChartTheme();
   const volumeLabel = (ts: number) =>
     bucket === 'auto' ? formatChartTimestamp(ts, span) : formatBucketLabel(ts, bucket);
 
   const toggleSort = (column: ServiceSortColumn) => setSort((prev) => toggleSortState(prev, column));
+  const toggleHandlerSort = (column: HandlerSortColumn) =>
+    setHandlerSort((prev) => toggleSortState(prev, column));
+
+  const detailService = selectedService || drillService;
+
+  useEffect(() => {
+    if (drillService) {
+      detailRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [drillService]);
+
+  function toggleDrillService(service: string) {
+    setDrillService((current) => (current === service ? null : service));
+  }
+
+  function handleServiceRowKeyDown(event: KeyboardEvent<HTMLTableRowElement>, service: string) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggleDrillService(service);
+    }
+  }
 
   // Shrinking the range under the current calendar bucket would leave a
   // one-bar chart; fall back to auto stepping instead.
@@ -131,6 +160,28 @@ function ExternalMonitoring() {
     enabled: bucket !== 'auto' && !selectedService,
   });
 
+  // Endpoint (handler) breakdown for the drilled-into / filtered service.
+  const handlersQuery = useQuery({
+    queryKey: ['ext-handlers-comparison', selKey, detailService],
+    queryFn: () => getExternalHandlersComparison(selection, detailService!),
+    refetchInterval,
+    enabled: !!detailService,
+  });
+
+  const sortedHandlers = useMemo(() => {
+    const rows = handlersQuery.data?.handlers ?? [];
+    return sortRows(rows, handlerSort, (row, column) => (column === 'handler' ? row.handler : row[column]));
+  }, [handlersQuery.data, handlerSort]);
+
+  const { maxHandlerRequests, maxHandlerP50, maxHandlerP95 } = useMemo(() => {
+    const rows = handlersQuery.data?.handlers ?? [];
+    return {
+      maxHandlerRequests: rows.reduce((m, r) => (r.requests > m ? r.requests : m), 0),
+      maxHandlerP50: rows.reduce((m, r) => (r.latency_p50_ms != null && r.latency_p50_ms > m ? r.latency_p50_ms : m), 0),
+      maxHandlerP95: rows.reduce((m, r) => (r.latency_p95_ms != null && r.latency_p95_ms > m ? r.latency_p95_ms : m), 0),
+    };
+  }, [handlersQuery.data]);
+
   const serviceOptions = useMemo(() => {
     const names = (comparisonQuery.data?.services ?? []).map((s) => s.service);
     if (selectedService && !names.includes(selectedService)) names.push(selectedService);
@@ -179,6 +230,66 @@ function ExternalMonitoring() {
     comparisonQuery.isError || comparisonSeriesQuery.isError
   );
 
+  // Endpoint drill-down panel — rendered under the comparison table when a
+  // row is clicked, or directly when the page is filtered to one service.
+  const endpointDetailPanel = detailService ? (
+    <div className="route-detail-panel" ref={detailRef}>
+      <div className="route-detail-header">
+        <span className="route-detail-title">
+          {t('externalMonitoring.endpointDetail', { service: detailService })}
+        </span>
+        {!selectedService && (
+          <button
+            type="button"
+            className="route-detail-close"
+            onClick={() => setDrillService(null)}
+            aria-label={t('externalMonitoring.closeEndpointDetail')}
+            title={t('externalMonitoring.closeEndpointDetail')}
+          >
+            &times;
+          </button>
+        )}
+      </div>
+      <div className="chart-panel chart-panel--nested">
+        <div className="chart-panel__title">{t('externalMonitoring.endpointComparison', { range: rangeLabel })}</div>
+        {(handlersQuery.data?.handlers ?? []).length > 0 ? (
+          <div className="table-container" style={{ border: 'none' }}>
+            <table className="data-table comparison-table">
+              <thead>
+                <tr>
+                  <SortableHeader column="handler"         label={t('externalMonitoring.endpoint')}    activeColumn={handlerSort.column} dir={handlerSort.dir} onToggle={toggleHandlerSort} />
+                  <SortableHeader column="requests"        label={t('gatewayMonitoring.requests')}     align="right" activeColumn={handlerSort.column} dir={handlerSort.dir} onToggle={toggleHandlerSort} />
+                  <SortableHeader column="share"           label={t('gatewayMonitoring.share')}        align="right" activeColumn={handlerSort.column} dir={handlerSort.dir} onToggle={toggleHandlerSort} />
+                  <SortableHeader column="error_rate"      label={t('gatewayMonitoring.errorRate')}    align="right" activeColumn={handlerSort.column} dir={handlerSort.dir} onToggle={toggleHandlerSort} />
+                  <SortableHeader column="latency_p50_ms"  label={t('gatewayMonitoring.latencyP50')}   align="right" activeColumn={handlerSort.column} dir={handlerSort.dir} onToggle={toggleHandlerSort} />
+                  <SortableHeader column="latency_p95_ms"  label={t('gatewayMonitoring.latencyP95')}   align="right" activeColumn={handlerSort.column} dir={handlerSort.dir} onToggle={toggleHandlerSort} />
+                </tr>
+              </thead>
+              <tbody>
+                {sortedHandlers.map((h) => (
+                  <tr key={h.handler}>
+                    <td className="cell-alias">{h.handler}</td>
+                    <td className="cell-metric"><BarCell value={h.requests} max={maxHandlerRequests} /></td>
+                    <td className="cell-metric"><BarCell value={h.share} max={100} suffix="%" /></td>
+                    <td className={`cell-metric ${errorRateClass(h.error_rate)}`}>{h.error_rate.toFixed(2)}%</td>
+                    <td className="cell-metric">{h.latency_p50_ms == null ? '—' : <BarCell value={h.latency_p50_ms} max={maxHandlerP50} />}</td>
+                    <td className="cell-metric">{h.latency_p95_ms == null ? '—' : <BarCell value={h.latency_p95_ms} max={maxHandlerP95} />}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <PanelStatus
+            loading={handlersQuery.isLoading}
+            error={handlersQuery.isError}
+            emptyText={t('externalMonitoring.noEndpointData')}
+          />
+        )}
+      </div>
+    </div>
+  ) : null;
+
   return (
     <div className="gateway-monitoring">
       <div className="page-header">
@@ -193,7 +304,7 @@ function ExternalMonitoring() {
             <select
               className="api-key-filter__select"
               value={selectedService}
-              onChange={(e) => setSelectedService(e.target.value)}
+              onChange={(e) => { setSelectedService(e.target.value); setDrillService(null); }}
             >
               <option value="">{t('externalMonitoring.allServices')}</option>
               {serviceOptions.map((name) => (
@@ -352,12 +463,15 @@ function ExternalMonitoring() {
 
       {/* Service Comparison — hidden (with a note) while scoped to one service */}
       {selectedService ? (
+        <>
         <div className="chart-panel chart-panel--note">
           <div className="chart-panel__title">{t('externalMonitoring.serviceComparison', { range: rangeLabel })}</div>
           <div className="no-data no-data--compact">
             {t('externalMonitoring.filteredNote', { key: selectedService })}
           </div>
         </div>
+        {endpointDetailPanel}
+        </>
       ) : (
         <>
       <div className="chart-panel">
@@ -377,7 +491,16 @@ function ExternalMonitoring() {
               </thead>
               <tbody>
                 {sortedServices.map((r) => (
-                  <tr key={r.service}>
+                  <tr
+                    key={r.service}
+                    className={`route-row ${drillService === r.service ? 'route-row--selected' : ''}`}
+                    onClick={() => toggleDrillService(r.service)}
+                    onKeyDown={(event) => handleServiceRowKeyDown(event, r.service)}
+                    tabIndex={0}
+                    role="button"
+                    aria-pressed={drillService === r.service}
+                    aria-label={t('externalMonitoring.openEndpointDetail', { service: r.service })}
+                  >
                     <td className="cell-alias">{r.service}</td>
                     <td className="cell-metric"><BarCell value={r.requests} max={maxRequests} /></td>
                     <td className="cell-metric"><BarCell value={r.share} max={100} suffix="%" /></td>
@@ -397,6 +520,9 @@ function ExternalMonitoring() {
           />
         )}
       </div>
+
+      {/* Endpoint drill-down for the clicked service */}
+      {endpointDetailPanel}
 
       {/* Per-service requests over time (bucketed) */}
       <BucketedBreakdownView

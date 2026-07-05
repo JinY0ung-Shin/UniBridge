@@ -538,7 +538,13 @@
     "service": "서비스",
     "serviceComparison": "서비스별 비교 ({{range}} 합계)",
     "noServiceData": "서비스 트래픽 데이터가 없습니다. Servers 페이지에서 서비스를 등록하고 메트릭 컨벤션을 노출하세요.",
-    "filteredNote": "'{{key}}' 서비스로 필터링 중입니다. 전체 서비스 비교는 필터를 해제하면 표시됩니다."
+    "filteredNote": "'{{key}}' 서비스로 필터링 중입니다. 전체 서비스 비교는 필터를 해제하면 표시됩니다.",
+    "endpointDetail": "엔드포인트별 상세 — {{service}}",
+    "endpointComparison": "엔드포인트별 비교 ({{range}} 합계 · 상위 10)",
+    "endpoint": "엔드포인트",
+    "noEndpointData": "엔드포인트 데이터가 없습니다. 서비스가 요청에 라우트 패턴(handler) 라벨을 달아야 합니다.",
+    "openEndpointDetail": "{{service}} 엔드포인트 상세 열기",
+    "closeEndpointDetail": "엔드포인트 상세 닫기"
   },
   "externalServices": {
     "title": "External services",

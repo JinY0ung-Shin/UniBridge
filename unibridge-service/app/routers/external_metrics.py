@@ -99,17 +99,19 @@ def _quantile_expr(quantile: float, sel_inner: str, window: str, group_by: str |
     )
 
 
-def _map_by_service(results: list[dict[str, Any]]) -> dict[str, float]:
+def _map_by_label(results: list[dict[str, Any]], label_name: str) -> dict[str, float]:
+    """Instant-query result → {label value: float}. Items missing the label are
+    skipped (the convention requires it; unlabeled series can't be attributed)."""
     out: dict[str, float] = {}
     for r in results or []:
-        service = r.get("metric", {}).get("service")
-        if not service:
+        key = r.get("metric", {}).get(label_name)
+        if not key:
             continue
         value = r.get("value")
         if not value:
             continue
         try:
-            out[service] = float(value[1])
+            out[key] = float(value[1])
         except (IndexError, ValueError, TypeError):
             continue
     return out
@@ -303,10 +305,10 @@ async def services_comparison(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
 
-    requests_map = _map_by_service(requests_res)
-    errors_map = _map_by_service(errors_res)
-    p50_map = _map_by_service(p50_res)
-    p95_map = _map_by_service(p95_res)
+    requests_map = _map_by_label(requests_res, "service")
+    errors_map = _map_by_label(errors_res, "service")
+    p50_map = _map_by_label(p50_res, "service")
+    p95_map = _map_by_label(p95_res, "service")
     total = _extract_scalar(total_res)
 
     services: list[dict[str, Any]] = []
@@ -330,6 +332,76 @@ async def services_comparison(
 
     services.sort(key=lambda s: s["requests"], reverse=True)
     return {"total_requests": round(total), "services": services}
+
+
+@router.get("/handlers-comparison")
+async def handlers_comparison(
+    tw: TimeWindow = Depends(resolve_time_window),
+    service: str = Query(..., description="Service name (required)"),
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+) -> dict[str, Any]:
+    """Per-endpoint (``handler``) comparison within one service.
+
+    The external analogue of the gateway's per-route drill-down — since these
+    services aren't authenticated by UniBridge there is no per-API-key axis, so
+    the breakdown axis is the RED convention's ``handler`` (route pattern)
+    label instead. Whole-window values; ``share`` uses the service's grand
+    total as denominator (not just the top-10 rows returned). Series without a
+    ``handler`` label are skipped (the convention requires it).
+    """
+    _validate_service(service)
+    sel = _sel(service)
+    sel5 = _sel(service, 'status=~"5.."')
+    w = tw.promql_window
+    try:
+        requests_res, errors_res, p50_res, p95_res, total_res = await asyncio.gather(
+            prometheus_client.instant_query(
+                f"topk(10, {_count_expr(sel, w, group_by='handler')})",
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                _count_expr(sel5, w, group_by="handler"), eval_time=tw.eval_time
+            ),
+            prometheus_client.instant_query(
+                _quantile_expr(0.5, sel, w, group_by="handler"), eval_time=tw.eval_time
+            ),
+            prometheus_client.instant_query(
+                _quantile_expr(0.95, sel, w, group_by="handler"), eval_time=tw.eval_time
+            ),
+            prometheus_client.instant_query(_count_expr(sel, w), eval_time=tw.eval_time),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
+
+    requests_map = _map_by_label(requests_res, "handler")
+    errors_map = _map_by_label(errors_res, "handler")
+    p50_map = _map_by_label(p50_res, "handler")
+    p95_map = _map_by_label(p95_res, "handler")
+    total = _extract_scalar(total_res)
+
+    handlers: list[dict[str, Any]] = []
+    for name, req in requests_map.items():
+        req_rounded = round(req)
+        if req_rounded <= 0:
+            continue
+        share = (req / total * 100) if total > 0 else 0.0
+        err = errors_map.get(name, 0.0)
+        error_rate = (err / req * 100) if req > 0 else 0.0
+        p50 = p50_map.get(name)
+        p95 = p95_map.get(name)
+        handlers.append({
+            "handler": name,
+            "requests": req_rounded,
+            "share": round(share, 2),
+            "error_rate": round(error_rate, 2),
+            "latency_p50_ms": round(p50 * 1000, 2) if p50 is not None and not math.isnan(p50) else None,
+            "latency_p95_ms": round(p95 * 1000, 2) if p95 is not None and not math.isnan(p95) else None,
+        })
+
+    handlers.sort(key=lambda h: h["requests"], reverse=True)
+    return {"total_requests": round(total), "handlers": handlers}
 
 
 @router.get("/services-comparison-series")

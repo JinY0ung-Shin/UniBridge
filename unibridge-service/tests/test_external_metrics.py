@@ -207,3 +207,52 @@ class TestServicesComparisonSeries:
         assert data["unit"] == "requests"
         keys = {s["key"] for s in data["series"]}
         assert keys == {"a", "b"}
+
+
+class TestHandlersComparison:
+    async def test_groups_by_handler_with_service_grand_total(self, client, admin_token):
+        requests_res = [
+            {"metric": {"handler": "/orders/{id}"}, "value": [0, "300"]},
+            {"metric": {"handler": "/orders"}, "value": [0, "100"]},
+        ]
+        errors_res = [{"metric": {"handler": "/orders/{id}"}, "value": [0, "3"]}]
+        p50_res = [{"metric": {"handler": "/orders/{id}"}, "value": [0, "0.05"]}]
+        p95_res = [{"metric": {"handler": "/orders/{id}"}, "value": [0, "0.2"]}]
+        # Grand total exceeds the visible rows: share must use it as denominator.
+        total_res = [{"value": [0, "800"]}]
+        mock = AsyncMock(side_effect=[requests_res, errors_res, p50_res, p95_res, total_res])
+        with patch(_INSTANT, mock):
+            resp = await client.get(
+                "/admin/external/metrics/handlers-comparison?range=1h&service=orders-api",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_requests"] == 800
+        by_handler = {h["handler"]: h for h in data["handlers"]}
+        assert by_handler["/orders/{id}"]["share"] == pytest.approx(37.5)  # 300/800
+        assert by_handler["/orders"]["share"] == pytest.approx(12.5)      # 100/800
+        assert by_handler["/orders/{id}"]["error_rate"] == pytest.approx(1.0)
+        assert by_handler["/orders/{id}"]["latency_p50_ms"] == pytest.approx(50.0)
+        assert by_handler["/orders/{id}"]["latency_p95_ms"] == pytest.approx(200.0)
+        assert by_handler["/orders"]["latency_p50_ms"] is None
+        # Every query is scoped to the requested service; the top-10 request
+        # query groups by handler.
+        top_q = mock.call_args_list[0].args[0]
+        assert 'service="orders-api"' in top_q
+        assert "by (handler)" in top_q
+        assert top_q.startswith("topk(10, ")
+
+    async def test_service_param_required(self, client, admin_token):
+        resp = await client.get(
+            "/admin/external/metrics/handlers-comparison?range=1h",
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 422
+
+    async def test_requires_monitoring_permission(self, client, user_token):
+        resp = await client.get(
+            "/admin/external/metrics/handlers-comparison?range=1h&service=orders-api",
+            headers=auth_header(user_token),
+        )
+        assert resp.status_code == 403
