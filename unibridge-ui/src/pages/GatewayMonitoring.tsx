@@ -409,7 +409,7 @@ function GatewayMonitoring() {
 
       {/* Status Code Distribution */}
       <div className="chart-panel">
-        <div className="chart-panel__title">{t('gatewayMonitoring.statusCodeDist')}</div>
+        <div className="chart-panel__title">{t('gatewayMonitoring.statusCodeDist', { range: rangeLabel })}</div>
         {(statusQuery.data ?? []).length > 0 ? (
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%">
@@ -473,7 +473,7 @@ function GatewayMonitoring() {
 
       {/* Route Comparison */}
       <div className="chart-panel">
-        <div className="chart-panel__title">{t('gatewayMonitoring.routeComparison')}</div>
+        <div className="chart-panel__title">{t('gatewayMonitoring.routeComparison', { range: rangeLabel })}</div>
         {(routesComparisonQuery.data?.routes ?? []).length > 0 ? (
           <div className="table-container" style={{ border: 'none' }}>
             <table className="data-table comparison-table">
@@ -623,7 +623,7 @@ function GatewayMonitoring() {
 
               {/* Route Status Code Distribution */}
               <div className="chart-panel chart-panel--nested">
-                <div className="chart-panel__title">{t('gatewayMonitoring.statusCodeDist')}</div>
+                <div className="chart-panel__title">{t('gatewayMonitoring.statusCodeDist', { range: rangeLabel })}</div>
                 {(routeStatusQuery.data ?? []).length > 0 ? (
                   <div className="chart-container">
                     <ResponsiveContainer width="100%" height="100%">
@@ -676,7 +676,7 @@ function GatewayMonitoring() {
           instead of the panels silently disappearing. */}
       {selectedConsumer ? (
         <div className="chart-panel chart-panel--note">
-          <div className="chart-panel__title">{t('gatewayMonitoring.apiKeyComparison')}</div>
+          <div className="chart-panel__title">{t('gatewayMonitoring.apiKeyComparison', { range: rangeLabel })}</div>
           <div className="no-data no-data--compact">
             {t('gatewayMonitoring.filteredNote', { key: selectedConsumer })}
           </div>
@@ -684,7 +684,7 @@ function GatewayMonitoring() {
       ) : (
         <>
       <div className="chart-panel">
-        <div className="chart-panel__title">{t('gatewayMonitoring.apiKeyComparison')}</div>
+        <div className="chart-panel__title">{t('gatewayMonitoring.apiKeyComparison', { range: rangeLabel })}</div>
         {(consumersComparisonQuery.data?.consumers ?? []).length > 0 ? (
           <div className="table-container" style={{ border: 'none' }}>
             <table className="data-table comparison-table">

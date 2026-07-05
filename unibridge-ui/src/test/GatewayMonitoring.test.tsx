@@ -125,9 +125,9 @@ describe('GatewayMonitoring', () => {
 
     expect(screen.getByText('Request Rate (req/s)')).toBeInTheDocument();
     expect(screen.getByText('Request Count (per interval)')).toBeInTheDocument();
-    expect(screen.getByText('Status Code Distribution')).toBeInTheDocument();
+    expect(screen.getByText('Status Code Distribution (1h)')).toBeInTheDocument();
     expect(screen.getByText('Latency (ms)')).toBeInTheDocument();
-    expect(screen.getByText('Route Comparison')).toBeInTheDocument();
+    expect(screen.getByText('Route Comparison (1h total)')).toBeInTheDocument();
   });
 
   it('keeps a custom range when picking a day bucket, but nudges presets', async () => {

@@ -343,7 +343,7 @@ function LlmMonitoring() {
 
       {/* Usage by Model */}
       <div className="chart-panel">
-        <div className="chart-panel__title">{t('llmMonitoring.byModel')}</div>
+        <div className="chart-panel__title">{t('llmMonitoring.byModel', { range: rangeLabel })}</div>
         {(byModelQuery.data ?? []).length > 0 ? (
           <div className="table-container" style={{ border: 'none' }}>
             <table className="data-table comparison-table">
@@ -410,7 +410,7 @@ function LlmMonitoring() {
           panels silently disappearing. */}
       {selectedKey ? (
         <div className="chart-panel chart-panel--note">
-          <div className="chart-panel__title">{t('llmMonitoring.topKeys')}</div>
+          <div className="chart-panel__title">{t('llmMonitoring.topKeys', { range: rangeLabel })}</div>
           <div className="no-data no-data--compact">
             {t('llmMonitoring.filteredNote', { key: selectedKey })}
           </div>
@@ -418,7 +418,7 @@ function LlmMonitoring() {
       ) : (
         <>
       <div className="chart-panel">
-        <div className="chart-panel__title">{t('llmMonitoring.topKeys')}</div>
+        <div className="chart-panel__title">{t('llmMonitoring.topKeys', { range: rangeLabel })}</div>
         {(topKeysQuery.data ?? []).length > 0 ? (
           <div className="table-container" style={{ border: 'none' }}>
             <table className="data-table comparison-table">
@@ -482,7 +482,7 @@ function LlmMonitoring() {
 
       {/* Status Code Distribution */}
       <div className="chart-panel">
-        <div className="chart-panel__title">{t('llmMonitoring.statusCodeDist')}</div>
+        <div className="chart-panel__title">{t('llmMonitoring.statusCodeDist', { range: rangeLabel })}</div>
         <p className="chart-panel__caption">{t('llmMonitoring.statusSourceCaption')}</p>
         {(statusCodesQuery.data ?? []).length > 0 ? (
           <div className="chart-container">
