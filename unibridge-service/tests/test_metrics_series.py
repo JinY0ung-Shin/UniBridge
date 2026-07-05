@@ -136,13 +136,18 @@ class TestByModelSeries:
         points align to the shared axis and totals sum across all buckets."""
         import time
 
+        from app.routers.gateway import _align_down_kst
+
         # Completed range samples are emitted at the bucket END; the helper
-        # shifts them back one day (86400s) to mark the bucket start. Place the
-        # samples a few days before "now" so they land inside the 30d window.
+        # shifts them back one day (86400s) to mark the bucket start. Real
+        # responses always sit on the KST day grid (the backend queries with an
+        # aligned start and a day step), so the fixtures must too — the bucket
+        # axis is generated on that grid and off-grid samples would be dropped.
         bsec = 86400
         now = int(time.time())
-        b1 = now - 5 * bsec  # bucket-end timestamps (within the window)
-        b2 = now - 4 * bsec
+        current_start = _align_down_kst(now, "day")
+        b1 = current_start - 3 * bsec  # bucket-end timestamps (within the window)
+        b2 = current_start - 2 * bsec
         completed = [
             _series("model", "gpt-4", [(b1, "100"), (b2, "200")]),
             _series("model", "claude", [(b1, "50")]),

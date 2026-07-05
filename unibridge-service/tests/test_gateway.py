@@ -1969,6 +1969,38 @@ class TestMetricsRequestsTotal:
         assert instant_mock.call_args.kwargs["eval_time"] == float(end)
         assert "[43200s]" in instant_mock.call_args.args[0]
 
+    async def test_day_bucket_zero_fills_missing_buckets(self, client, admin_token):
+        # Sparse metrics (e.g. LiteLLM counters) return no samples for quiet
+        # buckets; the axis must still contain every calendar bucket with 0
+        # instead of collapsing non-adjacent days next to each other.
+        from datetime import datetime, timedelta, timezone
+
+        kst = timezone(timedelta(hours=9))
+        start = int(datetime(2026, 6, 10, 3, 0, tzinfo=kst).timestamp())
+        end = int(datetime(2026, 6, 13, 12, 0, tzinfo=kst).timestamp())
+        aligned_start = int(datetime(2026, 6, 10, 0, 0, tzinfo=kst).timestamp())
+        current_start = int(datetime(2026, 6, 13, 0, 0, tzinfo=kst).timestamp())
+        # Only one completed sample (for the 6/11 bucket); 6/10 and 6/12 are silent.
+        completed = [{"values": [[aligned_start + 2 * 86400, "5"]]}]
+        partial = [{"value": [end, "7"]}]
+        range_mock = AsyncMock(return_value=completed)
+        instant_mock = AsyncMock(return_value=partial)
+
+        with patch("app.routers.gateway.prometheus_client.range_query", range_mock), \
+             patch("app.routers.gateway.prometheus_client.instant_query", instant_mock):
+            resp = await client.get(
+                f"/admin/gateway/metrics/requests-total?start={start}&end={end}&bucket=day",
+                headers=auth_header(admin_token),
+            )
+
+        assert resp.status_code == 200
+        assert resp.json() == [
+            {"timestamp": aligned_start, "value": 0.0},
+            {"timestamp": aligned_start + 86400, "value": 5.0},
+            {"timestamp": aligned_start + 2 * 86400, "value": 0.0},
+            {"timestamp": current_start, "value": 7.0},
+        ]
+
     async def test_prometheus_error_returns_502(self, client, admin_token):
         with patch(
             "app.routers.gateway.prometheus_client.range_query",
@@ -2424,6 +2456,55 @@ class TestLlmMetricsCustomRange:
         for call in instant_mock.call_args_list:
             assert call.kwargs["eval_time"] == float(end)
             assert "[43200s]" in call.args[0]
+
+
+class TestLlmByModelSeries:
+    async def test_week_bucket_axis_includes_empty_buckets(self, client, admin_token):
+        # A 3-week range where one model only has traffic in the second week
+        # and another only in the current partial week: the bucket axis must
+        # still list every KST calendar week, with per-series zero-fill.
+        from datetime import datetime, timedelta, timezone
+
+        kst = timezone(timedelta(hours=9))
+        start = int(datetime(2026, 6, 3, 10, 0, tzinfo=kst).timestamp())    # Wed
+        end = int(datetime(2026, 6, 24, 9, 0, tzinfo=kst).timestamp())      # Wed
+        week = 604800
+        mon_6_01 = int(datetime(2026, 6, 1, 0, 0, tzinfo=kst).timestamp())  # aligned start
+        mon_6_22 = int(datetime(2026, 6, 22, 0, 0, tzinfo=kst).timestamp()) # current bucket
+        completed = [{
+            "metric": {"requested_model": "model-a"},
+            "values": [
+                [mon_6_01, "999"],            # covers 5/25 week → before range, dropped
+                [mon_6_01 + 2 * week, "700"], # sample at 6/15 → bucket 6/8
+            ],
+        }]
+        partial = [{"metric": {"requested_model": "model-b"}, "value": [end, "40"]}]
+        range_mock = AsyncMock(return_value=completed)
+        instant_mock = AsyncMock(return_value=partial)
+
+        with patch("app.routers.gateway.prometheus_client.range_query", range_mock), \
+             patch("app.routers.gateway.prometheus_client.instant_query", instant_mock):
+            resp = await client.get(
+                f"/admin/gateway/metrics/llm/by-model-series?start={start}&end={end}&bucket=week",
+                headers=auth_header(admin_token),
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["unit"] == "tokens"
+        # Full weekly axis: 6/1, 6/8, 6/15 completed + 6/22 partial — including
+        # the empty 6/1 and 6/15 weeks.
+        assert data["buckets"] == [mon_6_01, mon_6_01 + week, mon_6_01 + 2 * week, mon_6_22]
+        assert data["series"] == [
+            {"key": "model-a", "total": 700.0, "points": [0.0, 700.0, 0.0, 0.0]},
+            {"key": "model-b", "total": 40.0, "points": [0.0, 0.0, 0.0, 40.0]},
+        ]
+        _, range_kwargs = range_mock.call_args
+        assert range_kwargs["start"] == float(mon_6_01)
+        assert range_kwargs["end"] == float(mon_6_22)
+        assert range_kwargs["step"] == f"{week}s"
+        assert "[7d]" in range_mock.call_args.args[0]
+        assert instant_mock.call_args.kwargs["eval_time"] == float(end)
 
 
 class TestLabelsHelper:

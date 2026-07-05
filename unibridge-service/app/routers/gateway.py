@@ -1234,6 +1234,19 @@ async def _volume_series(
                 "value": round(_extract_scalar(partial_results), 4),
             }
         )
+
+    # Deterministic calendar axis: emit every bucket in the window, zero-filling
+    # buckets Prometheus returned no samples for. Sparse metrics (e.g. LiteLLM
+    # counters that only exist while traffic flows) would otherwise drop empty
+    # buckets from the axis entirely, collapsing non-adjacent periods next to
+    # each other. Both bounds sit on the same KST grid (no DST), so fixed-step
+    # iteration is exact. An entirely empty result stays [] → "no data".
+    if points:
+        value_by_bucket = {int(p["timestamp"]): p["value"] for p in points}
+        axis = list(range(int(tw.start), int(current_start), bsec))
+        if elapsed > 0:
+            axis.append(int(current_start))
+        points = [{"timestamp": b, "value": value_by_bucket.get(b, 0.0)} for b in axis]
     return points
 
 
@@ -1362,7 +1375,6 @@ async def _grouped_volume_series(
     # Completed buckets: range query, then shift each sample back one bucket so
     # its timestamp marks the period start (mirrors _bucket_points).
     per_key_points: dict[str, dict[int, float]] = {}
-    bucket_set: set[int] = set()
     if float(current_start) > float(tw.start):
         completed = await prometheus_client.range_query(
             query_for_window(tw.volume_window),
@@ -1379,7 +1391,6 @@ async def _grouped_volume_series(
                 if bucket_start < start:
                     continue
                 dest[bucket_start] = dest.get(bucket_start, 0.0) + value
-                bucket_set.add(bucket_start)
 
     # Partial current bucket: instant query over the elapsed window.
     elapsed = int(raw_end - current_start)
@@ -1392,9 +1403,14 @@ async def _grouped_volume_series(
         for key, value in _grouped_instant(partial, label_names).items():
             dest = per_key_points.setdefault(key, {})
             dest[current_start] = dest.get(current_start, 0.0) + value
-        bucket_set.add(current_start)
 
-    buckets = sorted(bucket_set)
+    # Deterministic calendar axis (mirrors _volume_series): every bucket in the
+    # window appears even when no series has a sample there, so sparse metrics
+    # don't silently drop empty weeks/days and misalign the bars that remain.
+    # _assemble_grouped_breakdown zero-fills each series along this axis.
+    buckets = list(range(start, current_start, bsec))
+    if elapsed > 0:
+        buckets.append(current_start)
     return _assemble_grouped_breakdown(per_key_points, buckets, unit)
 
 
