@@ -1299,6 +1299,132 @@ export async function getServerMetrics(
   return data;
 }
 
+/* ── External services (APIs monitored without gateway onboarding) ── */
+
+export interface ExternalService {
+  id: number;
+  name: string;
+  address: string;
+  metrics_path: string;
+  description: string | null;
+  enabled: boolean;
+  status?: 'up' | 'down' | 'unknown' | null;
+  created_at?: string | null;
+}
+
+export interface ExternalServiceInput {
+  name?: string;
+  address?: string;
+  metrics_path?: string;
+  description?: string | null;
+  enabled?: boolean;
+}
+
+export async function getExternalServices(): Promise<ExternalService[]> {
+  const { data } = await client.get('/admin/servers/external-services');
+  return data;
+}
+
+export async function createExternalService(body: ExternalServiceInput): Promise<ExternalService> {
+  const { data } = await client.post('/admin/servers/external-services', body);
+  return data;
+}
+
+export async function updateExternalService(id: number, body: ExternalServiceInput): Promise<ExternalService> {
+  const { data } = await client.put(`/admin/servers/external-services/${id}`, body);
+  return data;
+}
+
+export async function deleteExternalService(id: number): Promise<void> {
+  await client.delete(`/admin/servers/external-services/${id}`);
+}
+
+/* ── External service metrics (RED convention, job="external-services") ── */
+
+export type ServiceComparisonRow = {
+  service: string;
+  requests: number;
+  share: number;
+  error_rate: number;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+};
+
+export type ServiceComparisonResponse = {
+  total_requests: number;
+  services: ServiceComparisonRow[];
+};
+
+export async function getExternalSummary(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  service?: string,
+): Promise<MetricsSummary> {
+  const { data } = await client.get('/admin/external/metrics/summary', {
+    params: { ...timeParams(sel), service },
+  });
+  return data;
+}
+
+export async function getExternalRequests(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  service?: string,
+): Promise<TimeSeriesPoint[]> {
+  const { data } = await client.get('/admin/external/metrics/requests', {
+    params: { ...timeParams(sel), service },
+  });
+  return data;
+}
+
+export async function getExternalRequestsTotal(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  service?: string,
+  bucket: Bucket = 'auto',
+): Promise<TimeSeriesPoint[]> {
+  const { data } = await client.get('/admin/external/metrics/requests-total', {
+    params: { ...timeParams(sel), ...bucketParam(bucket), service },
+  });
+  return data;
+}
+
+export async function getExternalStatusCodes(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  service?: string,
+): Promise<StatusCodeData[]> {
+  const { data } = await client.get('/admin/external/metrics/status-codes', {
+    params: { ...timeParams(sel), service },
+  });
+  return data;
+}
+
+export async function getExternalLatency(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  service?: string,
+): Promise<LatencyData> {
+  const { data } = await client.get('/admin/external/metrics/latency', {
+    params: { ...timeParams(sel), service },
+  });
+  return data;
+}
+
+export async function getExternalServicesComparison(
+  sel: TimeSelection = DEFAULT_SELECTION,
+): Promise<ServiceComparisonResponse> {
+  const { data } = await client.get('/admin/external/metrics/services-comparison', {
+    params: { ...timeParams(sel) },
+  });
+  return data;
+}
+
+export async function getExternalServicesComparisonSeries(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  bucket: Bucket = 'auto',
+): Promise<BucketedBreakdown> {
+  const { data } = await client.get('/admin/external/metrics/services-comparison-series', {
+    params: { ...timeParams(sel), ...bucketParam(bucket) },
+  });
+  return data;
+}
+
 /* ── S3 Types ── */
 
 export interface S3ConnectionConfig {

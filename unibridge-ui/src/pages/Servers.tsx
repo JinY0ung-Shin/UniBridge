@@ -12,6 +12,7 @@ import {
   type MonitoredServerInput,
 } from '../api/client';
 import ResourceModal from '../components/ResourceModal';
+import ExternalServicesSection from '../components/ExternalServicesSection';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
 import './Connections.css';
@@ -331,6 +332,8 @@ function Servers() {
           </div>
         )
       )}
+
+      <ExternalServicesSection />
 
       {showModal && (
         <ResourceModal

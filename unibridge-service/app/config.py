@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     # the MonitoredHost registry (must be on a volume shared with Prometheus).
     NODE_EXPORTER_JOB: str = "nodes"
     PROMETHEUS_FILE_SD_PATH: str = "/etc/prometheus/file_sd/nodes.json"
+    # External API-service monitoring: Prometheus scrape job for services that
+    # expose RED metrics (http_requests_total + http_request_duration_seconds)
+    # without routing through the gateway, and the file-based service-discovery
+    # targets file the service writes from the MonitoredService registry (must be
+    # on the same volume shared with Prometheus as PROMETHEUS_FILE_SD_PATH).
+    EXTERNAL_SERVICES_JOB: str = "external-services"
+    PROMETHEUS_SERVICES_FILE_SD_PATH: str = "/etc/prometheus/file_sd/services.json"
     # Optional global comma-separated mountpoint whitelist for disk-capacity
     # alerts (e.g. "/,/data,/backup"). Hosts with MonitoredHost.disk_mountpoints
     # override this. Empty at both levels → every real (non-pseudo) filesystem is

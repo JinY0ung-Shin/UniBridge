@@ -15,8 +15,22 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app import metrics
 from app.config import settings, validate_settings
 from app.database import get_db, init_db
-from app.models import DBConnection, MonitoredHost, NASConnection
-from app.routers import admin, alerts, api_keys, gateway, nas, query, query_history, roles, s3, servers, usages, users
+from app.models import DBConnection, MonitoredHost, MonitoredService, NASConnection
+from app.routers import (
+    admin,
+    alerts,
+    api_keys,
+    external_metrics,
+    gateway,
+    nas,
+    query,
+    query_history,
+    roles,
+    s3,
+    servers,
+    usages,
+    users,
+)
 from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
 from app.services.connection_manager import connection_manager
 from app.services.s3_manager import s3_manager
@@ -103,6 +117,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     async for db in get_db():
         from app.services import server_monitor
         await server_monitor.sync_targets_from_db(db)
+        await server_monitor.sync_service_targets_from_db(db)
         break
 
     logger.info("Loading system settings...")
@@ -509,6 +524,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         known_nas_aliases = set(nas_aliases_result.scalars().all())
         host_names_result = await db.execute(select(MonitoredHost.name))
         known_host_names = set(host_names_result.scalars().all())
+        service_names_result = await db.execute(select(MonitoredService.name))
+        known_service_names = set(service_names_result.scalars().all())
 
         known_upstream_ids: set[str] | None
         known_route_ids: set[str] | None
@@ -542,6 +559,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             known_upstream_ids=known_upstream_ids,
             known_route_ids=known_route_ids,
             known_host_names=known_host_names,
+            known_service_names=known_service_names,
         )
         break
     set_alert_state(alert_state)
@@ -642,6 +660,7 @@ app.include_router(admin.router)
 app.include_router(alerts.router)
 app.include_router(api_keys.router)
 app.include_router(gateway.router)
+app.include_router(external_metrics.router)
 app.include_router(s3.router)
 app.include_router(nas.router)
 app.include_router(servers.router)

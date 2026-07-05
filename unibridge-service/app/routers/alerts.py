@@ -20,6 +20,7 @@ from app.models import (
     AlertSettings,
     DBConnection,
     MonitoredHost,
+    MonitoredService,
     NASConnection,
     ResourceOwner,
     S3Connection,
@@ -53,7 +54,7 @@ def _mask_webhook_url(url: str) -> str:
     return f"{parsed.scheme}://{host}/***"
 
 
-RESOURCE_TYPES = {"db", "s3", "nas", "route", "server"}
+RESOURCE_TYPES = {"db", "s3", "nas", "route", "server", "service"}
 APISIX_RESOURCE_TYPES = {
     "route": "routes",
 }
@@ -213,6 +214,9 @@ async def _resource_display_name(
     if resource_type == "server":
         result = await db.execute(select(MonitoredHost.name).where(MonitoredHost.name == resource_id))
         return result.scalar_one_or_none()
+    if resource_type == "service":
+        result = await db.execute(select(MonitoredService.name).where(MonitoredService.name == resource_id))
+        return result.scalar_one_or_none()
 
     items = await _load_apisix_resources(resource_type)
     for item in items:
@@ -269,6 +273,17 @@ async def _list_resources_for_owners(db: AsyncSession) -> list[ResourceOwnerResp
         owner = owners.get(("server", name))
         rows.append(ResourceOwnerResponse(
             resource_type="server",
+            resource_id=name,
+            display_name=name,
+            emails=_parse_emails(owner.emails) if owner is not None else [],
+            alerts_enabled=owner.alerts_enabled if owner is not None else True,
+        ))
+
+    service_result = await db.execute(select(MonitoredService.name).order_by(MonitoredService.name))
+    for name in service_result.scalars().all():
+        owner = owners.get(("service", name))
+        rows.append(ResourceOwnerResponse(
+            resource_type="service",
             resource_id=name,
             display_name=name,
             emails=_parse_emails(owner.emails) if owner is not None else [],

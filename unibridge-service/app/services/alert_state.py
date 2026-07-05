@@ -318,6 +318,7 @@ async def purge_stale_states(
     known_upstream_ids: set[str] | None,
     known_route_ids: set[str] | None,
     known_host_names: set[str] | None = None,
+    known_service_names: set[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Drop alert states whose targets no longer exist.
 
@@ -350,6 +351,11 @@ async def purge_stale_states(
                 should_remove = True
             elif known_route_ids is not None:
                 should_remove = target not in known_route_ids
+        elif atype.startswith("external_service_"):
+            # External-service signals (external_service_down): key by service
+            # name. Skip the purge when the registry could not be loaded.
+            if known_service_names is not None:
+                should_remove = target not in known_service_names
         elif atype.startswith("server_"):
             # Host signals (server_down / server_disk / server_cpu / ...): key by
             # host name. Skip the purge when the registry could not be loaded.

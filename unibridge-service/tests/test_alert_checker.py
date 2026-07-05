@@ -629,3 +629,47 @@ async def test_run_single_check_respects_trigger_after_failures(monkeypatch, see
     assert dispatched == []
     await alert_checker.run_single_check(state, trigger_after_failures=3)
     assert dispatched == ["triggered"]
+
+
+class TestExternalServiceHealth:
+    @pytest.mark.asyncio
+    async def test_external_service_down_dispatches(self):
+        from app.services.alert_checker import _check_service_health
+        from app.services.server_monitor import ServiceSignal
+
+        state = AlertStateManager()
+        svc = SimpleNamespace(name="orders", enabled=True)
+        signal = ServiceSignal(
+            alert_type="external_service_down", target="orders", display="orders",
+            is_healthy=False, severity="critical",
+            message="External service 'orders' is unreachable (metrics scrape is down).",
+            monitor_label="외부 서비스 상태",
+        )
+        with patch("app.services.alert_checker._load_service_monitoring",
+                   new_callable=AsyncMock, return_value=([svc], 0)), \
+             patch("app.services.alert_checker.server_monitor.evaluate_services",
+                   new_callable=AsyncMock, return_value=[signal]), \
+             patch("app.services.alert_checker._persist_state_safely", new_callable=AsyncMock), \
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+            # trigger_after_failures=1 → first unhealthy observation fires immediately.
+            await _check_service_health(state, trigger_after_failures=1)
+
+        assert state.get_status("external_service_down", "orders") == "alert"
+        mock_dispatch.assert_called_once()
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs["resource_type"] == "service"
+        assert kwargs["resource_id"] == "orders"
+        assert kwargs["alert_type"] == "triggered"
+        assert kwargs["target"] == "orders"
+        assert kwargs["severity"] == "critical"
+
+    @pytest.mark.asyncio
+    async def test_no_enabled_services_no_dispatch(self):
+        from app.services.alert_checker import _check_service_health
+
+        state = AlertStateManager()
+        with patch("app.services.alert_checker._load_service_monitoring",
+                   new_callable=AsyncMock, return_value=([], 0)), \
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+            await _check_service_health(state, trigger_after_failures=1)
+        mock_dispatch.assert_not_called()

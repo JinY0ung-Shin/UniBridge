@@ -512,3 +512,163 @@ async def evaluate_hosts(
             ))
 
     return signals
+
+
+# ── External service (RED-metrics) monitoring ────────────────────────────────
+#
+# The service-monitoring analogue of the host pipeline above: render the
+# MonitoredService registry into a second file_sd file for the
+# ``external-services`` scrape job, and evaluate a single reachability signal
+# (``external_service_down``) per registered service from ``up{job=...}``.
+# Traffic-stat metrics (requests/errors/latency) are served on demand by
+# app.routers.external_metrics; only reachability drives alerts, mirroring
+# ``server_down``.
+
+# All alert_type strings produced for external-service signals (keyed by name).
+EXTERNAL_SERVICE_ALERT_TYPES = ("external_service_down",)
+
+
+def _services_job() -> str:
+    return settings.EXTERNAL_SERVICES_JOB
+
+
+def build_service_targets(services: Iterable[Any]) -> list[dict[str, Any]]:
+    """Render enabled MonitoredServices into Prometheus file_sd entries.
+
+    Each entry carries a ``service`` label (the friendly name, used as the alert
+    target and the metric ``service`` label) plus ``__metrics_path__`` so a
+    service exposing metrics somewhere other than ``/metrics`` (e.g. Spring's
+    ``/actuator/prometheus``) is scraped at the right path without a per-service
+    scrape config.
+    """
+    entries: list[dict[str, Any]] = []
+    for service in services:
+        if not getattr(service, "enabled", True):
+            continue
+        entries.append(
+            {
+                "targets": [service.address],
+                "labels": {
+                    "service": service.name,
+                    "__metrics_path__": service.metrics_path or "/metrics",
+                },
+            }
+        )
+    return entries
+
+
+async def write_service_targets_file(
+    services: Iterable[Any], path: str | None = None
+) -> None:
+    """Write the external-services file_sd targets file atomically. Raises on I/O failure."""
+    target_path = path or settings.PROMETHEUS_SERVICES_FILE_SD_PATH
+    entries = build_service_targets(services)
+    await asyncio.to_thread(_write_json_atomic, target_path, entries)
+
+
+async def sync_service_targets_from_db(db) -> None:
+    """Reload the service registry and rewrite the file_sd targets (best-effort).
+
+    Mirrors :func:`sync_targets_from_db` for hosts: the database is the source of
+    truth; a write failure here is logged but not fatal, and the next successful
+    sync (a later CRUD op or boot reconcile) repairs it.
+    """
+    from sqlalchemy import select
+
+    from app.models import MonitoredService
+
+    result = await db.execute(select(MonitoredService))
+    services = result.scalars().all()
+    try:
+        await write_service_targets_file(services)
+    except Exception as exc:  # noqa: BLE001 — best-effort reconcile
+        logger.warning(
+            "Failed to write Prometheus file_sd service targets to %s: %s",
+            settings.PROMETHEUS_SERVICES_FILE_SD_PATH,
+            exc,
+        )
+
+
+def _q_service_up() -> str:
+    return f'up{{job="{_services_job()}"}}'
+
+
+def _map_by_service(results: list[dict[str, Any]]) -> dict[str, float]:
+    """Collapse instant-query results into {service_label: value}, dropping NaN."""
+    out: dict[str, float] = {}
+    for item in results:
+        service = item.get("metric", {}).get("service")
+        if not service:
+            continue
+        try:
+            value = float(item.get("value", [0, "nan"])[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if math.isnan(value):
+            continue
+        out[str(service)] = value
+    return out
+
+
+async def service_up_map() -> dict[str, bool] | None:
+    """Return {service_name: is_up} from Prometheus, or None if it is unreachable."""
+    try:
+        results = await prometheus_client.instant_query(_q_service_up())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not query external-service up status: %s", exc)
+        return None
+    return {name: value >= 1.0 for name, value in _map_by_service(results).items()}
+
+
+@dataclass
+class ServiceSignal:
+    """One evaluated external-service signal, ready for the alert-state pipeline."""
+
+    alert_type: str
+    target: str          # service name (== ResourceOwner resource_id)
+    display: str
+    is_healthy: bool
+    severity: str | None
+    message: str
+    monitor_label: str
+
+
+async def evaluate_services(services: list[Any]) -> list[ServiceSignal]:
+    """Query Prometheus once for ``up`` and build a down-signal per service.
+
+    Returns an empty list (skip this cycle) if Prometheus is unreachable, so a
+    transient outage never produces a false ``external_service_down`` for every
+    service — identical to :func:`evaluate_hosts`.
+    """
+    enabled = [s for s in services if getattr(s, "enabled", True)]
+    if not enabled:
+        return []
+    try:
+        up_map = _map_by_service(await prometheus_client.instant_query(_q_service_up()))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "External-service health check skipped (Prometheus query failed): %s", exc
+        )
+        return []
+
+    signals: list[ServiceSignal] = []
+    for service in enabled:
+        name = service.name
+        # Absence from the up map == unreachable/not scraped yet.
+        is_up = up_map.get(name, 0.0) >= 1.0
+        signals.append(
+            ServiceSignal(
+                alert_type="external_service_down",
+                target=name,
+                display=name,
+                is_healthy=is_up,
+                severity="critical" if not is_up else None,
+                message=(
+                    f"External service '{name}' is reachable again."
+                    if is_up
+                    else f"External service '{name}' is unreachable (metrics scrape is down)."
+                ),
+                monitor_label="외부 서비스 상태",
+            )
+        )
+    return signals

@@ -374,3 +374,40 @@ class MonitoredHost(Base):
     def __init__(self, **kwargs):
         kwargs.setdefault("enabled", True)
         super().__init__(**kwargs)
+
+
+class MonitoredService(Base):
+    """An external API service scraped by Prometheus for RED metrics.
+
+    The service-monitoring analogue of :class:`MonitoredHost`: rather than a
+    node_exporter agent, each entry points at a service that exposes
+    ``http_requests_total`` + ``http_request_duration_seconds`` (see
+    ``docs/api-metrics-convention.md``). ``address`` is the metrics endpoint
+    (``host:port``), ``name`` is the friendly key rendered as the Prometheus
+    ``service`` label (and the alert target), and ``metrics_path`` is the HTTP
+    path Prometheus scrapes (written as ``__metrics_path__`` in file_sd, so a
+    Spring app can point at ``/actuator/prometheus``). Both are written into the
+    ``external-services`` file_sd targets file from this registry.
+
+    Alert recipients are not stored here: like hosts (resource_type ``server``),
+    services resolve 담당자 emails through :class:`ResourceOwner` keyed by
+    resource_type ``service``.
+    """
+
+    __tablename__ = "monitored_services"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), unique=True, nullable=False, index=True)
+    address = Column(String(255), nullable=False)  # metrics endpoint host:port
+    metrics_path = Column(
+        String(255), default="/metrics", nullable=False, server_default="/metrics"
+    )
+    description = Column(String(255), default="", nullable=False, server_default="")
+    enabled = Column(Boolean, default=True, nullable=False, server_default="true")
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("enabled", True)
+        kwargs.setdefault("metrics_path", "/metrics")
+        super().__init__(**kwargs)

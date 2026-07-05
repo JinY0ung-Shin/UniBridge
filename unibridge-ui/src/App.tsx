@@ -31,6 +31,7 @@ const NasConnections = lazy(() => import('./pages/NasConnections'));
 const NasBrowser = lazy(() => import('./pages/NasBrowser'));
 const Servers = lazy(() => import('./pages/Servers'));
 const ServerDetail = lazy(() => import('./pages/ServerDetail'));
+const ExternalMonitoring = lazy(() => import('./pages/ExternalMonitoring'));
 
 export function ProtectedRoute({ permission, children }: { permission: string | string[]; children: React.ReactNode }) {
   const { t } = useTranslation();
@@ -92,6 +93,7 @@ function App() {
           <Route path="/nas/browse/:alias" element={<ProtectedRoute permission="nas.browse"><NasBrowser /></ProtectedRoute>} />
           <Route path="/servers" element={<ProtectedRoute permission="servers.read"><Servers /></ProtectedRoute>} />
           <Route path="/servers/:id" element={<ProtectedRoute permission="servers.read"><ServerDetail /></ProtectedRoute>} />
+          <Route path="/external/monitoring" element={<ProtectedRoute permission="gateway.monitoring.read"><ExternalMonitoring /></ProtectedRoute>} />
           <Route path="/gateway/routes" element={<ProtectedRoute permission="gateway.routes.read"><GatewayRoutes /></ProtectedRoute>} />
           <Route path="/gateway/routes/new" element={<ProtectedRoute permission="gateway.routes.write"><GatewayRouteForm /></ProtectedRoute>} />
           <Route path="/gateway/routes/:id/edit" element={<ProtectedRoute permission="gateway.routes.write"><GatewayRouteForm /></ProtectedRoute>} />

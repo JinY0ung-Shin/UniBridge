@@ -5,16 +5,21 @@ vi.mock('../api/client', () => ({
   updateServer: vi.fn(),
   deleteServer: vi.fn(),
   testServer: vi.fn(),
+  getExternalServices: vi.fn(),
+  createExternalService: vi.fn(),
+  updateExternalService: vi.fn(),
+  deleteExternalService: vi.fn(),
 }));
 
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getServers } from '../api/client';
+import { getServers, getExternalServices } from '../api/client';
 import Servers from '../pages/Servers';
 import { renderWithProviders } from './helpers';
 
 const mockedGetServers = vi.mocked(getServers);
+const mockedGetExternalServices = vi.mocked(getExternalServices);
 
 function makeServer(overrides = {}) {
   return {
@@ -38,6 +43,28 @@ describe('Servers', () => {
   beforeEach(() => {
     mockedGetServers.mockReset();
     mockedGetServers.mockResolvedValue([]);
+    mockedGetExternalServices.mockReset();
+    mockedGetExternalServices.mockResolvedValue([]);
+  });
+
+  it('renders the external services section', async () => {
+    mockedGetExternalServices.mockResolvedValue([
+      {
+        id: 1,
+        name: 'order-api',
+        address: '10.0.0.7:8080',
+        metrics_path: '/metrics',
+        description: 'Orders backend',
+        enabled: true,
+        status: 'up' as const,
+      },
+    ]);
+
+    renderWithProviders(<Servers />, { permissions: ['servers.read'] });
+
+    await waitFor(() => expect(screen.getByText('External services')).toBeInTheDocument());
+    expect(await screen.findByText('order-api')).toBeInTheDocument();
+    expect(screen.getByText('10.0.0.7:8080')).toBeInTheDocument();
   });
 
   it('filters servers by search text', async () => {

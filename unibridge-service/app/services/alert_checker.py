@@ -6,7 +6,7 @@ import time
 from sqlalchemy import select
 
 from app.database import async_session
-from app.models import AlertSettings, MonitoredHost
+from app.models import AlertSettings, MonitoredHost, MonitoredService
 from app.services import server_monitor
 from app.services.alert_owner_dispatcher import dispatch_alert
 from app.services.alert_state import AlertStateManager, save_alert_state_to_db
@@ -291,6 +291,58 @@ async def _check_server_health(
             )
 
 
+async def _load_service_monitoring() -> tuple[list[MonitoredService], int]:
+    """Load registered external services and the re-notify cadence."""
+    async with async_session() as db:
+        settings_row = (
+            await db.execute(select(AlertSettings).where(AlertSettings.id == 1))
+        ).scalar_one_or_none()
+        services = list((await db.execute(select(MonitoredService))).scalars().all())
+    repeat = int(settings_row.repeat_alert_after_cycles or 0) if settings_row else 0
+    return services, repeat
+
+
+async def _check_service_health(
+    state: AlertStateManager,
+    *,
+    trigger_after_failures: int,
+) -> None:
+    """Evaluate external-service reachability signals and dispatch transitions.
+
+    The service analogue of :func:`_check_server_health`: one binary
+    ``external_service_down`` state per enabled service, fed through the same
+    AlertStateManager + dispatch pipeline, with recipients resolved from the
+    service's 담당자 (ResourceOwner resource_type ``service``) plus global admins.
+    A config-load failure is isolated so it can never abort the other checks.
+    """
+    try:
+        services, repeat = await _load_service_monitoring()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("External-service health check skipped (config load failed): %s", exc)
+        return
+    enabled = [s for s in services if getattr(s, "enabled", False)]
+    if not enabled:
+        return
+    signals = await server_monitor.evaluate_services(enabled)
+    for sig in signals:
+        transition = state.update(
+            sig.alert_type, sig.target,
+            is_healthy=sig.is_healthy,
+            display_target=sig.display,
+            severity=sig.severity,
+            trigger_after_failures=trigger_after_failures,
+            repeat_after_cycles=repeat,
+        )
+        await _persist_state_safely(state, sig.alert_type, sig.target)
+        if transition:
+            await dispatch_alert(
+                resource_type="service", resource_id=sig.target,
+                alert_type=transition, target=sig.target, message=sig.message,
+                display_target=sig.display, rate=None, threshold=None,
+                monitor_label=sig.monitor_label, severity=sig.severity,
+            )
+
+
 async def _persist_state_safely(
     state: AlertStateManager,
     alert_type: str,
@@ -406,6 +458,9 @@ async def run_single_check(state: AlertStateManager, *, trigger_after_failures: 
 
     # 4. Server (host) health via node_exporter metrics
     await _check_server_health(state, trigger_after_failures=trigger_after_failures)
+
+    # 4b. External API-service reachability (RED-metrics registry)
+    await _check_service_health(state, trigger_after_failures=trigger_after_failures)
 
     # 5. Route-level error rate (automatic for every route; global threshold)
     route_results = await _check_route_error_rate()

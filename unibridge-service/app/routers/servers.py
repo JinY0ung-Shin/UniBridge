@@ -18,11 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
 from app.database import get_db
-from app.models import AlertSettings, MonitoredHost
+from app.models import AlertSettings, MonitoredHost, MonitoredService
 from app.schemas import (
     MonitoredHostCreate,
     MonitoredHostResponse,
     MonitoredHostUpdate,
+    MonitoredServiceCreate,
+    MonitoredServiceResponse,
+    MonitoredServiceUpdate,
     ServerMetricPoint,
     ServerMetricSeries,
 )
@@ -363,3 +366,162 @@ async def server_metrics(
             continue
         series.append(ServerMetricSeries(metric=metric, points=points_from_result(results[0] if results else None)))
     return series
+
+
+# ── External services (RED-metrics registry) ─────────────────────────────────
+#
+# CRUD over :class:`~app.models.MonitoredService`, mirroring the host registry
+# above: each mutation rewrites the ``external-services`` file_sd targets and
+# clears any alert state for a removed/disabled service. Live reachability is
+# read from Prometheus ``up{job="external-services"}``; traffic-stat metrics are
+# served separately by app.routers.external_metrics.
+
+
+def _service_response(
+    service: MonitoredService, status: str | None = None
+) -> MonitoredServiceResponse:
+    return MonitoredServiceResponse(
+        id=service.id,
+        name=service.name,
+        address=service.address,
+        metrics_path=service.metrics_path,
+        description=service.description or "",
+        enabled=service.enabled,
+        status=status,
+        created_at=service.created_at,
+    )
+
+
+def _service_audit_snapshot(service: MonitoredService) -> dict[str, Any]:
+    return {
+        "name": service.name,
+        "address": service.address,
+        "metrics_path": service.metrics_path,
+        "description": service.description or "",
+        "enabled": service.enabled,
+    }
+
+
+async def _clear_service_alert_state(db: AsyncSession, service_name: str) -> None:
+    """Drop in-memory + persisted alert state for every signal of a service."""
+    from app.routers.alerts import get_alert_state
+
+    state = get_alert_state()
+    for alert_type in server_monitor.EXTERNAL_SERVICE_ALERT_TYPES:
+        if state is not None:
+            state.discard(alert_type, service_name)
+        await delete_alert_state(db, alert_type, service_name)
+
+
+@router.get("/external-services", response_model=list[MonitoredServiceResponse])
+async def list_external_services(
+    _user: CurrentUser = Depends(require_permission("servers.read")),
+    db: AsyncSession = Depends(get_db),
+) -> list[MonitoredServiceResponse]:
+    result = await db.execute(select(MonitoredService).order_by(MonitoredService.name))
+    services = result.scalars().all()
+    up_map = await server_monitor.service_up_map()  # None if Prometheus unreachable
+    rows: list[MonitoredServiceResponse] = []
+    for service in services:
+        if up_map is None:
+            status = "unknown"
+        elif service.name in up_map:
+            status = "up" if up_map[service.name] else "down"
+        else:
+            status = "unknown"
+        rows.append(_service_response(service, status))
+    return rows
+
+
+@router.post("/external-services", response_model=MonitoredServiceResponse, status_code=201)
+async def create_external_service(
+    body: MonitoredServiceCreate,
+    _user: CurrentUser = Depends(require_permission("servers.write")),
+    db: AsyncSession = Depends(get_db),
+) -> MonitoredServiceResponse:
+    service = MonitoredService(
+        name=body.name,
+        address=body.address,
+        metrics_path=body.metrics_path,
+        description=body.description,
+        enabled=body.enabled,
+    )
+    db.add(service)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=f"Service '{body.name}' already exists")
+    await db.refresh(service)
+    await server_monitor.sync_service_targets_from_db(db)
+    await log_admin_action(
+        db, actor=_user.username, action="create",
+        resource_type="monitored_service", resource_id=service.name, summary=service.address,
+        before=None, after=_service_audit_snapshot(service),
+    )
+    # A freshly created service has not been scraped yet → status "unknown".
+    return _service_response(service, status="unknown")
+
+
+@router.put("/external-services/{service_id}", response_model=MonitoredServiceResponse)
+async def update_external_service(
+    service_id: int,
+    body: MonitoredServiceUpdate,
+    _user: CurrentUser = Depends(require_permission("servers.write")),
+    db: AsyncSession = Depends(get_db),
+) -> MonitoredServiceResponse:
+    service = await db.get(MonitoredService, service_id)
+    if service is None:
+        raise HTTPException(status_code=404, detail="Service not found")
+    before = _service_audit_snapshot(service)
+    old_name = service.name
+    if body.name is not None:
+        service.name = body.name
+    if body.address is not None:
+        service.address = body.address
+    if body.metrics_path is not None:
+        service.metrics_path = body.metrics_path
+    if body.description is not None:
+        service.description = body.description
+    if body.enabled is not None:
+        service.enabled = body.enabled
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=f"Service '{body.name}' already exists")
+    await db.refresh(service)
+    # A disabled or renamed service is dropped from the scrape set under its old
+    # name; clear that alert state so it doesn't linger as a stale "down".
+    if not service.enabled or service.name != old_name:
+        await _clear_service_alert_state(db, old_name)
+        await db.commit()
+    await server_monitor.sync_service_targets_from_db(db)
+    await log_admin_action(
+        db, actor=_user.username, action="update",
+        resource_type="monitored_service", resource_id=service.name, summary=service.address,
+        before=before, after=_service_audit_snapshot(service),
+    )
+    return _service_response(service)
+
+
+@router.delete("/external-services/{service_id}", status_code=204, response_model=None)
+async def delete_external_service(
+    service_id: int,
+    _user: CurrentUser = Depends(require_permission("servers.write")),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    service = await db.get(MonitoredService, service_id)
+    if service is None:
+        raise HTTPException(status_code=404, detail="Service not found")
+    before = _service_audit_snapshot(service)
+    service_name = service.name
+    await _clear_service_alert_state(db, service_name)
+    await db.delete(service)
+    await db.commit()
+    await server_monitor.sync_service_targets_from_db(db)
+    await log_admin_action(
+        db, actor=_user.username, action="delete",
+        resource_type="monitored_service", resource_id=service_name, summary=before["address"],
+        before=before, after=None,
+    )

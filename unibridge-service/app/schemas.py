@@ -870,6 +870,76 @@ class ServerMetricSeries(BaseModel):
     points: list[ServerMetricPoint] = Field(default_factory=list)
 
 
+# ── Monitored external services (RED-metrics registry) ────────────────────────
+
+def _validate_metrics_path(path: str) -> str:
+    path = path.strip()
+    if not path.startswith("/"):
+        raise ValueError("metrics_path must start with '/' (e.g. /metrics or /actuator/prometheus)")
+    if any(c.isspace() for c in path):
+        raise ValueError("metrics_path must not contain whitespace")
+    return path
+
+
+class MonitoredServiceCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    address: str = Field(..., min_length=1, max_length=255)
+    metrics_path: str = Field("/metrics", min_length=1, max_length=255)
+    description: str = Field("", max_length=255)
+    enabled: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, v: str) -> str:
+        # Slug-safe: same charset as monitored hosts (used as the Prometheus
+        # `service` label value, so it must be safe inside a PromQL selector).
+        return _validate_host_name(v)
+
+    @field_validator("address")
+    @classmethod
+    def check_address(cls, v: str) -> str:
+        return _validate_host_address(v)
+
+    @field_validator("metrics_path")
+    @classmethod
+    def check_metrics_path(cls, v: str) -> str:
+        return _validate_metrics_path(v)
+
+
+class MonitoredServiceUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=100)
+    address: str | None = Field(None, min_length=1, max_length=255)
+    metrics_path: str | None = Field(None, min_length=1, max_length=255)
+    description: str | None = Field(None, max_length=255)
+    enabled: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, v: str | None) -> str | None:
+        return _validate_host_name(v) if v is not None else v
+
+    @field_validator("address")
+    @classmethod
+    def check_address(cls, v: str | None) -> str | None:
+        return _validate_host_address(v) if v is not None else v
+
+    @field_validator("metrics_path")
+    @classmethod
+    def check_metrics_path(cls, v: str | None) -> str | None:
+        return _validate_metrics_path(v) if v is not None else v
+
+
+class MonitoredServiceResponse(BaseModel):
+    id: int
+    name: str
+    address: str
+    metrics_path: str
+    description: str = ""
+    enabled: bool
+    status: str | None = None  # "up" | "down" | "unknown" — live from Prometheus
+    created_at: datetime | None = None
+
+
 # ── S3 Connections ──────────────────────────────────────────────────────────
 
 class S3ConnectionCreate(BaseModel):

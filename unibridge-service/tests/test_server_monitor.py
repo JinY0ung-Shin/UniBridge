@@ -7,7 +7,14 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from app.services import server_monitor
-from app.services.server_monitor import ServerThresholds, build_targets, evaluate_hosts, metric_query
+from app.services.server_monitor import (
+    ServerThresholds,
+    build_service_targets,
+    build_targets,
+    evaluate_hosts,
+    evaluate_services,
+    metric_query,
+)
 from app.services.alert_state import AlertStateManager
 
 
@@ -289,3 +296,77 @@ def test_binary_behaviour_unchanged_without_new_args():
     assert state.update("db_health", "x", is_healthy=False, trigger_after_failures=2) == "triggered"
     assert state.update("db_health", "x", is_healthy=False, trigger_after_failures=2) is None
     assert state.update("db_health", "x", is_healthy=True, trigger_after_failures=2) == "resolved"
+
+
+# ── external-service monitoring ───────────────────────────────────────────────
+
+def _service(name="orders", address="10.0.0.9:8080", metrics_path="/metrics", enabled=True):
+    return SimpleNamespace(name=name, address=address, metrics_path=metrics_path, enabled=enabled)
+
+
+def _svc_series(service, value):
+    return {"metric": {"service": service}, "value": [0, str(value)]}
+
+
+def test_build_service_targets_skips_disabled_and_sets_metrics_path():
+    services = [
+        _service("orders", "10.0.0.9:8080", "/actuator/prometheus"),
+        _service("legacy", "10.0.0.8:9000", enabled=False),
+    ]
+    entries = build_service_targets(services)
+    assert len(entries) == 1
+    assert entries[0]["targets"] == ["10.0.0.9:8080"]
+    assert entries[0]["labels"] == {"service": "orders", "__metrics_path__": "/actuator/prometheus"}
+
+
+@pytest.mark.asyncio
+async def test_write_service_targets_file_is_world_readable(tmp_path):
+    import json
+    import os
+    import stat
+
+    path = tmp_path / "services.json"
+    await server_monitor.write_service_targets_file([_service("orders", "10.0.0.9:8080")], str(path))
+
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    assert mode & stat.S_IROTH, f"targets file not other-readable: {oct(mode)}"
+    entry = json.loads(path.read_text())[0]
+    assert entry["targets"] == ["10.0.0.9:8080"]
+    assert entry["labels"]["service"] == "orders"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_services_up_and_down():
+    services = [_service("up-svc"), _service("down-svc")]
+    with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+        q.side_effect = _patch_queries({
+            'up{job="external-services"}': [_svc_series("up-svc", 1), _svc_series("down-svc", 0)],
+        })
+        signals = await evaluate_services(services)
+    by_target = {s.target: s for s in signals}
+    assert by_target["up-svc"].is_healthy is True and by_target["up-svc"].severity is None
+    assert by_target["down-svc"].is_healthy is False and by_target["down-svc"].severity == "critical"
+    assert all(s.alert_type == "external_service_down" for s in signals)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_services_missing_series_is_down():
+    with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+        q.side_effect = _patch_queries({'up{job="external-services"}': []})  # not scraped yet
+        signals = await evaluate_services([_service("orders")])
+    assert signals[0].alert_type == "external_service_down" and signals[0].is_healthy is False
+
+
+@pytest.mark.asyncio
+async def test_evaluate_services_prometheus_failure_skips_cycle():
+    with patch.object(
+        server_monitor.prometheus_client, "instant_query",
+        new=AsyncMock(side_effect=RuntimeError("down")),
+    ):
+        signals = await evaluate_services([_service("orders")])
+    assert signals == []
+
+
+@pytest.mark.asyncio
+async def test_evaluate_services_no_enabled_returns_empty():
+    assert await evaluate_services([_service(enabled=False)]) == []

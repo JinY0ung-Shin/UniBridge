@@ -34,6 +34,28 @@ scrape_configs:
           - /etc/prometheus/file_sd/nodes.json
         refresh_interval: 30s
 
+  # Externally-monitored API services exposing RED metrics (not routed through
+  # the gateway). Targets + their metrics path are written by unibridge-service
+  # from the MonitoredService registry into this file_sd file (shared volume);
+  # each target carries a `service` label. Spring/Micrometer services expose the
+  # duration histogram under `http_server_requests_seconds*` with a `uri` label,
+  # so normalize those to the convention's names (`http_request_duration_seconds*`
+  # + `handler`) at scrape time — FastAPI-style names already match and pass
+  # through unchanged.
+  - job_name: 'external-services'
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/file_sd/services.json
+        refresh_interval: 30s
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'http_server_requests_seconds(_bucket|_sum|_count)?'
+        target_label: __name__
+        replacement: 'http_request_duration_seconds${1}'
+      - source_labels: [uri]
+        regex: '(.+)'
+        target_label: handler
+
   - job_name: 'infra-db-tcp'
     metrics_path: '/probe'
     params:

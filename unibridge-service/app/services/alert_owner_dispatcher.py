@@ -20,7 +20,7 @@ from app.services.alert_sender import render_recipient_items, render_template, s
 
 logger = logging.getLogger(__name__)
 
-ASSIGNEE_RESOURCE_TYPES = {"db", "s3", "nas", "route", "server"}
+ASSIGNEE_RESOURCE_TYPES = {"db", "s3", "nas", "route", "server", "service"}
 
 
 async def dispatch_alert(

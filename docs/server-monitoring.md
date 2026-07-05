@@ -5,6 +5,10 @@ any host you operate — for reachability, disk, CPU, and memory, and raises
 proactive alerts through the existing alert pipeline (per-resource 담당자 +
 global 관리자, webhook/mail channel, alert history, and the Alert Status UI).
 
+> Monitoring an API service's **traffic stats** (requests, error rate, latency)
+> without routing it through the gateway uses the same registry + `file_sd`
+> pipeline — see [api-metrics-convention.md](api-metrics-convention.md).
+
 ## How it works
 
 ```
