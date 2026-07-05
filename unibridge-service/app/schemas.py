@@ -881,10 +881,18 @@ def _validate_metrics_path(path: str) -> str:
     return path
 
 
+def _validate_scheme(scheme: str) -> str:
+    scheme = scheme.strip().lower()
+    if scheme not in ("http", "https"):
+        raise ValueError("scheme must be 'http' or 'https'")
+    return scheme
+
+
 class MonitoredServiceCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     address: str = Field(..., min_length=1, max_length=255)
     metrics_path: str = Field("/metrics", min_length=1, max_length=255)
+    scheme: str = Field("http")
     description: str = Field("", max_length=255)
     enabled: bool = True
 
@@ -905,11 +913,17 @@ class MonitoredServiceCreate(BaseModel):
     def check_metrics_path(cls, v: str) -> str:
         return _validate_metrics_path(v)
 
+    @field_validator("scheme")
+    @classmethod
+    def check_scheme(cls, v: str) -> str:
+        return _validate_scheme(v)
+
 
 class MonitoredServiceUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
     address: str | None = Field(None, min_length=1, max_length=255)
     metrics_path: str | None = Field(None, min_length=1, max_length=255)
+    scheme: str | None = None
     description: str | None = Field(None, max_length=255)
     enabled: bool | None = None
 
@@ -928,12 +942,18 @@ class MonitoredServiceUpdate(BaseModel):
     def check_metrics_path(cls, v: str | None) -> str | None:
         return _validate_metrics_path(v) if v is not None else v
 
+    @field_validator("scheme")
+    @classmethod
+    def check_scheme(cls, v: str | None) -> str | None:
+        return _validate_scheme(v) if v is not None else v
+
 
 class MonitoredServiceResponse(BaseModel):
     id: int
     name: str
     address: str
     metrics_path: str
+    scheme: str = "http"
     description: str = ""
     enabled: bool
     status: str | None = None  # "up" | "down" | "unknown" — live from Prometheus

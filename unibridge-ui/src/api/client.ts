@@ -1306,6 +1306,7 @@ export interface ExternalService {
   name: string;
   address: string;
   metrics_path: string;
+  scheme?: 'http' | 'https';
   description: string | null;
   enabled: boolean;
   status?: 'up' | 'down' | 'unknown' | null;
@@ -1316,6 +1317,7 @@ export interface ExternalServiceInput {
   name?: string;
   address?: string;
   metrics_path?: string;
+  scheme?: 'http' | 'https';
   description?: string | null;
   enabled?: boolean;
 }
@@ -1337,6 +1339,11 @@ export async function updateExternalService(id: number, body: ExternalServiceInp
 
 export async function deleteExternalService(id: number): Promise<void> {
   await client.delete(`/admin/servers/external-services/${id}`);
+}
+
+export async function testExternalService(id: number): Promise<{ status: string; detail: string | null }> {
+  const { data } = await client.post(`/admin/servers/external-services/${id}/test`);
+  return data;
 }
 
 /* ── External service metrics (RED convention, job="external-services") ── */

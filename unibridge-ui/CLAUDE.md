@@ -22,3 +22,7 @@ See the repo-root `CLAUDE.md` for cross-service context. Served by nginx in prod
 - `build` runs `tsc -b` first — a type error fails the build (and CI). Manual chunking for
   recharts/keycloak/tanstack/i18n/react is configured in `vite.config.ts`.
 - Tests: vitest + Testing Library + jsdom, in `src/test/*.test.tsx`.
+- `src/content/api-metrics-convention.md` is a committed mirror of the canonical
+  `docs/api-metrics-convention.md` (repo root is outside this package's docker build
+  context, so it can't be imported directly). `MetricsGuide.test.tsx` fails when they
+  diverge — edit both together (`cp docs/api-metrics-convention.md src/content/`).

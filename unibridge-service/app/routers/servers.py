@@ -385,6 +385,7 @@ def _service_response(
         name=service.name,
         address=service.address,
         metrics_path=service.metrics_path,
+        scheme=service.scheme,
         description=service.description or "",
         enabled=service.enabled,
         status=status,
@@ -397,6 +398,7 @@ def _service_audit_snapshot(service: MonitoredService) -> dict[str, Any]:
         "name": service.name,
         "address": service.address,
         "metrics_path": service.metrics_path,
+        "scheme": service.scheme,
         "description": service.description or "",
         "enabled": service.enabled,
     }
@@ -443,6 +445,7 @@ async def create_external_service(
         name=body.name,
         address=body.address,
         metrics_path=body.metrics_path,
+        scheme=body.scheme,
         description=body.description,
         enabled=body.enabled,
     )
@@ -481,6 +484,8 @@ async def update_external_service(
         service.address = body.address
     if body.metrics_path is not None:
         service.metrics_path = body.metrics_path
+    if body.scheme is not None:
+        service.scheme = body.scheme
     if body.description is not None:
         service.description = body.description
     if body.enabled is not None:
@@ -503,6 +508,30 @@ async def update_external_service(
         before=before, after=_service_audit_snapshot(service),
     )
     return _service_response(service)
+
+
+@router.post("/external-services/{service_id}/test")
+async def test_external_service(
+    service_id: int,
+    _user: CurrentUser = Depends(require_permission("servers.read")),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Probe the service's metrics endpoint directly (no Prometheus round-trip).
+
+    Works right after registration — before the first scrape — and reports
+    whether the RED convention metrics are exposed, so a misconfigured service
+    gets actionable feedback instead of a silent "unknown".
+    """
+    service = await db.get(MonitoredService, service_id)
+    if service is None:
+        raise HTTPException(status_code=404, detail="Service not found")
+    scheme = getattr(service, "scheme", None) or "http"
+    path = service.metrics_path or "/metrics"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    url = f"{scheme}://{service.address}{path}"
+    status_str, detail = await server_monitor.probe_metrics_endpoint(url)
+    return {"status": status_str, "detail": detail}
 
 
 @router.delete("/external-services/{service_id}", status_code=204, response_model=None)

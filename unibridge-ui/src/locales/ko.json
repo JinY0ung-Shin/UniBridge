@@ -22,7 +22,8 @@
     "s3Connections": "S3 스토리지",
     "nasConnections": "NAS 스토리지",
     "servers": "서버 모니터링",
-    "externalMonitoring": "외부 API 모니터링"
+    "externalMonitoring": "외부 API 모니터링",
+    "metricsGuide": "메트릭 가이드"
   },
   "common": {
     "save": "저장",
@@ -546,6 +547,12 @@
     "openEndpointDetail": "{{service}} 엔드포인트 상세 열기",
     "closeEndpointDetail": "엔드포인트 상세 닫기"
   },
+  "metricsGuide": {
+    "title": "API 메트릭 가이드",
+    "subtitle": "게이트웨이 온보딩 없이 UniBridge 모니터링에 트래픽 통계를 노출하는 방법",
+    "goRegister": "서비스 등록하러 가기",
+    "goMonitoring": "외부 API 모니터링 보기"
+  },
   "externalServices": {
     "title": "External services",
     "subtitle": "게이트웨이 온보딩 없이 모니터링하는 API — 각 서비스의 /metrics를 수집합니다",
@@ -556,12 +563,15 @@
     "nameHint": "(영문/숫자/-/_ 만, Prometheus의 service 라벨로 사용)",
     "address": "서비스 주소",
     "metricsPath": "Metrics 경로",
+    "scheme": "프로토콜",
+    "viewGuide": "가이드 보기",
     "addressHint": "(Prometheus에서 접근 가능한 host:port)",
     "conventionHint": "서비스는 http_requests_total과 http_request_duration_seconds를 노출해야 합니다 — docs/api-metrics-convention.md 참고.",
     "saveFailed": "서비스 저장에 실패했습니다",
     "deleteConfirm": "외부 서비스 {{name}}을(를) 삭제할까요?",
     "editService": "{{name}} 서비스 수정",
-    "deleteService": "{{name}} 서비스 삭제"
+    "deleteService": "{{name}} 서비스 삭제",
+    "testService": "{{name}} 서비스 테스트"
   },
   "gatewayMonitoring": {
     "title": "게이트웨이 모니터링",

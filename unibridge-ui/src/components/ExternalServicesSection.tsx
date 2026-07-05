@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   getExternalServices,
   createExternalService,
   updateExternalService,
   deleteExternalService,
+  testExternalService,
   type ExternalService,
   type ExternalServiceInput,
 } from '../api/client';
@@ -17,12 +19,13 @@ interface FormState {
   name: string;
   address: string;
   metrics_path: string;
+  scheme: 'http' | 'https';
   description: string;
   enabled: boolean;
 }
 
 const emptyForm: FormState = {
-  name: '', address: '', metrics_path: '/metrics', description: '', enabled: true,
+  name: '', address: '', metrics_path: '/metrics', scheme: 'http', description: '', enabled: true,
 };
 
 function statusClass(status?: string | null): string {
@@ -90,6 +93,15 @@ function ExternalServicesSection() {
     onError: saveError,
   });
 
+  const testMutation = useMutation({
+    mutationFn: (id: number) => testExternalService(id),
+    onSuccess: (data) => addToast({
+      type: data.status === 'up' ? 'success' : 'error',
+      title: `${t('servers.statusLabel')}: ${data.status}`,
+      message: data.detail ?? undefined,
+    }),
+  });
+
   function openCreate() {
     setForm({ ...emptyForm });
     setEditingId(null);
@@ -101,6 +113,7 @@ function ExternalServicesSection() {
       name: svc.name,
       address: svc.address,
       metrics_path: svc.metrics_path,
+      scheme: svc.scheme === 'https' ? 'https' : 'http',
       description: svc.description ?? '',
       enabled: svc.enabled,
     });
@@ -112,6 +125,7 @@ function ExternalServicesSection() {
     const body: ExternalServiceInput = {
       address: form.address.trim(),
       metrics_path: form.metrics_path.trim() || '/metrics',
+      scheme: form.scheme,
       description: form.description.trim(),
       enabled: form.enabled,
     };
@@ -133,6 +147,7 @@ function ExternalServicesSection() {
           <p className="page-subtitle">{t('externalServices.subtitle')}</p>
         </div>
         <div className="page-header__actions connections-header-actions">
+          <Link to="/external/guide" className="btn btn-secondary">{t('externalServices.viewGuide')}</Link>
           {canWrite && (
             <button type="button" className="btn btn-primary" onClick={openCreate}>
               {t('externalServices.add')}
@@ -163,6 +178,7 @@ function ExternalServicesSection() {
               <tbody>
                 {services.map((s) => {
                   const isDeleting = deleteMutation.isPending && deleteMutation.variables === s.id;
+                  const isTesting = testMutation.isPending && testMutation.variables === s.id;
                   return (
                     <tr key={s.id}>
                       <td>
@@ -171,10 +187,20 @@ function ExternalServicesSection() {
                         </span>
                       </td>
                       <td>{s.name}</td>
-                      <td className="cell-target">{s.address}</td>
+                      <td className="cell-target">{`${s.scheme ?? 'http'}://${s.address}`}</td>
                       <td className="cell-target">{s.metrics_path}</td>
                       <td>{s.description}</td>
                       <td className="cell-actions">
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-secondary"
+                          aria-label={t('externalServices.testService', { name: s.name })}
+                          onClick={() => testMutation.mutate(s.id)}
+                          disabled={testMutation.isPending}
+                          aria-busy={isTesting}
+                        >
+                          {isTesting ? t('common.testing') : t('servers.test')}
+                        </button>
                         {canWrite && (
                           <>
                             <button
@@ -259,6 +285,18 @@ function ExternalServicesSection() {
                   placeholder="/metrics"
                   aria-label={t('externalServices.metricsPath')}
                 />
+              </div>
+              <div className="form-group">
+                <label htmlFor="ext-svc-scheme">{t('externalServices.scheme')}</label>
+                <select
+                  id="ext-svc-scheme"
+                  value={form.scheme}
+                  onChange={(e) => setForm({ ...form, scheme: e.target.value === 'https' ? 'https' : 'http' })}
+                  aria-label={t('externalServices.scheme')}
+                >
+                  <option value="http">http</option>
+                  <option value="https">https</option>
+                </select>
               </div>
               <div className="form-group form-group--full">
                 <label htmlFor="ext-svc-description">{t('servers.description')}</label>

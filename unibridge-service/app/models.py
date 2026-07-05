@@ -402,6 +402,9 @@ class MonitoredService(Base):
     metrics_path = Column(
         String(255), default="/metrics", nullable=False, server_default="/metrics"
     )
+    # Scrape scheme (http/https), written as ``__scheme__`` in file_sd so an
+    # https-only /metrics endpoint is scraped over TLS per target.
+    scheme = Column(String(8), default="http", nullable=False, server_default="http")
     description = Column(String(255), default="", nullable=False, server_default="")
     enabled = Column(Boolean, default=True, nullable=False, server_default="true")
     created_at = Column(UtcDateTime, default=utcnow, nullable=False)
@@ -410,4 +413,5 @@ class MonitoredService(Base):
     def __init__(self, **kwargs):
         kwargs.setdefault("enabled", True)
         kwargs.setdefault("metrics_path", "/metrics")
+        kwargs.setdefault("scheme", "http")
         super().__init__(**kwargs)

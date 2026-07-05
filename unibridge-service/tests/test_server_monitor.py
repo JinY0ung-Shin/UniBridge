@@ -300,8 +300,10 @@ def test_binary_behaviour_unchanged_without_new_args():
 
 # ── external-service monitoring ───────────────────────────────────────────────
 
-def _service(name="orders", address="10.0.0.9:8080", metrics_path="/metrics", enabled=True):
-    return SimpleNamespace(name=name, address=address, metrics_path=metrics_path, enabled=enabled)
+def _service(name="orders", address="10.0.0.9:8080", metrics_path="/metrics", scheme="http", enabled=True):
+    return SimpleNamespace(
+        name=name, address=address, metrics_path=metrics_path, scheme=scheme, enabled=enabled
+    )
 
 
 def _svc_series(service, value):
@@ -310,13 +312,25 @@ def _svc_series(service, value):
 
 def test_build_service_targets_skips_disabled_and_sets_metrics_path():
     services = [
-        _service("orders", "10.0.0.9:8080", "/actuator/prometheus"),
+        _service("orders", "10.0.0.9:8080", "/actuator/prometheus", scheme="https"),
         _service("legacy", "10.0.0.8:9000", enabled=False),
     ]
     entries = build_service_targets(services)
     assert len(entries) == 1
     assert entries[0]["targets"] == ["10.0.0.9:8080"]
-    assert entries[0]["labels"] == {"service": "orders", "__metrics_path__": "/actuator/prometheus"}
+    assert entries[0]["labels"] == {
+        "service": "orders",
+        "__metrics_path__": "/actuator/prometheus",
+        "__scheme__": "https",
+    }
+
+
+def test_build_service_targets_defaults_scheme_to_http():
+    # A service row without a scheme attribute falls back to http.
+    entry = build_service_targets([SimpleNamespace(
+        name="orders", address="10.0.0.9:8080", metrics_path="/metrics", enabled=True,
+    )])[0]
+    assert entry["labels"]["__scheme__"] == "http"
 
 
 @pytest.mark.asyncio
@@ -370,3 +384,64 @@ async def test_evaluate_services_prometheus_failure_skips_cycle():
 @pytest.mark.asyncio
 async def test_evaluate_services_no_enabled_returns_empty():
     assert await evaluate_services([_service(enabled=False)]) == []
+
+
+class TestProbeMetricsEndpoint:
+    """Direct HTTP probe used by the external-services Test button."""
+
+    @staticmethod
+    def _transport(handler):
+        import httpx
+
+        return httpx.MockTransport(handler)
+
+    @pytest.mark.asyncio
+    async def test_up_with_convention_metrics(self):
+        import httpx
+
+        def handler(request):
+            return httpx.Response(200, text="http_requests_total{method=\"GET\"} 42\n")
+
+        status, detail = await server_monitor.probe_metrics_endpoint(
+            "http://svc:8080/metrics", transport=self._transport(handler)
+        )
+        assert (status, detail) == ("up", None)
+
+    @pytest.mark.asyncio
+    async def test_up_but_convention_missing_gets_guidance(self):
+        import httpx
+
+        def handler(request):
+            return httpx.Response(200, text="python_gc_objects_collected_total 10\n")
+
+        status, detail = await server_monitor.probe_metrics_endpoint(
+            "http://svc:8080/metrics", transport=self._transport(handler)
+        )
+        assert status == "up"
+        assert "http_requests_total" in detail
+
+    @pytest.mark.asyncio
+    async def test_non_200_is_down(self):
+        import httpx
+
+        def handler(request):
+            return httpx.Response(404, text="not found")
+
+        status, detail = await server_monitor.probe_metrics_endpoint(
+            "http://svc:8080/metrics", transport=self._transport(handler)
+        )
+        assert status == "down"
+        assert "404" in detail
+
+    @pytest.mark.asyncio
+    async def test_connection_error_is_down(self):
+        import httpx
+
+        def handler(request):
+            raise httpx.ConnectError("connection refused")
+
+        status, detail = await server_monitor.probe_metrics_endpoint(
+            "http://svc:8080/metrics", transport=self._transport(handler)
+        )
+        assert status == "down"
+        assert "ConnectError" in detail

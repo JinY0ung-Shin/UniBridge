@@ -43,6 +43,12 @@ scrape_configs:
   # + `handler`) at scrape time — FastAPI-style names already match and pass
   # through unchanged.
   - job_name: 'external-services'
+    # Per-target scrape scheme comes from the `__scheme__` file_sd label (http by
+    # default, https when the service is registered as such). Skip TLS verification
+    # like the litellm job so internal self-signed certs don't break scraping;
+    # harmless for plain-http targets.
+    tls_config:
+      insecure_skip_verify: true
     file_sd_configs:
       - files:
           - /etc/prometheus/file_sd/services.json

@@ -9,6 +9,7 @@ vi.mock('../api/client', () => ({
   createExternalService: vi.fn(),
   updateExternalService: vi.fn(),
   deleteExternalService: vi.fn(),
+  testExternalService: vi.fn(),
 }));
 
 import { screen, waitFor } from '@testing-library/react';
@@ -54,6 +55,7 @@ describe('Servers', () => {
         name: 'order-api',
         address: '10.0.0.7:8080',
         metrics_path: '/metrics',
+        scheme: 'https' as const,
         description: 'Orders backend',
         enabled: true,
         status: 'up' as const,
@@ -64,7 +66,7 @@ describe('Servers', () => {
 
     await waitFor(() => expect(screen.getByText('External services')).toBeInTheDocument());
     expect(await screen.findByText('order-api')).toBeInTheDocument();
-    expect(screen.getByText('10.0.0.7:8080')).toBeInTheDocument();
+    expect(screen.getByText('https://10.0.0.7:8080')).toBeInTheDocument();
   });
 
   it('filters servers by search text', async () => {

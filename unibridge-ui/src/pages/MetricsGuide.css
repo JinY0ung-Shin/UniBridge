@@ -1,0 +1,124 @@
+.metrics-guide {
+  max-width: 880px;
+}
+
+.metrics-guide .page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.metrics-guide .page-header__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Rendered markdown (theme-aware, matches app panels) */
+
+.markdown-body {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: 28px 32px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.markdown-body h1 {
+  font-size: 22px;
+  color: var(--text-primary);
+  margin: 0 0 16px;
+}
+
+.markdown-body h2 {
+  font-size: 17px;
+  color: var(--text-primary);
+  margin: 28px 0 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.markdown-body h3 {
+  font-size: 14px;
+  color: var(--text-primary);
+  margin: 20px 0 8px;
+}
+
+.markdown-body p {
+  margin: 0 0 12px;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0 0 12px;
+  padding-left: 22px;
+}
+
+.markdown-body li {
+  margin-bottom: 4px;
+}
+
+.markdown-body code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.markdown-body pre {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 0 0 14px;
+}
+
+.markdown-body pre code {
+  background: none;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0 0 14px;
+  font-size: 13px;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border-default);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.markdown-body th {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.markdown-body blockquote {
+  margin: 0 0 12px;
+  padding: 8px 14px;
+  border-left: 3px solid var(--accent-blue);
+  background: var(--bg-secondary);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+
+.markdown-body a {
+  color: var(--accent-blue);
+}
+
+@media (max-width: 720px) {
+  .markdown-body {
+    padding: 18px 16px;
+  }
+}

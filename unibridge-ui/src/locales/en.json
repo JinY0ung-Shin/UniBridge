@@ -22,7 +22,8 @@
     "s3Connections": "S3 Storage",
     "nasConnections": "NAS Storage",
     "servers": "Servers",
-    "externalMonitoring": "External APIs"
+    "externalMonitoring": "External APIs",
+    "metricsGuide": "Metrics Guide"
   },
   "common": {
     "save": "Save",
@@ -546,6 +547,12 @@
     "openEndpointDetail": "Open endpoint details for {{service}}",
     "closeEndpointDetail": "Close endpoint details"
   },
+  "metricsGuide": {
+    "title": "API Metrics Guide",
+    "subtitle": "How to expose traffic metrics for UniBridge monitoring without gateway onboarding",
+    "goRegister": "Register a service",
+    "goMonitoring": "External API monitoring"
+  },
   "externalServices": {
     "title": "External services",
     "subtitle": "APIs monitored without gateway onboarding — scraped from their /metrics endpoint",
@@ -556,12 +563,15 @@
     "nameHint": "(letters, digits, - and _; becomes the 'service' label)",
     "address": "Service address",
     "metricsPath": "Metrics path",
+    "scheme": "Protocol",
+    "viewGuide": "View the guide",
     "addressHint": "(host:port reachable from Prometheus)",
     "conventionHint": "The service must expose http_requests_total and http_request_duration_seconds — see docs/api-metrics-convention.md.",
     "saveFailed": "Failed to save service",
     "deleteConfirm": "Delete external service {{name}}?",
     "editService": "Edit service {{name}}",
-    "deleteService": "Delete service {{name}}"
+    "deleteService": "Delete service {{name}}",
+    "testService": "Test service {{name}}"
   },
   "gatewayMonitoring": {
     "title": "Gateway Monitoring",

@@ -551,6 +551,7 @@ def build_service_targets(services: Iterable[Any]) -> list[dict[str, Any]]:
                 "labels": {
                     "service": service.name,
                     "__metrics_path__": service.metrics_path or "/metrics",
+                    "__scheme__": getattr(service, "scheme", None) or "http",
                 },
             }
         )
@@ -672,3 +673,43 @@ async def evaluate_services(services: list[Any]) -> list[ServiceSignal]:
             )
         )
     return signals
+
+
+async def probe_metrics_endpoint(
+    url: str, transport: Any | None = None
+) -> tuple[str, str | None]:
+    """Directly fetch a service's metrics endpoint and grade the response.
+
+    Used by the registry's Test button: unlike the Prometheus ``up`` check it
+    works immediately after registration (before the first scrape) and can tell
+    whether the RED convention metrics are actually exposed. Reads at most
+    256 KiB of the body; TLS verification is skipped to match the scrape job's
+    ``insecure_skip_verify``. ``transport`` is injectable for tests.
+
+    Returns ``(status, detail)`` where status is ``"up"`` or ``"down"``.
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(
+            verify=False, timeout=5.0, follow_redirects=True, transport=transport
+        ) as client:
+            async with client.stream("GET", url) as resp:
+                status_code = resp.status_code
+                body = b""
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+                    if len(body) >= 262_144:
+                        break
+    except httpx.HTTPError as exc:
+        return "down", f"Request failed: {exc.__class__.__name__}: {exc}"
+    if status_code != 200:
+        return "down", f"HTTP {status_code} from the metrics endpoint"
+    text = body.decode("utf-8", errors="replace")
+    if "http_requests_total" not in text and "http_request_duration_seconds" not in text:
+        return (
+            "up",
+            "Reachable, but the convention metrics (http_requests_total / "
+            "http_request_duration_seconds) were not found — see the metrics guide.",
+        )
+    return "up", None

@@ -30,6 +30,7 @@ async def test_create_list_update_delete(client, admin_token):
     body = resp.json()
     service_id = body["id"]
     assert body["metrics_path"] == "/metrics"
+    assert body["scheme"] == "http"  # defaults to http
     assert body["status"] == "unknown"  # up_map mocked empty
     assert body["enabled"] is True
 
@@ -80,6 +81,39 @@ async def test_invalid_address_name_and_metrics_path_rejected(client, admin_toke
     # bad metrics_path (no leading slash)
     assert (await client.post("/admin/servers/external-services", headers=h,
             json={"name": "z", "address": "1.2.3.4:9000", "metrics_path": "metrics"})).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_with_https_scheme_persists_and_returns(client, admin_token):
+    h = auth_header(admin_token)
+    resp = await client.post("/admin/servers/external-services", headers=h, json={
+        "name": "secure-api", "address": "10.0.0.7:8443", "scheme": "https",
+    })
+    assert resp.status_code == 201, resp.text
+    service_id = resp.json()["id"]
+    assert resp.json()["scheme"] == "https"
+
+    # Round-trips through list and survives a PUT back to http.
+    listed = await client.get("/admin/servers/external-services", headers=h)
+    assert next(r for r in listed.json() if r["id"] == service_id)["scheme"] == "https"
+
+    resp = await client.put(f"/admin/servers/external-services/{service_id}", headers=h, json={"scheme": "http"})
+    assert resp.status_code == 200
+    assert resp.json()["scheme"] == "http"
+
+
+@pytest.mark.asyncio
+async def test_invalid_scheme_rejected(client, admin_token):
+    h = auth_header(admin_token)
+    resp = await client.post("/admin/servers/external-services", headers=h,
+                             json={"name": "bad-scheme", "address": "1.2.3.4:9000", "scheme": "ftp"})
+    assert resp.status_code == 422
+    # Also rejected on update.
+    created = await client.post("/admin/servers/external-services", headers=h,
+                                json={"name": "ok-scheme", "address": "1.2.3.4:9001"})
+    resp = await client.put(f"/admin/servers/external-services/{created.json()['id']}",
+                            headers=h, json={"scheme": "gopher"})
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -147,3 +181,32 @@ async def test_disable_clears_alert_state(client, admin_token, seeded_db):
             )
         ).scalar_one_or_none()
     assert row is None
+
+
+async def test_test_endpoint_probes_metrics_url(client, admin_token):
+    h = auth_header(admin_token)
+    created = await client.post(
+        "/admin/servers/external-services",
+        json={"name": "probe-api", "address": "10.0.0.9:8443", "scheme": "https"},
+        headers=h,
+    )
+    assert created.status_code == 201
+    sid = created.json()["id"]
+
+    probe = AsyncMock(return_value=("up", None))
+    with patch("app.routers.servers.server_monitor.probe_metrics_endpoint", probe):
+        resp = await client.post(
+            f"/admin/servers/external-services/{sid}/test", headers=h
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "up", "detail": None}
+    # The probe URL is built from the registered scheme + address + metrics path.
+    probe.assert_awaited_once_with("https://10.0.0.9:8443/metrics")
+
+
+async def test_test_endpoint_unknown_service_404(client, admin_token):
+    resp = await client.post(
+        "/admin/servers/external-services/99999/test",
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 404
