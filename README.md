@@ -303,7 +303,11 @@ debugging; set `GRAFANA_EXTERNAL_URL` to relocate the UI links if you front it
 differently). It signs in with UniBridge accounts via
 Keycloak SSO ("UniBridge SSO" on the login page): any `apihub` realm user can
 log in, users with the `admin` realm role become Grafana Admins, everyone else
-a read-only Viewer. Grafana user records are created automatically on first
+a read-only Viewer. Every signed-in user sees every metric: the UI's per-key
+scoping (`gateway.monitoring.self`) does not apply inside Grafana — the in-app
+links are hidden for self-scoped users, but direct access stays open (set
+`GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT=true` with a stricter role mapping
+to restrict sign-in entirely). Grafana user records are created automatically on first
 SSO login; the local `admin` / `GRAFANA_ADMIN_PASSWORD` login remains as a
 fallback, and self-service (non-SSO) sign-up stays disabled. On a fresh install
 the realm import creates the `grafana` OAuth client from
@@ -322,8 +326,10 @@ Dashboards are pinned to `Asia/Seoul`, which both displays KST and aligns
 Prometheus query steps to KST — hourly/daily buckets match the UI's KST calendar
 buckets exactly. Known deltas vs the in-app UI: weekly buckets align to
 Thursday-start weeks (epoch-aligned) instead of the UI's Monday-start, route IDs
-are shown without the APISIX friendly-name lookup, and the Dashboard page's live
-per-database connection grid has no Prometheus equivalent.
+are shown without the APISIX friendly-name lookup, the Dashboard page's live
+per-database connection grid has no Prometheus equivalent, and "over time" bar
+panels follow Grafana's auto step (`$__interval`, all series plotted) rather
+than the UI's fixed per-range buckets with top-12 + "(others)" grouping.
 
 ### Server (host) monitoring
 

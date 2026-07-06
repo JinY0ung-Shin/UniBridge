@@ -13,6 +13,7 @@ import {
 } from '../api/client';
 import ResourceModal from '../components/ResourceModal';
 import ExternalServicesSection from '../components/ExternalServicesSection';
+import GrafanaLink from '../components/GrafanaLink';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
 import './Connections.css';
@@ -223,6 +224,7 @@ function Servers() {
           <p className="page-subtitle">{t('servers.subtitle')}</p>
         </div>
         <div className="page-header__actions connections-header-actions">
+          <GrafanaLink dashboard="unibridge-servers" />
           {servers.length > 0 && (
             <input
               className="connection-search-input"

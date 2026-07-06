@@ -526,7 +526,8 @@
     "panelLoading": "불러오는 중...",
     "panelLoadFailed": "이 패널을 불러오지 못했습니다.",
     "headerNote": "Prometheus 집계 기반 추정치 · 모든 시각은 KST 기준",
-    "openInGrafana": "Grafana에서 보기"
+    "openInGrafana": "Grafana에서 보기",
+    "grafanaSsoHint": "번들 Grafana를 새 탭에서 엽니다 (UniBridge 계정으로 자동 로그인)"
   },
   "externalMonitoring": {
     "title": "외부 API 모니터링",

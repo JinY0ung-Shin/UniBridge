@@ -423,5 +423,45 @@
         }
       ]
     }
+  ],
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "dashboard",
+      "includeVars": false,
+      "keepTime": true,
+      "tags": [
+        "unibridge"
+      ],
+      "targetBlank": false,
+      "title": "UniBridge dashboards",
+      "tooltip": "",
+      "type": "dashboards",
+      "url": ""
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": false,
+      "keepTime": false,
+      "tags": [],
+      "targetBlank": false,
+      "title": "UniBridge UI",
+      "tooltip": "Back to the UniBridge app",
+      "type": "link",
+      "url": "/"
+    },
+    {
+      "asDropdown": false,
+      "icon": "bolt",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "TV mode",
+      "tooltip": "Kiosk view - press Esc to exit",
+      "type": "link",
+      "url": "?kiosk"
+    }
   ]
 }

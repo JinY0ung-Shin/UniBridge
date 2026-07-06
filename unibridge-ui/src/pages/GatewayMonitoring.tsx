@@ -308,11 +308,15 @@ function GatewayMonitoring() {
           {selfScopeOnly && <span className="scope-note">{t('gatewayMonitoring.selfScopeNote')}</span>}
         </div>
         <div className="page-header__filters">
-          <GrafanaLink
-            dashboard="unibridge-gateway"
-            time={selection}
-            vars={{ 'var-route': selectedRoute, 'var-consumer': selectedConsumer }}
-          />
+          {/* Grafana reads Prometheus directly (no per-key scoping), so don't
+              offer it to viewers the backend restricts to their own key. */}
+          {!selfScopeOnly && (
+            <GrafanaLink
+              dashboard="unibridge-gateway"
+              time={selection}
+              vars={{ 'var-route': selectedRoute, 'var-consumer': selectedConsumer }}
+            />
+          )}
           {canReadApiKeys && (
             <label className="api-key-filter">
               <span className="api-key-filter__label">{t('gatewayMonitoring.apiKeyFilter')}</span>

@@ -526,7 +526,8 @@
     "panelLoading": "Loading...",
     "panelLoadFailed": "Failed to load this panel.",
     "headerNote": "Prometheus-based estimates · all times KST",
-    "openInGrafana": "Open in Grafana"
+    "openInGrafana": "Open in Grafana",
+    "grafanaSsoHint": "Opens the bundled Grafana in a new tab (signs in with your UniBridge account)"
   },
   "externalMonitoring": {
     "title": "External API Monitoring",

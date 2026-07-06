@@ -39,8 +39,16 @@ export default function GrafanaLink({ dashboard, vars, time }: GrafanaLinkProps)
       target="_blank"
       rel="noopener noreferrer"
       className="grafana-link-btn"
+      title={t('monitoring.grafanaSsoHint')}
       aria-label={`${t('monitoring.openInGrafana')} ${t('common.opensInNewTab')}`}
     >
+      {/* Bar-chart mark distinguishes this from sibling external-link buttons
+          (e.g. the LiteLLM admin button), which share the same pill style. */}
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ marginRight: 5 }} aria-hidden="true">
+        <path d="M2 10.5V6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        <path d="M6 10.5V2.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        <path d="M10 10.5V4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      </svg>
       {t('monitoring.openInGrafana')}
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ marginLeft: 4 }} aria-hidden="true">
         <path d="M3.5 1.5H10.5V8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />

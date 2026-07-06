@@ -133,9 +133,13 @@ function Dashboard() {
           <h1>{t('dashboard.title')}</h1>
           <p className="page-subtitle">{t('dashboard.subtitle')}</p>
         </div>
-        <div className="page-header__filters">
-          <GrafanaLink dashboard="unibridge-overview" />
-        </div>
+        {canViewMonitoring && (
+          <div className="page-header__filters">
+            {/* Carry the gateway chart's window so the linked overview opens
+                on the same headline numbers as the cards. */}
+            <GrafanaLink dashboard="unibridge-overview" time={dashSel(gwBucket)} />
+          </div>
+        )}
       </div>
 
       {/* Summary cards */}
