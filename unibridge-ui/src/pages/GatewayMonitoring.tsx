@@ -32,6 +32,7 @@ import BucketSelector from '../components/BucketSelector';
 import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket, bucketTooCoarse } from '../utils/timeRange';
 import { formatChartTime, formatChartTimestamp, formatBucketLabel } from '../utils/time';
 import { errorRateColor } from '../utils/monitoring';
+import GrafanaLink from '../components/GrafanaLink';
 
 function BarCell({ value, max, suffix = '' }: { value: number; max: number; suffix?: string }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
@@ -307,6 +308,7 @@ function GatewayMonitoring() {
           {selfScopeOnly && <span className="scope-note">{t('gatewayMonitoring.selfScopeNote')}</span>}
         </div>
         <div className="page-header__filters">
+          <GrafanaLink dashboard="unibridge-gateway" />
           {canReadApiKeys && (
             <label className="api-key-filter">
               <span className="api-key-filter__label">{t('gatewayMonitoring.apiKeyFilter')}</span>

@@ -525,7 +525,8 @@
   "monitoring": {
     "panelLoading": "Loading...",
     "panelLoadFailed": "Failed to load this panel.",
-    "headerNote": "Prometheus-based estimates · all times KST"
+    "headerNote": "Prometheus-based estimates · all times KST",
+    "openInGrafana": "Open in Grafana"
   },
   "externalMonitoring": {
     "title": "External API Monitoring",

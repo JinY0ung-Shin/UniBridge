@@ -14,6 +14,7 @@ import BucketSelector from '../components/BucketSelector';
 import { type Bucket, type TimeSelection, bucketKey } from '../utils/timeRange';
 import { formatBucketLabel, formatChartTime } from '../utils/time';
 import { errorRateColor } from '../utils/monitoring';
+import GrafanaLink from '../components/GrafanaLink';
 import './Dashboard.css';
 
 const BUCKET_RANGE: Record<Exclude<Bucket, 'auto'>, string> = { hour: '24h', day: '30d', week: '60d' };
@@ -131,6 +132,9 @@ function Dashboard() {
         <div className="dashboard-header-copy">
           <h1>{t('dashboard.title')}</h1>
           <p className="page-subtitle">{t('dashboard.subtitle')}</p>
+        </div>
+        <div className="page-header__filters">
+          <GrafanaLink dashboard="unibridge-overview" />
         </div>
       </div>
 

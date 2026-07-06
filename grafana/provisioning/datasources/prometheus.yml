@@ -1,0 +1,16 @@
+# Provisioned Prometheus datasource — same instance the UniBridge monitoring
+# UI queries (unibridge-service PROMETHEUS_URL), so Grafana shows the same data.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Match prometheus.yml global scrape_interval so $__rate_interval and
+      # auto steps never go below one scrape.
+      timeInterval: 15s
