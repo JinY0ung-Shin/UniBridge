@@ -177,6 +177,7 @@ function ServerDetail() {
         <div className="server-detail-controls">
           <GrafanaLink
             dashboard="unibridge-servers"
+            time={{ kind: 'preset', value: duration.key }}
             vars={server?.name ? { 'var-host': server.name } : undefined}
           />
           {DURATIONS.map((d) => (

@@ -128,7 +128,7 @@ details.
 | API Gateway | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/*` |
 | LiteLLM | `https://<HOST_IP>:<LITELLM_PORT>` |
 | Prometheus | `http://<HOST_IP>:9090` (localhost only) |
-| Grafana | `http://<HOST_IP>:<GRAFANA_PORT>` (default 3300) |
+| Grafana | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana` (same-origin behind the UI) |
 
 Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`). No human users are seeded into the `apihub` realm by default. After first boot, sign in to the admin console and create the first `admin` user in the `apihub` realm (assign the `admin` realm role), then manage further users from the UI **Users** page.
 
@@ -226,7 +226,7 @@ The helper authenticates as the Keycloak master admin (the service account lacks
 | 8000 | unibridge-service | localhost only |
 | 9180 | APISIX admin | localhost only |
 | 9090 | Prometheus | localhost only |
-| 3300 | Grafana | public (UniBridge SSO via Keycloak; local admin fallback) |
+| 3300 | Grafana | localhost only (debug; public access is `/grafana` on the UI port) |
 
 ## Local Development (without Docker)
 
@@ -296,7 +296,11 @@ Operational defaults in `docker-compose.yml`:
 
 ### Grafana dashboards
 
-Grafana (`GRAFANA_PORT`, default 3300) signs in with UniBridge accounts via
+Grafana is served same-origin behind the UI/edge nginx at
+`https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana` so it shares the stack's TLS —
+no plaintext HTTP origin (`GRAFANA_PORT`, default 3300, stays loopback-only for
+debugging; set `GRAFANA_EXTERNAL_URL` to relocate the UI links if you front it
+differently). It signs in with UniBridge accounts via
 Keycloak SSO ("UniBridge SSO" on the login page): any `apihub` realm user can
 log in, users with the `admin` realm role become Grafana Admins, everyone else
 a read-only Viewer. Grafana user records are created automatically on first
@@ -305,8 +309,9 @@ fallback, and self-service (non-SSO) sign-up stays disabled. On a fresh install
 the realm import creates the `grafana` OAuth client from
 `GRAFANA_OAUTH_CLIENT_SECRET`; for a realm imported before this client existed,
 create it once via the Keycloak admin console (confidential client `grafana`,
-redirect `http://<HOST_IP>:<GRAFANA_PORT>/*`, PKCE S256, plus a realm-roles
-mapper to claim `realm_access.roles`) or re-run the equivalent `kcadm` steps.
+redirect `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana/*`, PKCE S256, plus a
+realm-roles mapper to claim `realm_access.roles`) or re-run the equivalent
+`kcadm` steps.
 Grafana ships with provisioned dashboards that mirror the UniBridge monitoring UI —
 Overview, Gateway, LLM, External APIs, and Servers — running the same PromQL
 against the same Prometheus, so both show identical numbers. Dashboards are

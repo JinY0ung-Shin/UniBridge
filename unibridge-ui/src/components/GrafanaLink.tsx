@@ -1,25 +1,41 @@
 import { useTranslation } from 'react-i18next';
+import type { TimeSelection } from '../utils/timeRange';
 
-// Base URL of the bundled Grafana; injected at container start (entrypoint.sh),
-// with a Vite env fallback for local dev against a locally-running stack.
+// Same-origin path to the bundled Grafana (proxied by this nginx under
+// /grafana so it shares the UI's TLS); injected at container start
+// (entrypoint.sh) with a Vite env fallback for local dev.
 const GRAFANA_URL =
   window.__RUNTIME_CONFIG__?.GRAFANA_URL ||
   import.meta.env.VITE_GRAFANA_URL ||
-  'http://localhost:3300';
+  '/grafana';
+
+/** Map the page's time selection to Grafana's from/to query params. */
+function grafanaTime(sel?: TimeSelection): Record<string, string> {
+  if (!sel) return {};
+  return sel.kind === 'preset'
+    ? { from: `now-${sel.value}`, to: 'now' }
+    : { from: String(sel.start * 1000), to: String(sel.end * 1000) };
+}
 
 interface GrafanaLinkProps {
   /** Grafana dashboard UID this page mirrors (e.g. "unibridge-gateway"). */
   dashboard: string;
-  /** Optional template-variable preselection, e.g. { 'var-host': name }. */
-  vars?: Record<string, string>;
+  /** Template-variable preselection, e.g. { 'var-host': name }. Empty/null values are dropped. */
+  vars?: Record<string, string | null | undefined>;
+  /** Current time selection, carried over as Grafana's from/to. */
+  time?: TimeSelection;
 }
 
-export default function GrafanaLink({ dashboard, vars }: GrafanaLinkProps) {
+export default function GrafanaLink({ dashboard, vars, time }: GrafanaLinkProps) {
   const { t } = useTranslation();
-  const query = vars ? `?${new URLSearchParams(vars).toString()}` : '';
+  const params: Record<string, string> = grafanaTime(time);
+  for (const [key, value] of Object.entries(vars ?? {})) {
+    if (value) params[key] = value;
+  }
+  const qs = new URLSearchParams(params).toString();
   return (
     <a
-      href={`${GRAFANA_URL}/d/${dashboard}${query}`}
+      href={`${GRAFANA_URL}/d/${dashboard}${qs ? `?${qs}` : ''}`}
       target="_blank"
       rel="noopener noreferrer"
       className="grafana-link-btn"

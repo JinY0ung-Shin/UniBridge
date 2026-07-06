@@ -6,8 +6,10 @@
 : "${UNIBRIDGE_UI_PORT:=3000}"
 : "${KEYCLOAK_REDIRECT_URI:=https://${HOST_IP}:${UNIBRIDGE_UI_PORT}/*}"
 : "${KEYCLOAK_WEB_ORIGIN:=https://${HOST_IP}:${UNIBRIDGE_UI_PORT}}"
-: "${GRAFANA_PORT:=3300}"
-: "${GRAFANA_REDIRECT_URI:=http://${HOST_IP}:${GRAFANA_PORT}/*}"
+# Grafana is served same-origin behind the UI/edge nginx at /grafana, so its
+# OAuth redirect shares the UI's HTTPS endpoint (UNIBRIDGE_UI_PORT is the edge
+# port in blue/green deployments — see compose keycloak env).
+: "${GRAFANA_REDIRECT_URI:=https://${HOST_IP}:${UNIBRIDGE_UI_PORT}/grafana/*}"
 export KEYCLOAK_REDIRECT_URI KEYCLOAK_WEB_ORIGIN GRAFANA_REDIRECT_URI
 
 # Substitute environment variables in realm template and write to import dir

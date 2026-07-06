@@ -207,7 +207,11 @@ function LlmMonitoring() {
           <p className="page-meta">{t('monitoring.headerNote')}</p>
         </div>
         <div className="page-header__filters">
-          <GrafanaLink dashboard="unibridge-llm" />
+          <GrafanaLink
+            dashboard="unibridge-llm"
+            time={selection}
+            vars={{ 'var-api_key': selectedKey }}
+          />
           <a
             href={LITELLM_ADMIN_URL}
             target="_blank"

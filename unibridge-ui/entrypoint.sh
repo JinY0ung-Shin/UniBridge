@@ -6,7 +6,10 @@ set -eu
 
 # Generate runtime config from environment variables
 LITELLM_ADMIN_URL="https://${HOST_IP:-localhost}:${LITELLM_PORT:-4000}/ui"
-GRAFANA_URL="http://${HOST_IP:-localhost}:${GRAFANA_PORT:-3300}"
+# Same-origin path proxied by this nginx (see nginx.conf /grafana/); override
+# with GRAFANA_EXTERNAL_URL when Grafana lives behind a different endpoint.
+GRAFANA_URL="${GRAFANA_EXTERNAL_URL:-/grafana}"
+GRAFANA_UPSTREAM="${GRAFANA_UPSTREAM:-grafana}"
 KEYCLOAK_URL="${KEYCLOAK_EXTERNAL_URL:-https://${HOST_IP:-localhost}:${KEYCLOAK_PORT:-8443}}"
 KEYCLOAK_REALM_VALUE="${KEYCLOAK_REALM:-apihub}"
 KEYCLOAK_CLIENT_ID="${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}"
@@ -34,12 +37,13 @@ EOF
 sed -i \
   -e "s/__UNIBRIDGE_SERVICE_UPSTREAM__/$(sed_escape "$UNIBRIDGE_SERVICE_UPSTREAM")/g" \
   -e "s/__APISIX_UPSTREAM__/$(sed_escape "$APISIX_UPSTREAM")/g" \
+  -e "s/__GRAFANA_UPSTREAM__/$(sed_escape "$GRAFANA_UPSTREAM")/g" \
   /etc/nginx/conf.d/default.conf
 
 # Catch both a failed substitution (leftover placeholder) and any resulting
 # invalid config before handing off to nginx, so the container fails loudly
 # instead of booting with a broken proxy.
-if grep -q '__UNIBRIDGE_SERVICE_UPSTREAM__\|__APISIX_UPSTREAM__' /etc/nginx/conf.d/default.conf; then
+if grep -q '__UNIBRIDGE_SERVICE_UPSTREAM__\|__APISIX_UPSTREAM__\|__GRAFANA_UPSTREAM__' /etc/nginx/conf.d/default.conf; then
   echo "entrypoint: upstream placeholders were not substituted in default.conf" >&2
   exit 1
 fi

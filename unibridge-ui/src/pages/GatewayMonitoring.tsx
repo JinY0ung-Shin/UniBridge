@@ -308,7 +308,11 @@ function GatewayMonitoring() {
           {selfScopeOnly && <span className="scope-note">{t('gatewayMonitoring.selfScopeNote')}</span>}
         </div>
         <div className="page-header__filters">
-          <GrafanaLink dashboard="unibridge-gateway" />
+          <GrafanaLink
+            dashboard="unibridge-gateway"
+            time={selection}
+            vars={{ 'var-route': selectedRoute, 'var-consumer': selectedConsumer }}
+          />
           {canReadApiKeys && (
             <label className="api-key-filter">
               <span className="api-key-filter__label">{t('gatewayMonitoring.apiKeyFilter')}</span>

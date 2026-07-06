@@ -300,7 +300,11 @@ function ExternalMonitoring() {
           <p className="page-meta">{t('monitoring.headerNote')}</p>
         </div>
         <div className="page-header__filters">
-          <GrafanaLink dashboard="unibridge-external" />
+          <GrafanaLink
+            dashboard="unibridge-external"
+            time={selection}
+            vars={{ 'var-service': drillService ?? selectedService }}
+          />
           <label className="api-key-filter">
             <span className="api-key-filter__label">{t('externalMonitoring.serviceFilter')}</span>
             <select
