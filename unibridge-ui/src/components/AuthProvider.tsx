@@ -122,6 +122,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         authenticated,
         token: keycloak.token || null,
         username: keycloak.tokenParsed?.preferred_username as string || null,
+        appRole,
         initialized,
         logout,
       }}

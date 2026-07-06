@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import type { TimeSelection } from '../utils/timeRange';
+import { useAuth } from './useAuth';
 
 // Same-origin path to the bundled Grafana (proxied by this nginx under
 // /grafana so it shares the UI's TLS); injected at container start
@@ -28,6 +29,10 @@ interface GrafanaLinkProps {
 
 export default function GrafanaLink({ dashboard, vars, time }: GrafanaLinkProps) {
   const { t } = useTranslation();
+  const { appRole } = useAuth();
+  // Grafana SSO is admin-only (ROLE_ATTRIBUTE_STRICT, no Viewer fallback), so
+  // don't render a link that would dead-end at a rejected login.
+  if (appRole !== 'admin') return null;
   const params: Record<string, string> = grafanaTime(time);
   for (const [key, value] of Object.entries(vars ?? {})) {
     if (value) params[key] = value;

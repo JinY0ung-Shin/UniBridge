@@ -301,13 +301,15 @@ Grafana is served same-origin behind the UI/edge nginx at
 no plaintext HTTP origin (`GRAFANA_PORT`, default 3300, stays loopback-only for
 debugging; set `GRAFANA_EXTERNAL_URL` to relocate the UI links if you front it
 differently). It signs in with UniBridge accounts via
-Keycloak SSO ("UniBridge SSO" on the login page): any `apihub` realm user can
-log in, users with the `admin` realm role become Grafana Admins, everyone else
-a read-only Viewer. Every signed-in user sees every metric: the UI's per-key
-scoping (`gateway.monitoring.self`) does not apply inside Grafana — the in-app
-links are hidden for self-scoped users, but direct access stays open (set
-`GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT=true` with a stricter role mapping
-to restrict sign-in entirely). Grafana user records are created automatically on first
+Keycloak SSO ("UniBridge SSO" on the login page), restricted to admins: only
+users with the `admin` realm role can sign in (as Grafana Admins) — everyone
+else is rejected at login (`GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT`),
+because Grafana has no notion of the UI's per-key scoping
+(`gateway.monitoring.self`) and any sign-in would expose every metric. The
+in-app Grafana links are likewise rendered for admins only. To open read-only
+access to every UniBridge account instead, append `|| 'Viewer'` to
+`GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH` and drop the strict flag. Grafana
+user records are created automatically on first
 SSO login; the local `admin` / `GRAFANA_ADMIN_PASSWORD` login remains as a
 fallback, and self-service (non-SSO) sign-up stays disabled. On a fresh install
 the realm import creates the `grafana` OAuth client from
