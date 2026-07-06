@@ -121,7 +121,7 @@ services:
       - KEYCLOAK_DEV_MODE=${KEYCLOAK_DEV_MODE:-false}
       # Grafana SSO client: secret lands in the realm template on first import,
       # redirect URI is kept in sync by the entrypoint on every boot.
-      - GRAFANA_OAUTH_CLIENT_SECRET=${GRAFANA_OAUTH_CLIENT_SECRET:-}
+      - GRAFANA_OAUTH_CLIENT_SECRET=${GRAFANA_OAUTH_CLIENT_SECRET:?GRAFANA_OAUTH_CLIENT_SECRET is required}
     ports:
       - "${KEYCLOAK_PORT:-8443}:8443"
     volumes:

@@ -315,9 +315,14 @@ fallback, and self-service (non-SSO) sign-up stays disabled. On a fresh install
 the realm import creates the `grafana` OAuth client from
 `GRAFANA_OAUTH_CLIENT_SECRET`; for a realm imported before this client existed,
 create it once via the Keycloak admin console (confidential client `grafana`,
-redirect `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana/*`, PKCE S256, plus a
+redirect `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana/*` — on blue/green
+deployments use `UNIBRIDGE_EDGE_PORT`, the public port — PKCE S256, plus a
 realm-roles mapper to claim `realm_access.roles`) or re-run the equivalent
-`kcadm` steps.
+`kcadm` steps. Then either set the client's Credentials secret to the
+`GRAFANA_OAUTH_CLIENT_SECRET` value from `.env`, or simply restart Keycloak
+once: its entrypoint re-syncs the client secret and redirect URI from env on
+every boot (the console generates a random secret on creation, which would
+otherwise fail token exchange with `invalid_client`).
 Grafana ships with provisioned dashboards that mirror the UniBridge monitoring UI —
 Overview, Gateway, LLM, External APIs, and Servers — running the same PromQL
 against the same Prometheus, so both show identical numbers. Dashboards are
@@ -329,9 +334,11 @@ Prometheus query steps to KST — hourly/daily buckets match the UI's KST calend
 buckets exactly. Known deltas vs the in-app UI: weekly buckets align to
 Thursday-start weeks (epoch-aligned) instead of the UI's Monday-start, route IDs
 are shown without the APISIX friendly-name lookup, the Dashboard page's live
-per-database connection grid has no Prometheus equivalent, and "over time" bar
+per-database connection grid has no Prometheus equivalent, "over time" bar
 panels follow Grafana's auto step (`$__interval`, all series plotted) rather
-than the UI's fixed per-range buckets with top-12 + "(others)" grouping.
+than the UI's fixed per-range buckets with top-12 + "(others)" grouping, and
+the Servers disk panels ignore the `NODE_EXPORTER_DISK_MOUNTPOINTS` whitelist
+(they always show every real filesystem).
 
 ### Server (host) monitoring
 

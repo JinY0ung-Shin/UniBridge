@@ -98,7 +98,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -157,7 +159,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -216,7 +220,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -275,7 +281,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -335,7 +343,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -394,7 +404,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -454,7 +466,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -514,7 +528,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -737,7 +753,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (requested_model, model) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))",
+          "expr": "((sum by (requested_model, model) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) > 0) or (sum by (requested_model, model) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) + sum by (requested_model, model) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))) or sum by (requested_model, model) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) or sum by (requested_model, model) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) or (sum by (requested_model, model) (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\"}[$__range])) * 0))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -927,7 +943,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])))",
+          "expr": "((sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) > 0) or (sum by (end_user) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) + sum by (end_user) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))) or sum by (end_user) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) or sum by (end_user) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) or (sum by (end_user) (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\"}[$__range])) * 0)) and on (end_user) topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"

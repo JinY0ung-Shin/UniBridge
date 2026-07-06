@@ -82,10 +82,22 @@ for i in $(seq 1 60); do
         | grep '"id"' | head -1 | sed 's/.*"id" *: *"//;s/".*//')
     fi
     if [ -n "$GRAFANA_CLIENT_UUID" ]; then
-      /opt/keycloak/bin/kcadm.sh update "clients/$GRAFANA_CLIENT_UUID" -r apihub \
-        -s "redirectUris=[\"${GRAFANA_REDIRECT_URI}\"]" 2>/dev/null \
-        && echo "[init] Updated grafana client: redirectUris=${GRAFANA_REDIRECT_URI}" \
-        || echo "[init] WARNING: Failed to update grafana client"
+      # Sync the secret too (not just redirect URIs) so rotating
+      # GRAFANA_OAUTH_CLIENT_SECRET in .env — or hand-creating the client on a
+      # pre-existing realm with a console-generated secret — converges on the
+      # env value at the next boot instead of failing token exchange.
+      if [ -n "${GRAFANA_OAUTH_CLIENT_SECRET}" ]; then
+        /opt/keycloak/bin/kcadm.sh update "clients/$GRAFANA_CLIENT_UUID" -r apihub \
+          -s "redirectUris=[\"${GRAFANA_REDIRECT_URI}\"]" \
+          -s "secret=${GRAFANA_OAUTH_CLIENT_SECRET}" 2>/dev/null \
+          && echo "[init] Updated grafana client: redirectUris=${GRAFANA_REDIRECT_URI} (secret synced)" \
+          || echo "[init] WARNING: Failed to update grafana client"
+      else
+        /opt/keycloak/bin/kcadm.sh update "clients/$GRAFANA_CLIENT_UUID" -r apihub \
+          -s "redirectUris=[\"${GRAFANA_REDIRECT_URI}\"]" 2>/dev/null \
+          && echo "[init] Updated grafana client: redirectUris=${GRAFANA_REDIRECT_URI}" \
+          || echo "[init] WARNING: Failed to update grafana client"
+      fi
     else
       echo "[init] NOTE: grafana client not found (pre-existing realm import); create it to enable Grafana SSO"
     fi

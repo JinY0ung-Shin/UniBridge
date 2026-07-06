@@ -118,11 +118,13 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])) or sum(increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range]))",
+          "expr": "sum(increase(http_requests_total{job=\"external-services\",service=~\"$service\"}[$__range])) or sum(increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\"}[$__range]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -178,11 +180,13 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(sum(increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\",status=~\"5..\"}[$__range])) or sum(increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\",status=~\"5..\"}[$__range]))) / (sum(increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])) or sum(increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range]))) * 100",
+          "expr": "(sum(increase(http_requests_total{job=\"external-services\",service=~\"$service\",status=~\"5..\"}[$__range])) or sum(increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",status=~\"5..\"}[$__range]))) / (sum(increase(http_requests_total{job=\"external-services\",service=~\"$service\"}[$__range])) or sum(increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\"}[$__range]))) * 100",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -238,11 +242,13 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(http_request_duration_seconds_sum{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])) / sum(increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])) * 1000",
+          "expr": "sum(increase(http_request_duration_seconds_sum{job=\"external-services\",service=~\"$service\"}[$__range])) / sum(increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\"}[$__range])) * 1000",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -584,6 +590,22 @@
                 "value": 2
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Share"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
           }
         ]
       },
@@ -618,7 +640,8 @@
               "Value #A": "Requests",
               "Value #B": "5xx",
               "Value #C": "p50 (ms)",
-              "Value #D": "p95 (ms)"
+              "Value #D": "p95 (ms)",
+              "Value #E": "Share"
             }
           }
         },
@@ -639,7 +662,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "topk(10, sum by (service) (increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])) or sum by (service) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])))",
+          "expr": "topk(10, sum by (service) (increase(http_requests_total{job=\"external-services\",service=~\"$service\"}[$__range])) or sum by (service) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\"}[$__range])))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -650,7 +673,7 @@
         },
         {
           "refId": "B",
-          "expr": "(sum by (service) (increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\",status=~\"5..\"}[$__range])) or sum by (service) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\",status=~\"5..\"}[$__range]))) and on (service) topk(10, sum by (service) (increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])) or sum by (service) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])))",
+          "expr": "(sum by (service) (increase(http_requests_total{job=\"external-services\",service=~\"$service\",status=~\"5..\"}[$__range])) or sum by (service) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",status=~\"5..\"}[$__range])) or (sum by (service) (increase(http_requests_total{job=\"external-services\",service=~\"$service\"}[$__range])) or sum by (service) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\"}[$__range]))) * 0) and on (service) topk(10, sum by (service) (increase(http_requests_total{job=\"external-services\",service=~\"$service\"}[$__range])) or sum by (service) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\"}[$__range])))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -661,7 +684,7 @@
         },
         {
           "refId": "C",
-          "expr": "(histogram_quantile(0.5, sum by (service, le) (rate(http_request_duration_seconds_bucket{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range]))) * 1000) and on (service) topk(10, sum by (service) (increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])) or sum by (service) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])))",
+          "expr": "(histogram_quantile(0.5, sum by (service, le) (rate(http_request_duration_seconds_bucket{job=\"external-services\",service=~\"$service\"}[$__range]))) * 1000) and on (service) topk(10, sum by (service) (increase(http_requests_total{job=\"external-services\",service=~\"$service\"}[$__range])) or sum by (service) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\"}[$__range])))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -672,7 +695,18 @@
         },
         {
           "refId": "D",
-          "expr": "(histogram_quantile(0.95, sum by (service, le) (rate(http_request_duration_seconds_bucket{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range]))) * 1000) and on (service) topk(10, sum by (service) (increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])) or sum by (service) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])))",
+          "expr": "(histogram_quantile(0.95, sum by (service, le) (rate(http_request_duration_seconds_bucket{job=\"external-services\",service=~\"$service\"}[$__range]))) * 1000) and on (service) topk(10, sum by (service) (increase(http_requests_total{job=\"external-services\",service=~\"$service\"}[$__range])) or sum by (service) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\"}[$__range])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "E",
+          "expr": "(100 * (sum by (service) (increase(http_requests_total{job=\"external-services\",service=~\"$service\"}[$__range])) or sum by (service) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\"}[$__range]))) / scalar(sum(increase(http_requests_total{job=\"external-services\",service=~\"$service\"}[$__range])) or sum(increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\"}[$__range])))) and on (service) topk(10, sum by (service) (increase(http_requests_total{job=\"external-services\",service=~\"$service\"}[$__range])) or sum by (service) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\"}[$__range])))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -754,6 +788,22 @@
                 "value": 2
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Share"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
           }
         ]
       },
@@ -788,7 +838,8 @@
               "Value #A": "Requests",
               "Value #B": "5xx",
               "Value #C": "p50 (ms)",
-              "Value #D": "p95 (ms)"
+              "Value #D": "p95 (ms)",
+              "Value #E": "Share"
             }
           }
         },
@@ -820,7 +871,7 @@
         },
         {
           "refId": "B",
-          "expr": "(sum by (handler) (increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\",status=~\"5..\"}[$__range])) or sum by (handler) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\",status=~\"5..\"}[$__range]))) and on (handler) topk(10, sum by (handler) (increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])) or sum by (handler) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])))",
+          "expr": "(sum by (handler) (increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\",status=~\"5..\"}[$__range])) or sum by (handler) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\",status=~\"5..\"}[$__range])) or (sum by (handler) (increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])) or sum by (handler) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range]))) * 0) and on (handler) topk(10, sum by (handler) (increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])) or sum by (handler) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -843,6 +894,17 @@
         {
           "refId": "D",
           "expr": "(histogram_quantile(0.95, sum by (handler, le) (rate(http_request_duration_seconds_bucket{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range]))) * 1000) and on (handler) topk(10, sum by (handler) (increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])) or sum by (handler) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "E",
+          "expr": "(100 * (sum by (handler) (increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])) or sum by (handler) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range]))) / scalar(sum(increase(http_requests_total{job=\"external-services\",service=~\"$service\"}[$__range])) or sum(increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\"}[$__range])))) and on (handler) topk(10, sum by (handler) (increase(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])) or sum by (handler) (increase(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__range])))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -988,7 +1050,9 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "legendFormat": "{{service}}"
+          "legendFormat": "{{service}}",
+          "instant": true,
+          "range": false
         }
       ]
     }

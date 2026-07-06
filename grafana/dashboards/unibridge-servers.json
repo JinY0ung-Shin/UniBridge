@@ -119,7 +119,9 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "legendFormat": "{{host}}"
+          "legendFormat": "{{host}}",
+          "instant": true,
+          "range": false
         }
       ]
     },

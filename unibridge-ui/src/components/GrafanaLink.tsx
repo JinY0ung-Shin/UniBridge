@@ -4,11 +4,16 @@ import { useAuth } from './useAuth';
 
 // Same-origin path to the bundled Grafana (proxied by this nginx under
 // /grafana so it shares the UI's TLS); injected at container start
-// (entrypoint.sh) with a Vite env fallback for local dev.
-const GRAFANA_URL =
-  window.__RUNTIME_CONFIG__?.GRAFANA_URL ||
-  import.meta.env.VITE_GRAFANA_URL ||
-  '/grafana';
+// (entrypoint.sh) with a Vite env fallback for local dev. Trailing slashes
+// are stripped so an override like "https://grafana.example.com/" doesn't
+// produce "//d/..." hrefs.
+function grafanaBase(): string {
+  const raw =
+    window.__RUNTIME_CONFIG__?.GRAFANA_URL ||
+    import.meta.env.VITE_GRAFANA_URL ||
+    '/grafana';
+  return raw.replace(/\/+$/, '');
+}
 
 /** Map the page's time selection to Grafana's from/to query params. */
 function grafanaTime(sel?: TimeSelection): Record<string, string> {
@@ -40,7 +45,7 @@ export default function GrafanaLink({ dashboard, vars, time }: GrafanaLinkProps)
   const qs = new URLSearchParams(params).toString();
   return (
     <a
-      href={`${GRAFANA_URL}/d/${dashboard}${qs ? `?${qs}` : ''}`}
+      href={`${grafanaBase()}/d/${dashboard}${qs ? `?${qs}` : ''}`}
       target="_blank"
       rel="noopener noreferrer"
       className="grafana-link-btn"

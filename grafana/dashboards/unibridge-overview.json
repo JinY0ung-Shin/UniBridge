@@ -93,7 +93,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -172,7 +174,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -251,7 +255,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -330,7 +336,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -410,7 +418,9 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "legendFormat": "{{db}}"
+          "legendFormat": "{{db}}",
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -490,7 +500,9 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "legendFormat": "{{host}}"
+          "legendFormat": "{{host}}",
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -570,7 +582,9 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "legendFormat": "{{service}}"
+          "legendFormat": "{{service}}",
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -629,7 +643,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -689,7 +705,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -749,7 +767,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -867,7 +887,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -927,7 +949,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },
@@ -986,7 +1010,9 @@
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
-          }
+          },
+          "instant": true,
+          "range": false
         }
       ]
     },

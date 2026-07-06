@@ -1,5 +1,5 @@
 import { screen } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import type { ReactElement } from 'react';
 import GrafanaLink from '../components/GrafanaLink';
 import { AuthContext } from '../components/AuthContext';
@@ -23,6 +23,10 @@ const withRole = (appRole: string | null, ui: ReactElement) => (
 );
 
 describe('GrafanaLink', () => {
+  afterEach(() => {
+    delete window.__RUNTIME_CONFIG__;
+  });
+
   it('builds the dashboard URL with carried time and drops empty vars', () => {
     renderWithProviders(
       withRole(
@@ -72,5 +76,27 @@ describe('GrafanaLink', () => {
     renderWithProviders(withRole('user', <GrafanaLink dashboard="unibridge-servers" />));
 
     expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('URL-encodes template-variable values', () => {
+    renderWithProviders(
+      withRole(
+        'admin',
+        <GrafanaLink dashboard="unibridge-servers" vars={{ 'var-host': 'web #1 서버' }} />,
+      ),
+    );
+
+    const href = screen.getByRole('link').getAttribute('href')!;
+    expect(href).toContain('var-host=web+%231+%EC%84%9C%EB%B2%84');
+  });
+
+  it('strips trailing slashes from a configured base URL', () => {
+    window.__RUNTIME_CONFIG__ = { GRAFANA_URL: 'https://grafana.example.com/' };
+    renderWithProviders(withRole('admin', <GrafanaLink dashboard="unibridge-overview" />));
+
+    expect(screen.getByRole('link')).toHaveAttribute(
+      'href',
+      'https://grafana.example.com/d/unibridge-overview',
+    );
   });
 });
