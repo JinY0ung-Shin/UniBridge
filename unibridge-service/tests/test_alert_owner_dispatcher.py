@@ -449,7 +449,8 @@ async def test_dispatch_alert_sends_headers_and_alert_placeholders(engine):
     payload_template = (
         '{"recipients":{{recipients_json}},"to":"{{recipients}}",'
         '"status":"{{status}}","target":"{{target_name}}",'
-        '"rate":"{{rate}}","threshold":"{{threshold}}","rule":"{{rule_name}}"}'
+        '"rate":"{{rate}}","threshold":"{{threshold}}","rule":"{{rule_name}}",'
+        '"description":"{{target_description}}"}'
     )
     async with session_factory() as db:
         channel = await _seed_mail_channel(
@@ -476,6 +477,7 @@ async def test_dispatch_alert_sends_headers_and_alert_placeholders(engine):
             rate=12.34,
             threshold=10.0,
             monitor_label="라우트 에러율",
+            target_description="Handles checkout traffic",
         )
 
     sent = send.await_args.kwargs
@@ -488,6 +490,7 @@ async def test_dispatch_alert_sends_headers_and_alert_placeholders(engine):
     assert payload["rate"] == "12.3"
     assert payload["threshold"] == "10.0"
     assert payload["rule"] == "라우트 에러율"
+    assert payload["description"] == "Handles checkout traffic"
     histories = await _history_rows(session_factory)
     assert histories[0].success is True
 

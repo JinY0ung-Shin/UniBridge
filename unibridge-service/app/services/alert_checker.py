@@ -288,6 +288,7 @@ async def _check_server_health(
                 alert_type=transition, target=sig.target, message=sig.message,
                 display_target=sig.display, rate=sig.value, threshold=sig.threshold,
                 monitor_label=sig.monitor_label, severity=sig.severity,
+                target_description=sig.description,
             )
 
 
@@ -340,6 +341,7 @@ async def _check_service_health(
                 alert_type=transition, target=sig.target, message=sig.message,
                 display_target=sig.display, rate=None, threshold=None,
                 monitor_label=sig.monitor_label, severity=sig.severity,
+                target_description=sig.description,
             )
 
 

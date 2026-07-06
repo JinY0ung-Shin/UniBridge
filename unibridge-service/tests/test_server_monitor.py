@@ -21,6 +21,7 @@ from app.services.alert_state import AlertStateManager
 def _host(name="web1", address="10.0.0.1:9100", enabled=True, labels=None, **overrides):
     return SimpleNamespace(
         name=name, address=address, enabled=enabled, labels=labels,
+        description=overrides.get("description", ""),
         disk_warn_pct=overrides.get("disk_warn_pct"),
         disk_crit_pct=overrides.get("disk_crit_pct"),
         cpu_warn_pct=overrides.get("cpu_warn_pct"),
@@ -187,11 +188,12 @@ async def test_down_host_skips_other_signals():
     th = ServerThresholds(forecast_hours=0)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _patch_queries({"up{": [_series("web1", 0)]})
-        signals = await evaluate_hosts([_host("web1")], th)
+        signals = await evaluate_hosts([_host("web1", description="Primary web node")], th)
     types = {s.alert_type for s in signals}
     assert types == {"server_down"}
     down = signals[0]
     assert down.is_healthy is False and down.severity == "critical"
+    assert down.description == "Primary web node"
 
 
 @pytest.mark.asyncio
@@ -300,9 +302,17 @@ def test_binary_behaviour_unchanged_without_new_args():
 
 # ── external-service monitoring ───────────────────────────────────────────────
 
-def _service(name="orders", address="10.0.0.9:8080", metrics_path="/metrics", scheme="http", enabled=True):
+def _service(
+    name="orders",
+    address="10.0.0.9:8080",
+    metrics_path="/metrics",
+    scheme="http",
+    enabled=True,
+    description="",
+):
     return SimpleNamespace(
-        name=name, address=address, metrics_path=metrics_path, scheme=scheme, enabled=enabled
+        name=name, address=address, metrics_path=metrics_path, scheme=scheme,
+        enabled=enabled, description=description,
     )
 
 
@@ -351,7 +361,7 @@ async def test_write_service_targets_file_is_world_readable(tmp_path):
 
 @pytest.mark.asyncio
 async def test_evaluate_services_up_and_down():
-    services = [_service("up-svc"), _service("down-svc")]
+    services = [_service("up-svc"), _service("down-svc", description="Order API")]
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _patch_queries({
             'up{job="external-services"}': [_svc_series("up-svc", 1), _svc_series("down-svc", 0)],
@@ -360,6 +370,7 @@ async def test_evaluate_services_up_and_down():
     by_target = {s.target: s for s in signals}
     assert by_target["up-svc"].is_healthy is True and by_target["up-svc"].severity is None
     assert by_target["down-svc"].is_healthy is False and by_target["down-svc"].severity == "critical"
+    assert by_target["down-svc"].description == "Order API"
     assert all(s.alert_type == "external_service_down" for s in signals)
 
 

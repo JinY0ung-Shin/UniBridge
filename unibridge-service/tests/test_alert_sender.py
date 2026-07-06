@@ -33,24 +33,33 @@ class TestRenderTemplate:
         assert "{{unknown_var}}" in result
 
     def test_renders_new_placeholders(self):
-        template = '{"rate":"{{rate}}","threshold":"{{threshold}}","rule":"{{rule_name}}"}'
+        template = (
+            '{"rate":"{{rate}}","threshold":"{{threshold}}",'
+            '"rule":"{{rule_name}}","description":"{{target_description}}"}'
+        )
         result = render_template(
             template, alert_type="triggered", target_name="x",
             status="ok", message="m", timestamp="t", recipients="r",
             rate="12.3", threshold="10.0", rule_name="route-alert",
+            target_description="Primary API host",
         )
         assert '"rate":"12.3"' in result
         assert '"threshold":"10.0"' in result
         assert '"rule":"route-alert"' in result
+        assert '"description":"Primary API host"' in result
 
     def test_new_placeholders_default_to_empty(self):
-        template = '{"rate":"{{rate}}","rule":"{{rule_name}}"}'
+        template = (
+            '{"rate":"{{rate}}","rule":"{{rule_name}}",'
+            '"description":"{{target_description}}"}'
+        )
         result = render_template(
             template, alert_type="t", target_name="x",
             status="s", message="m", timestamp="t", recipients="r",
         )
         assert '"rate":""' in result
         assert '"rule":""' in result
+        assert '"description":""' in result
 
 
 class TestRecipientItemRendering:

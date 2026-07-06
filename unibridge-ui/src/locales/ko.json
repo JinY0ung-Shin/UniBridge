@@ -1003,6 +1003,7 @@
     "templateVarsToggle": "변수 목록 보기 ({{count}}개)",
     "varDesc_alert_type": "알림 유형 (db_health, nas_health, upstream_health, error_rate, route_error_rate)",
     "varDesc_target_name": "알림 대상 이름 (DB명, 업스트림명, 라우트명 등)",
+    "varDesc_target_description": "서버 또는 서비스 설정에 입력한 대상 설명",
     "varDesc_status": "상태 (triggered 또는 resolved)",
     "varDesc_message": "알림 메시지 본문",
     "varDesc_timestamp": "알림 발생 시각",

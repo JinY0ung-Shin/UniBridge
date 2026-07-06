@@ -35,6 +35,7 @@ async def dispatch_alert(
     threshold: float | None = None,
     monitor_label: str = "",
     severity: str | None = None,
+    target_description: str | None = None,
 ) -> None:
     """Send an alert to the resource's assignees (담당자) plus the global admins (관리자).
 
@@ -110,6 +111,7 @@ async def dispatch_alert(
                 threshold=threshold,
                 monitor_label=monitor_label,
                 severity=severity,
+                target_description=target_description,
             )
             send_args = {
                 "url": channel_webhook_url,
@@ -245,6 +247,7 @@ def _render_payload(
     threshold: float | None,
     monitor_label: str,
     severity: str | None = None,
+    target_description: str | None = None,
 ) -> str:
     status_label = "장애 발생" if alert_type == "triggered" else "정상 복구"
     return render_template(
@@ -260,4 +263,5 @@ def _render_payload(
         threshold=f"{threshold:.1f}" if threshold is not None else "",
         rule_name=monitor_label,
         severity=severity or "",
+        target_description=target_description or "",
     )

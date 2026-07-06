@@ -215,6 +215,7 @@ class HostSignal:
     threshold: float | None
     message: str
     monitor_label: str
+    description: str = ""
 
 
 # ── PromQL ───────────────────────────────────────────────────────────────────
@@ -398,6 +399,7 @@ async def evaluate_hosts(
     for host in enabled:
         name = host.name
         display = name
+        description = str(getattr(host, "description", "") or "")
 
         # 1. Reachability. Absence from the up map == unreachable/not scraped.
         is_up = up_map.get(name, 0.0) >= 1.0
@@ -415,6 +417,7 @@ async def evaluate_hosts(
                 f"Server '{display}' is unreachable (node_exporter scrape is down)."
             ),
             monitor_label="서버 상태",
+            description=description,
         ))
         # When a host is down its other series are stale/absent — skip them so a
         # single outage doesn't fan out into disk/cpu/mem alerts too.
@@ -455,6 +458,7 @@ async def evaluate_hosts(
                     f"(warn {warn:.0f}% / crit {crit:.0f}%)."
                 ),
                 monitor_label="서버 디스크 사용률",
+                description=description,
             ))
 
             # 3. Disk-fill forecast — proactive "will fill within N hours".
@@ -477,6 +481,7 @@ async def evaluate_hosts(
                             f"Server '{display}' disk fill projection cleared."
                         ),
                         monitor_label="서버 디스크 예측",
+                        description=description,
                     ))
 
         # 4. CPU utilisation.
@@ -493,6 +498,7 @@ async def evaluate_hosts(
                 threshold=warn,
                 message=f"Server '{display}' CPU usage is {cpu_pct:.1f}% (threshold {warn:.0f}%).",
                 monitor_label="서버 CPU 사용률",
+                description=description,
             ))
 
         # 5. Memory utilisation.
@@ -509,6 +515,7 @@ async def evaluate_hosts(
                 threshold=warn,
                 message=f"Server '{display}' memory usage is {mem_pct:.1f}% (threshold {warn:.0f}%).",
                 monitor_label="서버 메모리 사용률",
+                description=description,
             ))
 
     return signals
@@ -632,6 +639,7 @@ class ServiceSignal:
     severity: str | None
     message: str
     monitor_label: str
+    description: str = ""
 
 
 async def evaluate_services(services: list[Any]) -> list[ServiceSignal]:
@@ -655,6 +663,7 @@ async def evaluate_services(services: list[Any]) -> list[ServiceSignal]:
     signals: list[ServiceSignal] = []
     for service in enabled:
         name = service.name
+        description = str(getattr(service, "description", "") or "")
         # Absence from the up map == unreachable/not scraped yet.
         is_up = up_map.get(name, 0.0) >= 1.0
         signals.append(
@@ -670,6 +679,7 @@ async def evaluate_services(services: list[Any]) -> list[ServiceSignal]:
                     else f"External service '{name}' is unreachable (metrics scrape is down)."
                 ),
                 monitor_label="외부 서비스 상태",
+                description=description,
             )
         )
     return signals

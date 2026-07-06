@@ -644,6 +644,7 @@ class TestExternalServiceHealth:
             is_healthy=False, severity="critical",
             message="External service 'orders' is unreachable (metrics scrape is down).",
             monitor_label="외부 서비스 상태",
+            description="Order API",
         )
         with patch("app.services.alert_checker._load_service_monitoring",
                    new_callable=AsyncMock, return_value=([svc], 0)), \
@@ -662,6 +663,7 @@ class TestExternalServiceHealth:
         assert kwargs["alert_type"] == "triggered"
         assert kwargs["target"] == "orders"
         assert kwargs["severity"] == "critical"
+        assert kwargs["target_description"] == "Order API"
 
     @pytest.mark.asyncio
     async def test_no_enabled_services_no_dispatch(self):

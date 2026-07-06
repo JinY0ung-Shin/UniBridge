@@ -247,6 +247,7 @@ export default function AlertDeliveryPanel() {
   const templateVars: [string, string][] = [
     ['alert_type', t('alerts.varDesc_alert_type')],
     ['target_name', t('alerts.varDesc_target_name')],
+    ['target_description', t('alerts.varDesc_target_description')],
     ['status', t('alerts.varDesc_status')],
     ['message', t('alerts.varDesc_message')],
     ['timestamp', t('alerts.varDesc_timestamp')],

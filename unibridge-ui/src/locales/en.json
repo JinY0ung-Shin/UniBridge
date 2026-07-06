@@ -1003,6 +1003,7 @@
     "templateVarsToggle": "Show variables ({{count}})",
     "varDesc_alert_type": "Alert type (db_health, nas_health, upstream_health, error_rate, route_error_rate)",
     "varDesc_target_name": "Target name (DB, upstream, route, etc.)",
+    "varDesc_target_description": "Target description from server or service settings",
     "varDesc_status": "Status (triggered or resolved)",
     "varDesc_message": "Alert message body",
     "varDesc_timestamp": "Alert timestamp",

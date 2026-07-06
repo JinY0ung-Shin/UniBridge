@@ -59,13 +59,14 @@ def render_template(
     threshold: str = "",
     rule_name: str = "",
     severity: str = "",
+    target_description: str = "",
 ) -> str:
     """Replace {{placeholders}} in the template string.
 
     Supported placeholders:
       {{alert_type}}, {{target_name}}, {{status}}, {{message}},
       {{timestamp}}, {{recipients}}, {{recipients_json}}, {{rate}},
-      {{threshold}}, {{rule_name}}, {{severity}}
+      {{threshold}}, {{rule_name}}, {{severity}}, {{target_description}}
     Unknown placeholders are left untouched.
     """
     replacements = {
@@ -80,6 +81,7 @@ def render_template(
         "{{threshold}}": threshold,
         "{{rule_name}}": rule_name,
         "{{severity}}": severity,
+        "{{target_description}}": target_description,
     }
     result = template
     for placeholder, value in replacements.items():
