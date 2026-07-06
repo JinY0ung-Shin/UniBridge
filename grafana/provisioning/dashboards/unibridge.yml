@@ -1,0 +1,15 @@
+# Loads the dashboards checked into grafana/dashboards/ (mounted read-only).
+# UI edits are allowed for exploration but are overwritten by the JSON files
+# on container restart — persistent changes belong in the JSON.
+apiVersion: 1
+
+providers:
+  - name: unibridge
+    folder: UniBridge
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

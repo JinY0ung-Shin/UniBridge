@@ -7,6 +7,7 @@ import {
 } from 'recharts';
 import { getServers, getServerMetrics, type ServerMetricSeries } from '../api/client';
 import { useChartTheme, type ChartTheme } from '../components/useChartTheme';
+import GrafanaLink from '../components/GrafanaLink';
 import './Connections.css';
 import './Servers.css';
 
@@ -174,6 +175,11 @@ function ServerDetail() {
           <p className="page-subtitle">{server?.address}</p>
         </div>
         <div className="server-detail-controls">
+          <GrafanaLink
+            dashboard="unibridge-servers"
+            time={{ kind: 'preset', value: duration.key }}
+            vars={server?.name ? { 'var-host': server.name } : undefined}
+          />
           {DURATIONS.map((d) => (
             <button
               key={d.key}

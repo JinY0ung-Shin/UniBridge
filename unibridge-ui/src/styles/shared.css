@@ -840,3 +840,25 @@
     flex: 1 1 140px;
   }
 }
+
+/* External-link button to the bundled Grafana (same look as .admin-link-btn,
+   but global: pages are lazy-loaded so page-scoped CSS isn't always present). */
+.grafana-link-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-blue);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.grafana-link-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--accent-blue);
+}

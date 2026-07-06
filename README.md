@@ -26,7 +26,7 @@ Prometheus ── APISIX/LiteLLM/FastAPI metrics + DB TCP probes
 LiteLLM    ── Unified LLM proxy (+ Postgres)
 ```
 
-**Services (10):** etcd, APISIX, Keycloak + Postgres, unibridge-service, Prometheus, Blackbox Exporter, LiteLLM + Postgres, unibridge-ui
+**Services (11):** etcd, APISIX, Keycloak + Postgres, unibridge-service, Prometheus, Blackbox Exporter, Grafana, LiteLLM + Postgres, unibridge-ui
 
 ## Prerequisites
 
@@ -128,6 +128,7 @@ details.
 | API Gateway | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/*` |
 | LiteLLM | `https://<HOST_IP>:<LITELLM_PORT>` |
 | Prometheus | `http://<HOST_IP>:9090` (localhost only) |
+| Grafana | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana` (same-origin behind the UI) |
 
 Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`). No human users are seeded into the `apihub` realm by default. After first boot, sign in to the admin console and create the first `admin` user in the `apihub` realm (assign the `admin` realm role), then manage further users from the UI **Users** page.
 
@@ -225,6 +226,7 @@ The helper authenticates as the Keycloak master admin (the service account lacks
 | 8000 | unibridge-service | localhost only |
 | 9180 | APISIX admin | localhost only |
 | 9090 | Prometheus | localhost only |
+| 3300 | Grafana | localhost only (debug; public access is `/grafana` on the UI port) |
 
 ## Local Development (without Docker)
 
@@ -291,6 +293,52 @@ Operational defaults in `docker-compose.yml`:
 - Each service has an initial `deploy.resources.limits` CPU/memory cap for Docker Compose v2, plus `mem_limit`/`cpus` fallbacks for older Compose compatibility. Treat these as conservative starting values and tune from `docker stats` on the deploy host.
 - `unibridge-service` and `unibridge-ui` run with `init: true` for PID 1 signal handling and child process reaping.
 - Prometheus scrapes APISIX, LiteLLM, unibridge-service `/metrics`, and Blackbox TCP probes for the Postgres-backed services. Alert rules live under `prometheus/rules/`.
+
+### Grafana dashboards
+
+Grafana is served same-origin behind the UI/edge nginx at
+`https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana` so it shares the stack's TLS —
+no plaintext HTTP origin (`GRAFANA_PORT`, default 3300, stays loopback-only for
+debugging; set `GRAFANA_EXTERNAL_URL` to relocate the UI links if you front it
+differently). It signs in with UniBridge accounts via
+Keycloak SSO ("UniBridge SSO" on the login page), restricted to admins: only
+users with the `admin` realm role can sign in (as Grafana Admins) — everyone
+else is rejected at login (`GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT`),
+because Grafana has no notion of the UI's per-key scoping
+(`gateway.monitoring.self`) and any sign-in would expose every metric. The
+in-app Grafana links are likewise rendered for admins only. To open read-only
+access to every UniBridge account instead, append `|| 'Viewer'` to
+`GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH` and drop the strict flag. Grafana
+user records are created automatically on first
+SSO login; the local `admin` / `GRAFANA_ADMIN_PASSWORD` login remains as a
+fallback, and self-service (non-SSO) sign-up stays disabled. On a fresh install
+the realm import creates the `grafana` OAuth client from
+`GRAFANA_OAUTH_CLIENT_SECRET`; for a realm imported before this client existed,
+create it once via the Keycloak admin console (confidential client `grafana`,
+redirect `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana/*` — on blue/green
+deployments use `UNIBRIDGE_EDGE_PORT`, the public port — PKCE S256, plus a
+realm-roles mapper to claim `realm_access.roles`) or re-run the equivalent
+`kcadm` steps. Then either set the client's Credentials secret to the
+`GRAFANA_OAUTH_CLIENT_SECRET` value from `.env`, or simply restart Keycloak
+once: its entrypoint re-syncs the client secret and redirect URI from env on
+every boot (the console generates a random secret on creation, which would
+otherwise fail token exchange with `invalid_client`).
+Grafana ships with provisioned dashboards that mirror the UniBridge monitoring UI —
+Overview, Gateway, LLM, External APIs, and Servers — running the same PromQL
+against the same Prometheus, so both show identical numbers. Dashboards are
+code: JSON under [`grafana/dashboards/`](./grafana/dashboards/), datasource and
+loader config under `grafana/provisioning/` (mounted read-only; UI edits are
+lost on restart — persist changes by exporting back into the JSON files).
+Dashboards are pinned to `Asia/Seoul`, which both displays KST and aligns
+Prometheus query steps to KST — hourly/daily buckets match the UI's KST calendar
+buckets exactly. Known deltas vs the in-app UI: weekly buckets align to
+Thursday-start weeks (epoch-aligned) instead of the UI's Monday-start, route IDs
+are shown without the APISIX friendly-name lookup, the Dashboard page's live
+per-database connection grid has no Prometheus equivalent, "over time" bar
+panels follow Grafana's auto step (`$__interval`, all series plotted) rather
+than the UI's fixed per-range buckets with top-12 + "(others)" grouping, and
+the Servers disk panels ignore the `NODE_EXPORTER_DISK_MOUNTPOINTS` whitelist
+(they always show every real filesystem).
 
 ### Server (host) monitoring
 

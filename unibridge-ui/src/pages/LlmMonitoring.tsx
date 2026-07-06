@@ -27,6 +27,7 @@ import './Monitoring.css';
 import './LlmMonitoring.css';
 import TimeRangeSelector from '../components/TimeRangeSelector';
 import BucketSelector from '../components/BucketSelector';
+import GrafanaLink from '../components/GrafanaLink';
 import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket, bucketTooCoarse } from '../utils/timeRange';
 import { formatChartTimestamp, formatBucketLabel } from '../utils/time';
 
@@ -206,6 +207,11 @@ function LlmMonitoring() {
           <p className="page-meta">{t('monitoring.headerNote')}</p>
         </div>
         <div className="page-header__filters">
+          <GrafanaLink
+            dashboard="unibridge-llm"
+            time={selection}
+            vars={{ 'var-api_key': selectedKey }}
+          />
           <a
             href={LITELLM_ADMIN_URL}
             target="_blank"

@@ -14,6 +14,7 @@ import BucketSelector from '../components/BucketSelector';
 import { type Bucket, type TimeSelection, bucketKey } from '../utils/timeRange';
 import { formatBucketLabel, formatChartTime } from '../utils/time';
 import { errorRateColor } from '../utils/monitoring';
+import GrafanaLink from '../components/GrafanaLink';
 import './Dashboard.css';
 
 const BUCKET_RANGE: Record<Exclude<Bucket, 'auto'>, string> = { hour: '24h', day: '30d', week: '60d' };
@@ -132,6 +133,13 @@ function Dashboard() {
           <h1>{t('dashboard.title')}</h1>
           <p className="page-subtitle">{t('dashboard.subtitle')}</p>
         </div>
+        {canViewMonitoring && (
+          <div className="page-header__filters">
+            {/* Carry the gateway chart's window so the linked overview opens
+                on the same headline numbers as the cards. */}
+            <GrafanaLink dashboard="unibridge-overview" time={dashSel(gwBucket)} />
+          </div>
+        )}
       </div>
 
       {/* Summary cards */}
