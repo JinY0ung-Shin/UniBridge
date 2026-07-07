@@ -74,10 +74,19 @@ def test_get_step_known_and_unknown():
 def test_validate_route_accepts_safe_and_rejects_unsafe():
     _validate_route(None)
     _validate_route("query-api")
+    # Route *names* are legal filter values (prefer_name puts them in the
+    # Prometheus label), so free-form strings pass; PromQL safety is handled
+    # by escaping in _labels().
+    _validate_route("주문 API v1.2")
+    _validate_route('quoted "name" / path')
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc:
-        _validate_route("bad/route")
+        _validate_route("bad\nroute")
+    assert exc.value.status_code == 400
+
+    with pytest.raises(HTTPException) as exc:
+        _validate_route("x" * 201)
     assert exc.value.status_code == 400
 
 

@@ -1641,6 +1641,17 @@ class TestMetricsUsages:
 class TestRouteFilter:
     """Verify the optional route query parameter filters PromQL correctly."""
 
+    @pytest.fixture(autouse=True)
+    def _fresh_route_listing_cache(self):
+        """The id↔name expansion caches the APISIX route listing (30s TTL);
+        reset it so each test's list_resources mock (or its absence) applies."""
+        from app.routers import gateway as gw
+        gw._ROUTE_LISTING_CACHE = []
+        gw._ROUTE_LISTING_CACHE_TS = 0.0
+        yield
+        gw._ROUTE_LISTING_CACHE = []
+        gw._ROUTE_LISTING_CACHE_TS = 0.0
+
     async def test_summary_with_route_filter(self, client, admin_token):
         total = [{"value": [0, "50"]}]
         error = [{"value": [0, "5.0"]}]
@@ -1704,11 +1715,131 @@ class TestRouteFilter:
             assert "route=" not in call.args[0]
 
     async def test_invalid_route_returns_400(self, client, admin_token):
+        # Route names are free-form (prefer_name puts them in the label), so
+        # only control characters and absurd lengths are rejected.
         resp = await client.get(
-            '/admin/gateway/metrics/summary?range=1h&route="; drop table',
+            "/admin/gateway/metrics/summary?range=1h&route=bad%0Aroute",
             headers=auth_header(admin_token),
         )
         assert resp.status_code == 400
+        resp = await client.get(
+            f"/admin/gateway/metrics/summary?range=1h&route={'x' * 201}",
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_route_filter_quotes_escaped_not_rejected(self, client, admin_token):
+        # Quote injection is neutralized by escaping instead of a 400: names
+        # may legitimately contain quotes.
+        total = [{"value": [0, "1"]}]
+        mock = AsyncMock(side_effect=[total, total, total])
+        list_mock = AsyncMock(return_value={"items": []})
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock), \
+             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+            resp = await client.get(
+                '/admin/gateway/metrics/summary?range=1h&route="; drop table',
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            assert 'route="\\"; drop table"' in call.args[0]
+
+    async def test_route_filter_expands_id_to_name(self, client, admin_token):
+        # With APISIX prefer_name the label may hold the route name, and old
+        # series still hold the id — filtering by either must match both.
+        total = [{"value": [0, "1"]}]
+        routes = {"items": [{"id": "r1", "name": "orders", "uri": "/api/orders/*"}]}
+        mock = AsyncMock(side_effect=[total, total, total])
+        list_mock = AsyncMock(return_value=routes)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock), \
+             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/summary?range=1h&route=r1",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            assert 'route=~"r1|orders"' in call.args[0]
+
+    async def test_route_filter_expands_name_to_id(self, client, admin_token):
+        total = [{"value": [0, "1"]}]
+        routes = {"items": [{"id": "r1", "name": "orders", "uri": "/api/orders/*"}]}
+        mock = AsyncMock(side_effect=[total, total, total])
+        list_mock = AsyncMock(return_value=routes)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock), \
+             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/summary?range=1h&route=orders",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            assert 'route=~"orders|r1"' in call.args[0]
+
+    async def test_route_filter_degrades_to_exact_match_when_apisix_down(
+        self, client, admin_token
+    ):
+        total = [{"value": [0, "1"]}]
+        mock = AsyncMock(side_effect=[total, total, total])
+        list_mock = AsyncMock(side_effect=RuntimeError("apisix down"))
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock), \
+             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/summary?range=1h&route=r1",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            assert 'route="r1"' in call.args[0]
+
+
+class TestScopeConsumerRouteValues:
+    def test_restricted_scope_blocks_llm_routes_in_expanded_values(self):
+        """The self-scope LLM block must cover every value reaching the PromQL
+        selector — including the id/name counterpart added by expansion."""
+        from fastapi import HTTPException
+
+        from app.routers.gateway import _MonitoringScope, _scope_consumer
+
+        scope = _MonitoringScope(forced_consumer="my-key", restricted=True)
+        with pytest.raises(HTTPException) as exc:
+            _scope_consumer(scope, ["some-route", "llm-proxy"], None)
+        assert exc.value.status_code == 403
+        with pytest.raises(HTTPException):
+            _scope_consumer(scope, "llm-messages", None)
+        # Non-LLM filters: consumer is forced to the caller's own key
+        assert _scope_consumer(scope, ["r1", "orders"], "other-key") == "my-key"
+        assert _scope_consumer(scope, None, "other-key") == "my-key"
+
+
+class TestProtectedRouteNameInvariant:
+    async def test_put_system_route_forces_name_to_id(self, client, admin_token):
+        """System routes must keep name == id — the Prometheus route label uses
+        the name (prefer_name) and fixed-id filters rely on it."""
+        saved = {"id": "llm-proxy", "uri": "/api/llm/*", "name": "llm-proxy"}
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=_http_status(404, "not found"),
+            ),
+            patch(
+                "app.routers.gateway.apisix_client.put_resource",
+                new_callable=AsyncMock,
+                return_value=deepcopy(saved),
+            ) as mock_put,
+        ):
+            resp = await client.put(
+                "/admin/gateway/routes/llm-proxy",
+                json={
+                    "uri": "/api/llm/*",
+                    "upstream_id": "litellm",
+                    "name": "renamed-llm",
+                },
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert mock_put.call_args[0][2]["name"] == "llm-proxy"
 
 
 class TestConsumerFilter:
@@ -2531,6 +2662,18 @@ class TestLabelsHelper:
             '{code=~"5..",route!="llm-proxy",route!="llm-messages",route!="llm-responses"}'
         assert _labels("query-api", "alice", 'code=~"5.."') == \
             '{code=~"5..",route="query-api",consumer="alice"}'
+
+    def test_route_list_builds_anchored_regex_alternation(self):
+        # id + name pair (prefer_name bridging) matches either label value
+        assert _labels(["r1", "orders"], None) == '{route=~"r1|orders"}'
+        assert _labels(["r1"], None) == '{route="r1"}'  # single value: exact match
+
+    def test_route_values_are_escaped_for_promql(self):
+        # Exact matcher: only the string literal needs escaping
+        assert _labels('x"y', None) == '{route="x\\"y"}'
+        # Regex matcher: regex metachars escaped, then backslashes doubled for
+        # the PromQL string literal ("a|b" must not read as alternation)
+        assert _labels(["a|b", "c"], None) == '{route=~"a\\\\|b|c"}'
 
 
 class TestValidateConsumer:

@@ -422,6 +422,11 @@ async def save_route(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="upstream_id is required."
         )
+    # System routes must keep name == id: with APISIX prefer_name the Prometheus
+    # route label carries the name, and every fixed-id filter (dashboards,
+    # _labels/_llm_labels defaults, self-scope checks) relies on that invariant.
+    if route_id in PROTECTED_ROUTE_IDS:
+        body["name"] = route_id
 
     _validate_service_keys_payload(body)
 
@@ -973,8 +978,13 @@ def resolve_time_window(
     )
 
 
-_SAFE_ROUTE_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
 _SAFE_CONSUMER_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
+
+# Route filters accept a route id or a route name (with APISIX ``prefer_name``
+# the Prometheus ``route`` label carries the name, and the UI filters by label
+# value). Names are free-form display strings, so only cap length and reject
+# control characters; PromQL safety comes from escaping in ``_labels``.
+_ROUTE_FILTER_MAX_LEN = 200
 
 
 def _get_step(time_range: str) -> str:
@@ -982,9 +992,11 @@ def _get_step(time_range: str) -> str:
 
 
 def _validate_route(route: str | None) -> None:
-    if route and not _SAFE_ROUTE_RE.match(route):
+    if route and (
+        len(route) > _ROUTE_FILTER_MAX_LEN or any(ord(ch) < 32 for ch in route)
+    ):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid route ID"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid route filter"
         )
 
 
@@ -1042,15 +1054,20 @@ async def _gateway_monitoring_scope(
     return await _monitoring_scope_for(user, db)
 
 
-def _scope_consumer(scope: _MonitoringScope, route: str | None, consumer: str | None) -> str | None:
+def _scope_consumer(
+    scope: _MonitoringScope, route: str | list[str] | None, consumer: str | None
+) -> str | None:
     """Validate the requested consumer, or override it for self-scoped callers.
 
     Self-scoped callers cannot widen their view: their consumer filter is forced
     to their own key regardless of any ``consumer`` query param they send, and
     LLM-proxy traffic is hidden from them entirely (LLM monitoring is admin-only).
+    ``route`` may be the expanded id+name filter values — the check covers every
+    value that will actually reach the PromQL selector.
     """
     if scope.restricted:
-        if route in {"llm-proxy", "llm-messages", "llm-responses"}:
+        route_values = [route] if isinstance(route, str) else (route or [])
+        if {"llm-proxy", "llm-messages", "llm-responses"} & set(route_values):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="LLM metrics are not available",
@@ -1060,17 +1077,28 @@ def _scope_consumer(scope: _MonitoringScope, route: str | None, consumer: str | 
     return consumer
 
 
-def _labels(route: str | None, consumer: str | None, *extra: str) -> str:
+def _promql_str(value: str) -> str:
+    """Escape a value for embedding in a double-quoted PromQL string literal."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _labels(route: str | list[str] | None, consumer: str | None, *extra: str) -> str:
     """Build PromQL label selector.
 
     Defaults exclude the ``llm-proxy`` and ``llm-messages`` routes so the
     gateway monitoring page omits LLM traffic (shown separately on the LLM
     monitoring page). When ``route`` is explicitly set, that filter replaces
-    the default exclusion.
+    the default exclusion; a list matches any of the given values (used to
+    cover both a route's id and its name under APISIX ``prefer_name``).
     """
     parts = list(extra)
-    if route:
-        parts.append(f'route="{route}"')
+    routes = [route] if isinstance(route, str) else route
+    if routes:
+        if len(routes) == 1:
+            parts.append(f'route="{_promql_str(routes[0])}"')
+        else:
+            alternation = "|".join(_promql_str(re.escape(r)) for r in routes)
+            parts.append(f'route=~"{alternation}"')
     else:
         parts.append('route!="llm-proxy"')
         parts.append('route!="llm-messages"')
@@ -1078,6 +1106,61 @@ def _labels(route: str | None, consumer: str | None, *extra: str) -> str:
     if consumer:
         parts.append(f'consumer="{consumer}"')
     return "{" + ",".join(parts) + "}" if parts else ""
+
+
+# Short-TTL route listing cache: the UI fires several route-filtered metrics
+# endpoints concurrently on every refresh, and each expands its filter via the
+# APISIX admin API — cache the listing so that fan-out costs one call.
+_ROUTE_LISTING_CACHE: list[dict[str, Any]] = []
+_ROUTE_LISTING_CACHE_TS: float = 0.0
+_ROUTE_LISTING_TTL = 30.0
+
+
+async def _list_routes_cached() -> list[dict[str, Any]]:
+    """Route listing items with a short TTL. Failures raise (not cached) so
+    callers pick their own degradation and recovery is immediate."""
+    global _ROUTE_LISTING_CACHE, _ROUTE_LISTING_CACHE_TS
+    if time.monotonic() - _ROUTE_LISTING_CACHE_TS <= _ROUTE_LISTING_TTL:
+        return _ROUTE_LISTING_CACHE
+    listing = await apisix_client.list_resources("routes")
+    _ROUTE_LISTING_CACHE = listing.get("items", [])
+    _ROUTE_LISTING_CACHE_TS = time.monotonic()
+    return _ROUTE_LISTING_CACHE
+
+
+async def _route_filter_values(route: str) -> list[str]:
+    """Expand a route filter to also match its id/name counterpart.
+
+    With APISIX ``prefer_name`` enabled the Prometheus ``route`` label carries
+    the route *name* when one is set (id otherwise), while callers may pass
+    either form — and series recorded before the flip (or before a rename)
+    still carry the old value. Matching id and name together keeps per-route
+    drill-downs working across that boundary. APISIX lookup failure degrades
+    to the exact value that was requested.
+    """
+    try:
+        items = await _list_routes_cached()
+    except Exception as exc:
+        logger.warning("Route filter id/name expansion skipped: %s", exc)
+        return [route]
+    alt: str | None = None
+    # An id-shaped value resolves as an id first, so a name colliding with
+    # another route's id can't hijack the expansion (listing order must not
+    # matter). Mirrors alert_checker's reverse-map rule.
+    for item in items:
+        if str(item.get("id") or "") == route:
+            name = item.get("name")
+            alt = str(name) if name else None
+            break
+    else:
+        for item in items:
+            name = item.get("name")
+            if name is not None and str(name) == route:
+                alt = str(item.get("id") or "") or None
+                break
+    if alt and alt != route:
+        return [route, alt]
+    return [route]
 
 
 def _llm_labels(*extra: str) -> str:
@@ -1136,6 +1219,11 @@ async def _route_name_map() -> dict[str, str]:
             rname = item.get("name")
             if rid and rname:
                 name_map[str(rid)] = rname
+                # Under prefer_name the Prometheus label may already carry the
+                # name; mapping it to itself keeps the payload "name" filled.
+                # setdefault so an id-keyed entry wins if some name collides
+                # with another route's id.
+                name_map.setdefault(str(rname), str(rname))
     except Exception as exc:
         logger.warning("Failed to fetch route names from APISIX: %s", exc)
     return name_map
@@ -1417,7 +1505,7 @@ async def _grouped_volume_series(
 @router.get("/metrics/summary")
 async def metrics_summary(
     tw: TimeWindow = Depends(resolve_time_window),
-    route: str | None = Query(None, description="Filter by route ID"),
+    route: str | None = Query(None, description="Filter by route ID or name"),
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> dict[str, Any]:
@@ -1429,9 +1517,10 @@ async def metrics_summary(
     5xx-only; empty results fall back to 0 via ``_extract_scalar``.
     """
     _validate_route(route)
-    consumer = _scope_consumer(scope, route, consumer)
-    hs = _labels(route, consumer)
-    hs5 = _labels(route, consumer, 'code=~"5.."')
+    route_filter = await _route_filter_values(route) if route else None
+    consumer = _scope_consumer(scope, route_filter or route, consumer)
+    hs = _labels(route_filter, consumer)
+    hs5 = _labels(route_filter, consumer, 'code=~"5.."')
     try:
         total_results, error_rate_results, latency_results = await asyncio.gather(
             prometheus_client.instant_query(
@@ -1464,13 +1553,14 @@ async def metrics_summary(
 @router.get("/metrics/requests")
 async def metrics_requests(
     tw: TimeWindow = Depends(resolve_time_window),
-    route: str | None = Query(None, description="Filter by route ID"),
+    route: str | None = Query(None, description="Filter by route ID or name"),
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> list[dict[str, Any]]:
     _validate_route(route)
-    consumer = _scope_consumer(scope, route, consumer)
-    hs = _labels(route, consumer)
+    route_filter = await _route_filter_values(route) if route else None
+    consumer = _scope_consumer(scope, route_filter or route, consumer)
+    hs = _labels(route_filter, consumer)
     try:
         results = await prometheus_client.range_query(
             f"sum(rate(apisix_http_status{hs}[5m]))",
@@ -1489,13 +1579,14 @@ async def metrics_requests(
 @router.get("/metrics/status-codes")
 async def metrics_status_codes(
     tw: TimeWindow = Depends(resolve_time_window),
-    route: str | None = Query(None, description="Filter by route ID"),
+    route: str | None = Query(None, description="Filter by route ID or name"),
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> list[dict[str, Any]]:
     _validate_route(route)
-    consumer = _scope_consumer(scope, route, consumer)
-    hs = _labels(route, consumer)
+    route_filter = await _route_filter_values(route) if route else None
+    consumer = _scope_consumer(scope, route_filter or route, consumer)
+    hs = _labels(route_filter, consumer)
     try:
         results = await prometheus_client.instant_query(
             f"sum by (code) (increase(apisix_http_status{hs}[{tw.promql_window}]))",
@@ -1523,13 +1614,14 @@ async def metrics_status_codes(
 @router.get("/metrics/latency")
 async def metrics_latency(
     tw: TimeWindow = Depends(resolve_time_window),
-    route: str | None = Query(None, description="Filter by route ID"),
+    route: str | None = Query(None, description="Filter by route ID or name"),
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> dict[str, list[dict[str, Any]]]:
     _validate_route(route)
-    consumer = _scope_consumer(scope, route, consumer)
-    hs = _labels(route, consumer)
+    route_filter = await _route_filter_values(route) if route else None
+    consumer = _scope_consumer(scope, route_filter or route, consumer)
+    hs = _labels(route_filter, consumer)
     step = tw.step
     try:
         p50, p95, p99 = await asyncio.gather(
@@ -1935,14 +2027,15 @@ async def metrics_consumers_comparison_series(
 @router.get("/metrics/requests-total")
 async def metrics_requests_total(
     tw: TimeWindow = Depends(resolve_time_window),
-    route: str | None = Query(None, description="Filter by route ID"),
+    route: str | None = Query(None, description="Filter by route ID or name"),
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> list[dict[str, Any]]:
     """Request volume per time bucket (total count, not rate)."""
     _validate_route(route)
-    consumer = _scope_consumer(scope, route, consumer)
-    hs = _labels(route, consumer)
+    route_filter = await _route_filter_values(route) if route else None
+    consumer = _scope_consumer(scope, route_filter or route, consumer)
+    hs = _labels(route_filter, consumer)
     try:
         return await _volume_series(
             lambda window: f"sum(increase(apisix_http_status{hs}[{window}]))",
