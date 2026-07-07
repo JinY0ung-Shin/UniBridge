@@ -51,6 +51,18 @@ export function bucketKey(bucket: Bucket): string {
 }
 
 /**
+ * Grafana interval-variable value (`var-bucket`) for a bucket, matching the
+ * `bucket` variable provisioned in grafana/dashboards/*.json. `auto` maps to
+ * undefined so GrafanaLink drops the param and the dashboard default applies.
+ */
+export const GRAFANA_BUCKET_INTERVAL: Record<Bucket, string | undefined> = {
+  auto: undefined,
+  hour: '1h',
+  day: '1d',
+  week: '1w',
+};
+
+/**
  * One-shot bucket→period convenience mapping. Picking a calendar bucket nudges
  * the time range to a sensible default span; `auto`/`hour` leave it untouched.
  */

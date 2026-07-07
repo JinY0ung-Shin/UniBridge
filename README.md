@@ -332,13 +332,35 @@ lost on restart — persist changes by exporting back into the JSON files).
 Dashboards are pinned to `Asia/Seoul`, which both displays KST and aligns
 Prometheus query steps to KST — hourly/daily buckets match the UI's KST calendar
 buckets exactly. Known deltas vs the in-app UI: weekly buckets align to
-Thursday-start weeks (epoch-aligned) instead of the UI's Monday-start, route IDs
-are shown without the APISIX friendly-name lookup, the Dashboard page's live
-per-database connection grid has no Prometheus equivalent, "over time" bar
-panels follow Grafana's auto step (`$__interval`, all series plotted) rather
-than the UI's fixed per-range buckets with top-12 + "(others)" grouping, and
-the Servers disk panels ignore the `NODE_EXPORTER_DISK_MOUNTPOINTS` whitelist
-(they always show every real filesystem).
+Thursday-start weeks (epoch-aligned) instead of the UI's Monday-start, the
+Dashboard page's live per-database connection grid has no Prometheus equivalent,
+"over time" panels plot every series (no top-12 + "(others)" grouping) and
+their `auto` step follows Grafana's interval rather than the UI's fixed
+per-range windows, and the Servers disk panels ignore the
+`NODE_EXPORTER_DISK_MOUNTPOINTS` whitelist (they always show every real
+filesystem).
+
+The Gateway/LLM/Overview dashboards mirror the UI's calendar-bucket views
+(hour/day/week) through a `Bucket` variable (auto/1h/1d/1w) wired into the
+per-interval volume panels, and the in-app monitoring pages carry their bucket
+selection into the Grafana deep link as `var-bucket`. Daily buckets align to
+KST midnight (dashboards are pinned to Asia/Seoul); weekly buckets keep the
+Thursday-start caveat above.
+
+Routes appear by **name**, not id: `apisix/config.yaml` sets
+`plugin_attr.prometheus.prefer_name: true`, so the `route` label on
+`apisix_http_*` metrics carries the route's friendly name (falling back to the
+id for unnamed routes — give routes a name in the Gateway UI to get readable
+dashboards). System routes are named identically to their ids (`query-api`,
+`llm-proxy`, …), so fixed-id PromQL filters keep matching. Enabling or changing
+this requires an APISIX restart (`docker compose up -d apisix`), and series
+recorded before the switch (or before a route rename) keep their old label
+value — the in-app monitoring bridges id↔name when filtering, but Grafana
+panels show the old and new label as separate series across that boundary.
+Avoid giving two routes the same name: their metrics would merge into one
+series. API-key (`consumer`) labels are unaffected — admin-created keys already
+carry their human-readable key name; personal self-service keys show as
+`self_<id>`.
 
 ### Server (host) monitoring
 

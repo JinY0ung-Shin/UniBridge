@@ -63,6 +63,43 @@
         },
         "options": [],
         "sort": 1
+      },
+      {
+        "name": "bucket",
+        "label": "Bucket",
+        "type": "interval",
+        "auto": true,
+        "auto_count": 500,
+        "auto_min": "30s",
+        "query": "1h,1d,1w",
+        "refresh": 2,
+        "current": {
+          "selected": true,
+          "text": "auto",
+          "value": "$__auto_interval_bucket"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "auto",
+            "value": "$__auto_interval_bucket"
+          },
+          {
+            "selected": false,
+            "text": "1h",
+            "value": "1h"
+          },
+          {
+            "selected": false,
+            "text": "1d",
+            "value": "1d"
+          },
+          {
+            "selected": false,
+            "text": "1w",
+            "value": "1w"
+          }
+        ]
       }
     ]
   },
@@ -366,7 +403,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "legendFormat": "requests"
+          "legendFormat": "requests",
+          "interval": "$bucket"
         }
       ]
     },
@@ -772,7 +810,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "legendFormat": "{{route}}"
+          "legendFormat": "{{route}}",
+          "interval": "$bucket"
         }
       ]
     },
@@ -1029,7 +1068,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "legendFormat": "{{consumer}}"
+          "legendFormat": "{{consumer}}",
+          "interval": "$bucket"
         }
       ]
     }

@@ -270,6 +270,80 @@ class TestAlertChecker:
         assert kwargs["monitor_label"] == "라우트 에러율"
 
     @pytest.mark.asyncio
+    async def test_route_error_rate_maps_name_label_back_to_route_id(self):
+        """With APISIX prefer_name the Prometheus route label carries the route
+        *name*; alert state and per-resource recipients stay keyed by id."""
+        from app.services import alert_checker
+        state = AlertStateManager()
+        state.update(
+            "route_error_rate",
+            "route-a",
+            is_healthy=False,
+            display_target="checkout (route-a)",
+            trigger_after_failures=2,
+        )
+        alert_checker._ROUTE_LABEL_CACHE = {"route-a": "checkout"}
+        alert_checker._ROUTE_ID_BY_NAME = {"checkout": "route-a"}
+        alert_checker._ROUTE_LABEL_CACHE_TS = 9e18  # far future — skip refresh
+
+        try:
+            with patch("app.services.alert_checker._check_db_health", new=AsyncMock(return_value=[])), \
+                 patch("app.services.alert_checker._check_upstream_health", new=AsyncMock(return_value=[])), \
+                 patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=[("checkout", 12.5, 100.0)])), \
+                 patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(10.0))), \
+                 patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+                await run_single_check(state, trigger_after_failures=2)
+        finally:
+            alert_checker._ROUTE_LABEL_CACHE = {}
+            alert_checker._ROUTE_ID_BY_NAME = {}
+            alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
+
+        mock_dispatch.assert_called_once()
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs["resource_id"] == "route-a"
+        assert kwargs["target"] == "route-a"
+        assert kwargs["display_target"] == "checkout (route-a)"
+
+    @pytest.mark.asyncio
+    async def test_route_error_rate_merges_old_and_new_labels_after_rename(self):
+        """Right after a rename Prometheus reports the same route under both
+        the old (id) and new (name) label for one window; the rows must merge
+        into a single evaluation keyed by the route id — not double-count fail
+        cycles or let the stale row resolve a genuinely failing alert."""
+        from app.services import alert_checker
+        state = AlertStateManager()
+        state.update(
+            "route_error_rate",
+            "route-a",
+            is_healthy=False,
+            display_target="checkout (route-a)",
+            trigger_after_failures=2,
+        )
+        alert_checker._ROUTE_LABEL_CACHE = {"route-a": "checkout"}
+        alert_checker._ROUTE_ID_BY_NAME = {"checkout": "route-a"}
+        alert_checker._ROUTE_LABEL_CACHE_TS = 9e18  # far future — skip refresh
+
+        rows = [("route-a", 100.0, 10.0), ("checkout", 0.0, 90.0)]
+        try:
+            with patch("app.services.alert_checker._check_db_health", new=AsyncMock(return_value=[])), \
+                 patch("app.services.alert_checker._check_upstream_health", new=AsyncMock(return_value=[])), \
+                 patch("app.services.alert_checker._check_route_error_rate", new=AsyncMock(return_value=rows)), \
+                 patch("app.services.alert_checker.async_session", return_value=_FakeSessionContext(_threshold_db(10.0))), \
+                 patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+                await run_single_check(state, trigger_after_failures=2)
+        finally:
+            alert_checker._ROUTE_LABEL_CACHE = {}
+            alert_checker._ROUTE_ID_BY_NAME = {}
+            alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
+
+        # 10 errors over 100 requests = 10.0% — evaluated once, at/over the
+        # 10.0% threshold, so the second unhealthy cycle dispatches.
+        mock_dispatch.assert_called_once()
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs["resource_id"] == "route-a"
+        assert kwargs["rate"] == 10.0
+
+    @pytest.mark.asyncio
     async def test_route_error_rate_uses_settings_threshold(self):
         state = AlertStateManager()
         # Seed fail_count=1 so the next unhealthy observation crosses N=2.
@@ -540,6 +614,50 @@ class TestRouteLabelCache:
             assert alert_checker._ROUTE_LABEL_CACHE["r-bare"] == "r-bare"
         finally:
             alert_checker._ROUTE_LABEL_CACHE = {}
+            alert_checker._ROUTE_ID_BY_NAME = {}
+            alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
+
+    @pytest.mark.asyncio
+    async def test_refresh_builds_reverse_name_map_skipping_collisions(self):
+        from app.services import alert_checker
+        alert_checker._ROUTE_LABEL_CACHE = {}
+        alert_checker._ROUTE_ID_BY_NAME = {}
+        alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
+        fake = {"items": [
+            {"id": "r1", "name": "orders"},
+            {"id": "r2", "name": "dup"},
+            {"id": "r3", "name": "dup"},   # duplicate name → ambiguous, dropped
+            {"id": "r4", "name": "r5"},    # name collides with a real route id
+            {"id": "r5"},
+            {"id": "same", "name": "same"},  # name == id → no mapping needed
+        ]}
+        with patch(
+            "app.services.apisix_client.list_resources",
+            new=AsyncMock(return_value=fake),
+        ):
+            await alert_checker._refresh_route_labels()
+        try:
+            assert alert_checker._ROUTE_ID_BY_NAME == {"orders": "r1"}
+        finally:
+            alert_checker._ROUTE_LABEL_CACHE = {}
+            alert_checker._ROUTE_ID_BY_NAME = {}
+            alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
+
+    @pytest.mark.asyncio
+    async def test_resolve_route_id_translates_known_name(self):
+        """prefer_name puts the route *name* in the Prometheus label; state and
+        recipient lookups must stay keyed by route id."""
+        from app.services import alert_checker
+        alert_checker._ROUTE_LABEL_CACHE = {"r1": "orders"}
+        alert_checker._ROUTE_ID_BY_NAME = {"orders": "r1"}
+        alert_checker._ROUTE_LABEL_CACHE_TS = 9e18  # far future — skip refresh
+        try:
+            assert await alert_checker._resolve_route_id("orders") == "r1"
+            assert await alert_checker._resolve_route_id("r1") == "r1"
+            assert await alert_checker._resolve_route_id("mystery") == "mystery"
+        finally:
+            alert_checker._ROUTE_LABEL_CACHE = {}
+            alert_checker._ROUTE_ID_BY_NAME = {}
             alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
 
     @pytest.mark.asyncio

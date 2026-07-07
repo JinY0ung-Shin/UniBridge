@@ -29,7 +29,7 @@ import './Monitoring.css';
 import './GatewayMonitoring.css';
 import TimeRangeSelector from '../components/TimeRangeSelector';
 import BucketSelector from '../components/BucketSelector';
-import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket, bucketTooCoarse } from '../utils/timeRange';
+import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket, bucketTooCoarse, GRAFANA_BUCKET_INTERVAL } from '../utils/timeRange';
 import { formatChartTime, formatChartTimestamp, formatBucketLabel } from '../utils/time';
 import { errorRateColor } from '../utils/monitoring';
 import GrafanaLink from '../components/GrafanaLink';
@@ -314,7 +314,11 @@ function GatewayMonitoring() {
             <GrafanaLink
               dashboard="unibridge-gateway"
               time={selection}
-              vars={{ 'var-route': selectedRoute, 'var-consumer': selectedConsumer }}
+              vars={{
+                'var-route': selectedRoute,
+                'var-consumer': selectedConsumer,
+                'var-bucket': GRAFANA_BUCKET_INTERVAL[bucket],
+              }}
             />
           )}
           {canReadApiKeys && (

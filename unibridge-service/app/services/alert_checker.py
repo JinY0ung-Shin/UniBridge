@@ -17,9 +17,13 @@ logger = logging.getLogger(__name__)
 CHECK_INTERVAL = 60  # seconds
 _monotonic = time.monotonic
 
-# Route label cache: maps route_id → friendly label (name or uri).
+# Route label cache: maps route_id → friendly label (name or uri), plus the
+# reverse (unambiguous route name → route_id) because with APISIX prefer_name
+# the Prometheus ``route`` label carries the name while alert state and
+# per-resource recipients stay keyed by route id.
 # Refreshed lazily with a TTL to avoid hammering APISIX on every check.
 _ROUTE_LABEL_CACHE: dict[str, str] = {}
+_ROUTE_ID_BY_NAME: dict[str, str] = {}
 _ROUTE_LABEL_CACHE_TS: float = 0.0
 _ROUTE_LABEL_TTL = 300.0  # 5 minutes
 _UPSTREAM_NAME_BY_ID: dict[str, str] = {}
@@ -84,12 +88,13 @@ async def _refresh_route_labels() -> None:
     TTL governs retry cadence; otherwise an APISIX outage would cause every
     `_get_route_label` call to re-enter this function.
     """
-    global _ROUTE_LABEL_CACHE, _ROUTE_LABEL_CACHE_TS
+    global _ROUTE_LABEL_CACHE, _ROUTE_ID_BY_NAME, _ROUTE_LABEL_CACHE_TS
     from app.services import apisix_client
     try:
         data = await apisix_client.list_resources("routes")
+        items = data.get("items", [])
         new_cache: dict[str, str] = {}
-        for item in data.get("items", []):
+        for item in items:
             rid = str(item.get("id") or "")
             if not rid:
                 continue
@@ -99,7 +104,24 @@ async def _refresh_route_labels() -> None:
                 uris = item.get("uris") or []
                 uri = uris[0] if uris else None
             new_cache[rid] = name or uri or rid
+        # Reverse map: only names that identify exactly one route, and that
+        # don't collide with a real route id (an id-shaped value must keep
+        # resolving to itself).
+        id_by_name: dict[str, str] = {}
+        ambiguous: set[str] = set()
+        for item in items:
+            rid = str(item.get("id") or "")
+            name = str(item.get("name") or "")
+            if not rid or not name or name == rid or name in new_cache:
+                continue
+            if name in id_by_name and id_by_name[name] != rid:
+                ambiguous.add(name)
+                continue
+            id_by_name[name] = rid
+        for name in ambiguous:
+            id_by_name.pop(name, None)
         _ROUTE_LABEL_CACHE = new_cache
+        _ROUTE_ID_BY_NAME = id_by_name
     except Exception as exc:
         logger.warning("Failed to refresh route labels: %s", exc)
     finally:
@@ -115,6 +137,21 @@ async def _get_route_label(route_id: str) -> str:
     if _monotonic() - _ROUTE_LABEL_CACHE_TS > _ROUTE_LABEL_TTL:
         await _refresh_route_labels()
     return _ROUTE_LABEL_CACHE.get(route_id, route_id)
+
+
+async def _resolve_route_id(label_value: str) -> str:
+    """Map a Prometheus ``route`` label value back to a route id.
+
+    Under APISIX ``prefer_name`` the label carries the route name when one is
+    set. Alert state keys and per-resource recipient lookups stay keyed by
+    route id, so translate when the value is a known unambiguous route name;
+    ids and unknown values pass through unchanged.
+    """
+    if _monotonic() - _ROUTE_LABEL_CACHE_TS > _ROUTE_LABEL_TTL:
+        await _refresh_route_labels()
+    if label_value in _ROUTE_LABEL_CACHE:
+        return label_value
+    return _ROUTE_ID_BY_NAME.get(label_value, label_value)
 
 
 async def _check_db_health() -> list[tuple[str, bool]]:
@@ -476,16 +513,30 @@ async def run_single_check(state: AlertStateManager, *, trigger_after_failures: 
     async with async_session() as db:
         route_threshold, route_min_requests = await _load_route_error_settings(db)
 
+    # The Prometheus label may carry the route *name* (APISIX prefer_name);
+    # state keys and recipient lookups need the route id. Merge rows first:
+    # right after a rename both the old and the new label report for the same
+    # route for one window, and evaluating them separately would double-count
+    # fail cycles (or let the stale row spuriously resolve the alert).
+    merged: dict[str, tuple[float, float]] = {}  # route_id → (errors, requests)
+    for label_value, rate, sample_count in route_results:
+        route_id = await _resolve_route_id(label_value)
+        errors, requests = merged.get(route_id, (0.0, 0.0))
+        merged[route_id] = (
+            errors + rate * sample_count / 100.0,
+            requests + sample_count,
+        )
+
     processed: set[str] = set()
-    for route_id, rate, sample_count in route_results:
+    for route_id, (errors, requests) in merged.items():
         processed.add(route_id)
         await _evaluate_route_error_rule(
             state,
             route_id=route_id,
-            rate=rate,
+            rate=(errors / requests * 100.0) if requests > 0 else 0.0,
             threshold=route_threshold,
             trigger_after_failures=trigger_after_failures,
-            sample_count=sample_count,
+            sample_count=requests,
             min_requests=route_min_requests,
         )
 

@@ -26,6 +26,10 @@ plugin_attr:
     export_addr:
       ip: 0.0.0.0
       port: 9091
+    # Label metrics by route/service *name* (fallback: id) so Grafana shows
+    # human-readable routes. System routes are named identically to their ids,
+    # so fixed-id PromQL filters (llm-proxy etc.) are unaffected.
+    prefer_name: true
 
 plugins:
   - key-auth
