@@ -28,7 +28,7 @@ import './LlmMonitoring.css';
 import TimeRangeSelector from '../components/TimeRangeSelector';
 import BucketSelector from '../components/BucketSelector';
 import GrafanaLink from '../components/GrafanaLink';
-import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket, bucketTooCoarse } from '../utils/timeRange';
+import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket, bucketTooCoarse, GRAFANA_BUCKET_INTERVAL } from '../utils/timeRange';
 import { formatChartTimestamp, formatBucketLabel } from '../utils/time';
 
 type ModelSortColumn = 'model' | 'input_tokens' | 'output_tokens' | 'cached_tokens' | 'tokens' | 'requests' | 'cost';
@@ -210,7 +210,10 @@ function LlmMonitoring() {
           <GrafanaLink
             dashboard="unibridge-llm"
             time={selection}
-            vars={{ 'var-api_key': selectedKey }}
+            vars={{
+              'var-api_key': selectedKey,
+              'var-bucket': GRAFANA_BUCKET_INTERVAL[bucket],
+            }}
           />
           <a
             href={LITELLM_ADMIN_URL}
