@@ -1143,21 +1143,44 @@ async def _route_filter_values(route: str) -> list[str]:
     except Exception as exc:
         logger.warning("Route filter id/name expansion skipped: %s", exc)
         return [route]
+    route_ids = {str(item.get("id") or "") for item in items if item.get("id")}
+    ids_by_name: dict[str, list[str]] = {}
+    for item in items:
+        rid = str(item.get("id") or "")
+        name = item.get("name")
+        if not rid or name is None:
+            continue
+        name_str = str(name)
+        if not name_str:
+            continue
+        owners = ids_by_name.setdefault(name_str, [])
+        if rid not in owners:
+            owners.append(rid)
+
     alt: str | None = None
     # An id-shaped value resolves as an id first, so a name colliding with
     # another route's id can't hijack the expansion (listing order must not
-    # matter). Mirrors alert_checker's reverse-map rule.
+    # matter). Name expansion is allowed only when that name identifies exactly
+    # one route and does not collide with another route id; otherwise the
+    # prefer_name label is already ambiguous and expanding would mix metrics.
+    # Mirrors alert_checker's reverse-map rule.
     for item in items:
-        if str(item.get("id") or "") == route:
+        rid = str(item.get("id") or "")
+        if rid == route:
             name = item.get("name")
-            alt = str(name) if name else None
+            name_str = str(name) if name else ""
+            if (
+                name_str
+                and name_str != route
+                and name_str not in route_ids
+                and ids_by_name.get(name_str) == [route]
+            ):
+                alt = name_str
             break
     else:
-        for item in items:
-            name = item.get("name")
-            if name is not None and str(name) == route:
-                alt = str(item.get("id") or "") or None
-                break
+        owners = ids_by_name.get(route, [])
+        if len(owners) == 1:
+            alt = owners[0]
     if alt and alt != route:
         return [route, alt]
     return [route]

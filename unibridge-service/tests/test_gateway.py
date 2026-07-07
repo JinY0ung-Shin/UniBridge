@@ -1776,6 +1776,49 @@ class TestRouteFilter:
         for call in mock.call_args_list:
             assert 'route=~"orders|r1"' in call.args[0]
 
+    async def test_route_filter_does_not_expand_duplicate_route_names(
+        self, client, admin_token
+    ):
+        # APISIX prefer_name merges duplicate route names into one Prometheus
+        # label, so an id-filter must not expand to the shared name and pull in
+        # another route's traffic.
+        total = [{"value": [0, "1"]}]
+        routes = {"items": [
+            {"id": "r1", "name": "checkout"},
+            {"id": "r2", "name": "checkout"},
+        ]}
+        mock = AsyncMock(side_effect=[total, total, total])
+        list_mock = AsyncMock(return_value=routes)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock), \
+             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/summary?range=1h&route=r1",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            assert 'route="r1"' in call.args[0]
+
+    async def test_route_filter_does_not_expand_name_colliding_with_route_id(
+        self, client, admin_token
+    ):
+        total = [{"value": [0, "1"]}]
+        routes = {"items": [
+            {"id": "r1", "name": "r2"},
+            {"id": "r2", "name": "orders"},
+        ]}
+        mock = AsyncMock(side_effect=[total, total, total])
+        list_mock = AsyncMock(return_value=routes)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock), \
+             patch("app.routers.gateway.apisix_client.list_resources", list_mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/summary?range=1h&route=r1",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        for call in mock.call_args_list:
+            assert 'route="r1"' in call.args[0]
+
     async def test_route_filter_degrades_to_exact_match_when_apisix_down(
         self, client, admin_token
     ):
