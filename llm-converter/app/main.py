@@ -682,14 +682,14 @@ async def responses(request: Request) -> Response:
                             # no tool_calls) — matches the streaming path, which
                             # only persists when there is real output.
                             if assistant.get("content") or assistant.get("tool_calls"):
-                                conversation_store.put(
+                                stored = conversation_store.put(
                                     response_id, base_messages + [assistant]
                                 )
                                 # Supersede the chained-from response: a linear
                                 # chain only needs the latest transcript, so drop
                                 # the parent to keep total memory O(N) not O(N^2).
                                 # (Trades away branching off a shared prev id.)
-                                if prev_id is not None:
+                                if stored and prev_id is not None:
                                     conversation_store.delete(prev_id)
                 except json.JSONDecodeError:
                     logger.warning(
@@ -779,12 +779,12 @@ async def responses(request: Request) -> Response:
                     and payload.get("type") in ("response.completed", "response.incomplete")
                     and holder.get("assistant_message")
                 ):
-                    conversation_store.put(
+                    stored = conversation_store.put(
                         response_id, base_messages + [holder["assistant_message"]]
                     )
                     # Supersede the parent (see non-stream branch) — linear chain
                     # retains only the latest transcript.
-                    if prev_id is not None:
+                    if stored and prev_id is not None:
                         conversation_store.delete(prev_id)
                     persisted = True
                 yield format_sse(payload)
@@ -813,8 +813,10 @@ async def responses(request: Request) -> Response:
             # Fallback persistence if the terminal event path didn't run but a
             # complete transcript is available; never persist after a bridge error.
             if not persisted and not failed and store_flag and holder.get("assistant_message"):
-                conversation_store.put(response_id, base_messages + [holder["assistant_message"]])
-                if prev_id is not None:
+                stored = conversation_store.put(
+                    response_id, base_messages + [holder["assistant_message"]]
+                )
+                if stored and prev_id is not None:
                     conversation_store.delete(prev_id)
 
     resp_headers = filter_headers(upstream.headers.items(), DROP_FROM_RESPONSE)

@@ -2,10 +2,10 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-# unibridge-service metadata DB at /app/data/meta.db (SQLite)
+# Legacy unibridge-service metadata DB at /app/data/meta.db (SQLite)
 # VACUUM INTO produces a consistent snapshot even under concurrent writes.
 
-backup_unibridge_meta() {
+backup_unibridge_meta_sqlite() {
   local out="$1"
   local remote_tmp="/app/data/meta.backup.db"
 
@@ -42,7 +42,7 @@ PYEOF
   log "sqlite: $(size_of "$out") bytes"
 }
 
-restore_unibridge_meta() {
+restore_unibridge_meta_sqlite() {
   local src="$1"
   [[ -f "$src" ]] || die "dump not found: $src"
 

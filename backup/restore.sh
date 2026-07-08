@@ -9,6 +9,7 @@ source "$HERE/lib/common.sh"
 source "$HERE/lib/etcd.sh"
 source "$HERE/lib/postgres.sh"
 source "$HERE/lib/sqlite.sh"
+source "$HERE/lib/meta.sh"
 
 usage() {
   cat <<EOF
@@ -18,7 +19,8 @@ components:
   etcd              restore APISIX config store from etcd.snap
   keycloak-db       restore Keycloak Postgres from keycloak-db.sql.gz
   litellm-db        restore LiteLLM Postgres from litellm-db.sql.gz
-  unibridge-meta    restore unibridge-service SQLite from unibridge-meta.db.gz
+  unibridge-meta    restore unibridge-service metadata from unibridge-meta.sql.gz
+                    (Postgres default) or legacy unibridge-meta.db.gz (SQLite)
 
 example:
   $0 etcd ./snapshots/2026-04-19_030000Z
@@ -90,8 +92,10 @@ main() {
         "$dir/litellm-db.sql.gz" litellm
       ;;
     unibridge-meta)
-      verify_backup_dir "$dir" "unibridge-meta.db.gz"
-      restore_unibridge_meta "$dir/unibridge-meta.db.gz"
+      local meta_file
+      meta_file="$(unibridge_meta_backup_file "$dir")"
+      verify_backup_dir "$dir" "$meta_file"
+      restore_unibridge_meta_snapshot "$dir/$meta_file"
       ;;
     *)
       usage

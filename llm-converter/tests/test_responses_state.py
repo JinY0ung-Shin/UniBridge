@@ -1,10 +1,10 @@
-"""Unit tests for the in-memory conversation store."""
+"""Unit tests for Responses API conversation stores."""
 
 from __future__ import annotations
 
 import time
 
-from app.responses_state import ConversationStore
+from app.responses_state import ConversationStore, SQLiteConversationStore
 
 
 def test_put_get_roundtrip_is_isolated():
@@ -72,6 +72,17 @@ def test_byte_budget_keeps_latest_even_if_oversized():
     assert store.get("a") is not None
 
 
+def test_per_entry_budget_rejects_oversized_transcript():
+    store = ConversationStore(
+        ttl_seconds=3600,
+        max_entries=100,
+        max_bytes=10000,
+        max_entry_bytes=100,
+    )
+    assert store.put("a", [{"role": "user", "content": "z" * 1000}]) is False
+    assert store.get("a") is None
+
+
 def test_byte_total_decrements_on_delete_and_expiry():
     store = ConversationStore(ttl_seconds=3600, max_entries=100, max_bytes=10000)
     store.put("a", [{"role": "user", "content": "z" * 300}])
@@ -81,3 +92,39 @@ def test_byte_total_decrements_on_delete_and_expiry():
     store.put("c", [{"role": "user", "content": "z" * 300}])
     assert store.get("b") is not None
     assert store.get("c") is not None
+
+
+def test_sqlite_store_persists_between_instances(tmp_path):
+    path = tmp_path / "responses.sqlite3"
+    first = SQLiteConversationStore(
+        str(path),
+        ttl_seconds=3600,
+        max_entries=10,
+        max_bytes=10000,
+        max_entry_bytes=10000,
+    )
+    assert first.put("resp_1", [{"role": "user", "content": "hi"}]) is True
+    first.close()
+
+    second = SQLiteConversationStore(
+        str(path),
+        ttl_seconds=3600,
+        max_entries=10,
+        max_bytes=10000,
+        max_entry_bytes=10000,
+    )
+    assert second.get("resp_1") == [{"role": "user", "content": "hi"}]
+    second.close()
+
+
+def test_sqlite_store_respects_per_entry_budget(tmp_path):
+    store = SQLiteConversationStore(
+        str(tmp_path / "responses.sqlite3"),
+        ttl_seconds=3600,
+        max_entries=10,
+        max_bytes=10000,
+        max_entry_bytes=100,
+    )
+    assert store.put("resp_1", [{"role": "user", "content": "z" * 1000}]) is False
+    assert store.get("resp_1") is None
+    store.close()

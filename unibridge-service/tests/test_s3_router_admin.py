@@ -667,6 +667,32 @@ async def test_download_object_get_unexpected(client, admin_token):
 
 
 @pytest.mark.asyncio
+async def test_download_object_rechecks_get_object_content_length(client, admin_token):
+    class FakeBody:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    body = FakeBody()
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.has_connection.return_value = True
+        mgr.get_object_metadata = AsyncMock(return_value={"size": 100})
+        mgr.get_object = AsyncMock(return_value={
+            "Body": body,
+            "ContentType": "application/octet-stream",
+            "ContentLength": 600 * 1024 * 1024,
+        })
+        resp = await client.get(
+            "/s3/x/objects/download?bucket=b&key=k",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 413
+    assert body.closed
+
+
+@pytest.mark.asyncio
 async def test_download_object_streams_body(client, admin_token):
     chunks = [b"hello ", b"world", b""]
 

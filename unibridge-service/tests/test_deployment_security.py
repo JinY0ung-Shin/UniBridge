@@ -19,6 +19,9 @@ NGINX_CONFIG_FILE = REPO_ROOT / "unibridge-ui" / "nginx.conf"
 EDGE_TEMPLATE_FILE = REPO_ROOT / "deploy" / "edge" / "default.conf.template"
 DEPLOY_SCRIPT_FILE = REPO_ROOT / "scripts" / "deploy-bluegreen.sh"
 UI_ENTRYPOINT_FILE = REPO_ROOT / "unibridge-ui" / "entrypoint.sh"
+BACKUP_SCRIPT_FILE = REPO_ROOT / "backup" / "backup.sh"
+RESTORE_SCRIPT_FILE = REPO_ROOT / "backup" / "restore.sh"
+BACKUP_META_LIB_FILE = REPO_ROOT / "backup" / "lib" / "meta.sh"
 
 COMPOSE_SERVICE_LIMITS = {
     "etcd": {"memory": "256m", "cpus": "0.50"},
@@ -67,6 +70,7 @@ REQUIRED_BLANK_ENV_SECRETS = {
     "JWT_SECRET",
     "ETCD_ROOT_PASSWORD",
     "APISIX_ADMIN_KEY",
+    "APISIX_INTERNAL_PROXY_SECRET",
     "KC_ADMIN_PASSWORD",
     "KC_DB_PASSWORD",
     "KEYCLOAK_SERVICE_CLIENT_SECRET",
@@ -162,9 +166,11 @@ def test_bluegreen_compose_splits_stateful_infra_from_app_tier() -> None:
 
 
 def test_bluegreen_app_uses_color_specific_targets_and_deferred_apisix_promotion() -> None:
-    app_services = _load_yaml(BLUEGREEN_APP_COMPOSE_FILE)["services"]
+    app_compose = _load_yaml(BLUEGREEN_APP_COMPOSE_FILE)
+    app_services = app_compose["services"]
     service_env = app_services["unibridge-service"]["environment"]
     ui_env = app_services["unibridge-ui"]["environment"]
+    converter = app_services["llm-converter"]
 
     # Default true so a manual `compose up` bootstraps routes rather than coming
     # up route-less; deploy-bluegreen.sh always passes the value explicitly and
@@ -177,6 +183,10 @@ def test_bluegreen_app_uses_color_specific_targets_and_deferred_apisix_promotion
     assert (
         "APISIX_LLM_CONVERTER_NODE=${APISIX_LLM_CONVERTER_NODE:-llm-converter-${APP_COLOR}:4001}"
         in service_env
+    )
+    assert "llm-converter-state:/var/lib/llm-converter" in converter["volumes"]
+    assert app_compose["volumes"]["llm-converter-state"]["name"] == (
+        "${LLM_CONVERTER_STATE_VOLUME:-unibridge_llm-converter-state}"
     )
     assert (
         "UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service-${APP_COLOR}}"
@@ -292,12 +302,28 @@ def test_edge_template_strips_consumer_identity_and_keeps_keepalive() -> None:
     # only APISIX can assert it downstream.
     assert 'proxy_set_header X-Consumer-Username "";' in template
     assert 'proxy_set_header X-Consumer-Custom-Id "";' in template
+    assert 'proxy_set_header X-UniBridge-Internal-Proxy "";' in template
 
     # Connection header is driven by a map (keep-alive for normal requests,
     # upgrade only for real WebSocket), not an unconditional "upgrade".
     assert "map $http_upgrade $connection_upgrade" in template
     assert "proxy_set_header Connection $connection_upgrade;" in template
     assert 'proxy_set_header Connection "upgrade";' not in template
+
+
+def test_backup_uses_current_metadata_store_instead_of_sqlite_only() -> None:
+    backup_script = BACKUP_SCRIPT_FILE.read_text(encoding="utf-8")
+    restore_script = RESTORE_SCRIPT_FILE.read_text(encoding="utf-8")
+    meta_lib = BACKUP_META_LIB_FILE.read_text(encoding="utf-8")
+
+    assert 'source "$HERE/lib/meta.sh"' in backup_script
+    assert 'source "$HERE/lib/meta.sh"' in restore_script
+    assert 'backup_unibridge_meta "$dest"' in backup_script
+    assert "unibridge-meta.sql.gz" in meta_lib
+    assert "backup_postgres" in meta_lib
+    assert "restore_postgres" in meta_lib
+    assert "unibridge-meta.db.gz" in meta_lib
+    assert "backup_unibridge_meta_sqlite" in meta_lib
 
 
 def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:

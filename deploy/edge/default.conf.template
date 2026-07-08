@@ -36,6 +36,7 @@ server {
         # prevents a forged "X-Consumer-Username: admin" from reaching any hop.
         proxy_set_header X-Consumer-Username "";
         proxy_set_header X-Consumer-Custom-Id "";
+        proxy_set_header X-UniBridge-Internal-Proxy "";
 
         set $unibridge_ui "unibridge-ui-__ACTIVE_COLOR__";
         proxy_pass https://$unibridge_ui:443;

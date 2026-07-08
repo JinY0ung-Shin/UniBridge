@@ -865,6 +865,68 @@ async def test_apikey_user_from_apisix_header():
 
 
 @pytest.mark.asyncio
+async def test_apikey_user_rejects_untrusted_consumer_header_in_production(monkeypatch):
+    """Production auth must not trust a spoofed X-Consumer-Username by itself."""
+    from unittest.mock import AsyncMock, MagicMock
+    from fastapi import HTTPException
+    from app.auth import get_current_user_or_apikey, settings
+
+    monkeypatch.setattr(settings, "ENABLE_DEV_TOKEN_ENDPOINT", False)
+    monkeypatch.setattr(settings, "APISIX_INTERNAL_PROXY_SECRET", "proxy-secret")
+    monkeypatch.setattr(settings, "APISIX_ADMIN_KEY", "admin-secret")
+
+    mock_request = MagicMock()
+    mock_request.headers = {"x-consumer-username": "my-app-key"}
+    mock_db = AsyncMock()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user_or_apikey(
+            request=mock_request, credentials=None, db=mock_db
+        )
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Untrusted API key proxy headers"
+    mock_db.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apikey_user_accepts_trusted_consumer_header_in_production(monkeypatch):
+    """APISIX-injected consumer headers are accepted when the proxy secret matches."""
+    from unittest.mock import AsyncMock, MagicMock
+    from app.auth import get_current_user_or_apikey, ApiKeyUser, settings
+
+    monkeypatch.setattr(settings, "ENABLE_DEV_TOKEN_ENDPOINT", False)
+    monkeypatch.setattr(settings, "APISIX_INTERNAL_PROXY_SECRET", "proxy-secret")
+    monkeypatch.setattr(settings, "APISIX_ADMIN_KEY", "admin-secret")
+
+    mock_request = MagicMock()
+    mock_request.headers = {
+        "x-consumer-username": "my-app-key",
+        "x-unibridge-internal-proxy": "proxy-secret",
+    }
+
+    mock_access = MagicMock()
+    mock_access.consumer_name = "my-app-key"
+    mock_access.allowed_databases = '["mydb"]'
+    mock_access.allowed_routes = '["route-1"]'
+    mock_access.expires_at = None
+    mock_access.allow_insert = False
+    mock_access.allow_update = False
+    mock_access.allow_delete = False
+    mock_access.allowed_tables = None
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_access
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    user = await get_current_user_or_apikey(
+        request=mock_request, credentials=None, db=mock_db
+    )
+    assert isinstance(user, ApiKeyUser)
+    assert user.consumer_name == "my-app-key"
+
+
+@pytest.mark.asyncio
 async def test_apikey_user_carries_write_flags_and_allowed_tables():
     """Per-key write flags and the table whitelist surface on ApiKeyUser."""
     from unittest.mock import AsyncMock, MagicMock

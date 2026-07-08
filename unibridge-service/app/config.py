@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     ENABLE_DEV_TOKEN_ENDPOINT: bool = False
     APISIX_ADMIN_URL: str = "http://apisix:9180"
     APISIX_ADMIN_KEY: str = ""
+    APISIX_INTERNAL_PROXY_SECRET: str = ""
     APISIX_PROVISION_ON_START: bool = True
     # Gateway read/send timeout (seconds) for the query route. APISIX defaults to
     # 60s, which cuts long queries before the app's own timeout fires; keep this
