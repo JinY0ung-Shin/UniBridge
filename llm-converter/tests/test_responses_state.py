@@ -1,10 +1,27 @@
-"""Unit tests for the in-memory conversation store."""
+"""Unit tests for Responses API conversation stores."""
 
 from __future__ import annotations
 
 import time
 
-from app.responses_state import ConversationStore
+from app.responses_state import ConversationStore, SQLiteConversationStore
+
+
+def _sqlite_store(
+    tmp_path,
+    *,
+    ttl_seconds: float = 3600,
+    max_entries: int = 10,
+    max_bytes: int = 10000,
+    max_entry_bytes: int = 10000,
+) -> SQLiteConversationStore:
+    return SQLiteConversationStore(
+        str(tmp_path / "responses.sqlite3"),
+        ttl_seconds=ttl_seconds,
+        max_entries=max_entries,
+        max_bytes=max_bytes,
+        max_entry_bytes=max_entry_bytes,
+    )
 
 
 def test_put_get_roundtrip_is_isolated():
@@ -72,6 +89,17 @@ def test_byte_budget_keeps_latest_even_if_oversized():
     assert store.get("a") is not None
 
 
+def test_per_entry_budget_rejects_oversized_transcript():
+    store = ConversationStore(
+        ttl_seconds=3600,
+        max_entries=100,
+        max_bytes=10000,
+        max_entry_bytes=100,
+    )
+    assert store.put("a", [{"role": "user", "content": "z" * 1000}]) is False
+    assert store.get("a") is None
+
+
 def test_byte_total_decrements_on_delete_and_expiry():
     store = ConversationStore(ttl_seconds=3600, max_entries=100, max_bytes=10000)
     store.put("a", [{"role": "user", "content": "z" * 300}])
@@ -81,3 +109,75 @@ def test_byte_total_decrements_on_delete_and_expiry():
     store.put("c", [{"role": "user", "content": "z" * 300}])
     assert store.get("b") is not None
     assert store.get("c") is not None
+
+
+def test_sqlite_store_persists_between_instances(tmp_path):
+    path = tmp_path / "responses.sqlite3"
+    first = SQLiteConversationStore(
+        str(path),
+        ttl_seconds=3600,
+        max_entries=10,
+        max_bytes=10000,
+        max_entry_bytes=10000,
+    )
+    assert first.put("resp_1", [{"role": "user", "content": "hi"}]) is True
+    first.close()
+
+    second = SQLiteConversationStore(
+        str(path),
+        ttl_seconds=3600,
+        max_entries=10,
+        max_bytes=10000,
+        max_entry_bytes=10000,
+    )
+    assert second.get("resp_1") == [{"role": "user", "content": "hi"}]
+    second.close()
+
+
+def test_sqlite_store_respects_per_entry_budget(tmp_path):
+    store = _sqlite_store(tmp_path, max_entry_bytes=100)
+    assert store.put("resp_1", [{"role": "user", "content": "z" * 1000}]) is False
+    assert store.get("resp_1") is None
+    store.close()
+
+
+def test_sqlite_store_ttl_expiry(tmp_path):
+    store = _sqlite_store(tmp_path, ttl_seconds=0.05)
+    assert store.put("resp_1", [{"role": "user", "content": "hi"}]) is True
+    assert store.get("resp_1") is not None
+    time.sleep(0.08)
+    assert store.get("resp_1") is None
+    assert len(store) == 0
+    store.close()
+
+
+def test_sqlite_store_lru_eviction_past_max(tmp_path):
+    store = _sqlite_store(tmp_path, max_entries=2)
+    store.put("a", [{"role": "user", "content": "a"}])
+    store.put("b", [{"role": "user", "content": "b"}])
+    store.get("a")  # touch a so b becomes least-recently-used
+    store.put("c", [{"role": "user", "content": "c"}])
+    assert len(store) == 2
+    assert store.get("b") is None
+    assert store.get("a") is not None
+    assert store.get("c") is not None
+    store.close()
+
+
+def test_sqlite_store_byte_budget_evicts_lru_but_keeps_latest(tmp_path):
+    store = _sqlite_store(tmp_path, max_entries=100, max_bytes=500)
+    big = [{"role": "user", "content": "z" * 300}]
+    store.put("a", big)
+    store.put("b", big)
+    assert store.get("a") is None
+    assert store.get("b") is not None
+    assert len(store) == 1
+    store.close()
+
+
+def test_sqlite_store_byte_budget_keeps_latest_even_if_oversized(tmp_path):
+    store = _sqlite_store(tmp_path, max_entries=100, max_bytes=10)
+    assert store.put("a", [{"role": "user", "content": "z" * 1000}]) is True
+    assert store.get("a") is not None
+    assert len(store) == 1
+    store.close()

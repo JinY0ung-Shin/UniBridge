@@ -13,6 +13,7 @@ export default defineConfig({
         headers: {
           'X-Consumer-Username': '',
           'X-Consumer-Custom-Id': '',
+          'X-UniBridge-Internal-Proxy': '',
         },
       },
     },

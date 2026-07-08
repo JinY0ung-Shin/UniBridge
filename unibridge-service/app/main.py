@@ -42,6 +42,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+APISIX_INTERNAL_PROXY_HEADER = "X-UniBridge-Internal-Proxy"
 
 
 def _is_missing_route_error(exc: Exception) -> bool:
@@ -50,6 +51,18 @@ def _is_missing_route_error(exc: Exception) -> bool:
 
     message = str(exc).lower()
     return "404" in message or "not found" in message
+
+
+def _internal_proxy_headers(
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, dict[str, str]]:
+    headers = dict(extra_headers or {})
+    secret = getattr(settings, "APISIX_INTERNAL_PROXY_SECRET", "") or getattr(
+        settings, "APISIX_ADMIN_KEY", ""
+    )
+    if secret:
+        headers[APISIX_INTERNAL_PROXY_HEADER] = secret
+    return {"set": headers} if headers else {}
 
 
 async def _preserve_consumer_restriction(
@@ -199,6 +212,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                 "proxy-rewrite": {
                                     "regex_uri": ["^/api/query(.*)", "/query$1"],
                                     "use_real_request_uri_unsafe": True,
+                                    "headers": _internal_proxy_headers(),
                                 },
                             },
                             "status": 1,
@@ -223,6 +237,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                 "proxy-rewrite": {
                                     "regex_uri": ["^/api/s3(.*)", "/s3$1"],
                                     "use_real_request_uri_unsafe": True,
+                                    "headers": _internal_proxy_headers(),
                                 },
                             },
                             "status": 1,
@@ -254,6 +269,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                 "proxy-rewrite": {
                                     "regex_uri": ["^/api/nas(.*)", "/nas$1"],
                                     "use_real_request_uri_unsafe": True,
+                                    "headers": _internal_proxy_headers(),
                                 },
                             },
                             "status": 1,
@@ -284,6 +300,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                 "proxy-rewrite": {
                                     "regex_uri": ["^/api/usages(.*)", "/usages$1"],
                                     "use_real_request_uri_unsafe": True,
+                                    "headers": _internal_proxy_headers(),
                                 },
                             },
                             "status": 1,

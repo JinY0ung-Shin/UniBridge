@@ -1,4 +1,4 @@
-"""In-memory conversation store for Responses API ``previous_response_id`` chaining.
+"""Conversation store for Responses API ``previous_response_id`` chaining.
 
 The Responses API is stateful: a client sends only new input plus
 ``previous_response_id``, and the server replays the prior transcript. Since the
@@ -7,10 +7,11 @@ emulate that store itself. We persist the accumulated Chat Completions
 ``messages`` array (the whole transcript up to and including a turn) keyed by the
 ``resp_<id>`` we mint, so a follow-up can resolve it and prepend the history.
 
-This is a single-process, in-memory store: entries are lost on restart and
-bounded by a TTL, an entry-count LRU cap, AND a total-byte budget (NOT the 30-day
-OpenAI semantics). It can be swapped for a persistent backend later without
-changing the route logic.
+The default runtime can use a small SQLite database on a shared compose volume
+so entries survive a converter restart and blue/green color swap. Tests and
+single-process development can still use the in-memory implementation. Entries
+are bounded by a TTL, an entry-count LRU cap, a total-byte budget, and an
+optional per-entry byte cap (NOT the 30-day OpenAI semantics).
 
 Memory model: the route DELETES a ``previous_response_id`` once a follow-up
 successfully chains off it (see :meth:`delete`), so a linear conversation only
@@ -26,6 +27,8 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import sqlite3
 import threading
 import time
 from collections import OrderedDict
@@ -36,10 +39,17 @@ class ConversationStore:
     """Thread-safe TTL + LRU map of ``resp_<id>`` → accumulated chat messages,
     bounded by both an entry-count cap and a total-byte budget."""
 
-    def __init__(self, ttl_seconds: float, max_entries: int, max_bytes: int = 0) -> None:
+    def __init__(
+        self,
+        ttl_seconds: float,
+        max_entries: int,
+        max_bytes: int = 0,
+        max_entry_bytes: int = 0,
+    ) -> None:
         self._ttl = ttl_seconds
         self._max = max(1, max_entries)
         self._max_bytes = max(0, max_bytes)  # 0 disables the byte budget
+        self._max_entry_bytes = max(0, max_entry_bytes)  # 0 disables per-entry cap
         # resp_id -> (stored_at, messages, approx_bytes)
         self._data: "OrderedDict[str, tuple[float, list[dict], int]]" = OrderedDict()
         self._total_bytes = 0
@@ -76,16 +86,23 @@ class ConversationStore:
             self._data.move_to_end(resp_id)
             return copy.deepcopy(messages)
 
-    def put(self, resp_id: str, messages: list[dict]) -> None:
-        """Store a deep copy of the transcript under ``resp_id`` and prune."""
+    def put(self, resp_id: str, messages: list[dict]) -> bool:
+        """Store a deep copy of the transcript under ``resp_id`` and prune.
+
+        Returns False when the transcript exceeds the per-entry cap and is not
+        stored. Callers should only delete a chained-from parent after True.
+        """
         with self._lock:
             # On replace, drop the previous byte count before adding the new one.
             self._forget(resp_id)
             nbytes = self._sizeof(messages)
+            if self._max_entry_bytes > 0 and nbytes > self._max_entry_bytes:
+                return False
             self._data[resp_id] = (time.time(), copy.deepcopy(messages), nbytes)
             self._total_bytes += nbytes
             self._data.move_to_end(resp_id)
             self._prune()
+            return True
 
     def delete(self, resp_id: str) -> None:
         """Drop an entry if present (used to supersede a chained-from prev id)."""
@@ -118,13 +135,181 @@ class ConversationStore:
             return len(self._data)
 
 
-def _build_store() -> ConversationStore:
+class SQLiteConversationStore:
+    """SQLite-backed variant with the same public API as ConversationStore."""
+
+    def __init__(
+        self,
+        path: str,
+        ttl_seconds: float,
+        max_entries: int,
+        max_bytes: int = 0,
+        max_entry_bytes: int = 0,
+    ) -> None:
+        self._path = path
+        self._ttl = ttl_seconds
+        self._max = max(1, max_entries)
+        self._max_bytes = max(0, max_bytes)
+        self._max_entry_bytes = max(0, max_entry_bytes)
+        self._lock = threading.Lock()
+
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        self._conn = sqlite3.connect(path, check_same_thread=False, timeout=5.0)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversations (
+                resp_id TEXT PRIMARY KEY,
+                stored_at REAL NOT NULL,
+                accessed_at REAL NOT NULL,
+                messages TEXT NOT NULL,
+                approx_bytes INTEGER NOT NULL
+            )
+            """
+        )
+        self._conn.commit()
+
+    def _is_expired(self, ts: float, now: float) -> bool:
+        return self._ttl > 0 and (now - ts) > self._ttl
+
+    @staticmethod
+    def _sizeof(messages: list[dict]) -> int:
+        return ConversationStore._sizeof(messages)
+
+    def _delete_expired_locked(self, now: float) -> None:
+        if self._ttl > 0:
+            self._conn.execute(
+                "DELETE FROM conversations WHERE stored_at < ?",
+                (now - self._ttl,),
+            )
+
+    def _prune_locked(self, now: float) -> None:
+        self._delete_expired_locked(now)
+
+        count = self._conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+        overflow = count - self._max
+        if overflow > 0:
+            self._conn.execute(
+                """
+                DELETE FROM conversations
+                WHERE resp_id IN (
+                    SELECT resp_id FROM conversations
+                    ORDER BY accessed_at ASC
+                    LIMIT ?
+                )
+                """,
+                (overflow,),
+            )
+
+        if self._max_bytes <= 0:
+            return
+
+        while True:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(approx_bytes), 0), COUNT(*) FROM conversations"
+            ).fetchone()
+            total, count = int(row[0]), int(row[1])
+            if total <= self._max_bytes or count <= 1:
+                return
+            oldest = self._conn.execute(
+                "SELECT resp_id FROM conversations ORDER BY accessed_at ASC LIMIT 1"
+            ).fetchone()
+            if oldest is None:
+                return
+            self._conn.execute(
+                "DELETE FROM conversations WHERE resp_id = ?",
+                (oldest[0],),
+            )
+
+    def get(self, resp_id: str) -> Optional[list[dict]]:
+        now = time.time()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT stored_at, messages FROM conversations WHERE resp_id = ?",
+                (resp_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            stored_at, raw_messages = row
+            if self._is_expired(float(stored_at), now):
+                self._conn.execute(
+                    "DELETE FROM conversations WHERE resp_id = ?",
+                    (resp_id,),
+                )
+                self._conn.commit()
+                return None
+            try:
+                messages = json.loads(raw_messages)
+            except (TypeError, ValueError):
+                self._conn.execute(
+                    "DELETE FROM conversations WHERE resp_id = ?",
+                    (resp_id,),
+                )
+                self._conn.commit()
+                return None
+            self._conn.execute(
+                "UPDATE conversations SET accessed_at = ? WHERE resp_id = ?",
+                (now, resp_id),
+            )
+            self._conn.commit()
+            return messages if isinstance(messages, list) else None
+
+    def put(self, resp_id: str, messages: list[dict]) -> bool:
+        now = time.time()
+        raw_messages = json.dumps(messages, ensure_ascii=False)
+        nbytes = len(raw_messages.encode("utf-8"))
+        if self._max_entry_bytes > 0 and nbytes > self._max_entry_bytes:
+            return False
+
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO conversations
+                    (resp_id, stored_at, accessed_at, messages, approx_bytes)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (resp_id, now, now, raw_messages, nbytes),
+            )
+            self._prune_locked(now)
+            self._conn.commit()
+            return True
+
+    def delete(self, resp_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM conversations WHERE resp_id = ?", (resp_id,))
+            self._conn.commit()
+
+    def clear(self) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM conversations")
+            self._conn.commit()
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return int(self._conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
+
+
+def _build_store() -> ConversationStore | SQLiteConversationStore:
     from app.config import settings
 
+    store_path = settings.response_store_path
+    kwargs = {
+        "ttl_seconds": settings.response_store_ttl,
+        "max_entries": settings.response_store_max,
+        "max_bytes": settings.response_store_max_bytes,
+        "max_entry_bytes": settings.response_store_max_entry_bytes,
+    }
+    if store_path:
+        return SQLiteConversationStore(store_path, **kwargs)
     return ConversationStore(
-        ttl_seconds=settings.response_store_ttl,
-        max_entries=settings.response_store_max,
-        max_bytes=settings.response_store_max_bytes,
+        **kwargs,
     )
 
 
@@ -136,4 +321,8 @@ conversation_store = _build_store()
 def reset() -> None:
     """Rebuild the singleton from current env (test helper)."""
     global conversation_store
+    old_store = conversation_store
+    close = getattr(old_store, "close", None)
+    if callable(close):
+        close()
     conversation_store = _build_store()

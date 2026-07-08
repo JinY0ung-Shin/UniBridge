@@ -1,4 +1,5 @@
 """Comprehensive unit tests for the services layer."""
+# ruff: noqa: E402,F811
 from __future__ import annotations
 
 import asyncio

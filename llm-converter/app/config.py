@@ -126,7 +126,7 @@ class _Settings:
 
     @property
     def response_store_ttl(self) -> float:
-        """TTL (seconds) for the in-memory previous_response_id conversation store."""
+        """TTL (seconds) for the previous_response_id conversation store."""
         return float(_int_env("CONVERTER_RESPONSE_STORE_TTL", 3600))
 
     @property
@@ -138,8 +138,20 @@ class _Settings:
     def response_store_max_bytes(self) -> int:
         """Total approx-serialized byte budget for stored transcripts before LRU
         eviction (0 disables). Safety net for image-heavy / many concurrent
-        chains, which the entry-count cap alone does not bound. Default 256 MiB."""
-        return _int_env("CONVERTER_RESPONSE_STORE_MAX_BYTES", 256 * 1024 * 1024)
+        chains, which the entry-count cap alone does not bound. Default 64 MiB."""
+        return _int_env("CONVERTER_RESPONSE_STORE_MAX_BYTES", 64 * 1024 * 1024)
+
+    @property
+    def response_store_max_entry_bytes(self) -> int:
+        """Per-response transcript byte cap (0 disables). Oversized transcripts
+        are not persisted, so they cannot evict every other active chain.
+        Default 16 MiB."""
+        return _int_env("CONVERTER_RESPONSE_STORE_MAX_ENTRY_BYTES", 16 * 1024 * 1024)
+
+    @property
+    def response_store_path(self) -> str:
+        """Optional SQLite file path for a restart-safe previous_response_id store."""
+        return os.getenv("CONVERTER_RESPONSE_STORE_PATH", "").strip()
 
     @property
     def emit_reasoning(self) -> bool:

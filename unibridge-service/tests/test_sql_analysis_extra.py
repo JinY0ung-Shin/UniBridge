@@ -1,8 +1,6 @@
 """Extra tests covering sql_analysis helpers (strip strings, legacy fallback, blocked keywords)."""
 from __future__ import annotations
 
-import pytest
-
 from app.services.sql_analysis import (
     _strip_strings_and_comments,
     blocked_ast_keyword,

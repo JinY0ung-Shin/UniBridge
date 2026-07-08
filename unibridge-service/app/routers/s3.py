@@ -410,12 +410,32 @@ async def download_object(
     content_length = resp.get("ContentLength")
     filename = key.rsplit("/", 1)[-1] or "download"
 
+    try:
+        response_size = int(content_length) if content_length is not None else None
+    except (TypeError, ValueError):
+        response_size = None
+    if response_size is not None and response_size > MAX_PROXY_DOWNLOAD_BYTES:
+        await asyncio.to_thread(body.close)
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File too large for proxy download (max {MAX_PROXY_DOWNLOAD_BYTES // (1024 * 1024)}MB). Use presigned-url instead.",
+        )
+
     async def _stream_body():
+        streamed = 0
         try:
             while True:
                 chunk = await asyncio.to_thread(body.read, 1024 * 1024)
                 if not chunk:
                     break
+                streamed += len(chunk)
+                if streamed > MAX_PROXY_DOWNLOAD_BYTES:
+                    logger.warning(
+                        "S3 object '%s/%s' exceeded proxy download limit while streaming",
+                        alias,
+                        key,
+                    )
+                    raise RuntimeError("S3 proxy download exceeded maximum size")
                 yield chunk
         finally:
             await asyncio.to_thread(body.close)

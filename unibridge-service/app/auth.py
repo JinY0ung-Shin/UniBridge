@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import time
 from dataclasses import dataclass
@@ -20,8 +21,16 @@ from app.config import settings
 from app.database import get_db
 
 logger = logging.getLogger(__name__)
+APISIX_INTERNAL_PROXY_HEADER = "x-unibridge-internal-proxy"
 
 security = HTTPBearer(auto_error=False)
+
+
+def _constant_time_header_equal(provided: str, expected: str) -> bool:
+    return hmac.compare_digest(
+        provided.encode("utf-8", "surrogatepass"),
+        expected.encode("utf-8", "surrogatepass"),
+    )
 
 # ── All permissions ─────────────────────────────────────────────────────────
 
@@ -299,6 +308,15 @@ async def get_current_user_or_apikey(
     """
     consumer_name = request.headers.get("x-consumer-username")
     if consumer_name and credentials is None:
+        if not settings.ENABLE_DEV_TOKEN_ENDPOINT:
+            expected = settings.APISIX_INTERNAL_PROXY_SECRET or settings.APISIX_ADMIN_KEY
+            provided = request.headers.get(APISIX_INTERNAL_PROXY_HEADER, "")
+            if not expected or not _constant_time_header_equal(provided, expected):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Untrusted API key proxy headers",
+                )
+
         from app.models import ApiKeyAccess
         result = await db.execute(
             select(ApiKeyAccess).where(ApiKeyAccess.consumer_name == consumer_name)

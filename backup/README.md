@@ -9,7 +9,7 @@ Operator runbook for backing up and restoring UniBridge state.
 | Component | Source | Output | Why critical |
 |---|---|---|---|
 | etcd | volume `etcd-data` | `etcd.snap` | APISIX routes, consumers, plugin configs |
-| unibridge-service SQLite | volume `unibridge-data` (`meta.db`) | `unibridge-meta.db.gz` | API keys, encrypted credentials, user settings |
+| unibridge-service metadata | Postgres service `unibridge-db` by default, or legacy SQLite `unibridge-data` (`meta.db`) when `META_DB_URL=sqlite...` | `unibridge-meta.sql.gz` (Postgres) or `unibridge-meta.db.gz` (SQLite) | API keys, encrypted credentials, user settings |
 | Keycloak Postgres | volume `keycloak-db-data` | `keycloak-db.sql.gz` | users, realms, clients |
 | LiteLLM Postgres | volume `litellm-db-data` | `litellm-db.sql.gz` | LLM keys, budgets, usage history |
 
@@ -22,7 +22,7 @@ Prometheus time-series data is intentionally **not** backed up — retention is 
   etcd.snap
   keycloak-db.sql.gz
   litellm-db.sql.gz
-  unibridge-meta.db.gz
+  unibridge-meta.sql.gz  # or unibridge-meta.db.gz for legacy SQLite deployments
   manifest.json          # sizes + SHA256 of each file
 ```
 
@@ -33,7 +33,8 @@ File permissions are set to `600`, the per-run directory to `700`. Backups conta
 ### Host prerequisites
 
 - `docker` + `docker compose` plugin (obviously)
-- `bash`, `flock`, `find`, `sha256sum`, `gzip`, `sqlite3`-in-container (all standard)
+- `bash`, `flock`, `find`, `sha256sum`, `gzip` (all standard)
+- `pg_dump`/`psql` in the bundled Postgres containers for the default metadata store; `sqlite3` in `unibridge-service` only for legacy SQLite metadata deployments.
 - **`jq` or `python3`** on the host — `restore.sh` uses one of them to verify `manifest.json` SHA256 before destructive actions. If neither is installed, restore will refuse to run.
 
 ## Scheduling (cron)
@@ -92,7 +93,7 @@ Correct order:
    ```
    docker compose up -d --wait
    ```
-4. **Restore unibridge-service metadata** (this stops/starts the service on its own):
+4. **Restore unibridge-service metadata** (Postgres default; the script also accepts legacy SQLite snapshots):
    ```
    ./backup/restore.sh unibridge-meta ./snapshots/<stamp>
    ```
@@ -113,5 +114,5 @@ A backup you haven't tested restoring is a wish, not a backup. Recommended drill
 - **`cannot resolve volume for '<service>'`**: the service's container has never been created in this project. Run `docker compose up -d` first so compose materializes the volume, then retry.
 - **etcd snapshot size is suspiciously small (<10KB)**: snapshot likely failed silently. Check that `ETCD_ROOT_PASSWORD` matches `.env` and that the `etcd` container is healthy. An empty-but-valid etcd snapshot is ~20KB.
 - **Postgres restore hangs on `DROP TABLE`**: the consumer service is still connected. The restore script stops the known consumers automatically; if you invoked the library function directly, pass the consumer service name.
-- **SQLite restore leaves APISIX serving with stale consumer cache**: unibridge-meta restore does not restart APISIX. If API keys were changed, `docker compose restart apisix` to clear its in-memory consumer cache as well.
+- **Metadata restore leaves APISIX serving with stale consumer cache**: unibridge-meta restore does not restart APISIX. If API keys were changed, `docker compose restart apisix` to clear its in-memory consumer cache as well.
 - **`another backup/restore is already running`**: flock is held by an in-flight run. Check for orphan processes if you're sure none is running, then remove `.backup.lock`.

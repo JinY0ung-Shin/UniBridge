@@ -2,8 +2,6 @@
 
 from datetime import datetime, timezone, timedelta
 
-import pytest
-
 from app.db_types import UtcDateTime
 
 

@@ -42,6 +42,7 @@ services:
       - ENABLE_DEV_TOKEN_ENDPOINT=${ENABLE_DEV_TOKEN_ENDPOINT:-false}
       - APISIX_ADMIN_URL=${APISIX_ADMIN_URL:-http://apisix:9180}
       - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:?APISIX_ADMIN_KEY is required}
+      - APISIX_INTERNAL_PROXY_SECRET=${APISIX_INTERNAL_PROXY_SECRET:-${APISIX_ADMIN_KEY}}
       # Default true so a manual `docker compose -f docker-compose.app.yml up`
       # (outside deploy-bluegreen.sh) bootstraps routes instead of coming up with
       # none (silent 404s — etcd/APISIX is shared, not per-color). The deploy
@@ -131,9 +132,11 @@ services:
       - CONVERTER_CONNECT_TIMEOUT=${CONVERTER_CONNECT_TIMEOUT:-10}
       - CONVERTER_WRITE_TIMEOUT=${CONVERTER_WRITE_TIMEOUT:-30}
       - CONVERTER_POOL_TIMEOUT=${CONVERTER_POOL_TIMEOUT:-10}
+      - CONVERTER_RESPONSE_STORE_PATH=${CONVERTER_RESPONSE_STORE_PATH:-/var/lib/llm-converter/responses.sqlite3}
       - CONVERTER_RESPONSE_STORE_TTL=${CONVERTER_RESPONSE_STORE_TTL:-3600}
       - CONVERTER_RESPONSE_STORE_MAX=${CONVERTER_RESPONSE_STORE_MAX:-10000}
-      - CONVERTER_RESPONSE_STORE_MAX_BYTES=${CONVERTER_RESPONSE_STORE_MAX_BYTES:-268435456}
+      - CONVERTER_RESPONSE_STORE_MAX_BYTES=${CONVERTER_RESPONSE_STORE_MAX_BYTES:-67108864}
+      - CONVERTER_RESPONSE_STORE_MAX_ENTRY_BYTES=${CONVERTER_RESPONSE_STORE_MAX_ENTRY_BYTES:-16777216}
       - CONVERTER_EMIT_REASONING=${CONVERTER_EMIT_REASONING:-true}
       # Opt-in verbose tracing: logs the full incoming /v1/messages body and each
       # decisive upstream chunk (finish_reason + tool_calls) at INFO. Diagnostic
@@ -142,6 +145,7 @@ services:
     expose:
       - "4001"
     volumes:
+      - llm-converter-state:/var/lib/llm-converter
       - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/ssl/litellm-ca.crt:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4001/health')"]
@@ -220,3 +224,5 @@ volumes:
     name: ${UNIBRIDGE_DATA_VOLUME:-unibridge_unibridge-data}
   prometheus-file-sd:
     name: ${PROMETHEUS_FILE_SD_VOLUME:-unibridge_prometheus-file-sd}
+  llm-converter-state:
+    name: ${LLM_CONVERTER_STATE_VOLUME:-unibridge_llm-converter-state}

@@ -44,7 +44,14 @@ async def test_lifespan_provisions_llm_admin_route_when_master_key_set():
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
         patch("app.main.rate_limiter.update_limits"),
-        patch("app.main.settings", SimpleNamespace(LITELLM_MASTER_KEY="sk-test")),
+        patch(
+            "app.main.settings",
+            SimpleNamespace(
+                LITELLM_MASTER_KEY="sk-test",
+                APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
+                APISIX_ADMIN_KEY="admin-secret",
+            ),
+        ),
         patch("app.services.apisix_client.get_resource", AsyncMock(side_effect=RuntimeError("not found"))),
         patch("app.services.apisix_client.put_resource", put_resource),
         patch(
@@ -323,7 +330,14 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
         patch("app.main.rate_limiter.update_limits"),
-        patch("app.main.settings", SimpleNamespace(LITELLM_MASTER_KEY="sk-test")),
+        patch(
+            "app.main.settings",
+            SimpleNamespace(
+                LITELLM_MASTER_KEY="sk-test",
+                APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
+                APISIX_ADMIN_KEY="admin-secret",
+            ),
+        ),
         patch("app.services.apisix_client.get_resource", get_resource),
         patch("app.services.apisix_client.put_resource", put_resource),
         patch(
@@ -360,6 +374,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     llm_headers = route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]["headers"]["set"]
     assert llm_headers["Authorization"] == "Bearer sk-test"
     assert llm_headers["x-litellm-end-user-id"] == "$consumer_name"
+    for route_id in ("query-api", "s3-api", "nas-api", "usages-api"):
+        headers = route_calls[route_id]["plugins"]["proxy-rewrite"]["headers"]["set"]
+        assert headers["X-UniBridge-Internal-Proxy"] == "proxy-secret"
 
     # The converter routes preserve their consumer-restriction and inject the
     # same master-key / end-user headers as llm-proxy.
