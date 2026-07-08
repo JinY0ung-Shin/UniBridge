@@ -889,6 +889,33 @@ async def test_apikey_user_rejects_untrusted_consumer_header_in_production(monke
 
 
 @pytest.mark.asyncio
+async def test_apikey_user_rejects_non_ascii_proxy_secret_without_500(monkeypatch):
+    """Malformed/non-ASCII proxy secret headers should fail as 401, not TypeError."""
+    from unittest.mock import AsyncMock, MagicMock
+    from fastapi import HTTPException
+    from app.auth import get_current_user_or_apikey, settings
+
+    monkeypatch.setattr(settings, "ENABLE_DEV_TOKEN_ENDPOINT", False)
+    monkeypatch.setattr(settings, "APISIX_INTERNAL_PROXY_SECRET", "proxy-secret")
+    monkeypatch.setattr(settings, "APISIX_ADMIN_KEY", "admin-secret")
+
+    mock_request = MagicMock()
+    mock_request.headers = {
+        "x-consumer-username": "my-app-key",
+        "x-unibridge-internal-proxy": "프록시-secret",
+    }
+    mock_db = AsyncMock()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user_or_apikey(
+            request=mock_request, credentials=None, db=mock_db
+        )
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Untrusted API key proxy headers"
+    mock_db.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_apikey_user_accepts_trusted_consumer_header_in_production(monkeypatch):
     """APISIX-injected consumer headers are accepted when the proxy secret matches."""
     from unittest.mock import AsyncMock, MagicMock

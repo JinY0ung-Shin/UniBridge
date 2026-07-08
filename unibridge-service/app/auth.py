@@ -25,6 +25,13 @@ APISIX_INTERNAL_PROXY_HEADER = "x-unibridge-internal-proxy"
 
 security = HTTPBearer(auto_error=False)
 
+
+def _constant_time_header_equal(provided: str, expected: str) -> bool:
+    return hmac.compare_digest(
+        provided.encode("utf-8", "surrogatepass"),
+        expected.encode("utf-8", "surrogatepass"),
+    )
+
 # ── All permissions ─────────────────────────────────────────────────────────
 
 ALL_PERMISSIONS = [
@@ -304,7 +311,7 @@ async def get_current_user_or_apikey(
         if not settings.ENABLE_DEV_TOKEN_ENDPOINT:
             expected = settings.APISIX_INTERNAL_PROXY_SECRET or settings.APISIX_ADMIN_KEY
             provided = request.headers.get(APISIX_INTERNAL_PROXY_HEADER, "")
-            if not expected or not hmac.compare_digest(provided, expected):
+            if not expected or not _constant_time_header_equal(provided, expected):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Untrusted API key proxy headers",

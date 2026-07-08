@@ -18,8 +18,8 @@ unibridge_meta_kind() {
   fi
 
   case "$url" in
-    sqlite:*) printf 'sqlite\n' ;;
-    postgresql:*|postgres:*) printf 'postgres\n' ;;
+    sqlite:*|sqlite+*) printf 'sqlite\n' ;;
+    postgresql:*|postgresql+*|postgres:*|postgres+*) printf 'postgres\n' ;;
     *) die "unsupported META_DB_URL for unibridge metadata backup: $url" ;;
   esac
 }

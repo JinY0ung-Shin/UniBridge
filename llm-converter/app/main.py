@@ -77,6 +77,18 @@ def _make_client(timeout: float | None) -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=timeout, verify=settings.tls_verify)
 
 
+async def _conversation_store_get(resp_id: str) -> list[dict] | None:
+    return await asyncio.to_thread(conversation_store.get, resp_id)
+
+
+async def _conversation_store_put(resp_id: str, messages: list[dict]) -> bool:
+    return await asyncio.to_thread(conversation_store.put, resp_id, messages)
+
+
+async def _conversation_store_delete(resp_id: str) -> None:
+    await asyncio.to_thread(conversation_store.delete, resp_id)
+
+
 # Cap the full-body trace so a giant request (huge system prompt + many tool
 # schemas) can't blow up a single log line; the diff-relevant prefix survives.
 _TRACE_BODY_MAX = 200_000
@@ -599,7 +611,7 @@ async def responses(request: Request) -> Response:
     if prev_id is not None:
         if not isinstance(prev_id, str) or not prev_id:
             return _bad_request("previous_response_id must be a non-empty string")
-        prior_messages = conversation_store.get(prev_id)
+        prior_messages = await _conversation_store_get(prev_id)
         if prior_messages is None:
             return Response(
                 status_code=400,
@@ -682,7 +694,7 @@ async def responses(request: Request) -> Response:
                             # no tool_calls) — matches the streaming path, which
                             # only persists when there is real output.
                             if assistant.get("content") or assistant.get("tool_calls"):
-                                stored = conversation_store.put(
+                                stored = await _conversation_store_put(
                                     response_id, base_messages + [assistant]
                                 )
                                 # Supersede the chained-from response: a linear
@@ -690,7 +702,7 @@ async def responses(request: Request) -> Response:
                                 # the parent to keep total memory O(N) not O(N^2).
                                 # (Trades away branching off a shared prev id.)
                                 if stored and prev_id is not None:
-                                    conversation_store.delete(prev_id)
+                                    await _conversation_store_delete(prev_id)
                 except json.JSONDecodeError:
                     logger.warning(
                         "converter responses: upstream 2xx returned unparseable JSON; "
@@ -779,13 +791,13 @@ async def responses(request: Request) -> Response:
                     and payload.get("type") in ("response.completed", "response.incomplete")
                     and holder.get("assistant_message")
                 ):
-                    stored = conversation_store.put(
+                    stored = await _conversation_store_put(
                         response_id, base_messages + [holder["assistant_message"]]
                     )
                     # Supersede the parent (see non-stream branch) — linear chain
                     # retains only the latest transcript.
                     if stored and prev_id is not None:
-                        conversation_store.delete(prev_id)
+                        await _conversation_store_delete(prev_id)
                     persisted = True
                 yield format_sse(payload)
         except Exception:
@@ -813,11 +825,11 @@ async def responses(request: Request) -> Response:
             # Fallback persistence if the terminal event path didn't run but a
             # complete transcript is available; never persist after a bridge error.
             if not persisted and not failed and store_flag and holder.get("assistant_message"):
-                stored = conversation_store.put(
+                stored = await _conversation_store_put(
                     response_id, base_messages + [holder["assistant_message"]]
                 )
                 if stored and prev_id is not None:
-                    conversation_store.delete(prev_id)
+                    await _conversation_store_delete(prev_id)
 
     resp_headers = filter_headers(upstream.headers.items(), DROP_FROM_RESPONSE)
     resp_headers["Cache-Control"] = "no-cache"

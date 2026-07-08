@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -324,6 +327,53 @@ def test_backup_uses_current_metadata_store_instead_of_sqlite_only() -> None:
     assert "restore_postgres" in meta_lib
     assert "unibridge-meta.db.gz" in meta_lib
     assert "backup_unibridge_meta_sqlite" in meta_lib
+
+
+def test_backup_metadata_kind_matches_sqlalchemy_urls() -> None:
+    cases = [
+        (None, "postgres"),
+        ("sqlite:///data/meta.db", "sqlite"),
+        ("sqlite+aiosqlite:///data/meta.db", "sqlite"),
+        ("postgresql://unibridge:pw@db:5432/unibridge", "postgres"),
+        ("postgresql+asyncpg://unibridge:pw@db:5432/unibridge", "postgres"),
+        ("postgres+asyncpg://unibridge:pw@db:5432/unibridge", "postgres"),
+    ]
+
+    for meta_db_url, expected in cases:
+        env = os.environ.copy()
+        if meta_db_url is None:
+            env.pop("META_DB_URL", None)
+        else:
+            env["META_DB_URL"] = meta_db_url
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"source {shlex.quote(str(BACKUP_META_LIB_FILE))}; unibridge_meta_kind",
+            ],
+            check=False,
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
+
+    env = os.environ.copy()
+    env["META_DB_URL"] = "mysql://user:pw@db/app"
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"source {shlex.quote(str(BACKUP_META_LIB_FILE))}; unibridge_meta_kind",
+        ],
+        check=False,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert "unsupported META_DB_URL" in result.stderr
 
 
 def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
