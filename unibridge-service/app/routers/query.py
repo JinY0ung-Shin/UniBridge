@@ -346,6 +346,17 @@ async def execute(
                 detail=table_error,
             )
 
+    # Release the meta-store connection before the (potentially long) user query.
+    # Auth + the permission/table reads above run on the request-scoped `db`
+    # session, which SQLAlchemy autobegins a transaction for — pinning a
+    # meta-pool connection. Without this rollback that connection stays checked
+    # out idle-in-transaction for the whole query duration (up to the 300s
+    # timeout cap). Under concurrency that exhausts the meta QueuePool
+    # ("QueuePool limit of size N overflow M reached, connection timed out").
+    # The audit writes below use `db.bind` (a fresh short-lived session), so
+    # `db`'s own connection is not needed again; it re-acquires lazily if used.
+    await db.rollback()
+
     # 3. Acquire concurrent query slot (post-auth to prevent forged-token DoS)
     if not rate_limiter.try_acquire(username):
         raise HTTPException(

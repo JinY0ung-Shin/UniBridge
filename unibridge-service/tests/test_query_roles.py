@@ -119,6 +119,84 @@ class TestQueryExecute:
         assert data["row_count"] == 1
         mock_exec.assert_awaited_once()
 
+    async def test_meta_connection_released_before_query_execution(
+        self, app, seeded_db, querier_token
+    ):
+        """Regression: the request-scoped meta session must not stay in an open
+        transaction while the user query runs.
+
+        Auth + permission reads run on the request-scoped ``db`` session, which
+        SQLAlchemy autobegins a transaction for — pinning a meta-pool
+        connection. If it is held idle-in-transaction across the (potentially
+        300s) query, the meta QueuePool is exhausted under concurrency
+        ("QueuePool limit of size N overflow M reached"). We assert the session
+        has no active transaction at the moment the executor is invoked.
+        """
+        from httpx import ASGITransport, AsyncClient
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+        from app.auth import invalidate_permission_cache
+        from app.database import get_db
+        from app.models import Permission
+
+        # Grant the non-admin querier a per-DB SELECT grant so the router runs
+        # its meta read path (select(Permission)) and reaches execution.
+        session_factory = async_sessionmaker(
+            seeded_db, class_=AsyncSession, expire_on_commit=False
+        )
+        async with session_factory() as db:
+            db.add(
+                Permission(
+                    role="querier",
+                    db_alias="mydb",
+                    allow_select=True,
+                    allow_insert=False,
+                    allow_update=False,
+                    allow_delete=False,
+                )
+            )
+            await db.commit()
+        await invalidate_permission_cache()
+
+        captured: dict = {}
+
+        async def capturing_get_db():
+            async with session_factory() as session:
+                captured["session"] = session
+                yield session
+
+        app.dependency_overrides[get_db] = capturing_get_db
+
+        async def record_tx_state(**kwargs):
+            captured["in_tx_at_exec"] = captured["session"].in_transaction()
+            return _mock_query_response()
+
+        with patch(
+            "app.routers.query.connection_manager.get_engine",
+            return_value=MagicMock(),
+        ), patch(
+            "app.routers.query.connection_manager.get_db_type",
+            return_value="postgres",
+        ), patch(
+            "app.routers.query.execute_query",
+            new=AsyncMock(side_effect=record_tx_state),
+        ), patch(
+            "app.routers.query.log_query",
+            new_callable=AsyncMock,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                resp = await ac.post(
+                    "/query/execute",
+                    json={"database": "mydb", "sql": "SELECT * FROM users"},
+                    headers=auth_header(querier_token),
+                )
+
+        assert resp.status_code == 200
+        # No open transaction at execution time => meta connection was released
+        # back to the pool for the duration of the query.
+        assert captured.get("in_tx_at_exec") is False
+
     async def test_admin_executes_neo4j_query_by_alias(self, client, admin_token):
         mock_driver = MagicMock()
         with patch(

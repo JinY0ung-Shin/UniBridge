@@ -38,7 +38,7 @@ engine = create_async_engine(
     settings.META_DB_URL,
     echo=False,
     # SQLite does not support pool_size / max_overflow
-    **({} if "sqlite" in settings.META_DB_URL else {"pool_size": 5, "max_overflow": 3}),
+    **({} if "sqlite" in settings.META_DB_URL else {"pool_size": 10, "max_overflow": 10}),
 )
 
 
