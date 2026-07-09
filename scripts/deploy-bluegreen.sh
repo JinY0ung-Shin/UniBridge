@@ -32,6 +32,7 @@ EDGE_PROJECT="${UNIBRIDGE_EDGE_PROJECT:-unibridge-edge}"
 NETWORK_NAME="${UNIBRIDGE_NETWORK_NAME:-unibridge-net}"
 STOP_OLD_AFTER_PROMOTE="${STOP_OLD_AFTER_PROMOTE:-false}"
 DRAIN_SECONDS="${DRAIN_SECONDS:-15}"
+APISIX_INTERNAL_PROXY_HEADER_NAME="X-UniBridge-Internal-Proxy"
 
 usage() {
   cat <<'USAGE'
@@ -222,6 +223,15 @@ json_contains_pair() {
   [[ "$compact" == *"\"$key\":\"$value\""* ]]
 }
 
+route_has_internal_proxy_header() {
+  local json="$1"
+  local compact
+  compact="${json//[[:space:]]/}"
+  [[ "$compact" == *"\"proxy-rewrite\""* ]] || return 1
+  [[ "$compact" == *"\"headers\":{\"set\":"* ]] || return 1
+  [[ "$compact" == *"\"$APISIX_INTERNAL_PROXY_HEADER_NAME\":"* ]]
+}
+
 # PUT an APISIX admin resource with retry, so a transient admin 503/timeout in
 # the middle of a multi-resource promotion does not leave colors half-switched.
 apisix_put() {
@@ -262,13 +272,24 @@ wait_apisix_admin() {
 }
 
 # True only when the core routes already exist in etcd and still match the
-# built-in LiteLLM topology. A 404 or stale route shape (for example, llm-proxy
-# still pointing at an older gateway upstream) returns non-zero so the caller can
-# force re-provisioning.
+# built-in auth/header shape plus LiteLLM topology. A 404 or stale route shape
+# (for example, missing the internal proxy trust header, or llm-proxy still
+# pointing at an older gateway upstream) returns non-zero so the caller can force
+# re-provisioning.
 apisix_has_core_routes() {
-  local query_route llm_proxy_route llm_admin_route messages_route responses_route litellm_upstream
+  local query_route s3_route nas_route usages_route llm_proxy_route llm_admin_route messages_route responses_route litellm_upstream
   query_route="$(apisix_get "routes/query-api")" || return 1
   [[ -n "$query_route" ]] || return 1
+  route_has_internal_proxy_header "$query_route" || return 1
+
+  s3_route="$(apisix_get "routes/s3-api")" || return 1
+  route_has_internal_proxy_header "$s3_route" || return 1
+
+  nas_route="$(apisix_get "routes/nas-api")" || return 1
+  route_has_internal_proxy_header "$nas_route" || return 1
+
+  usages_route="$(apisix_get "routes/usages-api")" || return 1
+  route_has_internal_proxy_header "$usages_route" || return 1
 
   llm_proxy_route="$(apisix_get "routes/llm-proxy")" || return 1
   json_contains_pair "$llm_proxy_route" "upstream_id" "litellm" || return 1

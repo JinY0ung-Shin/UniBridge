@@ -387,6 +387,18 @@ def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
     assert "acquire_lock" in script
     # Forces re-provisioning if APISIX lost its core routes (etcd reset).
     assert "apisix_has_core_routes" in script
+    # Also treats pre-auth-hardening routes as stale so API-key requests keep the
+    # internal APISIX trust header after blue/green deploys that skip provisioning.
+    assert 'APISIX_INTERNAL_PROXY_HEADER_NAME="X-UniBridge-Internal-Proxy"' in script
+    assert "route_has_internal_proxy_header" in script
+    for route_id, route_var in (
+        ("query-api", "query_route"),
+        ("s3-api", "s3_route"),
+        ("nas-api", "nas_route"),
+        ("usages-api", "usages_route"),
+    ):
+        assert f'apisix_get "routes/{route_id}"' in script
+        assert f'route_has_internal_proxy_header "${route_var}" || return 1' in script
     # APISIX promotion PUTs retry instead of leaving colors half-switched.
     assert "apisix_put" in script
 
