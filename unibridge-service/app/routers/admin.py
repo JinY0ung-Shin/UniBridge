@@ -18,7 +18,11 @@ from app.models import (
     QueryTemplate,
     Role,
 )
-from app.routers.query import _detect_statement_type
+from app.routers.query import (
+    _template_audit_snapshot,
+    _to_template_response,
+    _validate_read_only_template_sql,
+)
 from app.schemas import (
     AdminAuditLogResponse,
     AuditLogResponse,
@@ -171,19 +175,6 @@ def _permission_audit_snapshot(perm: Permission) -> dict:
     }
 
 
-def _template_audit_snapshot(template: QueryTemplate) -> dict:
-    return {
-        "path": template.path,
-        "name": template.name,
-        "description": template.description or "",
-        "database": template.db_alias,
-        "sql": template.sql,
-        "default_limit": template.default_limit,
-        "timeout": template.timeout,
-        "enabled": template.enabled,
-    }
-
-
 def _to_permission_response(perm: Permission) -> PermissionResponse:
     return PermissionResponse(
         id=perm.id,
@@ -199,22 +190,6 @@ def _to_permission_response(perm: Permission) -> PermissionResponse:
     )
 
 
-def _to_template_response(template: QueryTemplate) -> QueryTemplateResponse:
-    return QueryTemplateResponse(
-        id=template.id,
-        path=template.path,
-        name=template.name,
-        description=template.description or "",
-        database=template.db_alias,
-        sql=template.sql,
-        default_limit=template.default_limit,
-        timeout=template.timeout,
-        enabled=template.enabled,
-        created_at=template.created_at,
-        updated_at=template.updated_at,
-    )
-
-
 async def _get_database_or_404(db: AsyncSession, alias: str) -> DBConnection:
     result = await db.execute(select(DBConnection).where(DBConnection.alias == alias))
     connection = result.scalar_one_or_none()
@@ -224,21 +199,6 @@ async def _get_database_or_404(db: AsyncSession, alias: str) -> DBConnection:
             detail=f"Database alias '{alias}' not found",
         )
     return connection
-
-
-def _validate_read_only_template_sql(sql: str, db_type: str) -> None:
-    try:
-        statement_type = _detect_statement_type(sql, db_type)
-    except HTTPException as exc:
-        if db_type == "graphdb" and exc.status_code == 422:
-            statement_type = "reject"
-        else:
-            raise
-    if statement_type not in {"select", "explain"}:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Query templates must be read-only SELECT/EXPLAIN statements",
-        )
 
 
 # ── DB Connection CRUD ───────────────────────────────────────────────────────

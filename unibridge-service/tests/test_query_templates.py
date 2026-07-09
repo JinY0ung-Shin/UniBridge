@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.models import ApiKeyAccess
 from app.schemas import QueryResponse
 from tests.conftest import auth_header
 
@@ -199,3 +203,120 @@ async def test_query_template_crud(client, admin_token):
     resp = await client.get("/admin/query/templates", headers=auth_header(admin_token))
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+async def _grant_db_permission(client, admin_token, *, role: str, alias: str) -> None:
+    resp = await client.put(
+        "/admin/query/permissions",
+        json={
+            "role": role,
+            "db_alias": alias,
+            "allow_select": True,
+            "allow_insert": False,
+            "allow_update": False,
+            "allow_delete": False,
+        },
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+
+
+# ── Template discovery — JWT query users + API-key agents ────────────────────
+
+
+async def test_query_user_lists_only_accessible_templates(client, admin_token, querier_token):
+    await _create_database(client, admin_token, alias="maindb")
+    await _create_database(client, admin_token, alias="otherdb")
+    await _create_template(client, admin_token, path="reports/users", database="maindb")
+    await _create_template(client, admin_token, path="reports/orders", database="otherdb")
+    # The querier role can only query maindb.
+    await _grant_db_permission(client, admin_token, role="querier", alias="maindb")
+
+    resp = await client.get("/query/templates", headers=auth_header(querier_token))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [t["path"] for t in body] == ["reports/users"]
+    # SQL is exposed for discovery.
+    assert body[0]["sql"] == "SELECT id, name FROM users WHERE id = :id"
+
+
+async def test_query_user_without_db_permission_sees_no_templates(client, admin_token, querier_token):
+    await _create_database(client, admin_token)
+    await _create_template(client, admin_token)
+
+    resp = await client.get("/query/templates", headers=auth_header(querier_token))
+
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_query_templates_listing_requires_query_execute(client, user_token):
+    resp = await client.get("/query/templates", headers=auth_header(user_token))
+    assert resp.status_code == 403
+
+
+async def test_query_templates_listing_hides_disabled(client, admin_token):
+    await _create_database(client, admin_token)
+    await _create_template(client, admin_token, path="reports/users")
+    await _create_template(client, admin_token, path="reports/hidden", enabled=False)
+
+    # Admin has query.databases.write → all-DB access, but disabled templates
+    # are still hidden from the runnable listing.
+    resp = await client.get("/query/templates", headers=auth_header(admin_token))
+
+    assert resp.status_code == 200
+    assert [t["path"] for t in resp.json()] == ["reports/users"]
+
+
+async def _create_api_key(seeded_db, *, name: str, allowed_databases: list[str]) -> None:
+    """Insert an API-key consumer directly.
+
+    Bypasses the APISIX-dependent ``POST /admin/api-keys`` endpoint so the
+    discovery listing can be exercised for the API-key (agent) principal.
+    """
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        db.add(
+            ApiKeyAccess(
+                consumer_name=name,
+                allowed_databases=json.dumps(allowed_databases),
+                allowed_routes=json.dumps(["query-api"]),
+            )
+        )
+        await db.commit()
+
+
+async def test_apikey_lists_only_templates_on_allowed_databases(client, admin_token, seeded_db):
+    await _create_database(client, admin_token, alias="maindb")
+    await _create_database(client, admin_token, alias="otherdb")
+    await _create_template(client, admin_token, path="reports/users", database="maindb")
+    await _create_template(client, admin_token, path="reports/orders", database="otherdb")
+    await _create_api_key(seeded_db, name="agent-key", allowed_databases=["maindb"])
+
+    # No Bearer token: the X-Consumer-Username header alone authenticates as the
+    # API key (dev-token mode skips the internal-proxy-secret check).
+    resp = await client.get("/query/templates", headers={"X-Consumer-Username": "agent-key"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # Only the template on the key's allowed database is discoverable.
+    assert [t["path"] for t in body] == ["reports/users"]
+    assert body[0]["sql"] == "SELECT id, name FROM users WHERE id = :id"
+
+
+async def test_apikey_wildcard_lists_all_enabled_templates(client, admin_token, seeded_db):
+    await _create_database(client, admin_token, alias="maindb")
+    await _create_database(client, admin_token, alias="otherdb")
+    await _create_template(client, admin_token, path="reports/users", database="maindb")
+    await _create_template(client, admin_token, path="reports/orders", database="otherdb")
+    await _create_template(
+        client, admin_token, path="reports/hidden", database="maindb", enabled=False
+    )
+    await _create_api_key(seeded_db, name="master-key", allowed_databases=["*"])
+
+    resp = await client.get("/query/templates", headers={"X-Consumer-Username": "master-key"})
+
+    assert resp.status_code == 200
+    # "*" sees every database, but disabled templates are still hidden.
+    assert [t["path"] for t in resp.json()] == ["reports/orders", "reports/users"]

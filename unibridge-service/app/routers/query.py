@@ -20,6 +20,7 @@ from app.schemas import (
     QueryRequest,
     QueryResponse,
     QueryTemplateExecuteRequest,
+    QueryTemplateResponse,
     normalize_query_template_path,
 )
 from app.middleware.rate_limiter import rate_limiter
@@ -482,6 +483,79 @@ async def execute(
     return response
 
 
+def _validate_read_only_template_sql(sql: str, db_type: str) -> None:
+    """Reject any template SQL that is not a read-only SELECT/EXPLAIN.
+
+    Shared by the admin template CRUD and the query-user content edit so both
+    surfaces enforce the same read-only guarantee.
+    """
+    try:
+        statement_type = _detect_statement_type(sql, db_type)
+    except HTTPException as exc:
+        if db_type == "graphdb" and exc.status_code == 422:
+            statement_type = "reject"
+        else:
+            raise
+    if statement_type not in {"select", "explain"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Query templates must be read-only SELECT/EXPLAIN statements",
+        )
+
+
+def _template_audit_snapshot(template: QueryTemplate) -> dict:
+    return {
+        "path": template.path,
+        "name": template.name,
+        "description": template.description or "",
+        "database": template.db_alias,
+        "sql": template.sql,
+        "default_limit": template.default_limit,
+        "timeout": template.timeout,
+        "enabled": template.enabled,
+    }
+
+
+def _to_template_response(template: QueryTemplate) -> QueryTemplateResponse:
+    return QueryTemplateResponse(
+        id=template.id,
+        path=template.path,
+        name=template.name,
+        description=template.description or "",
+        database=template.db_alias,
+        sql=template.sql,
+        default_limit=template.default_limit,
+        timeout=template.timeout,
+        enabled=template.enabled,
+        created_at=template.created_at,
+        updated_at=template.updated_at,
+    )
+
+
+async def _accessible_db_aliases(
+    db: AsyncSession, user: CurrentUser | ApiKeyUser
+) -> set[str] | None:
+    """DB aliases the caller may query, or ``None`` for all-access.
+
+    Scope mirrors the execute path so the discovery listing never advertises a
+    template the caller could not actually run:
+    - API key → its ``allowed_databases`` (``"*"`` → every database).
+    - JWT user → ``query.databases.write`` sees every database; otherwise the
+      role's per-database ``Permission`` rows.
+    """
+    if isinstance(user, ApiKeyUser):
+        if "*" in user.allowed_databases:
+            return None
+        return set(user.allowed_databases)
+    user_perms = await get_role_permissions(db, user.role)
+    if "query.databases.write" in user_perms:
+        return None
+    result = await db.execute(
+        select(Permission.db_alias).where(Permission.role == user.role)
+    )
+    return {row[0] for row in result.all()}
+
+
 @router.post("/query/templates/{template_path:path}", response_model=QueryResponse)
 async def execute_template(
     template_path: str,
@@ -519,6 +593,40 @@ async def execute_template(
         timeout=execute_body.timeout if execute_body.timeout is not None else template.timeout,
     )
     return await execute(request, user=user, db=db)
+
+
+@router.get("/query/templates", response_model=list[QueryTemplateResponse])
+async def list_accessible_query_templates(
+    user: CurrentUser | ApiKeyUser = Depends(get_current_user_or_apikey),
+    db: AsyncSession = Depends(get_db),
+) -> list[QueryTemplateResponse]:
+    """List the enabled query templates the caller may execute.
+
+    Discovery endpoint for programmatic callers: an LLM agent using an API key
+    can enumerate the templates it is allowed to run (then POST to
+    ``/query/templates/{path}``), and JWT users get the same view. Scope
+    mirrors the execute path, so a template only appears when the caller could
+    actually run it — API keys are limited to their ``allowed_databases`` and
+    JWT users to the databases their role can query. Disabled templates are
+    never listed.
+    """
+    # API keys are authorized by their allowed_databases scope alone (same
+    # principal model as the execute path); JWT callers still need query.execute.
+    if isinstance(user, CurrentUser):
+        user_perms = await get_role_permissions(db, user.role)
+        if "query.execute" not in user_perms:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Required permission: query.execute",
+            )
+    accessible = await _accessible_db_aliases(db, user)
+    stmt = select(QueryTemplate).where(QueryTemplate.enabled.is_(True))
+    if accessible is not None:
+        if not accessible:
+            return []
+        stmt = stmt.where(QueryTemplate.db_alias.in_(accessible))
+    result = await db.execute(stmt.order_by(QueryTemplate.path.asc()))
+    return [_to_template_response(template) for template in result.scalars().all()]
 
 
 @router.get("/query/databases", response_model=list[DBConnectionResponse])
