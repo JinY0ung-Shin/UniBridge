@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 import logging
 from pathlib import Path
 import re
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import metrics
@@ -22,6 +24,7 @@ from app.schemas import (
     HealthResponse,
     QueryRequest,
     QueryResponse,
+    QueryTemplateAgentCreate,
     QueryTemplateAgentUpdate,
     QueryTemplateExecuteRequest,
     QueryTemplateResponse,
@@ -80,6 +83,62 @@ async def _require_template_read_access(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Required permission: query.execute",
         )
+
+
+async def _require_template_write_access(
+    db: AsyncSession, user: CurrentUser | ApiKeyUser
+) -> None:
+    if isinstance(user, ApiKeyUser):
+        if not _api_key_has_route(user, QUERY_TEMPLATE_WRITE_ROUTE_ID):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Required API key route: {QUERY_TEMPLATE_WRITE_ROUTE_ID}",
+            )
+        return
+
+    user_perms = await get_role_permissions(db, user.role)
+    if "query.settings.write" not in user_perms:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Required permission: query.settings.write",
+        )
+
+
+def _ensure_api_key_database_scope(
+    user: CurrentUser | ApiKeyUser, database: str
+) -> None:
+    if isinstance(user, ApiKeyUser) and (
+        "*" not in user.allowed_databases and database not in user.allowed_databases
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"API key '{user.consumer_name}' is not allowed to access "
+                f"database '{database}'"
+            ),
+        )
+
+
+def _ensure_api_key_template_scope(
+    user: CurrentUser | ApiKeyUser,
+    *,
+    database: str,
+    db_type: str,
+    sql: str,
+) -> None:
+    if not isinstance(user, ApiKeyUser):
+        return
+    _ensure_api_key_database_scope(user, database)
+    if user.allowed_tables is None or db_type in {"neo4j", "graphdb"}:
+        return
+    referenced = extract_tables(sql, db_type=db_type)
+    table_error = check_table_access(referenced, user.allowed_tables)
+    if table_error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=table_error)
+
+
+def _template_actor(user: CurrentUser | ApiKeyUser) -> str:
+    return f"apikey:{user.consumer_name}" if isinstance(user, ApiKeyUser) else user.username
 
 
 def _strip_neo4j_literals_and_comments(sql: str) -> str:
@@ -743,6 +802,87 @@ async def list_accessible_query_templates(
     return [_to_template_response(template) for template in visible]
 
 
+@router.put(
+    "/query/templates/{template_path:path}",
+    response_model=QueryTemplateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_query_template_as_agent(
+    template_path: str,
+    body: QueryTemplateAgentCreate,
+    user: CurrentUser | ApiKeyUser = Depends(get_current_user_or_apikey),
+    db: AsyncSession = Depends(get_db),
+) -> QueryTemplateResponse:
+    """Create an enabled read-only template through the independent write route."""
+    await _require_template_write_access(db, user)
+    try:
+        normalized_path = normalize_query_template_path(template_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    _ensure_api_key_database_scope(user, body.database)
+    existing = await db.execute(
+        select(QueryTemplate).where(QueryTemplate.path == normalized_path)
+    )
+    existing_template = existing.scalar_one_or_none()
+    if existing_template is not None:
+        _ensure_api_key_database_scope(user, existing_template.db_alias)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Query template path '{normalized_path}' already exists",
+        )
+
+    connection_result = await db.execute(
+        select(DBConnection).where(DBConnection.alias == body.database)
+    )
+    connection = connection_result.scalar_one_or_none()
+    if connection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Database '{body.database}' not found",
+        )
+
+    _validate_read_only_template_sql(body.sql, connection.db_type)
+    _ensure_api_key_template_scope(
+        user,
+        database=body.database,
+        db_type=connection.db_type,
+        sql=body.sql,
+    )
+    template = QueryTemplate(
+        path=normalized_path,
+        name=body.name,
+        description=body.description,
+        db_alias=body.database,
+        sql=body.sql,
+        default_limit=body.default_limit,
+        timeout=body.timeout,
+        enabled=True,
+    )
+    db.add(template)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Query template path '{normalized_path}' already exists",
+        ) from exc
+    await db.refresh(template)
+
+    await log_admin_action(
+        db,
+        actor=_template_actor(user),
+        action="create",
+        resource_type="query_template",
+        resource_id=normalized_path,
+        summary=template.name,
+        before=None,
+        after=_template_audit_snapshot(template),
+    )
+    return _to_template_response(template)
+
+
 @router.patch(
     "/query/templates/{template_path:path}",
     response_model=QueryTemplateResponse,
@@ -754,19 +894,7 @@ async def update_query_template_as_agent(
     db: AsyncSession = Depends(get_db),
 ) -> QueryTemplateResponse:
     """Edit safe content fields through the independently granted write route."""
-    if isinstance(user, ApiKeyUser):
-        if not _api_key_has_route(user, QUERY_TEMPLATE_WRITE_ROUTE_ID):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Required API key route: {QUERY_TEMPLATE_WRITE_ROUTE_ID}",
-            )
-    else:
-        user_perms = await get_role_permissions(db, user.role)
-        if "query.settings.write" not in user_perms:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Required permission: query.settings.write",
-            )
+    await _require_template_write_access(db, user)
 
     try:
         normalized_path = normalize_query_template_path(template_path)
@@ -788,16 +916,7 @@ async def update_query_template_as_agent(
             detail=f"Query template path '{normalized_path}' is disabled",
         )
 
-    if isinstance(user, ApiKeyUser):
-        if "*" not in user.allowed_databases and template.db_alias not in user.allowed_databases:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    f"API key '{user.consumer_name}' is not allowed to access "
-                    f"database '{template.db_alias}'"
-                ),
-            )
-
+    _ensure_api_key_database_scope(user, template.db_alias)
     connection_result = await db.execute(
         select(DBConnection).where(DBConnection.alias == template.db_alias)
     )
@@ -814,15 +933,12 @@ async def update_query_template_as_agent(
         new_sql = body.sql
         _validate_read_only_template_sql(new_sql, connection.db_type)
 
-    if (
-        isinstance(user, ApiKeyUser)
-        and user.allowed_tables is not None
-        and connection.db_type not in {"neo4j", "graphdb"}
-    ):
-        referenced = extract_tables(new_sql, db_type=connection.db_type)
-        table_error = check_table_access(referenced, user.allowed_tables)
-        if table_error:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=table_error)
+    _ensure_api_key_template_scope(
+        user,
+        database=template.db_alias,
+        db_type=connection.db_type,
+        sql=new_sql,
+    )
 
     before_snapshot = _template_audit_snapshot(template)
     changes: dict[str, object] = {}
@@ -858,10 +974,9 @@ async def update_query_template_as_agent(
     await db.commit()
     await db.refresh(template)
 
-    actor = f"apikey:{user.consumer_name}" if isinstance(user, ApiKeyUser) else user.username
     await log_admin_action(
         db,
-        actor=actor,
+        actor=_template_actor(user),
         action="update",
         resource_type="query_template",
         resource_id=normalized_path,
@@ -870,6 +985,87 @@ async def update_query_template_as_agent(
         after=_template_audit_snapshot(template),
     )
     return _to_template_response(template)
+
+
+@router.delete(
+    "/query/templates/{template_path:path}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+)
+async def delete_query_template_as_agent(
+    template_path: str,
+    expected_updated_at: datetime = Query(
+        ...,
+        description="updated_at value returned by template discovery",
+    ),
+    user: CurrentUser | ApiKeyUser = Depends(get_current_user_or_apikey),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Delete an accessible template through the independent write route."""
+    await _require_template_write_access(db, user)
+    try:
+        normalized_path = normalize_query_template_path(template_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    result = await db.execute(
+        select(QueryTemplate).where(QueryTemplate.path == normalized_path)
+    )
+    template = result.scalar_one_or_none()
+    if template is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Query template path '{normalized_path}' not found",
+        )
+    if isinstance(user, ApiKeyUser) and not template.enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Query template path '{normalized_path}' is disabled",
+        )
+
+    _ensure_api_key_database_scope(user, template.db_alias)
+    connection_result = await db.execute(
+        select(DBConnection).where(DBConnection.alias == template.db_alias)
+    )
+    connection = connection_result.scalar_one_or_none()
+    if connection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Database '{template.db_alias}' not found",
+        )
+    _ensure_api_key_template_scope(
+        user,
+        database=template.db_alias,
+        db_type=connection.db_type,
+        sql=template.sql,
+    )
+
+    before_snapshot = _template_audit_snapshot(template)
+    template_name = template.name
+    result = await db.execute(
+        delete(QueryTemplate).where(
+            QueryTemplate.id == template.id,
+            QueryTemplate.updated_at == expected_updated_at,
+        )
+    )
+    if result.rowcount != 1:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Query template changed since it was discovered; fetch it again before deleting",
+        )
+    await db.commit()
+
+    await log_admin_action(
+        db,
+        actor=_template_actor(user),
+        action="delete",
+        resource_type="query_template",
+        resource_id=normalized_path,
+        summary=template_name,
+        before=before_snapshot,
+        after=None,
+    )
 
 
 @router.get("/query/databases", response_model=list[DBConnectionResponse])

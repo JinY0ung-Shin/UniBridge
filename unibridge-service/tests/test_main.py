@@ -251,7 +251,7 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 "id": "query-template-write-api",
                 "name": "query-template-write-api",
                 "uri": "/api/query/templates/*",
-                "methods": ["PATCH"],
+                "methods": ["PUT", "PATCH", "DELETE"],
                 "upstream_id": "unibridge-service",
                 "plugins": {
                     "key-auth": {},
@@ -376,7 +376,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     assert route_calls["query-template-write-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["template-editor"]
     }
-    assert route_calls["query-template-write-api"]["methods"] == ["PATCH"]
+    assert route_calls["query-template-write-api"]["methods"] == [
+        "PUT", "PATCH", "DELETE"
+    ]
     assert route_calls["s3-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["s3-consumer"]
     }

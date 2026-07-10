@@ -204,16 +204,72 @@ def _template_operation(template: Any) -> dict[str, Any]:
     return operation
 
 
-def _template_update_operation(template: Any) -> dict[str, Any]:
-    editable_fields = ("sql", "description", "default_limit", "timeout")
+def _template_create_operation() -> dict[str, Any]:
     return {
-        "summary": f"Edit {template.name}",
+        "summary": "Create a query template",
+        "description": (
+            "Create an enabled read-only query template at the path in the URL. "
+            f"Requires the independently granted `{QUERY_TEMPLATE_WRITE_ROUTE_ID}` route."
+        ),
+        "operationId": "put-query-template",
+        "tags": [TAG_QUERY_TEMPLATE],
+        "security": [{SECURITY_SCHEME_NAME: []}],
+        "parameters": [dict(_WILDCARD_PARAM)],
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["name", "database", "sql"],
+                        "properties": {
+                            "name": {"type": "string", "minLength": 1, "maxLength": 100},
+                            "description": {"type": "string", "maxLength": 255},
+                            "database": {"type": "string", "minLength": 1},
+                            "sql": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Read-only SELECT/EXPLAIN template SQL.",
+                            },
+                            "default_limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "nullable": True,
+                            },
+                            "timeout": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 300,
+                                "nullable": True,
+                            },
+                        },
+                    }
+                }
+            },
+        },
+        "responses": {
+            "201": {"description": "Created query template."},
+            "403": {"description": "Write route, database, or table access is missing."},
+            "409": {"description": "The requested template path already exists."},
+        },
+    }
+
+
+def _template_update_operation(template: Any | None = None) -> dict[str, Any]:
+    editable_fields = ("sql", "description", "default_limit", "timeout")
+    operation = {
+        "summary": f"Edit {template.name}" if template is not None else "Edit a query template",
         "description": (
             "Edit safe content fields on this existing query template. Requires "
             f"the independently granted `{QUERY_TEMPLATE_WRITE_ROUTE_ID}` route. "
-            "Database, path, enabled state, creation, and deletion remain admin-only."
+            "Path, name, database, and enabled state cannot be changed."
         ),
-        "operationId": f"patch-query-template-{template.path}".replace("/", "-"),
+        "operationId": (
+            f"patch-query-template-{template.path}".replace("/", "-")
+            if template is not None
+            else "patch-query-template"
+        ),
         "tags": [TAG_QUERY_TEMPLATE],
         "security": [{SECURITY_SCHEME_NAME: []}],
         "requestBody": {
@@ -260,6 +316,44 @@ def _template_update_operation(template: Any) -> dict[str, Any]:
             "409": {"description": "The template changed after discovery."},
         },
     }
+    if template is None:
+        operation["parameters"] = [dict(_WILDCARD_PARAM)]
+    return operation
+
+
+def _template_delete_operation(template: Any | None = None) -> dict[str, Any]:
+    parameters = [] if template is not None else [dict(_WILDCARD_PARAM)]
+    parameters.append(
+        {
+            "name": "expected_updated_at",
+            "in": "query",
+            "required": True,
+            "description": "updated_at value returned by template discovery.",
+            "schema": {"type": "string", "format": "date-time"},
+        }
+    )
+    return {
+        "summary": (
+            f"Delete {template.name}" if template is not None else "Delete a query template"
+        ),
+        "description": (
+            "Delete an accessible query template. Requires the independently granted "
+            f"`{QUERY_TEMPLATE_WRITE_ROUTE_ID}` route and a current concurrency value."
+        ),
+        "operationId": (
+            f"delete-query-template-{template.path}".replace("/", "-")
+            if template is not None
+            else "delete-query-template"
+        ),
+        "tags": [TAG_QUERY_TEMPLATE],
+        "security": [{SECURITY_SCHEME_NAME: []}],
+        "parameters": parameters,
+        "responses": {
+            "204": {"description": "Query template deleted."},
+            "403": {"description": "Write route, database, or table access is missing."},
+            "409": {"description": "The template changed after discovery."},
+        },
+    }
 
 
 def build_openapi_spec(
@@ -288,12 +382,20 @@ def build_openapi_spec(
                 if method not in path_item:
                     path_item[method] = _route_operation(route, method, has_wildcard)
 
-    template_write_available = any(
-        route.get("id") == QUERY_TEMPLATE_WRITE_ROUTE_ID
-        and "patch" in _route_methods(route)
-        for route in routes
-        if isinstance(route, dict)
-    )
+    template_write_methods: set[str] = set()
+    for route in routes:
+        if isinstance(route, dict) and route.get("id") == QUERY_TEMPLATE_WRITE_ROUTE_ID:
+            template_write_methods.update(_route_methods(route))
+
+    if template_write_methods:
+        generic_template_path = f"{QUERY_TEMPLATE_PUBLIC_PREFIX}/{{path}}"
+        generic_path_item = paths.setdefault(generic_template_path, {})
+        if "put" in template_write_methods:
+            generic_path_item["put"] = _template_create_operation()
+        if "patch" in template_write_methods:
+            generic_path_item["patch"] = _template_update_operation()
+        if "delete" in template_write_methods:
+            generic_path_item["delete"] = _template_delete_operation()
 
     for template in templates:
         if not template.enabled:
@@ -301,8 +403,10 @@ def build_openapi_spec(
         path = f"{QUERY_TEMPLATE_PUBLIC_PREFIX}/{template.path}"
         path_item = paths.setdefault(path, {})
         path_item["post"] = _template_operation(template)
-        if template_write_available:
+        if "patch" in template_write_methods:
             path_item["patch"] = _template_update_operation(template)
+        if "delete" in template_write_methods:
+            path_item["delete"] = _template_delete_operation(template)
 
     return {
         "openapi": OPENAPI_VERSION,
@@ -321,7 +425,7 @@ def build_openapi_spec(
             }
         ],
         "externalDocs": {
-            "description": "Query-template discovery, execution, and editing guide.",
+            "description": "Query-template discovery, execution, and lifecycle guide.",
             "url": f"{server_url.rstrip('/')}{QUERY_TEMPLATE_PUBLIC_PREFIX}/guide",
         },
         "paths": paths,

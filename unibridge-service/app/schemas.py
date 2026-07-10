@@ -89,6 +89,31 @@ class QueryTemplateUpdate(BaseModel):
         return value.strip() if value is not None else None
 
 
+class QueryTemplateAgentCreate(BaseModel):
+    """Fields an API-key agent may set when creating an enabled template."""
+
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field("", max_length=255)
+    database: str = Field(..., min_length=1)
+    sql: str = Field(..., min_length=1)
+    default_limit: int | None = Field(None, ge=1)
+    timeout: int | None = Field(None, ge=1, le=300)
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("name", "description", "database", "sql")
+    @classmethod
+    def strip_create_text(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def reject_blank_required_fields(self) -> "QueryTemplateAgentCreate":
+        for field_name in ("name", "database", "sql"):
+            if not getattr(self, field_name):
+                raise ValueError(f"{field_name} must not be empty")
+        return self
+
+
 class QueryTemplateAgentUpdate(BaseModel):
     """Safe content fields that an API-key agent may edit."""
 

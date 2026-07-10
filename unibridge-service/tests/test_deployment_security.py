@@ -400,7 +400,11 @@ def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
     ):
         assert f'apisix_get "routes/{route_id}"' in script
         assert f'route_has_internal_proxy_header "${route_var}" || return 1' in script
-    assert 'route_allows_method "$query_template_write_route" "PATCH" || return 1' in script
+    for method in ("PUT", "PATCH", "DELETE"):
+        assert (
+            f'route_allows_method "$query_template_write_route" "{method}" || return 1'
+            in script
+        )
     assert (
         'json_contains_pair "$query_template_write_route" "uri" '
         '"/api/query/templates/*" || return 1' in script

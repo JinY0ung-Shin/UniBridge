@@ -229,7 +229,7 @@ class TestTemplateMapping:
         op = _build(templates=[template])["paths"]["/api/query/templates/reports/users"]["post"]
         assert op["requestBody"]["required"] is False
 
-    def test_template_patch_requires_separate_write_route(self):
+    def test_template_lifecycle_requires_separate_write_route(self):
         template_path = "/api/query/templates/reports/users"
         without_write = _build(
             routes=[{"id": "query-api", "uri": "/api/query/*",
@@ -237,10 +237,12 @@ class TestTemplateMapping:
             templates=[_template()],
         )
         assert "patch" not in without_write["paths"][template_path]
+        assert "delete" not in without_write["paths"][template_path]
 
         with_write = _build(
             routes=[{"id": "query-template-write-api",
-                     "uri": "/api/query/templates/*", "methods": ["PATCH"],
+                     "uri": "/api/query/templates/*",
+                     "methods": ["PUT", "PATCH", "DELETE"],
                      "plugins": {"key-auth": {}}}],
             templates=[_template()],
         )
@@ -252,6 +254,14 @@ class TestTemplateMapping:
             "sql", "description", "default_limit", "timeout", "expected_updated_at"
         }
         assert schema["additionalProperties"] is False
+        delete_operation = with_write["paths"][template_path]["delete"]
+        assert delete_operation["parameters"][0]["name"] == "expected_updated_at"
+        generic = with_write["paths"]["/api/query/templates/{path}"]
+        assert {"put", "patch", "delete"}.issubset(generic)
+        create_schema = generic["put"]["requestBody"]["content"]["application/json"][
+            "schema"
+        ]
+        assert create_schema["required"] == ["name", "database", "sql"]
 
 
 class TestExtractTemplateParams:
@@ -288,7 +298,7 @@ MOCK_ROUTES = {
             "id": "query-template-write-api",
             "name": "query-template-write-api",
             "uri": "/api/query/templates/*",
-            "methods": ["PATCH"],
+            "methods": ["PUT", "PATCH", "DELETE"],
             "plugins": {"key-auth": {}},
         },
         {"id": "open-route", "uri": "/api/open", "methods": ["GET"], "plugins": {}},
@@ -340,6 +350,8 @@ class TestGatewayOpenapiEndpoint:
         assert "/api/open" in spec["paths"]
         assert "/api/query/templates/reports/users" in spec["paths"]
         assert "patch" in spec["paths"]["/api/query/templates/reports/users"]
+        assert "delete" in spec["paths"]["/api/query/templates/reports/users"]
+        assert "put" in spec["paths"]["/api/query/templates/{path}"]
         assert "/api/query/templates/reports/disabled" not in spec["paths"]
         assert "do-not-leak-9999" not in resp.text
 

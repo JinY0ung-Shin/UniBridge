@@ -239,9 +239,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         QUERY_TEMPLATE_WRITE_ROUTE_ID,
                         {
                             "name": QUERY_TEMPLATE_WRITE_ROUTE_ID,
-                            "desc": "Edit safe fields on existing query templates",
+                            "desc": "Create, edit, and delete query templates",
                             "uri": "/api/query/templates/*",
-                            "methods": ["PATCH"],
+                            "methods": ["PUT", "PATCH", "DELETE"],
                             "priority": 20,
                             "upstream_id": "unibridge-service",
                             "plugins": {

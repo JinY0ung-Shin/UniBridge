@@ -385,7 +385,7 @@ async def test_apikey_listing_hides_templates_outside_table_scope(
     assert [template["path"] for template in resp.json()] == ["reports/users"]
 
 
-# ── Agent guide + independently granted template editing ────────────────────
+# ── Agent guide + independently granted template lifecycle ─────────────────
 
 
 async def test_query_template_agent_guide_is_markdown(client, seeded_db):
@@ -399,7 +399,170 @@ async def test_query_template_agent_guide_is_markdown(client, seeded_db):
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/markdown")
     assert "GET /api/query/templates" in resp.text
+    assert "PUT /api/query/templates/reports/new-users" in resp.text
+    assert "DELETE /api/query/templates/reports/new-users" in resp.text
     assert "query-template-write-api" in resp.text
+
+
+async def test_agent_creates_and_deletes_template_with_write_route(
+    client, admin_token, seeded_db
+):
+    await _create_database(client, admin_token)
+    await _create_api_key(
+        seeded_db, name="lifecycle-agent", allowed_databases=["maindb"],
+        allowed_routes=["query-template-write-api"], allowed_tables=["users"],
+    )
+    headers = {"X-Consumer-Username": "lifecycle-agent"}
+
+    created = await client.put(
+        "/query/templates/reports/created",
+        json={
+            "name": "Created report",
+            "description": "Created by an agent",
+            "database": "maindb",
+            "sql": "SELECT id FROM users",
+            "default_limit": 25,
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201
+    assert created.json()["path"] == "reports/created"
+    assert created.json()["enabled"] is True
+    deleted = await client.delete(
+        "/query/templates/reports/created",
+        params={"expected_updated_at": created.json()["updated_at"]},
+        headers=headers,
+    )
+    templates = await client.get(
+        "/admin/query/templates", headers=auth_header(admin_token)
+    )
+    logs = await client.get(
+        "/admin/audit-logs",
+        params={"resource_type": "query_template"},
+        headers=auth_header(admin_token),
+    )
+
+    assert deleted.status_code == 204
+    assert templates.json() == []
+    lifecycle_logs = [
+        entry for entry in logs.json() if entry["actor"] == "apikey:lifecycle-agent"
+    ]
+    assert [entry["action"] for entry in lifecycle_logs] == ["delete", "create"]
+    assert json.loads(lifecycle_logs[0]["before"])["path"] == "reports/created"
+    assert json.loads(lifecycle_logs[1]["after"])["path"] == "reports/created"
+
+
+async def test_agent_create_enforces_write_database_table_and_sql_scope(
+    client, admin_token, seeded_db
+):
+    await _create_database(client, admin_token, alias="maindb")
+    await _create_database(client, admin_token, alias="otherdb")
+    await _create_api_key(
+        seeded_db, name="scoped-creator", allowed_databases=["maindb"],
+        allowed_routes=["query-template-write-api"], allowed_tables=["users"],
+    )
+    await _create_api_key(
+        seeded_db, name="read-only-creator", allowed_databases=["maindb"],
+        allowed_routes=["query-api"],
+    )
+    headers = {"X-Consumer-Username": "scoped-creator"}
+    valid_body = {
+        "name": "Users report",
+        "database": "maindb",
+        "sql": "SELECT id FROM users",
+    }
+
+    created = await client.put(
+        "/query/templates/reports/users", json=valid_body, headers=headers
+    )
+    duplicate = await client.put(
+        "/query/templates/reports/users", json=valid_body, headers=headers
+    )
+    wrong_table = await client.put(
+        "/query/templates/reports/orders",
+        json={**valid_body, "sql": "SELECT id FROM orders"},
+        headers=headers,
+    )
+    mutating = await client.put(
+        "/query/templates/reports/delete-users",
+        json={**valid_body, "sql": "DELETE FROM users"},
+        headers=headers,
+    )
+    wrong_database = await client.put(
+        "/query/templates/reports/other",
+        json={**valid_body, "database": "otherdb"},
+        headers=headers,
+    )
+    extra_field = await client.put(
+        "/query/templates/reports/extra",
+        json={**valid_body, "enabled": False},
+        headers=headers,
+    )
+    no_write_route = await client.put(
+        "/query/templates/reports/denied",
+        json=valid_body,
+        headers={"X-Consumer-Username": "read-only-creator"},
+    )
+
+    assert created.status_code == 201
+    assert duplicate.status_code == 409
+    assert wrong_table.status_code == 403
+    assert mutating.status_code == 400
+    assert wrong_database.status_code == 403
+    assert extra_field.status_code == 422
+    assert no_write_route.status_code == 403
+
+
+async def test_agent_delete_requires_write_route_and_current_version(
+    client, admin_token, seeded_db
+):
+    await _create_database(client, admin_token)
+    await _create_template(client, admin_token)
+    await _create_api_key(
+        seeded_db, name="delete-agent", allowed_databases=["maindb"],
+        allowed_routes=["query-api", "query-template-write-api"],
+    )
+    await _create_api_key(
+        seeded_db, name="read-only-delete-agent", allowed_databases=["maindb"],
+        allowed_routes=["query-api"],
+    )
+    await _create_api_key(
+        seeded_db, name="wrong-table-delete-agent", allowed_databases=["maindb"],
+        allowed_routes=["query-template-write-api"], allowed_tables=["orders"],
+    )
+    headers = {"X-Consumer-Username": "delete-agent"}
+    discovered = await client.get("/query/templates", headers=headers)
+    updated_at = discovered.json()[0]["updated_at"]
+
+    denied = await client.delete(
+        "/query/templates/reports/users",
+        params={"expected_updated_at": updated_at},
+        headers={"X-Consumer-Username": "read-only-delete-agent"},
+    )
+    missing_version = await client.delete(
+        "/query/templates/reports/users", headers=headers
+    )
+    wrong_table = await client.delete(
+        "/query/templates/reports/users",
+        params={"expected_updated_at": updated_at},
+        headers={"X-Consumer-Username": "wrong-table-delete-agent"},
+    )
+    stale = await client.delete(
+        "/query/templates/reports/users",
+        params={"expected_updated_at": "2000-01-01T00:00:00Z"},
+        headers=headers,
+    )
+    deleted = await client.delete(
+        "/query/templates/reports/users",
+        params={"expected_updated_at": updated_at},
+        headers=headers,
+    )
+
+    assert denied.status_code == 403
+    assert missing_version.status_code == 422
+    assert wrong_table.status_code == 403
+    assert stale.status_code == 409
+    assert deleted.status_code == 204
 
 
 async def test_template_write_route_is_independent_from_read_route(

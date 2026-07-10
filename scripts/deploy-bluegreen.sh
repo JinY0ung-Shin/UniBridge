@@ -295,7 +295,9 @@ apisix_has_core_routes() {
 
   query_template_write_route="$(apisix_get "routes/query-template-write-api")" || return 1
   route_has_internal_proxy_header "$query_template_write_route" || return 1
+  route_allows_method "$query_template_write_route" "PUT" || return 1
   route_allows_method "$query_template_write_route" "PATCH" || return 1
+  route_allows_method "$query_template_write_route" "DELETE" || return 1
   json_contains_pair "$query_template_write_route" "uri" "/api/query/templates/*" || return 1
   json_contains_pair "$query_template_write_route" "upstream_id" "unibridge-service" || return 1
 
