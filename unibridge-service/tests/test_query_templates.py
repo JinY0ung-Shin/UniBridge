@@ -402,6 +402,13 @@ async def test_query_template_agent_guide_is_markdown(client, seeded_db):
     assert "PUT /api/query/templates/reports/new-users" in resp.text
     assert "DELETE /api/query/templates/reports/new-users" in resp.text
     assert "query-template-write-api" in resp.text
+    assert "## Parameter value formats" in resp.text
+    assert "ANY(CAST(:ids AS bigint[]))" in resp.text
+    assert "OPENJSON(:ids_json)" in resp.text
+    assert "{ids:Array(UInt64)}" in resp.text
+    assert "u.id IN $ids" in resp.text
+    assert "GraphDB" in resp.text
+    assert "## Query result format" in resp.text
 
 
 async def test_agent_creates_and_deletes_template_with_write_route(

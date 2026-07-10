@@ -41,8 +41,181 @@ apikey: <API_KEY>
 }
 ```
 
-`params`, `limit`, and `timeout` are optional. Named SQL parameters use the
-`:name` form.
+`params`, `limit`, and `timeout` are optional. `params`, when present, must be
+a JSON object whose keys match the placeholders in the stored query. Parameter
+placeholders are database-specific; they do not all use the `:name` form.
+
+Never build SQL by concatenating or interpolating parameter values. UniBridge
+passes each `params` value to the configured database driver as a bind value.
+The execution envelope is:
+
+- `params`: optional JSON object or `null`.
+- `limit`: optional integer greater than or equal to `1`.
+- `timeout`: optional integer from `1` through `300`, in seconds.
+
+## Parameter value formats
+
+The HTTP request accepts standard JSON values inside the `params` object:
+
+| JSON value | Example | Binding guidance |
+| --- | --- | --- |
+| String | `"alice"` | Text values. Also use strings for dates, timestamps, UUIDs, exact decimals, and encoded binary values, with an explicit database cast or parser when needed. |
+| Number | `42`, `3.14` | Integer or finite floating-point input. Do not send `NaN` or infinity. |
+| Boolean | `true`, `false` | The target expression must accept the database's boolean type or explicitly convert it. |
+| Null | `null` | The query must handle SQL/Cypher null semantics. A typed cast may be required when the database cannot infer the parameter type. |
+| Array | `[1, 2, 3]` | Accepted by the HTTP API, but list binding and query syntax are database-specific. See the examples below. |
+| Object | `{"region": "KR"}` | Accepted by the HTTP API. Direct map/JSON binding is database-specific; otherwise send serialized JSON as a string and parse it in the query. |
+
+JSON has no native date, timestamp, UUID, arbitrary-precision decimal, or
+binary type. Use a string representation and make the expected database type
+explicit in the query. The top-level `params` value itself must be an object;
+a top-level array is invalid.
+
+An Array is one bind value. UniBridge does not turn it into a comma-separated
+SQL fragment and does not dynamically create one placeholder per element.
+Consequently, portable scalar syntax such as `IN (:ids)` must not be used for
+an Array.
+
+## Database-specific placeholders and Arrays
+
+| Database | Placeholder syntax | Array/list guidance |
+| --- | --- | --- |
+| PostgreSQL | `:name` | Pass a JSON Array and compare with a typed PostgreSQL array, normally `= ANY(CAST(:ids AS bigint[]))`. Do not use `IN (:ids)`. |
+| Microsoft SQL Server | `:name` | Direct list binding is not supported by this query path. Send serialized JSON as a string and expand it with `OPENJSON`; do not use `IN (:ids)`. |
+| ClickHouse | `{name:Type}` | Use a typed server-side placeholder such as `{ids:Array(UInt64)}` and pass a JSON Array. |
+| Neo4j | `$name` | JSON Arrays and Objects map to Cypher lists and maps. Use list expressions such as `u.id IN $ids`. |
+| GraphDB | None | Runtime bind parameters are not supported. Omit `params` or send an empty object, and keep any fixed SPARQL literals in the stored template. |
+
+### PostgreSQL Array example
+
+Store a template with explicit element and timestamp types:
+
+```sql
+SELECT id, name
+FROM users
+WHERE id = ANY(CAST(:ids AS bigint[]))
+  AND created_at >= CAST(:since AS timestamptz)
+```
+
+Execute it with a JSON Array and an ISO-8601 string:
+
+```json
+{
+  "params": {
+    "ids": [1, 2, 3],
+    "since": "2026-07-01T00:00:00Z"
+  }
+}
+```
+
+An empty `ids` Array is still a typed PostgreSQL array and matches no IDs.
+
+### Microsoft SQL Server Array example
+
+Send the list as serialized JSON text. In the request below, `ids_json` is a
+JSON string, not a JSON Array:
+
+```sql
+SELECT u.id, u.name
+FROM dbo.users AS u
+WHERE u.id IN (
+  SELECT TRY_CAST([value] AS bigint)
+  FROM OPENJSON(:ids_json)
+)
+```
+
+```json
+{
+  "params": {
+    "ids_json": "[1,2,3]"
+  }
+}
+```
+
+`OPENJSON` requires SQL Server compatibility level 130 or later. Validate or
+cast each expanded value to the expected database type.
+
+### ClickHouse Array example
+
+Put the ClickHouse type in the placeholder so the driver and server agree on
+the element type:
+
+```sql
+SELECT user_id, event_name
+FROM events
+WHERE user_id IN {ids:Array(UInt64)}
+```
+
+```json
+{
+  "params": {
+    "ids": [1, 2, 3]
+  }
+}
+```
+
+### Neo4j list example
+
+Use Cypher's `$name` placeholder and pass a JSON Array:
+
+```cypher
+MATCH (u:User)
+WHERE u.id IN $ids
+RETURN u.id, u.name
+```
+
+```json
+{
+  "params": {
+    "ids": [1, 2, 3]
+  }
+}
+```
+
+## Parameter authoring rules
+
+- Treat the stored query as the source of truth for placeholder syntax and
+  expected database types.
+- Supply every placeholder used by the query and avoid unrelated keys; missing
+  or extra values may be rejected by the database driver.
+- Add explicit casts or typed placeholders for Arrays, nulls, timestamps, and
+  other values whose type cannot be inferred safely.
+- Describe the contract in the template description, for example:
+  `params: ids=array<int64>, since=ISO-8601 timestamp string`.
+- Generated OpenAPI can expose detected parameter names, but it does not encode
+  the exact type contract for every database. Inspect the stored SQL and
+  description before executing a template.
+- Never place untrusted values directly into saved SQL. Bind parameters protect
+  values, not dynamic table names, column names, keywords, or SQL fragments.
+
+## Query result format
+
+Tabular queries return column names and row Arrays. Values in each row use the
+same position as the corresponding name in `columns`:
+
+```json
+{
+  "columns": ["id", "name", "tags"],
+  "rows": [
+    [1, "alice", ["admin", "active"]]
+  ],
+  "row_count": 1,
+  "truncated": false,
+  "elapsed_ms": 12,
+  "graph": null
+}
+```
+
+- `columns`: Array of column-name strings.
+- `rows`: Array of row Arrays; cell values may be JSON nulls, scalars, Arrays,
+  or Objects after database-specific serialization.
+- `row_count`: number of rows included in this response.
+- `truncated`: `true` when the row limit stopped the complete result from being
+  returned.
+- `elapsed_ms`: execution duration in milliseconds.
+- `graph`: serialized graph text for GraphDB `CONSTRUCT`/`DESCRIBE` results;
+  otherwise `null`. For a graph result, `columns` and `rows` are empty and
+  `row_count` is `0`.
 
 ## Create a template
 
