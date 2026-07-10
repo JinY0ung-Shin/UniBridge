@@ -70,6 +70,17 @@ describe('ExternalMonitoring', () => {
     expect(screen.getByText('Loading metrics...')).toBeInTheDocument();
   });
 
+  it('replaces the loading state with a clear error when the summary request fails', async () => {
+    mockedSummary.mockRejectedValue(new Error('not deployed'));
+
+    renderWithProviders(<ExternalMonitoring />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Failed to load metrics. Is Prometheus running?',
+    );
+    expect(screen.queryByText('Loading metrics...')).not.toBeInTheDocument();
+  });
+
   it('renders summary cards and panel titles', async () => {
     mockedSummary.mockResolvedValue({ total_requests: 4321, error_rate: 0.4, avg_latency_ms: 87 });
 

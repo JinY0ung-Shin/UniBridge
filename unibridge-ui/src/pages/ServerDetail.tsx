@@ -233,7 +233,7 @@ function ServerDetail() {
                     {panel.data.length === 0 ? (
                       <div className="empty-state empty-state--small"><p>{t('servers.noMetricData')}</p></div>
                     ) : (
-                      <ResponsiveContainer width="100%" height="100%">
+                      <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                         <LineChart data={panel.data}>
                           <CartesianGrid strokeDasharray="3 3" stroke={theme.grid} />
                           <XAxis dataKey="time" stroke={theme.axis} tick={{ fontSize: 11 }} minTickGap={40} />

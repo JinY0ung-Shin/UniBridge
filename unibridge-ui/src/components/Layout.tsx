@@ -36,6 +36,15 @@ function Layout({ children }: LayoutProps) {
     hasNavPermission(perm, userPermissions);
   const isNavOpen = navOpenPath === location.pathname;
 
+  useEffect(() => {
+    const currentItem = navItems
+      .filter((item) => item.to === location.pathname
+        || (item.to !== '/' && location.pathname.startsWith(`${item.to}/`)))
+      .sort((a, b) => b.to.length - a.to.length)[0];
+    const pageName = currentItem ? t(currentItem.labelKey) : t('notFound.title');
+    document.title = `${pageName} · UniBridge`;
+  }, [location.pathname, t]);
+
   function openNavigation() {
     setNavOpenPath(location.pathname);
   }
@@ -43,6 +52,14 @@ function Layout({ children }: LayoutProps) {
   function closeNavigation({ restoreFocus = true } = {}) {
     setNavOpenPath(null);
     if (restoreFocus) mobileNavToggleRef.current?.focus();
+  }
+
+  function followMobileNavigation() {
+    if (!isNavOpen) return;
+    closeNavigation({ restoreFocus: false });
+    window.requestAnimationFrame(() => {
+      document.getElementById('main-content')?.focus();
+    });
   }
 
   useEffect(() => {
@@ -61,9 +78,27 @@ function Layout({ children }: LayoutProps) {
   }, [isNavOpen]);
 
   function handleLayoutKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (!isNavOpen || event.key !== 'Escape') return;
-    event.preventDefault();
-    closeNavigation();
+    if (!isNavOpen) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeNavigation();
+      return;
+    }
+    if (event.key !== 'Tab' || !sidebarRef.current) return;
+
+    const focusable = Array.from(sidebarRef.current.querySelectorAll<HTMLElement>(
+      'a[href], button:not(:disabled), [tabindex]:not([tabindex="-1"])',
+    ));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   return (
@@ -106,6 +141,16 @@ function Layout({ children }: LayoutProps) {
             </div>
             <span className="sidebar-title">UniBridge</span>
           </Link>
+          <button
+            type="button"
+            className="sidebar-close-btn"
+            aria-label={t('common.closeNavigation')}
+            onClick={() => closeNavigation()}
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+          </button>
         </div>
         <nav className="sidebar-nav" aria-label={t('common.mainNavigation')}>
           {navItems.filter((item) => hasPermission(item.permission)).map((item, index, filtered) => {
@@ -117,7 +162,7 @@ function Layout({ children }: LayoutProps) {
                 <NavLink
                   to={item.to}
                   end={item.to === '/'}
-                  onClick={() => setNavOpenPath(null)}
+                  onClick={followMobileNavigation}
                   className={({ isActive }) =>
                     `nav-link ${isActive ? 'nav-link--active' : ''}`
                   }

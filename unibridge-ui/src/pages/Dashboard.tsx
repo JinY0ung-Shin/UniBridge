@@ -40,6 +40,7 @@ function Dashboard() {
   const { permissions } = usePermissions();
   const chartColors = useChartTheme();
   const canViewMonitoring = permissions.includes('gateway.monitoring.read');
+  const canAddDatabase = permissions.includes('query.databases.write');
   const [gwBucket, setGwBucket] = useState<Bucket>('auto');
   const [llmBucket, setLlmBucket] = useState<Bucket>('auto');
 
@@ -190,6 +191,18 @@ function Dashboard() {
         </>
       )}
 
+      {!isLoading && healthEntries.length === 0 && !isError && (
+        <div className="empty-state dashboard-empty-state">
+          <h3>{t('dashboard.noDatabases')}</h3>
+          <p>{t('dashboard.noDatabasesDesc')}</p>
+          {canAddDatabase && (
+            <Link to="/connections" className="btn btn-primary empty-state-action">
+              {t('dashboard.addDatabase')}
+            </Link>
+          )}
+        </div>
+      )}
+
       {/* Gateway Monitoring */}
       {canViewMonitoring && (
         <>
@@ -231,10 +244,10 @@ function Dashboard() {
                   <MiniChartState>{t('dashboard.monitoringNoData')}</MiniChartState>
                 ) : gwBucket === 'auto' ? (
                   gwTrendData.length > 0 ? (
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                       <LineChart data={gwTrendData}>
                         <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <Tooltip
                           contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
@@ -249,10 +262,10 @@ function Dashboard() {
                   )
                 ) : (
                   gwVolumeData.length > 0 ? (
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                       <BarChart data={gwVolumeData}>
                         <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <Tooltip
                           contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
@@ -314,11 +327,11 @@ function Dashboard() {
                 ) : llmTokensQuery.isError ? (
                   <MiniChartState>{t('dashboard.llmNoData')}</MiniChartState>
                 ) : llmChartHasData ? (
-                  <ResponsiveContainer width="100%" height="100%">
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                     {llmBucket === 'auto' ? (
                       <LineChart data={llmTokenChartData}>
                         <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <Tooltip
                           contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
@@ -332,7 +345,7 @@ function Dashboard() {
                     ) : (
                       <BarChart data={llmTokenChartData}>
                         <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <Tooltip
                           contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
@@ -352,14 +365,6 @@ function Dashboard() {
             </>
           )}
         </>
-      )}
-
-      {/* Empty state */}
-      {!isLoading && healthEntries.length === 0 && !isError && (
-        <div className="empty-state">
-          <h3>{t('dashboard.noDatabases')}</h3>
-          <p>{t('dashboard.noDatabasesDesc')}</p>
-        </div>
       )}
     </div>
   );

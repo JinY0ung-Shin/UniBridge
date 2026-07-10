@@ -289,4 +289,12 @@
   .api-key-filter__select {
     width: 100%;
   }
+
+  .page-header__filters {
+    min-width: 0;
+  }
+
+  .page-header__filters > * {
+    max-width: 100%;
+  }
 }

@@ -26,4 +26,17 @@ describe('MetricsGuide', () => {
     //   cp docs/api-metrics-convention.md unibridge-ui/src/content/
     expect(bundledGuide).toBe(canonicalGuide);
   });
+
+  it('wraps wide markdown tables in a keyboard-scrollable labelled region', () => {
+    renderWithProviders(<MetricsGuide />);
+
+    const tableRegions = screen.getAllByRole('region', {
+      name: 'Scrollable metrics reference table',
+    });
+    expect(tableRegions.length).toBeGreaterThan(0);
+    tableRegions.forEach((region) => {
+      expect(region).toHaveAttribute('tabindex', '0');
+      expect(region.querySelector('table')).toBeInTheDocument();
+    });
+  });
 });

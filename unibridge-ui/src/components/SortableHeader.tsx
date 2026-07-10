@@ -1,4 +1,3 @@
-import type { KeyboardEvent } from 'react';
 import type { SortDir } from '../utils/tableSort';
 
 interface SortableHeaderProps<C extends string> {
@@ -10,7 +9,7 @@ interface SortableHeaderProps<C extends string> {
   onToggle: (column: C) => void;
 }
 
-/** Clickable/keyboard-operable `<th>` with an aria-sort state and ▲▼ marker. */
+/** Semantic column header containing a native sort button and aria-sort state. */
 function SortableHeader<C extends string>({
   column,
   label,
@@ -23,23 +22,16 @@ function SortableHeader<C extends string>({
   const ariaSort: 'none' | 'ascending' | 'descending' =
     active ? (dir === 'asc' ? 'ascending' : 'descending') : 'none';
   const classes = `sortable-header${align === 'right' ? ' sortable-header--right' : ''}`;
-  const handleKey = (e: KeyboardEvent<HTMLTableCellElement>) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      onToggle(column);
-    }
-  };
   return (
-    <th
-      className={classes}
-      onClick={() => onToggle(column)}
-      onKeyDown={handleKey}
-      tabIndex={0}
-      role="button"
-      aria-sort={ariaSort}
-    >
-      {label}
-      {active && <span className="sort-indicator">{dir === 'asc' ? '▲' : '▼'}</span>}
+    <th className={classes} scope="col" aria-sort={ariaSort}>
+      <button
+        type="button"
+        className="sortable-header__button"
+        onClick={() => onToggle(column)}
+      >
+        <span>{label}</span>
+        {active && <span className="sort-indicator" aria-hidden="true">{dir === 'asc' ? '▲' : '▼'}</span>}
+      </button>
     </th>
   );
 }

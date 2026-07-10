@@ -24,7 +24,27 @@ function MetricsGuide() {
         </div>
       </div>
       <article className="markdown-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{guideMd}</ReactMarkdown>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            table: ({ children }) => (
+              <div className="markdown-table-scroll" tabIndex={0} role="region" aria-label={t('metricsGuide.tableRegion')}>
+                <table>{children}</table>
+              </div>
+            ),
+            input: ({ type, disabled, ...props }) => (
+              <input
+                type={type}
+                disabled={disabled}
+                {...props}
+                aria-hidden={type === 'checkbox' && disabled ? 'true' : undefined}
+                tabIndex={type === 'checkbox' && disabled ? -1 : props.tabIndex}
+              />
+            ),
+          }}
+        >
+          {guideMd}
+        </ReactMarkdown>
       </article>
     </div>
   );

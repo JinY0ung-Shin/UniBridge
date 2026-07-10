@@ -98,6 +98,7 @@
     "connectionFailed": "Connection failed",
     "noDatabases": "No databases configured",
     "noDatabasesDesc": "Go to the Connections page to add your first database.",
+    "addDatabase": "Add database connection",
     "gatewayMonitoring": "Gateway Monitoring",
     "viewDetails": "View Details →",
     "monitoringNoData": "No monitoring data available",
@@ -553,7 +554,8 @@
     "title": "API Metrics Guide",
     "subtitle": "How to expose traffic metrics for UniBridge monitoring without gateway onboarding",
     "goRegister": "Register a service",
-    "goMonitoring": "External API monitoring"
+    "goMonitoring": "External API monitoring",
+    "tableRegion": "Scrollable metrics reference table"
   },
   "externalServices": {
     "title": "External services",
@@ -1028,6 +1030,24 @@
     "serverMemWarn": "Memory warn %",
     "serverForecastHours": "Disk-fill forecast (hours, 0=off)",
     "repeatAfterCycles": "Re-notify every N cycles (0=once)"
+  },
+  "errorBoundary": {
+    "title": "Something went wrong",
+    "fallback": "An unexpected error occurred.",
+    "reload": "Reload",
+    "showDetails": "Show details",
+    "hideDetails": "Hide details"
+  },
+  "notFound": {
+    "title": "Page not found",
+    "message": "The link may be outdated or the address may be incorrect.",
+    "goHome": "Go to dashboard"
+  },
+  "auth": {
+    "signingIn": "Signing you in...",
+    "errorTitle": "Authentication error",
+    "unavailable": "Authentication service unavailable. Check that Keycloak is reachable at {{url}}",
+    "failed": "Authentication failed. Please try again."
   },
   "pending": {
     "title": "Awaiting approval",

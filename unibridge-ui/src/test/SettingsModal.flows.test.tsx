@@ -38,10 +38,12 @@ describe('SettingsModal interactions', () => {
     const koRadio = screen.getByDisplayValue('ko');
     fireEvent.click(koRadio);
     expect(i18n.language).toBe('ko');
+    expect(document.documentElement).toHaveAttribute('lang', 'ko');
 
     const enRadio = screen.getByDisplayValue('en');
     fireEvent.click(enRadio);
     expect(i18n.language).toBe('en');
+    expect(document.documentElement).toHaveAttribute('lang', 'en');
   });
 
   it('renders a change-password external link', () => {

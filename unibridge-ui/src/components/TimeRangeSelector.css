@@ -1,5 +1,7 @@
 .time-range-selector {
   position: relative;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .time-range-btn--custom {
@@ -60,4 +62,30 @@
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .time-range-selector,
+  .time-range-toggle {
+    width: 100%;
+  }
+
+  .time-range-toggle {
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+  }
+
+  .time-range-btn {
+    flex: 0 0 auto;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 7px 10px;
+  }
+
+  .time-range-popover {
+    width: min(320px, calc(100vw - 24px));
+    max-width: 100%;
+  }
 }

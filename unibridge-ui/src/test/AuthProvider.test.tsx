@@ -36,6 +36,19 @@ describe('AuthProvider', () => {
     keycloakMock.onTokenExpired = undefined;
   });
 
+  it('announces authentication progress instead of showing a blank screen', () => {
+    keycloakMock.init.mockReturnValue(new Promise(() => {}));
+
+    render(
+      <AuthProvider>
+        <main>Loaded app</main>
+      </AuthProvider>,
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent('Signing you in...');
+    expect(screen.queryByText('Loaded app')).not.toBeInTheDocument();
+  });
+
   it('announces authentication failures', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     keycloakMock.init.mockRejectedValue(new Error('offline'));

@@ -23,4 +23,13 @@ i18n
     },
   });
 
+function syncDocumentLanguage(language: string | undefined) {
+  if (typeof document === 'undefined') return;
+  const primaryLanguage = (language || 'ko').split('-')[0];
+  document.documentElement.lang = primaryLanguage === 'en' ? 'en' : 'ko';
+}
+
+syncDocumentLanguage(i18n.resolvedLanguage || i18n.language);
+i18n.on('languageChanged', syncDocumentLanguage);
+
 export default i18n;

@@ -9,14 +9,14 @@ const getAppRole = (): string | null => resolveAppRole(keycloak.tokenParsed as T
 
 const centeredBox: React.CSSProperties = {
   display: 'flex', alignItems: 'center', justifyContent: 'center',
-  height: '100vh', background: 'var(--bg-root)', color: 'var(--text-primary)',
+  minHeight: '100dvh', background: 'var(--bg-root)', color: 'var(--text-primary)',
   fontFamily: 'var(--font-sans)', padding: '2rem',
 };
 
 const actionBtn: React.CSSProperties = {
   marginTop: '1.5rem', padding: '8px 24px',
   background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border-hover)',
-  borderRadius: 6, cursor: 'pointer', fontSize: 14,
+  borderRadius: 6, cursor: 'pointer', fontSize: 14, minHeight: 44,
 };
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -74,15 +74,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .catch(() => { /* transient: stay on the pending screen */ });
   };
 
-  if (!initialized) return null;
+  if (!initialized) {
+    return (
+      <div style={centeredBox}>
+        <div className="loading-message" role="status" aria-live="polite">
+          {t('auth.signingIn')}
+        </div>
+      </div>
+    );
+  }
 
   if (error || !authenticated) {
     return (
       <div style={centeredBox}>
         <div style={{ textAlign: 'center', maxWidth: 500 }}>
-          <h2 style={{ marginBottom: '1rem' }}>Authentication Error</h2>
-          <p role="alert" style={{ color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
-            {error || 'Authentication failed. Please try again.'}
+          <h2 style={{ marginBottom: '1rem' }}>{t('auth.errorTitle')}</h2>
+          <p role="alert" style={{ color: 'var(--text-tertiary)', lineHeight: 1.6, overflowWrap: 'anywhere' }}>
+            {error
+              ? t('auth.unavailable', { url: keycloak.authServerUrl })
+              : t('auth.failed')}
           </p>
           <button type="button" onClick={() => window.location.reload()} style={actionBtn}>
             {t('common.retry')}
@@ -107,7 +117,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               {t('pending.account', { username })}
             </p>
           )}
-          <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
             <button type="button" onClick={recheckApproval} style={actionBtn}>{t('pending.recheck')}</button>
             <button type="button" onClick={logout} style={actionBtn}>{t('common.logout')}</button>
           </div>

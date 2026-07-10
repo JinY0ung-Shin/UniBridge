@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import Layout from './components/Layout';
 import { usePermissions } from './components/usePermissions';
@@ -76,6 +76,20 @@ function Home() {
   );
 }
 
+function NotFound() {
+  const { t } = useTranslation();
+  return (
+    <div className="page-status page-status--empty">
+      <div className="not-found">
+        <div className="not-found__code" aria-hidden="true">404</div>
+        <h1>{t('notFound.title')}</h1>
+        <p>{t('notFound.message')}</p>
+        <Link className="btn btn-primary" to="/">{t('notFound.goHome')}</Link>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   return (
     <Layout>
@@ -111,7 +125,7 @@ function App() {
           <Route path="/alerts/status" element={<ProtectedRoute permission="alerts.read"><AlertStatus /></ProtectedRoute>} />
           <Route path="/alerts/settings" element={<ProtectedRoute permission="alerts.read"><AlertSettings /></ProtectedRoute>} />
           <Route path="/alerts/history" element={<ProtectedRoute permission="alerts.read"><AlertHistory /></ProtectedRoute>} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>
     </Layout>

@@ -323,9 +323,7 @@ describe('GatewayMonitoring', () => {
     let rows = container.querySelectorAll('.comparison-table tbody tr');
     expect(rows[0].textContent).toContain('big');
 
-    const requestsHeader = screen
-      .getAllByRole('button')
-      .find((el) => el.tagName === 'TH' && /Requests/.test(el.textContent ?? ''));
+    const requestsHeader = screen.getAllByRole('button', { name: 'Requests' })[0];
     expect(requestsHeader).toBeDefined();
     await user.click(requestsHeader!);
 

@@ -106,6 +106,13 @@
   cursor: pointer;
 }
 
+@media (max-width: 720px) {
+  .method-check {
+    min-height: 44px;
+    padding: 8px 4px;
+  }
+}
+
 .method-check input {
   accent-color: var(--accent-blue);
   width: 16px;

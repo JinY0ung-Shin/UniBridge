@@ -352,10 +352,10 @@ function ExternalMonitoring() {
         <div className="chart-panel__title">{t('gatewayMonitoring.requestTrend')}</div>
         {requestsData.length > 0 ? (
           <div className="chart-container">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <LineChart data={requestsData}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
                   contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
@@ -380,10 +380,10 @@ function ExternalMonitoring() {
         <div className="chart-panel__title">{t('gatewayMonitoring.requestVolume')}</div>
         {(requestsTotalQuery.data ?? []).length > 0 ? (
           <div className="chart-container">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <BarChart data={(requestsTotalQuery.data ?? []).map((p) => ({ time: volumeLabel(p.timestamp), requests: Math.round(p.value) }))}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
                   contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
@@ -408,7 +408,7 @@ function ExternalMonitoring() {
         <div className="chart-panel__title">{t('gatewayMonitoring.statusCodeDist', { range: rangeLabel })}</div>
         {(statusQuery.data ?? []).length > 0 ? (
           <div className="chart-container">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <BarChart data={statusQuery.data}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
                 <XAxis dataKey="code" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
@@ -441,10 +441,10 @@ function ExternalMonitoring() {
         <div className="chart-panel__title">{t('gatewayMonitoring.latency')}</div>
         {latencyChartData.length > 0 ? (
           <div className="chart-container">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <LineChart data={latencyChartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
                   contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}

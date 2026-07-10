@@ -7,7 +7,7 @@
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 10px;
-  --font-sans: 'Outfit', system-ui, sans-serif;
+  --font-sans: 'Outfit', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 
   /* ── Dark theme (default) ── */
@@ -23,7 +23,7 @@
 
   --text-primary: #ededed;
   --text-secondary: #a1a1a1;
-  --text-tertiary: #666666;
+  --text-tertiary: #8a8a8a;
   --text-inverse: #000000;
 
   --accent-blue: #0070f3;
@@ -38,7 +38,7 @@
 
   /* Chart-specific tokens */
   --chart-grid: #1a1a1a;
-  --chart-axis: #666666;
+  --chart-axis: #8a8a8a;
   --chart-tooltip-bg: #111111;
   --chart-tooltip-border: #222222;
 
@@ -68,6 +68,11 @@
   border: 0;
 }
 
+:focus-visible {
+  outline: 2px solid var(--accent-blue) !important;
+  outline-offset: 2px;
+}
+
 /* ── Light theme ── */
 
 [data-theme="light"] {
@@ -83,29 +88,29 @@
 
   --text-primary: #171717;
   --text-secondary: #525252;
-  --text-tertiary: #a3a3a3;
+  --text-tertiary: #666666;
   --text-inverse: #ffffff;
 
   --accent-blue: #0070f3;
   --accent-blue-hover: #005bd4;
-  --accent-green: #17b692;
+  --accent-green: #087f69;
   --accent-red: #e5124c;
-  --accent-yellow: #d48c1a;
+  --accent-yellow: #8a5a00;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
   --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.12);
 
   --chart-grid: #e8e8e8;
-  --chart-axis: #a3a3a3;
+  --chart-axis: #666666;
   --chart-tooltip-bg: #ffffff;
   --chart-tooltip-border: #e0e0e0;
 
-  --status-success: #16a34a;
+  --status-success: #15803d;
   --status-danger: #dc2626;
-  --role-admin: #6366f1;
+  --role-admin: #4f46e5;
   --role-admin-bg: rgba(99, 102, 241, 0.08);
-  --role-developer: #0891b2;
+  --role-developer: #0e7490;
   --role-developer-bg: rgba(6, 182, 212, 0.08);
   --role-viewer: #6b7280;
   --role-viewer-bg: rgba(107, 114, 128, 0.08);
@@ -417,6 +422,12 @@
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 24px 20px;
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: var(--bg-primary);
+  border-top: 1px solid var(--border-subtle);
+  box-shadow: 0 -8px 16px color-mix(in srgb, var(--bg-primary) 88%, transparent);
 }
 
 /* ── Forms ── */
@@ -558,6 +569,31 @@
 
 .page-status--empty .page-status__spinner {
   display: none;
+}
+
+.not-found {
+  max-width: 420px;
+  text-align: center;
+}
+
+.not-found__code {
+  margin-bottom: 8px;
+  color: var(--accent-blue);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.not-found h1 {
+  margin-bottom: 8px;
+  color: var(--text-primary);
+  font-size: 22px;
+}
+
+.not-found p {
+  margin-bottom: 20px;
+  color: var(--text-tertiary);
 }
 
 @keyframes loading-spin {
@@ -732,6 +768,15 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
   .loading-message::before,
   .page-status__spinner {
     animation: none;
@@ -739,6 +784,53 @@
 }
 
 @media (max-width: 720px) {
+  .main-content .btn,
+  .main-content .grafana-link-btn,
+  .main-content .admin-link-btn,
+  .main-content .section-link,
+  .main-content .alert-tab,
+  .main-content .workspace-tab,
+  .main-content .bucket-btn,
+  .main-content .sortable-header__button {
+    min-height: 44px;
+  }
+
+  .main-content .section-link {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .main-content .bucket-btn {
+    min-width: 44px;
+  }
+
+  .main-content input:not([type="checkbox"]):not([type="radio"]),
+  .main-content select {
+    min-height: 44px;
+  }
+
+  .main-content label:has(> input[type="checkbox"]),
+  .main-content label:has(> input[type="radio"]),
+  .modal label:has(> input[type="checkbox"]),
+  .modal label:has(> input[type="radio"]) {
+    min-height: 44px;
+  }
+
+  .modal .btn,
+  .modal .modal-close,
+  .modal input:not([type="checkbox"]):not([type="radio"]),
+  .modal select {
+    min-height: 44px;
+  }
+
+  .modal .modal-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    margin: -10px -10px 0 0;
+  }
+
   .alert-settings .page-header.page-header,
   .alert-status .page-header.page-header,
   .api-keys .page-header.page-header,
@@ -796,6 +888,11 @@
   .data-table th,
   .data-table td {
     padding: 9px 10px;
+  }
+
+  .data-table tr[role="button"] > td {
+    padding-top: 13px;
+    padding-bottom: 13px;
   }
 
   .loading-message {

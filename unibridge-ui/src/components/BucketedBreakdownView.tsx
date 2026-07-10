@@ -99,7 +99,7 @@ function BucketedBreakdownView({
       ) : hasData ? (
         <>
           <div className="chart-container">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <BarChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
                 <XAxis dataKey="bucket" stroke={chartColors.axis} tick={{ fontSize: 11 }} />

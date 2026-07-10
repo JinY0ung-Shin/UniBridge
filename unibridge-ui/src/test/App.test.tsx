@@ -95,7 +95,7 @@ vi.mock('../api/client', () => ({
 /* ── Import App after mocking ── */
 
 import App from '../App';
-import { getCurrentUser } from '../api/client';
+import { getAdminDatabases, getCurrentUser, getHealth } from '../api/client';
 
 // Default current-user the app starts each test with. Reset in beforeEach so a
 // per-test override (reject / limited perms) never leaks into the next test.
@@ -215,6 +215,57 @@ describe('App', () => {
     expect(document.querySelector('.layout')).not.toHaveClass('layout--nav-open');
   });
 
+  it('keeps keyboard focus inside the open mobile navigation drawer', async () => {
+    renderWithProviders(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Connections')).toBeInTheDocument();
+    });
+
+    const toggle = screen.getByRole('button', { name: 'Open navigation', hidden: true });
+    fireEvent.click(toggle);
+
+    const sidebar = document.querySelector<HTMLElement>('#app-sidebar')!;
+    const focusable = Array.from(sidebar.querySelectorAll<HTMLElement>(
+      'a[href], button:not(:disabled), [tabindex]:not([tabindex="-1"])',
+    ));
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+
+    last.focus();
+    fireEvent.keyDown(last, { key: 'Tab' });
+    expect(first).toHaveFocus();
+
+    first.focus();
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
+    expect(last).toHaveFocus();
+
+    const close = sidebar.querySelector<HTMLButtonElement>('.sidebar-close-btn')!;
+    fireEvent.click(close);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveFocus();
+  });
+
+  it('moves focus to the new main content after choosing a mobile navigation link', async () => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    renderWithProviders(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Connections')).toBeInTheDocument();
+    });
+
+    const toggle = screen.getByRole('button', { name: 'Open navigation', hidden: true });
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('link', { name: 'Connections' }));
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('main')).toHaveFocus();
+    vi.unstubAllGlobals();
+  });
+
   it('renders the sidebar title "UniBridge"', async () => {
     renderWithProviders(<App />);
 
@@ -332,6 +383,26 @@ describe('App', () => {
     expect(screen.queryByText('Gateway Routes')).not.toBeInTheDocument();
   });
 
+  it('explains unknown routes instead of silently redirecting', async () => {
+    window.history.pushState({}, '', '/missing-page');
+
+    renderWithProviders(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Go to dashboard' })).toHaveAttribute('href', '/');
+    expect(window.location.pathname).toBe('/missing-page');
+    expect(document.title).toBe('Page not found · UniBridge');
+  });
+
+  it('uses the current localized page name in the browser title', async () => {
+    window.history.pushState({}, '', '/connections');
+
+    renderWithProviders(<App />);
+
+    await screen.findByRole('heading', { name: 'Connections' });
+    expect(document.title).toBe('Connections · UniBridge');
+  });
+
   it('Dashboard renders loading state then summary cards', async () => {
     // dashboard.read (so we land on the Dashboard) but no monitoring perm, so
     // only the 3 DB-health summary cards render (no gateway/LLM sections).
@@ -365,5 +436,22 @@ describe('App', () => {
       expect(values[1]).toHaveTextContent('1'); // Connected
       expect(values[2]).toHaveTextContent('0'); // Errors
     });
+  });
+
+  it('shows an actionable database empty state before monitoring sections', async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue({
+      username: 'test',
+      role: 'admin',
+      permissions: ['dashboard.read', 'query.databases.write', 'gateway.monitoring.read'],
+    });
+    vi.mocked(getHealth).mockResolvedValueOnce({ status: 'ok', databases: {} });
+    vi.mocked(getAdminDatabases).mockResolvedValueOnce([]);
+
+    renderWithProviders(<App />);
+
+    const emptyHeading = await screen.findByRole('heading', { name: 'No databases configured' });
+    const monitoringHeading = screen.getByRole('heading', { name: 'Gateway Monitoring' });
+    expect(screen.getByRole('link', { name: 'Add database connection' })).toHaveAttribute('href', '/connections');
+    expect(emptyHeading.compareDocumentPosition(monitoringHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

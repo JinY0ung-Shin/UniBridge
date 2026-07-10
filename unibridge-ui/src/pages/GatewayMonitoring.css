@@ -90,7 +90,7 @@
 }
 
 .comparison-table th.sortable-header {
-  cursor: pointer;
+  padding: 0;
   user-select: none;
 }
 .comparison-table th.sortable-header:hover {
@@ -99,8 +99,27 @@
 .comparison-table th.sortable-header--right {
   text-align: right;
 }
+.sortable-header__button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 36px;
+  padding: 10px 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  text-align: left;
+  text-transform: inherit;
+  letter-spacing: inherit;
+}
+.sortable-header--right .sortable-header__button {
+  justify-content: flex-end;
+  text-align: right;
+}
 .comparison-table .sort-indicator {
-  margin-left: 4px;
   font-size: 10px;
   color: var(--text-secondary);
 }
@@ -136,7 +155,7 @@
   background: rgba(239, 68, 68, 0.18);
 }
 
-.comparison-table th.sortable-header:focus-visible {
+.comparison-table .sortable-header__button:focus-visible {
   outline: 2px solid var(--accent-blue, #3b82f6);
   outline-offset: -2px;
 }

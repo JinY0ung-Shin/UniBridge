@@ -22,6 +22,9 @@
   text-decoration: none;
   box-shadow: var(--shadow-md);
   transition: transform 120ms ease;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
 }
 
 .skip-link:focus-visible {
@@ -47,6 +50,14 @@
 .sidebar-header {
   padding: 20px 16px 16px;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sidebar-close-btn {
+  display: none;
 }
 
 .sidebar-logo {
@@ -361,8 +372,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 36px;
-    height: 36px;
+    width: 44px;
+    height: 44px;
     border: 1px solid var(--border-default);
     border-radius: var(--radius-md);
     color: var(--text-secondary);
@@ -381,6 +392,7 @@
     min-width: 0;
     color: var(--text-primary);
     font-weight: 600;
+    min-height: 44px;
   }
 
   .mobile-brand::after {
@@ -404,13 +416,16 @@
     width: min(280px, 84vw);
     min-width: 0;
     transform: translateX(-100%);
-    transition: transform 0.18s ease;
+    visibility: hidden;
+    transition: transform 0.18s ease, visibility 0s linear 0.18s;
     box-shadow: var(--shadow-lg);
     z-index: 120;
   }
 
   .layout--nav-open .sidebar {
     transform: translateX(0);
+    visibility: visible;
+    transition-delay: 0s;
   }
 
   .nav-scrim {
@@ -436,6 +451,37 @@
 
   .sidebar-header {
     padding-top: 18px;
+  }
+
+  .sidebar-close-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+    padding: 0;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
+  }
+
+  .sidebar-close-btn:hover {
+    border-color: var(--border-hover);
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .sidebar-logo,
+  .nav-link {
+    min-height: 44px;
+  }
+
+  .sidebar-settings-btn,
+  .sidebar-logout-btn {
+    min-width: 44px;
+    min-height: 44px;
   }
 }
 

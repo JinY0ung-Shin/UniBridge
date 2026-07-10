@@ -11,6 +11,7 @@ interface Toast {
 }
 
 let nextId = 0;
+const MAX_VISIBLE_TOASTS = 4;
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
@@ -18,10 +19,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const addToast = useCallback((toast: Omit<Toast, 'id'>) => {
     const id = nextId++;
-    setToasts((prev) => [...prev, { ...toast, id }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 6000);
+    setToasts((prev) => {
+      const withoutDuplicate = prev.filter((item) =>
+        item.type !== toast.type || item.title !== toast.title || item.message !== toast.message);
+      return [...withoutDuplicate, { ...toast, id }].slice(-MAX_VISIBLE_TOASTS);
+    });
+    // Errors often contain the only actionable failure detail. Keep them
+    // available until the user dismisses them; transient notices still clear.
+    if (toast.type !== 'error') {
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, 6000);
+    }
   }, []);
 
   const dismiss = useCallback((id: number) => {

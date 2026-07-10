@@ -60,6 +60,27 @@ describe('ToastContext', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Two');
   });
 
+  it('deduplicates repeated messages and limits the visible stack', () => {
+    render(
+      <ToastProvider>
+        <ToastEmitter
+          toasts={[
+            { type: 'error', title: 'Repeated' },
+            { type: 'error', title: 'Repeated' },
+            { type: 'info', title: 'Two' },
+            { type: 'info', title: 'Three' },
+            { type: 'info', title: 'Four' },
+            { type: 'info', title: 'Five' },
+          ]}
+        />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByText('emit'));
+
+    expect(screen.queryByText('Repeated')).not.toBeInTheDocument();
+    expect(screen.getAllByRole('status')).toHaveLength(4);
+  });
+
   it('auto-dismisses after timeout', () => {
     render(
       <ToastProvider>
@@ -75,6 +96,22 @@ describe('ToastContext', () => {
       vi.advanceTimersByTime(6500);
     });
     expect(screen.queryByText('Bye')).not.toBeInTheDocument();
+  });
+
+  it('keeps error details visible until the user dismisses them', () => {
+    render(
+      <ToastProvider>
+        <ToastEmitter toasts={[{ type: 'error', title: 'Request failed', message: 'Action required' }]} />
+      </ToastProvider>,
+    );
+    act(() => {
+      fireEvent.click(screen.getByText('emit'));
+      vi.advanceTimersByTime(30_000);
+    });
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Action required');
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByText('Request failed')).not.toBeInTheDocument();
   });
 
   it('dismisses a toast when the close button is clicked', () => {

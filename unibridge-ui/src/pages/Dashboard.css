@@ -54,6 +54,13 @@
   font-weight: 500;
 }
 
+.dashboard-empty-state {
+  margin-bottom: 32px;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+}
+
 /* ── DB Grid ── */
 
 .db-grid {
@@ -190,6 +197,8 @@
 
 @media (max-width: 720px) {
   .dashboard .page-header {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
     align-items: flex-start;
     gap: 12px;
     margin-bottom: 22px;
@@ -199,6 +208,16 @@
     width: 44px;
     height: 44px;
     flex-basis: 44px;
+  }
+
+  .dashboard .page-header__filters {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .dashboard .page-header__filters .grafana-link-btn {
+    width: 100%;
+    justify-content: center;
   }
 
   .summary-cards {
