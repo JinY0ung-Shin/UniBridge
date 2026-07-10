@@ -66,6 +66,12 @@ class TestDocumentShape:
         spec = _build()
         assert spec["servers"][0]["url"] == "https://gw.example:3000"
 
+    def test_query_template_guide_is_linked(self):
+        spec = _build()
+        assert spec["externalDocs"]["url"] == (
+            "https://gw.example:3000/api/query/templates/guide"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Route → path mapping
@@ -223,6 +229,30 @@ class TestTemplateMapping:
         op = _build(templates=[template])["paths"]["/api/query/templates/reports/users"]["post"]
         assert op["requestBody"]["required"] is False
 
+    def test_template_patch_requires_separate_write_route(self):
+        template_path = "/api/query/templates/reports/users"
+        without_write = _build(
+            routes=[{"id": "query-api", "uri": "/api/query/*",
+                     "methods": ["GET", "POST"], "plugins": {"key-auth": {}}}],
+            templates=[_template()],
+        )
+        assert "patch" not in without_write["paths"][template_path]
+
+        with_write = _build(
+            routes=[{"id": "query-template-write-api",
+                     "uri": "/api/query/templates/*", "methods": ["PATCH"],
+                     "plugins": {"key-auth": {}}}],
+            templates=[_template()],
+        )
+        operation = with_write["paths"][template_path]["patch"]
+        schema = operation["requestBody"]["content"]["application/json"]["schema"]
+        assert operation["security"] == [{SECURITY_SCHEME_NAME: []}]
+        assert "query-template-write-api" in operation["description"]
+        assert set(schema["properties"]) == {
+            "sql", "description", "default_limit", "timeout", "expected_updated_at"
+        }
+        assert schema["additionalProperties"] is False
+
 
 class TestExtractTemplateParams:
     def test_named_binds(self):
@@ -254,9 +284,16 @@ MOCK_ROUTES = {
                 },
             },
         },
+        {
+            "id": "query-template-write-api",
+            "name": "query-template-write-api",
+            "uri": "/api/query/templates/*",
+            "methods": ["PATCH"],
+            "plugins": {"key-auth": {}},
+        },
         {"id": "open-route", "uri": "/api/open", "methods": ["GET"], "plugins": {}},
     ],
-    "total": 2,
+    "total": 3,
 }
 
 
@@ -302,6 +339,7 @@ class TestGatewayOpenapiEndpoint:
         assert "/api/query/{path}" in spec["paths"]
         assert "/api/open" in spec["paths"]
         assert "/api/query/templates/reports/users" in spec["paths"]
+        assert "patch" in spec["paths"]["/api/query/templates/reports/users"]
         assert "/api/query/templates/reports/disabled" not in spec["paths"]
         assert "do-not-leak-9999" not in resp.text
 

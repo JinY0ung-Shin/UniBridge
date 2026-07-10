@@ -32,6 +32,7 @@ from app.routers import (
     users,
 )
 from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
+from app.services.apisix_system_resources import QUERY_TEMPLATE_WRITE_ROUTE_ID
 from app.services.connection_manager import connection_manager
 from app.services.s3_manager import s3_manager
 from app.services.nas_manager import nas_manager
@@ -68,7 +69,16 @@ def _internal_proxy_headers(
 async def _preserve_consumer_restriction(
     route_id: str, body: dict[str, object]
 ) -> dict[str, object]:
-    if route_id not in {"query-api", "llm-proxy", "s3-api", "llm-messages", "llm-responses", "nas-api", "usages-api"}:
+    if route_id not in {
+        "query-api",
+        QUERY_TEMPLATE_WRITE_ROUTE_ID,
+        "llm-proxy",
+        "s3-api",
+        "llm-messages",
+        "llm-responses",
+        "nas-api",
+        "usages-api",
+    }:
         return body
 
     from app.services import apisix_client
@@ -220,6 +230,36 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     ),
                 )
                 logger.info("APISIX query route provisioned successfully")
+
+                # Editing is a separate key grant from query read/execute.
+                await apisix_client.put_resource(
+                    "routes",
+                    QUERY_TEMPLATE_WRITE_ROUTE_ID,
+                    await _preserve_consumer_restriction(
+                        QUERY_TEMPLATE_WRITE_ROUTE_ID,
+                        {
+                            "name": QUERY_TEMPLATE_WRITE_ROUTE_ID,
+                            "desc": "Edit safe fields on existing query templates",
+                            "uri": "/api/query/templates/*",
+                            "methods": ["PATCH"],
+                            "priority": 20,
+                            "upstream_id": "unibridge-service",
+                            "plugins": {
+                                "key-auth": {},
+                                "consumer-restriction": {
+                                    "whitelist": [api_keys.DENY_ALL_CONSUMER]
+                                },
+                                "proxy-rewrite": {
+                                    "regex_uri": ["^/api/query(.*)", "/query$1"],
+                                    "use_real_request_uri_unsafe": True,
+                                    "headers": _internal_proxy_headers(),
+                                },
+                            },
+                            "status": 1,
+                        },
+                    ),
+                )
+                logger.info("APISIX query-template write route provisioned successfully")
 
                 # Ensure /api/s3/* route exists with key-auth
                 await apisix_client.put_resource(

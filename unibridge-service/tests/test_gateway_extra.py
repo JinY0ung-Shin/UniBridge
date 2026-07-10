@@ -116,6 +116,8 @@ async def test_list_routes_marks_system_routes(client, admin_token):
         mock.list_resources = AsyncMock(return_value={
             "items": [
                 {"id": "query-api", "uri": "/q", "plugins": {}},
+                {"id": "query-template-write-api", "uri": "/api/query/templates/*",
+                 "plugins": {}},
                 {"id": "custom", "uri": "/c", "plugins": {}},
             ]
         })
@@ -123,6 +125,7 @@ async def test_list_routes_marks_system_routes(client, admin_token):
     assert resp.status_code == 200
     items = {i["id"]: i for i in resp.json()["items"]}
     assert items["query-api"]["system"] is True
+    assert items["query-template-write-api"]["system"] is True
     assert items["custom"]["system"] is False
 
 

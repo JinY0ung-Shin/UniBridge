@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import ApiKeyAccess
+from app.models import ApiKeyAccess, Permission
 from app.schemas import QueryResponse
 from tests.conftest import auth_header
 
@@ -205,16 +206,20 @@ async def test_query_template_crud(client, admin_token):
     assert resp.json() == []
 
 
-async def _grant_db_permission(client, admin_token, *, role: str, alias: str) -> None:
+async def _grant_db_permission(
+    client, admin_token, *, role: str, alias: str,
+    allow_select: bool = True, allowed_tables: list[str] | None = None,
+) -> None:
     resp = await client.put(
         "/admin/query/permissions",
         json={
             "role": role,
             "db_alias": alias,
-            "allow_select": True,
+            "allow_select": allow_select,
             "allow_insert": False,
             "allow_update": False,
             "allow_delete": False,
+            "allowed_tables": allowed_tables,
         },
         headers=auth_header(admin_token),
     )
@@ -251,6 +256,37 @@ async def test_query_user_without_db_permission_sees_no_templates(client, admin_
     assert resp.json() == []
 
 
+async def test_query_user_listing_matches_select_and_table_permissions(
+    client, admin_token, querier_token, seeded_db
+):
+    await _create_database(client, admin_token)
+    await _create_template(client, admin_token, path="reports/users", sql="SELECT * FROM users")
+    await _create_template(client, admin_token, path="reports/orders", sql="SELECT * FROM orders")
+    await _grant_db_permission(client, admin_token, role="querier", alias="maindb")
+    session_factory = async_sessionmaker(
+        seeded_db, class_=AsyncSession, expire_on_commit=False
+    )
+    async with session_factory() as db:
+        result = await db.execute(
+            select(Permission).where(
+                Permission.role == "querier", Permission.db_alias == "maindb"
+            )
+        )
+        result.scalar_one().allowed_tables = json.dumps(["users"])
+        await db.commit()
+
+    scoped = await client.get("/query/templates", headers=auth_header(querier_token))
+    assert scoped.status_code == 200
+    assert [template["path"] for template in scoped.json()] == ["reports/users"]
+
+    await _grant_db_permission(
+        client, admin_token, role="querier", alias="maindb", allow_select=False
+    )
+    no_select = await client.get("/query/templates", headers=auth_header(querier_token))
+    assert no_select.status_code == 200
+    assert no_select.json() == []
+
+
 async def test_query_templates_listing_requires_query_execute(client, user_token):
     resp = await client.get("/query/templates", headers=auth_header(user_token))
     assert resp.status_code == 403
@@ -269,7 +305,11 @@ async def test_query_templates_listing_hides_disabled(client, admin_token):
     assert [t["path"] for t in resp.json()] == ["reports/users"]
 
 
-async def _create_api_key(seeded_db, *, name: str, allowed_databases: list[str]) -> None:
+async def _create_api_key(
+    seeded_db, *, name: str, allowed_databases: list[str],
+    allowed_routes: list[str] | None = None,
+    allowed_tables: list[str] | None = None,
+) -> None:
     """Insert an API-key consumer directly.
 
     Bypasses the APISIX-dependent ``POST /admin/api-keys`` endpoint so the
@@ -281,7 +321,12 @@ async def _create_api_key(seeded_db, *, name: str, allowed_databases: list[str])
             ApiKeyAccess(
                 consumer_name=name,
                 allowed_databases=json.dumps(allowed_databases),
-                allowed_routes=json.dumps(["query-api"]),
+                allowed_routes=json.dumps(
+                    ["query-api"] if allowed_routes is None else allowed_routes
+                ),
+                allowed_tables=(
+                    json.dumps(allowed_tables) if allowed_tables is not None else None
+                ),
             )
         )
         await db.commit()
@@ -320,3 +365,192 @@ async def test_apikey_wildcard_lists_all_enabled_templates(client, admin_token, 
     assert resp.status_code == 200
     # "*" sees every database, but disabled templates are still hidden.
     assert [t["path"] for t in resp.json()] == ["reports/orders", "reports/users"]
+
+
+async def test_apikey_listing_hides_templates_outside_table_scope(
+    client, admin_token, seeded_db
+):
+    await _create_database(client, admin_token)
+    await _create_template(client, admin_token, path="reports/users", sql="SELECT * FROM users")
+    await _create_template(client, admin_token, path="reports/orders", sql="SELECT * FROM orders")
+    await _create_api_key(
+        seeded_db, name="users-reader", allowed_databases=["maindb"],
+        allowed_tables=["users"],
+    )
+
+    resp = await client.get(
+        "/query/templates", headers={"X-Consumer-Username": "users-reader"}
+    )
+    assert resp.status_code == 200
+    assert [template["path"] for template in resp.json()] == ["reports/users"]
+
+
+# ── Agent guide + independently granted template editing ────────────────────
+
+
+async def test_query_template_agent_guide_is_markdown(client, seeded_db):
+    await _create_api_key(
+        seeded_db, name="guide-reader", allowed_databases=[],
+        allowed_routes=["query-api"],
+    )
+    resp = await client.get(
+        "/query/templates/guide", headers={"X-Consumer-Username": "guide-reader"}
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/markdown")
+    assert "GET /api/query/templates" in resp.text
+    assert "query-template-write-api" in resp.text
+
+
+async def test_template_write_route_is_independent_from_read_route(
+    client, admin_token, seeded_db
+):
+    await _create_database(client, admin_token)
+    await _create_template(client, admin_token)
+    await _create_api_key(
+        seeded_db, name="read-only-agent", allowed_databases=["maindb"],
+        allowed_routes=["query-api"],
+    )
+    await _create_api_key(
+        seeded_db, name="write-only-agent", allowed_databases=["maindb"],
+        allowed_routes=["query-template-write-api"],
+    )
+
+    denied_edit = await client.patch(
+        "/query/templates/reports/users", json={"description": "must not be saved"},
+        headers={"X-Consumer-Username": "read-only-agent"},
+    )
+    denied_read = await client.get(
+        "/query/templates", headers={"X-Consumer-Username": "write-only-agent"}
+    )
+    with patch("app.routers.query.log_admin_action", new_callable=AsyncMock) as audit:
+        allowed_edit = await client.patch(
+            "/query/templates/reports/users",
+            json={"description": "agent-maintained report", "default_limit": None},
+            headers={"X-Consumer-Username": "write-only-agent"},
+        )
+
+    assert denied_edit.status_code == 403
+    assert denied_edit.json()["detail"] == "Required API key route: query-template-write-api"
+    assert denied_read.status_code == 403
+    assert denied_read.json()["detail"] == "Required API key route: query-api"
+    assert allowed_edit.status_code == 200
+    assert allowed_edit.json()["description"] == "agent-maintained report"
+    assert allowed_edit.json()["default_limit"] is None
+    assert audit.await_args.kwargs["actor"] == "apikey:write-only-agent"
+
+
+async def test_agent_template_edit_rejects_admin_only_fields(
+    client, admin_token, seeded_db
+):
+    await _create_database(client, admin_token)
+    await _create_template(client, admin_token)
+    await _create_api_key(
+        seeded_db, name="template-editor", allowed_databases=["maindb"],
+        allowed_routes=["query-template-write-api"],
+    )
+    resp = await client.patch(
+        "/query/templates/reports/users",
+        json={"sql": "SELECT 1", "database": "otherdb", "enabled": False},
+        headers={"X-Consumer-Username": "template-editor"},
+    )
+    assert resp.status_code == 422
+    assert {error["loc"][-1] for error in resp.json()["detail"]} == {
+        "database", "enabled"
+    }
+
+
+async def test_agent_template_edit_enforces_read_only_and_table_scope(
+    client, admin_token, seeded_db
+):
+    await _create_database(client, admin_token)
+    await _create_template(client, admin_token, sql="SELECT * FROM users")
+    await _create_api_key(
+        seeded_db, name="scoped-editor", allowed_databases=["maindb"],
+        allowed_routes=["query-template-write-api"], allowed_tables=["users"],
+    )
+    headers = {"X-Consumer-Username": "scoped-editor"}
+    mutating = await client.patch(
+        "/query/templates/reports/users", json={"sql": "DELETE FROM users"}, headers=headers
+    )
+    other_table = await client.patch(
+        "/query/templates/reports/users", json={"sql": "SELECT * FROM orders"},
+        headers=headers,
+    )
+    allowed = await client.patch(
+        "/query/templates/reports/users", json={"sql": "SELECT id FROM users"},
+        headers=headers,
+    )
+    assert mutating.status_code == 400
+    assert other_table.status_code == 403
+    assert other_table.json()["detail"] == "Access denied to table(s): orders"
+    assert allowed.status_code == 200
+    assert allowed.json()["sql"] == "SELECT id FROM users"
+
+
+async def test_agent_template_edit_enforces_database_scope(client, admin_token, seeded_db):
+    await _create_database(client, admin_token, alias="maindb")
+    await _create_template(client, admin_token, database="maindb")
+    await _create_api_key(
+        seeded_db, name="otherdb-editor", allowed_databases=["otherdb"],
+        allowed_routes=["query-template-write-api"],
+    )
+    resp = await client.patch(
+        "/query/templates/reports/users", json={"description": "not allowed"},
+        headers={"X-Consumer-Username": "otherdb-editor"},
+    )
+    assert resp.status_code == 403
+    assert "not allowed to access database 'maindb'" in resp.json()["detail"]
+
+
+async def test_agent_template_edit_detects_stale_discovery(client, admin_token, seeded_db):
+    await _create_database(client, admin_token)
+    await _create_template(client, admin_token)
+    await _create_api_key(
+        seeded_db, name="full-template-agent", allowed_databases=["maindb"],
+        allowed_routes=["query-api", "query-template-write-api"],
+    )
+    headers = {"X-Consumer-Username": "full-template-agent"}
+    discovered = await client.get("/query/templates", headers=headers)
+    original_updated_at = discovered.json()[0]["updated_at"]
+    first_edit = await client.patch(
+        "/query/templates/reports/users",
+        json={"description": "first edit", "expected_updated_at": original_updated_at},
+        headers=headers,
+    )
+    stale_edit = await client.patch(
+        "/query/templates/reports/users",
+        json={"timeout": 20, "expected_updated_at": original_updated_at},
+        headers=headers,
+    )
+    assert first_edit.status_code == 200
+    assert stale_edit.status_code == 409
+    assert "changed since it was discovered" in stale_edit.json()["detail"]
+
+
+async def test_agent_template_edit_writes_actor_and_snapshots_to_audit_log(
+    client, admin_token, seeded_db
+):
+    await _create_database(client, admin_token)
+    await _create_template(client, admin_token)
+    await _create_api_key(
+        seeded_db, name="audited-editor", allowed_databases=["maindb"],
+        allowed_routes=["query-template-write-api"],
+    )
+
+    edited = await client.patch(
+        "/query/templates/reports/users", json={"description": "audited change"},
+        headers={"X-Consumer-Username": "audited-editor"},
+    )
+    logs = await client.get(
+        "/admin/audit-logs",
+        params={"resource_type": "query_template", "action": "update"},
+        headers=auth_header(admin_token),
+    )
+
+    assert edited.status_code == 200
+    assert logs.status_code == 200
+    entry = logs.json()[0]
+    assert entry["actor"] == "apikey:audited-editor"
+    assert json.loads(entry["before"])["description"] == ""
+    assert json.loads(entry["after"])["description"] == "audited change"

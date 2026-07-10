@@ -27,6 +27,52 @@ ROUTE_FIXTURES = {
 
 
 @pytest.mark.asyncio
+async def test_query_template_write_route_is_granted_independently(client, admin_token):
+    route_state = {
+        "query-api": {
+            "id": "query-api", "uri": "/api/query/*",
+            "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}},
+        },
+        "query-template-write-api": {
+            "id": "query-template-write-api", "uri": "/api/query/templates/*",
+            "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}},
+        },
+    }
+
+    async def list_resources(resource_type):
+        assert resource_type == "routes"
+        return {"items": list(route_state.values())}
+
+    async def put_resource(resource_type, resource_id, body):
+        if resource_type == "routes":
+            route_state[resource_id] = {"id": resource_id, **body}
+        return body
+
+    with patch("app.routers.api_keys.apisix_client") as mock_apisix:
+        mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
+        mock_apisix.put_resource = AsyncMock(side_effect=put_resource)
+        resp = await client.post(
+            "/admin/api-keys",
+            json={
+                "name": "template-editor",
+                "api_key": "editor-key",
+                "allowed_databases": ["maindb"],
+                "allowed_routes": ["query-template-write-api"],
+            },
+            headers=auth_header(admin_token),
+        )
+
+    assert resp.status_code == 201
+    assert resp.json()["allowed_routes"] == ["query-template-write-api"]
+    assert route_state["query-template-write-api"]["plugins"][
+        "consumer-restriction"
+    ] == {"whitelist": ["template-editor"]}
+    assert route_state["query-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": [DENY_ALL_CONSUMER]
+    }
+
+
+@pytest.mark.asyncio
 async def test_sync_all_consumer_route_restrictions_replays_stored_allowed_routes():
     db = AsyncMock()
     db.execute.return_value = SimpleNamespace(
@@ -607,7 +653,8 @@ async def test_query_execute_via_apikey_header(client, admin_token):
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
         await client.post(
             "/admin/api-keys",
-            json={"name": "query-app", "api_key": "qk-123", "allowed_databases": ["testdb"]},
+            json={"name": "query-app", "api_key": "qk-123",
+                  "allowed_databases": ["testdb"], "allowed_routes": ["query-api"]},
             headers=auth_header(admin_token),
         )
 
@@ -727,7 +774,8 @@ async def test_query_execute_apikey_db_not_allowed(client, admin_token):
         mock_apisix.list_resources = AsyncMock(return_value=ROUTE_FIXTURES)
         await client.post(
             "/admin/api-keys",
-            json={"name": "restricted-app", "api_key": "rk-123", "allowed_databases": ["allowed-db"]},
+            json={"name": "restricted-app", "api_key": "rk-123",
+                  "allowed_databases": ["allowed-db"], "allowed_routes": ["query-api"]},
             headers=auth_header(admin_token),
         )
 
@@ -743,6 +791,7 @@ async def test_query_execute_apikey_db_not_allowed(client, admin_token):
 # ── Per-key write permissions + table ACL ────────────────────────────────────
 
 async def _create_key(client, admin_token, mock_apisix, body: dict):
+    body = {"allowed_routes": ["query-api"], **body}
     mock_apisix.put_resource = AsyncMock(return_value={
         "username": body["name"],
         "plugins": {"key-auth": {"key": body.get("api_key", "k")}},

@@ -232,6 +232,17 @@ route_has_internal_proxy_header() {
   [[ "$compact" == *"\"$APISIX_INTERNAL_PROXY_HEADER_NAME\":"* ]]
 }
 
+route_allows_method() {
+  local json="$1"
+  local method="$2"
+  local compact methods
+  compact="${json//[[:space:]]/}"
+  methods="${compact#*\"methods\":[}"
+  [[ "$methods" != "$compact" ]] || return 1
+  methods="${methods%%]*}"
+  [[ ",$methods," == *",\"$method\","* ]]
+}
+
 # PUT an APISIX admin resource with retry, so a transient admin 503/timeout in
 # the middle of a multi-resource promotion does not leave colors half-switched.
 apisix_put() {
@@ -277,10 +288,16 @@ wait_apisix_admin() {
 # pointing at an older gateway upstream) returns non-zero so the caller can force
 # re-provisioning.
 apisix_has_core_routes() {
-  local query_route s3_route nas_route usages_route llm_proxy_route llm_admin_route messages_route responses_route litellm_upstream
+  local query_route query_template_write_route s3_route nas_route usages_route llm_proxy_route llm_admin_route messages_route responses_route litellm_upstream
   query_route="$(apisix_get "routes/query-api")" || return 1
   [[ -n "$query_route" ]] || return 1
   route_has_internal_proxy_header "$query_route" || return 1
+
+  query_template_write_route="$(apisix_get "routes/query-template-write-api")" || return 1
+  route_has_internal_proxy_header "$query_template_write_route" || return 1
+  route_allows_method "$query_template_write_route" "PATCH" || return 1
+  json_contains_pair "$query_template_write_route" "uri" "/api/query/templates/*" || return 1
+  json_contains_pair "$query_template_write_route" "upstream_id" "unibridge-service" || return 1
 
   s3_route="$(apisix_get "routes/s3-api")" || return 1
   route_has_internal_proxy_header "$s3_route" || return 1

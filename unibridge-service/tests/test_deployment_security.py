@@ -393,12 +393,22 @@ def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
     assert "route_has_internal_proxy_header" in script
     for route_id, route_var in (
         ("query-api", "query_route"),
+        ("query-template-write-api", "query_template_write_route"),
         ("s3-api", "s3_route"),
         ("nas-api", "nas_route"),
         ("usages-api", "usages_route"),
     ):
         assert f'apisix_get "routes/{route_id}"' in script
         assert f'route_has_internal_proxy_header "${route_var}" || return 1' in script
+    assert 'route_allows_method "$query_template_write_route" "PATCH" || return 1' in script
+    assert (
+        'json_contains_pair "$query_template_write_route" "uri" '
+        '"/api/query/templates/*" || return 1' in script
+    )
+    assert (
+        'json_contains_pair "$query_template_write_route" "upstream_id" '
+        '"unibridge-service" || return 1' in script
+    )
     # APISIX promotion PUTs retry instead of leaving colors half-switched.
     assert "apisix_put" in script
 

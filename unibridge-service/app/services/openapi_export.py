@@ -12,7 +12,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.services.apisix_system_resources import PROTECTED_ROUTE_IDS
+from app.services.apisix_system_resources import (
+    PROTECTED_ROUTE_IDS,
+    QUERY_TEMPLATE_WRITE_ROUTE_ID,
+)
 
 OPENAPI_VERSION = "3.0.3"
 SPEC_TITLE = "UniBridge Gateway API"
@@ -201,6 +204,64 @@ def _template_operation(template: Any) -> dict[str, Any]:
     return operation
 
 
+def _template_update_operation(template: Any) -> dict[str, Any]:
+    editable_fields = ("sql", "description", "default_limit", "timeout")
+    return {
+        "summary": f"Edit {template.name}",
+        "description": (
+            "Edit safe content fields on this existing query template. Requires "
+            f"the independently granted `{QUERY_TEMPLATE_WRITE_ROUTE_ID}` route. "
+            "Database, path, enabled state, creation, and deletion remain admin-only."
+        ),
+        "operationId": f"patch-query-template-{template.path}".replace("/", "-"),
+        "tags": [TAG_QUERY_TEMPLATE],
+        "security": [{SECURITY_SCHEME_NAME: []}],
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "sql": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Read-only SELECT/EXPLAIN template SQL.",
+                            },
+                            "description": {"type": "string", "maxLength": 255},
+                            "default_limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "nullable": True,
+                            },
+                            "timeout": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 300,
+                                "nullable": True,
+                            },
+                            "expected_updated_at": {
+                                "type": "string",
+                                "format": "date-time",
+                                "description": "Optional optimistic-concurrency value from discovery.",
+                            },
+                        },
+                        "anyOf": [
+                            {"required": [field]} for field in editable_fields
+                        ],
+                    },
+                }
+            },
+        },
+        "responses": {
+            "200": {"description": "Updated query template."},
+            "403": {"description": "Write route, database, or table access is missing."},
+            "409": {"description": "The template changed after discovery."},
+        },
+    }
+
+
 def build_openapi_spec(
     routes: list[dict[str, Any]],
     templates: list[Any],
@@ -227,11 +288,21 @@ def build_openapi_spec(
                 if method not in path_item:
                     path_item[method] = _route_operation(route, method, has_wildcard)
 
+    template_write_available = any(
+        route.get("id") == QUERY_TEMPLATE_WRITE_ROUTE_ID
+        and "patch" in _route_methods(route)
+        for route in routes
+        if isinstance(route, dict)
+    )
+
     for template in templates:
         if not template.enabled:
             continue
         path = f"{QUERY_TEMPLATE_PUBLIC_PREFIX}/{template.path}"
-        paths.setdefault(path, {})["post"] = _template_operation(template)
+        path_item = paths.setdefault(path, {})
+        path_item["post"] = _template_operation(template)
+        if template_write_available:
+            path_item["patch"] = _template_update_operation(template)
 
     return {
         "openapi": OPENAPI_VERSION,
@@ -249,6 +320,10 @@ def build_openapi_spec(
                 "description": "UniBridge gateway public base (nginx → APISIX).",
             }
         ],
+        "externalDocs": {
+            "description": "Query-template discovery, execution, and editing guide.",
+            "url": f"{server_url.rstrip('/')}{QUERY_TEMPLATE_PUBLIC_PREFIX}/guide",
+        },
         "paths": paths,
         "components": {"securitySchemes": _security_schemes()},
     }

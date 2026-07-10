@@ -3,28 +3,36 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 import re
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi.responses import PlainTextResponse
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import metrics
 from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_role_permissions, require_permission
 from app.database import get_db
-from app.models import Permission, QueryTemplate
+from app.db_types import utcnow
+from app.models import DBConnection, Permission, QueryTemplate
 from app.schemas import (
     DBConnectionResponse,
     HealthResponse,
     QueryRequest,
     QueryResponse,
+    QueryTemplateAgentUpdate,
     QueryTemplateExecuteRequest,
     QueryTemplateResponse,
     normalize_query_template_path,
 )
 from app.middleware.rate_limiter import rate_limiter
-from app.services.audit import log_query
+from app.services.apisix_system_resources import (
+    QUERY_API_ROUTE_ID,
+    QUERY_TEMPLATE_WRITE_ROUTE_ID,
+)
+from app.services.audit import log_admin_action, log_query
 from app.services.connection_manager import connection_manager
 from app.services.query_executor import (
     check_permission,
@@ -45,6 +53,33 @@ from app.services.table_access import check_table_access, extract_tables
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Query"])
+
+_TEMPLATE_AGENT_GUIDE_PATH = (
+    Path(__file__).resolve().parents[1] / "docs" / "query-template-agent-guide.md"
+)
+
+
+def _api_key_has_route(user: ApiKeyUser, route_id: str) -> bool:
+    return "*" in user.allowed_routes or route_id in user.allowed_routes
+
+
+async def _require_template_read_access(
+    db: AsyncSession, user: CurrentUser | ApiKeyUser
+) -> None:
+    if isinstance(user, ApiKeyUser):
+        if not _api_key_has_route(user, QUERY_API_ROUTE_ID):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Required API key route: {QUERY_API_ROUTE_ID}",
+            )
+        return
+
+    user_perms = await get_role_permissions(db, user.role)
+    if "query.execute" not in user_perms:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Required permission: query.execute",
+        )
 
 
 def _strip_neo4j_literals_and_comments(sql: str) -> str:
@@ -209,8 +244,14 @@ async def execute(
                 headers={"Retry-After": "60"},
             )
 
-    # API Key user: check allowed databases
+    # APISIX enforces route access at the edge; repeat it here so direct
+    # internal calls cannot bypass the independently managed query grant.
     if isinstance(user, ApiKeyUser):
+        if not _api_key_has_route(user, QUERY_API_ROUTE_ID):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Required API key route: {QUERY_API_ROUTE_ID}",
+            )
         if "*" not in user.allowed_databases and req.database not in user.allowed_databases:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -532,28 +573,87 @@ def _to_template_response(template: QueryTemplate) -> QueryTemplateResponse:
     )
 
 
-async def _accessible_db_aliases(
-    db: AsyncSession, user: CurrentUser | ApiKeyUser
-) -> set[str] | None:
-    """DB aliases the caller may query, or ``None`` for all-access.
+def _decode_allowed_tables(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    try:
+        decoded = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        logger.warning("Ignoring malformed allowed_tables while listing query templates")
+        return []
+    if not isinstance(decoded, list) or any(not isinstance(item, str) for item in decoded):
+        logger.warning("Ignoring non-string allowed_tables while listing query templates")
+        return []
+    return decoded
 
-    Scope mirrors the execute path so the discovery listing never advertises a
-    template the caller could not actually run:
-    - API key → its ``allowed_databases`` (``"*"`` → every database).
-    - JWT user → ``query.databases.write`` sees every database; otherwise the
-      role's per-database ``Permission`` rows.
+
+async def _template_access_scope(
+    db: AsyncSession, user: CurrentUser | ApiKeyUser
+) -> tuple[set[str] | None, dict[str, list[str] | None], list[str] | None]:
+    """Return DB and table scopes used by template discovery.
+
+    JWT permissions without SELECT are omitted, matching the execution path.
     """
     if isinstance(user, ApiKeyUser):
-        if "*" in user.allowed_databases:
-            return None
-        return set(user.allowed_databases)
+        aliases = None if "*" in user.allowed_databases else set(user.allowed_databases)
+        return aliases, {}, user.allowed_tables
+
     user_perms = await get_role_permissions(db, user.role)
     if "query.databases.write" in user_perms:
-        return None
+        return None, {}, None
+
     result = await db.execute(
-        select(Permission.db_alias).where(Permission.role == user.role)
+        select(Permission).where(
+            Permission.role == user.role,
+            Permission.allow_select.is_(True),
+        )
     )
-    return {row[0] for row in result.all()}
+    permissions = list(result.scalars().all())
+    table_limits = {
+        permission.db_alias: _decode_allowed_tables(permission.allowed_tables)
+        for permission in permissions
+    }
+    return set(table_limits), table_limits, None
+
+
+def _template_tables_allowed(
+    template: QueryTemplate,
+    *,
+    db_types: dict[str, str],
+    per_database_limits: dict[str, list[str] | None],
+    api_key_table_limit: list[str] | None,
+) -> bool:
+    db_type = db_types.get(template.db_alias)
+    if db_type is None:
+        return False
+    if db_type in {"neo4j", "graphdb"}:
+        return True
+    allowed_tables = (
+        api_key_table_limit
+        if api_key_table_limit is not None
+        else per_database_limits.get(template.db_alias)
+    )
+    if allowed_tables is None:
+        return True
+    referenced = extract_tables(template.sql, db_type=db_type)
+    return check_table_access(referenced, allowed_tables) is None
+
+
+@router.get(
+    "/query/templates/guide",
+    response_class=PlainTextResponse,
+    responses={200: {"content": {"text/markdown": {}}}},
+)
+async def query_template_agent_guide(
+    user: CurrentUser | ApiKeyUser = Depends(get_current_user_or_apikey),
+    db: AsyncSession = Depends(get_db),
+) -> PlainTextResponse:
+    """Serve the API-key agent guide as Markdown on a stable gateway URL."""
+    await _require_template_read_access(db, user)
+    return PlainTextResponse(
+        _TEMPLATE_AGENT_GUIDE_PATH.read_text(encoding="utf-8"),
+        media_type="text/markdown",
+    )
 
 
 @router.post("/query/templates/{template_path:path}", response_model=QueryResponse)
@@ -564,6 +664,7 @@ async def execute_template(
     db: AsyncSession = Depends(get_db),
 ) -> QueryResponse:
     """Execute a saved read-only query template by stable path."""
+    await _require_template_read_access(db, user)
     try:
         normalized_path = normalize_query_template_path(template_path)
     except ValueError as exc:
@@ -606,27 +707,169 @@ async def list_accessible_query_templates(
     can enumerate the templates it is allowed to run (then POST to
     ``/query/templates/{path}``), and JWT users get the same view. Scope
     mirrors the execute path, so a template only appears when the caller could
-    actually run it — API keys are limited to their ``allowed_databases`` and
-    JWT users to the databases their role can query. Disabled templates are
-    never listed.
+    actually run it — API keys are limited by ``allowed_databases`` and
+    ``allowed_tables``; JWT users need SELECT access within their per-database
+    table scope. Disabled templates are never listed.
     """
-    # API keys are authorized by their allowed_databases scope alone (same
-    # principal model as the execute path); JWT callers still need query.execute.
-    if isinstance(user, CurrentUser):
-        user_perms = await get_role_permissions(db, user.role)
-        if "query.execute" not in user_perms:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Required permission: query.execute",
-            )
-    accessible = await _accessible_db_aliases(db, user)
+    await _require_template_read_access(db, user)
+    accessible, per_database_limits, api_key_table_limit = await _template_access_scope(
+        db, user
+    )
     stmt = select(QueryTemplate).where(QueryTemplate.enabled.is_(True))
     if accessible is not None:
         if not accessible:
             return []
         stmt = stmt.where(QueryTemplate.db_alias.in_(accessible))
     result = await db.execute(stmt.order_by(QueryTemplate.path.asc()))
-    return [_to_template_response(template) for template in result.scalars().all()]
+    templates = list(result.scalars().all())
+    if not templates:
+        return []
+
+    aliases = {template.db_alias for template in templates}
+    db_types_result = await db.execute(
+        select(DBConnection.alias, DBConnection.db_type).where(DBConnection.alias.in_(aliases))
+    )
+    db_types = {alias: db_type for alias, db_type in db_types_result.all()}
+    visible = [
+        template
+        for template in templates
+        if _template_tables_allowed(
+            template,
+            db_types=db_types,
+            per_database_limits=per_database_limits,
+            api_key_table_limit=api_key_table_limit,
+        )
+    ]
+    return [_to_template_response(template) for template in visible]
+
+
+@router.patch(
+    "/query/templates/{template_path:path}",
+    response_model=QueryTemplateResponse,
+)
+async def update_query_template_as_agent(
+    template_path: str,
+    body: QueryTemplateAgentUpdate,
+    user: CurrentUser | ApiKeyUser = Depends(get_current_user_or_apikey),
+    db: AsyncSession = Depends(get_db),
+) -> QueryTemplateResponse:
+    """Edit safe content fields through the independently granted write route."""
+    if isinstance(user, ApiKeyUser):
+        if not _api_key_has_route(user, QUERY_TEMPLATE_WRITE_ROUTE_ID):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Required API key route: {QUERY_TEMPLATE_WRITE_ROUTE_ID}",
+            )
+    else:
+        user_perms = await get_role_permissions(db, user.role)
+        if "query.settings.write" not in user_perms:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Required permission: query.settings.write",
+            )
+
+    try:
+        normalized_path = normalize_query_template_path(template_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    result = await db.execute(
+        select(QueryTemplate).where(QueryTemplate.path == normalized_path)
+    )
+    template = result.scalar_one_or_none()
+    if template is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Query template path '{normalized_path}' not found",
+        )
+    if isinstance(user, ApiKeyUser) and not template.enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Query template path '{normalized_path}' is disabled",
+        )
+
+    if isinstance(user, ApiKeyUser):
+        if "*" not in user.allowed_databases and template.db_alias not in user.allowed_databases:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"API key '{user.consumer_name}' is not allowed to access "
+                    f"database '{template.db_alias}'"
+                ),
+            )
+
+    connection_result = await db.execute(
+        select(DBConnection).where(DBConnection.alias == template.db_alias)
+    )
+    connection = connection_result.scalar_one_or_none()
+    if connection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Database '{template.db_alias}' not found",
+        )
+
+    new_sql = template.sql
+    if "sql" in body.model_fields_set:
+        assert body.sql is not None
+        new_sql = body.sql
+        _validate_read_only_template_sql(new_sql, connection.db_type)
+
+    if (
+        isinstance(user, ApiKeyUser)
+        and user.allowed_tables is not None
+        and connection.db_type not in {"neo4j", "graphdb"}
+    ):
+        referenced = extract_tables(new_sql, db_type=connection.db_type)
+        table_error = check_table_access(referenced, user.allowed_tables)
+        if table_error:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=table_error)
+
+    before_snapshot = _template_audit_snapshot(template)
+    changes: dict[str, object] = {}
+    if "sql" in body.model_fields_set:
+        changes["sql"] = new_sql
+    if "description" in body.model_fields_set:
+        changes["description"] = body.description
+    if "default_limit" in body.model_fields_set:
+        changes["default_limit"] = body.default_limit
+    if "timeout" in body.model_fields_set:
+        changes["timeout"] = body.timeout
+
+    if body.expected_updated_at is not None:
+        result = await db.execute(
+            update(QueryTemplate)
+            .where(
+                QueryTemplate.id == template.id,
+                QueryTemplate.updated_at == body.expected_updated_at,
+            )
+            .values(**changes, updated_at=utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Query template changed since it was discovered; fetch it again before editing",
+            )
+    else:
+        for field_name, value in changes.items():
+            setattr(template, field_name, value)
+
+    await db.commit()
+    await db.refresh(template)
+
+    actor = f"apikey:{user.consumer_name}" if isinstance(user, ApiKeyUser) else user.username
+    await log_admin_action(
+        db,
+        actor=actor,
+        action="update",
+        resource_type="query_template",
+        resource_id=normalized_path,
+        summary=template.name,
+        before=before_snapshot,
+        after=_template_audit_snapshot(template),
+    )
+    return _to_template_response(template)
 
 
 @router.get("/query/databases", response_model=list[DBConnectionResponse])

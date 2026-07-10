@@ -245,8 +245,9 @@ then remove old fields in a later release.
 The inactive color starts with `APISIX_PROVISION_ON_START=false` during normal
 updates. This prevents a warming container from changing APISIX before health
 checks pass. Before each deploy, the script verifies the built-in APISIX route
-shape, including the LLM routes. If those routes are missing or stale, for
-example `llm-proxy` still points at an older gateway upstream, it forces
+shape, including the separately granted `query-template-write-api` PATCH route
+and the LLM routes. If those routes are missing or stale, for example
+`llm-proxy` still points at an older gateway upstream, it forces
 re-provisioning on the new color instead of promoting broken routing.
 
 Stored API-key route restrictions are replayed from the database on **every**

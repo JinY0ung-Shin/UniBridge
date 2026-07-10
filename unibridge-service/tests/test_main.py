@@ -84,7 +84,9 @@ async def test_lifespan_provisions_llm_admin_route_when_master_key_set():
         "^/api/llm-admin(.*)",
         "$1",
     ]
-    for route_id in ("query-api", "s3-api", "llm-proxy", "llm-admin"):
+    for route_id in (
+        "query-api", "query-template-write-api", "s3-api", "llm-proxy", "llm-admin"
+    ):
         assert (
             route_calls[route_id]["plugins"]["proxy-rewrite"][
                 "use_real_request_uri_unsafe"
@@ -246,6 +248,18 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 "status": 1,
             },
             {
+                "id": "query-template-write-api",
+                "name": "query-template-write-api",
+                "uri": "/api/query/templates/*",
+                "methods": ["PATCH"],
+                "upstream_id": "unibridge-service",
+                "plugins": {
+                    "key-auth": {},
+                    "consumer-restriction": {"whitelist": ["template-editor"]},
+                },
+                "status": 1,
+            },
+            {
                 "id": "s3-api",
                 "name": "s3-api",
                 "uri": "/api/s3/*",
@@ -359,6 +373,10 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     assert route_calls["query-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["query-consumer"]
     }
+    assert route_calls["query-template-write-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["template-editor"]
+    }
+    assert route_calls["query-template-write-api"]["methods"] == ["PATCH"]
     assert route_calls["s3-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["s3-consumer"]
     }
@@ -374,7 +392,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     llm_headers = route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]["headers"]["set"]
     assert llm_headers["Authorization"] == "Bearer sk-test"
     assert llm_headers["x-litellm-end-user-id"] == "$consumer_name"
-    for route_id in ("query-api", "s3-api", "nas-api", "usages-api"):
+    for route_id in (
+        "query-api", "query-template-write-api", "s3-api", "nas-api", "usages-api"
+    ):
         headers = route_calls[route_id]["plugins"]["proxy-rewrite"]["headers"]["set"]
         assert headers["X-UniBridge-Internal-Proxy"] == "proxy-secret"
 
@@ -397,6 +417,7 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
     get_resource = AsyncMock(
         side_effect=[
             RuntimeError("route not found"),
+            RuntimeError("404 query-template write route missing"),
             RuntimeError("404 s3 route missing"),
             RuntimeError("404 nas route missing"),
             RuntimeError("404 usages route missing"),
@@ -437,6 +458,9 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
         if call.args[0] == "routes"
     }
     assert "consumer-restriction" not in route_calls["query-api"]["plugins"]
+    assert route_calls["query-template-write-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["__deny_all__"]
+    }
     assert "consumer-restriction" not in route_calls["s3-api"]["plugins"]
     assert "consumer-restriction" not in route_calls["llm-proxy"]["plugins"]
     # nas-api ships deny-all by default so it is never callable by an arbitrary
@@ -539,6 +563,7 @@ async def test_lifespan_skips_litellm_routes_when_master_key_missing():
     ]
 
     assert "query-api" in route_ids
+    assert "query-template-write-api" in route_ids
     assert "llm-proxy" not in route_ids
     assert "llm-admin" not in route_ids
 
@@ -636,6 +661,9 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     assert isinstance(db_arg, _ReplayDb)
     assert events[-1] == ("replay", "_ReplayDb")
     assert events.index(("routes", "query-api")) < events.index(("replay", "_ReplayDb"))
+    assert events.index(("routes", "query-template-write-api")) < events.index(
+        ("replay", "_ReplayDb")
+    )
     assert events.index(("routes", "s3-api")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "usages-api")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "llm-proxy")) < events.index(("replay", "_ReplayDb"))

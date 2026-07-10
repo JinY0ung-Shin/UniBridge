@@ -89,6 +89,35 @@ class QueryTemplateUpdate(BaseModel):
         return value.strip() if value is not None else None
 
 
+class QueryTemplateAgentUpdate(BaseModel):
+    """Safe content fields that an API-key agent may edit."""
+
+    sql: str | None = Field(None, min_length=1)
+    description: str | None = Field(None, max_length=255)
+    default_limit: int | None = Field(None, ge=1)
+    timeout: int | None = Field(None, ge=1, le=300)
+    expected_updated_at: datetime | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("sql", "description")
+    @classmethod
+    def strip_agent_text(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def require_edit_field(self) -> "QueryTemplateAgentUpdate":
+        editable_fields = {"sql", "description", "default_limit", "timeout"}
+        provided = editable_fields.intersection(self.model_fields_set)
+        if not provided:
+            raise ValueError("At least one editable query template field is required")
+        if "sql" in provided and not self.sql:
+            raise ValueError("sql must not be empty")
+        if "description" in provided and self.description is None:
+            raise ValueError("description must not be null; use an empty string to clear it")
+        return self
+
+
 class QueryTemplateResponse(BaseModel):
     id: int
     path: str
