@@ -14,7 +14,22 @@ const mockedGetAdminAuditLogs = vi.mocked(getAdminAuditLogs);
 
 describe('AdminAuditLogs', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     mockedGetAdminAuditLogs.mockResolvedValue([]);
+  });
+
+  it('shows loading and query-error feedback', async () => {
+    let resolveLogs!: (value: []) => void;
+    mockedGetAdminAuditLogs.mockReturnValue(new Promise((resolve) => { resolveLogs = resolve; }));
+    const loading = renderWithProviders(<AdminAuditLogs />);
+    expect(screen.getByRole('status')).toHaveTextContent('Loading audit logs...');
+    resolveLogs([]);
+    expect(await screen.findByText('No audit logs found')).toBeInTheDocument();
+    loading.unmount();
+
+    mockedGetAdminAuditLogs.mockRejectedValueOnce(new Error('offline'));
+    renderWithProviders(<AdminAuditLogs />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to load audit logs');
   });
 
   it('renders rows from getAdminAuditLogs', async () => {
@@ -94,6 +109,33 @@ describe('AdminAuditLogs', () => {
     expect(preTags[0].textContent).toContain('"name": "old"');
   });
 
+  it('supports keyboard expansion, raw invalid JSON, null details, and collapse', async () => {
+    mockedGetAdminAuditLogs.mockResolvedValue([
+      makeAdminAuditLog({
+        id: 9,
+        summary: null,
+        before: 'not-json',
+        after: null,
+        error_message: null,
+      }),
+    ]);
+    const user = userEvent.setup();
+    renderWithProviders(<AdminAuditLogs />);
+    const row = await screen.findByRole('button', { name: 'Toggle details for admin audit log 9' });
+    expect(screen.getByText('—')).toBeInTheDocument();
+
+    row.focus();
+    expect(row).toHaveFocus();
+    await user.keyboard('x');
+    expect(row).toHaveAttribute('aria-expanded', 'false');
+    await user.keyboard('{Enter}');
+    expect(row).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('not-json')).toBeInTheDocument();
+    expect(document.querySelectorAll('pre.detail-sql')[1]).toHaveTextContent('—');
+    await user.keyboard(' ');
+    expect(row).toHaveAttribute('aria-expanded', 'false');
+  });
+
   it('clicking Search refetches with applied filters', async () => {
     mockedGetAdminAuditLogs.mockResolvedValue([]);
     renderWithProviders(<AdminAuditLogs />);
@@ -112,6 +154,26 @@ describe('AdminAuditLogs', () => {
       const lastCall = mockedGetAdminAuditLogs.mock.calls[after - 1];
       expect(lastCall[0]).toEqual(expect.objectContaining({ actor: 'alice' }));
     });
+  });
+
+  it('applies action and KST date-range filters without refetching on draft changes', async () => {
+    renderWithProviders(<AdminAuditLogs />);
+    await screen.findByText('No audit logs found');
+    const user = userEvent.setup();
+    const initialCalls = mockedGetAdminAuditLogs.mock.calls.length;
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Action filter' }), 'delete');
+    await user.type(screen.getByLabelText('From date'), '2026-07-01');
+    await user.type(screen.getByLabelText('To date'), '2026-07-02');
+    expect(mockedGetAdminAuditLogs).toHaveBeenCalledTimes(initialCalls);
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+
+    await waitFor(() => expect(mockedGetAdminAuditLogs).toHaveBeenLastCalledWith(expect.objectContaining({
+      action: 'delete',
+      from_date: '2026-06-30T15:00:00.000Z',
+      to_date: '2026-07-02T14:59:59.999Z',
+      offset: 0,
+    })));
   });
 
   it('resets draft and applied filters', async () => {
@@ -161,6 +223,28 @@ describe('AdminAuditLogs', () => {
 
     expect(prevButton).toBeDisabled();
     expect(nextButton).toBeEnabled();
+    expect(screen.getByRole('status')).toHaveTextContent('Page 1');
+  });
+
+  it('navigates forward and back through full pages', async () => {
+    const firstPage = Array.from({ length: 20 }, (_, i) =>
+      makeAdminAuditLog({ id: i + 1, actor: `first-${i + 1}` }),
+    );
+    const secondPage = Array.from({ length: 20 }, (_, i) =>
+      makeAdminAuditLog({ id: i + 21, actor: `second-${i + 1}` }),
+    );
+    mockedGetAdminAuditLogs.mockImplementation(async (params) => params.offset === 20 ? secondPage : firstPage);
+    const user = userEvent.setup();
+    renderWithProviders(<AdminAuditLogs />);
+    await screen.findByText('first-1');
+
+    await user.click(screen.getByRole('button', { name: 'Next page' }));
+    expect(await screen.findByText('second-1')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Page 2');
+    expect(mockedGetAdminAuditLogs).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 20 }));
+
+    await user.click(screen.getByRole('button', { name: 'Previous page' }));
+    expect(await screen.findByText('first-1')).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('Page 1');
   });
 });

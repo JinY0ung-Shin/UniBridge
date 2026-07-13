@@ -27,8 +27,14 @@ run python3 -m compileall -q llm-converter/app llm-converter/tests
 step "LLM converter lint"
 run python3 -m ruff check llm-converter/app llm-converter/tests
 
-step "LLM converter tests"
-run pytest llm-converter/tests -v --tb=short
+step "LLM converter tests and coverage"
+(
+  cd llm-converter
+  run pytest tests/ -v --tb=short \
+    --cov=app \
+    --cov-config=.coveragerc \
+    --cov-report=term-missing:skip-covered
+)
 
 step "Backend lint"
 (
@@ -42,13 +48,16 @@ step "Backend migration check"
   export META_DB_URL=sqlite+aiosqlite:///./ci-alembic.db
   run alembic -c alembic.ini upgrade head
   run alembic -c alembic.ini check
-  rm -f ci-alembic.db
+  run rm -f ci-alembic.db
 )
 
-step "Backend tests"
+step "Backend tests and coverage"
 (
   cd unibridge-service
-  run pytest tests/ -v --tb=short
+  run pytest tests/ -v --tb=short \
+    --cov=app \
+    --cov-config=.coveragerc \
+    --cov-report=term-missing:skip-covered
 )
 
 step "Frontend install/lint/test/build"
@@ -56,7 +65,7 @@ step "Frontend install/lint/test/build"
   cd unibridge-ui
   run npm ci
   run npx eslint . --max-warnings=0
-  run npx vitest run
+  run npm run test:coverage
   run npx tsc -b
   run npx vite build
 )

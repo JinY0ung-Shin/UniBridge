@@ -139,6 +139,36 @@ describe('api client API helpers', () => {
     expect(captured).toEqual({ database: 'd', limit: 5 });
   });
 
+  it('saved-query, query-history, and admin-audit endpoints preserve request shapes', async () => {
+    const mod = await importClient(keycloak);
+    const calls: Array<{ method?: string; url?: string; params?: unknown; data?: unknown }> = [];
+    mod.default.defaults.adapter = makeAdapter((c) => {
+      calls.push({
+        method: c.method,
+        url: c.url,
+        params: c.params,
+        data: c.data ? JSON.parse(c.data) : undefined,
+      });
+      return {};
+    });
+
+    await mod.getQueryHistory({ database_alias: 'main', limit: 10 });
+    await mod.getSavedQueries();
+    await mod.createSavedQuery({ name: 'daily', sql_text: 'SELECT 1' });
+    await mod.updateSavedQuery(4, { description: 'updated' });
+    await mod.deleteSavedQuery(4);
+    await mod.getAdminAuditLogs({ actor: 'admin', offset: 20 });
+
+    expect(calls).toEqual([
+      { method: 'get', url: '/query/history', params: { database_alias: 'main', limit: 10 }, data: undefined },
+      { method: 'get', url: '/query/saved', params: undefined, data: undefined },
+      { method: 'post', url: '/query/saved', params: undefined, data: { name: 'daily', sql_text: 'SELECT 1' } },
+      { method: 'put', url: '/query/saved/4', params: undefined, data: { description: 'updated' } },
+      { method: 'delete', url: '/query/saved/4', params: undefined, data: undefined },
+      { method: 'get', url: '/admin/audit-logs', params: { actor: 'admin', offset: 20 }, data: undefined },
+    ]);
+  });
+
   it('query settings', async () => {
     const mod = await importClient(keycloak);
     const calls: Array<{ method?: string; url?: string }> = [];
@@ -208,6 +238,7 @@ describe('api client API helpers', () => {
     await mod.deleteGatewayRoute('r1');
     await mod.testGatewayRoute('r1');
     await mod.getGatewayRouteCurl('r1');
+    await mod.getGatewayOpenApiSpec();
     expect(calls).toEqual([
       { method: 'get', url: '/admin/gateway/routes' },
       { method: 'get', url: '/admin/gateway/routes/r1' },
@@ -215,6 +246,7 @@ describe('api client API helpers', () => {
       { method: 'delete', url: '/admin/gateway/routes/r1' },
       { method: 'post', url: '/admin/gateway/routes/r1/test' },
       { method: 'get', url: '/admin/gateway/routes/r1/curl' },
+      { method: 'get', url: '/admin/gateway/openapi.json' },
     ]);
   });
 
@@ -253,6 +285,33 @@ describe('api client API helpers', () => {
     expect(calls[2].params).toEqual({ range: '1h', route: 'r1' });
   });
 
+  it('covers gateway metric comparison, latency, totals, and default-selection helpers', async () => {
+    const mod = await importClient(keycloak);
+    const calls: Array<{ url?: string; params?: Record<string, unknown> }> = [];
+    mod.default.defaults.adapter = makeAdapter((c) => {
+      calls.push({ url: c.url, params: c.params });
+      return {};
+    });
+
+    await mod.getMetricsLatency({ kind: 'preset', value: '24h' }, 'orders', 'client-a');
+    await mod.getMetricsTopRoutes();
+    await mod.getMetricsRequestsTotal({ kind: 'custom', start: 10, end: 20 }, undefined, 'client-b', 'day');
+    await mod.getMetricsRoutesComparison({ kind: 'preset', value: '6h' }, 'client-c');
+    await mod.getMetricsConsumersComparison({ kind: 'preset', value: '1h' });
+    await mod.getRoutesComparisonSeries({ kind: 'preset', value: '6h' }, 'client-c', 'week');
+    await mod.getConsumersComparisonSeries({ kind: 'custom', start: 100, end: 200 }, 'hour');
+
+    expect(calls).toEqual([
+      { url: '/admin/gateway/metrics/latency', params: { range: '24h', route: 'orders', consumer: 'client-a' } },
+      { url: '/admin/gateway/metrics/top-routes', params: { range: '1h' } },
+      { url: '/admin/gateway/metrics/requests-total', params: { start: 10, end: 20, bucket: 'day', route: undefined, consumer: 'client-b' } },
+      { url: '/admin/gateway/metrics/routes-comparison', params: { range: '6h', consumer: 'client-c' } },
+      { url: '/admin/gateway/metrics/consumers-comparison', params: { range: '1h' } },
+      { url: '/admin/gateway/metrics/routes-comparison-series', params: { range: '6h', bucket: 'week', consumer: 'client-c' } },
+      { url: '/admin/gateway/metrics/consumers-comparison-series', params: { start: 100, end: 200, bucket: 'hour' } },
+    ]);
+  });
+
   it('llm metrics endpoints', async () => {
     const mod = await importClient(keycloak);
     const urls: Array<string | undefined> = [];
@@ -276,6 +335,31 @@ describe('api client API helpers', () => {
     ]);
   });
 
+  it('covers LLM status and bucketed series request parameters', async () => {
+    const mod = await importClient(keycloak);
+    const calls: Array<{ url?: string; params?: Record<string, unknown> }> = [];
+    mod.default.defaults.adapter = makeAdapter((c) => {
+      calls.push({ url: c.url, params: c.params });
+      return {};
+    });
+
+    await mod.getLlmStatusCodes({ kind: 'preset', value: '24h' }, 'key-a');
+    await mod.getLlmByModelSeries({ kind: 'custom', start: 1, end: 2 }, 'day', 'key-b');
+    await mod.getLlmTopKeysSeries({ kind: 'preset', value: '6h' }, 'week', 'key-c');
+    await mod.getLlmTokens({ kind: 'preset', value: '1h' }, 'hour', 'key-d');
+    await mod.getLlmErrors({ kind: 'preset', value: '1h' }, 'auto', 'key-e');
+    await mod.getLlmRequestsTotal({ kind: 'preset', value: '1h' }, 'day', 'key-f');
+
+    expect(calls).toEqual([
+      { url: '/admin/gateway/metrics/llm/status-codes', params: { range: '24h', api_key: 'key-a' } },
+      { url: '/admin/gateway/metrics/llm/by-model-series', params: { start: 1, end: 2, bucket: 'day', api_key: 'key-b' } },
+      { url: '/admin/gateway/metrics/llm/top-keys-series', params: { range: '6h', bucket: 'week', api_key: 'key-c' } },
+      { url: '/admin/gateway/metrics/llm/tokens', params: { range: '1h', bucket: 'hour', api_key: 'key-d' } },
+      { url: '/admin/gateway/metrics/llm/errors', params: { range: '1h', api_key: 'key-e' } },
+      { url: '/admin/gateway/metrics/llm/requests-total', params: { range: '1h', bucket: 'day', api_key: 'key-f' } },
+    ]);
+  });
+
   it('api keys CRUD', async () => {
     const mod = await importClient(keycloak);
     const calls: Array<{ method?: string; url?: string }> = [];
@@ -292,6 +376,29 @@ describe('api client API helpers', () => {
       { method: 'post', url: '/admin/api-keys' },
       { method: 'put', url: '/admin/api-keys/a' },
       { method: 'delete', url: '/admin/api-keys/a' },
+    ]);
+  });
+
+  it('my API key lifecycle endpoints', async () => {
+    const mod = await importClient(keycloak);
+    const calls: Array<{ method?: string; url?: string }> = [];
+    mod.default.defaults.adapter = makeAdapter((c) => {
+      calls.push({ method: c.method, url: c.url });
+      return {};
+    });
+
+    await mod.getMyApiKey();
+    await mod.createMyApiKey();
+    await mod.regenerateMyApiKey();
+    await mod.renewMyApiKey();
+    await mod.deleteMyApiKey();
+
+    expect(calls).toEqual([
+      { method: 'get', url: '/admin/api-keys/me' },
+      { method: 'post', url: '/admin/api-keys/me' },
+      { method: 'post', url: '/admin/api-keys/me/regenerate' },
+      { method: 'post', url: '/admin/api-keys/me/renew' },
+      { method: 'delete', url: '/admin/api-keys/me' },
     ]);
   });
 
@@ -420,6 +527,98 @@ describe('api client API helpers', () => {
     ]);
   });
 
+  it('server and external-service registries use their expected endpoints', async () => {
+    const mod = await importClient(keycloak);
+    const calls: Array<{ method?: string; url?: string; params?: unknown }> = [];
+    mod.default.defaults.adapter = makeAdapter((c) => {
+      calls.push({ method: c.method, url: c.url, params: c.params });
+      return {};
+    });
+
+    await mod.getServers();
+    await mod.createServer({ name: 'edge' });
+    await mod.updateServer(3, { enabled: false });
+    await mod.deleteServer(3);
+    await mod.testServer(3);
+    await mod.getServerMetrics(3, { duration: '6h', step: '120s' });
+    await mod.getExternalServices();
+    await mod.createExternalService({ name: 'orders' });
+    await mod.updateExternalService(8, { scheme: 'https' });
+    await mod.deleteExternalService(8);
+    await mod.testExternalService(8);
+
+    expect(calls).toEqual([
+      { method: 'get', url: '/admin/servers', params: undefined },
+      { method: 'post', url: '/admin/servers', params: undefined },
+      { method: 'put', url: '/admin/servers/3', params: undefined },
+      { method: 'delete', url: '/admin/servers/3', params: undefined },
+      { method: 'post', url: '/admin/servers/3/test', params: undefined },
+      { method: 'get', url: '/admin/servers/3/metrics', params: { duration: '6h', step: '120s' } },
+      { method: 'get', url: '/admin/servers/external-services', params: undefined },
+      { method: 'post', url: '/admin/servers/external-services', params: undefined },
+      { method: 'put', url: '/admin/servers/external-services/8', params: undefined },
+      { method: 'delete', url: '/admin/servers/external-services/8', params: undefined },
+      { method: 'post', url: '/admin/servers/external-services/8/test', params: undefined },
+    ]);
+  });
+
+  it('external metrics helpers forward time, service, and bucket parameters', async () => {
+    const mod = await importClient(keycloak);
+    const calls: Array<{ url?: string; params?: Record<string, unknown> }> = [];
+    mod.default.defaults.adapter = makeAdapter((c) => {
+      calls.push({ url: c.url, params: c.params });
+      return {};
+    });
+
+    const selection = { kind: 'preset', value: '6h' } as const;
+    await mod.getExternalSummary(selection, 'orders');
+    await mod.getExternalRequests(selection, 'orders');
+    await mod.getExternalRequestsTotal(selection, 'orders', 'hour');
+    await mod.getExternalStatusCodes(selection, 'orders');
+    await mod.getExternalLatency(selection, 'orders');
+    await mod.getExternalServicesComparison(selection);
+    await mod.getExternalServicesComparisonSeries(selection, 'week');
+    await mod.getExternalHandlersComparison(selection, 'orders');
+
+    expect(calls).toEqual([
+      { url: '/admin/external/metrics/summary', params: { range: '6h', service: 'orders' } },
+      { url: '/admin/external/metrics/requests', params: { range: '6h', service: 'orders' } },
+      { url: '/admin/external/metrics/requests-total', params: { range: '6h', bucket: 'hour', service: 'orders' } },
+      { url: '/admin/external/metrics/status-codes', params: { range: '6h', service: 'orders' } },
+      { url: '/admin/external/metrics/latency', params: { range: '6h', service: 'orders' } },
+      { url: '/admin/external/metrics/services-comparison', params: { range: '6h' } },
+      { url: '/admin/external/metrics/services-comparison-series', params: { range: '6h', bucket: 'week' } },
+      { url: '/admin/external/metrics/handlers-comparison', params: { range: '6h', service: 'orders' } },
+    ]);
+  });
+
+  it('NAS connection and browse endpoints preserve path parameters', async () => {
+    const mod = await importClient(keycloak);
+    const calls: Array<{ method?: string; url?: string; params?: unknown }> = [];
+    mod.default.defaults.adapter = makeAdapter((c) => {
+      calls.push({ method: c.method, url: c.url, params: c.params });
+      return {};
+    });
+
+    await mod.getNasConnections();
+    await mod.createNasConnection({ alias: 'n', base_path: '/mnt', read_only: true, show_hidden: false, follow_symlinks: false });
+    await mod.updateNasConnection('n', { show_hidden: true });
+    await mod.deleteNasConnection('n');
+    await mod.testNasConnection('n');
+    await mod.getNasEntries('n', { path: '/docs', offset: 2, limit: 20, q: 'report' });
+    await mod.getNasEntryMetadata('n', '/docs/report.pdf');
+
+    expect(calls).toEqual([
+      { method: 'get', url: '/admin/nas/connections', params: undefined },
+      { method: 'post', url: '/admin/nas/connections', params: undefined },
+      { method: 'put', url: '/admin/nas/connections/n', params: undefined },
+      { method: 'delete', url: '/admin/nas/connections/n', params: undefined },
+      { method: 'post', url: '/admin/nas/connections/n/test', params: undefined },
+      { method: 'get', url: '/nas/n/entries', params: { path: '/docs', offset: 2, limit: 20, q: 'report' } },
+      { method: 'get', url: '/nas/n/metadata', params: { path: '/docs/report.pdf' } },
+    ]);
+  });
+
   it('downloadS3Object parses UTF-8 filename header', async () => {
     const mod = await importClient(keycloak);
     mod.default.defaults.adapter = vi.fn(async (config) => {
@@ -496,9 +695,57 @@ describe('api client API helpers', () => {
     captured!.onDownloadProgress!({ loaded: 5, total: 0 } as never);
     expect(onProgress).toHaveBeenCalledTimes(1);
   });
+
+  it('downloadNasEntry parses filenames, falls back to path, and reports progress', async () => {
+    const mod = await importClient(keycloak);
+    let captured: InternalAxiosRequestConfig | undefined;
+    mod.default.defaults.adapter = vi.fn(async (config) => {
+      captured = config;
+      return {
+        data: new Blob(['nas']),
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-disposition': "attachment; filename*=UTF-8''weekly%20report.pdf" },
+        config,
+      };
+    }) as unknown as AxiosAdapter;
+    const onProgress = vi.fn();
+    let result = await mod.downloadNasEntry('n', '/docs/report.pdf', onProgress);
+    expect(result.filename).toBe('weekly report.pdf');
+    captured!.onDownloadProgress!({ loaded: 4, total: 8 } as never);
+    expect(onProgress).toHaveBeenCalledWith(4, 8);
+    captured!.onDownloadProgress!({ loaded: 4, total: 0 } as never);
+    expect(onProgress).toHaveBeenCalledTimes(1);
+
+    mod.default.defaults.adapter = vi.fn(async (config) => ({
+      data: new Blob([]),
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-disposition': 'attachment; filename="plain.txt"' },
+      config,
+    })) as unknown as AxiosAdapter;
+    result = await mod.downloadNasEntry('n', '/docs/ignored.txt');
+    expect(result.filename).toBe('plain.txt');
+
+    mod.default.defaults.adapter = vi.fn(async (config) => ({
+      data: new Blob([]), status: 200, statusText: 'OK', headers: {}, config,
+    })) as unknown as AxiosAdapter;
+    expect((await mod.downloadNasEntry('n', '/docs/fallback.csv')).filename).toBe('fallback.csv');
+    expect((await mod.downloadNasEntry('n', '')).filename).toBe('download');
+  });
 });
 
 describe('api client interceptor edge cases', () => {
+  it('rejects requests until authentication initialization is ready', async () => {
+    const keycloak = makeKeycloakMock();
+    vi.resetModules();
+    vi.doMock('../keycloak', () => ({ default: keycloak }));
+    const mod = await import('../api/client');
+
+    await expect(mod.default.get('/anything')).rejects.toThrow('Authentication is not ready');
+    expect(keycloak.updateToken).not.toHaveBeenCalled();
+  });
+
   it('rejects with "Authentication is required" when not authenticated', async () => {
     const keycloak = makeKeycloakMock();
     keycloak.authenticated = false;
@@ -609,5 +856,37 @@ describe('api client interceptor edge cases', () => {
     mod.default.defaults.adapter = makeAdapter(() => ({ ok: true }));
     const res = await mod.default.get('/admin/x');
     expect(res.data).toEqual({ ok: true });
+  });
+
+  it('refreshes and retries one 401 response with the latest token', async () => {
+    const keycloak = makeKeycloakMock();
+    const mod = await importClient(keycloak);
+    keycloak.updateToken
+      .mockResolvedValueOnce(true)
+      .mockImplementationOnce(async () => {
+        keycloak.token = 'token-2';
+        return true;
+      });
+
+    let calls = 0;
+    const authorizationHeaders: unknown[] = [];
+    mod.default.defaults.adapter = vi.fn(async (config) => {
+      calls += 1;
+      authorizationHeaders.push(config.headers.Authorization);
+      if (calls === 1) {
+        return Promise.reject({
+          config,
+          response: { status: 401, data: {}, headers: {}, config, statusText: '401' },
+          isAxiosError: true,
+        });
+      }
+      return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+    }) as unknown as AxiosAdapter;
+
+    await expect(mod.default.get('/admin/retry')).resolves.toMatchObject({ data: { ok: true } });
+    expect(calls).toBe(2);
+    expect(authorizationHeaders).toEqual(['Bearer token-1', 'Bearer token-2']);
+    expect(keycloak.updateToken).toHaveBeenNthCalledWith(1, 5);
+    expect(keycloak.updateToken).toHaveBeenNthCalledWith(2, -1);
   });
 });

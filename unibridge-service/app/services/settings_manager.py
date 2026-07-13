@@ -67,7 +67,12 @@ class SettingsManager:
 
         if "blocked_sql_keywords" in rows:
             try:
-                self.blocked_sql_keywords = json.loads(rows["blocked_sql_keywords"])
+                parsed_keywords = json.loads(rows["blocked_sql_keywords"])
+                if not isinstance(parsed_keywords, list) or not all(
+                    isinstance(keyword, str) for keyword in parsed_keywords
+                ):
+                    raise TypeError("blocked_sql_keywords must be a list of strings")
+                self.blocked_sql_keywords = parsed_keywords
             except (json.JSONDecodeError, TypeError):
                 logger.warning("Invalid blocked_sql_keywords in DB, using default")
 

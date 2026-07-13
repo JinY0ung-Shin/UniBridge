@@ -1,7 +1,6 @@
 [run]
-core = sysmon
 source = app
-branch = false
+branch = true
 
 [report]
 precision = 2

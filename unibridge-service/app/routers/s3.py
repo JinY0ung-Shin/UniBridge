@@ -392,7 +392,7 @@ async def download_object(
         )
     if file_size > MAX_PROXY_DOWNLOAD_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"File too large for proxy download (max {MAX_PROXY_DOWNLOAD_BYTES // (1024 * 1024)}MB). Use presigned-url instead.",
         )
 
@@ -417,7 +417,7 @@ async def download_object(
     if response_size is not None and response_size > MAX_PROXY_DOWNLOAD_BYTES:
         await asyncio.to_thread(body.close)
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"File too large for proxy download (max {MAX_PROXY_DOWNLOAD_BYTES // (1024 * 1024)}MB). Use presigned-url instead.",
         )
 

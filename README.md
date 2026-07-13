@@ -264,6 +264,10 @@ cd unibridge-service && pytest tests/ -v
 
 # Frontend
 cd unibridge-ui && npx vitest run
+
+# Full production-code coverage (backend + converter + frontend)
+./scripts/run-coverage.sh
+# Reports are written to /tmp/unibridge-coverage by default.
 ```
 
 ## Common Operations
