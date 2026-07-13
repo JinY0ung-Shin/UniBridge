@@ -1,0 +1,9 @@
+node_modules
+dist
+coverage
+.pytest_cache
+.ruff_cache
+.omc
+*.log
+npm-debug.log*
+.DS_Store

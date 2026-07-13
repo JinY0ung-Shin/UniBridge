@@ -204,7 +204,7 @@ services:
       unibridge-service:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-check-certificate -q -O- https://localhost/healthz | grep -q '^ok$'"]
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O- https://127.0.0.1/healthz | grep -q '^ok$'"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -221,8 +221,11 @@ networks:
 
 volumes:
   unibridge-data:
+    external: true
     name: ${UNIBRIDGE_DATA_VOLUME:-unibridge_unibridge-data}
   prometheus-file-sd:
+    external: true
     name: ${PROMETHEUS_FILE_SD_VOLUME:-unibridge_prometheus-file-sd}
   llm-converter-state:
+    external: true
     name: ${LLM_CONVERTER_STATE_VOLUME:-unibridge_llm-converter-state}

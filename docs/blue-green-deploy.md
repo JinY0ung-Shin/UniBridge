@@ -41,7 +41,9 @@ Work through this before running `deploy-bluegreen.sh` on a real environment.
    rotated blue/green. Keycloak, LiteLLM, APISIX and the databases live in the
    **infra** stack as single instances: they stay up *during* an app deploy, but
    updating/restarting them is a normal restart with downtime — blue/green does
-   not cover them.
+   not cover them. After the first bootstrap, normal app deploys verify the
+   existing infra without reconciling it. Set `RECONCILE_INFRA_ON_DEPLOY=true`
+   only for a reviewed deployment that is allowed to update/restart infra.
 
 4. **Migrations must be backward-compatible (expand/contract).** While both
    colors run, the old code must tolerate the new schema. Add nullable/new
@@ -156,6 +158,7 @@ when this repo runs as project `unibridge`:
 - `unibridge_litellm-db-data`
 - `unibridge_prometheus-data`
 - `unibridge_prometheus-file-sd`
+- `unibridge_llm-converter-state`
 
 If the old deployment used a different `COMPOSE_PROJECT_NAME`, set these in
 `.env` before running the split stack:
@@ -168,7 +171,12 @@ KEYCLOAK_DB_DATA_VOLUME=<old-project>_keycloak-db-data
 LITELLM_DB_DATA_VOLUME=<old-project>_litellm-db-data
 PROMETHEUS_DATA_VOLUME=<old-project>_prometheus-data
 PROMETHEUS_FILE_SD_VOLUME=<old-project>_prometheus-file-sd
+LLM_CONVERTER_STATE_VOLUME=<old-project>_llm-converter-state
 ```
+
+The deploy script creates the shared app-data and converter-state volumes if
+they do not exist. The app Compose file treats them as external so blue and
+green never compete for Compose ownership of the same volume.
 
 ## First Run
 
@@ -196,6 +204,15 @@ The script chooses the inactive color, builds it, verifies health, updates
 APISIX upstreams, reloads edge nginx, and records the active color in
 `.deploy/bluegreen-active`.
 
+Normal updates do not run `compose up` on the shared infra stack. If an infra
+service is missing or unhealthy, deployment aborts before building or changing
+traffic. To intentionally apply infra image/config changes, review their
+downtime impact and run:
+
+```bash
+RECONCILE_INFRA_ON_DEPLOY=true scripts/deploy-bluegreen.sh deploy
+```
+
 By default, the old color remains running for rollback:
 
 ```bash
@@ -216,10 +233,15 @@ To stop the old color automatically after promotion:
 STOP_OLD_AFTER_PROMOTE=true DRAIN_SECONDS=30 scripts/deploy-bluegreen.sh deploy
 ```
 
-`rollback` re-promotes the previous color. If that color was stopped (e.g. via
-`STOP_OLD_AFTER_PROMOTE=true` or a manual `stop`), `rollback` brings its
-containers back up first, then waits for health and promotes. Rollback only
-works to a color whose image still exists — it does not rebuild.
+`rollback` re-promotes the previous color only when all three of its containers
+are already running and healthy. It intentionally does not run `compose up` or
+reconcile infra: after a forward database migration, recreating an old service
+image can fail because its Alembic tree does not know the database's newer
+revision. If the inactive color was stopped (for example by
+`STOP_OLD_AFTER_PROMOTE=true`) or is unhealthy, rollback aborts without changing
+APISIX, edge routing, or the active-color state. Use `deploy <color>` from a
+reviewed, database-compatible checkout to build it as a new deployment, or use
+a planned database/image recovery procedure for a true historical rollback.
 
 Only one mutating command (`deploy`/`promote`/`rollback`/`stop`) can run at a
 time; the script takes a lock (`.deploy/bluegreen.lock`) and aborts if another
@@ -233,8 +255,9 @@ If a color is already running and healthy:
 scripts/deploy-bluegreen.sh promote green
 ```
 
-This does not rebuild containers. It only verifies the target color, updates
-APISIX upstreams, reloads the edge proxy, and updates the active state file.
+This does not rebuild containers or reconcile infra. It only verifies the
+target color, updates APISIX upstreams, reloads the edge proxy, and updates the
+active state file.
 
 ## Important Limits
 

@@ -23,3 +23,5 @@ unibridge-service/data/
 # Blue/green deployment runtime state.
 .deploy/
 deploy/edge/generated/*.conf
+# Personal Claude instructions and machine-local service endpoints.
+CLAUDE.local.md

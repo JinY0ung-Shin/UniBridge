@@ -26,12 +26,15 @@ STATE_FILE="${BLUEGREEN_STATE_FILE:-$STATE_DIR/bluegreen-active}"
 LOCK_FILE="${BLUEGREEN_LOCK_FILE:-$STATE_DIR/bluegreen.lock}"
 EDGE_TEMPLATE="$ROOT_DIR/deploy/edge/default.conf.template"
 EDGE_CONFIG="$ROOT_DIR/deploy/edge/generated/default.conf"
+EDGE_CANDIDATE_CONFIG="$ROOT_DIR/deploy/edge/generated/candidate.conf"
+EDGE_PREVIOUS_CONFIG="$ROOT_DIR/deploy/edge/generated/previous.conf"
 
 INFRA_PROJECT="${UNIBRIDGE_INFRA_PROJECT:-unibridge-infra}"
 EDGE_PROJECT="${UNIBRIDGE_EDGE_PROJECT:-unibridge-edge}"
 NETWORK_NAME="${UNIBRIDGE_NETWORK_NAME:-unibridge-net}"
 STOP_OLD_AFTER_PROMOTE="${STOP_OLD_AFTER_PROMOTE:-false}"
 DRAIN_SECONDS="${DRAIN_SECONDS:-15}"
+RECONCILE_INFRA_ON_DEPLOY="${RECONCILE_INFRA_ON_DEPLOY:-false}"
 APISIX_INTERNAL_PROXY_HEADER_NAME="X-UniBridge-Internal-Proxy"
 
 usage() {
@@ -51,6 +54,7 @@ Environment:
   APISIX_ADMIN_HOST_URL=http://127.0.0.1:${APISIX_ADMIN_PORT:-9180}
   STOP_OLD_AFTER_PROMOTE=false          Stop old color after promotion.
   DRAIN_SECONDS=15                      Delay before stopping old color.
+  RECONCILE_INFRA_ON_DEPLOY=false       Allow normal deploys to update/restart infra.
 USAGE
 }
 
@@ -67,7 +71,8 @@ compose_infra() {
 
 compose_edge() {
   mapfile -t env_args < <(compose_env_args)
-  UNIBRIDGE_NETWORK_NAME="$NETWORK_NAME" \
+  EDGE_CONFIG_PATH="${EDGE_CONFIG_PATH:-$EDGE_CONFIG}" \
+    UNIBRIDGE_NETWORK_NAME="$NETWORK_NAME" \
     docker compose "${env_args[@]}" -p "$EDGE_PROJECT" -f "$ROOT_DIR/docker-compose.edge.yml" "$@"
 }
 
@@ -75,11 +80,14 @@ compose_app() {
   local color="$1"
   local port="$2"
   local provision_on_start="$3"
-  shift 3
+  local provision_route_color="$4"
+  shift 4
   mapfile -t env_args < <(compose_env_args)
   APP_COLOR="$color" \
     UNIBRIDGE_UI_PORT="$port" \
     APISIX_PROVISION_ON_START="$provision_on_start" \
+    APISIX_UNIBRIDGE_SERVICE_NODE="unibridge-service-${provision_route_color}:8000" \
+    APISIX_LLM_CONVERTER_NODE="llm-converter-${provision_route_color}:4001" \
     UNIBRIDGE_NETWORK_NAME="$NETWORK_NAME" \
     docker compose "${env_args[@]}" -p "unibridge-$color" -f "$ROOT_DIR/docker-compose.app.yml" "$@"
 }
@@ -106,6 +114,22 @@ color_port() {
     blue) printf '%s' "${BLUEGREEN_BLUE_UI_PORT:-3001}" ;;
     green) printf '%s' "${BLUEGREEN_GREEN_UI_PORT:-3002}" ;;
   esac
+}
+
+# Route repair runs inside the target service during startup. When an active
+# color already exists, keep APISIX upstream nodes pinned to that known-good
+# color until the target stack has passed compose --wait and wait_color. The
+# later promote_apisix call is the only point allowed to switch upstreams.
+provision_route_color() {
+  local target="$1"
+  local previous="$2"
+  local provision_on_start="$3"
+
+  if [[ "$provision_on_start" == "true" && -n "$previous" ]]; then
+    printf '%s' "$previous"
+  else
+    printf '%s' "$target"
+  fi
 }
 
 active_color() {
@@ -180,23 +204,30 @@ wait_url() {
 
 render_edge_config() {
   local color="$1"
+  local destination="${2:-$EDGE_CONFIG}"
   validate_color "$color"
-  mkdir -p "$(dirname "$EDGE_CONFIG")"
+  mkdir -p "$(dirname "$destination")"
   # Guard the bind-mount directory trap: if the edge stack was ever started
   # before this config was rendered (e.g. a direct `docker compose -f
   # docker-compose.edge.yml up` instead of going through this script), Docker
   # creates a *directory* at the bind-mount path. A later `sed > "$EDGE_CONFIG"`
   # then fails with "Is a directory" and `set -e` aborts every subsequent deploy
   # until it is removed. Fail loudly with the fix instead of a cryptic error.
-  if [[ -d "$EDGE_CONFIG" ]]; then
-    echo "ERROR: $EDGE_CONFIG is a directory, not a file." >&2
+  if [[ -d "$destination" ]]; then
+    echo "ERROR: $destination is a directory, not a file." >&2
     echo "       This usually means the edge stack was started before the config was" >&2
     echo "       rendered. Remove it and re-run the deploy:" >&2
     echo "         docker compose -p \"$EDGE_PROJECT\" -f \"$ROOT_DIR/docker-compose.edge.yml\" down" >&2
-    echo "         rm -rf \"$EDGE_CONFIG\"" >&2
+    echo "         rm -rf \"$destination\"" >&2
     exit 1
   fi
-  sed "s/__ACTIVE_COLOR__/$color/g" "$EDGE_TEMPLATE" > "$EDGE_CONFIG"
+
+  local temporary="${destination}.tmp.$$"
+  if ! sed "s/__ACTIVE_COLOR__/$color/g" "$EDGE_TEMPLATE" > "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  mv "$temporary" "$destination"
 }
 
 admin_url() {
@@ -368,30 +399,139 @@ promote_apisix() {
   fi
 }
 
-# Render and validate the edge config for $color WITHOUT switching live traffic.
-# Bringing the edge container up (or leaving it up) does not change which color
-# it serves — only reload_edge applies a new config — so running `nginx -t` here
-# lets a bad edge config abort the promotion BEFORE any APISIX upstream is
-# flipped, keeping the two layers from desyncing on a config error.
+# Render and validate the edge config for $color WITHOUT touching the live
+# bind-mounted config or container. `compose up` is intentionally forbidden in
+# this phase: Compose may recreate edge when its service definition changes,
+# which would apply a newly rendered live config before APISIX is promoted.
 prepare_edge() {
   local color="$1"
   validate_color "$color"
 
-  render_edge_config "$color"
-  compose_edge up -d --wait
-  compose_edge exec -T edge nginx -t >/dev/null
+  render_edge_config "$color" "$EDGE_CANDIDATE_CONFIG"
+  EDGE_CONFIG_PATH="$EDGE_CANDIDATE_CONFIG" \
+    compose_edge run --rm --no-deps edge nginx -t >/dev/null
 }
 
-# Apply the already-rendered, already-validated edge config. Call only after
-# prepare_edge and promote_apisix have both succeeded.
-reload_edge() {
-  compose_edge exec -T edge nginx -s reload
+# Restore the config that was active before switch_edge. This is a best-effort
+# recovery path used when edge fails to start, validate, or reload after APISIX
+# was promoted.
+restore_previous_edge() {
+  local had_previous="$1"
+
+  if [[ "$had_previous" != "true" ]]; then
+    compose_edge down >/dev/null 2>&1 || true
+    rm -f "$EDGE_CONFIG" || true
+    return 0
+  fi
+
+  if ! cp "$EDGE_PREVIOUS_CONFIG" "$EDGE_CONFIG"; then
+    echo "WARNING: failed to restore the previous edge config file." >&2
+    return 1
+  fi
+  if ! compose_edge up -d --wait; then
+    echo "WARNING: failed to restart edge with its previous config." >&2
+    return 1
+  fi
+  if ! compose_edge exec -T edge nginx -t >/dev/null; then
+    echo "WARNING: restored edge config failed nginx validation." >&2
+    return 1
+  fi
+  if ! compose_edge exec -T edge nginx -s reload >/dev/null; then
+    echo "WARNING: failed to reload the restored edge config." >&2
+    return 1
+  fi
+}
+
+# Apply the already-rendered candidate only after APISIX promotion. Copying over
+# the existing file preserves the inode used by Docker's file bind mount, so a
+# running edge sees the new contents on reload. `compose up` is also delayed to
+# this phase; if Compose must recreate edge, it can no longer switch traffic
+# ahead of APISIX.
+switch_edge() {
+  if [[ ! -f "$EDGE_CANDIDATE_CONFIG" ]]; then
+    echo "ERROR: validated edge candidate is missing: $EDGE_CANDIDATE_CONFIG" >&2
+    return 1
+  fi
+  if [[ -d "$EDGE_CONFIG" ]]; then
+    echo "ERROR: live edge config path is a directory: $EDGE_CONFIG" >&2
+    return 1
+  fi
+
+  local had_previous="false"
+  if ! rm -f "$EDGE_PREVIOUS_CONFIG"; then
+    echo "ERROR: could not clear stale edge backup: $EDGE_PREVIOUS_CONFIG" >&2
+    return 1
+  fi
+  if [[ -f "$EDGE_CONFIG" ]]; then
+    if ! cp "$EDGE_CONFIG" "$EDGE_PREVIOUS_CONFIG"; then
+      echo "ERROR: could not back up the live edge config." >&2
+      return 1
+    fi
+    had_previous="true"
+  fi
+
+  if ! cp "$EDGE_CANDIDATE_CONFIG" "$EDGE_CONFIG"; then
+    echo "ERROR: could not install the validated edge candidate." >&2
+    return 1
+  fi
+  if ! compose_edge up -d --wait \
+    || ! compose_edge exec -T edge nginx -t >/dev/null \
+    || ! compose_edge exec -T edge nginx -s reload >/dev/null; then
+    echo "ERROR: edge switch failed; restoring the previous edge config." >&2
+    restore_previous_edge "$had_previous" || true
+    return 1
+  fi
+
+  rm -f "$EDGE_CANDIDATE_CONFIG" || true
+  return 0
+}
+
+restore_apisix_after_edge_failure() {
+  local target="$1"
+  local previous="$2"
+
+  if [[ -z "$previous" || "$previous" == "$target" ]]; then
+    return 0
+  fi
+
+  echo "Rolling APISIX upstreams back to $previous after edge switch failure..." >&2
+  if ! promote_apisix "$previous" "$target"; then
+    echo "WARNING: APISIX rollback to $previous failed; inspect upstreams before retrying." >&2
+    return 1
+  fi
 }
 
 write_active_color() {
   local color="$1"
-  mkdir -p "$STATE_DIR"
-  printf '%s\n' "$color" > "$STATE_FILE"
+  if ! mkdir -p "$STATE_DIR"; then
+    return 1
+  fi
+  local temporary="${STATE_FILE}.tmp.$$"
+  if ! printf '%s\n' "$color" > "$temporary"; then
+    rm -f "$temporary"
+    return 1
+  fi
+  if ! mv "$temporary" "$STATE_FILE"; then
+    rm -f "$temporary"
+    return 1
+  fi
+}
+
+commit_active_color() {
+  local target="$1"
+  local previous="$2"
+
+  if write_active_color "$target"; then
+    rm -f "$EDGE_PREVIOUS_CONFIG" "$EDGE_CANDIDATE_CONFIG" || true
+    return 0
+  fi
+
+  echo "ERROR: failed to record active color; rolling routing back to ${previous:-none}." >&2
+  local had_previous="false"
+  [[ -f "$EDGE_PREVIOUS_CONFIG" ]] && had_previous="true"
+  restore_previous_edge "$had_previous" || true
+  restore_apisix_after_edge_failure "$target" "$previous" || true
+  return 1
 }
 
 wait_color() {
@@ -403,8 +543,77 @@ wait_color() {
   wait_url "https://127.0.0.1:$port/_api/health" "unibridge-service-$color"
 }
 
+color_is_healthy() {
+  local color="$1"
+  local port
+  validate_color "$color"
+  port="$(color_port "$color")"
+
+  local container status
+  for container in \
+    "unibridge-ui-$color" \
+    "unibridge-service-$color" \
+    "llm-converter-$color"; do
+    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container" 2>/dev/null || true)"
+    [[ "$status" == "healthy" ]] || return 1
+  done
+
+  curl -kfsS --max-time 5 "https://127.0.0.1:$port/healthz" >/dev/null 2>&1 \
+    && curl -kfsS --max-time 5 "https://127.0.0.1:$port/_api/health" >/dev/null 2>&1
+}
+
+ensure_external_volume() {
+  local volume="$1"
+  if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+    echo "Creating shared app volume: $volume"
+    docker volume create "$volume" >/dev/null
+  fi
+}
+
+ensure_shared_app_volumes() {
+  ensure_external_volume "${UNIBRIDGE_DATA_VOLUME:-unibridge_unibridge-data}"
+  ensure_external_volume "${LLM_CONVERTER_STATE_VOLUME:-unibridge_llm-converter-state}"
+}
+
 up_infra() {
   compose_infra up -d --wait
+}
+
+require_existing_infra_healthy() {
+  if ! docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
+    echo "ERROR: required Docker network is missing: $NETWORK_NAME" >&2
+    echo "       Run with RECONCILE_INFRA_ON_DEPLOY=true to create/reconcile infra." >&2
+    return 1
+  fi
+
+  local services=()
+  mapfile -t services < <(compose_infra config --services)
+  if [[ "${#services[@]}" -eq 0 ]]; then
+    echo "ERROR: infra Compose file contains no services." >&2
+    return 1
+  fi
+
+  local service container_id state
+  for service in "${services[@]}"; do
+    container_id="$(compose_infra ps -q "$service")"
+    if [[ -z "$container_id" ]]; then
+      echo "ERROR: infra service is not running: $service" >&2
+      echo "       Active traffic was not changed. Run with" >&2
+      echo "       RECONCILE_INFRA_ON_DEPLOY=true after reviewing restart impact." >&2
+      return 1
+    fi
+
+    state="$(docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id" 2>/dev/null || true)"
+    case "$state" in
+      running\|healthy|running\|none) ;;
+      *)
+        echo "ERROR: infra service is not ready: $service ($state)" >&2
+        echo "       Active traffic was not changed. Run with" >&2
+        echo "       RECONCILE_INFRA_ON_DEPLOY=true after reviewing restart impact." >&2
+        return 1
+        ;;
+    esac
+  done
 }
 
 deploy_color() {
@@ -424,8 +633,14 @@ deploy_color() {
   local port
   port="$(color_port "$target")"
 
-  echo "Starting infra stack..."
-  up_infra
+  if [[ -z "$old" || "$RECONCILE_INFRA_ON_DEPLOY" == "true" ]]; then
+    echo "Starting/reconciling infra stack..."
+    up_infra
+  else
+    echo "Verifying existing infra stack without recreating it..."
+    require_existing_infra_healthy
+  fi
+  ensure_shared_app_volumes
 
   # Decide whether the new color should provision APISIX routes at boot.
   # First-ever deploy (no active color) always provisions. Otherwise routes
@@ -441,15 +656,20 @@ deploy_color() {
     provision_on_start="true"
   fi
 
+  local route_color
+  route_color="$(provision_route_color "$target" "$old" "$provision_on_start")"
+  if [[ "$provision_on_start" == "true" && "$route_color" != "$target" ]]; then
+    echo "         Keeping APISIX upstreams on active $route_color until $target is healthy." >&2
+  fi
+
   echo "Building and starting $target app stack on local port $port (provision=$provision_on_start)..."
-  compose_app "$target" "$port" "$provision_on_start" up -d --build --wait
+  compose_app "$target" "$port" "$provision_on_start" "$route_color" up -d --build --wait
   wait_color "$target"
 
-  # Validate the new edge config before touching APISIX, then flip APISIX
-  # upstreams (with rollback on partial failure), and only switch the edge once
-  # APISIX is on the new color. The active-color state file is written last, so
-  # an abort anywhere above leaves both layers and the recorded state on the old
-  # color (rollback stays consistent).
+  # Validate a detached edge candidate before touching APISIX, then flip APISIX
+  # upstreams and only apply the candidate once APISIX is on the new color. The
+  # active-color state file is written last. If the edge switch fails, both the
+  # edge config and APISIX are restored to the previous color before aborting.
   echo "Validating edge proxy config for $target..."
   prepare_edge "$target"
 
@@ -457,13 +677,16 @@ deploy_color() {
   promote_apisix "$target" "$old"
 
   echo "Switching edge proxy to $target..."
-  reload_edge
-  write_active_color "$target"
+  if ! switch_edge; then
+    restore_apisix_after_edge_failure "$target" "$old" || true
+    return 1
+  fi
+  commit_active_color "$target" "$old"
 
   if [[ -n "$old" && "$old" != "$target" && "$STOP_OLD_AFTER_PROMOTE" == "true" ]]; then
     echo "Waiting ${DRAIN_SECONDS}s before stopping old $old stack..."
     sleep "$DRAIN_SECONDS"
-    compose_app "$old" "$(color_port "$old")" "false" stop
+    compose_app "$old" "$(color_port "$old")" "false" "$old" stop
   fi
 
   echo "Active color: $target"
@@ -476,18 +699,17 @@ promote_color() {
   local old
   old="$(active_color || true)"
 
-  # Ensure infra (and therefore the external apihub-net the app/edge stacks
-  # attach to) is up before touching the edge: a promote can run after infra was
-  # stopped or cleaned, and the edge stack would otherwise fail with
-  # "network unibridge-net not found".
-  echo "Ensuring infra stack is running..."
-  up_infra
-
+  # Promotion is routing-only. Do not reconcile or recreate infra here: an
+  # emergency promotion/rollback must not restart shared single-instance
+  # services. A healthy target already proves its required infra is reachable.
   wait_color "$target"
   prepare_edge "$target"
   promote_apisix "$target" "$old"
-  reload_edge
-  write_active_color "$target"
+  if ! switch_edge; then
+    restore_apisix_after_edge_failure "$target" "$old" || true
+    return 1
+  fi
+  commit_active_color "$target" "$old"
   echo "Active color: $target"
 }
 
@@ -500,29 +722,24 @@ rollback() {
   fi
   # Reject a corrupted state file up front. Without this, a non-empty bad value
   # (e.g. a truncated/hand-edited state file) makes other_color return "" and
-  # the compose_app call below runs with an empty APP_COLOR/port — a cryptic
-  # docker error instead of the clear "color must be 'blue' or 'green'".
+  # produces a cryptic health-check error instead of the clear color error.
   validate_color "$current"
 
   local target
   target="$(other_color "$current")"
 
-  # rollback brings a color's app stack back up (compose_app ... up), so it must
-  # honour the same shared-SQLite guard as deploy_color — otherwise rollback is a
-  # second path that can start a color against an unsafe shared meta store.
-  require_shared_db_safe
-
-  # Bring infra up first so the external apihub-net exists; otherwise the
-  # compose_app call below fails attaching to a missing network.
-  echo "Ensuring infra stack is running..."
-  up_infra
-
-  # The old color may have been stopped after a previous promotion
-  # (STOP_OLD_AFTER_PROMOTE=true). promote_color waits on its health endpoints,
-  # so bring it back up first; otherwise rollback would just time out. No
-  # --build here: rollback restores the previously-deployed image as-is.
-  echo "Ensuring $target stack is running before rollback..."
-  compose_app "$target" "$(color_port "$target")" "false" up -d --wait
+  # Never recreate an inactive color during an emergency rollback. The shared
+  # database may already be at a revision the old image does not know; `compose
+  # up` would then replace a usable old process with a restart loop. Rollback is
+  # deliberately a routing-only operation to an already-running healthy color.
+  if ! color_is_healthy "$target"; then
+    echo "ERROR: inactive $target stack is not already healthy; rollback was not attempted." >&2
+    echo "       Refusing to recreate it because the shared database may have advanced" >&2
+    echo "       beyond that image's Alembic revisions. Active $current remains unchanged." >&2
+    echo "       Build and validate a compatible checkout with 'deploy $target', or" >&2
+    echo "       restore a matching database/image under a planned recovery procedure." >&2
+    return 1
+  fi
 
   promote_color "$target"
 }
@@ -538,7 +755,7 @@ status() {
 stop_color() {
   local color="$1"
   validate_color "$color"
-  compose_app "$color" "$(color_port "$color")" "false" stop
+  compose_app "$color" "$(color_port "$color")" "false" "$color" stop
 }
 
 main() {
@@ -577,4 +794,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

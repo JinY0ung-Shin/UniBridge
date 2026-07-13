@@ -22,6 +22,7 @@ NGINX_CONFIG_FILE = REPO_ROOT / "unibridge-ui" / "nginx.conf"
 EDGE_TEMPLATE_FILE = REPO_ROOT / "deploy" / "edge" / "default.conf.template"
 DEPLOY_SCRIPT_FILE = REPO_ROOT / "scripts" / "deploy-bluegreen.sh"
 UI_ENTRYPOINT_FILE = REPO_ROOT / "unibridge-ui" / "entrypoint.sh"
+UI_DOCKERIGNORE_FILE = REPO_ROOT / "unibridge-ui" / ".dockerignore"
 BACKUP_SCRIPT_FILE = REPO_ROOT / "backup" / "backup.sh"
 RESTORE_SCRIPT_FILE = REPO_ROOT / "backup" / "restore.sh"
 BACKUP_META_LIB_FILE = REPO_ROOT / "backup" / "lib" / "meta.sh"
@@ -143,9 +144,34 @@ def test_docker_compose_declares_ui_and_prometheus_healthchecks() -> None:
     prometheus_healthcheck = services["prometheus"].get("healthcheck", {})
     blackbox_healthcheck = services["blackbox-exporter"].get("healthcheck", {})
 
-    assert "/healthz" in str(ui_healthcheck)
+    assert ui_healthcheck["test"] == [
+        "CMD-SHELL",
+        "wget --no-check-certificate -q -O- https://127.0.0.1/healthz | grep -q '^ok$'",
+    ]
     assert "/-/ready" in str(prometheus_healthcheck)
     assert "/-/healthy" in str(blackbox_healthcheck)
+
+
+def test_bluegreen_ui_and_edge_healthchecks_use_ipv4_loopback() -> None:
+    expected = [
+        "CMD-SHELL",
+        "wget --no-check-certificate -q -O- https://127.0.0.1/healthz | grep -q '^ok$'",
+    ]
+    app_services = _load_yaml(BLUEGREEN_APP_COMPOSE_FILE)["services"]
+    edge_services = _load_yaml(BLUEGREEN_EDGE_COMPOSE_FILE)["services"]
+
+    assert app_services["unibridge-ui"]["healthcheck"]["test"] == expected
+    assert edge_services["edge"]["healthcheck"]["test"] == expected
+
+
+def test_ui_docker_context_excludes_host_build_artifacts() -> None:
+    ignored = {
+        line.strip()
+        for line in UI_DOCKERIGNORE_FILE.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+
+    assert {"node_modules", "dist", "coverage"} <= ignored
 
 
 def test_bluegreen_compose_splits_stateful_infra_from_app_tier() -> None:
@@ -191,6 +217,18 @@ def test_bluegreen_app_uses_color_specific_targets_and_deferred_apisix_promotion
     assert app_compose["volumes"]["llm-converter-state"]["name"] == (
         "${LLM_CONVERTER_STATE_VOLUME:-unibridge_llm-converter-state}"
     )
+    assert app_compose["volumes"]["prometheus-file-sd"] == {
+        "external": True,
+        "name": "${PROMETHEUS_FILE_SD_VOLUME:-unibridge_prometheus-file-sd}",
+    }
+    assert app_compose["volumes"]["unibridge-data"] == {
+        "external": True,
+        "name": "${UNIBRIDGE_DATA_VOLUME:-unibridge_unibridge-data}",
+    }
+    assert app_compose["volumes"]["llm-converter-state"] == {
+        "external": True,
+        "name": "${LLM_CONVERTER_STATE_VOLUME:-unibridge_llm-converter-state}",
+    }
     assert (
         "UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service-${APP_COLOR}}"
         in ui_env
@@ -385,6 +423,9 @@ def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
     # Serializes mutating runs with a lock.
     assert "flock" in script
     assert "acquire_lock" in script
+    # Normal app deploys must not recreate single-instance shared infra.
+    assert "RECONCILE_INFRA_ON_DEPLOY" in script
+    assert "require_existing_infra_healthy" in script
     # Forces re-provisioning if APISIX lost its core routes (etcd reset).
     assert "apisix_has_core_routes" in script
     # Also treats pre-auth-hardening routes as stale so API-key requests keep the
@@ -415,6 +456,252 @@ def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
     )
     # APISIX promotion PUTs retry instead of leaving colors half-switched.
     assert "apisix_put" in script
+
+    # Edge config validation must not mutate/recreate the live edge before
+    # APISIX promotion. Validate a detached candidate, then apply it afterward.
+    prepare_edge_body = script.split("prepare_edge() {", 1)[1].split("\n}", 1)[0]
+    assert 'render_edge_config "$color" "$EDGE_CANDIDATE_CONFIG"' in prepare_edge_body
+    assert "compose_edge run --rm --no-deps edge nginx -t" in prepare_edge_body
+    assert "compose_edge up" not in prepare_edge_body
+    assert "switch_edge" in script
+    assert "restore_previous_edge" in script
+    assert "restore_apisix_after_edge_failure" in script
+    assert "commit_active_color" in script
+    assert 'mv "$temporary" "$STATE_FILE"' in script
+    assert 'if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then' in script
+    assert (
+        'APISIX_UNIBRIDGE_SERVICE_NODE="unibridge-service-${provision_route_color}:8000"'
+        in script
+    )
+    assert (
+        'APISIX_LLM_CONVERTER_NODE="llm-converter-${provision_route_color}:4001"'
+        in script
+    )
+
+
+def test_stale_route_repair_keeps_upstreams_on_active_color() -> None:
+    shell = f"""
+source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}
+printf '%s\n' \
+  "$(provision_route_color blue green true)" \
+  "$(provision_route_color blue green false)" \
+  "$(provision_route_color blue '' true)"
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["green", "blue", "blue"]
+
+
+def test_compose_app_exports_pinned_route_nodes() -> None:
+    shell = f"""
+source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}
+docker() {{
+  printf '%s|%s|%s|%s\n' \
+    "$APP_COLOR" \
+    "$APISIX_PROVISION_ON_START" \
+    "$APISIX_UNIBRIDGE_SERVICE_NODE" \
+    "$APISIX_LLM_CONVERTER_NODE"
+}}
+compose_app blue 3001 true green config
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == (
+        "blue|true|unibridge-service-green:8000|llm-converter-green:4001"
+    )
+
+
+def test_rollback_refuses_to_recreate_an_unhealthy_inactive_color() -> None:
+    shell = f"""
+source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}
+active_color() {{ printf '%s' blue; }}
+color_is_healthy() {{ return 1; }}
+promote_color() {{ exit 20; }}
+if rollback; then
+  exit 10
+fi
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "rollback was not attempted" in result.stderr
+    assert "Active blue remains unchanged" in result.stderr
+
+
+def test_rollback_only_promotes_an_already_healthy_color() -> None:
+    shell = f"""
+source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}
+active_color() {{ printf '%s' blue; }}
+color_is_healthy() {{ return 0; }}
+promote_color() {{ printf 'promoted:%s\n' "$1"; }}
+rollback
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "promoted:green"
+
+
+def test_promote_and_rollback_do_not_reconcile_shared_infra() -> None:
+    script = DEPLOY_SCRIPT_FILE.read_text(encoding="utf-8")
+    promote_body = script.split("promote_color() {", 1)[1].split("\n}", 1)[0]
+    rollback_body = script.split("rollback() {", 1)[1].split("\n}", 1)[0]
+
+    assert "up_infra" not in promote_body
+    assert "compose_app" not in rollback_body
+    assert "color_is_healthy" in rollback_body
+
+
+def test_existing_infra_check_is_read_only_and_accepts_healthy_services() -> None:
+    shell = f"""
+source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}
+NETWORK_NAME=test-network
+compose_infra() {{
+  if [[ "$1" == "config" && "$2" == "--services" ]]; then
+    printf '%s\n' apisix postgres
+  elif [[ "$1" == "ps" && "$2" == "-q" ]]; then
+    printf 'id-%s\n' "$3"
+  else
+    exit 30
+  fi
+}}
+docker() {{
+  if [[ "$1" == "network" && "$2" == "inspect" ]]; then
+    return 0
+  fi
+  if [[ "$1" == "inspect" ]]; then
+    case "${{@: -1}}" in
+      id-apisix) printf '%s\n' 'running|none' ;;
+      id-postgres) printf '%s\n' 'running|healthy' ;;
+      *) exit 31 ;;
+    esac
+    return 0
+  fi
+  exit 32
+}}
+require_existing_infra_healthy
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_edge_switch_restores_live_config_when_start_fails(tmp_path: Path) -> None:
+    live_config = tmp_path / "default.conf"
+    candidate_config = tmp_path / "candidate.conf"
+    previous_config = tmp_path / "previous.conf"
+    live_config.write_text("old\n", encoding="utf-8")
+    candidate_config.write_text("new\n", encoding="utf-8")
+
+    shell = f"""
+source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}
+EDGE_CONFIG={shlex.quote(str(live_config))}
+EDGE_CANDIDATE_CONFIG={shlex.quote(str(candidate_config))}
+EDGE_PREVIOUS_CONFIG={shlex.quote(str(previous_config))}
+compose_calls=0
+compose_edge() {{
+  compose_calls=$((compose_calls + 1))
+  if [[ "$1" == "up" && "$compose_calls" -eq 1 ]]; then
+    return 1
+  fi
+  return 0
+}}
+if switch_edge; then
+  exit 10
+fi
+[[ "$(<"$EDGE_CONFIG")" == "old" ]]
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert live_config.read_text(encoding="utf-8") == "old\n"
+
+
+def test_active_color_state_write_is_atomic(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    env = os.environ.copy()
+    env["BLUEGREEN_STATE_DIR"] = str(state_dir)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}; write_active_color green",
+        ],
+        check=False,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (state_dir / "bluegreen-active").read_text(encoding="utf-8") == "green\n"
+    assert list(state_dir.glob("*.tmp.*")) == []
+
+
+def test_active_color_write_failure_rolls_edge_and_apisix_back(tmp_path: Path) -> None:
+    blocked_state_dir = tmp_path / "not-a-directory"
+    blocked_state_dir.write_text("blocked\n", encoding="utf-8")
+    live_config = tmp_path / "default.conf"
+    previous_config = tmp_path / "previous.conf"
+    apisix_log = tmp_path / "apisix.log"
+    live_config.write_text("new\n", encoding="utf-8")
+    previous_config.write_text("old\n", encoding="utf-8")
+
+    shell = f"""
+source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}
+STATE_DIR={shlex.quote(str(blocked_state_dir))}
+STATE_FILE="$STATE_DIR/bluegreen-active"
+EDGE_CONFIG={shlex.quote(str(live_config))}
+EDGE_PREVIOUS_CONFIG={shlex.quote(str(previous_config))}
+compose_edge() {{ return 0; }}
+promote_apisix() {{ printf '%s %s\n' "$1" "$2" > {shlex.quote(str(apisix_log))}; }}
+if commit_active_color blue green; then
+  exit 10
+fi
+[[ "$(<"$EDGE_CONFIG")" == "old" ]]
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert live_config.read_text(encoding="utf-8") == "old\n"
+    assert apisix_log.read_text(encoding="utf-8") == "green blue\n"
 
 
 def test_ui_entrypoint_fails_loudly_on_bad_template() -> None:
