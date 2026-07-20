@@ -317,16 +317,13 @@ user records are created automatically on first
 SSO login; the local `admin` / `GRAFANA_ADMIN_PASSWORD` login remains as a
 fallback, and self-service (non-SSO) sign-up stays disabled. On a fresh install
 the realm import creates the `grafana` OAuth client from
-`GRAFANA_OAUTH_CLIENT_SECRET`; for a realm imported before this client existed,
-create it once via the Keycloak admin console (confidential client `grafana`,
-redirect `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana/*` — on blue/green
-deployments use `UNIBRIDGE_EDGE_PORT`, the public port — PKCE S256, plus a
-realm-roles mapper to claim `realm_access.roles`) or re-run the equivalent
-`kcadm` steps. Then either set the client's Credentials secret to the
-`GRAFANA_OAUTH_CLIENT_SECRET` value from `.env`, or simply restart Keycloak
-once: its entrypoint re-syncs the client secret and redirect URI from env on
-every boot (the console generates a random secret on creation, which would
-otherwise fail token exchange with `invalid_client`).
+`GRAFANA_OAUTH_CLIENT_SECRET`; on a realm imported before this client existed,
+the Keycloak entrypoint creates it automatically at the next boot (confidential
+client, PKCE S256, realm-roles mapper), so restarting Keycloak once is all it
+takes. The entrypoint also re-syncs the client secret and redirect URI from env
+on every boot, which likewise converges hand-created clients (whose
+console-generated secret would otherwise fail token exchange with
+`invalid_client`) onto the `.env` values.
 Grafana ships with provisioned dashboards that mirror the UniBridge monitoring UI —
 Overview, Gateway, LLM, External APIs, and Servers — running the same PromQL
 against the same Prometheus, so both show identical numbers. Dashboards are
@@ -395,16 +392,19 @@ Caveats worth knowing:
   creeps toward the cap.
 - Accounts need a syntactically valid email — reserved TLDs like `.local` fail
   LiteLLM's validation at the callback with a 500.
-- On a fresh install the realm import creates the `litellm` OAuth client from
-  `LITELLM_OAUTH_CLIENT_SECRET`; for a realm imported before this client
-  existed, create it once (confidential client `litellm`, redirect
-  `https://<HOST_IP>:<LITELLM_PORT>/sso/callback`, PKCE S256, a client role
-  `proxy_admin` wired in as a composite of the realm `admin` role, and a
-  user-client-role mapper emitting a single-valued `role` claim into the ID
-  token and userinfo). Adding the composite needs realm-management rights the
-  `apihub-service` account doesn't have — use the Keycloak admin console or the
-  bootstrap admin. The Keycloak entrypoint re-syncs the client's secret and
-  redirect URI from env on every boot, same as Grafana's client.
+- On a fresh install the realm import creates everything — the `litellm`
+  OAuth client (from `LITELLM_OAUTH_CLIENT_SECRET`, redirect
+  `https://<HOST_IP>:<LITELLM_PORT>/sso/callback`, PKCE S256), its
+  `proxy_admin` client role, the composite on the realm `admin` role, and the
+  user-client-role mapper emitting a single-valued `role` claim. On a realm
+  imported before this client existed, the Keycloak entrypoint creates the
+  missing pieces automatically at the next boot. The composite link needs
+  realm-management rights beyond the `apihub-service` account, so that one
+  step escalates to the bootstrap admin (`KC_ADMIN_USER`/`KC_ADMIN_PASSWORD`)
+  and, if that account has been removed, logs a warning — add the composite in
+  the Keycloak console then (realm role `admin` → Associated roles →
+  `litellm` `proxy_admin`). The entrypoint also re-syncs the client's secret
+  and redirect URI from env on every boot, same as Grafana's client.
 
 ### Server (host) monitoring
 
