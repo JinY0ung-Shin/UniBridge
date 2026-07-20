@@ -56,6 +56,11 @@ requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
   (`query-api`, `llm-proxy`, `s3-api`, `llm-messages`, `llm-responses`, `nas-api`,
   `usages-api`) via `main.py::_preserve_consumer_restriction` — don't clobber it.
 - **Request routing**: UI nginx → `/_api/*` = unibridge-service, `/api/*` = APISIX gateway.
+- **LiteLLM admin UI = Keycloak SSO, admins only** (`ui_access_mode: admin_only` +
+  realm `admin` → `litellm:proxy_admin` composite). `GENERIC_CLIENT_USE_PKCE=true` is
+  load-bearing, not hardening — without it logins 500 on Keycloak's userinfo issuer
+  check. Free tier caps LiteLLM's user table at 5 rows and rejected non-admin logins
+  still insert rows. See README "LiteLLM admin UI SSO".
 - **TZ=UTC everywhere**; timestamps stored UTC (see `scripts/backfill_utc_timestamps.py`).
 - `.omc/`, `docs/superpowers/`, `certs/`, `unibridge-service/data/` are gitignored — tooling
   artifacts / local state, not app code.

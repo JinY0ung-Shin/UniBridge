@@ -660,7 +660,8 @@
     "noErrorData": "No error rate data available",
     "statusSourceCaption": "Measured at the gateway (APISIX), including requests rejected before reaching LiteLLM — totals can exceed the LiteLLM-based request counts above.",
     "filteredNote": "Filtered to '{{key}}'. Clear the API key filter to compare all keys.",
-    "adminDashboard": "LiteLLM Admin"
+    "adminDashboard": "LiteLLM Admin",
+    "adminSsoHint": "Opens the LiteLLM admin UI in a new tab (admin accounts only, via UniBridge SSO)"
   },
   "roles": {
     "title": "Roles",

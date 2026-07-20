@@ -126,7 +126,7 @@ details.
 | Web UI | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>` |
 | Keycloak Admin | `https://<HOST_IP>:<KEYCLOAK_PORT>/admin` |
 | API Gateway | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/*` |
-| LiteLLM | `https://<HOST_IP>:<LITELLM_PORT>` |
+| LiteLLM | `https://<HOST_IP>:<LITELLM_PORT>` (admin UI at `/ui` signs in via UniBridge SSO, admins only) |
 | Prometheus | `http://<HOST_IP>:9090` (localhost only) |
 | Grafana | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana` (same-origin behind the UI) |
 
@@ -365,6 +365,46 @@ Avoid giving two routes the same name: their metrics would merge into one
 series. API-key (`consumer`) labels are unaffected — admin-created keys already
 carry their human-readable key name; personal self-service keys show as
 `self_<id>`.
+
+### LiteLLM admin UI SSO
+
+The LiteLLM admin UI (`https://<HOST_IP>:<LITELLM_PORT>/ui`) signs in with
+UniBridge accounts via Keycloak SSO, admins only — mirroring the Grafana setup.
+Opening `/ui` redirects straight to Keycloak (`AUTO_REDIRECT_UI_LOGIN_TO_SSO`),
+so an admin holding a live UniBridge session lands signed in without touching a
+login form; unset that env var to get the manual login page (and its master-key
+fallback) back, e.g. while debugging a broken Keycloak. The wiring: the realm
+`admin` role is a composite granting the `litellm` client role `proxy_admin`, a
+client-role mapper surfaces it as a single-valued `role` claim, and LiteLLM
+adopts that claim as its own `proxy_admin` role; everyone else resolves to
+`internal_user_viewer` and is rejected at the SSO callback by
+`ui_access_mode: "admin_only"` (`litellm/config.yaml`). The in-app "LiteLLM
+Admin" button is likewise rendered for admins only.
+
+Caveats worth knowing:
+
+- **`GENERIC_CLIENT_USE_PKCE=true` is load-bearing** (see the compose comment):
+  Keycloak pins the token issuer to the browser-facing host, so the userinfo
+  endpoint always rejects tokens presented over the in-network listener; the
+  PKCE code path is what makes LiteLLM fall back to id_token claims instead of
+  500ing on that userinfo reply.
+- **LiteLLM SSO is free for up to 5 rows in its internal user table**;
+  more needs an enterprise license. Rejected non-admin sign-ins still insert an
+  `internal_user_viewer` row before the admin check runs, so prune strays from
+  the LiteLLM UI (Internal Users) or via `POST /user/delete` if the table
+  creeps toward the cap.
+- Accounts need a syntactically valid email — reserved TLDs like `.local` fail
+  LiteLLM's validation at the callback with a 500.
+- On a fresh install the realm import creates the `litellm` OAuth client from
+  `LITELLM_OAUTH_CLIENT_SECRET`; for a realm imported before this client
+  existed, create it once (confidential client `litellm`, redirect
+  `https://<HOST_IP>:<LITELLM_PORT>/sso/callback`, PKCE S256, a client role
+  `proxy_admin` wired in as a composite of the realm `admin` role, and a
+  user-client-role mapper emitting a single-valued `role` claim into the ID
+  token and userinfo). Adding the composite needs realm-management rights the
+  `apihub-service` account doesn't have — use the Keycloak admin console or the
+  bootstrap admin. The Keycloak entrypoint re-syncs the client's secret and
+  redirect URI from env on every boot, same as Grafana's client.
 
 ### Server (host) monitoring
 

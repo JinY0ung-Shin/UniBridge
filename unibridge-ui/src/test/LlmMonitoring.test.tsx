@@ -32,6 +32,20 @@ vi.mock('../components/usePermissions', () => ({
   usePermissions: () => ({ permissions: ['apikeys.read', 'gateway.monitoring.read'], loaded: true }),
 }));
 
+// Same stability trick for the auth role: the LiteLLM Admin link (and
+// GrafanaLink) render for admins only, so tests flip authState.appRole.
+const authState = vi.hoisted(() => ({ appRole: 'admin' as string | null }));
+vi.mock('../components/useAuth', () => ({
+  useAuth: () => ({
+    authenticated: true,
+    token: null,
+    username: 'tester',
+    appRole: authState.appRole,
+    initialized: true,
+    logout: () => {},
+  }),
+}));
+
 import { screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -86,6 +100,7 @@ describe('LlmMonitoring', () => {
       ...window.__RUNTIME_CONFIG__,
       LITELLM_ADMIN_URL: 'https://localhost:4000/ui',
     };
+    authState.appRole = 'admin';
   });
 
   afterEach(() => {
@@ -112,6 +127,18 @@ describe('LlmMonitoring', () => {
       'href',
       'https://localhost:4000/ui',
     );
+  });
+
+  it('hides the LiteLLM Admin link for non-admins (SSO is admin-only)', async () => {
+    authState.appRole = 'user';
+    const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
+
+    renderWithProviders(<LlmMonitoring />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('custom-toggle')).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('link', { name: 'LiteLLM Admin opens in new tab' })).not.toBeInTheDocument();
   });
 
   it('renders request count in model usage table', async () => {

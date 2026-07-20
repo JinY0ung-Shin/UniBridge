@@ -2,6 +2,10 @@
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   always_include_stream_usage: true
+  # Admin UI sign-in is Keycloak SSO (compose GENERIC_* env). Only SSO users
+  # whose token maps to proxy_admin (UniBridge realm role `admin`) may enter;
+  # everyone else is rejected at the SSO callback.
+  ui_access_mode: "admin_only"
 
 litellm_settings:
   success_callback: ["prometheus"]

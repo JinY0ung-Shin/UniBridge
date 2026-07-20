@@ -8,9 +8,19 @@
   "duplicateEmailsAllowed": true,
   "roles": {
     "realm": [
-      { "name": "admin", "description": "Full access to all features" },
+      {
+        "name": "admin",
+        "description": "Full access to all features",
+        "composite": true,
+        "composites": { "client": { "litellm": ["proxy_admin"] } }
+      },
       { "name": "user", "description": "Monitoring and self-service API key" }
-    ]
+    ],
+    "client": {
+      "litellm": [
+        { "name": "proxy_admin", "description": "LiteLLM Admin UI admin (surfaced as the `role` claim for the litellm client)" }
+      ]
+    }
   },
   "scopeMappings": [
     {
@@ -51,6 +61,36 @@
             "claim.name": "realm_access.roles",
             "jsonType.label": "String",
             "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "litellm",
+      "name": "LiteLLM Admin UI",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "${LITELLM_OAUTH_CLIENT_SECRET}",
+      "serviceAccountsEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "standardFlowEnabled": true,
+      "redirectUris": ["${LITELLM_REDIRECT_URI:-https://localhost:4000/sso/callback}"],
+      "webOrigins": [],
+      "attributes": {"pkce.code.challenge.method": "S256"},
+      "protocolMappers": [
+        {
+          "name": "litellm role",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "usermodel.clientRoleMapping.clientId": "litellm",
+            "claim.name": "role",
+            "jsonType.label": "String",
+            "multivalued": "false",
             "id.token.claim": "true",
             "access.token.claim": "true",
             "userinfo.token.claim": "true"

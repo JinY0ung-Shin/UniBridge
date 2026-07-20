@@ -18,6 +18,7 @@ import {
   getApiKeys,
 } from '../api/client';
 import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
+import { useAuth } from '../components/useAuth';
 import { usePermissions } from '../components/usePermissions';
 import BucketedBreakdownView from '../components/BucketedBreakdownView';
 import PanelStatus from '../components/PanelStatus';
@@ -49,6 +50,7 @@ function formatTokens(value: number): string {
 function LlmMonitoring() {
   const { t } = useTranslation();
   const { permissions, loaded: permissionsLoaded } = usePermissions();
+  const { appRole } = useAuth();
   const [selection, setSelection] = useState<TimeSelection>({ kind: 'preset', value: '1h' });
   const selKey = selectionKey(selection);
   const span = selectionSpanSeconds(selection);
@@ -215,19 +217,25 @@ function LlmMonitoring() {
               'var-bucket': GRAFANA_BUCKET_INTERVAL[bucket],
             }}
           />
-          <a
-            href={LITELLM_ADMIN_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="admin-link-btn"
-            aria-label={`${t('llmMonitoring.adminDashboard')} ${t('common.opensInNewTab')}`}
-          >
-            {t('llmMonitoring.adminDashboard')}
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ marginLeft: 4 }}>
-              <path d="M3.5 1.5H10.5V8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              <path d="M10.5 1.5L1.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </a>
+          {appRole === 'admin' && (
+            // LiteLLM's admin UI signs in via UniBridge SSO restricted to
+            // admins (ui_access_mode admin_only), so mirror GrafanaLink and
+            // don't render a link that dead-ends at a rejected login.
+            <a
+              href={LITELLM_ADMIN_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="admin-link-btn"
+              title={t('llmMonitoring.adminSsoHint')}
+              aria-label={`${t('llmMonitoring.adminDashboard')} ${t('common.opensInNewTab')}`}
+            >
+              {t('llmMonitoring.adminDashboard')}
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ marginLeft: 4 }}>
+                <path d="M3.5 1.5H10.5V8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M10.5 1.5L1.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </a>
+          )}
           {canReadApiKeys && (
             <label className="api-key-filter">
               <span className="api-key-filter__label">{t('llmMonitoring.apiKeyFilter')}</span>

@@ -10,7 +10,10 @@
 # OAuth redirect shares the UI's HTTPS endpoint (UNIBRIDGE_UI_PORT is the edge
 # port in blue/green deployments — see compose keycloak env).
 : "${GRAFANA_REDIRECT_URI:=https://${HOST_IP}:${UNIBRIDGE_UI_PORT}/grafana/*}"
-export KEYCLOAK_REDIRECT_URI KEYCLOAK_WEB_ORIGIN GRAFANA_REDIRECT_URI
+# LiteLLM's admin UI lives on LiteLLM's own HTTPS port; its SSO callback is
+# fixed at {PROXY_BASE_URL}/sso/callback (see compose litellm env).
+: "${LITELLM_REDIRECT_URI:=https://${HOST_IP}:${LITELLM_PORT:-4000}/sso/callback}"
+export KEYCLOAK_REDIRECT_URI KEYCLOAK_WEB_ORIGIN GRAFANA_REDIRECT_URI LITELLM_REDIRECT_URI
 
 # Substitute environment variables in realm template and write to import dir
 TEMPLATE="/opt/init/realm-export.json.tpl"
@@ -26,8 +29,10 @@ else
   # Escape sed replacement metachars (\, &, |) in the secrets before substitution.
   SECRET_ESCAPED=$(printf '%s' "${KEYCLOAK_SERVICE_CLIENT_SECRET}" | sed -e 's/[\\&|]/\\&/g')
   GRAFANA_SECRET_ESCAPED=$(printf '%s' "${GRAFANA_OAUTH_CLIENT_SECRET}" | sed -e 's/[\\&|]/\\&/g')
+  LITELLM_SECRET_ESCAPED=$(printf '%s' "${LITELLM_OAUTH_CLIENT_SECRET}" | sed -e 's/[\\&|]/\\&/g')
   sed -e "s|\${KEYCLOAK_SERVICE_CLIENT_SECRET}|${SECRET_ESCAPED}|g" \
       -e "s|\${GRAFANA_OAUTH_CLIENT_SECRET}|${GRAFANA_SECRET_ESCAPED}|g" \
+      -e "s|\${LITELLM_OAUTH_CLIENT_SECRET}|${LITELLM_SECRET_ESCAPED}|g" \
     "$TEMPLATE" > "$IMPORT_DIR/realm-export.json"
   echo "[init] Environment variables substituted in realm-export.json (sed fallback)"
 fi
@@ -100,6 +105,32 @@ for i in $(seq 1 60); do
       fi
     else
       echo "[init] NOTE: grafana client not found (pre-existing realm import); create it to enable Grafana SSO"
+    fi
+
+    # Keep the litellm client's redirect URI and secret in sync as well
+    # (same rationale as the grafana block above).
+    if command -v jq >/dev/null 2>&1; then
+      LITELLM_CLIENT_UUID=$(/opt/keycloak/bin/kcadm.sh get clients -r apihub -q clientId=litellm --fields id 2>/dev/null \
+        | jq -r '.[0].id // empty')
+    else
+      LITELLM_CLIENT_UUID=$(/opt/keycloak/bin/kcadm.sh get clients -r apihub -q clientId=litellm --fields id 2>/dev/null \
+        | grep '"id"' | head -1 | sed 's/.*"id" *: *"//;s/".*//')
+    fi
+    if [ -n "$LITELLM_CLIENT_UUID" ]; then
+      if [ -n "${LITELLM_OAUTH_CLIENT_SECRET}" ]; then
+        /opt/keycloak/bin/kcadm.sh update "clients/$LITELLM_CLIENT_UUID" -r apihub \
+          -s "redirectUris=[\"${LITELLM_REDIRECT_URI}\"]" \
+          -s "secret=${LITELLM_OAUTH_CLIENT_SECRET}" 2>/dev/null \
+          && echo "[init] Updated litellm client: redirectUris=${LITELLM_REDIRECT_URI} (secret synced)" \
+          || echo "[init] WARNING: Failed to update litellm client"
+      else
+        /opt/keycloak/bin/kcadm.sh update "clients/$LITELLM_CLIENT_UUID" -r apihub \
+          -s "redirectUris=[\"${LITELLM_REDIRECT_URI}\"]" 2>/dev/null \
+          && echo "[init] Updated litellm client: redirectUris=${LITELLM_REDIRECT_URI}" \
+          || echo "[init] WARNING: Failed to update litellm client"
+      fi
+    else
+      echo "[init] NOTE: litellm client not found (pre-existing realm import); create it to enable LiteLLM admin-UI SSO (see README)"
     fi
 
     break

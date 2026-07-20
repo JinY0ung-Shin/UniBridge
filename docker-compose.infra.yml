@@ -122,6 +122,10 @@ services:
       # Grafana SSO client: secret lands in the realm template on first import,
       # redirect URI is kept in sync by the entrypoint on every boot.
       - GRAFANA_OAUTH_CLIENT_SECRET=${GRAFANA_OAUTH_CLIENT_SECRET:?GRAFANA_OAUTH_CLIENT_SECRET is required}
+      # LiteLLM admin-UI SSO client: same first-import/boot-sync pattern as
+      # Grafana; LITELLM_PORT feeds the derived /sso/callback redirect URI.
+      - LITELLM_OAUTH_CLIENT_SECRET=${LITELLM_OAUTH_CLIENT_SECRET:?LITELLM_OAUTH_CLIENT_SECRET is required}
+      - LITELLM_PORT=${LITELLM_PORT:-4000}
     ports:
       - "${KEYCLOAK_PORT:-8443}:8443"
     volumes:
@@ -342,6 +346,26 @@ services:
       - HOST_IP=${HOST_IP:-localhost}
       - LITELLM_PORT=${LITELLM_PORT:-4000}
       - PROXY_BASE_URL=${PROXY_BASE_URL:-}
+      # Admin-UI SSO via the UniBridge Keycloak realm. The browser-facing
+      # authorize URL derives from HOST_IP; the server-side token exchange
+      # uses Keycloak's in-network HTTP listener (same internal/external
+      # split as the Grafana env block).
+      - GENERIC_CLIENT_ID=litellm
+      - GENERIC_CLIENT_SECRET=${LITELLM_OAUTH_CLIENT_SECRET:?LITELLM_OAUTH_CLIENT_SECRET is required}
+      - GENERIC_AUTHORIZATION_ENDPOINT=https://${HOST_IP:-localhost}:${KEYCLOAK_PORT:-8443}/realms/${KEYCLOAK_REALM:-apihub}/protocol/openid-connect/auth
+      - GENERIC_TOKEN_ENDPOINT=http://keycloak:8080/realms/${KEYCLOAK_REALM:-apihub}/protocol/openid-connect/token
+      - GENERIC_USERINFO_ENDPOINT=http://keycloak:8080/realms/${KEYCLOAK_REALM:-apihub}/protocol/openid-connect/userinfo
+      # PKCE is load-bearing, not just hardening: it switches LiteLLM to its
+      # own token-exchange path, which falls back to id_token claims when the
+      # userinfo endpoint rejects the token. Keycloak pins the token issuer to
+      # the browser-facing host, so userinfo via the in-network listener always
+      # 401s (the same trap Grafana avoids by omitting api_url) — without PKCE
+      # the login 500s on that userinfo response.
+      - GENERIC_CLIENT_USE_PKCE=true
+      # UniBridge admins usually hold a live Keycloak session, so /ui flows
+      # straight through SSO; non-admins carry no `role` claim and are
+      # rejected by ui_access_mode admin_only (litellm/config.yaml).
+      - AUTO_REDIRECT_UI_LOGIN_TO_SSO=true
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
       - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/ssl/tls.crt:ro
