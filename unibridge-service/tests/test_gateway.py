@@ -532,6 +532,83 @@ class TestSaveRoute:
         assert "service_keys" not in call_body
         assert "require_auth" not in call_body
 
+    async def test_new_route_defaults_to_key_auth(self, client, admin_token):
+        """require_auth omitted on a brand-new route → key-auth injected."""
+        saved_route = {"id": "r1", "uri": "/api/test/*", "plugins": {"key-auth": {}}}
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=_http_status(404, "not found"),
+            ),
+            patch(
+                "app.routers.gateway.apisix_client.put_resource",
+                new_callable=AsyncMock,
+                return_value=deepcopy(saved_route),
+            ) as mock_put,
+        ):
+            resp = await client.put(
+                "/admin/gateway/routes/r1",
+                json={"uri": "/api/test/*", "upstream_id": "u1"},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert resp.json()["require_auth"] is True
+        call_body = mock_put.call_args[0][2]
+        assert "key-auth" in call_body["plugins"]
+
+    async def test_new_route_explicit_require_auth_false_stays_open(
+        self, client, admin_token
+    ):
+        saved_route = {"id": "r1", "uri": "/api/test/*", "plugins": {}}
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=_http_status(404, "not found"),
+            ),
+            patch(
+                "app.routers.gateway.apisix_client.put_resource",
+                new_callable=AsyncMock,
+                return_value=deepcopy(saved_route),
+            ) as mock_put,
+        ):
+            resp = await client.put(
+                "/admin/gateway/routes/r1",
+                json={"uri": "/api/test/*", "upstream_id": "u1", "require_auth": False},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        call_body = mock_put.call_args[0][2]
+        assert "key-auth" not in call_body.get("plugins", {})
+
+    async def test_update_without_require_auth_keeps_open_route_open(
+        self, client, admin_token
+    ):
+        """The new-route default must not force key-auth onto an existing
+        intentionally-open route during unrelated edits."""
+        existing = {"id": "r1", "uri": "/api/test/*", "upstream_id": "u1", "plugins": {}}
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                return_value=deepcopy(existing),
+            ),
+            patch(
+                "app.routers.gateway.apisix_client.put_resource",
+                new_callable=AsyncMock,
+                return_value=deepcopy(existing),
+            ) as mock_put,
+        ):
+            resp = await client.put(
+                "/admin/gateway/routes/r1",
+                json={"uri": "/api/test/*", "upstream_id": "u1"},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        call_body = mock_put.call_args[0][2]
+        assert "key-auth" not in call_body.get("plugins", {})
+
     async def test_legacy_service_key_payload_is_accepted(self, client, admin_token):
         saved_route = {
             "id": "r1",

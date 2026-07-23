@@ -94,6 +94,8 @@ describe('GatewayRouteForm', () => {
       'aria-describedby',
       'gateway-route-require-auth-hint',
     );
+    // Secure by default: a new route starts with authentication required.
+    expect(screen.getByRole('checkbox', { name: 'Require Authentication (key-auth)' })).toBeChecked();
     expect(document.getElementById('gateway-route-require-auth-hint')).toHaveTextContent(
       'Consumer registration required',
     );
@@ -164,6 +166,7 @@ describe('GatewayRouteForm', () => {
       expect(mockedSaveGatewayRoute).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({
+          require_auth: true,
           service_keys: [
             { header_name: 'X-Api-Key', header_value: 'secret-1' },
             { header_name: 'Authorization', header_value: 'Bearer secret-2' },
@@ -209,7 +212,8 @@ describe('GatewayRouteForm', () => {
         methods: ['POST', 'PATCH'],
         upstream_id: 'us-1',
         status: 0,
-        require_auth: true,
+        // The click above toggles auth OFF — it now defaults to on.
+        require_auth: false,
         strip_prefix: false,
         timeout: 45,
         service_keys: [{ header_name: 'Authorization', header_value: 'Bearer secret' }],

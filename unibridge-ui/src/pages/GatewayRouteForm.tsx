@@ -102,7 +102,7 @@ function GatewayRouteEditor({
   const [methods, setMethods] = useState<string[]>(initialRoute?.methods || ['GET', 'POST']);
   const [upstreamId, setUpstreamId] = useState(initialRoute?.upstream_id || '');
   const [statusVal, setStatusVal] = useState(initialRoute?.status ?? 1);
-  const [requireAuth, setRequireAuth] = useState(!!initialRoute?.require_auth);
+  const [requireAuth, setRequireAuth] = useState(initialRoute ? !!initialRoute.require_auth : true);
   const [stripPrefix, setStripPrefix] = useState(initialRoute ? !!initialRoute.strip_prefix : true);
   // Blank = inherit the global gateway default; a number is a per-route override.
   const [timeoutInput, setTimeoutInput] = useState(

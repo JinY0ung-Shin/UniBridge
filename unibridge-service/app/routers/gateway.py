@@ -448,6 +448,12 @@ async def save_route(
             detail=f"Failed to look up existing route: {exc}",
         )
 
+    # Secure by default: a brand-new route with require_auth unspecified gets
+    # key-auth. Updates keep _inject_plugins' preserve-existing semantics, so
+    # an intentionally open route stays open across unrelated edits.
+    if existing_route is None and body.get("require_auth") is None:
+        body["require_auth"] = True
+
     body = _inject_plugins(body, existing_plugins)
     _apply_route_timeout(body, existing_route)
     plugins = body.get("plugins")
