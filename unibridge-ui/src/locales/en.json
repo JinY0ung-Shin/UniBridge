@@ -8,7 +8,7 @@
     "queryTemplates": "Query Templates",
     "gatewayRoutes": "Gateway Routes",
     "gatewayUpstreams": "Gateway Upstreams",
-    "apiKeys": "API Keys",
+    "apiKeys": "API Key Management",
     "myApiKey": "My API Key",
     "gatewayMonitoring": "Gateway Monitoring",
     "roles": "Roles",
@@ -406,8 +406,8 @@
     "deleteFailed": "Failed to delete upstream"
   },
   "apiKeys": {
-    "title": "API Keys",
-    "subtitle": "Create API keys and manage access to data sources and routes",
+    "title": "API Key Management",
+    "subtitle": "Create and manage all API keys and their access to data sources and routes (self_ keys are users' personal keys)",
     "addKey": "+ Add API Key",
     "loadingKeys": "Loading API keys...",
     "loadFailed": "Failed to load API keys.",

@@ -12,6 +12,9 @@ export interface NavItem {
   icon: string;
   section: string;
   permission: NavPermission;
+  /** Hide the item when the user has ANY of these permissions, even if
+   *  `permission` matches. The route itself stays reachable by URL. */
+  hiddenForPermissions?: string[];
 }
 
 export const navItems: NavItem[] = [
@@ -32,7 +35,9 @@ export const navItems: NavItem[] = [
   { to: '/external/monitoring', labelKey: 'nav.externalMonitoring', icon: 'Gateway Monitoring', section: 'servers', permission: 'gateway.monitoring.read' },
   { to: '/external/guide', labelKey: 'nav.metricsGuide', icon: 'Audit Logs', section: 'servers', permission: null },
   { to: '/api-keys', labelKey: 'nav.apiKeys', icon: 'API Keys', section: 'access', permission: 'apikeys.read' },
-  { to: '/my-api-key', labelKey: 'nav.myApiKey', icon: 'API Keys', section: 'access', permission: 'apikeys.self' },
+  // Key administrators manage every key (incl. their own) on /api-keys, so the
+  // self-service page only clutters their sidebar.
+  { to: '/my-api-key', labelKey: 'nav.myApiKey', icon: 'API Keys', section: 'access', permission: 'apikeys.self', hiddenForPermissions: ['apikeys.read'] },
   { to: '/roles', labelKey: 'nav.roles', icon: 'Roles', section: 'admin', permission: 'admin.roles.read' },
   { to: '/users', labelKey: 'nav.users', icon: 'Users', section: 'admin', permission: 'admin.users.read' },
   { to: '/admin-audit-logs', labelKey: 'nav.adminAuditLogs', icon: 'Audit Logs', section: 'admin', permission: 'admin.audit.read' },
@@ -48,9 +53,16 @@ export function hasNavPermission(permission: NavPermission, perms: string[]): bo
   return perms.includes(permission);
 }
 
+/** Full sidebar visibility: permission match minus hiddenForPermissions. */
+export function isNavItemVisible(item: NavItem, perms: string[]): boolean {
+  if (!hasNavPermission(item.permission, perms)) return false;
+  return !item.hiddenForPermissions?.some((p) => perms.includes(p));
+}
+
 /** First non-root nav path the user can access, or null if none. Used as the
- *  landing page for users who cannot see the dashboard. */
+ *  landing page for users who cannot see the dashboard. Mirrors sidebar
+ *  visibility so users never land on a page their menu doesn't show. */
 export function firstAccessiblePath(perms: string[]): string | null {
-  const item = navItems.find((i) => i.to !== '/' && hasNavPermission(i.permission, perms));
+  const item = navItems.find((i) => i.to !== '/' && isNavItemVisible(i, perms));
   return item ? item.to : null;
 }

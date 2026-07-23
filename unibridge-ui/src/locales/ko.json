@@ -8,7 +8,7 @@
     "queryTemplates": "쿼리 템플릿",
     "gatewayRoutes": "게이트웨이 라우트",
     "gatewayUpstreams": "게이트웨이 업스트림",
-    "apiKeys": "API Keys",
+    "apiKeys": "API 키 관리",
     "myApiKey": "내 API 키",
     "gatewayMonitoring": "게이트웨이 모니터링",
     "roles": "역할",
@@ -406,8 +406,8 @@
     "deleteFailed": "업스트림 삭제에 실패했습니다"
   },
   "apiKeys": {
-    "title": "API Keys",
-    "subtitle": "API 키를 생성하고 데이터 소스 및 라우트 접근 권한을 관리합니다",
+    "title": "API 키 관리",
+    "subtitle": "모든 API 키를 생성하고 데이터 소스 및 라우트 접근 권한을 관리합니다 (self_ 키는 각 사용자의 개인 키입니다)",
     "addKey": "+ API 키 추가",
     "loadingKeys": "API 키를 불러오는 중...",
     "loadFailed": "API 키를 불러오지 못했습니다.",

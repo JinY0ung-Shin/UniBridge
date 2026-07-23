@@ -307,7 +307,7 @@ describe('App', () => {
     expect(screen.getByText('Query Templates')).toBeInTheDocument();
     expect(screen.getByText('Gateway Routes')).toBeInTheDocument();
     expect(screen.getByText('Gateway Upstreams')).toBeInTheDocument();
-    expect(screen.getByText('API Keys')).toBeInTheDocument();
+    expect(screen.getByText('API Key Management')).toBeInTheDocument();
     // "Gateway Monitoring" appears both as a nav link and as the Dashboard section title
     expect(screen.getAllByText('Gateway Monitoring').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Roles')).toBeInTheDocument();
@@ -332,7 +332,36 @@ describe('App', () => {
     expect(screen.queryByText('Permissions')).not.toBeInTheDocument();
     expect(screen.queryByText('Audit Logs')).not.toBeInTheDocument();
     expect(screen.queryByText('Roles')).not.toBeInTheDocument();
-    expect(screen.queryByText('API Keys')).not.toBeInTheDocument();
+    expect(screen.queryByText('API Key Management')).not.toBeInTheDocument();
+  });
+
+  it('hides My API Key for key administrators but keeps it for self-service users', async () => {
+    const { getCurrentUser } = await import('../api/client');
+
+    // Admin: has both apikeys.read and apikeys.self → only the management page.
+    vi.mocked(getCurrentUser).mockResolvedValue({
+      username: 'test',
+      role: 'admin',
+      permissions: [...DEFAULT_USER.permissions, 'apikeys.self'],
+    });
+    const adminView = renderWithProviders(<App />);
+    await waitFor(() => {
+      expect(screen.getByText('API Key Management')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('My API Key')).not.toBeInTheDocument();
+    adminView.unmount();
+
+    // Regular user: apikeys.self without apikeys.read → self-service page shows.
+    vi.mocked(getCurrentUser).mockResolvedValue({
+      username: 'user',
+      role: 'user',
+      permissions: ['dashboard.read', 'apikeys.self'],
+    });
+    renderWithProviders(<App />);
+    await waitFor(() => {
+      expect(screen.getByText('My API Key')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('API Key Management')).not.toBeInTheDocument();
   });
 
   it('shows retry state when current user permissions fail to load', async () => {

@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getCurrentUser } from '../api/client';
 import { useAuth } from './useAuth';
 import { PermissionProvider } from './PermissionContext';
-import { navItems, hasNavPermission } from './navItems';
+import { navItems, isNavItemVisible } from './navItems';
 import SettingsModal from './SettingsModal';
 import UniBridgeLogo from './UniBridgeLogo';
 import './Layout.css';
@@ -32,8 +32,6 @@ function Layout({ children }: LayoutProps) {
   const userPermissions = permissionsQuery.data?.permissions ?? [];
   const permissionsLoaded = permissionsQuery.isSuccess;
 
-  const hasPermission = (perm: Parameters<typeof hasNavPermission>[0]) =>
-    hasNavPermission(perm, userPermissions);
   const isNavOpen = navOpenPath === location.pathname;
 
   useEffect(() => {
@@ -153,7 +151,7 @@ function Layout({ children }: LayoutProps) {
           </button>
         </div>
         <nav className="sidebar-nav" aria-label={t('common.mainNavigation')}>
-          {navItems.filter((item) => hasPermission(item.permission)).map((item, index, filtered) => {
+          {navItems.filter((item) => isNavItemVisible(item, userPermissions)).map((item, index, filtered) => {
             const prevItem = filtered[index - 1];
             const showDivider = prevItem && prevItem.section !== item.section;
             return (
