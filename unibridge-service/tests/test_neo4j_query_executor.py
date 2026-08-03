@@ -51,9 +51,11 @@ class FakeDriver:
     def __init__(self, session):
         self._session = session
         self.database = None
+        self.default_access_mode = None
 
-    def session(self, *, database):
+    def session(self, *, database, default_access_mode=None):
         self.database = database
+        self.default_access_mode = default_access_mode
         return self._session
 
 
@@ -87,6 +89,24 @@ async def test_execute_neo4j_query_limits_rows_and_returns_metadata():
     assert getattr(session.query, "timeout", None) == 30
     assert session.params == {"active": True}
     assert driver.database == "neo4j"
+    # readonly defaults to True → session opens in READ access mode.
+    assert driver.default_access_mode == query_executor.NEO4J_READ_ACCESS
+
+
+@pytest.mark.asyncio
+async def test_execute_neo4j_query_write_mode_only_when_readonly_false():
+    session = FakeSession(FakeResult(["n"], [FakeRecord(["node"])]))
+    driver = FakeDriver(session)
+
+    await execute_neo4j_query(
+        driver,
+        "neo4j",
+        "CREATE (n:User {name: 'x'})",
+        limit=1,
+        readonly=False,
+    )
+
+    assert driver.default_access_mode == query_executor.NEO4J_WRITE_ACCESS
 
 
 @pytest.mark.asyncio

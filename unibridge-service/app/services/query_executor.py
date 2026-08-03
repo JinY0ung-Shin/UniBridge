@@ -14,11 +14,16 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 try:  # pragma: no cover - exercised when neo4j is installed
+    from neo4j import READ_ACCESS as NEO4J_READ_ACCESS
+    from neo4j import WRITE_ACCESS as NEO4J_WRITE_ACCESS
     from neo4j import Query as Neo4jQuery
     from neo4j.graph import Node as Neo4jNode
     from neo4j.graph import Path as Neo4jPath
     from neo4j.graph import Relationship as Neo4jRelationship
 except ImportError:  # pragma: no cover - test environment may omit neo4j
+    NEO4J_READ_ACCESS = "READ"
+    NEO4J_WRITE_ACCESS = "WRITE"
+
     class Neo4jQuery:
         def __init__(self, text: str, timeout: int | float | None = None) -> None:
             self.text = text
@@ -526,11 +531,15 @@ def _execute_neo4j_sync(
     params: dict[str, Any] | None,
     limit: int,
     timeout: int | float,
+    readonly: bool,
 ) -> QueryResponse:
     """Core execution logic for Neo4j via the official driver."""
     start = time.monotonic()
     cypher = Neo4jQuery(query, timeout=timeout)
-    with driver.session(database=database) as session:
+    # READ access mode is enforced by the server (and routes to secondaries in
+    # a cluster), so a write misclassified as a read upstream still fails here.
+    access_mode = NEO4J_READ_ACCESS if readonly else NEO4J_WRITE_ACCESS
+    with driver.session(database=database, default_access_mode=access_mode) as session:
         result = session.run(cypher, parameters=params or {})
         columns = list(result.keys())
         rows: list[list[Any]] = []
@@ -558,8 +567,13 @@ async def execute_neo4j_query(
     params: dict[str, Any] | None = None,
     limit: int | None = None,
     timeout: int | None = None,
+    readonly: bool = True,
 ) -> QueryResponse:
-    """Execute a Neo4j Cypher query with timeout and row limit."""
+    """Execute a Neo4j Cypher query with timeout and row limit.
+
+    ``readonly=True`` (the default) opens the session in READ access mode, so
+    the server rejects writes; pass ``False`` only for authorized data writes.
+    """
     effective_limit = limit or settings_manager.default_row_limit
     effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
     try:
@@ -572,6 +586,7 @@ async def execute_neo4j_query(
                 params,
                 effective_limit,
                 effective_timeout,
+                readonly,
             ),
             timeout=effective_timeout,
         )

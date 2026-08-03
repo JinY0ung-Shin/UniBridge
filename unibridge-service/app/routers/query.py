@@ -182,12 +182,49 @@ def _contains_neo4j_clause(sql: str, pattern: str) -> bool:
     return re.search(rf"(?<!\S){pattern}\b", sql) is not None
 
 
+# Statement types that may reach the per-key / per-role permission checks for
+# Neo4j. Everything else (procedures, LOAD CSV, schema/admin commands) is
+# rejected outright regardless of granted flags.
+_NEO4J_DATA_STATEMENTS = {"select", "insert", "update", "delete"}
+
+# Cypher schema/admin commands always start with their command verb, so they
+# are matched anchored at the statement head. They can embed data-write
+# keywords (`ALTER USER ... SET PASSWORD`, `CREATE INDEX`), so they must be
+# classified before the data-write keyword scan below.
+_NEO4J_SCHEMA_ADMIN_RE = re.compile(
+    r"^(?:"
+    r"ALTER|GRANT|DENY|REVOKE|RENAME|TERMINATE|"
+    r"ENABLE\s+SERVER|DEALLOCATE|REALLOCATE|"
+    r"(?:START|STOP)\s+DATABASE|"
+    r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:COMPOSITE\s+)?"
+    r"(?:(?:RANGE|TEXT|POINT|LOOKUP|FULLTEXT|VECTOR|BTREE)\s+)?"
+    r"(?:INDEX|CONSTRAINT|DATABASE|ALIAS|USER|ROLE|SERVER)"
+    r")\b"
+)
+
+
 def _detect_neo4j_statement_type(sql: str) -> str:
     normalized = re.sub(
         r"\s+",
         " ",
         _strip_neo4j_literals_and_comments(sql).strip(),
     ).upper()
+    # Schema/admin commands and procedure calls are classified before the
+    # data-write keywords: `ALTER USER x SET PASSWORD` must not count as
+    # "update", and `MATCH ... CALL apoc.x() ... CREATE ...` must not count as
+    # "insert" — otherwise a data-write grant would unlock them.
+    if _NEO4J_SCHEMA_ADMIN_RE.match(normalized):
+        return "execute"
+    # USE retargets the query at another database on the same server (it may
+    # also appear after UNION in composite queries), which would bypass the
+    # per-alias database scoping — so it is never treated as a data statement.
+    if (
+        _contains_neo4j_clause(normalized, r"LOAD\s+CSV")
+        or _contains_neo4j_clause(normalized, "CALL")
+        or _contains_neo4j_clause(normalized, "DROP")
+        or _contains_neo4j_clause(normalized, "USE")
+    ):
+        return "execute"
     if _contains_neo4j_clause(
         normalized,
         r"DETACH\s+DELETE",
@@ -203,12 +240,6 @@ def _detect_neo4j_statement_type(sql: str) -> str:
         "MERGE",
     ):
         return "insert"
-    if (
-        _contains_neo4j_clause(normalized, r"LOAD\s+CSV")
-        or _contains_neo4j_clause(normalized, "CALL")
-        or _contains_neo4j_clause(normalized, "DROP")
-    ):
-        return "execute"
     if re.match(
         r"^(OPTIONAL\s+MATCH\b.*\bRETURN\b|MATCH\b.*\bRETURN\b|RETURN\b|WITH\b.*\bRETURN\b|UNWIND\b.*\bRETURN\b)",
         normalized,
@@ -355,10 +386,19 @@ async def execute(
             error_message=str(exc.detail),
         )
         raise
-    if db_type == "neo4j" and statement_type != "select":
+    # Neo4j allows data reads and data writes only; data writes still have to
+    # pass the per-key / per-role permission checks below. Procedure calls,
+    # LOAD CSV, and schema/admin commands stay blocked for everyone because no
+    # grant flag maps to them (unlike SQL roles, which may run DDL/EXECUTE
+    # with all four flags).
+    if db_type == "neo4j" and statement_type not in _NEO4J_DATA_STATEMENTS:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Neo4j queries are read-only",
+            detail=(
+                "Unsupported Cypher for Neo4j: only data reads (MATCH ... RETURN) "
+                "and data writes (CREATE/MERGE/SET/REMOVE/DELETE) are allowed; "
+                "CALL, LOAD CSV, and schema/admin commands are blocked"
+            ),
         )
 
     # 2. Check per-database permissions
@@ -484,6 +524,7 @@ async def execute(
                 params=req.params,
                 limit=req.limit,
                 timeout=req.timeout,
+                readonly=statement_type == "select",
             )
         elif db_type == "graphdb":
             graphdb_client = connection_manager.get_graphdb_client(req.database)
