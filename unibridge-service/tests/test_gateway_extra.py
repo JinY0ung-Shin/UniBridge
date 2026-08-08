@@ -193,11 +193,11 @@ async def test_save_route_upstream_id_required(client, admin_token):
 
 @pytest.mark.asyncio
 async def test_save_route_apisix_http_and_generic_errors(client, admin_token):
-    # get_resource returns 404 (new route), then put_resource fails — both
-    # error variants must surface as 502 from the put path.
-    body = {"uri": "/api/x", "upstream_id": "u1"}
+    # The listing shows no existing route (new route), then put_resource
+    # fails — both error variants must surface as 502 from the put path.
+    body = {"name": "x-route", "uri": "/api/x", "upstream_id": "u1"}
     with patch("app.routers.gateway.apisix_client") as mock:
-        mock.get_resource = AsyncMock(side_effect=_http_status(404, "no"))
+        mock.list_resources = AsyncMock(return_value={"items": []})
         mock.put_resource = AsyncMock(side_effect=_http_status(500, "boom"))
         resp = await client.put(
             "/admin/gateway/routes/r1",
@@ -207,7 +207,7 @@ async def test_save_route_apisix_http_and_generic_errors(client, admin_token):
     assert resp.status_code == 502
 
     with patch("app.routers.gateway.apisix_client") as mock:
-        mock.get_resource = AsyncMock(side_effect=_http_status(404, "no"))
+        mock.list_resources = AsyncMock(return_value={"items": []})
         mock.put_resource = AsyncMock(side_effect=RuntimeError("fail"))
         resp = await client.put(
             "/admin/gateway/routes/r1",
@@ -219,9 +219,11 @@ async def test_save_route_apisix_http_and_generic_errors(client, admin_token):
 
 @pytest.mark.asyncio
 async def test_save_route_success(client, admin_token):
-    body = {"uri": "/api/x", "upstream_id": "u1"}
+    body = {"name": "x-route", "uri": "/api/x", "upstream_id": "u1"}
     with patch("app.routers.gateway.apisix_client") as mock:
-        mock.get_resource = AsyncMock(return_value={"plugins": {"prometheus": {}}})
+        mock.list_resources = AsyncMock(
+            return_value={"items": [{"id": "r1", "plugins": {"prometheus": {}}}]}
+        )
         mock.put_resource = AsyncMock(return_value={
             "uri": "/api/x", "upstream_id": "u1", "plugins": {},
         })
@@ -247,11 +249,16 @@ async def test_save_keyauth_route_defaults_to_deny_all_when_no_master(client, ad
         return dict(body)
 
     with patch("app.routers.gateway.apisix_client") as mock:
-        mock.get_resource = AsyncMock(side_effect=_http_status(404, "missing"))
+        mock.list_resources = AsyncMock(return_value={"items": []})
         mock.put_resource = AsyncMock(side_effect=put_resource)
         resp = await client.put(
             "/admin/gateway/routes/secure",
-            json={"uri": "/api/secure/*", "upstream_id": "u1", "require_auth": True},
+            json={
+                "name": "secure-route",
+                "uri": "/api/secure/*",
+                "upstream_id": "u1",
+                "require_auth": True,
+            },
             headers=auth_header(admin_token),
         )
 
@@ -281,11 +288,16 @@ async def test_save_keyauth_route_whitelists_master_consumers(client, admin_toke
         return dict(body)
 
     with patch("app.routers.gateway.apisix_client") as gateway_apisix:
-        gateway_apisix.get_resource = AsyncMock(side_effect=_http_status(404, "missing"))
+        gateway_apisix.list_resources = AsyncMock(return_value={"items": []})
         gateway_apisix.put_resource = AsyncMock(side_effect=put_resource)
         resp = await client.put(
             "/admin/gateway/routes/secure",
-            json={"uri": "/api/secure/*", "upstream_id": "u1", "require_auth": True},
+            json={
+                "name": "secure-route",
+                "uri": "/api/secure/*",
+                "upstream_id": "u1",
+                "require_auth": True,
+            },
             headers=auth_header(admin_token),
         )
 

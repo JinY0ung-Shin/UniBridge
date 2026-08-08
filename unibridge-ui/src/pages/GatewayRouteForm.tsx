@@ -145,7 +145,7 @@ function GatewayRouteEditor({
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!uriSuffix.trim() || !upstreamId) return;
+    if (!name.trim() || !uriSuffix.trim() || !upstreamId) return;
 
     const uri = `/api/${uriSuffix.replace(/^\/+/, '')}`;
     const routeId = id || crypto.randomUUID();
@@ -161,7 +161,7 @@ function GatewayRouteEditor({
       .filter((entry): entry is { header_name: string; header_value: string } => entry !== null);
 
     const body: Record<string, unknown> = {
-      name: name.trim() || undefined,
+      name: name.trim(),
       uri,
       methods,
       upstream_id: upstreamId || undefined,
@@ -232,7 +232,16 @@ function GatewayRouteEditor({
           <div className="form-row">
             <div className="field">
               <label htmlFor="gateway-route-name">{t('common.name')}</label>
-              <input id="gateway-route-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="My API Route" aria-label={t('common.name')} />
+              <input
+                id="gateway-route-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="My API Route"
+                aria-label={t('common.name')}
+                aria-describedby="gateway-route-name-hint"
+                required
+              />
+              <span id="gateway-route-name-hint" className="field-hint">{t('gatewayRouteForm.nameHint')}</span>
             </div>
             <div className="field">
               <label htmlFor="gateway-route-status">{t('common.status')}</label>

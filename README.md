@@ -351,8 +351,11 @@ Thursday-start caveat above.
 Routes appear by **name**, not id: `apisix/config.yaml` sets
 `plugin_attr.prometheus.prefer_name: true`, so the `route` label on
 `apisix_http_*` metrics carries the route's friendly name (falling back to the
-id for unnamed routes — give routes a name in the Gateway UI to get readable
-dashboards). System routes are named identically to their ids (`query-api`,
+id for unnamed routes). The backend therefore requires a name when saving a
+route and rejects names already used by another route's name or id (duplicate
+labels would merge their series); routes created before this rule keep working
+but pick up the requirement on their next edit. System routes are named
+identically to their ids (`query-api`,
 `llm-proxy`, …), so fixed-id PromQL filters keep matching. Enabling or changing
 this requires an APISIX restart (`docker compose up -d apisix`), and series
 recorded before the switch (or before a route rename) keep their old label

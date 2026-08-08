@@ -332,6 +332,7 @@
     "newSubtitle": "새로운 API 게이트웨이 라우트 생성",
     "loadingRoute": "라우트를 불러오는 중...",
     "basicInfo": "기본 정보",
+    "nameHint": "필수 — 모니터링과 Grafana에서 이 라우트의 라벨로 표시됩니다. 다른 라우트와 중복될 수 없습니다.",
     "uri": "URI",
     "uriHint": "/api/로 시작해야 합니다. /* 를 붙이면 하위 모든 경로를 포함합니다",
     "methods": "메서드",

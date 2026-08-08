@@ -496,9 +496,9 @@ class TestSaveRoute:
         }
         with (
             patch(
-                "app.routers.gateway.apisix_client.get_resource",
+                "app.routers.gateway.apisix_client.list_resources",
                 new_callable=AsyncMock,
-                side_effect=_http_status(404, "not found"),
+                return_value={"items": []},
             ),
             patch(
                 "app.routers.gateway.apisix_client.put_resource",
@@ -509,6 +509,7 @@ class TestSaveRoute:
             resp = await client.put(
                 "/admin/gateway/routes/r1",
                 json={
+                    "name": "test-route",
                     "uri": "/api/test/*",
                     "upstream_id": "u1",
                     "service_keys": [
@@ -537,9 +538,9 @@ class TestSaveRoute:
         saved_route = {"id": "r1", "uri": "/api/test/*", "plugins": {"key-auth": {}}}
         with (
             patch(
-                "app.routers.gateway.apisix_client.get_resource",
+                "app.routers.gateway.apisix_client.list_resources",
                 new_callable=AsyncMock,
-                side_effect=_http_status(404, "not found"),
+                return_value={"items": []},
             ),
             patch(
                 "app.routers.gateway.apisix_client.put_resource",
@@ -549,7 +550,7 @@ class TestSaveRoute:
         ):
             resp = await client.put(
                 "/admin/gateway/routes/r1",
-                json={"uri": "/api/test/*", "upstream_id": "u1"},
+                json={"name": "test-route", "uri": "/api/test/*", "upstream_id": "u1"},
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 200
@@ -563,9 +564,9 @@ class TestSaveRoute:
         saved_route = {"id": "r1", "uri": "/api/test/*", "plugins": {}}
         with (
             patch(
-                "app.routers.gateway.apisix_client.get_resource",
+                "app.routers.gateway.apisix_client.list_resources",
                 new_callable=AsyncMock,
-                side_effect=_http_status(404, "not found"),
+                return_value={"items": []},
             ),
             patch(
                 "app.routers.gateway.apisix_client.put_resource",
@@ -575,7 +576,12 @@ class TestSaveRoute:
         ):
             resp = await client.put(
                 "/admin/gateway/routes/r1",
-                json={"uri": "/api/test/*", "upstream_id": "u1", "require_auth": False},
+                json={
+                    "name": "test-route",
+                    "uri": "/api/test/*",
+                    "upstream_id": "u1",
+                    "require_auth": False,
+                },
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 200
@@ -590,9 +596,9 @@ class TestSaveRoute:
         existing = {"id": "r1", "uri": "/api/test/*", "upstream_id": "u1", "plugins": {}}
         with (
             patch(
-                "app.routers.gateway.apisix_client.get_resource",
+                "app.routers.gateway.apisix_client.list_resources",
                 new_callable=AsyncMock,
-                return_value=deepcopy(existing),
+                return_value={"items": [deepcopy(existing)]},
             ),
             patch(
                 "app.routers.gateway.apisix_client.put_resource",
@@ -602,7 +608,7 @@ class TestSaveRoute:
         ):
             resp = await client.put(
                 "/admin/gateway/routes/r1",
-                json={"uri": "/api/test/*", "upstream_id": "u1"},
+                json={"name": "test-route", "uri": "/api/test/*", "upstream_id": "u1"},
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 200
@@ -619,9 +625,9 @@ class TestSaveRoute:
         }
         with (
             patch(
-                "app.routers.gateway.apisix_client.get_resource",
+                "app.routers.gateway.apisix_client.list_resources",
                 new_callable=AsyncMock,
-                side_effect=_http_status(404, "not found"),
+                return_value={"items": []},
             ),
             patch(
                 "app.routers.gateway.apisix_client.put_resource",
@@ -632,6 +638,7 @@ class TestSaveRoute:
             resp = await client.put(
                 "/admin/gateway/routes/r1",
                 json={
+                    "name": "test-route",
                     "uri": "/api/test/*",
                     "upstream_id": "u1",
                     "service_key": {
@@ -685,9 +692,9 @@ class TestSaveRoute:
         }
         with (
             patch(
-                "app.routers.gateway.apisix_client.get_resource",
+                "app.routers.gateway.apisix_client.list_resources",
                 new_callable=AsyncMock,
-                return_value=deepcopy(existing_route),
+                return_value={"items": [deepcopy(existing_route)]},
             ),
             patch(
                 "app.routers.gateway.apisix_client.put_resource",
@@ -697,7 +704,7 @@ class TestSaveRoute:
         ):
             resp = await client.put(
                 "/admin/gateway/routes/r1",
-                json={"uri": "/api/test/*", "upstream_id": "u1"},
+                json={"name": "test-route", "uri": "/api/test/*", "upstream_id": "u1"},
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 200
@@ -707,13 +714,13 @@ class TestSaveRoute:
         assert "key-auth" in call_body.get("plugins", {})
 
     async def test_apisix_error_returns_502(self, client, admin_token):
-        # get_resource returns 404 (new route) so we proceed to the put,
-        # which fails — the response is the put failure surfaced as 502.
+        # The listing has no existing route (new route) so we proceed to the
+        # put, which fails — the response is the put failure surfaced as 502.
         with (
             patch(
-                "app.routers.gateway.apisix_client.get_resource",
+                "app.routers.gateway.apisix_client.list_resources",
                 new_callable=AsyncMock,
-                side_effect=_http_status(404, "not found"),
+                return_value={"items": []},
             ),
             patch(
                 "app.routers.gateway.apisix_client.put_resource",
@@ -723,7 +730,7 @@ class TestSaveRoute:
         ):
             resp = await client.put(
                 "/admin/gateway/routes/r1",
-                json={"uri": "/api/test/*", "upstream_id": "u1"},
+                json={"name": "test-route", "uri": "/api/test/*", "upstream_id": "u1"},
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 502
@@ -736,6 +743,7 @@ class TestSaveRouteValidation:
         resp = await client.put(
             "/admin/gateway/routes/r1",
             json={
+                "name": "svc-route",
                 "uri": "/api/test/*",
                 "upstream_id": "u1",
                 "service_keys": {"header_name": "X", "header_value": "v"},
@@ -749,6 +757,7 @@ class TestSaveRouteValidation:
         resp = await client.put(
             "/admin/gateway/routes/r1",
             json={
+                "name": "svc-route",
                 "uri": "/api/test/*",
                 "upstream_id": "u1",
                 "service_keys": ["X-Api-Key: v"],
@@ -761,6 +770,7 @@ class TestSaveRouteValidation:
         resp = await client.put(
             "/admin/gateway/routes/r1",
             json={
+                "name": "svc-route",
                 "uri": "/api/test/*",
                 "upstream_id": "u1",
                 "service_key": "X-Api-Key: v",
@@ -773,6 +783,7 @@ class TestSaveRouteValidation:
         resp = await client.put(
             "/admin/gateway/routes/r1",
             json={
+                "name": "svc-route",
                 "uri": "/api/test/*",
                 "upstream_id": "u1",
                 "service_keys": [{"header_value": "v"}],
@@ -786,6 +797,7 @@ class TestSaveRouteValidation:
         resp = await client.put(
             "/admin/gateway/routes/r1",
             json={
+                "name": "svc-route",
                 "uri": "/api/test/*",
                 "upstream_id": "u1",
                 "service_keys": [{"header_name": "   ", "header_value": "v"}],
@@ -798,6 +810,7 @@ class TestSaveRouteValidation:
         resp = await client.put(
             "/admin/gateway/routes/r1",
             json={
+                "name": "svc-route",
                 "uri": "/api/test/*",
                 "upstream_id": "u1",
                 "service_keys": [{"header_name": "X", "header_value": 123}],
@@ -812,6 +825,7 @@ class TestSaveRouteValidation:
         resp = await client.put(
             "/admin/gateway/routes/r1",
             json={
+                "name": "svc-route",
                 "uri": "/api/test/*",
                 "upstream_id": "u1",
                 "service_keys": [
@@ -825,10 +839,141 @@ class TestSaveRouteValidation:
         assert "Duplicate" in resp.json()["detail"]
 
 
-class TestSaveRouteExistingLookup:
-    """Verify save_route distinguishes 404 (new route) from transient errors."""
+class TestRouteNameValidation:
+    """Custom routes must carry a unique, human-readable name — with APISIX
+    prefer_name the Prometheus route label shows the name and falls back to
+    the opaque UUID id for unnamed routes."""
 
-    async def test_404_treated_as_new_route(self, client, admin_token):
+    async def test_missing_name_rejected(self, client, admin_token):
+        resp = await client.put(
+            "/admin/gateway/routes/r1",
+            json={"uri": "/api/test/*", "upstream_id": "u1"},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+        assert "name" in resp.json()["detail"].lower()
+
+    async def test_blank_name_rejected(self, client, admin_token):
+        resp = await client.put(
+            "/admin/gateway/routes/r1",
+            json={"name": "   ", "uri": "/api/test/*", "upstream_id": "u1"},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_non_string_name_rejected(self, client, admin_token):
+        resp = await client.put(
+            "/admin/gateway/routes/r1",
+            json={"name": 123, "uri": "/api/test/*", "upstream_id": "u1"},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_overlong_name_rejected(self, client, admin_token):
+        resp = await client.put(
+            "/admin/gateway/routes/r1",
+            json={"name": "x" * 101, "uri": "/api/test/*", "upstream_id": "u1"},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_control_char_name_rejected(self, client, admin_token):
+        resp = await client.put(
+            "/admin/gateway/routes/r1",
+            json={"name": "bad\nname", "uri": "/api/test/*", "upstream_id": "u1"},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 400
+
+    async def test_name_is_trimmed_before_save(self, client, admin_token):
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.list_resources",
+                new_callable=AsyncMock,
+                return_value={"items": []},
+            ),
+            patch(
+                "app.routers.gateway.apisix_client.put_resource",
+                new_callable=AsyncMock,
+                return_value={"id": "r1", "uri": "/api/test/*", "plugins": {}},
+            ) as mock_put,
+        ):
+            resp = await client.put(
+                "/admin/gateway/routes/r1",
+                json={"name": "  orders  ", "uri": "/api/test/*", "upstream_id": "u1"},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert mock_put.call_args[0][2]["name"] == "orders"
+
+    async def test_name_used_by_another_route_conflicts(self, client, admin_token):
+        put_mock = AsyncMock(return_value={"id": "r1", "plugins": {}})
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.list_resources",
+                new_callable=AsyncMock,
+                return_value={"items": [{"id": "other", "name": "orders"}]},
+            ),
+            patch("app.routers.gateway.apisix_client.put_resource", put_mock),
+        ):
+            resp = await client.put(
+                "/admin/gateway/routes/r1",
+                json={"name": "orders", "uri": "/api/test/*", "upstream_id": "u1"},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 409
+        assert "already used" in resp.json()["detail"]
+        assert put_mock.await_count == 0
+
+    async def test_name_colliding_with_another_route_id_conflicts(
+        self, client, admin_token
+    ):
+        # An unnamed legacy route reports its id as the Prometheus label, so a
+        # new name equal to that id would merge the two series.
+        put_mock = AsyncMock(return_value={"id": "r1", "plugins": {}})
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.list_resources",
+                new_callable=AsyncMock,
+                return_value={"items": [{"id": "abc-uuid"}]},
+            ),
+            patch("app.routers.gateway.apisix_client.put_resource", put_mock),
+        ):
+            resp = await client.put(
+                "/admin/gateway/routes/r1",
+                json={"name": "abc-uuid", "uri": "/api/test/*", "upstream_id": "u1"},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 409
+        assert put_mock.await_count == 0
+
+    async def test_keeping_own_name_on_update_is_allowed(self, client, admin_token):
+        existing = {"id": "r1", "name": "orders", "uri": "/api/test/*", "plugins": {}}
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.list_resources",
+                new_callable=AsyncMock,
+                return_value={"items": [deepcopy(existing)]},
+            ),
+            patch(
+                "app.routers.gateway.apisix_client.put_resource",
+                new_callable=AsyncMock,
+                return_value=deepcopy(existing),
+            ),
+        ):
+            resp = await client.put(
+                "/admin/gateway/routes/r1",
+                json={"name": "orders", "uri": "/api/test/*", "upstream_id": "u1"},
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+
+
+class TestSaveRouteExistingLookup:
+    """Verify save_route treats an absent listing entry as a new route but
+    surfaces listing failures instead of proceeding."""
+
+    async def test_absent_from_listing_treated_as_new_route(self, client, admin_token):
         saved = {
             "id": "r1",
             "uri": "/api/test/*",
@@ -836,9 +981,9 @@ class TestSaveRouteExistingLookup:
         }
         with (
             patch(
-                "app.routers.gateway.apisix_client.get_resource",
+                "app.routers.gateway.apisix_client.list_resources",
                 new_callable=AsyncMock,
-                side_effect=_http_status(404, "not found"),
+                return_value={"items": []},
             ),
             patch(
                 "app.routers.gateway.apisix_client.put_resource",
@@ -848,18 +993,18 @@ class TestSaveRouteExistingLookup:
         ):
             resp = await client.put(
                 "/admin/gateway/routes/r1",
-                json={"uri": "/api/test/*", "upstream_id": "u1"},
+                json={"name": "test-route", "uri": "/api/test/*", "upstream_id": "u1"},
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 200
 
-    async def test_non_404_http_error_returns_502_before_put(
+    async def test_listing_http_error_returns_502_before_put(
         self, client, admin_token
     ):
         put_mock = AsyncMock(return_value={"id": "r1", "plugins": {}})
         with (
             patch(
-                "app.routers.gateway.apisix_client.get_resource",
+                "app.routers.gateway.apisix_client.list_resources",
                 new_callable=AsyncMock,
                 side_effect=_http_status(500, "etcd down"),
             ),
@@ -870,12 +1015,12 @@ class TestSaveRouteExistingLookup:
         ):
             resp = await client.put(
                 "/admin/gateway/routes/r1",
-                json={"uri": "/api/test/*", "upstream_id": "u1"},
+                json={"name": "test-route", "uri": "/api/test/*", "upstream_id": "u1"},
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 502
-        # We must NOT proceed to PUT when the lookup failed for a non-404 reason;
-        # otherwise we'd silently drop preserved service-key values.
+        # We must NOT proceed to PUT when the listing failed — otherwise we'd
+        # silently drop preserved service-key values.
         assert put_mock.await_count == 0
 
     async def test_connection_error_returns_502_before_put(
@@ -884,7 +1029,7 @@ class TestSaveRouteExistingLookup:
         put_mock = AsyncMock(return_value={"id": "r1", "plugins": {}})
         with (
             patch(
-                "app.routers.gateway.apisix_client.get_resource",
+                "app.routers.gateway.apisix_client.list_resources",
                 new_callable=AsyncMock,
                 side_effect=ConnectionError("network down"),
             ),
@@ -895,7 +1040,7 @@ class TestSaveRouteExistingLookup:
         ):
             resp = await client.put(
                 "/admin/gateway/routes/r1",
-                json={"uri": "/api/test/*", "upstream_id": "u1"},
+                json={"name": "test-route", "uri": "/api/test/*", "upstream_id": "u1"},
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 502
@@ -1939,9 +2084,9 @@ class TestProtectedRouteNameInvariant:
         saved = {"id": "llm-proxy", "uri": "/api/llm/*", "name": "llm-proxy"}
         with (
             patch(
-                "app.routers.gateway.apisix_client.get_resource",
+                "app.routers.gateway.apisix_client.list_resources",
                 new_callable=AsyncMock,
-                side_effect=_http_status(404, "not found"),
+                return_value={"items": []},
             ),
             patch(
                 "app.routers.gateway.apisix_client.put_resource",

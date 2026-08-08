@@ -398,6 +398,11 @@ async def get_route(
     return route
 
 
+# APISIX caps route names at 100 chars (rule_name schema); enforcing it here
+# turns the opaque schema error into a clean 400.
+_ROUTE_NAME_MAX_LEN = 100
+
+
 @router.put("/routes/{route_id}")
 async def save_route(
     route_id: str,
@@ -427,26 +432,66 @@ async def save_route(
     # _labels/_llm_labels defaults, self-scope checks) relies on that invariant.
     if route_id in PROTECTED_ROUTE_IDS:
         body["name"] = route_id
+    else:
+        # Names are required: an unnamed route falls back to its (UUID) id in
+        # the Prometheus route label, which is what monitoring/Grafana show.
+        raw_name = body.get("name")
+        name = raw_name.strip() if isinstance(raw_name, str) else ""
+        if not name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Route name is required.",
+            )
+        if len(name) > _ROUTE_NAME_MAX_LEN or any(ord(ch) < 32 for ch in name):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Route name must be at most {_ROUTE_NAME_MAX_LEN} characters"
+                    " and contain no control characters."
+                ),
+            )
+        body["name"] = name
 
     _validate_service_keys_payload(body)
 
-    # Look up existing route so we can (a) preserve plugins we don't manage and
-    # (b) honor "blank value = preserve existing secret" for service_keys. Only
-    # APISIX 404 means "new route, proceed"; any other failure is fatal to avoid
-    # silently losing previously stored headers.
-    existing_plugins: dict[str, Any] | None = None
-    existing_route: dict[str, Any] | None = None
+    # One listing fetch serves both lookups: the existing route (to preserve
+    # plugins we don't manage and honor "blank value = preserve existing
+    # secret" for service_keys) and name uniqueness (a name shared with
+    # another route's name or id merges their Prometheus series under
+    # prefer_name). Absence from the listing means "new route, proceed"; any
+    # listing failure is fatal to avoid silently losing previously stored
+    # headers.
     try:
-        existing_route = await apisix_client.get_resource("routes", route_id)
-        existing_plugins = existing_route.get("plugins")
+        listing = await apisix_client.list_resources("routes")
     except HTTPStatusError as exc:
-        if exc.response.status_code != 404:
-            _handle_apisix_error(exc, "Route")
+        _handle_apisix_error(exc, "Routes")
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to look up existing route: {exc}",
+            detail=f"Failed to look up existing routes: {exc}",
         )
+    all_routes: list[dict[str, Any]] = listing.get("items", [])
+    existing_route: dict[str, Any] | None = next(
+        (item for item in all_routes if item.get("id") == route_id), None
+    )
+    existing_plugins: dict[str, Any] | None = (
+        existing_route.get("plugins") if existing_route else None
+    )
+
+    if route_id not in PROTECTED_ROUTE_IDS:
+        for other in all_routes:
+            if other.get("id") == route_id:
+                continue
+            if body["name"] == other.get("name"):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Route name '{body['name']}' is already used by another route.",
+                )
+            if body["name"] == other.get("id"):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Route name '{body['name']}' collides with another route's id.",
+                )
 
     # Secure by default: a brand-new route with require_auth unspecified gets
     # key-auth. Updates keep _inject_plugins' preserve-existing semantics, so
@@ -472,6 +517,7 @@ async def save_route(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Failed to connect to APISIX: {exc}",
         )
+    _invalidate_route_listing_cache()
     logger.info(
         "Route saved: id=%s uri=%s upstream=%s user=%s",
         route_id,
@@ -524,6 +570,7 @@ async def delete_route(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Failed to connect to APISIX: {exc}",
         )
+    _invalidate_route_listing_cache()
     logger.info("Route deleted: id=%s user=%s", route_id, _admin.username)
     await log_admin_action(
         db,
@@ -1132,6 +1179,13 @@ async def _list_routes_cached() -> list[dict[str, Any]]:
     _ROUTE_LISTING_CACHE = listing.get("items", [])
     _ROUTE_LISTING_CACHE_TS = time.monotonic()
     return _ROUTE_LISTING_CACHE
+
+
+def _invalidate_route_listing_cache() -> None:
+    """Route saves/deletes change the id↔name mapping the monitoring filter
+    expansion relies on — force the next lookup to refetch."""
+    global _ROUTE_LISTING_CACHE_TS
+    _ROUTE_LISTING_CACHE_TS = 0.0
 
 
 async def _route_filter_values(route: str) -> list[str]:

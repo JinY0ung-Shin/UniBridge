@@ -68,6 +68,14 @@ describe('GatewayRouteForm', () => {
     });
 
     expect(screen.getByRole('textbox', { name: 'Name' })).toHaveAttribute('id', 'gateway-route-name');
+    expect(screen.getByRole('textbox', { name: 'Name' })).toBeRequired();
+    expect(screen.getByRole('textbox', { name: 'Name' })).toHaveAttribute(
+      'aria-describedby',
+      'gateway-route-name-hint',
+    );
+    expect(document.getElementById('gateway-route-name-hint')).toHaveTextContent(
+      'shown as this route\'s label in monitoring and Grafana',
+    );
     expect(screen.getByRole('textbox', { name: 'URI' })).toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'Methods' })).toHaveAttribute(
       'aria-labelledby',
@@ -144,6 +152,7 @@ describe('GatewayRouteForm', () => {
       expect(screen.getByRole('option', { name: 'my-upstream' })).toBeInTheDocument();
     });
 
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'external-route');
     await user.type(screen.getByRole('textbox', { name: 'URI' }), 'external/*');
     await user.selectOptions(screen.getByRole('combobox', { name: 'Upstream' }), 'us-1');
     await user.click(screen.getByRole('button', { name: '+ Add Header' }));
@@ -222,6 +231,30 @@ describe('GatewayRouteForm', () => {
     expect(navigateMock).toHaveBeenCalledWith('/gateway/routes');
   });
 
+  it('does not submit while the name is empty', async () => {
+    const user = userEvent.setup();
+    mockedGetGatewayUpstreams.mockResolvedValue({ items: [makeGatewayUpstream()], total: 1 });
+    mockedSaveGatewayRoute.mockResolvedValue(makeGatewayRoute());
+
+    renderWithProviders(<GatewayRouteForm />);
+    await screen.findByRole('option', { name: 'test-upstream' });
+
+    await user.type(screen.getByRole('textbox', { name: 'URI' }), 'orders/*');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Upstream' }), 'upstream-1');
+    await user.click(screen.getByRole('button', { name: 'Create Route' }));
+
+    expect(mockedSaveGatewayRoute).not.toHaveBeenCalled();
+
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'orders-route');
+    await user.click(screen.getByRole('button', { name: 'Create Route' }));
+    await waitFor(() => {
+      expect(mockedSaveGatewayRoute).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ name: 'orders-route' }),
+      );
+    });
+  });
+
   it('submit button is disabled when no upstream selected', async () => {
     renderWithProviders(<GatewayRouteForm />);
 
@@ -260,6 +293,7 @@ describe('GatewayRouteForm', () => {
     const user = userEvent.setup();
     renderWithProviders(<GatewayRouteForm />);
     await screen.findByRole('option', { name: 'test-upstream' });
+    await user.type(screen.getByRole('textbox', { name: 'Name' }), 'orders-route');
     await user.type(screen.getByRole('textbox', { name: 'URI' }), 'orders/*');
     await user.selectOptions(screen.getByRole('combobox', { name: 'Upstream' }), 'upstream-1');
 

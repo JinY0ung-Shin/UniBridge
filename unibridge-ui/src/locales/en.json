@@ -332,6 +332,7 @@
     "newSubtitle": "Create a new API gateway route",
     "loadingRoute": "Loading route...",
     "basicInfo": "Basic Info",
+    "nameHint": "Required — shown as this route's label in monitoring and Grafana. Must be unique across routes.",
     "uri": "URI",
     "uriHint": "Must start with /api/. Append /* to include all sub-paths",
     "methods": "Methods",

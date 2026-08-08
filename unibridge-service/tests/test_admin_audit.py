@@ -107,12 +107,13 @@ class TestRouteAuditing:
             },
         }
         with (
-            patch(f"{GW}.get_resource", new_callable=AsyncMock, side_effect=_http_status(404)),
+            patch(f"{GW}.list_resources", new_callable=AsyncMock, return_value={"items": []}),
             patch(f"{GW}.put_resource", new_callable=AsyncMock, return_value=deepcopy(saved)),
         ):
             resp = await client.put(
                 "/admin/gateway/routes/r1",
                 json={
+                    "name": "audit-route",
                     "uri": "/api/test/*",
                     "upstream_id": "u1",
                     "service_keys": [
@@ -139,12 +140,16 @@ class TestRouteAuditing:
         existing = {"id": "r2", "uri": "/api/old/*", "upstream_id": "u1", "plugins": {}}
         saved = {"id": "r2", "uri": "/api/new/*", "upstream_id": "u2", "plugins": {}}
         with (
-            patch(f"{GW}.get_resource", new_callable=AsyncMock, return_value=deepcopy(existing)),
+            patch(
+                f"{GW}.list_resources",
+                new_callable=AsyncMock,
+                return_value={"items": [deepcopy(existing)]},
+            ),
             patch(f"{GW}.put_resource", new_callable=AsyncMock, return_value=deepcopy(saved)),
         ):
             resp = await client.put(
                 "/admin/gateway/routes/r2",
-                json={"uri": "/api/new/*", "upstream_id": "u2"},
+                json={"name": "audit-route-2", "uri": "/api/new/*", "upstream_id": "u2"},
                 headers=auth_header(admin_token),
             )
             assert resp.status_code == 200
@@ -286,12 +291,12 @@ class TestAdminAuditEndpoint:
         route = {"id": "r1", "uri": "/api/r/*", "upstream_id": "u1", "plugins": {}}
         upstream = {"id": "u1", "name": "up"}
         with (
-            patch(f"{GW}.get_resource", new_callable=AsyncMock, side_effect=_http_status(404)),
+            patch(f"{GW}.list_resources", new_callable=AsyncMock, return_value={"items": []}),
             patch(f"{GW}.put_resource", new_callable=AsyncMock, return_value=deepcopy(route)),
         ):
             await client.put(
                 "/admin/gateway/routes/r1",
-                json={"uri": "/api/r/*", "upstream_id": "u1"},
+                json={"name": "filter-route", "uri": "/api/r/*", "upstream_id": "u1"},
                 headers=auth_header(admin_token),
             )
         with (
@@ -316,13 +321,13 @@ class TestAdminAuditEndpoint:
         """A failure inside log_admin_action is swallowed — the route still saves."""
         saved = {"id": "rok", "uri": "/api/ok/*", "upstream_id": "u1", "plugins": {}}
         with (
-            patch(f"{GW}.get_resource", new_callable=AsyncMock, side_effect=_http_status(404)),
+            patch(f"{GW}.list_resources", new_callable=AsyncMock, return_value={"items": []}),
             patch(f"{GW}.put_resource", new_callable=AsyncMock, return_value=deepcopy(saved)),
             patch("app.services.audit.async_sessionmaker", side_effect=RuntimeError("audit db down")),
         ):
             resp = await client.put(
                 "/admin/gateway/routes/rok",
-                json={"uri": "/api/ok/*", "upstream_id": "u1"},
+                json={"name": "ok-route", "uri": "/api/ok/*", "upstream_id": "u1"},
                 headers=auth_header(admin_token),
             )
             assert resp.status_code == 200
