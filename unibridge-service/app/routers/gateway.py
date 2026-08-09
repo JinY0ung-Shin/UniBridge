@@ -1752,7 +1752,11 @@ async def metrics_top_routes(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
 
-    routes = []
+    # Fold pre-prefer_name id rows onto their name row (same merge as
+    # usages_payload) so a window spanning the flip doesn't list one logical
+    # route twice and burn two top-10 slots.
+    name_map = await _route_name_map()
+    counts: dict[str, int] = {}
     for r in results:
         route = r.get("metric", {}).get("route", "unknown")
         value = r.get("value", [0, "0"])
@@ -1761,7 +1765,10 @@ async def metrics_top_routes(
         except (IndexError, ValueError, TypeError):
             requests = 0
         if requests > 0:
-            routes.append({"route": route, "requests": requests})
+            canonical = name_map.get(route, route)
+            counts[canonical] = counts.get(canonical, 0) + requests
+    routes = [{"route": route, "requests": requests} for route, requests in counts.items()]
+    routes.sort(key=lambda r: r["requests"], reverse=True)
     return routes
 
 
@@ -1824,7 +1831,13 @@ async def usages_payload(
 
     name_map = await _route_name_map()
 
-    routes: list[dict[str, Any]] = []
+    # Series recorded before the prefer_name flip (or before a route rename)
+    # carry the route *id* while newer samples carry the *name*, so a day
+    # spanning that boundary yields an id row and a name row for one logical
+    # route. Fold each row onto its canonical label (id → name when known,
+    # mirroring alert_checker's id↔name merge) so callers keep seeing one row
+    # per route; the day's total is unaffected.
+    counts: dict[str, int] = {}
     total = 0
     for r in results:
         route = r.get("metric", {}).get("route", "unknown")
@@ -1836,7 +1849,13 @@ async def usages_payload(
         if requests <= 0:
             continue
         total += requests
-        routes.append({"route": route, "name": name_map.get(route), "requests": requests})
+        canonical = name_map.get(route, route)
+        counts[canonical] = counts.get(canonical, 0) + requests
+
+    routes: list[dict[str, Any]] = [
+        {"route": route, "name": name_map.get(route), "requests": requests}
+        for route, requests in counts.items()
+    ]
     routes.sort(key=lambda r: r["requests"], reverse=True)
 
     resolved_date = datetime.fromtimestamp(start + _KST_OFFSET, tz=timezone.utc).strftime(

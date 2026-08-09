@@ -348,19 +348,24 @@ selection into the Grafana deep link as `var-bucket`. Daily buckets align to
 KST midnight (dashboards are pinned to Asia/Seoul); weekly buckets keep the
 Thursday-start caveat above.
 
-Routes appear by **name**, not id: `apisix/config.yaml` sets
-`plugin_attr.prometheus.prefer_name: true`, so the `route` label on
-`apisix_http_*` metrics carries the route's friendly name (falling back to the
-id for unnamed routes). The backend therefore requires a name when saving a
-route and rejects names already used by another route's name or id (duplicate
-labels would merge their series); routes created before this rule keep working
-but pick up the requirement on their next edit. System routes are named
-identically to their ids (`query-api`,
-`llm-proxy`, …), so fixed-id PromQL filters keep matching. Enabling or changing
-this requires an APISIX restart (`docker compose up -d apisix`), and series
-recorded before the switch (or before a route rename) keep their old label
-value — the in-app monitoring bridges id↔name when filtering, but Grafana
-panels show the old and new label as separate series across that boundary.
+Routes appear by **name**, not id: unibridge-service sets the prometheus
+plugin's `prefer_name` on the APISIX `prometheus` global rule at every boot
+(APISIX only reads this flag from the plugin conf — a
+`plugin_attr.prometheus` entry in `apisix/config.yaml` is silently ignored),
+so the `route` label on `apisix_http_*` metrics carries the route's friendly
+name (falling back to the id for unnamed routes). The backend therefore
+requires a name when saving a route and rejects names already used by another
+route's name or id (duplicate labels would merge their series); routes created
+before this rule keep working but pick up the requirement on their next edit.
+System routes are named identically to their ids (`query-api`,
+`llm-proxy`, …), so fixed-id PromQL filters keep matching. The global rule is
+re-applied on every unibridge-service boot (no APISIX restart involved, and it
+runs even with `APISIX_PROVISION_ON_START=false`), and series recorded before
+the switch (or before a route rename) keep their old label value — the in-app
+monitoring bridges id↔name when filtering and merges id/name rows in the
+usages and top-routes views, but Grafana panels (and any external PromQL
+pinned to a route id) show the old and new label as separate series across
+that boundary.
 Avoid giving two routes the same name: their metrics would merge into one
 series. API-key (`consumer`) labels are unaffected — admin-created keys already
 carry their human-readable key name; personal self-service keys show as

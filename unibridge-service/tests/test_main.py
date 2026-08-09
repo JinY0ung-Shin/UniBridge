@@ -75,6 +75,18 @@ async def test_lifespan_provisions_llm_admin_route_when_master_key_set():
         if call.args[0] == "routes"
     }
 
+    # The prometheus global rule must pin prefer_name — it is what makes the
+    # Prometheus `route` label carry route *names* instead of ids (Grafana
+    # Route picker); reverting the body to {} silently regresses to id labels.
+    global_rule_calls = {
+        call.args[1]: call.args[2]
+        for call in put_resource.await_args_list
+        if call.args[0] == "global_rules"
+    }
+    assert global_rule_calls["prometheus"] == {
+        "plugins": {"prometheus": {"prefer_name": True}}
+    }
+
     assert "litellm" in upstream_calls
     assert upstream_calls["litellm"]["scheme"] == "https"
     assert "llm-proxy" in route_calls
@@ -178,8 +190,16 @@ async def test_lifespan_can_skip_apisix_route_provisioning():
         async with lifespan(app):
             pass
 
-    # Route/upstream provisioning is skipped entirely when the flag is false.
-    put_resource.assert_not_awaited()
+    # Route/upstream provisioning is skipped entirely when the flag is false —
+    # but the prometheus global rule is still reconciled on every boot (it is
+    # the only place prefer_name lives; see main.py), so exactly that one PUT
+    # goes out and it must pin prefer_name.
+    assert [call.args[:2] for call in put_resource.await_args_list] == [
+        ("global_rules", "prometheus")
+    ]
+    assert put_resource.await_args_list[0].args[2] == {
+        "plugins": {"prometheus": {"prefer_name": True}}
+    }
     get_resource.assert_not_awaited()
     assert list_resources.await_count == 2
     # …but the stored API-key restriction replay still runs on every boot

@@ -152,27 +152,59 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         break
 
+    # Reconcile the prometheus global rule on EVERY boot, regardless of
+    # APISIX_PROVISION_ON_START: it is what makes APISIX collect HTTP metrics in
+    # the first place, and its plugin conf carries `prefer_name` (label series
+    # by route *name*, falling back to id). APISIX reads that flag only from the
+    # plugin conf — a `plugin_attr.prometheus` entry in config.yaml is silently
+    # ignored — so this PUT is the single place it is set. Unlike route
+    # provisioning it touches no routes/upstreams, making it safe on an
+    # inactive blue/green color (mirrors the restriction replay below).
+    import asyncio as _asyncio
+    from app.services import apisix_client
+
+    # APISIX's admin API returns 503 for a while after the container starts
+    # (it is still syncing config from etcd), and 400/502 transients can occur
+    # mid-sync. Give it a generous window — up to ~100s of backoff — so a cold
+    # `compose up` does not fail startup before APISIX is actually reachable.
+    _gr_max_retries = 10
+    for _gr_attempt in range(1, _gr_max_retries + 1):
+        try:
+            await apisix_client.put_resource(
+                "global_rules",
+                "prometheus",
+                {
+                    "plugins": {"prometheus": {"prefer_name": True}},
+                },
+            )
+            break
+        except Exception as exc:
+            if _gr_attempt < _gr_max_retries:
+                _delay = min(2**_gr_attempt, 15)  # 2,4,8,15,15,… capped
+                logger.warning(
+                    "Prometheus global-rule PUT attempt %d/%d failed: %s — retrying in %ds",
+                    _gr_attempt,
+                    _gr_max_retries,
+                    exc,
+                    _delay,
+                )
+                await _asyncio.sleep(_delay)
+            else:
+                logger.error(
+                    "Prometheus global-rule PUT failed after %d attempts: %s — "
+                    "failing startup until APISIX is reachable",
+                    _gr_max_retries,
+                    exc,
+                )
+                raise
+
     if getattr(settings, "APISIX_PROVISION_ON_START", True):
         logger.info("Provisioning APISIX query route...")
-        import asyncio as _asyncio
-        from app.services import apisix_client
 
-        # APISIX's admin API returns 503 for a while after the container starts
-        # (it is still syncing config from etcd), and 400/502 transients can occur
-        # mid-sync. Give it a generous window — up to ~100s of backoff — so a cold
-        # `compose up` does not fail startup before APISIX is actually reachable.
+        # Same transient-503 story as the global-rule PUT above.
         _max_retries = 10
         for _attempt in range(1, _max_retries + 1):
             try:
-                # Ensure prometheus global rule exists so HTTP metrics are collected
-                await apisix_client.put_resource(
-                    "global_rules",
-                    "prometheus",
-                    {
-                        "plugins": {"prometheus": {}},
-                    },
-                )
-
                 # Ensure upstream for unibridge-service exists
                 await apisix_client.put_resource(
                     "upstreams",

@@ -1441,6 +1441,15 @@ class TestMetricsLatency:
 
 
 class TestMetricsTopRoutes:
+    @pytest.fixture(autouse=True)
+    def _patch_routes_listing(self):
+        """Default empty routes listing (id→name fold) without a real APISIX."""
+        with patch(
+            "app.routers.gateway.apisix_client.list_resources",
+            new=AsyncMock(return_value={"items": [], "total": 0}),
+        ):
+            yield
+
     async def test_returns_top_routes(self, client, admin_token):
         results = [
             {"metric": {"route": "route-1"}, "value": [0, "1000"]},
@@ -1478,6 +1487,33 @@ class TestMetricsTopRoutes:
         data = resp.json()
         assert len(data) == 1
         assert data[0]["route"] == "active"
+
+    async def test_merges_id_and_name_rows_for_same_route(self, client, admin_token):
+        # Window spans the prefer_name flip: old samples carry the route id,
+        # newer ones the name — one logical route must occupy one top slot.
+        results = [
+            {"metric": {"route": "r1"}, "value": [0, "800"]},
+            {"metric": {"route": "orders"}, "value": [0, "150"]},
+            {"metric": {"route": "other"}, "value": [0, "500"]},
+        ]
+        listing = {"items": [{"id": "r1", "name": "orders"}], "total": 1}
+        with patch(
+            "app.routers.gateway.prometheus_client.instant_query",
+            new_callable=AsyncMock,
+            return_value=results,
+        ), patch(
+            "app.routers.gateway.apisix_client.list_resources",
+            new=AsyncMock(return_value=listing),
+        ):
+            resp = await client.get(
+                "/admin/gateway/metrics/top-routes?range=24h",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert resp.json() == [
+            {"route": "orders", "requests": 950},
+            {"route": "other", "requests": 500},
+        ]
 
 
 class TestMetricsRoutesComparison:
@@ -1745,6 +1781,29 @@ class TestMetricsUsages:
         assert "[86400s]" in query
         assert "sum by (route)" in query
         assert mock.call_args.kwargs["eval_time"] == self.DAY_END
+
+    async def test_merges_id_and_name_rows_for_same_route(self, client, admin_token):
+        # A day spanning the prefer_name flip (or a route rename) returns an
+        # id-labeled row and a name-labeled row for the same logical route —
+        # /usages must fold them into one row keyed by the canonical name.
+        results = [
+            {"metric": {"route": "r1"}, "value": [0, "800"]},
+            {"metric": {"route": "orders"}, "value": [0, "150"]},
+        ]
+        listing = {"items": [{"id": "r1", "name": "orders"}], "total": 1}
+        mock = AsyncMock(return_value=results)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock), patch(
+            "app.routers.gateway.apisix_client.list_resources",
+            new=AsyncMock(return_value=listing),
+        ):
+            resp = await client.get(
+                "/admin/gateway/metrics/usages?date=2026-06-15",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_requests"] == 950
+        assert data["routes"] == [{"route": "orders", "name": "orders", "requests": 950}]
 
     async def test_consumer_filter_in_query(self, client, admin_token):
         mock = AsyncMock(return_value=[])

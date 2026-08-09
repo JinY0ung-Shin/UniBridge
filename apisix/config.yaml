@@ -26,10 +26,10 @@ plugin_attr:
     export_addr:
       ip: 0.0.0.0
       port: 9091
-    # Label metrics by route/service *name* (fallback: id) so Grafana shows
-    # human-readable routes. System routes are named identically to their ids,
-    # so fixed-id PromQL filters (llm-proxy etc.) are unaffected.
-    prefer_name: true
+    # NOTE: `prefer_name` (label metrics by route/service *name* instead of id)
+    # is NOT a plugin_attr key — APISIX reads it from the prometheus *plugin*
+    # conf. It is set on the `prometheus` global rule in
+    # unibridge-service/app/main.py; putting it here has no effect.
 
 plugins:
   - key-auth
