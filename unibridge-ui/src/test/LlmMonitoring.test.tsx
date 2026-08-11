@@ -179,6 +179,7 @@ describe('LlmMonitoring', () => {
         cached_tokens: 800,
         tokens: 5000,
         requests: 25,
+        cost: 4.5,
       },
     ]);
     const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
@@ -196,11 +197,13 @@ describe('LlmMonitoring', () => {
     expect(screen.getAllByText('2.0K').length).toBeGreaterThan(0);
     expect(screen.getAllByText('5.0K').length).toBeGreaterThan(0);
     expect(screen.getAllByText('25').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Cost').length).toBeGreaterThan(0);
+    expect(screen.getByText('$4.50')).toBeInTheDocument();
   });
 
   it('shows the API key description as a tooltip on its name', async () => {
     mockedGetLlmTopKeys.mockResolvedValue([
-      { api_key: 'customer-portal', input_tokens: 0, output_tokens: 0, cached_tokens: 0, tokens: 0, requests: 0 },
+      { api_key: 'customer-portal', input_tokens: 0, output_tokens: 0, cached_tokens: 0, tokens: 0, requests: 0, cost: 0 },
     ]);
     mockedGetApiKeys.mockResolvedValue([
       { name: 'customer-portal', description: 'Customer support chatbot', api_key: null, key_created: true, allowed_databases: [], allowed_routes: [], rate_limit_per_minute: null, owner: null, created_at: null },

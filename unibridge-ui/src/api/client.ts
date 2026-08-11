@@ -731,6 +731,7 @@ export interface LlmKeyUsage {
   cached_tokens: number;
   tokens: number;
   requests: number;
+  cost: number;
 }
 
 export interface LlmErrorPoint {

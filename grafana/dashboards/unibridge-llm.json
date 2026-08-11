@@ -943,7 +943,24 @@
             }
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cost"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "cellHeight": "sm",
@@ -977,7 +994,8 @@
               "Value #B": "Input",
               "Value #C": "Output",
               "Value #D": "Cached",
-              "Value #E": "Requests"
+              "Value #E": "Requests",
+              "Value #F": "Cost"
             }
           }
         }
@@ -1030,6 +1048,17 @@
         {
           "refId": "E",
           "expr": "(sum by (end_user) (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\"}[$__range]))) and on (end_user) topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "F",
+          "expr": "(sum by (end_user) (increase(litellm_spend_metric_total{end_user=~\"$api_key\"}[$__range]))) and on (end_user) topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"

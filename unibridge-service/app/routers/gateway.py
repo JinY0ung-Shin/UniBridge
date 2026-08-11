@@ -2432,7 +2432,7 @@ async def llm_metrics_top_keys(
     api_key: str | None = Query(None, description="Filter to one API key (LiteLLM end_user)"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
-    """Top UniBridge API keys by token usage."""
+    """Top UniBridge API keys by token usage, with request count and cost."""
     sel = _llm_key_selector(api_key)
     try:
         (
@@ -2441,6 +2441,7 @@ async def llm_metrics_top_keys(
             output_token_results,
             req_results,
             cached_token_results,
+            cost_results,
         ) = await asyncio.gather(
             prometheus_client.instant_query(
                 f"topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total{sel}[{tw.promql_window}])))",
@@ -2460,6 +2461,10 @@ async def llm_metrics_top_keys(
             ),
             prometheus_client.instant_query(
                 f"sum by (end_user) (increase(litellm_input_cached_tokens_metric_total{sel}[{tw.promql_window}]))",
+                eval_time=tw.eval_time,
+            ),
+            prometheus_client.instant_query(
+                f"sum by (end_user) (increase(litellm_spend_metric_total{sel}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
         )
@@ -2500,6 +2505,14 @@ async def llm_metrics_top_keys(
         except (IndexError, ValueError, TypeError):
             cached_map[key] = 0
 
+    cost_map: dict[str, float] = {}
+    for r in cost_results:
+        key = _metric_label(r, "end_user")
+        try:
+            cost_map[key] = round(float(r["value"][1]), 4)
+        except (IndexError, ValueError, TypeError):
+            cost_map[key] = 0.0
+
     keys = []
     for r in token_results:
         key = _metric_label(r, "end_user")
@@ -2513,7 +2526,8 @@ async def llm_metrics_top_keys(
             tokens = input_tokens + output_tokens
         requests = req_map.get(key, 0)
         cached_tokens = cached_map.get(key, 0)
-        if tokens > 0 or input_tokens > 0 or output_tokens > 0 or requests > 0:
+        cost = cost_map.get(key, 0.0)
+        if tokens > 0 or input_tokens > 0 or output_tokens > 0 or requests > 0 or cost > 0:
             keys.append(
                 {
                     "api_key": key,
@@ -2522,6 +2536,7 @@ async def llm_metrics_top_keys(
                     "cached_tokens": cached_tokens,
                     "tokens": tokens,
                     "requests": requests,
+                    "cost": cost,
                 }
             )
     return keys

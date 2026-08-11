@@ -33,7 +33,7 @@ import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bu
 import { formatChartTimestamp, formatBucketLabel } from '../utils/time';
 
 type ModelSortColumn = 'model' | 'input_tokens' | 'output_tokens' | 'cached_tokens' | 'tokens' | 'requests' | 'cost';
-type KeySortColumn = 'api_key' | 'input_tokens' | 'output_tokens' | 'cached_tokens' | 'tokens' | 'requests';
+type KeySortColumn = 'api_key' | 'input_tokens' | 'output_tokens' | 'cached_tokens' | 'tokens' | 'requests' | 'cost';
 
 const LITELLM_ADMIN_URL = window.__RUNTIME_CONFIG__?.LITELLM_ADMIN_URL || import.meta.env.VITE_LITELLM_ADMIN_URL || 'https://localhost:4000/ui';
 
@@ -447,6 +447,7 @@ function LlmMonitoring() {
                   <SortableHeader column="cached_tokens" label={t('llmMonitoring.cached')}          align="right" activeColumn={keySort.column} dir={keySort.dir} onToggle={toggleKeySort} />
                   <SortableHeader column="tokens"        label={t('llmMonitoring.totalTokenShort')} align="right" activeColumn={keySort.column} dir={keySort.dir} onToggle={toggleKeySort} />
                   <SortableHeader column="requests"      label={t('llmMonitoring.requests')}        align="right" activeColumn={keySort.column} dir={keySort.dir} onToggle={toggleKeySort} />
+                  <SortableHeader column="cost"          label={t('llmMonitoring.cost')}            align="right" activeColumn={keySort.column} dir={keySort.dir} onToggle={toggleKeySort} />
                 </tr>
               </thead>
               <tbody>
@@ -469,6 +470,9 @@ function LlmMonitoring() {
                     </td>
                     <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
                       {k.requests.toLocaleString()}
+                    </td>
+                    <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                      {formatCost(k.cost)}
                     </td>
                   </tr>
                 ))}
