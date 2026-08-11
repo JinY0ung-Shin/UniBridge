@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+import json
 import logging
 from typing import Any, TypeVar
 
@@ -24,6 +25,28 @@ _S3_EXECUTOR: ThreadPoolExecutor | None = ThreadPoolExecutor(
 )
 
 _T = TypeVar("_T")
+
+
+def _parse_allowed_buckets(conn: S3Connection) -> list[str] | None:
+    """Decode the stored JSON bucket allow-list. Unusable values are logged and
+    treated as ``None`` (= all buckets), matching an unset column."""
+    if not conn.allowed_buckets:
+        return None
+    try:
+        parsed = json.loads(conn.allowed_buckets)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid allowed_buckets JSON for S3 alias '%s'; treating as unrestricted",
+            conn.alias,
+        )
+        return None
+    if not isinstance(parsed, list):
+        logger.warning(
+            "allowed_buckets for S3 alias '%s' is not a list; treating as unrestricted",
+            conn.alias,
+        )
+        return None
+    return [str(bucket) for bucket in parsed] or None
 
 
 def _get_executor() -> ThreadPoolExecutor:
@@ -106,6 +129,7 @@ class S3ConnectionManager:
             "endpoint_url": conn.endpoint_url,
             "region": conn.region,
             "default_bucket": conn.default_bucket,
+            "allowed_buckets": _parse_allowed_buckets(conn),
         }
         logger.info("S3 connection created for alias '%s'", conn.alias)
 
@@ -125,6 +149,10 @@ class S3ConnectionManager:
     def get_config(self, alias: str) -> dict[str, Any]:
         return self._configs.get(alias, {})
 
+    def allowed_buckets(self, alias: str) -> list[str] | None:
+        """Buckets this connection may browse; ``None`` = no restriction."""
+        return self._configs.get(alias, {}).get("allowed_buckets")
+
     def has_connection(self, alias: str) -> bool:
         return alias in self._clients
 
@@ -136,8 +164,12 @@ class S3ConnectionManager:
             client = self.get_client(alias)
             config = self.get_config(alias)
             default_bucket = config.get("default_bucket")
+            allowed = config.get("allowed_buckets")
             if default_bucket:
                 await self._run_blocking(client.head_bucket, Bucket=default_bucket)
+            elif allowed:
+                # Restricted credentials often cannot ListAllMyBuckets.
+                await self._run_blocking(client.head_bucket, Bucket=allowed[0])
             else:
                 await self._run_blocking(client.list_buckets)
             return True, "Connection successful"

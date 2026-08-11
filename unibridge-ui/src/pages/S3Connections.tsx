@@ -25,6 +25,12 @@ const emptyForm: S3ConnectionConfig = {
   use_ssl: true,
 };
 
+// Comma-separated text -> deduped bucket list; empty means "all buckets allowed".
+function parseAllowedBuckets(text: string): string[] | null {
+  const buckets = [...new Set(text.split(',').map((b) => b.trim()).filter(Boolean))];
+  return buckets.length > 0 ? buckets : null;
+}
+
 function S3Connections() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -35,6 +41,7 @@ function S3Connections() {
   const [showModal, setShowModal] = useState(false);
   const [editingAlias, setEditingAlias] = useState<string | null>(null);
   const [form, setForm] = useState<S3ConnectionConfig>({ ...emptyForm });
+  const [allowedBucketsText, setAllowedBucketsText] = useState('');
   const [testResults, setTestResults] = useState<Record<string, { status: string }>>({});
   const [connectionSearch, setConnectionSearch] = useState('');
 
@@ -98,6 +105,7 @@ function S3Connections() {
         conn.endpoint_url || 'AWS S3',
         conn.region,
         conn.default_bucket,
+        conn.allowed_buckets?.join(' '),
         testResults[conn.alias]?.status,
         conn.status,
       ]
@@ -109,6 +117,7 @@ function S3Connections() {
 
   function openCreate() {
     setForm({ ...emptyForm });
+    setAllowedBucketsText('');
     setEditingAlias(null);
     setShowModal(true);
   }
@@ -121,6 +130,7 @@ function S3Connections() {
       endpoint_url: conn.endpoint_url ?? '',
       default_bucket: conn.default_bucket ?? '',
     });
+    setAllowedBucketsText(conn.allowed_buckets?.join(', ') ?? '');
     setEditingAlias(conn.alias);
     setShowModal(true);
   }
@@ -129,18 +139,20 @@ function S3Connections() {
     setShowModal(false);
     setEditingAlias(null);
     setForm({ ...emptyForm });
+    setAllowedBucketsText('');
   }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    const allowed_buckets = parseAllowedBuckets(allowedBucketsText);
     if (editingAlias) {
       const { secret_access_key, access_key_id, ...rest } = form;
-      const data: Partial<S3ConnectionConfig> = { ...rest };
+      const data: Partial<S3ConnectionConfig> = { ...rest, allowed_buckets };
       if (access_key_id) data.access_key_id = access_key_id;
       if (secret_access_key) data.secret_access_key = secret_access_key;
       updateMutation.mutate({ alias: editingAlias, data });
     } else {
-      createMutation.mutate(form);
+      createMutation.mutate({ ...form, allowed_buckets });
     }
   }
 
@@ -271,6 +283,7 @@ function S3Connections() {
                 <th scope="col">{t('s3.endpointUrl')}</th>
                 <th scope="col">{t('s3.region')}</th>
                 <th scope="col">{t('s3.defaultBucket')}</th>
+                <th scope="col">{t('s3.allowedBuckets')}</th>
                 <th scope="col">{t('common.status')}</th>
                 <th scope="col">{t('common.actions')}</th>
               </tr>
@@ -280,12 +293,16 @@ function S3Connections() {
                 const testResult = testResults[conn.alias];
                 const isTesting = testMutation.isPending && testMutation.variables === conn.alias;
                 const isDeleting = deleteMutation.isPending && deleteMutation.variables === conn.alias;
+                const allowedBuckets = conn.allowed_buckets?.length ? conn.allowed_buckets.join(', ') : null;
                 return (
                   <tr key={conn.alias}>
                     <td className="cell-alias">{conn.alias}</td>
                     <td className="mono">{conn.endpoint_url || 'AWS S3'}</td>
                     <td>{conn.region}</td>
                     <td>{conn.default_bucket || '—'}</td>
+                    <td className="cell-allowed-buckets" title={allowedBuckets ?? undefined}>
+                      {allowedBuckets ?? t('s3.allBuckets')}
+                    </td>
                     <td>
                       {testResult ? (
                         <span className={`badge ${testResult.status === 'error' ? 'badge-error' : 'badge-ok'}`}>
@@ -483,6 +500,21 @@ function S3Connections() {
                   />
                   {t('s3.useSsl')}
                 </label>
+              </div>
+              <div className="form-group form-group--full">
+                <label htmlFor="s3-allowed-buckets">
+                  {t('s3.allowedBuckets')}{' '}
+                  <span id="s3-allowed-buckets-hint" className="hint">{t('s3.allowedBucketsHint')}</span>
+                </label>
+                <input
+                  id="s3-allowed-buckets"
+                  type="text"
+                  value={allowedBucketsText}
+                  onChange={(e) => setAllowedBucketsText(e.target.value)}
+                  placeholder="bucket-a, bucket-b"
+                  aria-label={t('s3.allowedBuckets')}
+                  aria-describedby="s3-allowed-buckets-hint"
+                />
               </div>
             </div>
 

@@ -48,6 +48,7 @@ class S3Connection(Base):
     access_key_id_encrypted = Column(String, nullable=False)
     secret_access_key_encrypted = Column(String, nullable=False)
     default_bucket = Column(String, nullable=True)
+    allowed_buckets = Column(Text, nullable=True)  # JSON array: ["bucket-a", "bucket-b"], null = all buckets
     use_ssl = Column(Boolean, default=True)
     created_at = Column(UtcDateTime, default=utcnow)
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)

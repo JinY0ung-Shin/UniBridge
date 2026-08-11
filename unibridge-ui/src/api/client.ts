@@ -1467,6 +1467,7 @@ export interface S3ConnectionConfig {
   access_key_id_masked?: string;
   secret_access_key?: string;
   default_bucket?: string | null;
+  allowed_buckets?: string[] | null;
   use_ssl: boolean;
   status?: string;
 }

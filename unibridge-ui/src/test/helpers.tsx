@@ -253,6 +253,7 @@ export function makeS3Connection(overrides = {}) {
     access_key_id: 'access-key',
     secret_access_key: '',
     default_bucket: 'default-bucket',
+    allowed_buckets: null as string[] | null,
     use_ssl: true,
     ...overrides,
   };

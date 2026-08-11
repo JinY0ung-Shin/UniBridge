@@ -135,6 +135,66 @@ describe('S3Connections CRUD', () => {
     await waitFor(() => expect(mockCreate).toHaveBeenCalled());
     expect(mockCreate.mock.calls[0][0].alias).toBe('new-bucket');
     expect(mockCreate.mock.calls[0][0].region).toBe('us-west-2');
+    // Empty allowed-buckets field means "all buckets allowed"
+    expect(mockCreate.mock.calls[0][0].allowed_buckets).toBeNull();
+  });
+
+  it('create parses allowed buckets into a deduped list', async () => {
+    mockCreate.mockResolvedValue(makeS3Connection());
+    renderWithProviders(<S3Connections />);
+    await waitFor(() => expect(screen.getByText(/No S3 connections/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /Add S3 Connection/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('textbox', { name: 'Alias' })).toBeInTheDocument(),
+    );
+    const aliasInput = screen.getByRole('textbox', { name: 'Alias' });
+    await userEvent.type(aliasInput, 'restricted');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Region' }), 'us-east-1');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Access Key ID' }), 'AKIA-NEW');
+    await userEvent.type(screen.getByLabelText('Secret Access Key'), 'sekret');
+
+    const allowedInput = screen.getByRole('textbox', { name: 'Allowed buckets' });
+    expect(allowedInput).toHaveAttribute('aria-describedby', 's3-allowed-buckets-hint');
+    expect(document.getElementById('s3-allowed-buckets-hint')).toHaveTextContent('Comma-separated');
+    await userEvent.type(allowedInput, 'a, b, a');
+
+    fireEvent.submit(aliasInput.closest('form')!);
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    expect(mockCreate.mock.calls[0][0].allowed_buckets).toEqual(['a', 'b']);
+  });
+
+  it('edit prefills allowed buckets and clearing them sends null', async () => {
+    mockGet.mockResolvedValue([makeS3Connection({ alias: 'edit-buckets', allowed_buckets: ['a', 'b'] })]);
+    mockUpdate.mockResolvedValue(makeS3Connection({ alias: 'edit-buckets' }));
+    renderWithProviders(<S3Connections />);
+    await waitFor(() => expect(screen.getByText('edit-buckets')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Edit S3 connection edit-buckets' }));
+
+    const allowedInput = await screen.findByRole('textbox', { name: 'Allowed buckets' });
+    expect(allowedInput).toHaveValue('a, b');
+
+    await userEvent.clear(allowedInput);
+    fireEvent.submit(allowedInput.closest('form')!);
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalled());
+    expect(mockUpdate.mock.calls[0][1].allowed_buckets).toBeNull();
+  });
+
+  it('lists allowed buckets per connection and marks unrestricted ones', async () => {
+    mockGet.mockResolvedValue([
+      makeS3Connection({ alias: 'open-conn' }),
+      makeS3Connection({ alias: 'locked-conn', allowed_buckets: ['bk-1', 'bk-2'] }),
+    ]);
+    renderWithProviders(<S3Connections />);
+    await waitFor(() => expect(screen.getByText('open-conn')).toBeInTheDocument());
+
+    expect(screen.getByText('All buckets')).toBeInTheDocument();
+    expect(screen.getByText('bk-1, bk-2')).toHaveAttribute('title', 'bk-1, bk-2');
+
+    const search = screen.getByRole('searchbox', { name: /search s3 connections/i });
+    await userEvent.type(search, 'bk-2');
+    expect(screen.queryByText('open-conn')).not.toBeInTheDocument();
+    expect(screen.getByText('locked-conn')).toBeInTheDocument();
   });
 
   it('opens edit modal with alias disabled and partial PUT', async () => {

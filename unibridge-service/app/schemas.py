@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 from pathlib import PurePosixPath
 import re
 from typing import Any
@@ -545,6 +546,36 @@ def _validate_s3_endpoint_url(url: str) -> str:
     return url
 
 
+MAX_ALLOWED_BUCKETS = 100
+MAX_BUCKET_NAME_LENGTH = 255
+
+
+def _normalize_allowed_buckets(buckets: list[str] | None) -> list[str] | None:
+    """Strip, drop blanks and dedupe an S3 bucket allow-list, preserving order.
+
+    An empty result normalizes to ``None``, which means "all buckets allowed".
+    """
+    if buckets is None:
+        return None
+    if len(buckets) > MAX_ALLOWED_BUCKETS:
+        raise ValueError(f"allowed_buckets must not contain more than {MAX_ALLOWED_BUCKETS} entries")
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_bucket in buckets:
+        bucket = raw_bucket.strip()
+        if not bucket:
+            continue
+        if len(bucket) > MAX_BUCKET_NAME_LENGTH:
+            raise ValueError(
+                f"allowed_buckets entries must be at most {MAX_BUCKET_NAME_LENGTH} characters"
+            )
+        if bucket not in seen:
+            seen.add(bucket)
+            normalized.append(bucket)
+    return normalized or None
+
+
 def _validate_nas_base_path(path: str) -> str:
     """Pure-string validation for a NAS base_path (NO filesystem I/O).
 
@@ -1023,6 +1054,9 @@ class S3ConnectionCreate(BaseModel):
     access_key_id: str = Field(..., min_length=1)
     secret_access_key: str = Field(..., min_length=1)
     default_bucket: str | None = Field(None, max_length=255)
+    allowed_buckets: list[str] | None = Field(
+        None, description="Bucket whitelist for browsing; null = all buckets"
+    )
     use_ssl: bool = True
 
     @field_validator("endpoint_url")
@@ -1032,6 +1066,11 @@ class S3ConnectionCreate(BaseModel):
             return _validate_s3_endpoint_url(v)
         return None
 
+    @field_validator("allowed_buckets")
+    @classmethod
+    def check_allowed_buckets(cls, v: list[str] | None) -> list[str] | None:
+        return _normalize_allowed_buckets(v)
+
 
 class S3ConnectionUpdate(BaseModel):
     endpoint_url: str | None = None
@@ -1039,6 +1078,9 @@ class S3ConnectionUpdate(BaseModel):
     access_key_id: str | None = Field(None, min_length=1)
     secret_access_key: str | None = Field(None, min_length=1)
     default_bucket: str | None = Field(None, max_length=255)
+    allowed_buckets: list[str] | None = Field(
+        None, description="Bucket whitelist; explicit null clears the restriction"
+    )
     use_ssl: bool | None = None
 
     @field_validator("endpoint_url")
@@ -1048,6 +1090,11 @@ class S3ConnectionUpdate(BaseModel):
             return _validate_s3_endpoint_url(v)
         return None
 
+    @field_validator("allowed_buckets")
+    @classmethod
+    def check_allowed_buckets(cls, v: list[str] | None) -> list[str] | None:
+        return _normalize_allowed_buckets(v)
+
 
 class S3ConnectionResponse(BaseModel):
     alias: str
@@ -1055,10 +1102,19 @@ class S3ConnectionResponse(BaseModel):
     region: str
     access_key_id_masked: str = ""
     default_bucket: str | None = None
+    allowed_buckets: list[str] | None = None
     use_ssl: bool
     status: str = "unknown"
 
     model_config = {"from_attributes": True}
+
+    @field_validator("allowed_buckets", mode="before")
+    @classmethod
+    def decode_allowed_buckets(cls, v: Any) -> Any:
+        """The ORM attribute is a JSON Text column; decode it for the response."""
+        if isinstance(v, str):
+            return json.loads(v) if v.strip() else None
+        return v
 
 
 # ── NAS Connections ─────────────────────────────────────────────────────────

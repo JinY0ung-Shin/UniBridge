@@ -393,6 +393,7 @@ async def test_browse_admin_has_permission_but_alias_missing(client, admin_token
 async def test_list_buckets_success(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.list_buckets = AsyncMock(return_value=[{"name": "a"}, {"name": "b"}])
         resp = await client.get(
             "/s3/x/buckets",
@@ -406,6 +407,7 @@ async def test_list_buckets_success(client, admin_token):
 async def test_list_buckets_client_error_404(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.list_buckets = AsyncMock(side_effect=_client_error("NoSuchBucket"))
         resp = await client.get("/s3/x/buckets", headers=auth_header(admin_token))
     assert resp.status_code == 404
@@ -415,6 +417,7 @@ async def test_list_buckets_client_error_404(client, admin_token):
 async def test_list_buckets_client_error_403(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.list_buckets = AsyncMock(side_effect=_client_error("AccessDenied"))
         resp = await client.get("/s3/x/buckets", headers=auth_header(admin_token))
     assert resp.status_code == 403
@@ -424,6 +427,7 @@ async def test_list_buckets_client_error_403(client, admin_token):
 async def test_list_buckets_client_error_other_502(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.list_buckets = AsyncMock(side_effect=_client_error("InternalError"))
         resp = await client.get("/s3/x/buckets", headers=auth_header(admin_token))
     assert resp.status_code == 502
@@ -433,6 +437,7 @@ async def test_list_buckets_client_error_other_502(client, admin_token):
 async def test_list_buckets_unexpected_error_502(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.list_buckets = AsyncMock(side_effect=RuntimeError("kaboom"))
         resp = await client.get("/s3/x/buckets", headers=auth_header(admin_token))
     assert resp.status_code == 502
@@ -449,6 +454,7 @@ async def test_list_objects_success(client, admin_token):
     }
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.list_objects = AsyncMock(return_value=payload)
         resp = await client.get(
             "/s3/x/objects?bucket=b&prefix=p/&max_keys=10",
@@ -471,6 +477,7 @@ async def test_list_objects_alias_404(client, admin_token):
 async def test_list_objects_client_error(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.list_objects = AsyncMock(side_effect=_client_error("AccessDenied"))
         resp = await client.get("/s3/x/objects?bucket=b", headers=auth_header(admin_token))
     assert resp.status_code == 403
@@ -480,6 +487,7 @@ async def test_list_objects_client_error(client, admin_token):
 async def test_list_objects_unexpected_error(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.list_objects = AsyncMock(side_effect=RuntimeError("oops"))
         resp = await client.get("/s3/x/objects?bucket=b", headers=auth_header(admin_token))
     assert resp.status_code == 502
@@ -489,6 +497,7 @@ async def test_list_objects_unexpected_error(client, admin_token):
 async def test_get_object_metadata_success(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.get_object_metadata = AsyncMock(return_value={"key": "k", "size": 99})
         resp = await client.get(
             "/s3/x/objects/metadata?bucket=b&key=k",
@@ -513,6 +522,7 @@ async def test_get_object_metadata_alias_missing(client, admin_token):
 async def test_get_object_metadata_nosuchkey(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.get_object_metadata = AsyncMock(side_effect=_client_error("NoSuchKey"))
         resp = await client.get(
             "/s3/x/objects/metadata?bucket=b&key=k",
@@ -525,6 +535,7 @@ async def test_get_object_metadata_nosuchkey(client, admin_token):
 async def test_get_object_metadata_unexpected(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.get_object_metadata = AsyncMock(side_effect=RuntimeError("nope"))
         resp = await client.get(
             "/s3/x/objects/metadata?bucket=b&key=k",
@@ -537,6 +548,7 @@ async def test_get_object_metadata_unexpected(client, admin_token):
 async def test_presigned_url_success(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.generate_presigned_url = AsyncMock(return_value="https://signed/url")
         resp = await client.get(
             "/s3/x/objects/presigned-url?bucket=b&key=k&expires_in=120",
@@ -561,6 +573,7 @@ async def test_presigned_url_alias_missing(client, admin_token):
 async def test_presigned_url_client_error(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.generate_presigned_url = AsyncMock(side_effect=_client_error("AccessDenied"))
         resp = await client.get(
             "/s3/x/objects/presigned-url?bucket=b&key=k",
@@ -573,6 +586,7 @@ async def test_presigned_url_client_error(client, admin_token):
 async def test_presigned_url_unexpected(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.generate_presigned_url = AsyncMock(side_effect=RuntimeError("oops"))
         resp = await client.get(
             "/s3/x/objects/presigned-url?bucket=b&key=k",
@@ -585,6 +599,7 @@ async def test_presigned_url_unexpected(client, admin_token):
 async def test_download_object_too_large(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.get_object_metadata = AsyncMock(return_value={"size": 600 * 1024 * 1024})
         resp = await client.get(
             "/s3/x/objects/download?bucket=b&key=k",
@@ -597,6 +612,7 @@ async def test_download_object_too_large(client, admin_token):
 async def test_download_object_unknown_size(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.get_object_metadata = AsyncMock(return_value={"size": None})
         resp = await client.get(
             "/s3/x/objects/download?bucket=b&key=k",
@@ -609,6 +625,7 @@ async def test_download_object_unknown_size(client, admin_token):
 async def test_download_object_metadata_clienterror(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.get_object_metadata = AsyncMock(side_effect=_client_error("NoSuchKey"))
         resp = await client.get(
             "/s3/x/objects/download?bucket=b&key=k",
@@ -621,6 +638,7 @@ async def test_download_object_metadata_clienterror(client, admin_token):
 async def test_download_object_metadata_unexpected(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.get_object_metadata = AsyncMock(side_effect=RuntimeError("oops"))
         resp = await client.get(
             "/s3/x/objects/download?bucket=b&key=k",
@@ -644,6 +662,7 @@ async def test_download_object_alias_missing(client, admin_token):
 async def test_download_object_get_clienterror(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.get_object_metadata = AsyncMock(return_value={"size": 100})
         mgr.get_object = AsyncMock(side_effect=_client_error("AccessDenied"))
         resp = await client.get(
@@ -657,6 +676,7 @@ async def test_download_object_get_clienterror(client, admin_token):
 async def test_download_object_get_unexpected(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.get_object_metadata = AsyncMock(return_value={"size": 100})
         mgr.get_object = AsyncMock(side_effect=RuntimeError("nope"))
         resp = await client.get(
@@ -678,6 +698,7 @@ async def test_download_object_rechecks_get_object_content_length(client, admin_
     body = FakeBody()
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.get_object_metadata = AsyncMock(return_value={"size": 100})
         mgr.get_object = AsyncMock(return_value={
             "Body": body,
@@ -710,6 +731,7 @@ async def test_download_object_streams_body(client, admin_token):
     body = FakeBody()
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
         mgr.get_object_metadata = AsyncMock(return_value={"size": 11})
         mgr.get_object = AsyncMock(return_value={
             "Body": body,
@@ -725,3 +747,352 @@ async def test_download_object_streams_body(client, admin_token):
     assert resp.headers["content-type"].startswith("text/plain")
     assert "file.txt" in resp.headers["content-disposition"]
     assert body.closed
+
+
+# ── Bucket allow-list ───────────────────────────────────────────────────────
+
+def _restricted_payload(alias: str, **overrides) -> dict:
+    payload = {
+        "alias": alias,
+        "region": "us-east-1",
+        "access_key_id": f"AKIA-{alias.upper()}",
+        "secret_access_key": "secret",
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def _stored_allowed_buckets_json(seeded_db, alias: str) -> str | None:
+    """Raw column value, to prove the list is persisted as JSON text."""
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from app.models import S3Connection
+
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        result = await db.execute(
+            select(S3Connection.allowed_buckets).where(S3Connection.alias == alias)
+        )
+        return result.scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_create_with_allowed_buckets_persists_json(client, admin_token, seeded_db):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.add_connection = AsyncMock()
+        mgr.has_connection.return_value = True
+
+        resp = await client.post(
+            "/admin/s3/connections",
+            json=_restricted_payload(
+                "allow-json",
+                default_bucket="bucket-a",
+                allowed_buckets=["bucket-a", "bucket-b"],
+            ),
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["allowed_buckets"] == ["bucket-a", "bucket-b"]
+    assert await _stored_allowed_buckets_json(seeded_db, "allow-json") == '["bucket-a", "bucket-b"]'
+
+
+@pytest.mark.asyncio
+async def test_create_normalizes_allowed_buckets(client, admin_token):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.add_connection = AsyncMock()
+        mgr.has_connection.return_value = True
+
+        resp = await client.post(
+            "/admin/s3/connections",
+            json=_restricted_payload(
+                "allow-normalize",
+                allowed_buckets=["  bucket-a  ", "", "bucket-b", "bucket-a", "   "],
+            ),
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["allowed_buckets"] == ["bucket-a", "bucket-b"]
+
+
+@pytest.mark.asyncio
+async def test_create_empty_allowed_buckets_means_unrestricted(client, admin_token, seeded_db):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.add_connection = AsyncMock()
+        mgr.has_connection.return_value = True
+
+        resp = await client.post(
+            "/admin/s3/connections",
+            json=_restricted_payload("allow-empty", allowed_buckets=[]),
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["allowed_buckets"] is None
+    assert await _stored_allowed_buckets_json(seeded_db, "allow-empty") is None
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_too_many_allowed_buckets(client, admin_token):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.add_connection = AsyncMock()
+        mgr.has_connection.return_value = True
+
+        resp = await client.post(
+            "/admin/s3/connections",
+            json=_restricted_payload(
+                "allow-toomany",
+                allowed_buckets=[f"bucket-{i}" for i in range(101)],
+            ),
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_overlong_bucket_name(client, admin_token):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.add_connection = AsyncMock()
+        mgr.has_connection.return_value = True
+
+        resp = await client.post(
+            "/admin/s3/connections",
+            json=_restricted_payload("allow-longname", allowed_buckets=["b" * 256]),
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_default_bucket_outside_allowlist(client, admin_token):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.add_connection = AsyncMock()
+        mgr.has_connection.return_value = True
+
+        resp = await client.post(
+            "/admin/s3/connections",
+            json=_restricted_payload(
+                "allow-mismatch",
+                default_bucket="other-bucket",
+                allowed_buckets=["bucket-a"],
+            ),
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "default_bucket must be one of allowed_buckets"
+
+
+@pytest.mark.asyncio
+async def test_update_sets_and_clears_allowed_buckets(client, admin_token, seeded_db):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.add_connection = AsyncMock()
+        mgr.has_connection.return_value = True
+
+        await client.post(
+            "/admin/s3/connections",
+            json=_restricted_payload("allow-upd"),
+            headers=auth_header(admin_token),
+        )
+
+        set_resp = await client.put(
+            "/admin/s3/connections/allow-upd",
+            json={"allowed_buckets": ["bucket-a", "bucket-b"]},
+            headers=auth_header(admin_token),
+        )
+        assert set_resp.status_code == 200, set_resp.text
+        assert set_resp.json()["allowed_buckets"] == ["bucket-a", "bucket-b"]
+        assert await _stored_allowed_buckets_json(seeded_db, "allow-upd") == '["bucket-a", "bucket-b"]'
+
+        clear_resp = await client.put(
+            "/admin/s3/connections/allow-upd",
+            json={"allowed_buckets": None},
+            headers=auth_header(admin_token),
+        )
+    assert clear_resp.status_code == 200, clear_resp.text
+    assert clear_resp.json()["allowed_buckets"] is None
+    assert await _stored_allowed_buckets_json(seeded_db, "allow-upd") is None
+
+
+@pytest.mark.asyncio
+async def test_update_empty_allowed_buckets_clears_restriction(client, admin_token, seeded_db):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.add_connection = AsyncMock()
+        mgr.has_connection.return_value = True
+
+        await client.post(
+            "/admin/s3/connections",
+            json=_restricted_payload("allow-clear", allowed_buckets=["bucket-a"]),
+            headers=auth_header(admin_token),
+        )
+        resp = await client.put(
+            "/admin/s3/connections/allow-clear",
+            json={"allowed_buckets": []},
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["allowed_buckets"] is None
+    assert await _stored_allowed_buckets_json(seeded_db, "allow-clear") is None
+
+
+@pytest.mark.asyncio
+async def test_update_allowlist_excluding_stored_default_bucket_422(client, admin_token, seeded_db):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.add_connection = AsyncMock()
+        mgr.has_connection.return_value = True
+
+        await client.post(
+            "/admin/s3/connections",
+            json=_restricted_payload("allow-keepdefault", default_bucket="bucket-a"),
+            headers=auth_header(admin_token),
+        )
+        resp = await client.put(
+            "/admin/s3/connections/allow-keepdefault",
+            json={"allowed_buckets": ["bucket-b"]},
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == "default_bucket must be one of allowed_buckets"
+    # The rejected request must not have leaked a partial write.
+    assert await _stored_allowed_buckets_json(seeded_db, "allow-keepdefault") is None
+
+
+@pytest.mark.asyncio
+async def test_update_default_bucket_outside_stored_allowlist_422(client, admin_token):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.add_connection = AsyncMock()
+        mgr.has_connection.return_value = True
+
+        await client.post(
+            "/admin/s3/connections",
+            json=_restricted_payload(
+                "allow-keeplist",
+                default_bucket="bucket-a",
+                allowed_buckets=["bucket-a"],
+            ),
+            headers=auth_header(admin_token),
+        )
+        resp = await client.put(
+            "/admin/s3/connections/allow-keeplist",
+            json={"default_bucket": "bucket-z"},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 422
+
+        after = await client.get(
+            "/admin/s3/connections/allow-keeplist",
+            headers=auth_header(admin_token),
+        )
+    assert after.json()["default_bucket"] == "bucket-a"
+
+
+@pytest.mark.asyncio
+async def test_update_default_bucket_and_allowlist_together(client, admin_token):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.add_connection = AsyncMock()
+        mgr.has_connection.return_value = True
+
+        await client.post(
+            "/admin/s3/connections",
+            json=_restricted_payload(
+                "allow-both",
+                default_bucket="bucket-a",
+                allowed_buckets=["bucket-a"],
+            ),
+            headers=auth_header(admin_token),
+        )
+        resp = await client.put(
+            "/admin/s3/connections/allow-both",
+            json={"default_bucket": "bucket-z", "allowed_buckets": ["bucket-z"]},
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["default_bucket"] == "bucket-z"
+    assert body["allowed_buckets"] == ["bucket-z"]
+
+
+@pytest.mark.asyncio
+async def test_list_buckets_restricted_returns_allowlist_only(client, admin_token):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = ["bucket-b", "bucket-a"]
+        mgr.list_buckets = AsyncMock(return_value=[{"name": "secret-bucket"}])
+        resp = await client.get("/s3/x/buckets", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"name": "bucket-b", "creation_date": None},
+        {"name": "bucket-a", "creation_date": None},
+    ]
+    mgr.list_buckets.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_list_objects_bucket_not_allowed_403(client, admin_token):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = ["bucket-a"]
+        mgr.list_objects = AsyncMock()
+        resp = await client.get(
+            "/s3/x/objects?bucket=forbidden",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 403
+    assert "bucket-a" not in resp.text
+    mgr.list_objects.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_list_objects_allowed_bucket_succeeds(client, admin_token):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = ["bucket-a"]
+        mgr.list_objects = AsyncMock(return_value={"objects": [], "folders": []})
+        resp = await client.get(
+            "/s3/x/objects?bucket=bucket-a",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 200
+    mgr.list_objects.assert_awaited_once_with("x", "bucket-a", "", "/", 200, None)
+
+
+@pytest.mark.asyncio
+async def test_object_metadata_bucket_not_allowed_403(client, admin_token):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = ["bucket-a"]
+        mgr.get_object_metadata = AsyncMock()
+        resp = await client.get(
+            "/s3/x/objects/metadata?bucket=forbidden&key=k",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 403
+    mgr.get_object_metadata.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_presigned_url_bucket_not_allowed_403(client, admin_token):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = ["bucket-a"]
+        mgr.generate_presigned_url = AsyncMock()
+        resp = await client.get(
+            "/s3/x/objects/presigned-url?bucket=forbidden&key=k",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 403
+    mgr.generate_presigned_url.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_download_bucket_not_allowed_403(client, admin_token):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = ["bucket-a"]
+        mgr.get_object_metadata = AsyncMock()
+        mgr.get_object = AsyncMock()
+        resp = await client.get(
+            "/s3/x/objects/download?bucket=forbidden&key=k",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 403
+    mgr.get_object_metadata.assert_not_awaited()
+    mgr.get_object.assert_not_awaited()

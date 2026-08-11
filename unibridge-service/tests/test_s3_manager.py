@@ -24,7 +24,7 @@ def fresh_manager():
     s3_manager._configs = saved_configs
 
 
-def _make_conn(alias="t", endpoint=None, bucket=None) -> S3Connection:
+def _make_conn(alias="t", endpoint=None, bucket=None, allowed=None) -> S3Connection:
     return S3Connection(
         alias=alias,
         endpoint_url=endpoint,
@@ -32,6 +32,7 @@ def _make_conn(alias="t", endpoint=None, bucket=None) -> S3Connection:
         access_key_id_encrypted=encrypt_password("AKIA-TEST"),
         secret_access_key_encrypted=encrypt_password("SECRET"),
         default_bucket=bucket,
+        allowed_buckets=allowed,
         use_ssl=True,
     )
 
@@ -312,3 +313,74 @@ async def test_initialize_skips_failures(fresh_manager):
 
     assert fresh_manager.has_connection("good")
     assert not fresh_manager.has_connection("bad")
+
+
+# ── Bucket allow-list ───────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_add_connection_parses_allowed_buckets(fresh_manager):
+    with patch("app.services.s3_manager.boto3.client", return_value=MagicMock()):
+        await fresh_manager.add_connection(
+            _make_conn("allowed", allowed='["bucket-a", "bucket-b"]')
+        )
+    assert fresh_manager.get_config("allowed")["allowed_buckets"] == ["bucket-a", "bucket-b"]
+    assert fresh_manager.allowed_buckets("allowed") == ["bucket-a", "bucket-b"]
+
+
+@pytest.mark.asyncio
+async def test_allowed_buckets_none_when_unrestricted(fresh_manager):
+    with patch("app.services.s3_manager.boto3.client", return_value=MagicMock()):
+        await fresh_manager.add_connection(_make_conn("unrestricted"))
+    assert fresh_manager.allowed_buckets("unrestricted") is None
+
+
+def test_allowed_buckets_none_for_unknown_alias(fresh_manager):
+    assert fresh_manager.allowed_buckets("nope") is None
+
+
+@pytest.mark.asyncio
+async def test_add_connection_invalid_allowed_buckets_json_is_unrestricted(fresh_manager):
+    with patch("app.services.s3_manager.boto3.client", return_value=MagicMock()):
+        await fresh_manager.add_connection(_make_conn("badjson", allowed="not json"))
+    assert fresh_manager.allowed_buckets("badjson") is None
+
+
+@pytest.mark.asyncio
+async def test_add_connection_non_list_allowed_buckets_is_unrestricted(fresh_manager):
+    with patch("app.services.s3_manager.boto3.client", return_value=MagicMock()):
+        await fresh_manager.add_connection(_make_conn("notalist", allowed='{"bucket": true}'))
+    assert fresh_manager.allowed_buckets("notalist") is None
+
+
+@pytest.mark.asyncio
+async def test_add_connection_empty_allowed_buckets_list_is_unrestricted(fresh_manager):
+    with patch("app.services.s3_manager.boto3.client", return_value=MagicMock()):
+        await fresh_manager.add_connection(_make_conn("emptylist", allowed="[]"))
+    assert fresh_manager.allowed_buckets("emptylist") is None
+
+
+@pytest.mark.asyncio
+async def test_test_connection_heads_first_allowed_bucket(fresh_manager):
+    fake = MagicMock()
+    fake.head_bucket.return_value = {}
+    with patch("app.services.s3_manager.boto3.client", return_value=fake):
+        await fresh_manager.add_connection(
+            _make_conn("allowedtest", allowed='["bucket-a", "bucket-b"]')
+        )
+    ok, _msg = await fresh_manager.test_connection("allowedtest")
+    assert ok is True
+    fake.head_bucket.assert_called_once_with(Bucket="bucket-a")
+    fake.list_buckets.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_test_connection_prefers_default_bucket_over_allowlist(fresh_manager):
+    fake = MagicMock()
+    fake.head_bucket.return_value = {}
+    with patch("app.services.s3_manager.boto3.client", return_value=fake):
+        await fresh_manager.add_connection(
+            _make_conn("bothset", bucket="bucket-b", allowed='["bucket-a", "bucket-b"]')
+        )
+    ok, _msg = await fresh_manager.test_connection("bothset")
+    assert ok is True
+    fake.head_bucket.assert_called_once_with(Bucket="bucket-b")

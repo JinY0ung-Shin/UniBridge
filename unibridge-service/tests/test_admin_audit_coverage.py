@@ -317,6 +317,28 @@ class TestS3ConnectionAuditing:
         assert S3_PAYLOAD["secret_access_key"] not in entry["after"]
         assert S3_PAYLOAD["access_key_id"] not in entry["after"]
 
+    async def test_allowed_buckets_tracked_as_config(self, client, admin_token):
+        """The bucket allow-list is config, not a secret, so before/after keep it."""
+        with _s3_patch():
+            await client.post(
+                "/admin/s3/connections",
+                json={**S3_PAYLOAD, "allowed_buckets": ["my-bucket"]},
+                headers=auth_header(admin_token),
+            )
+            resp = await client.put(
+                "/admin/s3/connections/audit-s3",
+                json={"default_bucket": None, "allowed_buckets": None},
+                headers=auth_header(admin_token),
+            )
+            assert resp.status_code == 200, resp.text
+
+        logs = await _audit_logs(client, admin_token, resource_type="s3_connection")
+        created = json.loads(logs[1]["after"])
+        assert created["allowed_buckets"] == ["my-bucket"]
+        updated = logs[0]
+        assert json.loads(updated["before"])["allowed_buckets"] == ["my-bucket"]
+        assert json.loads(updated["after"])["allowed_buckets"] is None
+
     async def test_update_and_delete_write_audit(self, client, admin_token):
         with _s3_patch():
             await client.post(

@@ -284,6 +284,7 @@ async def test_self_wildcard_allows_arbitrary_s3_alias(app, client):
     # alias that is NOT in any explicit list — wildcard must let it through.
     with patch("app.routers.s3.s3_manager") as mock_s3_manager:
         mock_s3_manager.has_connection.return_value = True
+        mock_s3_manager.allowed_buckets.return_value = None
         mock_s3_manager.list_buckets = AsyncMock(return_value=[{"name": "anything"}])
 
         # Remove the JWT override so the header-based ApiKeyUser path is used.

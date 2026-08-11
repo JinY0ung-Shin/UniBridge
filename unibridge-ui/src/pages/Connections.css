@@ -52,6 +52,14 @@
   color: var(--accent-red);
 }
 
+/* Allowed-bucket list: keep rows compact, full list stays in the title tooltip. */
+.connections .cell-allowed-buckets {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 720px) {
   .connection-search-input {
     width: 100%;

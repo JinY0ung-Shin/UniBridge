@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any, NoReturn
 from urllib.parse import quote
@@ -32,6 +33,30 @@ def _mask_access_key(key: str) -> str:
     return "***" + key[-MASK_KEEP:]
 
 
+def _stored_allowed_buckets(conn: S3Connection) -> list[str] | None:
+    """Decode the persisted allow-list; unusable values read as unrestricted
+    (same fallback the S3 manager applies when loading the connection)."""
+    if not conn.allowed_buckets:
+        return None
+    try:
+        parsed = json.loads(conn.allowed_buckets)
+    except (TypeError, ValueError):
+        logger.warning("Invalid allowed_buckets JSON for S3 connection '%s'", conn.alias)
+        return None
+    return parsed if isinstance(parsed, list) else None
+
+
+def _check_default_bucket_allowed(
+    default_bucket: str | None, allowed_buckets: list[str] | None
+) -> None:
+    """A default bucket outside the allow-list would be unreachable at browse time."""
+    if default_bucket and allowed_buckets and default_bucket not in allowed_buckets:
+        raise HTTPException(
+            status_code=422,
+            detail="default_bucket must be one of allowed_buckets",
+        )
+
+
 def _audit_snapshot(conn: S3Connection) -> dict[str, Any]:
     """Audit snapshot of an S3 connection. The secret access key is never
     recorded; the access key id is reduced to the usual ``***`` + last-4
@@ -47,6 +72,7 @@ def _audit_snapshot(conn: S3Connection) -> dict[str, Any]:
         "access_key_id": access_key_masked,
         "secret_access_key": "***",
         "default_bucket": conn.default_bucket,
+        "allowed_buckets": _stored_allowed_buckets(conn),
         "use_ssl": conn.use_ssl,
     }
 
@@ -79,6 +105,8 @@ async def create_s3_connection(
             detail=f"S3 connection '{body.alias}' already exists",
         )
 
+    _check_default_bucket_allowed(body.default_bucket or None, body.allowed_buckets)
+
     conn = S3Connection(
         alias=body.alias,
         endpoint_url=body.endpoint_url or None,
@@ -86,6 +114,7 @@ async def create_s3_connection(
         access_key_id_encrypted=encrypt_password(body.access_key_id),
         secret_access_key_encrypted=encrypt_password(body.secret_access_key),
         default_bucket=body.default_bucket or None,
+        allowed_buckets=json.dumps(body.allowed_buckets) if body.allowed_buckets else None,
         use_ssl=body.use_ssl,
     )
     db.add(conn)
@@ -161,6 +190,13 @@ async def update_s3_connection(
     before_snapshot = _audit_snapshot(conn)
 
     provided = body.model_fields_set
+    # Validate the post-update combination before touching the ORM object, so a
+    # rejected request leaves nothing dirty in the session.
+    _check_default_bucket_allowed(
+        (body.default_bucket or None) if "default_bucket" in provided else conn.default_bucket,
+        body.allowed_buckets if "allowed_buckets" in provided else _stored_allowed_buckets(conn),
+    )
+
     if "endpoint_url" in provided:
         conn.endpoint_url = body.endpoint_url or None
     if "region" in provided and body.region is not None:
@@ -171,6 +207,8 @@ async def update_s3_connection(
         conn.secret_access_key_encrypted = encrypt_password(body.secret_access_key)
     if "default_bucket" in provided:
         conn.default_bucket = body.default_bucket or None
+    if "allowed_buckets" in provided:
+        conn.allowed_buckets = json.dumps(body.allowed_buckets) if body.allowed_buckets else None
     if "use_ssl" in provided and body.use_ssl is not None:
         conn.use_ssl = body.use_ssl
 
@@ -270,6 +308,19 @@ async def _require_s3_browse(
     return user
 
 
+def _require_bucket_allowed(alias: str, bucket: str) -> None:
+    """Enforce the connection's bucket allow-list (unset = all buckets).
+
+    This is a property of the connection, so it applies on top of
+    ``_require_s3_browse`` for JWT and API-key callers alike."""
+    allowed = s3_manager.allowed_buckets(alias)
+    if allowed is not None and bucket not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Bucket '{bucket}' is not allowed for S3 connection '{alias}'",
+        )
+
+
 def _handle_s3_error(alias: str, exc: Exception) -> NoReturn:
     if isinstance(exc, ClientError):
         code = exc.response.get("Error", {}).get("Code", "Unknown")
@@ -291,6 +342,11 @@ async def list_buckets(
 ) -> list[dict[str, Any]]:
     if not s3_manager.has_connection(alias):
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
+    allowed = s3_manager.allowed_buckets(alias)
+    if allowed:
+        # Restricted credentials often cannot ListAllMyBuckets, and a real listing
+        # would expose bucket names outside the allow-list.
+        return [{"name": bucket, "creation_date": None} for bucket in allowed]
     try:
         return await s3_manager.list_buckets(alias)
     except (BotoCoreError, ClientError) as exc:
@@ -312,6 +368,7 @@ async def list_objects(
 ) -> dict[str, Any]:
     if not s3_manager.has_connection(alias):
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
+    _require_bucket_allowed(alias, bucket)
     try:
         return await s3_manager.list_objects(
             alias, bucket, prefix, delimiter, max_keys, continuation_token
@@ -332,6 +389,7 @@ async def get_object_metadata(
 ) -> dict[str, Any]:
     if not s3_manager.has_connection(alias):
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
+    _require_bucket_allowed(alias, bucket)
     try:
         return await s3_manager.get_object_metadata(alias, bucket, key)
     except (BotoCoreError, ClientError) as exc:
@@ -351,6 +409,7 @@ async def get_presigned_download_url(
 ) -> dict[str, Any]:
     if not s3_manager.has_connection(alias):
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
+    _require_bucket_allowed(alias, bucket)
     try:
         url = await s3_manager.generate_presigned_url(alias, bucket, key, expires_in)
         return {"url": url, "expires_in": expires_in}
@@ -374,6 +433,7 @@ async def download_object(
     """Proxy-download an S3 object through UniBridge (works for internal S3 endpoints)."""
     if not s3_manager.has_connection(alias):
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
+    _require_bucket_allowed(alias, bucket)
 
     # Check size before streaming
     try:
