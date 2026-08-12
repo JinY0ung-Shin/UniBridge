@@ -286,6 +286,8 @@ async def test_get_and_update_alert_settings(client, admin_token):
         "admin_emails": ["ops@company.com", "lead@company.com"],
         "route_error_threshold_pct": 12.5,
         "check_interval_seconds": 90,
+        "server_gpu_util_warn_pct": 75,
+        "server_gpu_mem_warn_pct": 0,  # 0 = GPU memory alerting off globally
     }
     resp = await client.put(
         "/admin/alerts/settings",

@@ -424,7 +424,10 @@ add the host in the UI under **Servers**, and tune thresholds globally (Alert
 settings) or per host. Disk checks can also be limited to selected node_exporter
 mountpoints globally with `NODE_EXPORTER_DISK_MOUNTPOINTS`, or per host in the
 Servers UI; the server detail disk chart splits those selected mountpoints into
-separate lines. Full guide: [`docs/server-monitoring.md`](./docs/server-monitoring.md).
+separate lines. GPU hosts can optionally run NVIDIA `dcgm-exporter` as well
+([`deploy/dcgm-exporter/`](./deploy/dcgm-exporter/docker-compose.yml)) for GPU
+down/utilisation/memory alerts and per-GPU charts. Full guide:
+[`docs/server-monitoring.md`](./docs/server-monitoring.md).
 
 ## Backups
 

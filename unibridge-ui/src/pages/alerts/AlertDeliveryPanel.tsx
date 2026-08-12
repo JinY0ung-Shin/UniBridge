@@ -30,6 +30,8 @@ const defaultSettings: AlertSettings = {
   server_disk_crit_pct: 90,
   server_cpu_warn_pct: 90,
   server_mem_warn_pct: 90,
+  server_gpu_util_warn_pct: 90,
+  server_gpu_mem_warn_pct: 90,
   server_disk_forecast_hours: 24,
   repeat_alert_after_cycles: 0,
 };
@@ -39,6 +41,8 @@ type ServerSettingKey =
   | 'server_disk_crit_pct'
   | 'server_cpu_warn_pct'
   | 'server_mem_warn_pct'
+  | 'server_gpu_util_warn_pct'
+  | 'server_gpu_mem_warn_pct'
   | 'server_disk_forecast_hours'
   | 'repeat_alert_after_cycles';
 
@@ -227,6 +231,8 @@ export default function AlertDeliveryPanel() {
       server_disk_crit_pct: settingsForm.server_disk_crit_pct,
       server_cpu_warn_pct: settingsForm.server_cpu_warn_pct,
       server_mem_warn_pct: settingsForm.server_mem_warn_pct,
+      server_gpu_util_warn_pct: settingsForm.server_gpu_util_warn_pct,
+      server_gpu_mem_warn_pct: settingsForm.server_gpu_mem_warn_pct,
       server_disk_forecast_hours: settingsForm.server_disk_forecast_hours,
       repeat_alert_after_cycles: settingsForm.repeat_alert_after_cycles,
     });
@@ -355,6 +361,8 @@ export default function AlertDeliveryPanel() {
             ['server_disk_crit_pct', 'alerts.serverDiskCrit', 0, 100],
             ['server_cpu_warn_pct', 'alerts.serverCpuWarn', 0, 100],
             ['server_mem_warn_pct', 'alerts.serverMemWarn', 0, 100],
+            ['server_gpu_util_warn_pct', 'alerts.serverGpuUtilWarn', 0, 100],
+            ['server_gpu_mem_warn_pct', 'alerts.serverGpuMemWarn', 0, 100],
             ['server_disk_forecast_hours', 'alerts.serverForecastHours', 0, 720],
             ['repeat_alert_after_cycles', 'alerts.repeatAfterCycles', 0, 1000],
           ] as Array<[ServerSettingKey, string, number, number]>).map(([field, labelKey, min, max]) => (

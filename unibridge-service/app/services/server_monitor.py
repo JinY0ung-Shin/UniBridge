@@ -7,10 +7,19 @@ Two responsibilities:
    file, so Prometheus scrapes each registered host's node_exporter without a
    config reload.
 2. **Evaluation** — query Prometheus for host signals (reachability, disk,
-   disk-fill forecast, CPU, memory) grouped by the ``host`` label and turn them
-   into :class:`HostSignal` results. The alert checker feeds these through the
-   shared :class:`~app.services.alert_state.AlertStateManager` /
-   ``dispatch_alert`` pipeline, exactly like the DB/NAS/route signals.
+   disk-fill forecast, CPU, memory, and — for hosts that also run
+   dcgm-exporter — GPU scrape health, GPU utilisation and GPU memory) grouped by
+   the ``host`` label and turn them into :class:`HostSignal` results. The alert
+   checker feeds these through the shared
+   :class:`~app.services.alert_state.AlertStateManager` / ``dispatch_alert``
+   pipeline, exactly like the DB/NAS/route signals.
+
+GPU monitoring is a per-host option: a host with a ``gpu_address`` gets a second
+file_sd entry in its own targets file, scraped by its own job
+(``DCGM_EXPORTER_JOB``) but labelled with the same ``host`` value so both jobs
+join on one host. The job must stay separate — dcgm targets inside the node job
+would give such a host two ``up`` series and break the per-host collapse that
+``server_down`` depends on.
 
 All Prometheus access goes through :mod:`app.services.prometheus_client`, which
 raises on transport errors; :func:`evaluate_hosts` treats any query failure as
@@ -37,6 +46,15 @@ logger = logging.getLogger(__name__)
 # Pseudo-filesystems that should never count toward host disk-capacity alerts.
 _FS_EXCLUDE = "tmpfs|overlay|squashfs|ramfs|devtmpfs"
 
+# Host signals that exist only while GPU monitoring is on. Kept separate so
+# turning GPU monitoring off for one host clears exactly these, and composed
+# into SERVER_ALERT_TYPES below so the two lists can never drift.
+GPU_ALERT_TYPES = (
+    "server_gpu_down",
+    "server_gpu_util",
+    "server_gpu_mem",
+)
+
 # All alert_type strings produced for host signals (keyed by host name).
 SERVER_ALERT_TYPES = (
     "server_down",
@@ -44,11 +62,20 @@ SERVER_ALERT_TYPES = (
     "server_disk_forecast",
     "server_cpu",
     "server_mem",
-)
+) + GPU_ALERT_TYPES
 
 
 def _job() -> str:
     return settings.NODE_EXPORTER_JOB
+
+
+def _gpu_job() -> str:
+    return settings.DCGM_EXPORTER_JOB
+
+
+def _gpu_address(host: Any) -> str:
+    """The host's dcgm-exporter endpoint, or ``""`` when GPU monitoring is off."""
+    return str(getattr(host, "gpu_address", "") or "").strip()
 
 
 def _mountpoint_values(raw: str | None = None) -> tuple[str, ...]:
@@ -112,29 +139,48 @@ def _has_disk_mountpoint_override(hosts: Iterable[Any]) -> bool:
 # ── File-based service discovery ─────────────────────────────────────────────
 
 
-def build_targets(hosts: Iterable[Any]) -> list[dict[str, Any]]:
-    """Render enabled MonitoredHosts into Prometheus file_sd entries.
+def _entry_labels(host: Any) -> dict[str, str]:
+    """The ``host`` label (friendly name, used as the alert target) merged with
+    the host's user-defined labels stored as JSON."""
+    labels: dict[str, str] = {"host": host.name}
+    if host.labels:
+        try:
+            extra = json.loads(host.labels)
+        except (json.JSONDecodeError, TypeError):
+            extra = None
+        if isinstance(extra, dict):
+            for key, value in extra.items():
+                # Never let a user label clobber the identifying host label.
+                if str(key) == "host":
+                    continue
+                labels[str(key)] = str(value)
+    return labels
 
-    Each entry carries a ``host`` label (the friendly name, used as the alert
-    target) plus any user-defined labels stored as JSON on the host.
+
+def build_targets(hosts: Iterable[Any]) -> list[dict[str, Any]]:
+    """Render enabled MonitoredHosts into Prometheus file_sd entries."""
+    entries: list[dict[str, Any]] = []
+    for host in hosts:
+        if not getattr(host, "enabled", True):
+            continue
+        entries.append({"targets": [host.address], "labels": _entry_labels(host)})
+    return entries
+
+
+def build_gpu_targets(hosts: Iterable[Any]) -> list[dict[str, Any]]:
+    """Render the dcgm-exporter endpoints of GPU-enabled hosts into file_sd entries.
+
+    Only hosts that are enabled *and* carry a ``gpu_address`` appear. The labels
+    match the node entry so both jobs describe the same host under one name.
     """
     entries: list[dict[str, Any]] = []
     for host in hosts:
         if not getattr(host, "enabled", True):
             continue
-        labels: dict[str, str] = {"host": host.name}
-        if host.labels:
-            try:
-                extra = json.loads(host.labels)
-            except (json.JSONDecodeError, TypeError):
-                extra = None
-            if isinstance(extra, dict):
-                for key, value in extra.items():
-                    # Never let a user label clobber the identifying host label.
-                    if str(key) == "host":
-                        continue
-                    labels[str(key)] = str(value)
-        entries.append({"targets": [host.address], "labels": labels})
+        address = _gpu_address(host)
+        if not address:
+            continue
+        entries.append({"targets": [address], "labels": _entry_labels(host)})
     return entries
 
 
@@ -165,12 +211,20 @@ async def write_targets_file(hosts: Iterable[Any], path: str | None = None) -> N
     await asyncio.to_thread(_write_json_atomic, target_path, entries)
 
 
+async def write_gpu_targets_file(hosts: Iterable[Any], path: str | None = None) -> None:
+    """Write the dcgm-exporter file_sd targets file atomically. Raises on I/O failure."""
+    target_path = path or settings.PROMETHEUS_GPU_FILE_SD_PATH
+    entries = build_gpu_targets(hosts)
+    await asyncio.to_thread(_write_json_atomic, target_path, entries)
+
+
 async def sync_targets_from_db(db) -> None:
-    """Reload the host registry and rewrite the file_sd targets (best-effort).
+    """Reload the host registry and rewrite both file_sd targets (best-effort).
 
     The database is the source of truth; a write failure here is logged but not
     fatal — the next successful sync (a later CRUD op or boot reconcile) repairs
-    it. Callers should not depend on this raising.
+    it. Callers should not depend on this raising. The node and GPU files are
+    written independently so a failure on one still refreshes the other.
     """
     from sqlalchemy import select
 
@@ -186,6 +240,14 @@ async def sync_targets_from_db(db) -> None:
             settings.PROMETHEUS_FILE_SD_PATH,
             exc,
         )
+    try:
+        await write_gpu_targets_file(hosts)
+    except Exception as exc:  # noqa: BLE001 — best-effort reconcile
+        logger.warning(
+            "Failed to write Prometheus GPU file_sd targets to %s: %s",
+            settings.PROMETHEUS_GPU_FILE_SD_PATH,
+            exc,
+        )
 
 
 # ── Threshold inputs ─────────────────────────────────────────────────────────
@@ -199,6 +261,8 @@ class ServerThresholds:
     disk_crit_pct: float = 90.0
     cpu_warn_pct: float = 90.0
     mem_warn_pct: float = 90.0
+    gpu_util_warn_pct: float = 90.0
+    gpu_mem_warn_pct: float = 90.0
     forecast_hours: float = 24.0
 
 
@@ -289,6 +353,29 @@ def _q_mem_pct() -> str:
     )
 
 
+def _q_gpu_up() -> str:
+    return f'up{{job="{_gpu_job()}"}}'
+
+
+def _q_gpu_util_pct() -> str:
+    # avg by (host) = mean utilisation across the host's GPUs, so one busy card
+    # in a multi-GPU box doesn't alert on its own.
+    return f'avg by (host) (DCGM_FI_DEV_GPU_UTIL{{job="{_gpu_job()}"}})'
+
+
+def _q_gpu_mem_pct() -> str:
+    # dcgm reports framebuffer used/free in MiB. The division is label-matched,
+    # so the percentage is computed per GPU first and only then averaged across
+    # the host's cards — an unweighted mean of per-GPU usage percentages.
+    # clamp_min guards the divide when a card reports neither (both zero) mid-reset.
+    j = _gpu_job()
+    return (
+        f'avg by (host) (100 * DCGM_FI_DEV_FB_USED{{job="{j}"}} / '
+        f'clamp_min(DCGM_FI_DEV_FB_USED{{job="{j}"}} + '
+        f'DCGM_FI_DEV_FB_FREE{{job="{j}"}}, 1))'
+    )
+
+
 def _escape_label(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -316,6 +403,17 @@ def metric_query(
             f'node_filesystem_avail_bytes{{{sel},fstype!~"{_FS_EXCLUDE}"{mp}}} / '
             f'node_filesystem_size_bytes{{{sel},fstype!~"{_FS_EXCLUDE}"{mp}}}))'
         )
+    if metric in ("gpu_util", "gpu_mem"):
+        # Unlike the alert queries these keep one series per GPU, so the detail
+        # chart can draw each card separately.
+        sel_gpu = f'job="{_gpu_job()}",host="{_escape_label(host_name)}"'
+        if metric == "gpu_util":
+            return f'max by (host, gpu, modelName) (DCGM_FI_DEV_GPU_UTIL{{{sel_gpu}}})'
+        return (
+            f'max by (host, gpu, modelName) (100 * DCGM_FI_DEV_FB_USED{{{sel_gpu}}} / '
+            f'clamp_min(DCGM_FI_DEV_FB_USED{{{sel_gpu}}} + '
+            f'DCGM_FI_DEV_FB_FREE{{{sel_gpu}}}, 1))'
+        )
     return None
 
 
@@ -337,6 +435,16 @@ async def host_up_map() -> dict[str, bool] | None:
         results = await prometheus_client.instant_query(_q_up())
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not query host up status: %s", exc)
+        return None
+    return {host: value >= 1.0 for host, value in _map_by_host(results).items()}
+
+
+async def gpu_up_map() -> dict[str, bool] | None:
+    """Return {host_name: dcgm-exporter is up}, or None if Prometheus is unreachable."""
+    try:
+        results = await prometheus_client.instant_query(_q_gpu_up())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not query GPU exporter up status: %s", exc)
         return None
     return {host: value >= 1.0 for host, value in _map_by_host(results).items()}
 
@@ -379,6 +487,7 @@ async def evaluate_hosts(
         return []
 
     forecast_on = thresholds.forecast_hours and thresholds.forecast_hours > 0
+    gpu_hosts = [h for h in enabled if _gpu_address(h)]
     try:
         up_map = _map_by_host(await prometheus_client.instant_query(_q_up()))
         disk_map = _map_by_host(await prometheus_client.instant_query(_q_disk_pct_for_hosts(enabled)))
@@ -391,6 +500,13 @@ async def evaluate_hosts(
                     _q_disk_forecast_for_hosts(enabled, thresholds.forecast_hours * 3600.0)
                 )
             )
+        gpu_up_values: dict[str, float] = {}
+        gpu_util_map: dict[str, float] = {}
+        gpu_mem_map: dict[str, float] = {}
+        if gpu_hosts:
+            gpu_up_values = _map_by_host(await prometheus_client.instant_query(_q_gpu_up()))
+            gpu_util_map = _map_by_host(await prometheus_client.instant_query(_q_gpu_util_pct()))
+            gpu_mem_map = _map_by_host(await prometheus_client.instant_query(_q_gpu_mem_pct()))
     except Exception as exc:  # noqa: BLE001
         logger.warning("Server health check skipped (Prometheus query failed): %s", exc)
         return []
@@ -515,6 +631,72 @@ async def evaluate_hosts(
                 threshold=warn,
                 message=f"Server '{display}' memory usage is {mem_pct:.1f}% (threshold {warn:.0f}%).",
                 monitor_label="서버 메모리 사용률",
+                description=description,
+            ))
+
+        # 6. GPU — only for hosts that additionally run dcgm-exporter.
+        if not _gpu_address(host):
+            continue
+
+        gpu_is_up = gpu_up_values.get(name, 0.0) >= 1.0
+        signals.append(HostSignal(
+            alert_type="server_gpu_down",
+            target=name,
+            display=display,
+            is_healthy=gpu_is_up,
+            severity="critical" if not gpu_is_up else None,
+            value=None,
+            threshold=None,
+            message=(
+                f"Server '{display}' GPU metrics are reachable again."
+                if gpu_is_up else
+                f"Server '{display}' GPU metrics are unavailable (dcgm-exporter scrape is down)."
+            ),
+            monitor_label="서버 GPU 수집 상태",
+            description=description,
+        ))
+        # Same reasoning as the node-down skip above: with the exporter down the
+        # utilisation series are stale, so don't fan one outage out into three.
+        if not gpu_is_up:
+            continue
+
+        # 6a. GPU utilisation (mean across GPUs). A threshold of 0 disables the alert.
+        gpu_util_pct = gpu_util_map.get(name)
+        warn = _effective(getattr(host, "gpu_util_warn_pct", None), thresholds.gpu_util_warn_pct)
+        if warn > 0 and gpu_util_pct is not None:
+            signals.append(HostSignal(
+                alert_type="server_gpu_util",
+                target=name,
+                display=display,
+                is_healthy=gpu_util_pct < warn,
+                severity="warning" if gpu_util_pct >= warn else None,
+                value=gpu_util_pct,
+                threshold=warn,
+                message=(
+                    f"Server '{display}' GPU usage is {gpu_util_pct:.1f}% "
+                    f"(threshold {warn:.0f}%, avg across GPUs)."
+                ),
+                monitor_label="서버 GPU 사용률",
+                description=description,
+            ))
+
+        # 6b. GPU memory (mean across GPUs). A threshold of 0 disables the alert.
+        gpu_mem_pct = gpu_mem_map.get(name)
+        warn = _effective(getattr(host, "gpu_mem_warn_pct", None), thresholds.gpu_mem_warn_pct)
+        if warn > 0 and gpu_mem_pct is not None:
+            signals.append(HostSignal(
+                alert_type="server_gpu_mem",
+                target=name,
+                display=display,
+                is_healthy=gpu_mem_pct < warn,
+                severity="warning" if gpu_mem_pct >= warn else None,
+                value=gpu_mem_pct,
+                threshold=warn,
+                message=(
+                    f"Server '{display}' GPU memory usage is {gpu_mem_pct:.1f}% "
+                    f"(threshold {warn:.0f}%, avg across GPUs)."
+                ),
+                monitor_label="서버 GPU 메모리 사용률",
                 description=description,
             ))
 

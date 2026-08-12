@@ -23,7 +23,14 @@ const METRIC_COLORS: Record<string, 'blue' | 'green' | 'yellow'> = {
   disk: 'yellow',
 };
 
-const METRIC_ORDER: Array<ServerMetricSeries['metric']> = ['cpu', 'mem', 'disk'];
+const METRIC_ORDER: Array<ServerMetricSeries['metric']> = ['cpu', 'mem', 'disk', 'gpu_util', 'gpu_mem'];
+
+/** Metrics that return one series per device, so each line needs its own color. */
+const PER_DEVICE_METRICS: ReadonlyArray<ServerMetricSeries['metric']> = ['disk', 'gpu_util', 'gpu_mem'];
+
+function isGpuMetric(metric: ServerMetricSeries['metric']) {
+  return metric === 'gpu_util' || metric === 'gpu_mem';
+}
 
 type ChartDatum = {
   timestamp: number;
@@ -34,6 +41,7 @@ type ChartDatum = {
 interface ChartLine {
   key: string;
   name: string;
+  model: string | null;
   color: string;
   totalKey: string;
   usedKey: string;
@@ -53,7 +61,7 @@ function formatTime(ts: number) {
   return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function diskLineColor(theme: ChartTheme, index: number) {
+function deviceLineColor(theme: ChartTheme, index: number) {
   const colors = [theme.yellow, theme.blue, theme.green, theme.red, theme.textSecondary, theme.textTertiary];
   return colors[index % colors.length];
 }
@@ -106,7 +114,11 @@ function buildChartPanel(
     const totalKey = `total_${index}`;
     const usedKey = `used_${index}`;
     const availableKey = `available_${index}`;
-    const name = metric === 'disk' ? (s.mountpoint ?? 'disk') : metric;
+    const name = metric === 'disk'
+      ? (s.mountpoint ?? 'disk')
+      : isGpuMetric(metric)
+        ? `GPU ${s.gpu ?? index}`
+        : metric;
     let totalBytes: number | null = null;
     let usedBytes: number | null = null;
     let availableBytes: number | null = null;
@@ -127,7 +139,8 @@ function buildChartPanel(
     return {
       key,
       name,
-      color: metric === 'disk' ? diskLineColor(theme, index) : theme[METRIC_COLORS[metric]],
+      model: isGpuMetric(metric) ? (s.gpu_model ?? null) : null,
+      color: PER_DEVICE_METRICS.includes(metric) ? deviceLineColor(theme, index) : theme[METRIC_COLORS[metric]],
       totalKey,
       usedKey,
       availableKey,
@@ -210,6 +223,10 @@ function ServerDetail() {
                     return value ? [{ line, value }] : [];
                   })
                 : [];
+              // Identical cards are the norm on a GPU host, so list each model once.
+              const gpuModels = Array.from(
+                new Set(panel.lines.flatMap((line) => (line.model ? [line.model] : []))),
+              );
               return (
                 <div className="server-chart-card" key={panel.metric}>
                   <div className="server-chart-card__heading">
@@ -227,6 +244,11 @@ function ServerDetail() {
                           </span>
                         ))}
                       </div>
+                    )}
+                    {gpuModels.length > 0 && (
+                      <p className="server-gpu-models" aria-label={t('servers.gpuModels')}>
+                        {gpuModels.join(', ')}
+                      </p>
                     )}
                   </div>
                   <div className="server-chart-body">

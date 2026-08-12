@@ -1103,6 +1103,8 @@ export interface AlertSettings {
   server_disk_crit_pct?: number;
   server_cpu_warn_pct?: number;
   server_mem_warn_pct?: number;
+  server_gpu_util_warn_pct?: number;
+  server_gpu_mem_warn_pct?: number;
   server_disk_forecast_hours?: number;
   repeat_alert_after_cycles?: number;
   updated_at?: string | null;
@@ -1238,6 +1240,10 @@ export interface MonitoredServer {
   disk_crit_pct: number | null;
   cpu_warn_pct: number | null;
   mem_warn_pct: number | null;
+  /** host:port of the dcgm-exporter agent; null disables GPU monitoring for this host. */
+  gpu_address: string | null;
+  gpu_util_warn_pct: number | null;
+  gpu_mem_warn_pct: number | null;
   status?: 'up' | 'down' | 'unknown' | 'disabled' | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -1254,11 +1260,17 @@ export interface MonitoredServerInput {
   disk_crit_pct?: number | null;
   cpu_warn_pct?: number | null;
   mem_warn_pct?: number | null;
+  gpu_address?: string | null;
+  gpu_util_warn_pct?: number | null;
+  gpu_mem_warn_pct?: number | null;
 }
 
 export interface ServerMetricSeries {
-  metric: 'cpu' | 'mem' | 'disk';
+  metric: 'cpu' | 'mem' | 'disk' | 'gpu_util' | 'gpu_mem';
   mountpoint?: string | null;
+  /** GPU index label, e.g. "0" — set on gpu_util/gpu_mem series only. */
+  gpu?: string | null;
+  gpu_model?: string | null;
   points: Array<{
     t: number;
     v: number | null;
@@ -1287,7 +1299,9 @@ export async function deleteServer(id: number): Promise<void> {
   await client.delete(`/admin/servers/${id}`);
 }
 
-export async function testServer(id: number): Promise<{ status: string; detail: string | null }> {
+export async function testServer(
+  id: number,
+): Promise<{ status: string; detail: string | null; gpu_status?: string }> {
   const { data } = await client.post(`/admin/servers/${id}/test`);
   return data;
 }

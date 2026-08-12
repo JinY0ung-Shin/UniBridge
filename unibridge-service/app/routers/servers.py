@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Iterable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -123,10 +123,13 @@ def _host_response(host: MonitoredHost, status: str | None = None) -> MonitoredH
         description=host.description or "",
         labels=_parse_labels(host.labels),
         disk_mountpoints=host.disk_mountpoints,
+        gpu_address=host.gpu_address,
         disk_warn_pct=host.disk_warn_pct,
         disk_crit_pct=host.disk_crit_pct,
         cpu_warn_pct=host.cpu_warn_pct,
         mem_warn_pct=host.mem_warn_pct,
+        gpu_util_warn_pct=host.gpu_util_warn_pct,
+        gpu_mem_warn_pct=host.gpu_mem_warn_pct,
         status=status,
         created_at=host.created_at,
         updated_at=host.updated_at,
@@ -141,22 +144,36 @@ def _audit_snapshot(host: MonitoredHost) -> dict[str, Any]:
         "description": host.description or "",
         "labels": _parse_labels(host.labels),
         "disk_mountpoints": host.disk_mountpoints,
+        "gpu_address": host.gpu_address,
         "disk_warn_pct": host.disk_warn_pct,
         "disk_crit_pct": host.disk_crit_pct,
         "cpu_warn_pct": host.cpu_warn_pct,
         "mem_warn_pct": host.mem_warn_pct,
+        "gpu_util_warn_pct": host.gpu_util_warn_pct,
+        "gpu_mem_warn_pct": host.gpu_mem_warn_pct,
     }
+
+
+async def _clear_alert_state(
+    db: AsyncSession, host_name: str, alert_types: Iterable[str]
+) -> None:
+    from app.routers.alerts import get_alert_state
+
+    state = get_alert_state()
+    for alert_type in alert_types:
+        if state is not None:
+            state.discard(alert_type, host_name)
+        await delete_alert_state(db, alert_type, host_name)
 
 
 async def _clear_host_alert_state(db: AsyncSession, host_name: str) -> None:
     """Drop in-memory + persisted alert state for every signal of a host."""
-    from app.routers.alerts import get_alert_state
+    await _clear_alert_state(db, host_name, server_monitor.SERVER_ALERT_TYPES)
 
-    state = get_alert_state()
-    for alert_type in server_monitor.SERVER_ALERT_TYPES:
-        if state is not None:
-            state.discard(alert_type, host_name)
-        await delete_alert_state(db, alert_type, host_name)
+
+async def _clear_gpu_alert_state(db: AsyncSession, host_name: str) -> None:
+    """Drop alert state for the GPU signals only, leaving the node signals alone."""
+    await _clear_alert_state(db, host_name, server_monitor.GPU_ALERT_TYPES)
 
 
 @router.get("", response_model=list[MonitoredHostResponse])
@@ -199,10 +216,13 @@ async def create_server(
         description=body.description,
         labels=json.dumps(body.labels, ensure_ascii=False) if body.labels else None,
         disk_mountpoints=body.disk_mountpoints,
+        gpu_address=body.gpu_address,
         disk_warn_pct=body.disk_warn_pct,
         disk_crit_pct=body.disk_crit_pct,
         cpu_warn_pct=body.cpu_warn_pct,
         mem_warn_pct=body.mem_warn_pct,
+        gpu_util_warn_pct=body.gpu_util_warn_pct,
+        gpu_mem_warn_pct=body.gpu_mem_warn_pct,
     )
     db.add(host)
     try:
@@ -248,7 +268,13 @@ async def update_server(
         host.labels = json.dumps(body.labels, ensure_ascii=False) if body.labels else None
     if "disk_mountpoints" in body.model_fields_set:
         host.disk_mountpoints = body.disk_mountpoints
-    for field in ("disk_warn_pct", "disk_crit_pct", "cpu_warn_pct", "mem_warn_pct"):
+    had_gpu = bool(host.gpu_address)
+    if "gpu_address" in body.model_fields_set:
+        host.gpu_address = body.gpu_address
+    for field in (
+        "disk_warn_pct", "disk_crit_pct", "cpu_warn_pct", "mem_warn_pct",
+        "gpu_util_warn_pct", "gpu_mem_warn_pct",
+    ):
         if field in body.model_fields_set:
             setattr(host, field, getattr(body, field))
     await db.commit()
@@ -257,6 +283,11 @@ async def update_server(
     # doesn't linger as a stale "down" while unscraped.
     if not host.enabled:
         await _clear_host_alert_state(db, host.name)
+        await db.commit()
+    elif had_gpu and not host.gpu_address:
+        # GPU monitoring turned off: only the dcgm target disappears, so clear
+        # just those signals and leave the node-level state intact.
+        await _clear_gpu_alert_state(db, host.name)
         await db.commit()
     await server_monitor.sync_targets_from_db(db)
     await log_admin_action(
@@ -300,10 +331,20 @@ async def test_server(
         raise HTTPException(status_code=404, detail="Server not found")
     up_map = await server_monitor.host_up_map()
     if up_map is None:
-        return {"status": "unknown", "detail": "Prometheus unreachable"}
-    if host.name not in up_map:
-        return {"status": "unknown", "detail": "No scrape data yet for this host"}
-    return {"status": "up" if up_map[host.name] else "down", "detail": None}
+        result: dict[str, Any] = {"status": "unknown", "detail": "Prometheus unreachable"}
+    elif host.name not in up_map:
+        result = {"status": "unknown", "detail": "No scrape data yet for this host"}
+    else:
+        result = {"status": "up" if up_map[host.name] else "down", "detail": None}
+    # The dcgm-exporter is a separate scrape target, so it gets its own verdict —
+    # reported only for hosts that opted into GPU monitoring.
+    if host.gpu_address:
+        gpu_map = await server_monitor.gpu_up_map()
+        if gpu_map is None or host.name not in gpu_map:
+            result["gpu_status"] = "unknown"
+        else:
+            result["gpu_status"] = "up" if gpu_map[host.name] else "down"
+    return result
 
 
 @router.get("/{host_id}/metrics", response_model=list[ServerMetricSeries])
@@ -336,7 +377,10 @@ async def server_metrics(
         return points
 
     series: list[ServerMetricSeries] = []
-    for metric in ("cpu", "mem", "disk"):
+    metrics = ("cpu", "mem", "disk")
+    if host.gpu_address:
+        metrics += ("gpu_util", "gpu_mem")
+    for metric in metrics:
         query = server_monitor.metric_query(metric, host.name, disk_mountpoints=host.disk_mountpoints)
         if query is None:
             continue
@@ -345,6 +389,21 @@ async def server_metrics(
         except Exception as exc:  # noqa: BLE001
             logger.warning("Server metric query failed (%s/%s): %s", host.name, metric, exc)
             results = []
+        if metric in ("gpu_util", "gpu_mem"):
+            # One series per GPU, ordered by the dcgm `gpu` index label.
+            for result in sorted(results, key=lambda item: str(item.get("metric", {}).get("gpu") or "")):
+                labels = result.get("metric", {})
+                gpu = labels.get("gpu")
+                model = labels.get("modelName")
+                series.append(
+                    ServerMetricSeries(
+                        metric=metric,
+                        gpu=str(gpu) if gpu is not None else None,
+                        gpu_model=str(model) if model is not None else None,
+                        points=points_from_result(result),
+                    )
+                )
+            continue
         if metric == "disk":
             if not results:
                 series.append(ServerMetricSeries(metric=metric))

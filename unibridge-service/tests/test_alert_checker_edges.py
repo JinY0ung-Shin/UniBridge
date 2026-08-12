@@ -237,6 +237,8 @@ def _settings_row(**overrides):
         "server_disk_crit_pct": 85,
         "server_cpu_warn_pct": 75,
         "server_mem_warn_pct": 80,
+        "server_gpu_util_warn_pct": 65,
+        "server_gpu_mem_warn_pct": 0,
         "server_disk_forecast_hours": 12,
         "repeat_alert_after_cycles": 3,
     }
@@ -265,6 +267,8 @@ async def test_load_server_monitoring_handles_default_and_configured_settings(
         assert thresholds.disk_crit_pct == 85
         assert thresholds.cpu_warn_pct == 75
         assert thresholds.mem_warn_pct == 80
+        assert thresholds.gpu_util_warn_pct == 65
+        assert thresholds.gpu_mem_warn_pct == 0
         assert thresholds.forecast_hours == 12
         assert repeat == 3
 

@@ -294,6 +294,11 @@ class AlertSettings(Base):
     server_disk_crit_pct = Column(Float, default=90.0, nullable=False, server_default="90.0")
     server_cpu_warn_pct = Column(Float, default=90.0, nullable=False, server_default="90.0")
     server_mem_warn_pct = Column(Float, default=90.0, nullable=False, server_default="90.0")
+    # GPU thresholds, applied only to hosts that also register a dcgm-exporter
+    # endpoint. 0 disables the alert; a positive per-host override re-enables it
+    # for that host (and a per-host 0 disables it for that host alone).
+    server_gpu_util_warn_pct = Column(Float, default=90.0, nullable=False, server_default="90.0")
+    server_gpu_mem_warn_pct = Column(Float, default=90.0, nullable=False, server_default="90.0")
     # predict_linear horizon (hours) for "disk will fill within N hours". 0 disables forecasting.
     server_disk_forecast_hours = Column(Float, default=24.0, nullable=False, server_default="24.0")
     # Re-notify cadence for a still-firing alert: 0 = notify once per transition;
@@ -364,11 +369,16 @@ class MonitoredHost(Base):
     labels = Column(Text, nullable=True)  # JSON object of extra Prometheus labels
     description = Column(String(255), default="", nullable=False, server_default="")
     disk_mountpoints = Column(Text, nullable=True)  # comma-separated node_exporter mountpoints; null = global default
+    # Optional GPU monitoring: the host's dcgm-exporter endpoint (host:9400),
+    # scraped by a separate job. Null/empty = GPU monitoring off for this host.
+    gpu_address = Column(String(255), nullable=True)
     # Per-host threshold overrides (null → fall back to AlertSettings global defaults)
     disk_warn_pct = Column(Float, nullable=True)
     disk_crit_pct = Column(Float, nullable=True)
     cpu_warn_pct = Column(Float, nullable=True)
     mem_warn_pct = Column(Float, nullable=True)
+    gpu_util_warn_pct = Column(Float, nullable=True)
+    gpu_mem_warn_pct = Column(Float, nullable=True)
     created_at = Column(UtcDateTime, default=utcnow, nullable=False)
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
 

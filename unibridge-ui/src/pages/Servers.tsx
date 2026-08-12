@@ -29,12 +29,16 @@ interface FormState {
   disk_crit_pct: string;
   cpu_warn_pct: string;
   mem_warn_pct: string;
+  gpu_address: string;
+  gpu_util_warn_pct: string;
+  gpu_mem_warn_pct: string;
 }
 
 const emptyForm: FormState = {
   name: '', address: '', description: '', enabled: true,
   disk_mountpoints: '',
   disk_warn_pct: '', disk_crit_pct: '', cpu_warn_pct: '', mem_warn_pct: '',
+  gpu_address: '', gpu_util_warn_pct: '', gpu_mem_warn_pct: '',
 };
 
 function pctOrNull(value: string): number | null {
@@ -139,11 +143,15 @@ function Servers() {
 
   const testMutation = useMutation({
     mutationFn: (id: number) => testServer(id),
-    onSuccess: (data) => addToast({
-      type: data.status === 'up' ? 'success' : 'error',
-      title: `${t('servers.statusLabel')}: ${data.status}`,
-      message: data.detail ?? undefined,
-    }),
+    onSuccess: (data) => {
+      // gpu_status only comes back for hosts that have a gpu_address.
+      const gpuSuffix = data.gpu_status ? ` · ${t('servers.gpuTestStatus', { status: data.gpu_status })}` : '';
+      addToast({
+        type: data.status === 'up' ? 'success' : 'error',
+        title: `${t('servers.statusLabel')}: ${data.status}${gpuSuffix}`,
+        message: data.detail ?? undefined,
+      });
+    },
   });
 
   function openCreate() {
@@ -163,6 +171,9 @@ function Servers() {
       disk_crit_pct: numToStr(server.disk_crit_pct),
       cpu_warn_pct: numToStr(server.cpu_warn_pct),
       mem_warn_pct: numToStr(server.mem_warn_pct),
+      gpu_address: server.gpu_address ?? '',
+      gpu_util_warn_pct: numToStr(server.gpu_util_warn_pct),
+      gpu_mem_warn_pct: numToStr(server.gpu_mem_warn_pct),
     });
     setEditingId(server.id);
     setShowModal(true);
@@ -174,8 +185,11 @@ function Servers() {
       disk_crit_pct: pctOrNull(form.disk_crit_pct),
       cpu_warn_pct: pctOrNull(form.cpu_warn_pct),
       mem_warn_pct: pctOrNull(form.mem_warn_pct),
+      gpu_util_warn_pct: pctOrNull(form.gpu_util_warn_pct),
+      gpu_mem_warn_pct: pctOrNull(form.gpu_mem_warn_pct),
     };
     const diskMountpoints = strOrNull(form.disk_mountpoints);
+    const gpuAddress = strOrNull(form.gpu_address);
     if (editingId == null) {
       createMutation.mutate({
         name: form.name.trim(),
@@ -183,6 +197,7 @@ function Servers() {
         description: form.description.trim(),
         enabled: form.enabled,
         disk_mountpoints: diskMountpoints,
+        gpu_address: gpuAddress,
         ...thresholds,
       });
     } else {
@@ -193,6 +208,7 @@ function Servers() {
           description: form.description.trim(),
           enabled: form.enabled,
           disk_mountpoints: diskMountpoints,
+          gpu_address: gpuAddress,
           ...thresholds,
         },
       });
@@ -386,6 +402,16 @@ function Servers() {
                 />
               </div>
               <div className="form-group form-group--full">
+                <label htmlFor="server-gpu-address">{t('servers.gpuAddress')}</label>
+                <input
+                  id="server-gpu-address"
+                  value={form.gpu_address}
+                  onChange={(e) => setForm({ ...form, gpu_address: e.target.value })}
+                  placeholder={t('servers.gpuAddressPlaceholder')}
+                  aria-label={t('servers.gpuAddress')}
+                />
+              </div>
+              <div className="form-group form-group--full">
                 <label htmlFor="server-description">{t('servers.description')}</label>
                 <input
                   id="server-description"
@@ -430,6 +456,14 @@ function Servers() {
               <div className="form-group">
                 <label htmlFor="server-mem-warn">{t('servers.memWarn')}</label>
                 <input id="server-mem-warn" type="number" min={0} max={100} value={form.mem_warn_pct} onChange={(e) => setForm({ ...form, mem_warn_pct: e.target.value })} placeholder="90" aria-label={t('servers.memWarn')} />
+              </div>
+              <div className="form-group">
+                <label htmlFor="server-gpu-util-warn">{t('servers.gpuUtilWarn')}</label>
+                <input id="server-gpu-util-warn" type="number" min={0} max={100} value={form.gpu_util_warn_pct} onChange={(e) => setForm({ ...form, gpu_util_warn_pct: e.target.value })} placeholder="90" aria-label={t('servers.gpuUtilWarn')} />
+              </div>
+              <div className="form-group">
+                <label htmlFor="server-gpu-mem-warn">{t('servers.gpuMemWarn')}</label>
+                <input id="server-gpu-mem-warn" type="number" min={0} max={100} value={form.gpu_mem_warn_pct} onChange={(e) => setForm({ ...form, gpu_mem_warn_pct: e.target.value })} placeholder="90" aria-label={t('servers.gpuMemWarn')} />
               </div>
             </div>
 

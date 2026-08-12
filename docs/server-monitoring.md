@@ -26,6 +26,9 @@ global 관리자, webhook/mail channel, alert history, and the Alert Status UI).
   targets into a Prometheus `file_sd` file (`/etc/prometheus/file_sd/nodes.json`,
   a shared volume) from the `MonitoredHost` registry — no Prometheus reload
   needed when you add/remove hosts.
+* Hosts that also register a **GPU exporter** address go into a second `file_sd`
+  file (`gpus.json`) scraped by a second job (`gpu-nodes`) — same mechanism, same
+  `host` label, still no reload. See [GPU monitoring](#gpu-monitoring-optional).
 * The alert checker (the same ~60s loop that checks DB/NAS/route health) queries
   Prometheus for each host signal, compares against thresholds, and feeds the
   result through the shared alert-state machine and `dispatch_alert`. No
@@ -98,6 +101,9 @@ selected filesystem per host so existing warning/critical behavior stays stable.
 | `server_cpu`           | CPU utilisation ≥ warn                                   | warning  |
 | `server_mem`           | memory utilisation ≥ warn                               | warning  |
 
+Hosts with a GPU exporter registered get three more signals — see
+[GPU monitoring](#gpu-monitoring-optional).
+
 Global defaults live in **Alert settings → Server thresholds**
 (disk warn 80 / crit 90, CPU 90, memory 90, forecast 24h). Per-host overrides
 live on each server. The disk-fill forecast uses Prometheus `predict_linear`
@@ -108,6 +114,84 @@ than a static threshold. Set the forecast horizon to 0 to disable it.
 crit threshold. Set **Re-notify every N cycles** (`repeat_alert_after_cycles`)
 to re-send a still-firing alert every N check cycles (0 = notify once per
 transition).
+
+## GPU monitoring (optional)
+
+GPU monitoring is per host and off by default: a server is monitored for
+disk/CPU/memory whether or not it has GPUs. To turn it on for a host, run
+**NVIDIA dcgm-exporter** there and fill in the GPU exporter address in the same
+**Servers** form (leave it empty = GPU monitoring off for that host).
+
+### 1. Run dcgm-exporter on the GPU host
+
+Prerequisites: the NVIDIA driver plus **nvidia-container-toolkit**, with the
+Docker runtime configured (`sudo nvidia-ctk runtime configure --runtime=docker &&
+sudo systemctl restart docker`). Copy
+[`deploy/dcgm-exporter/docker-compose.yml`](../deploy/dcgm-exporter/docker-compose.yml)
+to the host and:
+
+```bash
+docker compose up -d
+curl -s http://localhost:39400/metrics | grep -m1 DCGM_FI_DEV_GPU_UTIL
+```
+
+Then open port 39400 from the central Prometheus host only — dcgm-exporter is
+unauthenticated, same as node_exporter:
+
+```bash
+sudo ufw allow from <PROMETHEUS_IP> to any port 39400 proto tcp
+```
+
+> Docker is the supported path here. On a bare-metal host that doesn't run
+> Docker there is no install script — you'd install DCGM and the dcgm-exporter
+> binary manually and run it under systemd on `:39400` yourself.
+
+### 2. Register the GPU address
+
+UI → **Servers** → edit the host, set the GPU exporter address to
+`<host-ip>:39400`. UniBridge writes it to the `gpus.json` `file_sd` file and the
+`gpu-nodes` job picks it up within ~30s; no Prometheus reload.
+
+### GPU signals
+
+| alert_type        | Fires when                                                | Severity |
+|-------------------|-----------------------------------------------------------|----------|
+| `server_gpu_down` | dcgm-exporter scrape is down while the host itself is up  | critical |
+| `server_gpu_util` | average GPU utilisation (across GPUs) ≥ threshold        | warning  |
+| `server_gpu_mem`  | average GPU memory usage (across GPUs) ≥ threshold       | warning  |
+
+`server_gpu_down` deliberately requires the host to be *up* — when a machine
+dies you get one `server_down`, not a pair. Thresholds default to 90/90 in
+**Alert settings → Server thresholds**, with per-host overrides on each server;
+**0 disables** that check for the host.
+
+> **GPU utilisation pinned at 100% is normal** on training nodes — that's the
+> hardware doing its job, not an incident. On those hosts set the util threshold
+> to 0 (off) or to something deliberately high; memory and `server_gpu_down` are
+> the load-bearing signals there.
+
+### Multi-GPU hosts
+
+dcgm-exporter exposes one series **per GPU** (labels `gpu`, `UUID`,
+`modelName`), and Prometheus records every one of them individually — nothing
+is averaged at collection time. The two consumers then differ:
+
+* **Alerts** evaluate the **average across the host's GPUs**, so a host
+  produces one alert per signal, keyed `(alert_type, host)` like every other
+  server signal. The flip side: one hot or nearly-full GPU among several idle
+  ones barely moves the average — that case shows up in the per-GPU chart
+  lines, and a lower per-host threshold can compensate on hosts where a single
+  GPU matters.
+* **Charts** on the server detail page draw one line per GPU, the same way the
+  disk chart splits per `mountpoint` — the full per-GPU history stays
+  queryable in Prometheus.
+
+### Supported hardware
+
+DCGM officially targets NVIDIA **datacenter** GPUs (A/H/L/Tesla series).
+Consumer GeForce cards generally still report the basics UniBridge uses
+(utilisation, memory, temperature) but are not officially supported — treat them
+as best-effort.
 
 ## Push mode (firewalled hosts)
 
@@ -125,12 +209,16 @@ instead. Enable the remote-write receiver on Prometheus:
 node_exporter and remote-writing to `http(s)://<prometheus-host>:9090/api/v1/write`.
 Add a `host` label in the agent's `external_labels` matching the name you
 registered in UniBridge so the alert checker's queries line up. Pull mode is the
-default and is simpler; use push only for the hosts that need it.
+default and is simpler; use push only for the hosts that need it. GPU hosts work
+the same way — point the agent at the local dcgm-exporter too and keep the same
+`host` external label.
 
 ## Not covered yet (future)
 
 * **Windows servers** — add `windows_exporter` and a parallel scrape job; the
   evaluation queries assume node_exporter metric names.
+* **AMD GPUs** — add the ROCm SMI exporter and a parallel scrape job; the GPU
+  queries assume `DCGM_FI_*` metric names.
 * **Container-level metrics** — add cAdvisor for per-container CPU/memory.
 * **Alert grouping/correlation** — multiple signals firing on one host are
   currently independent alerts.

@@ -34,6 +34,18 @@ scrape_configs:
           - /etc/prometheus/file_sd/nodes.json
         refresh_interval: 30s
 
+  # GPU hosts running NVIDIA dcgm-exporter. Targets are written by
+  # unibridge-service from the MonitoredHost registry (the hosts that have a GPU
+  # exporter address) into a second file_sd file, same shared volume and same
+  # `host` label as the nodes job. Kept as a SEPARATE job so `up` stays one
+  # series per host per job — `server_down` watches the nodes job, and
+  # `server_gpu_down` watches this one.
+  - job_name: 'gpu-nodes'
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/file_sd/gpus.json
+        refresh_interval: 30s
+
   # Externally-monitored API services exposing RED metrics (not routed through
   # the gateway). Targets + their metrics path are written by unibridge-service
   # from the MonitoredService registry into this file_sd file (shared volume);

@@ -68,6 +68,9 @@ describe('ServerDetail page', () => {
     disk_crit_pct: null,
     cpu_warn_pct: null,
     mem_warn_pct: null,
+    gpu_address: null,
+    gpu_util_warn_pct: null,
+    gpu_mem_warn_pct: null,
     status: 'up' as const,
   };
 
@@ -177,6 +180,39 @@ describe('ServerDetail page', () => {
     expect(screen.getByLabelText('Disk capacity')).toHaveTextContent('/: 512 B / 1.0 KiB');
     expect(screen.getByLabelText('Disk capacity')).toHaveTextContent('/data: total 2.0 KiB');
     expect(rechartsCapture.chartData[0].map((point) => (point as { timestamp: number }).timestamp)).toEqual([1, 2]);
+  });
+
+  it('renders one line per GPU and lists each GPU model once', async () => {
+    mockGetServers.mockResolvedValue([{ ...server, gpu_address: '10.0.0.7:39400' }]);
+    mockGetServerMetrics.mockResolvedValue([
+      { metric: 'gpu_util', gpu: '0', gpu_model: 'NVIDIA A100 80GB', points: [{ t: 1, v: 40 }] },
+      { metric: 'gpu_util', gpu: '1', gpu_model: 'NVIDIA A100 80GB', points: [{ t: 1, v: 60 }] },
+      { metric: 'gpu_mem', gpu: '0', gpu_model: 'NVIDIA A100 80GB', points: [{ t: 1, v: 25 }] },
+      { metric: 'gpu_mem', gpu: '1', gpu_model: 'NVIDIA A100 80GB', points: [{ t: 1, v: 35 }] },
+    ]);
+
+    renderWithProviders(<ServerDetail />);
+
+    expect(await screen.findByRole('heading', { name: 'GPU utilization (per GPU)' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'GPU memory usage (per GPU)' })).toBeInTheDocument();
+    expect(screen.getAllByTestId('chart-line').map((line) => line.textContent))
+      .toEqual(['GPU 0', 'GPU 1', 'GPU 0', 'GPU 1']);
+    expect(screen.getAllByLabelText('GPU models').map((el) => el.textContent))
+      .toEqual(['NVIDIA A100 80GB', 'NVIDIA A100 80GB']);
+    expect(screen.queryByRole('heading', { name: 'CPU usage (%)' })).not.toBeInTheDocument();
+  });
+
+  it('falls back to the series index and omits the model caption for unlabelled GPUs', async () => {
+    mockGetServers.mockResolvedValue([server]);
+    mockGetServerMetrics.mockResolvedValue([
+      { metric: 'gpu_util', points: [{ t: 1, v: 40 }] },
+    ]);
+
+    renderWithProviders(<ServerDetail />);
+
+    expect(await screen.findByRole('heading', { name: 'GPU utilization (per GPU)' })).toBeInTheDocument();
+    expect(screen.getByTestId('chart-line')).toHaveTextContent('GPU 0');
+    expect(screen.queryByLabelText('GPU models')).not.toBeInTheDocument();
   });
 
   it('formats tooltip percentages and disk capacity details defensively', async () => {

@@ -46,6 +46,9 @@ function makeServer(overrides = {}) {
     disk_crit_pct: null,
     cpu_warn_pct: null,
     mem_warn_pct: null,
+    gpu_address: null,
+    gpu_util_warn_pct: null,
+    gpu_mem_warn_pct: null,
     status: 'up' as const,
     ...overrides,
   };
@@ -170,6 +173,15 @@ describe('Servers', () => {
       'server-thresholds-hint',
     );
     expect(screen.getByRole('spinbutton', { name: 'Disk warn %' })).toHaveAttribute('id', 'server-disk-warn');
+
+    const gpuAddress = screen.getByRole('textbox', { name: 'GPU exporter address (dcgm)' });
+    expect(gpuAddress).toHaveAttribute('id', 'server-gpu-address');
+    expect(gpuAddress).toHaveAttribute(
+      'placeholder',
+      'e.g. 10.0.0.5:39400 — leave blank to skip GPU monitoring',
+    );
+    expect(screen.getByRole('spinbutton', { name: 'GPU util warn % (0=off)' })).toBeInTheDocument();
+    expect(screen.getByRole('spinbutton', { name: 'GPU memory warn % (0=off)' })).toBeInTheDocument();
   });
 
   it('creates a trimmed server with numeric and inherited threshold values', async () => {
@@ -185,6 +197,8 @@ describe('Servers', () => {
     await user.type(screen.getByRole('spinbutton', { name: 'Disk warn %' }), '80');
     await user.type(screen.getByRole('spinbutton', { name: 'Disk critical %' }), '90');
     await user.type(screen.getByRole('spinbutton', { name: 'CPU warn %' }), '85');
+    await user.type(screen.getByRole('textbox', { name: 'GPU exporter address (dcgm)' }), ' 10.0.0.9:39400 ');
+    await user.type(screen.getByRole('spinbutton', { name: 'GPU util warn % (0=off)' }), '95');
     await user.click(screen.getByRole('checkbox', { name: /Enabled/ }));
     await user.click(screen.getByRole('button', { name: 'Create' }));
 
@@ -194,10 +208,13 @@ describe('Servers', () => {
       description: 'edge host',
       enabled: false,
       disk_mountpoints: '/,/data',
+      gpu_address: '10.0.0.9:39400',
       disk_warn_pct: 80,
       disk_crit_pct: 90,
       cpu_warn_pct: 85,
       mem_warn_pct: null,
+      gpu_util_warn_pct: 95,
+      gpu_mem_warn_pct: null,
     }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add server' })).not.toBeInTheDocument());
   });
@@ -211,6 +228,9 @@ describe('Servers', () => {
       disk_crit_pct: 91,
       cpu_warn_pct: 82,
       mem_warn_pct: 83,
+      gpu_address: '10.0.0.5:39400',
+      gpu_util_warn_pct: 88,
+      gpu_mem_warn_pct: 77,
     })]);
     mockedUpdateServer.mockResolvedValue(makeServer());
     const user = userEvent.setup();
@@ -220,10 +240,13 @@ describe('Servers', () => {
     await user.click(screen.getByRole('button', { name: 'Edit web-1' }));
     expect(screen.getByRole('textbox', { name: 'Name' })).toBeDisabled();
     expect(screen.getByRole('spinbutton', { name: 'Disk warn %' })).toHaveValue(70);
+    expect(screen.getByRole('textbox', { name: 'GPU exporter address (dcgm)' })).toHaveValue('10.0.0.5:39400');
+    expect(screen.getByRole('spinbutton', { name: 'GPU util warn % (0=off)' })).toHaveValue(88);
     await user.clear(screen.getByRole('textbox', { name: 'node_exporter address' }));
     await user.type(screen.getByRole('textbox', { name: 'node_exporter address' }), ' new.example:39100 ');
     await user.clear(screen.getByRole('textbox', { name: 'Disk mountpoints' }));
     await user.clear(screen.getByRole('spinbutton', { name: 'Disk warn %' }));
+    await user.clear(screen.getByRole('textbox', { name: 'GPU exporter address (dcgm)' }));
     await user.click(screen.getByRole('checkbox', { name: /Enabled/ }));
     await user.click(screen.getByRole('button', { name: 'Save' }));
 
@@ -232,10 +255,13 @@ describe('Servers', () => {
       description: 'Frontend host',
       enabled: true,
       disk_mountpoints: null,
+      gpu_address: null,
       disk_warn_pct: null,
       disk_crit_pct: 91,
       cpu_warn_pct: 82,
       mem_warn_pct: 83,
+      gpu_util_warn_pct: 88,
+      gpu_mem_warn_pct: 77,
     }));
   });
 
@@ -267,8 +293,8 @@ describe('Servers', () => {
   });
 
   it('tests, deletes, and opens a server only after the corresponding user action', async () => {
-    mockedGetServers.mockResolvedValue([makeServer()]);
-    mockedTestServer.mockResolvedValue({ status: 'up', detail: 'node_exporter reachable' });
+    mockedGetServers.mockResolvedValue([makeServer({ gpu_address: '10.0.0.5:39400' })]);
+    mockedTestServer.mockResolvedValue({ status: 'up', detail: 'node_exporter reachable', gpu_status: 'down' });
     mockedDeleteServer.mockResolvedValue(undefined);
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
     const user = userEvent.setup();
@@ -277,6 +303,7 @@ describe('Servers', () => {
 
     await user.click(screen.getByRole('button', { name: 'Test web-1' }));
     expect(await screen.findByText('node_exporter reachable')).toBeInTheDocument();
+    expect(screen.getByText('Status: up · GPU: down')).toBeInTheDocument();
     expect(mockedTestServer).toHaveBeenCalledWith(1);
 
     await user.click(screen.getByRole('button', { name: 'Delete web-1' }));

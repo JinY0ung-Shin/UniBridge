@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     # the MonitoredHost registry (must be on a volume shared with Prometheus).
     NODE_EXPORTER_JOB: str = "nodes"
     PROMETHEUS_FILE_SD_PATH: str = "/etc/prometheus/file_sd/nodes.json"
+    # GPU monitoring: a registered host may additionally run dcgm-exporter. Its
+    # targets get their own file_sd file and their own scrape job — folding them
+    # into the node job would give a GPU host two `up` series and break the
+    # per-host collapse that server_down relies on.
+    DCGM_EXPORTER_JOB: str = "gpu-nodes"
+    PROMETHEUS_GPU_FILE_SD_PATH: str = "/etc/prometheus/file_sd/gpus.json"
     # External API-service monitoring: Prometheus scrape job for services that
     # expose RED metrics (http_requests_total + http_request_duration_seconds)
     # without routing through the gateway, and the file-based service-discovery

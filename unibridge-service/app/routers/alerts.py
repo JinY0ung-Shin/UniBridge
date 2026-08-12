@@ -125,6 +125,8 @@ def _build_settings_response(settings: AlertSettings) -> AlertSettingsResponse:
         server_disk_crit_pct=settings.server_disk_crit_pct,
         server_cpu_warn_pct=settings.server_cpu_warn_pct,
         server_mem_warn_pct=settings.server_mem_warn_pct,
+        server_gpu_util_warn_pct=settings.server_gpu_util_warn_pct,
+        server_gpu_mem_warn_pct=settings.server_gpu_mem_warn_pct,
         server_disk_forecast_hours=settings.server_disk_forecast_hours,
         repeat_alert_after_cycles=settings.repeat_alert_after_cycles,
         updated_at=settings.updated_at,
@@ -143,6 +145,8 @@ def _settings_audit_snapshot(settings: AlertSettings) -> dict[str, Any]:
         "server_disk_crit_pct": settings.server_disk_crit_pct,
         "server_cpu_warn_pct": settings.server_cpu_warn_pct,
         "server_mem_warn_pct": settings.server_mem_warn_pct,
+        "server_gpu_util_warn_pct": settings.server_gpu_util_warn_pct,
+        "server_gpu_mem_warn_pct": settings.server_gpu_mem_warn_pct,
         "server_disk_forecast_hours": settings.server_disk_forecast_hours,
         "repeat_alert_after_cycles": settings.repeat_alert_after_cycles,
     }
@@ -353,6 +357,10 @@ async def update_alert_settings(
         settings.server_cpu_warn_pct = body.server_cpu_warn_pct
     if body.server_mem_warn_pct is not None:
         settings.server_mem_warn_pct = body.server_mem_warn_pct
+    if body.server_gpu_util_warn_pct is not None:
+        settings.server_gpu_util_warn_pct = body.server_gpu_util_warn_pct
+    if body.server_gpu_mem_warn_pct is not None:
+        settings.server_gpu_mem_warn_pct = body.server_gpu_mem_warn_pct
     if body.server_disk_forecast_hours is not None:
         settings.server_disk_forecast_hours = body.server_disk_forecast_hours
     if body.repeat_alert_after_cycles is not None:

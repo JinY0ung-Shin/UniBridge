@@ -667,6 +667,8 @@ class AlertSettingsResponse(BaseModel):
     server_disk_crit_pct: float
     server_cpu_warn_pct: float
     server_mem_warn_pct: float
+    server_gpu_util_warn_pct: float
+    server_gpu_mem_warn_pct: float
     server_disk_forecast_hours: float
     repeat_alert_after_cycles: int
     updated_at: datetime | None = None
@@ -683,6 +685,9 @@ class AlertSettingsUpdate(BaseModel):
     server_disk_crit_pct: float | None = Field(None, ge=0, le=100)
     server_cpu_warn_pct: float | None = Field(None, ge=0, le=100)
     server_mem_warn_pct: float | None = Field(None, ge=0, le=100)
+    # 0 disables the GPU alert globally (per-host overrides can re-enable it).
+    server_gpu_util_warn_pct: float | None = Field(None, ge=0, le=100)
+    server_gpu_mem_warn_pct: float | None = Field(None, ge=0, le=100)
     server_disk_forecast_hours: float | None = Field(None, ge=0, le=720)
     repeat_alert_after_cycles: int | None = Field(None, ge=0, le=1000)
 
@@ -703,6 +708,8 @@ class AlertSettingsUpdate(BaseModel):
             "server_disk_crit_pct",
             "server_cpu_warn_pct",
             "server_mem_warn_pct",
+            "server_gpu_util_warn_pct",
+            "server_gpu_mem_warn_pct",
             "server_disk_forecast_hours",
             "repeat_alert_after_cycles",
         ):
@@ -830,6 +837,17 @@ def _validate_host_address(address: str) -> str:
     return address
 
 
+def _normalize_gpu_address(value: str | None) -> str | None:
+    """Validate an optional dcgm-exporter endpoint.
+
+    GPU monitoring is off when unset, so an empty/whitespace string collapses to
+    None rather than failing validation — that is how the UI clears it.
+    """
+    if value is None or not value.strip():
+        return None
+    return _validate_host_address(value)
+
+
 def _normalize_disk_mountpoints(value: str | None) -> str | None:
     if value is None:
         return None
@@ -863,10 +881,13 @@ class MonitoredHostCreate(BaseModel):
     description: str = Field("", max_length=255)
     labels: dict[str, str] | None = None
     disk_mountpoints: str | None = Field(None, max_length=1000)
+    gpu_address: str | None = Field(None, max_length=255)
     disk_warn_pct: float | None = Field(None, ge=0, le=100)
     disk_crit_pct: float | None = Field(None, ge=0, le=100)
     cpu_warn_pct: float | None = Field(None, ge=0, le=100)
     mem_warn_pct: float | None = Field(None, ge=0, le=100)
+    gpu_util_warn_pct: float | None = Field(None, ge=0, le=100)
+    gpu_mem_warn_pct: float | None = Field(None, ge=0, le=100)
 
     @field_validator("name")
     @classmethod
@@ -877,6 +898,11 @@ class MonitoredHostCreate(BaseModel):
     @classmethod
     def check_address(cls, v: str) -> str:
         return _validate_host_address(v)
+
+    @field_validator("gpu_address")
+    @classmethod
+    def check_gpu_address(cls, v: str | None) -> str | None:
+        return _normalize_gpu_address(v)
 
     @field_validator("disk_mountpoints")
     @classmethod
@@ -895,15 +921,23 @@ class MonitoredHostUpdate(BaseModel):
     description: str | None = Field(None, max_length=255)
     labels: dict[str, str] | None = None
     disk_mountpoints: str | None = Field(None, max_length=1000)
+    gpu_address: str | None = Field(None, max_length=255)
     disk_warn_pct: float | None = Field(None, ge=0, le=100)
     disk_crit_pct: float | None = Field(None, ge=0, le=100)
     cpu_warn_pct: float | None = Field(None, ge=0, le=100)
     mem_warn_pct: float | None = Field(None, ge=0, le=100)
+    gpu_util_warn_pct: float | None = Field(None, ge=0, le=100)
+    gpu_mem_warn_pct: float | None = Field(None, ge=0, le=100)
 
     @field_validator("address")
     @classmethod
     def check_address(cls, v: str | None) -> str | None:
         return _validate_host_address(v) if v is not None else v
+
+    @field_validator("gpu_address")
+    @classmethod
+    def check_gpu_address(cls, v: str | None) -> str | None:
+        return _normalize_gpu_address(v)
 
     @field_validator("disk_mountpoints")
     @classmethod
@@ -924,10 +958,13 @@ class MonitoredHostResponse(BaseModel):
     description: str = ""
     labels: dict[str, str] | None = None
     disk_mountpoints: str | None = None
+    gpu_address: str | None = None  # dcgm-exporter host:port; null = GPU monitoring off
     disk_warn_pct: float | None = None
     disk_crit_pct: float | None = None
     cpu_warn_pct: float | None = None
     mem_warn_pct: float | None = None
+    gpu_util_warn_pct: float | None = None
+    gpu_mem_warn_pct: float | None = None
     status: str | None = None  # "up" | "down" | "unknown" — live from Prometheus
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -950,8 +987,10 @@ class ServerMetricPoint(BaseModel):
 
 
 class ServerMetricSeries(BaseModel):
-    metric: str  # "cpu" | "mem" | "disk"
+    metric: str  # "cpu" | "mem" | "disk" | "gpu_util" | "gpu_mem"
     mountpoint: str | None = None  # set for disk series when Prometheus returns the label
+    gpu: str | None = None  # set for gpu series — the dcgm `gpu` index label
+    gpu_model: str | None = None  # set for gpu series — the dcgm `modelName` label
     points: list[ServerMetricPoint] = Field(default_factory=list)
 
 

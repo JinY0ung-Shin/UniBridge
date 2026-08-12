@@ -1,0 +1,42 @@
+# NVIDIA dcgm-exporter for UniBridge GPU monitoring — run this on each monitored
+# GPU host that already runs Docker. GPU monitoring is optional and per host: a
+# server without this exporter is still monitored for disk/CPU/memory by
+# node_exporter (see ../node-exporter/docker-compose.yml).
+#
+# Prerequisites on the host: the NVIDIA driver plus nvidia-container-toolkit,
+# with the Docker runtime wired up (`sudo nvidia-ctk runtime configure
+# --runtime=docker && sudo systemctl restart docker`). Without the toolkit the
+# container starts but sees no GPUs.
+#
+#   docker compose up -d
+#   curl -s http://localhost:39400/metrics | grep -m1 DCGM_FI_DEV_GPU_UTIL
+#
+# Then register the host in UniBridge (UI → Servers) with the GPU exporter
+# address <host-ip>:39400. Host port 39400 mirrors the project's 39100
+# node_exporter convention; the container itself listens on the dcgm-exporter
+# default 9400.
+#
+# Security: dcgm-exporter is unauthenticated — open 39400 only to the central
+# Prometheus host (host firewall), never to the public internet:
+#
+#   sudo ufw allow from <PROMETHEUS_IP> to any port 39400 proto tcp
+services:
+  dcgm_exporter:
+    # Tag verified against the nvcr.io registry tag list (this release also
+    # ships -ubi9 / -ubuntu22.04 variants). Check the NGC catalog page for
+    # nvidia/k8s/dcgm-exporter before bumping.
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.5.2-4.8.1-distroless
+    container_name: dcgm_exporter
+    restart: unless-stopped
+    ports:
+      - "39400:9400"
+    # cap_add:
+    #   - SYS_ADMIN          # only needed for DCGM_FI_PROF_* profiling metrics,
+    #                        # which UniBridge's GPU alerts and charts don't use
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

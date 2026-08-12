@@ -18,6 +18,9 @@ function typeLabel(t: (k: string) => string, type: string): string {
     server_disk_forecast: t('alerts.typeServerDiskForecast'),
     server_cpu: t('alerts.typeServerCpu'),
     server_mem: t('alerts.typeServerMem'),
+    server_gpu_down: t('alerts.typeServerGpuDown'),
+    server_gpu_util: t('alerts.typeServerGpuUtil'),
+    server_gpu_mem: t('alerts.typeServerGpuMem'),
   };
   return map[type] ?? type;
 }

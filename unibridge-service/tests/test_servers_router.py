@@ -14,6 +14,7 @@ from tests.conftest import auth_header
 def _no_prometheus_or_filesd():
     """Isolate the router from Prometheus and the file_sd writer."""
     with patch("app.routers.servers.server_monitor.sync_targets_from_db", new=AsyncMock()), \
+         patch("app.routers.servers.server_monitor.gpu_up_map", new=AsyncMock(return_value={})), \
          patch("app.routers.servers.server_monitor.host_up_map", new=AsyncMock(return_value={})):
         yield
 
@@ -192,6 +193,155 @@ async def test_metrics_returns_disk_series_per_mountpoint(client, admin_token):
         },
         {"t": 2.0, "v": None, "total_bytes": 2147483648.0},
     ]
+
+
+@pytest.mark.asyncio
+async def test_gpu_fields_roundtrip_and_clear(client, admin_token):
+    h = auth_header(admin_token)
+    created = await client.post("/admin/servers", headers=h, json={
+        "name": "gpu1", "address": "1.2.3.4:9100", "gpu_address": "1.2.3.4:9400",
+        "gpu_util_warn_pct": 85, "gpu_mem_warn_pct": 0,
+    })
+    assert created.status_code == 201, created.text
+    host_id = created.json()["id"]
+    assert created.json()["gpu_address"] == "1.2.3.4:9400"
+    assert created.json()["gpu_util_warn_pct"] == 85
+    assert created.json()["gpu_mem_warn_pct"] == 0
+
+    resp = await client.put(
+        f"/admin/servers/{host_id}",
+        headers=h,
+        json={"gpu_address": "1.2.3.4:9401", "gpu_mem_warn_pct": 70},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["gpu_address"] == "1.2.3.4:9401"
+    assert resp.json()["gpu_mem_warn_pct"] == 70
+
+    # Blank input is how the UI turns GPU monitoring off.
+    resp = await client.put(f"/admin/servers/{host_id}", headers=h, json={"gpu_address": "   "})
+    assert resp.status_code == 200 and resp.json()["gpu_address"] is None
+
+    assert (await client.post("/admin/servers", headers=h, json={
+        "name": "gpu-bad", "address": "1.2.3.9:9100", "gpu_address": "no-port",
+    })).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_clearing_gpu_address_clears_only_gpu_alert_state(client, admin_token, seeded_db):
+    h = auth_header(admin_token)
+    created = await client.post("/admin/servers", headers=h, json={
+        "name": "gpu-state", "address": "1.2.3.4:9100", "gpu_address": "1.2.3.4:9400",
+    })
+    assert created.status_code == 201, created.text
+    host_id = created.json()["id"]
+
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        db.add(AlertState(alert_type="server_gpu_down", target="gpu-state", status="alert"))
+        db.add(AlertState(alert_type="server_gpu_util", target="gpu-state", status="alert"))
+        db.add(AlertState(alert_type="server_down", target="gpu-state", status="alert"))
+        await db.commit()
+
+    resp = await client.put(f"/admin/servers/{host_id}", headers=h, json={"gpu_address": None})
+    assert resp.status_code == 200 and resp.json()["gpu_address"] is None
+
+    async with session_factory() as db:
+        rows = (
+            await db.execute(select(AlertState).where(AlertState.target == "gpu-state"))
+        ).scalars().all()
+    # The node-level signal survives: only the GPU target left the scrape set.
+    assert [r.alert_type for r in rows] == ["server_down"]
+
+
+@pytest.mark.asyncio
+async def test_metrics_returns_one_gpu_series_per_card(client, admin_token):
+    h = auth_header(admin_token)
+    created = await client.post("/admin/servers", headers=h, json={
+        "name": "gpu-metrics", "address": "1.2.3.4:9100", "gpu_address": "1.2.3.4:9400",
+    })
+    assert created.status_code == 201, created.text
+    host_id = created.json()["id"]
+
+    async def fake_range_query(query, **_kwargs):
+        if "DCGM_FI_DEV_GPU_UTIL" in query:
+            assert "max by (host, gpu, modelName)" in query
+            return [
+                {"metric": {"host": "gpu-metrics", "gpu": "1", "modelName": "NVIDIA A100"},
+                 "values": [[1, "80"]]},
+                {"metric": {"host": "gpu-metrics", "gpu": "0", "modelName": "NVIDIA A100"},
+                 "values": [[1, "40"]]},
+            ]
+        if "DCGM_FI_DEV_FB_USED" in query:
+            return [
+                {"metric": {"host": "gpu-metrics", "gpu": "0", "modelName": "NVIDIA A100"},
+                 "values": [[1, "55"]]},
+            ]
+        return []
+
+    async def fake_instant_query(_query, **_kwargs):
+        return []
+
+    with patch("app.routers.servers.prometheus_client.range_query", new=fake_range_query), \
+         patch("app.routers.servers.prometheus_client.instant_query", new=fake_instant_query):
+        resp = await client.get(f"/admin/servers/{host_id}/metrics", headers=h)
+
+    assert resp.status_code == 200, resp.text
+    gpu_series = [s for s in resp.json() if s["metric"].startswith("gpu_")]
+    assert [(s["metric"], s["gpu"], s["gpu_model"]) for s in gpu_series] == [
+        ("gpu_util", "0", "NVIDIA A100"),
+        ("gpu_util", "1", "NVIDIA A100"),
+        ("gpu_mem", "0", "NVIDIA A100"),
+    ]
+    # No disk-style byte enrichment on GPU points.
+    assert gpu_series[0]["points"] == [{"t": 1.0, "v": 40.0}]
+
+
+@pytest.mark.asyncio
+async def test_metrics_skips_gpu_queries_without_gpu_address(client, admin_token):
+    h = auth_header(admin_token)
+    created = await client.post(
+        "/admin/servers", headers=h, json={"name": "no-gpu", "address": "1.2.3.4:9100"}
+    )
+    host_id = created.json()["id"]
+    queries: list[str] = []
+
+    async def fake_range_query(query, **_kwargs):
+        queries.append(query)
+        return []
+
+    with patch("app.routers.servers.prometheus_client.range_query", new=fake_range_query):
+        resp = await client.get(f"/admin/servers/{host_id}/metrics", headers=h)
+
+    assert resp.status_code == 200
+    assert not any("DCGM" in q for q in queries)
+    assert not any(s["metric"].startswith("gpu_") for s in resp.json())
+
+
+@pytest.mark.asyncio
+async def test_test_endpoint_reports_gpu_status_only_when_configured(client, admin_token):
+    h = auth_header(admin_token)
+    plain = (await client.post(
+        "/admin/servers", headers=h, json={"name": "cpu-only", "address": "1.2.3.4:9100"}
+    )).json()
+    gpu = (await client.post("/admin/servers", headers=h, json={
+        "name": "gpu-node", "address": "1.2.3.5:9100", "gpu_address": "1.2.3.5:9400",
+    })).json()
+
+    up_map = {"cpu-only": True, "gpu-node": True}
+    with patch("app.routers.servers.server_monitor.host_up_map", new=AsyncMock(return_value=up_map)), \
+         patch("app.routers.servers.server_monitor.gpu_up_map", new=AsyncMock(return_value={"gpu-node": False})):
+        plain_resp = await client.post(f"/admin/servers/{plain['id']}/test", headers=h)
+        gpu_resp = await client.post(f"/admin/servers/{gpu['id']}/test", headers=h)
+
+    assert "gpu_status" not in plain_resp.json()
+    assert gpu_resp.json()["status"] == "up"
+    assert gpu_resp.json()["gpu_status"] == "down"
+
+    # No dcgm sample yet (or Prometheus unreachable) reads as unknown, not down.
+    with patch("app.routers.servers.server_monitor.host_up_map", new=AsyncMock(return_value=up_map)), \
+         patch("app.routers.servers.server_monitor.gpu_up_map", new=AsyncMock(return_value=None)):
+        unknown = await client.post(f"/admin/servers/{gpu['id']}/test", headers=h)
+    assert unknown.json()["gpu_status"] == "unknown"
 
 
 @pytest.mark.asyncio

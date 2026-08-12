@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 from app.services import server_monitor
 from app.services.server_monitor import (
     ServerThresholds,
+    build_gpu_targets,
     build_service_targets,
     build_targets,
     evaluate_hosts,
@@ -27,6 +28,9 @@ def _host(name="web1", address="10.0.0.1:9100", enabled=True, labels=None, **ove
         cpu_warn_pct=overrides.get("cpu_warn_pct"),
         mem_warn_pct=overrides.get("mem_warn_pct"),
         disk_mountpoints=overrides.get("disk_mountpoints"),
+        gpu_address=overrides.get("gpu_address"),
+        gpu_util_warn_pct=overrides.get("gpu_util_warn_pct"),
+        gpu_mem_warn_pct=overrides.get("gpu_mem_warn_pct"),
     )
 
 
@@ -66,6 +70,102 @@ async def test_write_targets_file_is_world_readable(tmp_path):
     mode = stat.S_IMODE(os.stat(path).st_mode)
     assert mode & stat.S_IROTH, f"targets file not other-readable: {oct(mode)}"
     assert json.loads(path.read_text())[0]["targets"] == ["10.0.0.1:39100"]
+
+
+# ── GPU file_sd (dcgm-exporter, separate job) ────────────────────────────────
+
+def test_gpu_alert_types_belong_to_the_server_family():
+    # SERVER_ALERT_TYPES composition drives delete/disable cleanup, and the boot
+    # stale-purge keys off the "server_" prefix.
+    assert set(server_monitor.GPU_ALERT_TYPES) < set(server_monitor.SERVER_ALERT_TYPES)
+    assert all(t.startswith("server_") for t in server_monitor.GPU_ALERT_TYPES)
+
+
+def test_build_gpu_targets_only_covers_gpu_enabled_hosts():
+    hosts = [
+        _host("gpu1", "10.0.0.1:9100", gpu_address="10.0.0.1:9400", labels='{"env":"prod"}'),
+        _host("web1", "10.0.0.2:9100"),  # no dcgm-exporter → not a GPU target
+        _host("gpu2", "10.0.0.3:9100", gpu_address="10.0.0.3:9400", enabled=False),
+    ]
+    entries = build_gpu_targets(hosts)
+    assert len(entries) == 1
+    assert entries[0]["targets"] == ["10.0.0.1:9400"]
+    assert entries[0]["labels"] == {"host": "gpu1", "env": "prod"}
+
+
+def test_build_gpu_targets_user_label_cannot_clobber_host():
+    entries = build_gpu_targets(
+        [_host("gpu1", gpu_address="10.0.0.1:9400", labels='{"host":"evil"}')]
+    )
+    assert entries[0]["labels"]["host"] == "gpu1"
+
+
+@pytest.mark.asyncio
+async def test_write_gpu_targets_file_is_world_readable(tmp_path):
+    import json
+    import os
+    import stat
+
+    path = tmp_path / "gpus.json"
+    await server_monitor.write_gpu_targets_file(
+        [_host("gpu1", "10.0.0.1:39100", gpu_address="10.0.0.1:9400")], str(path)
+    )
+
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    assert mode & stat.S_IROTH, f"targets file not other-readable: {oct(mode)}"
+    assert json.loads(path.read_text())[0]["targets"] == ["10.0.0.1:9400"]
+
+
+@pytest.mark.asyncio
+async def test_sync_targets_from_db_writes_node_and_gpu_files(tmp_path):
+    import json
+
+    hosts = [
+        _host("gpu1", "10.0.0.1:9100", gpu_address="10.0.0.1:9400"),
+        _host("web1", "10.0.0.2:9100"),
+    ]
+
+    class _FakeDB:
+        async def execute(self, *_args, **_kwargs):
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: hosts))
+
+    nodes_path = tmp_path / "nodes.json"
+    gpus_path = tmp_path / "gpus.json"
+    with patch.object(server_monitor.settings, "PROMETHEUS_FILE_SD_PATH", str(nodes_path)), \
+         patch.object(server_monitor.settings, "PROMETHEUS_GPU_FILE_SD_PATH", str(gpus_path)):
+        await server_monitor.sync_targets_from_db(_FakeDB())
+
+    assert [e["targets"] for e in json.loads(nodes_path.read_text())] == [
+        ["10.0.0.1:9100"], ["10.0.0.2:9100"],
+    ]
+    assert [e["targets"] for e in json.loads(gpus_path.read_text())] == [["10.0.0.1:9400"]]
+
+
+def test_gpu_queries_use_the_configured_dcgm_job():
+    with patch.object(server_monitor.settings, "DCGM_EXPORTER_JOB", "dcgm-test"):
+        up = server_monitor._q_gpu_up()
+        util = server_monitor._q_gpu_util_pct()
+        mem = server_monitor._q_gpu_mem_pct()
+        detail_util = metric_query("gpu_util", "web1")
+        detail_mem = metric_query("gpu_mem", "web1")
+
+    assert up == 'up{job="dcgm-test"}'
+    # Alerts average across the host's GPUs rather than tracking the worst card.
+    assert util == 'avg by (host) (DCGM_FI_DEV_GPU_UTIL{job="dcgm-test"})'
+    # Per-GPU percentage first (label-matched divide, guarded against a 0/0
+    # card), then the unweighted mean per host.
+    assert mem.startswith("avg by (host) (100 * DCGM_FI_DEV_FB_USED")
+    assert "clamp_min(" in mem and "DCGM_FI_DEV_FB_FREE" in mem
+    assert mem.count('job="dcgm-test"') == 3
+    # The detail charts keep one series per card instead of collapsing them.
+    assert "max by (host, gpu, modelName)" in detail_util
+    assert 'job="dcgm-test"' in detail_util and 'host="web1"' in detail_util
+    assert "max by (host, gpu, modelName)" in detail_mem and "clamp_min(" in detail_mem
+
+
+def test_gpu_metric_query_escapes_the_host_label():
+    assert '\\"' in metric_query("gpu_util", 'a"b')
+    assert '\\"' in metric_query("gpu_mem", 'a"b')
 
 
 def test_metric_query_escapes_and_covers_metrics():
@@ -259,6 +359,116 @@ async def test_prometheus_failure_skips_cycle():
 @pytest.mark.asyncio
 async def test_no_enabled_hosts_returns_empty():
     assert await evaluate_hosts([_host(enabled=False)], ServerThresholds()) == []
+
+
+# ── GPU evaluation ────────────────────────────────────────────────────────────
+
+def _gpu_queries(node_up=1, gpu_up=1, util=50, mem=50, host="gpu1"):
+    """Prometheus stubs for one GPU host, keyed by the two distinct up{} jobs."""
+    return _patch_queries({
+        'up{job="gpu-nodes"}': [_series(host, gpu_up)],
+        'up{job="nodes"}': [_series(host, node_up)],
+        "DCGM_FI_DEV_GPU_UTIL": [_series(host, util)],
+        "DCGM_FI_DEV_FB_USED": [_series(host, mem)],
+    })
+
+
+@pytest.mark.asyncio
+async def test_host_without_gpu_address_gets_no_gpu_signals():
+    th = ServerThresholds(forecast_hours=0)
+    with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+        q.side_effect = _patch_queries({"up{": [_series("web1", 1)]})
+        signals = await evaluate_hosts([_host("web1")], th)
+    assert not [s for s in signals if s.alert_type.startswith("server_gpu")]
+    # The dcgm queries are not even issued when no host opted in.
+    assert not [call for call in q.call_args_list if "DCGM" in call.args[0]]
+
+
+@pytest.mark.asyncio
+async def test_down_node_reports_no_gpu_signals():
+    """A host that is down produces server_down only — even with GPU monitoring on."""
+    th = ServerThresholds(forecast_hours=0)
+    with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+        q.side_effect = _gpu_queries(node_up=0)
+        signals = await evaluate_hosts([_host("gpu1", gpu_address="10.0.0.1:9400")], th)
+    assert {s.alert_type for s in signals} == {"server_down"}
+
+
+@pytest.mark.asyncio
+async def test_gpu_scrape_down_suppresses_usage_signals():
+    th = ServerThresholds(forecast_hours=0)
+    with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+        q.side_effect = _gpu_queries(gpu_up=0, util=99, mem=99)
+        signals = await evaluate_hosts([_host("gpu1", gpu_address="10.0.0.1:9400")], th)
+    gpu_down = next(s for s in signals if s.alert_type == "server_gpu_down")
+    assert gpu_down.is_healthy is False and gpu_down.severity == "critical"
+    assert "dcgm-exporter" in gpu_down.message
+    assert not [s for s in signals if s.alert_type in ("server_gpu_util", "server_gpu_mem")]
+
+
+@pytest.mark.asyncio
+async def test_gpu_usage_thresholds_and_per_host_override():
+    th = ServerThresholds(forecast_hours=0, gpu_util_warn_pct=90, gpu_mem_warn_pct=90)
+    hosts = [
+        _host("gpu1", gpu_address="10.0.0.1:9400"),
+        _host("gpu2", "10.0.0.2:9100", gpu_address="10.0.0.2:9400", gpu_util_warn_pct=50),
+    ]
+    with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+        q.side_effect = _patch_queries({
+            'up{job="gpu-nodes"}': [_series("gpu1", 1), _series("gpu2", 1)],
+            'up{job="nodes"}': [_series("gpu1", 1), _series("gpu2", 1)],
+            "DCGM_FI_DEV_GPU_UTIL": [_series("gpu1", 60), _series("gpu2", 60)],
+            "DCGM_FI_DEV_FB_USED": [_series("gpu1", 95), _series("gpu2", 10)],
+        })
+        signals = await evaluate_hosts(hosts, th)
+    by = {(s.alert_type, s.target): s for s in signals}
+    assert by[("server_gpu_down", "gpu1")].is_healthy is True
+    assert by[("server_gpu_util", "gpu1")].is_healthy is True
+    assert by[("server_gpu_util", "gpu1")].threshold == 90
+    # gpu2's per-host override (50) fires on the same 60% reading.
+    assert by[("server_gpu_util", "gpu2")].is_healthy is False
+    assert by[("server_gpu_util", "gpu2")].severity == "warning"
+    assert by[("server_gpu_util", "gpu2")].threshold == 50
+    assert by[("server_gpu_mem", "gpu1")].is_healthy is False
+    assert "avg across GPUs" in by[("server_gpu_mem", "gpu1")].message
+    assert by[("server_gpu_mem", "gpu2")].is_healthy is True
+
+
+@pytest.mark.asyncio
+async def test_zero_gpu_threshold_disables_only_that_signal():
+    """0 disables globally; a positive per-host value re-enables it for one host."""
+    th = ServerThresholds(forecast_hours=0, gpu_util_warn_pct=0, gpu_mem_warn_pct=0)
+    hosts = [
+        _host("gpu1", gpu_address="10.0.0.1:9400"),
+        _host("gpu2", "10.0.0.2:9100", gpu_address="10.0.0.2:9400", gpu_util_warn_pct=80),
+    ]
+    with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+        q.side_effect = _patch_queries({
+            'up{job="gpu-nodes"}': [_series("gpu1", 1), _series("gpu2", 1)],
+            'up{job="nodes"}': [_series("gpu1", 1), _series("gpu2", 1)],
+            "DCGM_FI_DEV_GPU_UTIL": [_series("gpu1", 99), _series("gpu2", 99)],
+            "DCGM_FI_DEV_FB_USED": [_series("gpu1", 99), _series("gpu2", 99)],
+        })
+        signals = await evaluate_hosts(hosts, th)
+    emitted = {(s.alert_type, s.target) for s in signals}
+    assert ("server_gpu_util", "gpu1") not in emitted
+    assert ("server_gpu_mem", "gpu1") not in emitted
+    assert ("server_gpu_mem", "gpu2") not in emitted
+    assert ("server_gpu_util", "gpu2") in emitted
+    # Scrape health is not threshold-gated — it stays on for both.
+    assert {("server_gpu_down", "gpu1"), ("server_gpu_down", "gpu2")} <= emitted
+
+
+@pytest.mark.asyncio
+async def test_per_host_zero_gpu_threshold_disables_for_that_host():
+    th = ServerThresholds(forecast_hours=0, gpu_util_warn_pct=90, gpu_mem_warn_pct=90)
+    host = _host("gpu1", gpu_address="10.0.0.1:9400", gpu_util_warn_pct=0)
+    with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+        q.side_effect = _gpu_queries(util=99, mem=99)
+        signals = await evaluate_hosts([host], th)
+    types = {s.alert_type for s in signals}
+    assert "server_gpu_util" not in types
+    assert "server_gpu_mem" in types
 
 
 # ── state-machine: severity escalation + repeat ───────────────────────────────

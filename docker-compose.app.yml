@@ -53,6 +53,8 @@ services:
       - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
       - NODE_EXPORTER_JOB=${NODE_EXPORTER_JOB:-nodes}
       - PROMETHEUS_FILE_SD_PATH=${PROMETHEUS_FILE_SD_PATH:-/etc/prometheus/file_sd/nodes.json}
+      - DCGM_EXPORTER_JOB=${DCGM_EXPORTER_JOB:-gpu-nodes}
+      - PROMETHEUS_GPU_FILE_SD_PATH=${PROMETHEUS_GPU_FILE_SD_PATH:-/etc/prometheus/file_sd/gpus.json}
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
       - KEYCLOAK_ISSUER_URL=${KEYCLOAK_ISSUER_URL:-}
       - KEYCLOAK_JWKS_URL=${KEYCLOAK_JWKS_URL:-}

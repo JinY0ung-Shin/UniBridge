@@ -280,6 +280,8 @@ async def _load_server_monitoring() -> tuple[list[MonitoredHost], ServerThreshol
         disk_crit_pct=settings_row.server_disk_crit_pct,
         cpu_warn_pct=settings_row.server_cpu_warn_pct,
         mem_warn_pct=settings_row.server_mem_warn_pct,
+        gpu_util_warn_pct=settings_row.server_gpu_util_warn_pct,
+        gpu_mem_warn_pct=settings_row.server_gpu_mem_warn_pct,
         forecast_hours=settings_row.server_disk_forecast_hours,
     )
     repeat = int(settings_row.repeat_alert_after_cycles or 0)

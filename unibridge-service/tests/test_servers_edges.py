@@ -233,9 +233,9 @@ async def test_server_metrics_tolerates_prometheus_failures_and_empty_disk(
 
     assert response.status_code == 200, response.text
     assert response.json() == [
-        {"metric": "cpu", "mountpoint": None, "points": []},
-        {"metric": "mem", "mountpoint": None, "points": []},
-        {"metric": "disk", "mountpoint": None, "points": []},
+        {"metric": "cpu", "mountpoint": None, "gpu": None, "gpu_model": None, "points": []},
+        {"metric": "mem", "mountpoint": None, "gpu": None, "gpu_model": None, "points": []},
+        {"metric": "disk", "mountpoint": None, "gpu": None, "gpu_model": None, "points": []},
     ]
     assert "Server metric query failed" in caplog.text
 
