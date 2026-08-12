@@ -2,7 +2,8 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-# etcd image used in docker-compose.yml. Kept in sync with the service image.
+# etcd image used in docker-compose.yml and docker-compose.infra.yml.
+# Kept in sync with the service image.
 ETCD_IMAGE="${ETCD_IMAGE:-bitnamilegacy/etcd:3.5.11}"
 
 # Path inside the bitnami etcd container where the data volume is mounted.
@@ -16,16 +17,16 @@ backup_etcd() {
   # Pass the password via environment (ETCDCTL_USER), never argv, so it does
   # not appear in `ps` on the host or in /proc/*/cmdline inside the container.
   if [[ -n "${ETCD_ROOT_PASSWORD:-}" ]]; then
-    compose exec -T \
+    infra_compose exec -T \
       -e "ETCDCTL_USER=root:${ETCD_ROOT_PASSWORD}" \
       etcd etcdctl --command-timeout=30s snapshot save "$remote_tmp"
   else
-    compose exec -T \
+    infra_compose exec -T \
       etcd etcdctl --command-timeout=30s snapshot save "$remote_tmp"
   fi
 
-  compose cp "etcd:${remote_tmp}" "$out"
-  compose exec -T etcd rm -f "$remote_tmp"
+  infra_compose cp "etcd:${remote_tmp}" "$out"
+  infra_compose exec -T etcd rm -f "$remote_tmp"
   log "etcd: snapshot saved to $out ($(size_of "$out") bytes)"
 }
 
@@ -56,8 +57,8 @@ EOF
   [[ "$confirm" == "RESTORE ETCD" ]] || die "aborted"
 
   log "etcd: stopping apisix and etcd"
-  compose stop apisix etcd
-  compose rm -f etcd
+  infra_compose stop apisix etcd
+  infra_compose rm -f etcd
 
   log "etcd: recreating volume $volume"
   docker volume rm "$volume" || die "failed to remove volume $volume"
@@ -83,8 +84,8 @@ EOF
     " < "$snap"
 
   log "etcd: starting etcd and waiting for healthy"
-  compose up -d --wait etcd
+  infra_compose up -d --wait etcd
   log "etcd: starting apisix"
-  compose up -d --wait apisix
+  infra_compose up -d --wait apisix
   log "etcd: restore complete"
 }

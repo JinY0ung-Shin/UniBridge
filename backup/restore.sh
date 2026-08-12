@@ -51,7 +51,31 @@ on_restore_failure() {
   local rc=$?
   trap - EXIT
   [[ $rc -eq 0 ]] && exit 0
-  cat >&2 <<EOF
+
+  # Detection can itself be the thing that failed; fall back to the single-stack
+  # wording rather than dying inside the trap and printing nothing.
+  local mode="single"
+  mode="$(backup_stack_mode 2>/dev/null)" || mode="single"
+  [[ "$mode" == "bluegreen" ]] || mode="single"
+
+  if [[ "$mode" == "bluegreen" ]]; then
+    cat >&2 <<EOF
+
+================================================================
+RESTORE FAILED with exit code $rc.
+Some services may still be stopped. Check current state:
+  docker compose -p $INFRA_PROJECT -f docker-compose.infra.yml ps
+
+Bring up anything that's down once you've resolved the failure:
+  docker compose -p $INFRA_PROJECT -f docker-compose.infra.yml up -d --wait
+
+App colors (unibridge-service, llm-converter, unibridge-ui) are managed by
+scripts/deploy-bluegreen.sh — use it instead of a plain 'docker compose up',
+which would start a second single-stack instance on the same data volumes.
+================================================================
+EOF
+  else
+    cat >&2 <<EOF
 
 ================================================================
 RESTORE FAILED with exit code $rc.
@@ -62,6 +86,7 @@ Bring up anything that's down once you've resolved the failure:
   docker compose up -d --wait
 ================================================================
 EOF
+  fi
   exit $rc
 }
 

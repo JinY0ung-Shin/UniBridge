@@ -178,6 +178,26 @@ The deploy script creates the shared app-data and converter-state volumes if
 they do not exist. The app Compose file treats them as external so blue and
 green never compete for Compose ownership of the same volume.
 
+## Backups
+
+`backup/backup.sh` and `backup/restore.sh` work on this layout without extra
+flags. They detect blue/green from `.deploy/bluegreen-active` (or a running
+`unibridge-infra` project) and then address each service in the project that
+owns it: infra services (`etcd`, `apisix`, `keycloak(-db)`, `litellm(-db)`,
+`unibridge-db`) through `unibridge-infra`, app-tier services through the color
+projects. A restore that must stop `unibridge-service` stops it in every color
+currently running it and starts back exactly those colors.
+
+`BACKUP_STACK=single|bluegreen` forces the mode when detection cannot see the
+stack — for example a restore onto a host whose infra project is still down and
+that has no state file yet.
+
+Do not recover a blue/green host with a plain `docker compose up -d`: the
+single-stack `docker-compose.yml` pins the same `unibridge_*` volumes and would
+run a second instance against them. Bring infra up with
+`docker compose -p unibridge-infra -f docker-compose.infra.yml up -d` and app
+colors with this script. See `backup/README.md` for the full runbook.
+
 ## First Run
 
 From the repo root:

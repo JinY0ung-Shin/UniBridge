@@ -15,6 +15,23 @@ Operator runbook for backing up and restoring UniBridge state.
 
 Prometheus time-series data is intentionally **not** backed up — retention is already configured in the Prometheus container and the data is regeneratable over time.
 
+## Blue-green deployments
+
+The scripts run on either layout and detect which one they are on:
+
+- **single stack** — everything from `docker-compose.yml` (compose project `unibridge`).
+- **blue-green** (`scripts/deploy-bluegreen.sh`) — shared infra in project `unibridge-infra` (`docker-compose.infra.yml`) plus one app stack per color, `unibridge-blue` / `unibridge-green` (`docker-compose.app.yml`).
+
+Detection picks blue-green when `.deploy/bluegreen-active` exists (override the path with `BLUEGREEN_STATE_FILE`) or the `unibridge-infra` project has containers; single stack otherwise. Set `BACKUP_STACK=single` or `BACKUP_STACK=bluegreen` to force it — useful when a blue-green host's infra project is fully down and no state file was ever written. Every run logs the mode it picked (`stack mode: ...`).
+
+What the mode changes:
+
+- **Infra-tier services** (`etcd`, `apisix`, `keycloak`, `keycloak-db`, `litellm`, `litellm-db`, `unibridge-db`) are addressed in the `unibridge-infra` project.
+- **App-tier services** (`unibridge-service`, `llm-converter`, `unibridge-ui`) are addressed per color. A restore that has to stop `unibridge-service` stops it in every color currently running it and starts back exactly those colors — a color you deliberately left down stays down. Operations that only need one container (legacy SQLite `docker compose cp`) go through the active color from the state file.
+- **Metadata store**: blue-green normally uses the bundled `unibridge-db` Postgres, so `unibridge-meta.sql.gz` is a Postgres dump like the others. SQLite metadata is legacy — under blue-green it only exists behind `ALLOW_SQLITE_BLUEGREEN`, where both colors share one data volume, so its restore stops every running color before swapping the file.
+
+On a blue-green host, never bring services up with a plain `docker compose up -d`: `docker-compose.yml` would start a **second, single-stack instance on the same pinned `unibridge_*` volumes**. Use the infra project for infra services and `scripts/deploy-bluegreen.sh` for app colors.
+
 ## Layout
 
 ```
@@ -64,7 +81,7 @@ Restore is **per-component and destructive**. Each `restore.sh` invocation:
 - Verifies the backup dir has a `manifest.json` and the needed file before doing anything.
 - Prints a plan of what will change.
 - Requires a typed confirmation phrase (`RESTORE ETCD`, `RESTORE PG`, `RESTORE META`).
-- Stops the consumer service (Keycloak / LiteLLM / unibridge-service / apisix) before touching its backing store, then restarts it.
+- Stops the consumer service (Keycloak / LiteLLM / unibridge-service / apisix) before touching its backing store, then restarts it — under blue-green, in every color that was running it. The plan it prints names those colors.
 
 ```
 ./backup/restore.sh etcd           ./snapshots/2026-04-19_030000Z
@@ -83,6 +100,10 @@ Correct order:
    ```
    docker compose up -d --wait keycloak-db litellm-db etcd
    ```
+   On a blue-green host, bring them up in the infra project instead:
+   ```
+   docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait keycloak-db litellm-db etcd
+   ```
 2. **Restore the data stores** (each script stops/starts the relevant consumer):
    ```
    ./backup/restore.sh keycloak-db    ./snapshots/<stamp>
@@ -92,6 +113,11 @@ Correct order:
 3. **Bring up the rest** with restored data:
    ```
    docker compose up -d --wait
+   ```
+   On a blue-green host, bring up the infra stack and then an app color through the deploy script — a plain `docker compose up -d` here would start a second single-stack instance on the same volumes:
+   ```
+   docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait
+   scripts/deploy-bluegreen.sh deploy blue
    ```
 4. **Restore unibridge-service metadata** (Postgres default; the script also accepts legacy SQLite snapshots):
    ```
@@ -110,9 +136,9 @@ A backup you haven't tested restoring is a wish, not a backup. Recommended drill
 
 ## Troubleshooting
 
-- **`docker compose exec` fails with "no container"**: a service is down. Start it (`docker compose up -d <svc>`) before running backup.
-- **`cannot resolve volume for '<service>'`**: the service's container has never been created in this project. Run `docker compose up -d` first so compose materializes the volume, then retry.
+- **`docker compose exec` fails with "no container"**: a service is down. Start it (`docker compose up -d <svc>`) before running backup. On a blue-green host, start infra services with `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d <svc>` and app colors with `scripts/deploy-bluegreen.sh` — a plain `docker compose up -d` would boot a second single-stack instance onto the same volumes.
+- **`cannot resolve volume for '<service>'`**: the service's container has never been created in this project. Materialize the volume first, then retry: `docker compose up -d` on a single stack, or `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d` on a blue-green host (stateful services live in the infra stack).
 - **etcd snapshot size is suspiciously small (<10KB)**: snapshot likely failed silently. Check that `ETCD_ROOT_PASSWORD` matches `.env` and that the `etcd` container is healthy. An empty-but-valid etcd snapshot is ~20KB.
 - **Postgres restore hangs on `DROP TABLE`**: the consumer service is still connected. The restore script stops the known consumers automatically; if you invoked the library function directly, pass the consumer service name.
-- **Metadata restore leaves APISIX serving with stale consumer cache**: unibridge-meta restore does not restart APISIX. If API keys were changed, `docker compose restart apisix` to clear its in-memory consumer cache as well.
+- **Metadata restore leaves APISIX serving with stale consumer cache**: unibridge-meta restore does not restart APISIX. If API keys were changed, restart it to clear its in-memory consumer cache: `docker compose restart apisix`, or `docker compose -p unibridge-infra -f docker-compose.infra.yml restart apisix` on a blue-green host.
 - **`another backup/restore is already running`**: flock is held by an in-flight run. Check for orphan processes if you're sure none is running, then remove `.backup.lock`.
