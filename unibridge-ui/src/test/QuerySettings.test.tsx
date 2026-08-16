@@ -21,6 +21,9 @@ const defaultSettings = {
   query_route_timeout: 310,
   gateway_route_timeout: 45,
   blocked_sql_keywords: ['DROP', 'TRUNCATE'],
+  audit_log_retention_days: 90,
+  admin_audit_log_retention_days: 365,
+  alert_history_retention_days: 30,
 };
 
 describe('QuerySettingsPage', () => {
@@ -186,5 +189,83 @@ describe('QuerySettingsPage', () => {
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent('Failed to save settings.');
     });
+  });
+
+  /* ── Log retention ── */
+
+  it('renders the retention fields with their current values', async () => {
+    renderWithProviders(<QuerySettingsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('spinbutton', { name: 'Query audit log retention (days)' })).toHaveValue(90);
+    });
+    expect(screen.getByRole('spinbutton', { name: 'Admin audit log retention (days)' })).toHaveValue(365);
+    expect(screen.getByRole('spinbutton', { name: 'Alert history retention (days)' })).toHaveValue(30);
+    expect(document.getElementById('alert-history-retention-hint')).toHaveTextContent(
+      /0 = keep forever/,
+    );
+  });
+
+  it('allows 0 (keep forever) and saves retention on the settings payload', async () => {
+    mockedUpdateQuerySettings.mockResolvedValue({ ...defaultSettings, alert_history_retention_days: 0 });
+    renderWithProviders(<QuerySettingsPage />);
+
+    const field = await screen.findByRole('spinbutton', { name: 'Alert history retention (days)' });
+    expect(field).toHaveAttribute('min', '0');
+    await userEvent.clear(field);
+    await userEvent.type(field, '0');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(mockedUpdateQuerySettings.mock.calls[0][0]).toMatchObject({
+        audit_log_retention_days: 90,
+        admin_audit_log_retention_days: 365,
+        alert_history_retention_days: 0,
+      });
+    });
+  });
+
+  it('defaults retention fields to 0 when the backend omits them', async () => {
+    const withoutRetention = { ...defaultSettings };
+    delete (withoutRetention as Partial<typeof defaultSettings>).audit_log_retention_days;
+    delete (withoutRetention as Partial<typeof defaultSettings>).admin_audit_log_retention_days;
+    delete (withoutRetention as Partial<typeof defaultSettings>).alert_history_retention_days;
+    mockedGetQuerySettings.mockResolvedValue(withoutRetention);
+    renderWithProviders(<QuerySettingsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('spinbutton', { name: 'Query audit log retention (days)' })).toHaveValue(0);
+    });
+    // no spurious "unsaved changes" from the defaulting
+    expect(screen.getByText('No settings changes')).toBeInTheDocument();
+  });
+
+  /* ── Write gating ── */
+
+  it('disables every field and hides Save without query.settings.write', async () => {
+    renderWithProviders(<QuerySettingsPage />, {
+      permissions: ['query.settings.read'],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('spinbutton', { name: 'Requests per minute (per user)' })).toBeDisabled();
+    });
+    expect(screen.getByRole('textbox', { name: 'Additional blocked keywords' })).toBeDisabled();
+    expect(screen.getByRole('spinbutton', { name: 'Alert history retention (days)' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Discard changes' })).not.toBeInTheDocument();
+    expect(screen.getByText('You have read-only access to these settings.')).toBeInTheDocument();
+  });
+
+  it('keeps fields editable with query.settings.write', async () => {
+    renderWithProviders(<QuerySettingsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('spinbutton', { name: 'Requests per minute (per user)' })).toBeEnabled();
+    });
+    expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument();
+    expect(
+      screen.queryByText('You have read-only access to these settings.'),
+    ).not.toBeInTheDocument();
   });
 });

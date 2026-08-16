@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { getAlertHistory, type AlertHistoryEntry } from '../api/client';
+import { RULE_TYPES, ruleTypeLabel } from '../utils/alerts';
 import { formatKST } from '../utils/time';
 import './AuditLogs.css';
 import './AlertHistory.css';
@@ -9,6 +10,7 @@ import './AlertHistory.css';
 const PAGE_SIZE = 50;
 const EMPTY_FILTER_FORM = {
   alert_type: '',
+  rule_type: '',
   target: '',
 };
 
@@ -25,6 +27,7 @@ function AlertHistory() {
     queryFn: () =>
       getAlertHistory({
         alert_type: appliedFilterForm.alert_type || undefined,
+        rule_type: appliedFilterForm.rule_type || undefined,
         target: appliedFilterForm.target || undefined,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
@@ -75,6 +78,22 @@ function AlertHistory() {
           </select>
         </div>
         <div className="filter-field">
+          <label htmlFor="alert-history-rule-filter">{t('alerts.filterRuleType')}</label>
+          <select
+            id="alert-history-rule-filter"
+            value={filterForm.rule_type}
+            onChange={(e) => setFilterForm((f) => ({ ...f, rule_type: e.target.value }))}
+            className="filter-select"
+          >
+            <option value="">{t('alerts.allRuleTypes')}</option>
+            {RULE_TYPES.map((rule) => (
+              <option key={rule} value={rule}>
+                {ruleTypeLabel(t, rule)}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="filter-field">
           <label htmlFor="alert-history-target-filter">{t('alerts.filterTarget')}</label>
           <input
             id="alert-history-target-filter"
@@ -112,6 +131,7 @@ function AlertHistory() {
                 <tr>
                   <th scope="col">{t('alerts.sentAt')}</th>
                   <th scope="col">{t('alerts.filterAlertType')}</th>
+                  <th scope="col">{t('alerts.rule')}</th>
                   <th scope="col">{t('alerts.target')}</th>
                   <th scope="col">{t('alerts.message')}</th>
                   <th scope="col">{t('common.status')}</th>
@@ -131,6 +151,9 @@ function AlertHistory() {
                           ? t('alerts.triggered')
                           : t('alerts.resolved')}
                       </span>
+                    </td>
+                    <td className="cell-rule">
+                      {entry.rule_type ? ruleTypeLabel(t, entry.rule_type) : '—'}
                     </td>
                     <td>{entry.display_target || entry.target}</td>
                     <td className="cell-message">{entry.message}</td>

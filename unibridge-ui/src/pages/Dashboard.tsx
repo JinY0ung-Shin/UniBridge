@@ -15,6 +15,7 @@ import { type Bucket, type TimeSelection, bucketKey } from '../utils/timeRange';
 import { formatBucketLabel, formatChartTime } from '../utils/time';
 import { errorRateColor } from '../utils/monitoring';
 import GrafanaLink from '../components/GrafanaLink';
+import OpsSummary from './dashboard/OpsSummary';
 import './Dashboard.css';
 
 const BUCKET_RANGE: Record<Exclude<Bucket, 'auto'>, string> = { hour: '24h', day: '30d', week: '60d' };
@@ -142,6 +143,9 @@ function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* Alerting / servers / approvals at a glance */}
+      <OpsSummary />
 
       {/* Summary cards */}
       <div className="summary-cards">

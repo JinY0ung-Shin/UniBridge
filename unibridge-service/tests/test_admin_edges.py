@@ -389,6 +389,9 @@ def _settings_data(*, query_timeout=30, gateway_timeout=60):
         "query_route_timeout": query_timeout,
         "gateway_route_timeout": gateway_timeout,
         "blocked_sql_keywords": ["DROP"],
+        "audit_log_retention_days": 0,
+        "admin_audit_log_retention_days": 0,
+        "alert_history_retention_days": 0,
     }
 
 

@@ -119,3 +119,14 @@ export function epochToKstLocal(epochSeconds: number): string {
   const p = kstParts(epochSeconds);
   return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
 }
+
+/**
+ * datetime-local value ("YYYY-MM-DDTHH:mm", read as KST) → ISO 8601 UTC.
+ * Returns undefined for empty or unparseable input, matching
+ * `kstDateToUtcIso`'s "no value" semantics.
+ */
+export function kstLocalToUtcIso(local: string): string | undefined {
+  if (!local) return undefined;
+  const epoch = kstLocalToEpoch(local);
+  return Number.isNaN(epoch) ? undefined : new Date(epoch * 1000).toISOString();
+}

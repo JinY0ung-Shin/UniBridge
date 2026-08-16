@@ -958,6 +958,9 @@ async def update_settings(
         query_route_timeout=body.query_route_timeout,
         gateway_route_timeout=body.gateway_route_timeout,
         blocked_sql_keywords=body.blocked_sql_keywords,
+        audit_log_retention_days=body.audit_log_retention_days,
+        admin_audit_log_retention_days=body.admin_audit_log_retention_days,
+        alert_history_retention_days=body.alert_history_retention_days,
     )
 
     # Sync rate limiter with new settings

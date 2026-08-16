@@ -17,6 +17,7 @@ from app.database import get_db
 from app.models import (
     AlertChannel,
     AlertHistory,
+    AlertMute,
     AlertSettings,
     DBConnection,
     MonitoredHost,
@@ -29,12 +30,13 @@ from app.schemas import (
     AlertChannelCreate, AlertChannelResponse, AlertChannelUpdate,
     AlertDeliveryTestResponse,
     AlertHistoryResponse,
+    AlertMuteListResponse, AlertMuteResponse, AlertMuteUpsert,
     RecipientTestRequest,
     ResourceOwnerResponse, ResourceOwnerUpsert,
-    AlertStatusResponse,
+    AlertStatusListResponse, AlertStatusResponse,
     AlertSettingsResponse, AlertSettingsUpdate,
 )
-from app.services import apisix_client
+from app.services import alert_mutes, apisix_client
 from app.services.alert_sender import render_recipient_items, render_template, send_webhook
 from app.services.audit import log_admin_action
 
@@ -788,7 +790,8 @@ def _render_channel_recipients_json(
 
 @router.get("/history", response_model=list[AlertHistoryResponse])
 async def list_history(
-    alert_type: str | None = Query(None),
+    alert_type: str | None = Query(None, description="Transition: triggered | resolved"),
+    rule_type: str | None = Query(None, description="Monitoring rule, e.g. db_health"),
     target: str | None = Query(None),
     from_date: datetime | None = Query(None),
     to_date: datetime | None = Query(None),
@@ -800,6 +803,8 @@ async def list_history(
     q = select(AlertHistory).order_by(AlertHistory.sent_at.desc())
     if alert_type:
         q = q.where(AlertHistory.alert_type == alert_type)
+    if rule_type:
+        q = q.where(AlertHistory.rule_type == rule_type)
     if target:
         q = q.where(AlertHistory.target == target)
     if from_date:
@@ -812,13 +817,180 @@ async def list_history(
     return [
         AlertHistoryResponse(
             id=h.id, channel_id=h.channel_id,
-            alert_type=h.alert_type, target=h.target, display_target=h.display_target,
+            alert_type=h.alert_type, rule_type=h.rule_type,
+            target=h.target, display_target=h.display_target,
             severity=h.severity, message=h.message,
             recipients=json.loads(h.recipients) if h.recipients else None,
             sent_at=h.sent_at, success=h.success, error_detail=h.error_detail,
         )
         for h in rows
     ]
+
+
+# ── Mutes ───────────────────────────────────────────────────────────────────
+
+
+def _mute_audit_snapshot(mute: AlertMute | None) -> dict[str, Any] | None:
+    if mute is None:
+        return None
+    return {
+        "resource_type": mute.resource_type,
+        "resource_id": mute.resource_id,
+        "muted_until": mute.muted_until.isoformat() if mute.muted_until else None,
+    }
+
+
+def _validate_mute_target(resource_type: str, resource_id: str) -> str:
+    """Check the mute key and return the normalized resource_id."""
+    if resource_type not in alert_mutes.MUTE_RESOURCE_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Unsupported resource type. Expected one of: "
+                + ", ".join(sorted(alert_mutes.MUTE_RESOURCE_TYPES))
+            ),
+        )
+    if resource_type == alert_mutes.GLOBAL_MUTE_TYPE:
+        # The global mute is a single row; an id would create duplicates that
+        # all mean the same thing.
+        if resource_id:
+            raise HTTPException(
+                status_code=422,
+                detail="resource_id must be empty for a global mute",
+            )
+        return ""
+    if not resource_id:
+        raise HTTPException(status_code=422, detail="resource_id is required")
+    return resource_id
+
+
+def _build_mute_list(mutes: list[AlertMute]) -> AlertMuteListResponse:
+    global_until: datetime | None = None
+    rows: list[AlertMuteResponse] = []
+    for mute in mutes:
+        if mute.resource_type == alert_mutes.GLOBAL_MUTE_TYPE:
+            if global_until is None or mute.muted_until > global_until:
+                global_until = mute.muted_until
+        rows.append(AlertMuteResponse(
+            resource_type=mute.resource_type,
+            resource_id=mute.resource_id,
+            muted_until=mute.muted_until,
+            created_by=mute.created_by,
+        ))
+    return AlertMuteListResponse(global_muted_until=global_until, mutes=rows)
+
+
+@router.get("/mutes", response_model=AlertMuteListResponse)
+async def list_alert_mutes(
+    _user: CurrentUser = Depends(require_permission("alerts.read")),
+    db: AsyncSession = Depends(get_db),
+) -> AlertMuteListResponse:
+    """Active mutes only; expired rows are pruned as a side effect."""
+    return _build_mute_list(await alert_mutes.list_active_mutes(db))
+
+
+@router.put("/mutes", response_model=AlertMuteResponse)
+async def upsert_alert_mute(
+    body: AlertMuteUpsert,
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> AlertMuteResponse:
+    resource_id = _validate_mute_target(body.resource_type, body.resource_id)
+    try:
+        muted_until = alert_mutes.validate_mute_window(body.muted_until)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    result = await db.execute(
+        select(AlertMute).where(
+            AlertMute.resource_type == body.resource_type,
+            AlertMute.resource_id == resource_id,
+        )
+    )
+    mute = result.scalar_one_or_none()
+    before_snapshot = _mute_audit_snapshot(mute)
+    if mute is None:
+        mute = AlertMute(
+            resource_type=body.resource_type,
+            resource_id=resource_id,
+            muted_until=muted_until,
+            created_by=_user.username,
+        )
+        db.add(mute)
+    else:
+        mute.muted_until = muted_until
+        mute.created_by = _user.username
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Concurrent upsert of the same key: adopt the winner and re-apply.
+        await db.rollback()
+        result = await db.execute(
+            select(AlertMute).where(
+                AlertMute.resource_type == body.resource_type,
+                AlertMute.resource_id == resource_id,
+            )
+        )
+        mute = result.scalar_one_or_none()
+        if mute is None:
+            raise HTTPException(status_code=409, detail="Alert mute conflict")
+        # We lost the insert race, so this is an update of somebody else's row,
+        # not the create we set out to do — the audit entry has to say so.
+        before_snapshot = _mute_audit_snapshot(mute)
+        mute.muted_until = muted_until
+        mute.created_by = _user.username
+        await db.commit()
+    await db.refresh(mute)
+
+    await log_admin_action(
+        db,
+        actor=_user.username,
+        action="update" if before_snapshot is not None else "create",
+        resource_type="alert_mute",
+        resource_id=f"{body.resource_type}/{resource_id}",
+        summary=None,
+        before=before_snapshot,
+        after=_mute_audit_snapshot(mute),
+    )
+    return AlertMuteResponse(
+        resource_type=mute.resource_type,
+        resource_id=mute.resource_id,
+        muted_until=mute.muted_until,
+        created_by=mute.created_by,
+    )
+
+
+@router.delete("/mutes", status_code=204, response_model=None)
+async def delete_alert_mute(
+    resource_type: str = Query(...),
+    resource_id: str = Query(""),
+    _user: CurrentUser = Depends(require_permission("alerts.write")),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    resource_id = _validate_mute_target(resource_type, resource_id)
+    result = await db.execute(
+        select(AlertMute).where(
+            AlertMute.resource_type == resource_type,
+            AlertMute.resource_id == resource_id,
+        )
+    )
+    mute = result.scalar_one_or_none()
+    if mute is None:
+        return
+    before_snapshot = _mute_audit_snapshot(mute)
+    await db.delete(mute)
+    await db.commit()
+
+    await log_admin_action(
+        db,
+        actor=_user.username,
+        action="delete",
+        resource_type="alert_mute",
+        resource_id=f"{resource_type}/{resource_id}",
+        summary=None,
+        before=before_snapshot,
+        after=None,
+    )
 
 
 # ── Status ──────────────────────────────────────────────────────────────────
@@ -836,17 +1008,39 @@ def get_alert_state():
     return _alert_state
 
 
-@router.get("/status", response_model=list[AlertStatusResponse])
+@router.get("/status", response_model=AlertStatusListResponse)
 async def alert_status(
     _user: CurrentUser = Depends(require_permission("alerts.read")),
-) -> list[AlertStatusResponse]:
+    db: AsyncSession = Depends(get_db),
+) -> AlertStatusListResponse:
+    # Read-only: expired rows are pruned by the mutes endpoints, not by this
+    # one, which the status page polls.
+    active = await alert_mutes.list_active_mutes(db, purge=False)
+    index = alert_mutes.build_index(active)
     if _alert_state is None:
-        return []
-    alerts = _alert_state.get_all_statuses()
-    return [
-        AlertStatusResponse(
-            target=a["target"], type=a["type"], status=a["status"],
-            since=a["since"], severity=a.get("severity"),
+        return AlertStatusListResponse(global_muted_until=index.global_until, items=[])
+
+    items: list[AlertStatusResponse] = []
+    for entry in _alert_state.get_entries():
+        rule_type = entry["type"]
+        resource_type = alert_mutes.resource_type_for_rule(rule_type)
+        resource_id = entry["target"]
+        muted_until = (
+            index.muted_until(resource_type, resource_id)
+            if resource_type is not None
+            else index.global_until
         )
-        for a in alerts
-    ]
+        items.append(AlertStatusResponse(
+            # ``target`` stays the friendly label for backwards compatibility;
+            # resource_type/resource_id carry the addressable mute key.
+            target=entry["display_target"],
+            type=rule_type,
+            status=entry["status"],
+            since=entry["since"] if entry["status"] == "alert" else None,
+            severity=entry["severity"] if entry["status"] == "alert" else None,
+            muted=muted_until is not None,
+            muted_until=muted_until,
+            resource_type=resource_type,
+            resource_id=resource_id if resource_type is not None else None,
+        ))
+    return AlertStatusListResponse(global_muted_until=index.global_until, items=items)

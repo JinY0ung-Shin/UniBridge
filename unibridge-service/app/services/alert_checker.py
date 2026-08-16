@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.database import async_session
 from app.models import AlertSettings, MonitoredHost, MonitoredService
 from app.services import server_monitor
+from app.services.alert_mutes import MuteIndex, load_mute_index
 from app.services.alert_owner_dispatcher import dispatch_alert
 from app.services.alert_state import AlertStateManager, save_alert_state_to_db
 from app.services.server_monitor import ServerThresholds
@@ -168,6 +169,20 @@ async def _check_db_health() -> list[tuple[str, bool]]:
     return results
 
 
+async def _check_s3_health() -> list[tuple[str, bool]]:
+    """Check registered S3 connections. Returns [(alias, is_healthy)]."""
+    from app.services.s3_manager import s3_manager
+    results = []
+    for alias in s3_manager.list_aliases():
+        try:
+            ok, _ = await s3_manager.test_connection(alias)
+            results.append((alias, ok))
+        except Exception as exc:
+            logger.warning("S3 health check failed for '%s': %s", alias, exc)
+            results.append((alias, False))
+    return results
+
+
 async def _check_nas_health() -> list[tuple[str, bool]]:
     """Check registered NAS connections. Returns [(alias, is_healthy)]."""
     from app.services.nas_manager import nas_manager
@@ -292,6 +307,7 @@ async def _check_server_health(
     state: AlertStateManager,
     *,
     trigger_after_failures: int,
+    mutes: MuteIndex | None = None,
 ) -> None:
     """Evaluate node_exporter host signals and dispatch transitions.
 
@@ -302,6 +318,7 @@ async def _check_server_health(
     A failure to load the registry/thresholds is isolated to this step so it
     can never abort the DB/NAS/upstream/route checks in the same cycle.
     """
+    mutes = mutes if mutes is not None else MuteIndex()
     try:
         hosts, thresholds, repeat = await _load_server_monitoring()
     except Exception as exc:  # noqa: BLE001
@@ -312,6 +329,7 @@ async def _check_server_health(
         return
     signals = await server_monitor.evaluate_hosts(enabled, thresholds)
     for sig in signals:
+        was_alerting = state.get_status(sig.alert_type, sig.target) == "alert"
         transition = state.update(
             sig.alert_type, sig.target,
             is_healthy=sig.is_healthy,
@@ -320,11 +338,18 @@ async def _check_server_health(
             trigger_after_failures=trigger_after_failures,
             repeat_after_cycles=repeat,
         )
+        outbound = _outbound_alert_type(
+            state, mutes,
+            rule_type=sig.alert_type, target=sig.target, transition=transition,
+            resource_type="server", resource_id=sig.target,
+            was_alerting=was_alerting,
+        )
         await _persist_state_safely(state, sig.alert_type, sig.target)
-        if transition:
+        if outbound:
             await dispatch_alert(
                 resource_type="server", resource_id=sig.target,
-                alert_type=transition, target=sig.target, message=sig.message,
+                alert_type=outbound, rule_type=sig.alert_type,
+                target=sig.target, message=sig.message,
                 display_target=sig.display, rate=sig.value, threshold=sig.threshold,
                 monitor_label=sig.monitor_label, severity=sig.severity,
                 target_description=sig.description,
@@ -346,6 +371,7 @@ async def _check_service_health(
     state: AlertStateManager,
     *,
     trigger_after_failures: int,
+    mutes: MuteIndex | None = None,
 ) -> None:
     """Evaluate external-service reachability signals and dispatch transitions.
 
@@ -355,6 +381,7 @@ async def _check_service_health(
     service's 담당자 (ResourceOwner resource_type ``service``) plus global admins.
     A config-load failure is isolated so it can never abort the other checks.
     """
+    mutes = mutes if mutes is not None else MuteIndex()
     try:
         services, repeat = await _load_service_monitoring()
     except Exception as exc:  # noqa: BLE001
@@ -365,6 +392,7 @@ async def _check_service_health(
         return
     signals = await server_monitor.evaluate_services(enabled)
     for sig in signals:
+        was_alerting = state.get_status(sig.alert_type, sig.target) == "alert"
         transition = state.update(
             sig.alert_type, sig.target,
             is_healthy=sig.is_healthy,
@@ -373,11 +401,18 @@ async def _check_service_health(
             trigger_after_failures=trigger_after_failures,
             repeat_after_cycles=repeat,
         )
+        outbound = _outbound_alert_type(
+            state, mutes,
+            rule_type=sig.alert_type, target=sig.target, transition=transition,
+            resource_type="service", resource_id=sig.target,
+            was_alerting=was_alerting,
+        )
         await _persist_state_safely(state, sig.alert_type, sig.target)
-        if transition:
+        if outbound:
             await dispatch_alert(
                 resource_type="service", resource_id=sig.target,
-                alert_type=transition, target=sig.target, message=sig.message,
+                alert_type=outbound, rule_type=sig.alert_type,
+                target=sig.target, message=sig.message,
                 display_target=sig.display, rate=None, threshold=None,
                 monitor_label=sig.monitor_label, severity=sig.severity,
                 target_description=sig.description,
@@ -396,6 +431,76 @@ async def _persist_state_safely(
         logger.warning("Failed to persist alert state %s/%s: %s", alert_type, target, exc)
 
 
+def _outbound_alert_type(
+    state: AlertStateManager,
+    mutes: MuteIndex,
+    *,
+    rule_type: str,
+    target: str,
+    transition: str | None,
+    resource_type: str,
+    resource_id: str,
+    was_alerting: bool,
+) -> str | None:
+    """Decide what to notify for one just-evaluated target, honouring mutes.
+
+    Detection already happened — ``transition`` is verbatim what
+    ``AlertStateManager.update`` returned — so this only gates delivery. It
+    mutates the entry's ``pending_notify`` flag in memory; the caller's existing
+    :func:`_persist_state_safely` call writes it out. ``was_alerting`` is the
+    target's status *before* that update.
+
+    ``pending_notify`` means exactly "this incident has not been announced".
+    Everything below follows from that one invariant: an announced incident
+    always gets its recovery announced, and an unannounced one never does.
+
+    Returns "triggered" / "resolved" / None:
+
+    - A trigger opening an unannounced incident while muted is withheld and
+      remembered. A withheld *re*-announcement (severity escalation or the
+      repeat cadence) is only a reminder of an incident recipients already know
+      about, so it must not mark that incident unannounced.
+    - A remembered trigger fires on the first unmuted cycle where the target is
+      still alerting, even though that cycle has no transition of its own.
+    - A recovery is delivered whenever its trigger was announced — a mute does
+      not apply, because leaving a paged incident open is worse than one extra
+      message. A recovery whose trigger was never announced stays silent.
+    """
+    muted = mutes.is_muted(resource_type, resource_id)
+    pending = state.get_pending_notify(rule_type, target)
+
+    if transition == "triggered":
+        if muted:
+            if not was_alerting:
+                state.set_pending_notify(rule_type, target, True)
+            logger.info(
+                "Alert %s/%s triggered while muted — notification withheld",
+                rule_type, target,
+            )
+            return None
+        state.set_pending_notify(rule_type, target, False)
+        return "triggered"
+
+    if transition == "resolved":
+        state.set_pending_notify(rule_type, target, False)
+        if pending:
+            logger.info(
+                "Alert %s/%s resolved without an announced trigger — staying silent",
+                rule_type, target,
+            )
+            return None
+        return "resolved"
+
+    if pending and not muted and state.get_status(rule_type, target) == "alert":
+        state.set_pending_notify(rule_type, target, False)
+        logger.info(
+            "Alert %s/%s still firing after mute expiry — notifying now",
+            rule_type, target,
+        )
+        return "triggered"
+    return None
+
+
 async def _evaluate_route_error_rule(
     state: AlertStateManager,
     *,
@@ -406,6 +511,7 @@ async def _evaluate_route_error_rule(
     sample_count: float = 0.0,
     min_requests: int = 0,
     display_target: str | None = None,
+    mutes: MuteIndex | None = None,
 ) -> None:
     if display_target is None:
         label = await _get_route_label(route_id)
@@ -419,6 +525,7 @@ async def _evaluate_route_error_rule(
         is_healthy = True
     else:
         is_healthy = rate < threshold
+    was_alerting = state.get_status("route_error_rate", route_id) == "alert"
     transition = state.update(
         "route_error_rate",
         route_id,
@@ -426,84 +533,157 @@ async def _evaluate_route_error_rule(
         display_target=display,
         trigger_after_failures=trigger_after_failures,
     )
+    outbound = _outbound_alert_type(
+        state, mutes if mutes is not None else MuteIndex(),
+        rule_type="route_error_rate", target=route_id, transition=transition,
+        resource_type="route", resource_id=route_id,
+        was_alerting=was_alerting,
+    )
     await _persist_state_safely(state, "route_error_rate", route_id)
-    if transition:
+    if outbound:
         msg = (
             f"Route '{display}' 5xx error rate is "
             f"{rate:.1f}% (threshold: {threshold}%)."
         )
         await dispatch_alert(
             resource_type="route", resource_id=route_id,
-            alert_type=transition, target=route_id, message=msg,
+            alert_type=outbound, rule_type="route_error_rate",
+            target=route_id, message=msg,
             display_target=display,
             rate=rate, threshold=threshold,
             monitor_label="라우트 에러율",
         )
 
 
-async def run_single_check(state: AlertStateManager, *, trigger_after_failures: int) -> None:
-    """Execute one round of all health checks."""
+async def run_single_check(
+    state: AlertStateManager,
+    *,
+    trigger_after_failures: int,
+    mutes: MuteIndex | None = None,
+) -> None:
+    """Execute one round of all health checks.
+
+    ``mutes`` is the active-suppression snapshot for this cycle; it gates
+    outbound notifications only, never detection. Omit it and the current
+    snapshot is loaded from the database.
+    """
+    if mutes is None:
+        mutes = await load_mute_index()
+
     # 1. DB health
     db_results = await _check_db_health()
     for alias, is_healthy in db_results:
+        was_alerting = state.get_status("db_health", alias) == "alert"
         transition = state.update(
             "db_health", alias,
             is_healthy=is_healthy,
             trigger_after_failures=trigger_after_failures,
         )
+        outbound = _outbound_alert_type(
+            state, mutes,
+            rule_type="db_health", target=alias, transition=transition,
+            resource_type="db", resource_id=alias,
+            was_alerting=was_alerting,
+        )
         await _persist_state_safely(state, "db_health", alias)
-        if transition:
-            msg = f"Database '{alias}' connection {'restored' if transition == 'resolved' else 'failed'}."
+        if outbound:
+            msg = f"Database '{alias}' connection {'restored' if outbound == 'resolved' else 'failed'}."
             await dispatch_alert(
                 resource_type="db", resource_id=alias,
-                alert_type=transition, target=alias, message=msg,
+                alert_type=outbound, rule_type="db_health",
+                target=alias, message=msg,
                 display_target=alias, monitor_label="DB 헬스체크",
             )
 
-    # 2. NAS connection health
+    # 2. S3 connection health
+    s3_results = await _check_s3_health()
+    for alias, is_healthy in s3_results:
+        was_alerting = state.get_status("s3_health", alias) == "alert"
+        transition = state.update(
+            "s3_health", alias,
+            is_healthy=is_healthy,
+            trigger_after_failures=trigger_after_failures,
+        )
+        outbound = _outbound_alert_type(
+            state, mutes,
+            rule_type="s3_health", target=alias, transition=transition,
+            resource_type="s3", resource_id=alias,
+            was_alerting=was_alerting,
+        )
+        await _persist_state_safely(state, "s3_health", alias)
+        if outbound:
+            msg = f"S3 connection '{alias}' {'restored' if outbound == 'resolved' else 'is unavailable'}."
+            await dispatch_alert(
+                resource_type="s3", resource_id=alias,
+                alert_type=outbound, rule_type="s3_health",
+                target=alias, message=msg,
+                display_target=alias, monitor_label="S3 연결 상태",
+            )
+
+    # 3. NAS connection health
     nas_results = await _check_nas_health()
     for alias, is_healthy in nas_results:
+        was_alerting = state.get_status("nas_health", alias) == "alert"
         transition = state.update(
             "nas_health", alias,
             is_healthy=is_healthy,
             trigger_after_failures=trigger_after_failures,
         )
+        outbound = _outbound_alert_type(
+            state, mutes,
+            rule_type="nas_health", target=alias, transition=transition,
+            resource_type="nas", resource_id=alias,
+            was_alerting=was_alerting,
+        )
         await _persist_state_safely(state, "nas_health", alias)
-        if transition:
-            msg = f"NAS connection '{alias}' {'restored' if transition == 'resolved' else 'is unavailable'}."
+        if outbound:
+            msg = f"NAS connection '{alias}' {'restored' if outbound == 'resolved' else 'is unavailable'}."
             await dispatch_alert(
                 resource_type="nas", resource_id=alias,
-                alert_type=transition, target=alias, message=msg,
+                alert_type=outbound, rule_type="nas_health",
+                target=alias, message=msg,
                 display_target=alias, monitor_label="NAS 연결 상태",
             )
 
-    # 3. Upstream health
+    # 4. Upstream health
     upstream_results = await _check_upstream_health()
     for uid, is_healthy in upstream_results:
         upstream_name = _UPSTREAM_NAME_BY_ID.get(uid)
         display = f"{upstream_name} ({uid})" if upstream_name and upstream_name != uid else uid
+        was_alerting = state.get_status("upstream_health", uid) == "alert"
         transition = state.update(
             "upstream_health", uid,
             is_healthy=is_healthy,
             display_target=display,
             trigger_after_failures=trigger_after_failures,
         )
+        outbound = _outbound_alert_type(
+            state, mutes,
+            rule_type="upstream_health", target=uid, transition=transition,
+            resource_type="upstream", resource_id=uid,
+            was_alerting=was_alerting,
+        )
         await _persist_state_safely(state, "upstream_health", uid)
-        if transition:
-            msg = f"Upstream '{display}' {'recovered' if transition == 'resolved' else 'is down'}."
+        if outbound:
+            msg = f"Upstream '{display}' {'recovered' if outbound == 'resolved' else 'is down'}."
             await dispatch_alert(
                 resource_type="upstream", resource_id=uid,
-                alert_type=transition, target=uid, message=msg,
+                alert_type=outbound, rule_type="upstream_health",
+                target=uid, message=msg,
                 display_target=display, monitor_label="업스트림 헬스체크",
             )
 
-    # 4. Server (host) health via node_exporter metrics
-    await _check_server_health(state, trigger_after_failures=trigger_after_failures)
+    # 5. Server (host) health via node_exporter metrics
+    await _check_server_health(
+        state, trigger_after_failures=trigger_after_failures, mutes=mutes,
+    )
 
-    # 4b. External API-service reachability (RED-metrics registry)
-    await _check_service_health(state, trigger_after_failures=trigger_after_failures)
+    # 5b. External API-service reachability (RED-metrics registry)
+    await _check_service_health(
+        state, trigger_after_failures=trigger_after_failures, mutes=mutes,
+    )
 
-    # 5. Route-level error rate (automatic for every route; global threshold)
+    # 6. Route-level error rate (automatic for every route; global threshold)
     route_results = await _check_route_error_rate()
     if route_results is None:
         return
@@ -540,6 +720,7 @@ async def run_single_check(state: AlertStateManager, *, trigger_after_failures: 
             trigger_after_failures=trigger_after_failures,
             sample_count=requests,
             min_requests=route_min_requests,
+            mutes=mutes,
         )
 
     # Routes that were alerting but no longer report traffic → resolve at rate 0.
@@ -556,6 +737,7 @@ async def run_single_check(state: AlertStateManager, *, trigger_after_failures: 
             sample_count=0.0,
             min_requests=route_min_requests,
             display_target=entry.get("display_target"),
+            mutes=mutes,
         )
 
 

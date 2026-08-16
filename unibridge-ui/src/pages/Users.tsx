@@ -15,11 +15,12 @@ import { useCanWrite } from '../components/useCanWrite';
 import { useAuth } from '../components/useAuth';
 import { useToast } from '../components/useToast';
 import ResourceModal from '../components/ResourceModal';
+import { isPendingUser } from '../utils/users';
 import './Users.css';
 
-function roleBadgeClass(role: string | null): string {
-  if (!role) return 'role-badge role-badge--pending';
-  const r = role.toLowerCase();
+function roleBadgeClass(user: Pick<KeycloakUser, 'role'>): string {
+  if (isPendingUser(user)) return 'role-badge role-badge--pending';
+  const r = (user.role ?? '').toLowerCase();
   if (r === 'admin') return 'role-badge role-badge--admin';
   if (r === 'developer') return 'role-badge role-badge--developer';
   if (r === 'viewer') return 'role-badge role-badge--viewer';
@@ -256,8 +257,8 @@ function Users() {
                   <td className="cell-alias">{user.username}</td>
                   <td>{user.email || '—'}</td>
                   <td>
-                    <span className={roleBadgeClass(user.role)}>
-                      {user.role || t('users.pending')}
+                    <span className={roleBadgeClass(user)}>
+                      {isPendingUser(user) ? t('users.pending') : user.role}
                     </span>
                   </td>
                   <td>

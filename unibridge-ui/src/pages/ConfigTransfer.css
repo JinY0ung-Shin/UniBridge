@@ -1,0 +1,189 @@
+/* Config export/import page. Reuses .settings-card / .settings-readonly-notice
+   from QuerySettings.css and .filter-select from AuditLogs.css. */
+
+.config-transfer {
+  max-width: 900px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.config-transfer .settings-card {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  padding: 20px;
+}
+
+.config-transfer .settings-card h2 {
+  margin: 0 0 8px 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.config-transfer__hint {
+  margin: 0 0 16px 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.config-transfer .settings-readonly-notice {
+  padding: 10px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.config-transfer__file {
+  margin: 16px 0 8px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* ── Section picker ── */
+
+.config-sections {
+  margin: 0 0 16px 0;
+  padding: 12px 16px 16px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+}
+
+.config-sections legend {
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.config-sections__bulk {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.config-section {
+  border-top: 1px solid var(--border-subtle);
+  padding: 6px 0;
+}
+
+.config-section:first-of-type {
+  border-top: none;
+}
+
+.config-section__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.config-section__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  font-size: 13px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.config-section__count {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.config-section__preview {
+  margin: 8px 0 4px 0;
+  padding: 10px 12px;
+  max-height: 240px;
+  overflow: auto;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Actions ── */
+
+.config-transfer__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.config-transfer__lock-hint {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+/* ── Results ── */
+
+.config-results {
+  margin-top: 24px;
+}
+
+.config-results__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.config-results__head h3 {
+  margin: 0 0 4px 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.config-results__summary {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.config-results__reason {
+  color: var(--text-secondary);
+  max-width: 360px;
+}
+
+/* Import outcome badges — same palette as the admin audit action badges,
+   with skip muted because it is a no-op rather than a change. */
+.badge-import-create {
+  background: color-mix(in srgb, var(--accent-green) 10%, transparent);
+  color: var(--accent-green);
+}
+
+.badge-import-update {
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+  color: var(--accent-blue);
+}
+
+.badge-import-skip {
+  background: var(--bg-tertiary);
+  color: var(--text-tertiary);
+}
+
+.badge-import-error {
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
+  color: var(--accent-red);
+}
+
+@media (max-width: 720px) {
+  .config-section__row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .config-results__reason {
+    max-width: none;
+  }
+}

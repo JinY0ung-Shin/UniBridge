@@ -1,0 +1,23 @@
+.ops-summary {
+  margin-bottom: 8px;
+}
+
+.ops-card {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+
+.ops-card:hover .summary-card__label {
+  color: var(--text-primary);
+}
+
+.ops-card__sub {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.ops-card__sub--error {
+  color: var(--accent-red);
+}

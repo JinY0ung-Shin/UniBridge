@@ -17,6 +17,14 @@
   font-size: 13px;
 }
 
+/* ── Rule cell ── */
+
+.cell-rule {
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
 /* ── Neutral badge ── */
 
 .badge-neutral {

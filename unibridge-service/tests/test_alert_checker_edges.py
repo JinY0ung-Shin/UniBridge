@@ -347,6 +347,7 @@ async def test_check_server_health_persists_and_dispatches_transition(monkeypatc
         "resource_type": "server",
         "resource_id": "host-a",
         "alert_type": "triggered",
+        "rule_type": "server_cpu_high",
         "target": "host-a",
         "message": "CPU is high",
         "display_target": "Host A",

@@ -138,6 +138,27 @@
   flex-shrink: 0;
 }
 
+.nav-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.nav-badge--alert {
+  background: var(--accent-red);
+  color: #fff;
+}
+
+.nav-badge--muted {
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+  border: 1px solid var(--border-default);
+}
+
 .sidebar-footer {
   padding: 16px;
   border-top: 1px solid var(--border-default);

@@ -15,11 +15,18 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app import metrics
 from app.config import settings, validate_settings
 from app.database import get_db, init_db
-from app.models import DBConnection, MonitoredHost, MonitoredService, NASConnection
+from app.models import (
+    DBConnection,
+    MonitoredHost,
+    MonitoredService,
+    NASConnection,
+    S3Connection,
+)
 from app.routers import (
     admin,
     alerts,
     api_keys,
+    config_transfer,
     external_metrics,
     gateway,
     nas,
@@ -611,6 +618,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         known_db_aliases = set(db_aliases_result.scalars().all())
         nas_aliases_result = await db.execute(select(NASConnection.alias))
         known_nas_aliases = set(nas_aliases_result.scalars().all())
+        s3_aliases_result = await db.execute(select(S3Connection.alias))
+        known_s3_aliases = set(s3_aliases_result.scalars().all())
         host_names_result = await db.execute(select(MonitoredHost.name))
         known_host_names = set(host_names_result.scalars().all())
         service_names_result = await db.execute(select(MonitoredService.name))
@@ -645,6 +654,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             alert_state,
             known_db_aliases=known_db_aliases,
             known_nas_aliases=known_nas_aliases,
+            known_s3_aliases=known_s3_aliases,
             known_upstream_ids=known_upstream_ids,
             known_route_ids=known_route_ids,
             known_host_names=known_host_names,
@@ -657,9 +667,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.meta_db_metrics_task = asyncio.create_task(metrics.monitor_meta_db_health())
     logger.info("Metadata database metrics monitor started")
 
+    from app.services.retention import run_retention_loop
+
+    app.state.retention_task = asyncio.create_task(run_retention_loop())
+
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────
+    if hasattr(app.state, "retention_task"):
+        app.state.retention_task.cancel()
+        try:
+            await app.state.retention_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Log retention cleanup stopped")
+
     if hasattr(app.state, "meta_db_metrics_task"):
         app.state.meta_db_metrics_task.cancel()
         try:
@@ -748,6 +770,7 @@ app.include_router(query_history.router)
 app.include_router(admin.router)
 app.include_router(alerts.router)
 app.include_router(api_keys.router)
+app.include_router(config_transfer.router)
 app.include_router(gateway.router)
 app.include_router(external_metrics.router)
 app.include_router(s3.router)

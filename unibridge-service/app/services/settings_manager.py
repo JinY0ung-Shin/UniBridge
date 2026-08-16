@@ -29,6 +29,11 @@ class SettingsManager:
         # non-override routes (see admin settings endpoint).
         self.gateway_route_timeout: int = app_settings.APISIX_GATEWAY_ROUTE_TIMEOUT
         self.blocked_sql_keywords: list[str] = []
+        # Log retention, in days. 0 = disabled (keep forever), which is the
+        # default so an upgrade never silently starts deleting history.
+        self.audit_log_retention_days: int = 0
+        self.admin_audit_log_retention_days: int = 0
+        self.alert_history_retention_days: int = 0
 
     async def load_from_db(self, db: AsyncSession) -> None:
         """Load settings from SystemConfig table, falling back to defaults."""
@@ -65,6 +70,22 @@ class SettingsManager:
             except ValueError:
                 logger.warning("Invalid gateway_route_timeout in DB, using default")
 
+        for retention_key in (
+            "audit_log_retention_days",
+            "admin_audit_log_retention_days",
+            "alert_history_retention_days",
+        ):
+            if retention_key in rows:
+                try:
+                    value = int(rows[retention_key])
+                except ValueError:
+                    logger.warning("Invalid %s in DB, using default", retention_key)
+                    continue
+                if value < 0:
+                    logger.warning("Negative %s in DB, using default", retention_key)
+                    continue
+                setattr(self, retention_key, value)
+
         if "blocked_sql_keywords" in rows:
             try:
                 parsed_keywords = json.loads(rows["blocked_sql_keywords"])
@@ -95,6 +116,9 @@ class SettingsManager:
         query_route_timeout: int | None = None,
         gateway_route_timeout: int | None = None,
         blocked_sql_keywords: list[str] | None = None,
+        audit_log_retention_days: int | None = None,
+        admin_audit_log_retention_days: int | None = None,
+        alert_history_retention_days: int | None = None,
     ) -> None:
         """Update settings in memory and persist to DB."""
         updates: dict[str, str] = {}
@@ -123,6 +147,18 @@ class SettingsManager:
             self.blocked_sql_keywords = blocked_sql_keywords
             updates["blocked_sql_keywords"] = json.dumps(blocked_sql_keywords)
 
+        for retention_key, retention_value in (
+            ("audit_log_retention_days", audit_log_retention_days),
+            ("admin_audit_log_retention_days", admin_audit_log_retention_days),
+            ("alert_history_retention_days", alert_history_retention_days),
+        ):
+            if retention_value is None:
+                continue
+            if retention_value < 0:
+                raise ValueError(f"{retention_key} must be >= 0")
+            setattr(self, retention_key, retention_value)
+            updates[retention_key] = str(retention_value)
+
         for key, value in updates.items():
             existing = await db.execute(
                 select(SystemConfig).where(SystemConfig.key == key)
@@ -144,6 +180,9 @@ class SettingsManager:
             "query_route_timeout": self.query_route_timeout,
             "gateway_route_timeout": self.gateway_route_timeout,
             "blocked_sql_keywords": self.blocked_sql_keywords,
+            "audit_log_retention_days": self.audit_log_retention_days,
+            "admin_audit_log_retention_days": self.admin_audit_log_retention_days,
+            "alert_history_retention_days": self.alert_history_retention_days,
         }
 
 

@@ -3,7 +3,7 @@ vi.mock('../api/client', () => ({
   getAdminAuditLogs: vi.fn(),
 }));
 
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getAdminAuditLogs } from '../api/client';
@@ -246,5 +246,45 @@ describe('AdminAuditLogs', () => {
     await user.click(screen.getByRole('button', { name: 'Previous page' }));
     expect(await screen.findByText('first-1')).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('Page 1');
+  });
+  it('offers the alert resource types with readable labels', async () => {
+    mockedGetAdminAuditLogs.mockResolvedValue([]);
+    renderWithProviders(<AdminAuditLogs />);
+    await waitFor(() => expect(screen.getByText('No audit logs found')).toBeInTheDocument());
+
+    const select = screen.getByRole('combobox', { name: 'Resource type filter' });
+    const options = Array.from(select.querySelectorAll('option'));
+    const byValue = Object.fromEntries(options.map((o) => [o.value, o.textContent]));
+
+    // Every resource_type the backend passes to log_admin_action must be
+    // selectable, or audit rows exist that the filter cannot reach.
+    const AUDITED_RESOURCE_TYPES = [
+      'alert_channel', 'alert_mute', 'alert_settings', 'api_key', 'config_import',
+      'db_connection', 'monitored_host', 'monitored_service', 'nas_connection',
+      'permission', 'query_template', 'resource_owner', 'role', 'route',
+      's3_connection', 'system_settings', 'upstream', 'user', 'user_role',
+    ];
+    for (const value of AUDITED_RESOURCE_TYPES) {
+      expect(byValue).toHaveProperty(value);
+      expect(byValue[value]).toBeTruthy();
+    }
+    expect(byValue.alert_mute).toBe('Alert mute');
+    expect(byValue.resource_owner).toBe('Resource owner');
+    expect(byValue.system_settings).toBe('System settings');
+    expect(byValue.monitored_host).toBe('Server');
+    expect(byValue.config_import).toBe('Config import');
+    // recipients are audited as resource_owner, so there is no alert_recipient type
+    expect(byValue).not.toHaveProperty('alert_recipient');
+  });
+
+  it('labels the resource type column', async () => {
+    mockedGetAdminAuditLogs.mockResolvedValue([
+      makeAdminAuditLog({ id: 1, resource_type: 'alert_mute', resource_id: 'db:orders' }),
+    ]);
+    renderWithProviders(<AdminAuditLogs />);
+    await waitFor(() => expect(screen.getByText('db:orders')).toBeInTheDocument());
+
+    const table = within(screen.getByRole('table'));
+    expect(table.getByText('Alert mute')).toBeInTheDocument();
   });
 });

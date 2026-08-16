@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { getQuerySettings, updateQuerySettings, type QuerySettings } from '../api/client';
+import { useCanWrite } from '../components/useCanWrite';
 import './QuerySettings.css';
 
 function parseBlockedKeywords(value: string): string[] {
@@ -9,6 +10,11 @@ function parseBlockedKeywords(value: string): string[] {
     .split(',')
     .map((k) => k.trim().toUpperCase())
     .filter((k) => k.length > 0);
+}
+
+/** Retention fields are absent on backends that predate them; 0 = keep forever. */
+function retentionValue(value: number | undefined): number {
+  return value ?? 0;
 }
 
 function settingsKey(settings: QuerySettings): string {
@@ -19,18 +25,31 @@ function settingsKey(settings: QuerySettings): string {
     settings.query_route_timeout,
     settings.gateway_route_timeout,
     settings.blocked_sql_keywords.join('\0'),
+    retentionValue(settings.audit_log_retention_days),
+    retentionValue(settings.admin_audit_log_retention_days),
+    retentionValue(settings.alert_history_retention_days),
   ].join(':');
 }
 
 function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const canWrite = useCanWrite('query.settings.write');
   const [rateLimit, setRateLimit] = useState(settings.rate_limit_per_minute);
   const [maxConcurrent, setMaxConcurrent] = useState(settings.max_concurrent_queries);
   const [defaultRowLimit, setDefaultRowLimit] = useState(settings.default_row_limit);
   const [queryRouteTimeout, setQueryRouteTimeout] = useState(settings.query_route_timeout);
   const [gatewayRouteTimeout, setGatewayRouteTimeout] = useState(settings.gateway_route_timeout);
   const [blockedKeywords, setBlockedKeywords] = useState(settings.blocked_sql_keywords.join(', '));
+  const [auditRetention, setAuditRetention] = useState(
+    retentionValue(settings.audit_log_retention_days),
+  );
+  const [adminAuditRetention, setAdminAuditRetention] = useState(
+    retentionValue(settings.admin_audit_log_retention_days),
+  );
+  const [alertHistoryRetention, setAlertHistoryRetention] = useState(
+    retentionValue(settings.alert_history_retention_days),
+  );
 
   const draftSettings: QuerySettings = {
     rate_limit_per_minute: rateLimit,
@@ -39,6 +58,9 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
     query_route_timeout: queryRouteTimeout,
     gateway_route_timeout: gatewayRouteTimeout,
     blocked_sql_keywords: parseBlockedKeywords(blockedKeywords),
+    audit_log_retention_days: auditRetention,
+    admin_audit_log_retention_days: adminAuditRetention,
+    alert_history_retention_days: alertHistoryRetention,
   };
   const hasChanges = settingsKey(draftSettings) !== settingsKey(settings);
 
@@ -49,6 +71,9 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
     setQueryRouteTimeout(next.query_route_timeout);
     setGatewayRouteTimeout(next.gateway_route_timeout);
     setBlockedKeywords(next.blocked_sql_keywords.join(', '));
+    setAuditRetention(retentionValue(next.audit_log_retention_days));
+    setAdminAuditRetention(retentionValue(next.admin_audit_log_retention_days));
+    setAlertHistoryRetention(retentionValue(next.alert_history_retention_days));
   }
 
   const updateMut = useMutation({
@@ -60,7 +85,7 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
   });
 
   function handleSave() {
-    if (!hasChanges) return;
+    if (!hasChanges || !canWrite) return;
     updateMut.mutate(draftSettings);
   }
 
@@ -71,6 +96,12 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
 
   return (
     <div className="settings-form">
+      {!canWrite && (
+        <div className="settings-readonly-notice" role="status">
+          {t('querySettings.readOnlyNotice')}
+        </div>
+      )}
+
       <div className="settings-card">
         <h3>{t('querySettings.rateLimiting')}</h3>
         <div className="form-group">
@@ -84,6 +115,7 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
             aria-label={t('querySettings.rateLimit')}
             aria-describedby="query-rate-limit-hint"
             onChange={(e) => setRateLimit(Number(e.target.value))}
+            disabled={!canWrite}
           />
           <span id="query-rate-limit-hint" className="form-hint">{t('querySettings.rateLimitHint')}</span>
         </div>
@@ -98,6 +130,7 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
             aria-label={t('querySettings.maxConcurrent')}
             aria-describedby="query-max-concurrent-hint"
             onChange={(e) => setMaxConcurrent(Number(e.target.value))}
+            disabled={!canWrite}
           />
           <span id="query-max-concurrent-hint" className="form-hint">{t('querySettings.maxConcurrentHint')}</span>
         </div>
@@ -112,6 +145,7 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
             aria-label={t('querySettings.defaultRowLimit')}
             aria-describedby="query-default-row-limit-hint"
             onChange={(e) => setDefaultRowLimit(Number(e.target.value))}
+            disabled={!canWrite}
           />
           <span id="query-default-row-limit-hint" className="form-hint">{t('querySettings.defaultRowLimitHint')}</span>
         </div>
@@ -126,6 +160,7 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
             aria-label={t('querySettings.queryRouteTimeout')}
             aria-describedby="query-route-timeout-hint"
             onChange={(e) => setQueryRouteTimeout(Number(e.target.value))}
+            disabled={!canWrite}
           />
           <span id="query-route-timeout-hint" className="form-hint">{t('querySettings.queryRouteTimeoutHint')}</span>
         </div>
@@ -144,6 +179,7 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
             aria-label={t('querySettings.gatewayRouteTimeout')}
             aria-describedby="gateway-route-timeout-hint"
             onChange={(e) => setGatewayRouteTimeout(Number(e.target.value))}
+            disabled={!canWrite}
           />
           <span id="gateway-route-timeout-hint" className="form-hint">{t('querySettings.gatewayRouteTimeoutHint')}</span>
         </div>
@@ -158,6 +194,7 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
             type="text"
             value={blockedKeywords}
             onChange={(e) => setBlockedKeywords(e.target.value)}
+            disabled={!canWrite}
             placeholder="VACUUM, ANALYZE, ..."
             aria-label={t('querySettings.blockedKeywords')}
             aria-describedby="blocked-sql-keywords-hint"
@@ -166,6 +203,56 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
         </div>
       </div>
 
+      <div className="settings-card">
+        <h3>{t('querySettings.retentionSection')}</h3>
+        <div className="form-group">
+          <label htmlFor="audit-log-retention">{t('querySettings.auditLogRetention')}</label>
+          <input
+            id="audit-log-retention"
+            type="number"
+            min={0}
+            max={3650}
+            value={auditRetention}
+            aria-label={t('querySettings.auditLogRetention')}
+            aria-describedby="audit-log-retention-hint"
+            onChange={(e) => setAuditRetention(Number(e.target.value))}
+            disabled={!canWrite}
+          />
+          <span id="audit-log-retention-hint" className="form-hint">{t('querySettings.auditLogRetentionHint')}</span>
+        </div>
+        <div className="form-group">
+          <label htmlFor="admin-audit-log-retention">{t('querySettings.adminAuditLogRetention')}</label>
+          <input
+            id="admin-audit-log-retention"
+            type="number"
+            min={0}
+            max={3650}
+            value={adminAuditRetention}
+            aria-label={t('querySettings.adminAuditLogRetention')}
+            aria-describedby="admin-audit-log-retention-hint"
+            onChange={(e) => setAdminAuditRetention(Number(e.target.value))}
+            disabled={!canWrite}
+          />
+          <span id="admin-audit-log-retention-hint" className="form-hint">{t('querySettings.adminAuditLogRetentionHint')}</span>
+        </div>
+        <div className="form-group">
+          <label htmlFor="alert-history-retention">{t('querySettings.alertHistoryRetention')}</label>
+          <input
+            id="alert-history-retention"
+            type="number"
+            min={0}
+            max={3650}
+            value={alertHistoryRetention}
+            aria-label={t('querySettings.alertHistoryRetention')}
+            aria-describedby="alert-history-retention-hint"
+            onChange={(e) => setAlertHistoryRetention(Number(e.target.value))}
+            disabled={!canWrite}
+          />
+          <span id="alert-history-retention-hint" className="form-hint">{t('querySettings.alertHistoryRetentionHint')}</span>
+        </div>
+      </div>
+
+      {canWrite && (
       <div className="settings-save-bar">
         <span className={hasChanges ? 'settings-save-status settings-save-status--changed' : 'settings-save-status'}>
           {hasChanges ? t('querySettings.unsavedChanges') : t('querySettings.noChanges')}
@@ -190,6 +277,7 @@ function QuerySettingsForm({ settings }: { settings: QuerySettings }) {
           </button>
         </div>
       </div>
+      )}
 
       {updateMut.isSuccess && !hasChanges && (
         <span className="save-success" role="status">{t('querySettings.saved')}</span>

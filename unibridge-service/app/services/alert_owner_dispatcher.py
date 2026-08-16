@@ -30,6 +30,7 @@ async def dispatch_alert(
     alert_type: str,
     target: str,
     message: str,
+    rule_type: str | None = None,
     display_target: str | None = None,
     rate: float | None = None,
     threshold: float | None = None,
@@ -44,11 +45,16 @@ async def dispatch_alert(
     assignees still notifies the admins. With no recipients at all, nothing is
     sent. Upstream alerts intentionally skip assignee routing and notify only
     admins because upstreams are route internals in the UI.
+
+    ``alert_type`` is the transition ("triggered"/"resolved"); ``rule_type`` is
+    the monitoring rule that produced it ("db_health", "server_disk", …). Both
+    are recorded on the history row.
     """
     history = AlertHistory(
         channel_id=None,
         resource_type=resource_type,
         alert_type=alert_type,
+        rule_type=rule_type,
         target=target,
         display_target=display_target,
         severity=severity,

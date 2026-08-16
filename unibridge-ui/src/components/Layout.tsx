@@ -6,9 +6,14 @@ import { getCurrentUser } from '../api/client';
 import { useAuth } from './useAuth';
 import { PermissionProvider } from './PermissionContext';
 import { navItems, isNavItemVisible } from './navItems';
+import { useAlertStatusQuery } from './useAlertStatus';
+import { alertBadgeCounts, isMuteActive } from '../utils/alerts';
 import SettingsModal from './SettingsModal';
 import UniBridgeLogo from './UniBridgeLogo';
 import './Layout.css';
+
+/** Nav item the alert badge attaches to. */
+const ALERT_STATUS_PATH = '/alerts/status';
 
 interface LayoutProps {
   children: ReactNode;
@@ -31,6 +36,12 @@ function Layout({ children }: LayoutProps) {
   });
   const userPermissions = permissionsQuery.data?.permissions ?? [];
   const permissionsLoaded = permissionsQuery.isSuccess;
+
+  const alertStatusQuery = useAlertStatusQuery({
+    enabled: userPermissions.includes('alerts.read'),
+  });
+  const alertsGlobalMuted = isMuteActive(alertStatusQuery.data?.global_muted_until);
+  const firingAlertCount = alertBadgeCounts(alertStatusQuery.data?.items).firing;
 
   const isNavOpen = navOpenPath === location.pathname;
 
@@ -286,6 +297,23 @@ function Layout({ children }: LayoutProps) {
                     )}
                   </span>
                   {t(item.labelKey)}
+                  {item.to === ALERT_STATUS_PATH && alertsGlobalMuted && (
+                    <span
+                      className="nav-badge nav-badge--muted"
+                      title={t('alerts.badgeGlobalMuted')}
+                      aria-label={t('alerts.badgeGlobalMuted')}
+                    >
+                      {t('alerts.muted')}
+                    </span>
+                  )}
+                  {item.to === ALERT_STATUS_PATH && !alertsGlobalMuted && firingAlertCount > 0 && (
+                    <span
+                      className="nav-badge nav-badge--alert"
+                      aria-label={t('alerts.badgeFiringCount', { count: firingAlertCount })}
+                    >
+                      {firingAlertCount}
+                    </span>
+                  )}
                 </NavLink>
               </span>
             );

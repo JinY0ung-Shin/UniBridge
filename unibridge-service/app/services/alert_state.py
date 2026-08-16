@@ -27,6 +27,8 @@ class AlertStateManager:
     failure tally, since is the timestamp of the most recent status flip.
     ``severity`` (optional) carries the current host-signal severity while
     alerting, and ``cycles_in_alert`` drives re-notification cadence.
+    ``pending_notify`` marks a "triggered" notification that a mute withheld and
+    that is still owed once the mute lifts.
     """
 
     def __init__(self) -> None:
@@ -48,6 +50,7 @@ class AlertStateManager:
             "display_target": entry.get("display_target", target),
             "fail_count": entry.get("fail_count", 0),
             "severity": entry.get("severity"),
+            "pending_notify": bool(entry.get("pending_notify", False)),
         }
 
     def set_entry(
@@ -60,6 +63,7 @@ class AlertStateManager:
         display_target: str | None = None,
         fail_count: int = 0,
         severity: str | None = None,
+        pending_notify: bool = False,
     ) -> None:
         self._states[(alert_type, target)] = {
             "status": status,
@@ -68,7 +72,22 @@ class AlertStateManager:
             "fail_count": fail_count,
             "severity": severity,
             "cycles_in_alert": 0,
+            "pending_notify": pending_notify,
         }
+
+    def get_pending_notify(self, alert_type: str, target: str) -> bool:
+        entry = self._states.get((alert_type, target))
+        return bool(entry.get("pending_notify", False)) if entry else False
+
+    def set_pending_notify(self, alert_type: str, target: str, value: bool) -> bool:
+        """Set the withheld-notification flag. Returns True if it changed."""
+        entry = self._states.get((alert_type, target))
+        if entry is None:
+            return False
+        if bool(entry.get("pending_notify", False)) == value:
+            return False
+        entry["pending_notify"] = value
+        return True
 
     def update(
         self,
@@ -184,18 +203,6 @@ class AlertStateManager:
             if v["status"] == "alert"
         ]
 
-    def get_all_statuses(self) -> list[dict]:
-        return [
-            {
-                "type": k[0],
-                "target": v.get("display_target", k[1]),
-                "status": v["status"],
-                "since": v["since"] if v["status"] == "alert" else None,
-                "severity": v.get("severity") if v["status"] == "alert" else None,
-            }
-            for k, v in self._states.items()
-        ]
-
     def get_entries(
         self,
         *,
@@ -216,6 +223,7 @@ class AlertStateManager:
                 "display_target": entry.get("display_target", target),
                 "fail_count": entry.get("fail_count", 0),
                 "severity": entry.get("severity"),
+                "pending_notify": bool(entry.get("pending_notify", False)),
             })
         return rows
 
@@ -263,6 +271,7 @@ async def save_alert_state_to_db(
     row.display_target = entry["display_target"]
     row.fail_count = int(entry["fail_count"])
     row.severity = entry.get("severity")
+    row.pending_notify = bool(entry.get("pending_notify", False))
     row.updated_at = utcnow()
     await db.commit()
 
@@ -289,6 +298,7 @@ async def load_alert_state_from_db(
             display_target=row.display_target,
             fail_count=row.fail_count,
             severity=row.severity,
+            pending_notify=bool(row.pending_notify),
         )
 
 
@@ -319,12 +329,13 @@ async def purge_stale_states(
     known_route_ids: set[str] | None,
     known_host_names: set[str] | None = None,
     known_service_names: set[str] | None = None,
+    known_s3_aliases: set[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Drop alert states whose targets no longer exist.
 
-    Pass None for `known_upstream_ids` / `known_route_ids` to skip the
-    corresponding alert types when APISIX is unreachable — better to
-    leave state alone than to wipe it because of a transient outage.
+    Pass None for `known_upstream_ids` / `known_route_ids` / `known_s3_aliases`
+    to skip the corresponding alert types when the source is unreachable —
+    better to leave state alone than to wipe it because of a transient outage.
     Returns the (alert_type, target) pairs that were removed.
 
     Route states are keyed by plain ``route_id``. Any legacy rule-scoped
@@ -340,6 +351,10 @@ async def purge_stale_states(
 
         if atype == "db_health":
             should_remove = target not in known_db_aliases
+        elif atype == "s3_health":
+            # Skip the purge when the S3 registry could not be loaded.
+            if known_s3_aliases is not None:
+                should_remove = target not in known_s3_aliases
         elif atype == "nas_health":
             should_remove = target not in known_nas_aliases
         elif atype == "upstream_health":

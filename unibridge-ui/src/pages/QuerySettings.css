@@ -8,11 +8,25 @@
   gap: 24px;
 }
 
+.settings-readonly-notice {
+  padding: 10px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
 .settings-card {
   background: var(--bg-primary);
   border: 1px solid var(--border-default);
   border-radius: 8px;
   padding: 20px;
+}
+
+.settings-card input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .settings-card h3 {

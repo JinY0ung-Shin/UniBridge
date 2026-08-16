@@ -89,7 +89,12 @@ vi.mock('../api/client', () => ({
   deleteAlertChannel: vi.fn(),
   testAlertChannel: vi.fn(),
   getAlertHistory: vi.fn().mockResolvedValue([]),
-  getAlertStatus: vi.fn().mockResolvedValue([]),
+  getUsers: vi.fn().mockResolvedValue({ users: [], total: 0 }),
+  getAlertStatus: vi.fn().mockResolvedValue({ items: [], global_muted_until: null }),
+  getAlertMutes: vi.fn().mockResolvedValue({ global_muted_until: null, mutes: [] }),
+  setAlertMute: vi.fn(),
+  deleteAlertMute: vi.fn(),
+  GLOBAL_MUTE_RESOURCE_TYPE: 'global',
 }));
 
 /* ── Import App after mocking ── */

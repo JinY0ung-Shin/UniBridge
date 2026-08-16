@@ -58,6 +58,8 @@ ALL_PERMISSIONS = [
     "admin.users.read",
     "admin.users.write",
     "admin.audit.read",
+    "admin.config.read",
+    "admin.config.write",
     "alerts.read",
     "alerts.write",
     "s3.connections.read",

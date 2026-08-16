@@ -18,13 +18,46 @@ const RESOURCE_TYPES = [
   'system_settings',
   's3_connection',
   'nas_connection',
+  'monitored_host',
+  'monitored_service',
   'alert_settings',
   'alert_channel',
+  'alert_mute',
   'resource_owner',
   'role',
   'user',
   'user_role',
+  'config_import',
 ] as const;
+
+const RESOURCE_TYPE_LABEL_KEYS: Record<string, string> = {
+  route: 'adminAuditLogs.resourceTypeRoute',
+  upstream: 'adminAuditLogs.resourceTypeUpstream',
+  api_key: 'adminAuditLogs.resourceTypeApiKey',
+  db_connection: 'adminAuditLogs.resourceTypeDbConnection',
+  permission: 'adminAuditLogs.resourceTypePermission',
+  query_template: 'adminAuditLogs.resourceTypeQueryTemplate',
+  system_settings: 'adminAuditLogs.resourceTypeSystemSettings',
+  s3_connection: 'adminAuditLogs.resourceTypeS3Connection',
+  nas_connection: 'adminAuditLogs.resourceTypeNasConnection',
+  monitored_host: 'adminAuditLogs.resourceTypeMonitoredHost',
+  monitored_service: 'adminAuditLogs.resourceTypeMonitoredService',
+  alert_settings: 'adminAuditLogs.resourceTypeAlertSettings',
+  alert_channel: 'adminAuditLogs.resourceTypeAlertChannel',
+  alert_mute: 'adminAuditLogs.resourceTypeAlertMute',
+  resource_owner: 'adminAuditLogs.resourceTypeResourceOwner',
+  role: 'adminAuditLogs.resourceTypeRole',
+  user: 'adminAuditLogs.resourceTypeUser',
+  user_role: 'adminAuditLogs.resourceTypeUserRole',
+  config_import: 'adminAuditLogs.resourceTypeConfigImport',
+};
+
+/** Human label for a resource type; unknown types render as-is. */
+function resourceTypeLabel(t: (key: string) => string, resourceType: string): string {
+  const key = RESOURCE_TYPE_LABEL_KEYS[resourceType];
+  return key ? t(key) : resourceType;
+}
+
 const ACTIONS = ['create', 'update', 'delete'] as const;
 const EMPTY_FILTER_FORM = {
   actor: '',
@@ -131,7 +164,7 @@ function AdminAuditLogs() {
             <option value="">{t('adminAuditLogs.allResourceTypes')}</option>
             {RESOURCE_TYPES.map((rt) => (
               <option key={rt} value={rt}>
-                {rt}
+                {resourceTypeLabel(t, rt)}
               </option>
             ))}
           </select>
@@ -226,7 +259,7 @@ function AdminAuditLogs() {
                       <td>
                         <span className={`badge badge-action-${log.action}`}>{log.action}</span>
                       </td>
-                      <td>{log.resource_type}</td>
+                      <td>{resourceTypeLabel(t, log.resource_type)}</td>
                       <td className="mono">{log.resource_id}</td>
                       <td className="cell-summary">{log.summary ?? '—'}</td>
                       <td>

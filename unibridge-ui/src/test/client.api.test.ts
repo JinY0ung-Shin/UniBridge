@@ -733,6 +733,120 @@ describe('api client API helpers', () => {
     expect((await mod.downloadNasEntry('n', '/docs/fallback.csv')).filename).toBe('fallback.csv');
     expect((await mod.downloadNasEntry('n', '')).filename).toBe('download');
   });
+
+  it('getAlertStatus widens a legacy bare-array response', async () => {
+    const mod = await importClient(keycloak);
+    mod.default.defaults.adapter = makeAdapter(() => [
+      { target: 'db1', type: 'db_health', status: 'alert', since: null },
+    ]);
+    expect(await mod.getAlertStatus()).toEqual({
+      items: [{ target: 'db1', type: 'db_health', status: 'alert', since: null }],
+      global_muted_until: null,
+    });
+  });
+
+  it('getAlertStatus passes through the object response with the global mute', async () => {
+    const mod = await importClient(keycloak);
+    mod.default.defaults.adapter = makeAdapter(() => ({
+      items: [{ target: 'db1', type: 'db_health', status: 'alert', since: null, muted: true }],
+      global_muted_until: '2099-01-01T00:00:00Z',
+    }));
+    const result = await mod.getAlertStatus();
+    expect(result.global_muted_until).toBe('2099-01-01T00:00:00Z');
+    expect(result.items[0].muted).toBe(true);
+  });
+
+  it('getAlertStatus tolerates a response with neither shape', async () => {
+    const mod = await importClient(keycloak);
+    mod.default.defaults.adapter = makeAdapter(() => null);
+    expect(await mod.getAlertStatus()).toEqual({ items: [], global_muted_until: null });
+  });
+
+  it('getAlertMutes defaults missing fields', async () => {
+    const mod = await importClient(keycloak);
+    mod.default.defaults.adapter = makeAdapter((config) => {
+      expect(config.url).toBe('/admin/alerts/mutes');
+      return {};
+    });
+    expect(await mod.getAlertMutes()).toEqual({ global_muted_until: null, mutes: [] });
+  });
+
+  it('setAlertMute PUTs and deleteAlertMute passes the key as query params', async () => {
+    const mod = await importClient(keycloak);
+    mod.default.defaults.adapter = makeAdapter((config) => {
+      expect(config.url).toBe('/admin/alerts/mutes');
+      if (config.method === 'put') {
+        expect(JSON.parse(config.data)).toEqual({
+          resource_type: 'db',
+          resource_id: 'orders',
+          muted_until: '2099-01-01T00:00:00Z',
+        });
+        return { resource_type: 'db', resource_id: 'orders', muted_until: '2099-01-01T00:00:00Z', created_by: 'admin' };
+      }
+      expect(config.method).toBe('delete');
+      expect(config.params).toEqual({ resource_type: 'global', resource_id: '' });
+      return null;
+    });
+
+    const created = await mod.setAlertMute({
+      resource_type: 'db',
+      resource_id: 'orders',
+      muted_until: '2099-01-01T00:00:00Z',
+    });
+    expect(created.created_by).toBe('admin');
+    await mod.deleteAlertMute(mod.GLOBAL_MUTE_RESOURCE_TYPE, '');
+  });
+
+  it('getAlertHistory forwards the rule_type filter', async () => {
+    const mod = await importClient(keycloak);
+    mod.default.defaults.adapter = makeAdapter((config) => {
+      expect(config.url).toBe('/admin/alerts/history');
+      expect(config.params).toMatchObject({ rule_type: 'server_gpu_mem' });
+      return [];
+    });
+    expect(await mod.getAlertHistory({ rule_type: 'server_gpu_mem' })).toEqual([]);
+  });
+
+  it('exportConfig GETs the export document', async () => {
+    const mod = await importClient(keycloak);
+    const doc = {
+      unibridge_export_version: 1,
+      exported_at: '2026-08-15T01:00:00Z',
+      sections: { routes: [{ id: 'r1' }] },
+      excluded: { builtin_routes: ['query-api'], notes: [] },
+    };
+    mod.default.defaults.adapter = makeAdapter((config) => {
+      expect(config.method).toBe('get');
+      expect(config.url).toBe('/admin/config/export');
+      return doc;
+    });
+    expect(await mod.exportConfig()).toEqual(doc);
+  });
+
+  it('importConfig POSTs the selection and document verbatim', async () => {
+    const mod = await importClient(keycloak);
+    const body = {
+      dry_run: true,
+      sections: ['routes', 'roles'],
+      data: {
+        unibridge_export_version: 1,
+        exported_at: '2026-08-15T01:00:00Z',
+        sections: { routes: [{ id: 'r1' }], roles: [{ name: 'admin' }] },
+      },
+    };
+    const result = {
+      dry_run: true,
+      results: [{ section: 'routes', name: 'r1', action: 'create' as const, reason: null }],
+      summary: { create: 1, update: 0, skip: 0, error: 0 },
+    };
+    mod.default.defaults.adapter = makeAdapter((config) => {
+      expect(config.method).toBe('post');
+      expect(config.url).toBe('/admin/config/import');
+      expect(JSON.parse(config.data)).toEqual(body);
+      return result;
+    });
+    expect(await mod.importConfig(body)).toEqual(result);
+  });
 });
 
 describe('api client interceptor edge cases', () => {

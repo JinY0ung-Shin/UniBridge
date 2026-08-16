@@ -993,7 +993,7 @@ async def test_alert_status_no_state(client, admin_token):
     alerts_router.set_alert_state(None)
     resp = await client.get("/admin/alerts/status", headers=auth_header(admin_token))
     assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.json() == {"global_muted_until": None, "items": []}
 
 
 @pytest.mark.asyncio
@@ -1005,9 +1005,16 @@ async def test_alert_status_with_state(client, admin_token):
     try:
         resp = await client.get("/admin/alerts/status", headers=auth_header(admin_token))
         assert resp.status_code == 200
-        rows = resp.json()
+        body = resp.json()
+        assert body["global_muted_until"] is None
+        rows = body["items"]
         assert len(rows) == 1
         assert rows[0]["target"] == "db-x"
         assert rows[0]["status"] == "alert"
+        # Mute key is addressable even though ``target`` is a display label.
+        assert rows[0]["resource_type"] == "db"
+        assert rows[0]["resource_id"] == "db-x"
+        assert rows[0]["muted"] is False
+        assert rows[0]["muted_until"] is None
     finally:
         alerts_router.set_alert_state(None)

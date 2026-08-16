@@ -368,6 +368,9 @@ class HealthResponse(BaseModel):
 
 # ── System Config ───────────────────────────────────────────────────────────
 
+_RETENTION_DESCRIPTION = "Days of history to keep; 0 = keep forever"
+
+
 class SystemConfigResponse(BaseModel):
     rate_limit_per_minute: int
     max_concurrent_queries: int
@@ -375,6 +378,9 @@ class SystemConfigResponse(BaseModel):
     query_route_timeout: int
     gateway_route_timeout: int
     blocked_sql_keywords: list[str]
+    audit_log_retention_days: int
+    admin_audit_log_retention_days: int
+    alert_history_retention_days: int
 
 
 class SystemConfigUpdate(BaseModel):
@@ -389,6 +395,15 @@ class SystemConfigUpdate(BaseModel):
         description="Default read/send timeout (seconds) for gateway routes without an override",
     )
     blocked_sql_keywords: list[str] | None = Field(None, description="Each keyword must be non-empty")
+    audit_log_retention_days: int | None = Field(
+        None, ge=0, le=3650, description=_RETENTION_DESCRIPTION
+    )
+    admin_audit_log_retention_days: int | None = Field(
+        None, ge=0, le=3650, description=_RETENTION_DESCRIPTION
+    )
+    alert_history_retention_days: int | None = Field(
+        None, ge=0, le=3650, description=_RETENTION_DESCRIPTION
+    )
 
     @staticmethod
     def _validate_keywords(v: list[str] | None) -> list[str] | None:
@@ -779,7 +794,8 @@ class ResourceOwnerResponse(BaseModel):
 class AlertHistoryResponse(BaseModel):
     id: int
     channel_id: int | None = None
-    alert_type: str
+    alert_type: str  # transition: "triggered" | "resolved"
+    rule_type: str | None = None  # monitoring rule: "db_health", "server_disk", …
     target: str
     display_target: str | None = None
     severity: str | None = None
@@ -798,6 +814,45 @@ class AlertStatusResponse(BaseModel):
     status: str  # "ok" | "alert"
     since: str | None = None
     severity: str | None = None
+    # Notification suppression — detection is unaffected. ``muted_until`` is the
+    # later of the global mute and this target's own mute.
+    muted: bool = False
+    muted_until: datetime | None = None
+    # Mute key for this row. ``target`` above is the human-friendly label (e.g.
+    # "route-name (id)"), so it cannot be used to address a mute; these carry
+    # the stable identifiers the mute endpoints expect. ``resource_type`` is
+    # null for a rule with no mutable resource.
+    resource_type: str | None = None
+    resource_id: str | None = None
+
+
+class AlertStatusListResponse(BaseModel):
+    """Alert status plus the global mute window.
+
+    An object rather than a bare array so the global mute (which belongs to no
+    single target) can travel with the per-target rows.
+    """
+
+    global_muted_until: datetime | None = None
+    items: list[AlertStatusResponse] = []
+
+
+class AlertMuteResponse(BaseModel):
+    resource_type: str
+    resource_id: str
+    muted_until: datetime
+    created_by: str
+
+
+class AlertMuteListResponse(BaseModel):
+    global_muted_until: datetime | None = None
+    mutes: list[AlertMuteResponse] = []
+
+
+class AlertMuteUpsert(BaseModel):
+    resource_type: str = Field(..., min_length=1, max_length=20)
+    resource_id: str = Field("", max_length=200)
+    muted_until: datetime
 
 
 # ── Monitored servers (hosts) ─────────────────────────────────────────────────
@@ -1202,3 +1257,46 @@ class NasConnectionResponse(BaseModel):
     status: str = "unknown"
 
     model_config = {"from_attributes": True}
+
+
+# ── Config transfer (export / import) ───────────────────────────────────────
+
+class ConfigExportResponse(BaseModel):
+    """One deployment's administrative configuration as a portable document."""
+
+    unibridge_export_version: int
+    exported_at: str
+    sections: dict[str, Any]
+    excluded: dict[str, Any]
+
+
+class ConfigImportRequest(BaseModel):
+    """Replay of an export document, limited to the requested sections.
+
+    ``dry_run`` defaults to true so a client that omits the flag previews the
+    plan instead of writing it.
+    """
+
+    dry_run: bool = True
+    sections: list[str] = []
+    data: dict[str, Any]
+
+
+class ConfigImportResultRow(BaseModel):
+    section: str
+    name: str = Field(..., description="Natural key of the item within its section")
+    action: str = Field(..., description="create | update | skip | error")
+    reason: str | None = None
+
+
+class ConfigImportSummary(BaseModel):
+    create: int = 0
+    update: int = 0
+    skip: int = 0
+    error: int = 0
+
+
+class ConfigImportResponse(BaseModel):
+    dry_run: bool
+    results: list[ConfigImportResultRow]
+    summary: ConfigImportSummary

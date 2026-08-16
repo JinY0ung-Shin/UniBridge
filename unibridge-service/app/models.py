@@ -322,12 +322,17 @@ class AlertHistory(Base):
     channel_id = Column(Integer, ForeignKey("alert_channels.id", ondelete="SET NULL"), nullable=True)
     resource_type = Column(String(20), nullable=True)
     alert_type = Column(String(20), nullable=False)  # "triggered" / "resolved"
+    # Which monitoring rule produced the row ("db_health", "route_error_rate",
+    # "server_disk", …) — the AlertState.alert_type key. Distinct from
+    # ``alert_type`` above, which carries the transition. Nullable: rows written
+    # before this column existed have no rule attribution.
+    rule_type = Column(String(30), nullable=True)
     target = Column(String(100), nullable=False)  # stable key/id (route_id, alias, …) — used for filtering
     display_target = Column(String(200), nullable=True)  # human-friendly label (e.g. "route-name (id)"); falls back to target
     severity = Column(String(20), nullable=True)  # "warning" / "critical" (host signals); null for binary types
     message = Column(Text, nullable=False)
     recipients = Column(Text, nullable=True)  # JSON array
-    sent_at = Column(UtcDateTime, default=utcnow)
+    sent_at = Column(UtcDateTime, default=utcnow, index=True)
     success = Column(Boolean, nullable=True)
     error_detail = Column(Text, nullable=True)
 
@@ -343,10 +348,42 @@ class AlertState(Base):
     display_target = Column(String(200), nullable=True)
     fail_count = Column(Integer, default=0, nullable=False, server_default="0")
     severity = Column(String(20), nullable=True)  # current severity while alerting (host signals)
+    # Set when a "triggered" notification was withheld because the target (or
+    # everything) was muted. Survives restarts so a mute that expires while the
+    # alert is still firing still produces exactly one notification.
+    pending_notify = Column(Boolean, default=False, nullable=False, server_default="false")
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)
 
     __table_args__ = (
         UniqueConstraint("alert_type", "target", name="uq_alert_state_type_target"),
+    )
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("pending_notify", False)
+        super().__init__(**kwargs)
+
+
+class AlertMute(Base):
+    """Temporary suppression of alert notifications for one resource.
+
+    Detection and state transitions are unaffected: only outbound delivery is
+    withheld while the mute is active. ``resource_type`` "global" (with an empty
+    ``resource_id``) mutes every alert; any other type/id pair matches the
+    ``resource_type``/``resource_id`` the checker dispatches with. Expired rows
+    are pruned lazily on read.
+    """
+
+    __tablename__ = "alert_mutes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    resource_type = Column(String(20), nullable=False)
+    resource_id = Column(String(200), nullable=False, server_default="")  # "" for global
+    muted_until = Column(UtcDateTime, nullable=False)
+    created_by = Column(String(255), nullable=False)
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("resource_type", "resource_id", name="uq_alert_mute_type_id"),
     )
 
 

@@ -239,12 +239,12 @@ class TestAlertState:
         targets = {a["target"] for a in alerts}
         assert targets == {"db1", "svc1"}
 
-    def test_get_all_statuses_includes_known_ok_and_alert_states(self):
+    def test_get_entries_includes_known_ok_and_alert_states(self):
         mgr = AlertStateManager()
         mgr.update("db_health", "db1", is_healthy=False, trigger_after_failures=1)
         mgr.update("db_health", "db2", is_healthy=True, trigger_after_failures=1)
-        statuses = mgr.get_all_statuses()
-        status_by_target = {entry["target"]: entry["status"] for entry in statuses}
+        entries = mgr.get_entries()
+        status_by_target = {entry["target"]: entry["status"] for entry in entries}
         assert status_by_target == {"db1": "alert", "db2": "ok"}
 
     def test_reset_clears_all(self):
@@ -399,7 +399,7 @@ class TestAlertState:
         async with session_factory() as db:
             from app.services.alert_state import load_alert_state_from_db
             await load_alert_state_from_db(db, restored)
-        assert restored.get_all_statuses() == []
+        assert restored.get_entries() == []
 
     @pytest.mark.asyncio
     async def test_persist_and_restore_alert_state(self, seeded_db):
@@ -421,9 +421,9 @@ class TestAlertState:
             await load_alert_state_from_db(db, restored)
 
         assert restored.get_status("db_health", "main-db") == "alert"
-        statuses = restored.get_all_statuses()
-        assert statuses[0]["target"] == "main-db"
-        assert statuses[0]["status"] == "alert"
+        entries = restored.get_entries()
+        assert entries[0]["target"] == "main-db"
+        assert entries[0]["status"] == "alert"
         # fail_count must round-trip
         entry = restored.get_entry("db_health", "main-db")
         assert entry is not None

@@ -33,10 +33,14 @@ from tests.conftest import auth_header
 
 class TestAllPermissions:
     def test_all_permissions_has_expected_entries(self):
-        assert len(ALL_PERMISSIONS) == 33
+        assert len(ALL_PERMISSIONS) == 35
 
     def test_admin_audit_read_permission_present(self):
         assert "admin.audit.read" in ALL_PERMISSIONS
+
+    def test_config_transfer_permissions_present(self):
+        assert "admin.config.read" in ALL_PERMISSIONS
+        assert "admin.config.write" in ALL_PERMISSIONS
 
     def test_server_permissions_present(self):
         assert "servers.read" in ALL_PERMISSIONS

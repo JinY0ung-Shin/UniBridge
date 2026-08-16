@@ -3,7 +3,7 @@ vi.mock('../api/client', () => ({
   getAlertHistory: vi.fn(),
 }));
 
-import { screen, waitFor, fireEvent } from '@testing-library/react';
+import { screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getAlertHistory } from '../api/client';
@@ -88,7 +88,7 @@ describe('AlertHistory page', () => {
     renderWithProviders(<AlertHistory />);
     await waitFor(() => expect(mockGet).toHaveBeenCalled());
 
-    const select = screen.getByRole('combobox');
+    const select = screen.getByRole('combobox', { name: /Alert Type|알림 유형/i });
     fireEvent.change(select, { target: { value: 'triggered' } });
     const targetInput = screen.getByRole('textbox', { name: /Target|대상/i });
     await userEvent.type(targetInput, 'db1');
@@ -151,6 +151,42 @@ describe('AlertHistory page', () => {
     await waitFor(() => {
       expect(mockGet).toHaveBeenLastCalledWith(
         expect.objectContaining({ offset: 0 }),
+      );
+    });
+  });
+
+  it('renders the rule label, with an em dash for historical rows', async () => {
+    mockGet.mockResolvedValue([
+      makeEntry({ id: 1, rule_type: 'server_gpu_util', message: 'gpu hot' }),
+      makeEntry({ id: 2, rule_type: 'external_service_down', message: 'svc gone' }),
+      makeEntry({ id: 3, rule_type: null, message: 'legacy row' }),
+    ]);
+    renderWithProviders(<AlertHistory />);
+    await waitFor(() => expect(screen.getByText('gpu hot')).toBeInTheDocument());
+
+    // scoped to the table: the same labels also appear as filter options
+    const table = within(screen.getByRole('table'));
+    expect(table.getByText('Server GPU util')).toBeInTheDocument();
+    expect(table.getByText('External service down')).toBeInTheDocument();
+    expect(table.getByText('—')).toBeInTheDocument();
+  });
+
+  it('sends the selected rule as a rule_type query param', async () => {
+    mockGet.mockResolvedValue([makeEntry()]);
+    renderWithProviders(<AlertHistory />);
+    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+
+    const ruleSelect = screen.getByRole('combobox', { name: /Rule|규칙/i });
+    expect(ruleSelect).toHaveAttribute('id', 'alert-history-rule-filter');
+    // every rule identifier is offered, plus the "all" option
+    expect(ruleSelect.querySelectorAll('option')).toHaveLength(15);
+
+    fireEvent.change(ruleSelect, { target: { value: 'server_disk_forecast' } });
+    fireEvent.click(screen.getByRole('button', { name: /Search|검색/i }));
+
+    await waitFor(() => {
+      expect(mockGet).toHaveBeenLastCalledWith(
+        expect.objectContaining({ rule_type: 'server_disk_forecast', offset: 0 }),
       );
     });
   });

@@ -146,6 +146,9 @@ class TestSettingsManager:
             query_route_timeout=30,
             gateway_route_timeout=60,
             blocked_sql_keywords=["DROP", "TRUNCATE"],
+            audit_log_retention_days=90,
+            admin_audit_log_retention_days=365,
+            alert_history_retention_days=30,
         )
 
         result = await settings_db.execute(select(SystemConfig))
@@ -157,6 +160,9 @@ class TestSettingsManager:
             "query_route_timeout": "30",
             "gateway_route_timeout": "60",
             "blocked_sql_keywords": json.dumps(["DROP", "TRUNCATE"]),
+            "audit_log_retention_days": "90",
+            "admin_audit_log_retention_days": "365",
+            "alert_history_retention_days": "30",
         }
         assert manager.get_all() == {
             "rate_limit_per_minute": 120,
@@ -165,6 +171,9 @@ class TestSettingsManager:
             "query_route_timeout": 30,
             "gateway_route_timeout": 60,
             "blocked_sql_keywords": ["DROP", "TRUNCATE"],
+            "audit_log_retention_days": 90,
+            "admin_audit_log_retention_days": 365,
+            "alert_history_retention_days": 30,
         }
 
     async def test_get_all(self, manager):

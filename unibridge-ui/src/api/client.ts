@@ -194,6 +194,10 @@ export interface QuerySettings {
   query_route_timeout: number;
   gateway_route_timeout: number;
   blocked_sql_keywords: string[];
+  /** Retention in days for each log store; 0 = keep forever. */
+  audit_log_retention_days: number;
+  admin_audit_log_retention_days: number;
+  alert_history_retention_days: number;
 }
 
 export interface QuerySettingsUpdate {
@@ -203,6 +207,9 @@ export interface QuerySettingsUpdate {
   query_route_timeout?: number;
   gateway_route_timeout?: number;
   blocked_sql_keywords?: string[];
+  audit_log_retention_days?: number;
+  admin_audit_log_retention_days?: number;
+  alert_history_retention_days?: number;
 }
 
 export interface QueryRequest {
@@ -1130,6 +1137,9 @@ export interface AlertHistoryEntry {
   sent_at: string;
   success: boolean | null;
   error_detail: string | null;
+  /** Rule that produced the alert (e.g. "db_health"); null on rows written
+   *  before the column existed. */
+  rule_type?: string | null;
 }
 
 export interface AlertStatus {
@@ -1138,7 +1148,45 @@ export interface AlertStatus {
   status: 'ok' | 'alert';
   since: string | null;
   severity?: string | null;
+  /** Mute state. Absent on backends without the mute feature — treat as false. */
+  muted?: boolean;
+  muted_until?: string | null;
+  /**
+   * Addressable mute key, sent as a pair. `type` above is a rule id and
+   * `target` a display label, so neither can address a mute — only these two
+   * fields can. Null (rule with no mutable resource) or absent (backend
+   * predating mutes) both mean "not mutable". See `muteKeyFor`.
+   */
+  resource_type?: string | null;
+  resource_id?: string | null;
 }
+
+/** Normalized `/admin/alerts/status` payload; see `getAlertStatus`. */
+export interface AlertStatusResult {
+  items: AlertStatus[];
+  global_muted_until: string | null;
+}
+
+export interface AlertMute {
+  resource_type: string;
+  resource_id: string;
+  muted_until: string;
+  created_by: string;
+}
+
+export interface AlertMutesResponse {
+  global_muted_until: string | null;
+  mutes: AlertMute[];
+}
+
+export interface AlertMuteInput {
+  resource_type: string;
+  resource_id: string;
+  muted_until: string;
+}
+
+/** resource_type sentinel for the "mute everything" entry. */
+export const GLOBAL_MUTE_RESOURCE_TYPE = 'global';
 
 // Channels
 export async function getAlertSettings(): Promise<AlertSettings> {
@@ -1211,6 +1259,7 @@ export async function deleteAlertResourceOwner(resourceType: string, resourceId:
 // History & Status
 export async function getAlertHistory(params?: {
   alert_type?: string;
+  rule_type?: string;
   target?: string;
   from_date?: string;
   to_date?: string;
@@ -1221,9 +1270,41 @@ export async function getAlertHistory(params?: {
   return data;
 }
 
-export async function getAlertStatus(): Promise<AlertStatus[]> {
+/**
+ * Alert status, normalized to `{ items, global_muted_until }`.
+ *
+ * Backends predating the mute feature answer with a bare array and have no
+ * global mute, so that shape is widened here rather than at every call site.
+ */
+export async function getAlertStatus(): Promise<AlertStatusResult> {
   const { data } = await client.get('/admin/alerts/status');
+  if (Array.isArray(data)) {
+    return { items: data, global_muted_until: null };
+  }
+  return {
+    items: Array.isArray(data?.items) ? data.items : [],
+    global_muted_until: data?.global_muted_until ?? null,
+  };
+}
+
+// Mutes
+export async function getAlertMutes(): Promise<AlertMutesResponse> {
+  const { data } = await client.get('/admin/alerts/mutes');
+  return {
+    global_muted_until: data?.global_muted_until ?? null,
+    mutes: data?.mutes ?? [],
+  };
+}
+
+export async function setAlertMute(body: AlertMuteInput): Promise<AlertMute> {
+  const { data } = await client.put('/admin/alerts/mutes', body);
   return data;
+}
+
+export async function deleteAlertMute(resourceType: string, resourceId: string): Promise<void> {
+  await client.delete('/admin/alerts/mutes', {
+    params: { resource_type: resourceType, resource_id: resourceId },
+  });
 }
 
 /* ── Monitored servers (hosts) ── */
@@ -1704,6 +1785,63 @@ export async function downloadNasEntry(
     ? decodeURIComponent(raw)
     : path.split('/').pop() || 'download';
   return { blob: response.data as Blob, filename };
+}
+
+/* ── Config export / import ── */
+
+/**
+ * Portable configuration document. Section values are either a list of items
+ * or a settings object, both kept generic on purpose: the exporter mirrors
+ * each domain's own GET shape (minus secrets), so the UI renders whatever the
+ * backend sends instead of re-modelling every section.
+ */
+export interface ConfigExportDocument {
+  unibridge_export_version: number;
+  exported_at: string;
+  sections: Record<string, unknown>;
+  excluded?: {
+    builtin_routes?: string[];
+    notes?: string[];
+  };
+}
+
+export interface ConfigImportRequest {
+  dry_run: boolean;
+  sections: string[];
+  data: ConfigExportDocument;
+}
+
+export type ConfigImportAction = 'create' | 'update' | 'skip' | 'error';
+
+export interface ConfigImportResultRow {
+  section: string;
+  /** Natural key of the item within its section (alias, route name, ...). */
+  name: string;
+  action: ConfigImportAction;
+  reason: string | null;
+}
+
+export interface ConfigImportSummary {
+  create: number;
+  update: number;
+  skip: number;
+  error: number;
+}
+
+export interface ConfigImportResult {
+  dry_run: boolean;
+  results: ConfigImportResultRow[];
+  summary: ConfigImportSummary;
+}
+
+export async function exportConfig(): Promise<ConfigExportDocument> {
+  const { data } = await client.get('/admin/config/export');
+  return data;
+}
+
+export async function importConfig(body: ConfigImportRequest): Promise<ConfigImportResult> {
+  const { data } = await client.post('/admin/config/import', body);
+  return data;
 }
 
 export default client;
