@@ -16,3 +16,7 @@ Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
   Live coverage lives in repo-root `e2e/` (runs only when `LLM_API_KEY` is set), not here.
 - Reasoning models emit a `thinking` block before answer text — keep `max_tokens` generous
   when testing or the answer can be empty.
+- `CONVERTER_MID_SYSTEM_POLICY` (`user`|`hoist`|`asis`, default `user`) — strict chat templates
+  (newer Qwen) 400 on any system message past index 0, and Claude Code sends mid-history
+  `role:"system"` reminders. `system_norm.py` merges the leading run + role-swaps later ones;
+  both bridges apply it as the last request step (so `/v1/responses` chains stay normalized).

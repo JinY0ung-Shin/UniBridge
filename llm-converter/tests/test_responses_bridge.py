@@ -83,9 +83,11 @@ def test_request_prior_messages_prepended_then_followup_instructions():
     body = {"model": "m", "instructions": "new", "input": "q2", "previous_response_id": "resp_x"}
     out = responses_request_to_chat_body(body, prior_messages=prior)
     # prior chain prepended; a follow-up instructions applies to the current turn,
-    # appended as a system message ahead of the new input (OpenAI allows this).
+    # appended ahead of the new input. It is appended as a system message, but
+    # that lands past index 0, so the default placement policy role-swaps it to
+    # ``user`` in place — strict chat templates 400 on a mid-array system turn.
     assert out["messages"][:3] == prior
-    assert out["messages"][3] == {"role": "system", "content": "new"}
+    assert out["messages"][3] == {"role": "user", "content": "new"}
     assert out["messages"][4] == {"role": "user", "content": "q2"}
 
 
@@ -94,6 +96,46 @@ def test_request_prior_messages_without_followup_instructions():
     body = {"model": "m", "input": "q2", "previous_response_id": "resp_x"}
     out = responses_request_to_chat_body(body, prior_messages=prior)
     assert out["messages"] == prior + [{"role": "user", "content": "q2"}]
+
+
+def test_request_followup_instructions_merge_into_head_under_hoist_policy(monkeypatch):
+    monkeypatch.setenv("CONVERTER_MID_SYSTEM_POLICY", "hoist")
+    prior = [{"role": "system", "content": "orig"}, {"role": "user", "content": "q1"},
+             {"role": "assistant", "content": "a1"}]
+    body = {"model": "m", "instructions": "new", "input": "q2", "previous_response_id": "resp_x"}
+    out = responses_request_to_chat_body(body, prior_messages=prior)
+    # hoist keeps the follow-up instructions at system authority by folding it
+    # into the chain's original system prompt, leaving exactly one system turn.
+    assert out["messages"] == [
+        {"role": "system", "content": "orig\n\nnew"},
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+    ]
+
+
+def test_request_developer_item_is_demoted_when_not_leading():
+    body = {"model": "m", "input": [
+        {"type": "message", "role": "user", "content": "q"},
+        {"type": "message", "role": "developer", "content": "rule"},
+        {"type": "message", "role": "assistant", "content": "a"},
+    ]}
+    out = responses_request_to_chat_body(body)
+    # developer → system is preserved as a mapping, but a system turn past index 0
+    # is what strict templates reject, so the default policy role-swaps it.
+    assert [m["role"] for m in out["messages"]] == ["user", "user", "assistant"]
+    assert out["messages"][1] == {"role": "user", "content": "rule"}
+
+
+def test_request_developer_item_keeps_system_role_under_asis_policy(monkeypatch):
+    monkeypatch.setenv("CONVERTER_MID_SYSTEM_POLICY", "asis")
+    body = {"model": "m", "input": [
+        {"type": "message", "role": "user", "content": "q"},
+        {"type": "message", "role": "developer", "content": "rule"},
+        {"type": "message", "role": "assistant", "content": "a"},
+    ]}
+    out = responses_request_to_chat_body(body)
+    assert out["messages"][1] == {"role": "system", "content": "rule"}
 
 
 def test_request_function_call_output_array_extracts_text():

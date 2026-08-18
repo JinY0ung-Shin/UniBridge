@@ -107,6 +107,38 @@ def test_previous_response_id_chaining_prepends_history():
     assert msgs[3] == {"role": "user", "content": "q2"}
 
 
+def test_chained_turns_never_accumulate_a_second_system_message():
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, headers={"content-type": "application/json"},
+                              content=json.dumps(_chat_json(content=f"a{len(bodies)}")).encode())
+
+    client = TestClient(_make_app(handler))
+
+    rid = client.post("/v1/responses",
+                      json={"model": "m", "instructions": "sys", "input": "q1"}).json()["id"]
+    # Each follow-up carries fresh instructions, which would append another system
+    # message to a transcript that already begins with one. The store persists the
+    # NORMALIZED array, so every turn re-normalizes the previous turn's output —
+    # the placement fix has to be idempotent or systems pile up and the backend 400s.
+    for turn in range(2, 4):
+        rid = client.post(
+            "/v1/responses",
+            json={"model": "m", "instructions": f"more {turn}", "input": f"q{turn}",
+                  "previous_response_id": rid},
+        ).json()["id"]
+
+    for body in bodies:
+        roles = [m["role"] for m in body["messages"]]
+        assert roles.count("system") == 1
+        assert roles[0] == "system"
+    # The follow-up instructions still reach the model, as user turns in place.
+    assert {"role": "user", "content": "more 2"} in bodies[-1]["messages"]
+    assert {"role": "user", "content": "more 3"} in bodies[-1]["messages"]
+
+
 def test_unknown_previous_response_id_returns_400():
     client = TestClient(_make_app(lambda r: httpx.Response(200)))
     resp = client.post("/v1/responses",

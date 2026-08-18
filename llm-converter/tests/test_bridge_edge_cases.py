@@ -62,10 +62,11 @@ def test_messages_request_rejects_malformed_content_without_crashing():
         }
     )
 
+    # The three leading system messages (top-level ``system`` + two mid-history
+    # ones) collapse into a single head under the default placement policy; the
+    # third contributes nothing because its junk content flattens to "".
     assert converted["messages"] == [
-        {"role": "system", "content": "top"},
-        {"role": "system", "content": "plain"},
-        {"role": "system", "content": ""},
+        {"role": "system", "content": "top\n\nplain"},
         {"role": "assistant", "content": "answer"},
         {"role": "assistant", "content": ""},
         {"role": "tool", "tool_call_id": "a", "content": ""},

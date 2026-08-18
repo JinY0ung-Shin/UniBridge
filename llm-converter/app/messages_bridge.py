@@ -39,6 +39,9 @@ import json
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+from .config import settings
+from .system_norm import normalize_system_messages
+
 
 # ---------------------------------------------------------------------------
 # Request: Anthropic → OpenAI
@@ -60,7 +63,7 @@ _FINISH_REASON_TO_STOP_REASON: Dict[str, str] = {
 }
 
 
-def _flatten_text_blocks(content: Any) -> str:
+def _flatten_text_blocks(content: Any, separator: str = "") -> str:
     """Concatenate the ``text`` of every ``{type: 'text'}`` block.
 
     Used to turn Anthropic-style structured content arrays into the single
@@ -68,6 +71,15 @@ def _flatten_text_blocks(content: Any) -> str:
     OpenAI's wire format has no slot for reasoning in historical assistant
     turns, and the model will recompute its own chain-of-thought on the next
     pass anyway.
+
+    *separator* joins the block texts. The default ``""`` is byte-faithful, which
+    is what conversational turns need — their blocks are fragments of one
+    continuous string. System prompts are the exception and pass ``"\\n\\n"``:
+    clients (Claude Code among them) split a system prompt into several
+    INDEPENDENT instruction blocks, and gluing those together bare runs the last
+    word of one into the first word of the next. A non-empty separator also drops
+    empty texts first, so a junk block cannot open a blank line in the middle of
+    the prompt.
     """
     if isinstance(content, str):
         return content
@@ -81,6 +93,8 @@ def _flatten_text_blocks(content: Any) -> str:
             text = block.get("text")
             if isinstance(text, str):
                 out.append(text)
+    if separator:
+        return separator.join(text for text in out if text)
     return "".join(out)
 
 
@@ -331,7 +345,9 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
 
     system = body.get("system")
     if system:
-        system_text = system if isinstance(system, str) else _flatten_text_blocks(system)
+        system_text = (
+            system if isinstance(system, str) else _flatten_text_blocks(system, separator="\n\n")
+        )
         if system_text:
             messages.append({"role": "system", "content": system_text})
 
@@ -347,9 +363,14 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
         elif role == "system":
             # Some clients place additional ``system`` messages mid-history
             # (Anthropic disallows this, but be liberal in what we accept).
-            messages.append({"role": "system", "content": _flatten_text_blocks(content)})
+            messages.append(
+                {"role": "system", "content": _flatten_text_blocks(content, separator="\n\n")}
+            )
 
-    out["messages"] = messages
+    # Placement of those mid-history system turns (and of a multi-block system
+    # prompt) is what strict chat templates reject; fix it in one place, last, so
+    # the policy sees the fully assembled array.
+    out["messages"] = normalize_system_messages(messages, settings.mid_system_policy)
 
     tools = body.get("tools")
     if isinstance(tools, list) and tools:

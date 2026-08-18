@@ -537,6 +537,10 @@ services:
       # decisive upstream chunk (finish_reason + tool_calls) at INFO. Diagnostic
       # only; leave off in normal operation.
       - CONVERTER_TRACE=${CONVERTER_TRACE:-false}
+      # Placement of system messages that would land after index 0 (strict chat
+      # templates — e.g. newer Qwen — reject them): user = role-swap to user in
+      # place (default), hoist = merge all into one leading system, asis = pass through.
+      - CONVERTER_MID_SYSTEM_POLICY=${CONVERTER_MID_SYSTEM_POLICY:-user}
     expose:
       - "4001"
     volumes:

@@ -76,6 +76,9 @@ def _bool_env(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"true", "1", "yes", "on"}
 
 
+_MID_SYSTEM_POLICIES = frozenset({"user", "hoist", "asis"})
+
+
 def _get_timeout() -> httpx.Timeout:
     """httpx timeout for the upstream client.
 
@@ -167,6 +170,28 @@ class _Settings:
         request from client A yields parseable tool calls from vLLM while client
         B's gets a plain-text ``finish_reason: stop``. Off by default (noisy)."""
         return _bool_env("CONVERTER_TRACE", False)
+
+    @property
+    def mid_system_policy(self) -> str:
+        """Placement policy for system messages that would land after index 0
+        (``CONVERTER_MID_SYSTEM_POLICY``). Strict chat templates — newer Qwen
+        among them — raise "System message must be at the beginning." and the
+        backend answers 400, so a request carrying a second or mid-history
+        system turn never reaches the model:
+
+        * ``user`` — merge the leading system run into one head message and
+          role-swap later system messages to ``user`` where they stand.
+        * ``hoist`` — merge every system message into one leading system message.
+        * ``asis`` — forward untouched (tolerant templates / debugging).
+
+        Defaults to ``user`` because Claude Code sends mid-history
+        ``role: "system"`` reminders on nearly every non-trivial turn: the
+        alternative default (``asis``) breaks that client outright, while
+        ``hoist`` silently relocates a reminder away from the turn it belongs to.
+        Missing, empty, or unrecognized values fall back silently, matching
+        ``_int_env``/``_bool_env``."""
+        raw = os.getenv("CONVERTER_MID_SYSTEM_POLICY", "").strip().lower()
+        return raw if raw in _MID_SYSTEM_POLICIES else "user"
 
     @property
     def sse_heartbeat_seconds(self) -> float:

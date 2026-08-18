@@ -74,7 +74,80 @@ class TestRequestConversion:
             "messages": [{"role": "user", "content": "hi"}],
         }
         out = anthropic_request_to_openai_body(body)
-        assert out["messages"][0] == {"role": "system", "content": "Part A. Part B."}
+        # System blocks are independent instructions, so they join with a blank
+        # line rather than being glued together (assistant/user turns still
+        # concatenate bare — see test_assistant_text_blocks_join_without_separator).
+        assert out["messages"][0] == {"role": "system", "content": "Part A. \n\nPart B."}
+
+    def test_assistant_text_blocks_join_without_separator(self):
+        body = {
+            "model": "m",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "one "},
+                        {"type": "text", "text": "sentence."},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "two "},
+                        {"type": "text", "text": "words."},
+                    ],
+                },
+            ],
+        }
+        out = anthropic_request_to_openai_body(body)
+        # The blank-line separator is scoped to SYSTEM flattening only. A
+        # conversational turn's blocks are fragments of one continuous string, so
+        # inserting anything between them would alter what the client sent.
+        assert out["messages"] == [
+            {"role": "assistant", "content": "one sentence."},
+            {"role": "user", "content": "two words."},
+        ]
+
+    def test_claude_code_shape_merges_system_blocks_and_demotes_reminder(self):
+        # The shape Claude Code 2.1.234 actually sends (live capture): the system
+        # prompt arrives as several text blocks, and a ``role: "system"`` reminder
+        # is planted mid-history. Strict chat templates 400 on both.
+        body = {
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "system", "content": [{"type": "text", "text": "reminder"}]},
+            ],
+            "system": [
+                {"type": "text", "text": "You are Claude Code."},
+                {"type": "text", "text": "# Tone"},
+                {"type": "text", "text": "Be concise."},
+            ],
+        }
+        out = anthropic_request_to_openai_body(body)
+        assert out["messages"] == [
+            {
+                "role": "system",
+                "content": "You are Claude Code.\n\n# Tone\n\nBe concise.",
+            },
+            {"role": "user", "content": "hi"},
+            {"role": "user", "content": "reminder"},
+        ]
+
+    def test_claude_code_shape_keeps_mid_history_system_under_asis_policy(self, monkeypatch):
+        monkeypatch.setenv("CONVERTER_MID_SYSTEM_POLICY", "asis")
+        body = {
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "system", "content": [{"type": "text", "text": "reminder"}]},
+            ],
+            "system": [{"type": "text", "text": "sys"}],
+        }
+        out = anthropic_request_to_openai_body(body)
+        # Content still flattens with the blank-line separator; only placement is
+        # left alone, for a backend whose template tolerates it.
+        assert out["messages"][2] == {"role": "system", "content": "reminder"}
 
     def test_assistant_history_with_tool_use(self):
         body = {

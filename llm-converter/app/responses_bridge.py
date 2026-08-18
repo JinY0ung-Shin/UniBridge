@@ -22,6 +22,9 @@ import time
 import uuid
 from typing import Any, AsyncIterator, Optional
 
+from .config import settings
+from .system_norm import normalize_system_messages
+
 # ---------------------------------------------------------------------------
 # ID generation
 # ---------------------------------------------------------------------------
@@ -266,7 +269,10 @@ def responses_request_to_chat_body(
     chain already carries the original turn's system message, but OpenAI allows
     a new ``instructions`` on a follow-up to apply to the current turn — so when
     both are present the new instructions is appended as a system message ahead
-    of this turn's input.
+    of this turn's input. That lands a system message mid-array, so where it
+    finally sits is decided by ``CONVERTER_MID_SYSTEM_POLICY`` (see
+    :func:`app.system_norm.normalize_system_messages`), applied to the assembled
+    array below.
     """
     out: dict[str, Any] = {}
     if body.get("model") is not None:
@@ -280,7 +286,7 @@ def responses_request_to_chat_body(
     elif body.get("instructions"):
         messages.append({"role": "system", "content": body["instructions"]})
     messages.extend(_input_to_messages(body.get("input", [])))
-    out["messages"] = messages
+    out["messages"] = normalize_system_messages(messages, settings.mid_system_policy)
 
     if "max_output_tokens" in body and body["max_output_tokens"] is not None:
         out["max_completion_tokens"] = body["max_output_tokens"]
