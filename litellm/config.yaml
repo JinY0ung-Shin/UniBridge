@@ -13,6 +13,15 @@ litellm_settings:
   enable_end_user_cost_tracking_prometheus_only: true
   drop_params: true
   num_retries: 2
+  # Fine-tuning dataset capture: every successful call is appended as JSONL to
+  # the litellm-dataset volume (see litellm/custom_callbacks.py). This is the
+  # separate `callbacks:` key on purpose — it coexists with the `prometheus`
+  # success_callback above instead of replacing it.
+  callbacks: custom_callbacks.proxy_handler_instance
+  # Closes the client-side bypass: without this a caller can pass
+  # `"no-log": true` in the request body and silently skip all logging,
+  # leaving holes in both the metrics and the captured dataset.
+  global_disable_no_log_param: true
 
 model_list: []
 # Models are managed via LiteLLM Admin UI (/ui)
