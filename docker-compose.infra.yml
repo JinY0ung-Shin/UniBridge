@@ -366,10 +366,18 @@ services:
       # straight through SSO; non-admins carry no `role` claim and are
       # rejected by ui_access_mode admin_only (litellm/config.yaml).
       - AUTO_REDIRECT_UI_LOGIN_TO_SSO=true
+      # Fine-tuning dataset capture dir, written by custom_callbacks.py.
+      - LITELLM_DATASET_DIR=/var/lib/litellm-dataset
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
       - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/ssl/tls.crt:ro
       - ${TLS_KEY_PATH:-./certs/tls.key}:/etc/ssl/tls.key:ro
+      # Custom callback module referenced by litellm/config.yaml as
+      # `callbacks: custom_callbacks.proxy_handler_instance`; LiteLLM imports it
+      # by dotted path from its WORKDIR (/app). config.yaml is shared with the
+      # single-stack layout, so this mount must exist wherever that config runs.
+      - ./litellm/custom_callbacks.py:/app/custom_callbacks.py:ro
+      - litellm-dataset:/var/lib/litellm-dataset
     depends_on:
       litellm-db:
         condition: service_healthy
@@ -400,5 +408,9 @@ volumes:
     name: ${KEYCLOAK_DB_DATA_VOLUME:-unibridge_keycloak-db-data}
   litellm-db-data:
     name: ${LITELLM_DB_DATA_VOLUME:-unibridge_litellm-db-data}
+  # Same volume name as the single-stack layout's default, so a capture started
+  # under docker-compose.yml carries over to the split stack (and vice versa).
+  litellm-dataset:
+    name: ${LITELLM_DATASET_VOLUME:-unibridge_litellm-dataset}
   unibridge-db-data:
     name: ${UNIBRIDGE_DB_DATA_VOLUME:-unibridge_unibridge-db-data}

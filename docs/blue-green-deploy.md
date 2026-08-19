@@ -156,6 +156,7 @@ when this repo runs as project `unibridge`:
 - `unibridge_etcd-data`
 - `unibridge_keycloak-db-data`
 - `unibridge_litellm-db-data`
+- `unibridge_litellm-dataset`
 - `unibridge_prometheus-data`
 - `unibridge_prometheus-file-sd`
 - `unibridge_llm-converter-state`
@@ -169,6 +170,7 @@ UNIBRIDGE_DB_DATA_VOLUME=<old-project>_unibridge-db-data
 ETCD_DATA_VOLUME=<old-project>_etcd-data
 KEYCLOAK_DB_DATA_VOLUME=<old-project>_keycloak-db-data
 LITELLM_DB_DATA_VOLUME=<old-project>_litellm-db-data
+LITELLM_DATASET_VOLUME=<old-project>_litellm-dataset
 PROMETHEUS_DATA_VOLUME=<old-project>_prometheus-data
 PROMETHEUS_FILE_SD_VOLUME=<old-project>_prometheus-file-sd
 LLM_CONVERTER_STATE_VOLUME=<old-project>_llm-converter-state

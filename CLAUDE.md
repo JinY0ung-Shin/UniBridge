@@ -12,7 +12,13 @@ S3/NAS — all behind Keycloak OIDC + RBAC + API keys. See `README.md` for deplo
 - `llm-converter/`     — FastAPI sidecar: translates Anthropic `/v1/messages` and
   OpenAI `/v1/responses` → chat/completions for LiteLLM. See its CLAUDE.md.
 - `e2e/`               — live end-to-end tests (skipped unless `LLM_API_KEY` set).
-- `apisix/ keycloak/ litellm/ prometheus/` — infra config. `docker-compose.yml` — full stack.
+- `apisix/ keycloak/ litellm/ prometheus/` — infra config. `docker-compose.yml` — full stack
+  (single-stack/dev). **Production runs the split blue-green layout instead**:
+  `docker-compose.infra.yml` (project `unibridge-infra`; APISIX/Keycloak/LiteLLM/DBs) +
+  `docker-compose.app.yml` (blue/green) + `docker-compose.edge.yml`, driven by
+  `scripts/deploy-bluegreen.sh` (see `docs/blue-green-deploy.md`). Any compose change —
+  volumes, mounts, env, images — must be applied to BOTH `docker-compose.yml` and the
+  split files, or production silently misses it.
 
 ## Commands
 Backend (`cd unibridge-service`):
