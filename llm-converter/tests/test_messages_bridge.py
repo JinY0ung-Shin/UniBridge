@@ -111,9 +111,10 @@ class TestRequestConversion:
     def test_claude_code_shape_merges_system_blocks_and_demotes_reminder(self):
         # The shape Claude Code 2.1.234 actually sends (live capture): the system
         # prompt arrives as several text blocks, and a ``role: "system"`` reminder
-        # is planted mid-history. Strict chat templates 400 on both.
+        # is planted mid-history. Strict chat templates 400 on both — and only a
+        # model the gate pattern matches gets the fix, hence the dotted name.
         body = {
-            "model": "m",
+            "model": "qwen3.5-test",
             "messages": [
                 {"role": "user", "content": "hi"},
                 {"role": "system", "content": [{"type": "text", "text": "reminder"}]},
@@ -136,8 +137,10 @@ class TestRequestConversion:
 
     def test_claude_code_shape_keeps_mid_history_system_under_asis_policy(self, monkeypatch):
         monkeypatch.setenv("CONVERTER_MID_SYSTEM_POLICY", "asis")
+        # Model matches the gate, so the pass-through here is the POLICY's doing
+        # and not the gate's — otherwise this test would hold under any policy.
         body = {
-            "model": "m",
+            "model": "qwen3.5-test",
             "messages": [
                 {"role": "user", "content": "hi"},
                 {"role": "system", "content": [{"type": "text", "text": "reminder"}]},
@@ -148,6 +151,30 @@ class TestRequestConversion:
         # Content still flattens with the blank-line separator; only placement is
         # left alone, for a backend whose template tolerates it.
         assert out["messages"][2] == {"role": "system", "content": "reminder"}
+
+    def test_claude_code_shape_is_untouched_for_a_model_outside_the_gate(self):
+        # Same shape and the same default ``user`` policy as the test above — only
+        # the model name differs. A backend that never 400s on placement keeps the
+        # client's, so the reminder holds both its index and its ``system`` role.
+        body = {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "system", "content": [{"type": "text", "text": "reminder"}]},
+            ],
+            "system": [
+                {"type": "text", "text": "You are Claude Code."},
+                {"type": "text", "text": "Be concise."},
+            ],
+        }
+        out = anthropic_request_to_openai_body(body)
+        assert out["messages"] == [
+            # The multi-block top-level prompt still collapses into one message:
+            # that is content flattening, which the gate has no say over.
+            {"role": "system", "content": "You are Claude Code.\n\nBe concise."},
+            {"role": "user", "content": "hi"},
+            {"role": "system", "content": "reminder"},
+        ]
 
     def test_assistant_history_with_tool_use(self):
         body = {
@@ -1099,6 +1126,295 @@ class TestStreamConversion:
         args = self._tool_args(out)
         assert args == {"call_1": '{"command":"ls -la"}'}
         assert json.loads(args["call_1"]) == {"command": "ls -la"}
+
+    async def test_tool_index_reuse_with_distinct_ids_splits_calls(self):
+        # Non-conformant upstreams (vLLM/GLM dialect, #31437) reuse ONE index for
+        # two distinct sequential calls. Bucketing by index alone overwrote the
+        # first call's metadata and — via add_arguments' both-complete replace
+        # rule — dropped its arguments, so the first tool_use disappeared and the
+        # client silently never ran that tool. Both must survive, in order.
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_a",
+                                    "type": "function",
+                                    "function": {"name": "Read", "arguments": '{"path":"a"}'},
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_b",
+                                    "type": "function",
+                                    "function": {"name": "Bash", "arguments": '{"command":"ls"}'},
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        ]
+
+        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        starts = [e for e in out if e["type"] == "content_block_start"]
+        assert [s["content_block"]["id"] for s in starts] == ["call_a", "call_b"]
+        assert [s["content_block"]["name"] for s in starts] == ["Read", "Bash"]
+        # Distinct, monotonically increasing Anthropic block indices, each closed.
+        assert [s["index"] for s in starts] == [0, 1]
+        assert [e["index"] for e in out if e["type"] == "content_block_stop"] == [0, 1]
+        assert self._tool_args(out) == {
+            "call_a": '{"path":"a"}',
+            "call_b": '{"command":"ls"}',
+        }
+
+    async def test_tool_index_reuse_survives_a_mid_stream_flush_boundary(self):
+        # Same index reuse, but with text in between: the first call is flushed
+        # when the text block opens, so the second call starts from an empty
+        # buffer and must still be emitted as its own block (and not be dropped
+        # or merged into the flushed one).
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_a",
+                                    "function": {"name": "Read", "arguments": '{"path":"a"}'},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {"content": "and then"}}]},
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_b",
+                                    "function": {"name": "Bash", "arguments": '{"command":"ls"}'},
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        ]
+
+        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        starts = [e for e in out if e["type"] == "content_block_start"]
+        assert [s["content_block"]["type"] for s in starts] == ["tool_use", "text", "tool_use"]
+        assert [s["content_block"].get("id") for s in starts] == ["call_a", None, "call_b"]
+        assert self._tool_args(out) == {
+            "call_a": '{"path":"a"}',
+            "call_b": '{"command":"ls"}',
+        }
+
+    async def test_post_flush_same_index_fragment_is_not_swallowed(self):
+        # Flushing empties the buffer, so the per-index "currently open call"
+        # bookkeeping must be cleared with it. Otherwise a later same-index
+        # fragment appends to the already-emitted call object, which is no
+        # longer in the buffer — and the fragment vanishes from the output.
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_a",
+                                    "function": {"name": "Read", "arguments": '{"path":"a"}'},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {"content": "checking"}}]},
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": '{"path":"b"}'}}
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        ]
+
+        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        tool_starts = [
+            e
+            for e in out
+            if e["type"] == "content_block_start"
+            and e["content_block"]["type"] == "tool_use"
+        ]
+        assert len(tool_starts) == 2
+        assert list(self._tool_args(out).values()) == ['{"path":"a"}', '{"path":"b"}']
+
+    async def test_incremental_fragments_with_repeated_id_stay_one_block(self):
+        # Canonical OpenAI/sglang streaming: partial argument fragments, with the
+        # id restated on every delta. Same id → same call, so the split must NOT
+        # fire and the fragments concatenate into one tool_use.
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "Bash", "arguments": '{"comm'},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "id": "call_1", "function": {"arguments": 'and":'}}
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": '"ls"}'}}
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        ]
+
+        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        starts = [e for e in out if e["type"] == "content_block_start"]
+        assert len(starts) == 1
+        args = self._tool_args(out)
+        assert args == {"call_1": '{"command":"ls"}'}
+        assert json.loads(args["call_1"]) == {"command": "ls"}
+
+    async def test_late_arriving_id_backfills_metadata_without_splitting(self):
+        # A call whose opening delta carries no id gets a synthesized ``toolu_``
+        # id. When the real id shows up on a later fragment of that SAME call it
+        # is metadata, not a second call — comparing against the synthesized id
+        # would split one call into two (the first with a bogus id).
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": '{"city":'}}
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "weather", "arguments": '"Seoul"}'},
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        ]
+
+        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        starts = [e for e in out if e["type"] == "content_block_start"]
+        assert len(starts) == 1
+        assert starts[0]["content_block"]["id"] == "call_1"
+        assert starts[0]["content_block"]["name"] == "weather"
+        assert self._tool_args(out) == {"call_1": '{"city":"Seoul"}'}
+
+    async def test_vllm_complete_then_restated_args_still_one_block(self):
+        # The complete-then-restate dialect for a SINGLE call: the finish chunk
+        # repeats the whole arguments AND the same id. Splitting on id is only
+        # for a *different* id, so this stays one block with the args once.
+        full = '{"pattern":"TODO","path":"src"}'
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "Grep", "arguments": full},
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "id": "call_1", "function": {"arguments": full}}
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        ]
+
+        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        starts = [e for e in out if e["type"] == "content_block_start"]
+        assert len(starts) == 1
+        args = self._tool_args(out)
+        assert args == {"call_1": full}
+        assert json.loads(args["call_1"]) == {"pattern": "TODO", "path": "src"}
 
 
 # ---------------------------------------------------------------------------

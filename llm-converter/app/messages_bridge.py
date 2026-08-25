@@ -369,8 +369,14 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
 
     # Placement of those mid-history system turns (and of a multi-block system
     # prompt) is what strict chat templates reject; fix it in one place, last, so
-    # the policy sees the fully assembled array.
-    out["messages"] = normalize_system_messages(messages, settings.mid_system_policy)
+    # the policy sees the fully assembled array — and only for the models whose
+    # template actually rejects it, hence the model gate.
+    out["messages"] = normalize_system_messages(
+        messages,
+        settings.mid_system_policy,
+        model=out.get("model"),
+        model_pattern=settings.mid_system_model_regex,
+    )
 
     tools = body.get("tools")
     if isinstance(tools, list) and tools:
@@ -431,6 +437,7 @@ class _StreamState:
         "open_kind",
         "open_index",
         "pending_tool_calls",
+        "current_tool_by_index",
         "model",
         "message_id",
         "input_tokens",
@@ -447,7 +454,15 @@ class _StreamState:
         # fragments interleaved by ``index``. Anthropic content blocks are
         # contiguous, so we buffer each OpenAI tool call and flush it as one
         # complete Anthropic block before ``message_delta``.
-        self.pending_tool_calls: Dict[int, _PendingToolCall] = {}
+        #
+        # Buffered calls live in an ORDERED LIST (emission order), not a dict
+        # keyed by ``index``: some upstreams reuse one index for two distinct
+        # sequential calls (vLLM/GLM dialect, #31437), and a dict would let the
+        # second call overwrite — and silently destroy — the first.
+        # ``current_tool_by_index`` maps an OpenAI ``index`` to the call its
+        # fragments are currently appending to.
+        self.pending_tool_calls: List[_PendingToolCall] = []
+        self.current_tool_by_index: Dict[int, _PendingToolCall] = {}
         # Index of the most recent tool-call delta seen. Some upstreams omit
         # ``index`` on continuation/finish chunks (sglang #5661, vLLM's
         # stripped finish chunk #31437); we attribute an index-less fragment to
@@ -479,9 +494,17 @@ def _is_complete_json(s: str) -> bool:
 
 
 class _PendingToolCall:
-    __slots__ = ("id", "name", "argument_parts")
+    __slots__ = ("id", "name", "argument_parts", "upstream_id")
 
     def __init__(self, call_id: Optional[str], name: Optional[str]) -> None:
+        # ``id`` is what we emit (synthesized when the upstream never sends one);
+        # ``upstream_id`` remembers the *actual* id the upstream gave this call,
+        # staying ``None`` until one arrives. Only the latter may be compared
+        # against a later delta's id — a synthesized ``toolu_...`` would never
+        # match a real id and would split one call into two (see
+        # :func:`_record_tool_call_delta`).
+        has_upstream_id = isinstance(call_id, str) and bool(call_id)
+        self.upstream_id: Optional[str] = call_id if has_upstream_id else None
         self.id = call_id or f"toolu_{uuid.uuid4().hex[:24]}"
         self.name = name or ""
         self.argument_parts: List[str] = []
@@ -489,6 +512,7 @@ class _PendingToolCall:
     def update_metadata(self, call_id: Optional[str], name: Optional[str]) -> None:
         if call_id:
             self.id = call_id
+            self.upstream_id = call_id
         if name:
             self.name = name
 
@@ -562,11 +586,35 @@ def _record_tool_call_delta(
     name: Optional[str],
     arguments: Optional[str],
 ) -> None:
-    pending = state.pending_tool_calls.get(tc_index)
-    if pending is None:
+    existing = state.current_tool_by_index.get(tc_index)
+    # Some non-conformant upstreams (the vLLM/GLM dialect again, #31437) reuse a
+    # single ``index`` for two DISTINCT sequential tool calls. A delta whose
+    # ``id`` is non-empty and differs from the id the open call was given
+    # upstream is a NEW call, not a continuation: folding it into the open call
+    # would overwrite that call's id/name and — via ``add_arguments``' both-
+    # complete replace rule — throw its arguments away, so the FIRST tool_use
+    # vanished entirely and the client silently never ran that tool.
+    #
+    # The comparison is against ``upstream_id``, never the emitted ``id``: a
+    # call whose opening delta carried no id gets a synthesized ``toolu_...``
+    # id, and a real id arriving on a later fragment of that SAME call
+    # (edge case exercised by the "restatement" tests) must be adopted as
+    # metadata rather than mistaken for a second call.
+    is_new_call = (
+        existing is not None
+        and existing.upstream_id is not None
+        and isinstance(call_id, str)
+        and bool(call_id)
+        and call_id != existing.upstream_id
+    )
+    if existing is None or is_new_call:
+        # The superseded call stays in ``pending_tool_calls`` fully intact and
+        # is flushed as its own block, ahead of this one.
         pending = _PendingToolCall(call_id, name)
-        state.pending_tool_calls[tc_index] = pending
+        state.pending_tool_calls.append(pending)
+        state.current_tool_by_index[tc_index] = pending
     else:
+        pending = existing
         pending.update_metadata(call_id, name)
 
     if isinstance(arguments, str) and arguments:
@@ -574,7 +622,12 @@ def _record_tool_call_delta(
 
 
 def _flush_tool_calls(state: _StreamState) -> List[Dict[str, Any]]:
-    """Emit buffered OpenAI tool calls as contiguous Anthropic blocks."""
+    """Emit buffered OpenAI tool calls as contiguous Anthropic blocks.
+
+    Buffered calls are emitted in arrival order, which for a conformant
+    upstream is index order, and which keeps two calls that shared one
+    ``index`` in the order the model asked for them.
+    """
     if not state.pending_tool_calls:
         return []
 
@@ -582,12 +635,11 @@ def _flush_tool_calls(state: _StreamState) -> List[Dict[str, Any]]:
     if state.open_kind is not None:
         events.append(_close_block(state))
 
-    for tc_index in sorted(state.pending_tool_calls):
-        pending = state.pending_tool_calls[tc_index]
+    for position, pending in enumerate(state.pending_tool_calls):
         events.append(
             _open_block(
                 state,
-                f"tool:{tc_index}",
+                f"tool:{position}",
                 {
                     "type": "tool_use",
                     "id": pending.id,
@@ -607,6 +659,7 @@ def _flush_tool_calls(state: _StreamState) -> List[Dict[str, Any]]:
         events.append(_close_block(state))
 
     state.pending_tool_calls.clear()
+    state.current_tool_by_index.clear()
     return events
 
 
@@ -719,8 +772,10 @@ async def openai_stream_to_anthropic_events(
         # Tool calls. The OpenAI streaming protocol delivers each tool call
         # as a series of deltas keyed by the call's own ``index`` field —
         # the first occurrence carries ``id``/``name``, subsequent ones
-        # only append to ``arguments``. Buffer by index because parallel
-        # calls can interleave argument chunks, while Anthropic blocks cannot.
+        # only append to ``arguments``. Track the open call per index because
+        # parallel calls can interleave argument chunks, while Anthropic blocks
+        # cannot — and buffer the calls themselves in arrival order, since an
+        # index may be reused for a second, distinct call.
         tool_calls = delta.get("tool_calls") or []
         for tc in tool_calls:
             if not isinstance(tc, dict):

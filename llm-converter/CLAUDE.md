@@ -20,3 +20,5 @@ Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
   (newer Qwen) 400 on any system message past index 0, and Claude Code sends mid-history
   `role:"system"` reminders. `system_norm.py` merges the leading run + role-swaps later ones;
   both bridges apply it as the last request step (so `/v1/responses` chains stay normalized).
+  Gated by `CONVERTER_MID_SYSTEM_MODEL_PATTERN` — case-insensitive regex `search`ed against the
+  outbound model (default `qwen3\.\d`, so `qwen3-8b`/`gpt-4o` pass through untouched; `.*` = all).

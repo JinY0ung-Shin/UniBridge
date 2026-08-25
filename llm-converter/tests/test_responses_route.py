@@ -118,7 +118,7 @@ def test_chained_turns_never_accumulate_a_second_system_message():
     client = TestClient(_make_app(handler))
 
     rid = client.post("/v1/responses",
-                      json={"model": "m", "instructions": "sys", "input": "q1"}).json()["id"]
+                      json={"model": "qwen3.5-test", "instructions": "sys", "input": "q1"}).json()["id"]
     # Each follow-up carries fresh instructions, which would append another system
     # message to a transcript that already begins with one. The store persists the
     # NORMALIZED array, so every turn re-normalizes the previous turn's output —
@@ -126,7 +126,7 @@ def test_chained_turns_never_accumulate_a_second_system_message():
     for turn in range(2, 4):
         rid = client.post(
             "/v1/responses",
-            json={"model": "m", "instructions": f"more {turn}", "input": f"q{turn}",
+            json={"model": "qwen3.5-test", "instructions": f"more {turn}", "input": f"q{turn}",
                   "previous_response_id": rid},
         ).json()["id"]
 

@@ -80,7 +80,8 @@ def test_request_tools_and_tool_choice_reshape():
 def test_request_prior_messages_prepended_then_followup_instructions():
     prior = [{"role": "system", "content": "orig"}, {"role": "user", "content": "q1"},
              {"role": "assistant", "content": "a1"}]
-    body = {"model": "m", "instructions": "new", "input": "q2", "previous_response_id": "resp_x"}
+    body = {"model": "qwen3.5-test", "instructions": "new", "input": "q2",
+            "previous_response_id": "resp_x"}
     out = responses_request_to_chat_body(body, prior_messages=prior)
     # prior chain prepended; a follow-up instructions applies to the current turn,
     # appended ahead of the new input. It is appended as a system message, but
@@ -89,6 +90,21 @@ def test_request_prior_messages_prepended_then_followup_instructions():
     assert out["messages"][:3] == prior
     assert out["messages"][3] == {"role": "user", "content": "new"}
     assert out["messages"][4] == {"role": "user", "content": "q2"}
+
+
+def test_request_followup_instructions_stay_system_for_a_model_outside_the_gate():
+    prior = [{"role": "system", "content": "orig"}, {"role": "user", "content": "q1"},
+             {"role": "assistant", "content": "a1"}]
+    body = {"model": "gpt-4o-mini", "instructions": "new", "input": "q2",
+            "previous_response_id": "resp_x"}
+    out = responses_request_to_chat_body(body, prior_messages=prior)
+    # The chaining shape a tolerant backend gets: the follow-up instructions stays
+    # a second system message, mid-array, at system authority — where the chain
+    # assembled it, and how this bridge behaved before the placement fix existed.
+    assert out["messages"] == prior + [
+        {"role": "system", "content": "new"},
+        {"role": "user", "content": "q2"},
+    ]
 
 
 def test_request_prior_messages_without_followup_instructions():
@@ -102,7 +118,10 @@ def test_request_followup_instructions_merge_into_head_under_hoist_policy(monkey
     monkeypatch.setenv("CONVERTER_MID_SYSTEM_POLICY", "hoist")
     prior = [{"role": "system", "content": "orig"}, {"role": "user", "content": "q1"},
              {"role": "assistant", "content": "a1"}]
-    body = {"model": "m", "instructions": "new", "input": "q2", "previous_response_id": "resp_x"}
+    # A real deployment name carries the provider prefix; the gate searches the
+    # model string rather than matching it whole, so this still matches.
+    body = {"model": "hosted_vllm/qwen3.6-32b", "instructions": "new", "input": "q2",
+            "previous_response_id": "resp_x"}
     out = responses_request_to_chat_body(body, prior_messages=prior)
     # hoist keeps the follow-up instructions at system authority by folding it
     # into the chain's original system prompt, leaving exactly one system turn.
@@ -115,7 +134,7 @@ def test_request_followup_instructions_merge_into_head_under_hoist_policy(monkey
 
 
 def test_request_developer_item_is_demoted_when_not_leading():
-    body = {"model": "m", "input": [
+    body = {"model": "qwen3.5-test", "input": [
         {"type": "message", "role": "user", "content": "q"},
         {"type": "message", "role": "developer", "content": "rule"},
         {"type": "message", "role": "assistant", "content": "a"},
@@ -129,13 +148,26 @@ def test_request_developer_item_is_demoted_when_not_leading():
 
 def test_request_developer_item_keeps_system_role_under_asis_policy(monkeypatch):
     monkeypatch.setenv("CONVERTER_MID_SYSTEM_POLICY", "asis")
-    body = {"model": "m", "input": [
+    # Gate-matching model, so ``asis`` is what preserves the role here.
+    body = {"model": "qwen3.5-test", "input": [
         {"type": "message", "role": "user", "content": "q"},
         {"type": "message", "role": "developer", "content": "rule"},
         {"type": "message", "role": "assistant", "content": "a"},
     ]}
     out = responses_request_to_chat_body(body)
     assert out["messages"][1] == {"role": "system", "content": "rule"}
+
+
+def test_request_developer_item_keeps_system_role_for_a_model_outside_the_gate():
+    # Unchained counterpart to the gate test above: a mid-array system turn that
+    # came straight from the input array, not from a resolved chain.
+    body = {"model": "gpt-4o-mini", "input": [
+        {"type": "message", "role": "user", "content": "q"},
+        {"type": "message", "role": "developer", "content": "rule"},
+        {"type": "message", "role": "assistant", "content": "a"},
+    ]}
+    out = responses_request_to_chat_body(body)
+    assert [m["role"] for m in out["messages"]] == ["user", "system", "assistant"]
 
 
 def test_request_function_call_output_array_extracts_text():

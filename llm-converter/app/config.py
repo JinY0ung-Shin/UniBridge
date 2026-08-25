@@ -10,6 +10,7 @@ route. All settings are read from the environment so they can be overridden in
 from __future__ import annotations
 
 import os
+import re
 import ssl
 
 import httpx
@@ -77,6 +78,12 @@ def _bool_env(name: str, default: bool) -> bool:
 
 
 _MID_SYSTEM_POLICIES = frozenset({"user", "hoist", "asis"})
+
+# Which models get their system messages normalized at all. Only the dotted
+# Qwen3.x generations (3.5 / 3.6 / 3.8) hard-error on a misplaced system turn;
+# the hyphenated 2025 line (``qwen3-8b``) tolerates it, so ``qwen3`` alone would
+# over-match and reshape requests that never needed it.
+_DEFAULT_MID_SYSTEM_MODEL_PATTERN = r"qwen3\.\d"
 
 
 def _get_timeout() -> httpx.Timeout:
@@ -192,6 +199,36 @@ class _Settings:
         ``_int_env``/``_bool_env``."""
         raw = os.getenv("CONVERTER_MID_SYSTEM_POLICY", "").strip().lower()
         return raw if raw in _MID_SYSTEM_POLICIES else "user"
+
+    @property
+    def mid_system_model_regex(self) -> re.Pattern[str]:
+        """Which models :attr:`mid_system_policy` applies to
+        (``CONVERTER_MID_SYSTEM_MODEL_PATTERN``). The pattern is *searched*
+        (:meth:`re.Pattern.search`, case-insensitive) against the OUTBOUND
+        chat/completions ``model`` value rather than matched whole, so a
+        provider-prefixed deployment name — ``hosted_vllm/qwen3.5-32b`` — hits on
+        the substring and needs no wildcards.
+
+        The gate exists because normalization is not free of consequence: it
+        role-swaps or relocates a system turn, so a backend whose template
+        tolerates mid-history system messages should keep receiving the client's
+        original shape. The default ``qwen3\\.\\d`` covers the strict dotted
+        Qwen3.5 / 3.6 / 3.8 generations while deliberately NOT matching the
+        tolerant 2025-line ``qwen3-8b`` naming. Set ``.*`` to restore
+        normalize-for-every-model.
+
+        An unparseable regex falls back to the default silently, matching
+        ``_int_env``/:attr:`mid_system_policy` — a typo in compose must not fail
+        every request. Re-compiling per access is cheap (``re.compile`` hits its
+        own module-level cache), so this stays a plain re-reading property like
+        the rest."""
+        raw = os.getenv("CONVERTER_MID_SYSTEM_MODEL_PATTERN", "").strip()
+        if raw:
+            try:
+                return re.compile(raw, re.IGNORECASE)
+            except re.error:
+                pass
+        return re.compile(_DEFAULT_MID_SYSTEM_MODEL_PATTERN, re.IGNORECASE)
 
     @property
     def sse_heartbeat_seconds(self) -> float:

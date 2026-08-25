@@ -2,15 +2,17 @@
 
 Strict chat templates (newer Qwen) 400 on any system message past index 0, and
 Claude Code sends both a multi-block system prompt and mid-history
-``role: "system"`` reminders. These tests pin the three placement policies, plus
-the two properties the ``/v1/responses`` chain depends on: idempotency (the
-stored transcript is already normalized and gets re-normalized every turn) and
-non-mutation (the caller's list is also the persisted one).
+``role: "system"`` reminders. These tests pin the three placement policies, the
+model-name gate that decides whether any of them runs, plus the two properties
+the ``/v1/responses`` chain depends on: idempotency (the stored transcript is
+already normalized and gets re-normalized every turn) and non-mutation (the
+caller's list is also the persisted one).
 """
 
 from __future__ import annotations
 
 import copy
+import re
 
 import pytest
 
@@ -196,6 +198,56 @@ def test_unrecognized_policy_takes_the_user_path():
 
 
 # ---------------------------------------------------------------------------
+# model gate
+# ---------------------------------------------------------------------------
+
+# Mirrors what config compiles from ``_DEFAULT_MID_SYSTEM_MODEL_PATTERN``. These
+# tests pin the gate's mechanics; which model NAMES the shipped default covers is
+# pinned in the config section below.
+_GATE = re.compile(r"qwen3\.\d", re.IGNORECASE)
+
+
+@pytest.mark.parametrize("model", ["qwen3.5-32b", "Qwen3.5", "hosted_vllm/qwen3.6-32b"])
+def test_gate_normalizes_when_the_model_matches(model):
+    # Neither casing nor a provider prefix may defeat the gate: the pattern is
+    # searched case-insensitively, so a LiteLLM deployment name hits on the
+    # substring without the operator having to write wildcards.
+    messages = [{"role": "user", "content": "q"}, {"role": "system", "content": "reminder"}]
+    assert normalize_system_messages(messages, "user", model=model, model_pattern=_GATE) == [
+        {"role": "user", "content": "q"},
+        {"role": "user", "content": "reminder"},
+    ]
+
+
+@pytest.mark.parametrize("model", ["qwen3-8b", "gpt-4o-mini", "claude-sonnet-5", ""])
+def test_gate_returns_the_caller_list_when_the_model_does_not_match(model):
+    messages = [{"role": "user", "content": "q"}, {"role": "system", "content": "reminder"}]
+    out = normalize_system_messages(messages, "user", model=model, model_pattern=_GATE)
+    # Identity, not equality: a model outside the gate reaches the backend in the
+    # client's own shape, and the check costs no allocation.
+    assert out is messages
+
+
+@pytest.mark.parametrize("model", [None, 123, {"model": "qwen3.5"}, ["qwen3.5"]])
+def test_gate_passes_through_an_absent_or_non_string_model(model):
+    # An unnamed model cannot be shown to need the rewrite, and pass-through is
+    # exactly the ``asis`` shape — what the client sent — so this fails open.
+    messages = [{"role": "user", "content": "q"}, {"role": "system", "content": "reminder"}]
+    assert normalize_system_messages(messages, "user", model=model, model_pattern=_GATE) is messages
+
+
+@pytest.mark.parametrize("model", [None, "gpt-4o-mini", "qwen3.5-32b"])
+def test_no_pattern_normalizes_regardless_of_model(model):
+    # ``model_pattern=None`` is the ungated contract every policy test above
+    # relies on; the model argument is then irrelevant.
+    messages = [{"role": "user", "content": "q"}, {"role": "system", "content": "reminder"}]
+    assert normalize_system_messages(messages, "user", model=model) == [
+        {"role": "user", "content": "q"},
+        {"role": "user", "content": "reminder"},
+    ]
+
+
+# ---------------------------------------------------------------------------
 # config property
 # ---------------------------------------------------------------------------
 
@@ -218,3 +270,36 @@ def test_mid_system_policy_defaults_to_user(monkeypatch):
 def test_mid_system_policy_normalizes_case_and_falls_back(monkeypatch, raw, expected):
     monkeypatch.setenv("CONVERTER_MID_SYSTEM_POLICY", raw)
     assert config.settings.mid_system_policy == expected
+
+
+def test_default_model_pattern_covers_the_dotted_qwen_generations(monkeypatch):
+    monkeypatch.delenv("CONVERTER_MID_SYSTEM_MODEL_PATTERN", raising=False)
+    pattern = config.settings.mid_system_model_regex
+    for model in ("qwen3.5-32b", "Qwen3.6", "qwen3.8-a3b", "hosted_vllm/qwen3.5-32b"):
+        assert pattern.search(model), model
+    # The hyphenated 2025 line tolerates a mid-history system turn, so widening
+    # the default to a bare ``qwen3`` would reshape requests that never needed
+    # it; other vendors' models have no business matching at all.
+    for model in ("qwen3-8b", "qwen2.5-72b", "gpt-4o", "claude-sonnet-5"):
+        assert pattern.search(model) is None, model
+
+
+def test_model_pattern_env_override_replaces_the_default(monkeypatch):
+    monkeypatch.setenv("CONVERTER_MID_SYSTEM_MODEL_PATTERN", "  ^strict-model$  ")
+    pattern = config.settings.mid_system_model_regex
+    assert pattern.search("strict-model")
+    assert pattern.search("qwen3.5-32b") is None
+
+    monkeypatch.setenv("CONVERTER_MID_SYSTEM_MODEL_PATTERN", ".*")
+    # The documented escape hatch back to normalize-for-every-model.
+    assert config.settings.mid_system_model_regex.search("gpt-4o")
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "("])
+def test_unset_or_unparseable_model_pattern_falls_back_to_the_default(monkeypatch, raw):
+    # A compose typo degrades to the default silently rather than raising inside
+    # request translation, matching how the policy and the int settings behave.
+    monkeypatch.setenv("CONVERTER_MID_SYSTEM_MODEL_PATTERN", raw)
+    pattern = config.settings.mid_system_model_regex
+    assert pattern.pattern == config._DEFAULT_MID_SYSTEM_MODEL_PATTERN
+    assert pattern.flags & re.IGNORECASE

@@ -272,7 +272,9 @@ def responses_request_to_chat_body(
     of this turn's input. That lands a system message mid-array, so where it
     finally sits is decided by ``CONVERTER_MID_SYSTEM_POLICY`` (see
     :func:`app.system_norm.normalize_system_messages`), applied to the assembled
-    array below.
+    array below — but only for models matching
+    ``CONVERTER_MID_SYSTEM_MODEL_PATTERN``; anything else keeps the mid-array
+    system message where it landed.
     """
     out: dict[str, Any] = {}
     if body.get("model") is not None:
@@ -286,7 +288,12 @@ def responses_request_to_chat_body(
     elif body.get("instructions"):
         messages.append({"role": "system", "content": body["instructions"]})
     messages.extend(_input_to_messages(body.get("input", [])))
-    out["messages"] = normalize_system_messages(messages, settings.mid_system_policy)
+    out["messages"] = normalize_system_messages(
+        messages,
+        settings.mid_system_policy,
+        model=out.get("model"),
+        model_pattern=settings.mid_system_model_regex,
+    )
 
     if "max_output_tokens" in body and body["max_output_tokens"] is not None:
         out["max_completion_tokens"] = body["max_output_tokens"]

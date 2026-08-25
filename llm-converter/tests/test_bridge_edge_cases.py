@@ -28,7 +28,7 @@ async def _collect(items) -> list[dict]:
 def test_messages_request_rejects_malformed_content_without_crashing():
     converted = anthropic_request_to_openai_body(
         {
-            "model": "m",
+            "model": "qwen3.5-junk",
             "system": [None, {"type": "text", "text": "top"}],
             "messages": [
                 {"role": "system", "content": "plain"},

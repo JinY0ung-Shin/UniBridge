@@ -25,10 +25,18 @@ The active policy comes from ``CONVERTER_MID_SYSTEM_POLICY``
 (:attr:`app.config._Settings.mid_system_policy`); the bridges call
 :func:`normalize_system_messages` as the last step of request translation, so
 one implementation covers both ``/v1/messages`` and ``/v1/responses``.
+
+The rewrite is gated on the outbound model name, because only the strict
+templates need it: the bridges also pass the request's ``model`` plus the
+compiled :attr:`app.config._Settings.mid_system_model_regex`, and a model the
+pattern does not match is forwarded exactly as the client shaped it. This module
+stays pure — it never reads settings itself, so the gate is whatever its caller
+passes.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Separator between the texts of two MERGED system messages. Each one is an
@@ -138,8 +146,23 @@ def _demote_to_user(messages: list[dict]) -> list[dict]:
     return out
 
 
-def normalize_system_messages(messages: list[dict], policy: str) -> list[dict]:
+def normalize_system_messages(
+    messages: list[dict],
+    policy: str,
+    model: Any = None,
+    model_pattern: re.Pattern[str] | None = None,
+) -> list[dict]:
     """Rewrite *messages* so no system turn lands where a strict template 400s.
+
+    *model_pattern* gates the whole rewrite: when it is given, *messages* is
+    returned untouched unless *model* is a string the pattern searches
+    successfully. The bridges pass the outbound ``model`` and
+    :attr:`app.config._Settings.mid_system_model_regex`, so only the strict
+    generations get reshaped. A missing or non-string *model* with a pattern set
+    therefore also passes through — an unnamed model cannot be shown to need the
+    rewrite, and pass-through is exactly the ``asis`` shape, i.e. what the client
+    sent. Leaving *model_pattern* at ``None`` normalizes unconditionally, which
+    is how the direct unit tests exercise the policies.
 
     Policies:
 
@@ -163,6 +186,10 @@ def normalize_system_messages(messages: list[dict], policy: str) -> list[dict]:
     ``previous_response_id`` chaining, so every follow-up turn re-normalizes
     output this function already produced.
     """
+    if model_pattern is not None and not (
+        isinstance(model, str) and model_pattern.search(model)
+    ):
+        return messages
     if policy == "asis" or not isinstance(messages, list) or not messages:
         return messages
     if policy == "hoist":
