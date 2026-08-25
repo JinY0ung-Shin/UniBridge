@@ -166,6 +166,8 @@ async def test_check_nas_health_isolates_each_connection_failure(
 
 
 async def test_check_upstream_health_classifies_nodes_and_caches_names(monkeypatch):
+    import httpx
+
     from app.services import apisix_client
 
     monkeypatch.setattr(alert_checker, "_UPSTREAM_NAME_BY_ID", {})
@@ -183,7 +185,15 @@ async def test_check_upstream_health_classifies_nodes_and_caches_names(monkeypat
         ),
     )
 
-    assert await alert_checker._check_upstream_health() == [
+    # Only the weighted node is probed at all; the zero-weight and malformed
+    # upstreams never get that far.
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "a"
+        return httpx.Response(200)
+
+    assert await alert_checker._check_upstream_health(
+        transport=httpx.MockTransport(handler)
+    ) == [
         ("healthy", True),
         ("7", False),
         ("unknown", False),

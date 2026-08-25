@@ -16,7 +16,16 @@ class QueryRequest(BaseModel):
     database: str = Field(..., description="Database alias to run the query against")
     sql: str = Field(..., description="SQL statement to execute")
     params: dict[str, Any] | None = Field(None, description="Named bind parameters")
-    limit: int | None = Field(None, ge=1, description="Maximum number of rows to return")
+    limit: int | None = Field(
+        None,
+        ge=1,
+        le=1_000_000,
+        description=(
+            "Maximum number of rows to return. Capped at 1,000,000 "
+            "(settings.MAX_ROW_LIMIT); larger results come back with "
+            "truncated=true."
+        ),
+    )
     timeout: int | None = Field(None, ge=1, le=300, description="Query timeout in seconds")
 
 

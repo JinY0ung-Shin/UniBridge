@@ -254,6 +254,54 @@ async def test_loop_survives_a_failing_cycle(caplog):
     assert "Log retention cleanup cycle failed" in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_loop_skips_the_sweep_on_the_standby_color():
+    """Blue/green share one meta DB — only the active color may delete."""
+    sleeps = 0
+
+    async def _fake_sleep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps >= 3:
+            raise asyncio.CancelledError
+
+    cleanup = AsyncMock(return_value={})
+
+    with patch("app.services.retention.asyncio.sleep", _fake_sleep), \
+         patch("app.services.retention.is_active_instance",
+               new=AsyncMock(return_value=False)), \
+         patch("app.services.retention.run_retention_cleanup", cleanup):
+        with pytest.raises(asyncio.CancelledError):
+            await retention.run_retention_loop()
+
+    cleanup.assert_not_awaited()
+    # The loop stays alive and keeps re-checking, so a promote is picked up.
+    assert sleeps == 3
+
+
+@pytest.mark.asyncio
+async def test_loop_starts_sweeping_after_a_promotion_without_a_restart():
+    sleeps = 0
+
+    async def _fake_sleep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps >= 3:
+            raise asyncio.CancelledError
+
+    cleanup = AsyncMock(return_value={})
+    # Standby on the first cycle, promoted before the second.
+    active = AsyncMock(side_effect=[False, True])
+
+    with patch("app.services.retention.asyncio.sleep", _fake_sleep), \
+         patch("app.services.retention.is_active_instance", new=active), \
+         patch("app.services.retention.run_retention_cleanup", cleanup):
+        with pytest.raises(asyncio.CancelledError):
+            await retention.run_retention_loop()
+
+    assert cleanup.await_count == 1
+
+
 # ── Settings ─────────────────────────────────────────────────────────────────
 
 

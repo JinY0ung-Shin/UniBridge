@@ -793,3 +793,323 @@ class TestExternalServiceHealth:
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             await _check_service_health(state, trigger_after_failures=1)
         mock_dispatch.assert_not_called()
+
+
+def _upstream_listing(*items):
+    return patch(
+        "app.services.apisix_client.list_resources",
+        new=AsyncMock(return_value={"items": list(items)}),
+    )
+
+
+class TestUpstreamReachabilityProbe:
+    """The upstream check must talk to the node, not just read APISIX config.
+
+    Reading config only made "healthy" a tautology (any weighted node in the
+    map = up), so a dead backend never alerted; and list-form ``nodes`` fell
+    through the dict guard into a permanent false "down".
+    """
+
+    @pytest.mark.asyncio
+    async def test_unreachable_node_is_unhealthy(self):
+        import httpx
+        from app.services import alert_checker
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused")
+
+        with _upstream_listing({"id": "orders", "nodes": {"orders-api:8080": 1}}):
+            result = await alert_checker._check_upstream_health(
+                transport=httpx.MockTransport(handler)
+            )
+
+        assert result == [("orders", False)]
+
+    @pytest.mark.asyncio
+    async def test_reachable_node_is_healthy(self):
+        import httpx
+        from app.services import alert_checker
+
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(str(request.url))
+            return httpx.Response(200, json={"status": "ok"})
+
+        with _upstream_listing({"id": "orders", "nodes": {"orders-api:8080": 1}}):
+            result = await alert_checker._check_upstream_health(
+                transport=httpx.MockTransport(handler)
+            )
+
+        assert result == [("orders", True)]
+        assert seen == ["http://orders-api:8080/health"]
+
+    @pytest.mark.asyncio
+    async def test_any_http_status_counts_as_reachable(self):
+        """A 404 on /health still proves the port is open and speaking HTTP."""
+        import httpx
+        from app.services import alert_checker
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, text="not found")
+
+        with _upstream_listing({"id": "orders", "nodes": {"orders-api:8080": 1}}):
+            result = await alert_checker._check_upstream_health(
+                transport=httpx.MockTransport(handler)
+            )
+
+        assert result == [("orders", True)]
+
+    @pytest.mark.asyncio
+    async def test_timeout_is_unhealthy(self):
+        import httpx
+        from app.services import alert_checker
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("timed out", request=request)
+
+        with _upstream_listing({"id": "orders", "nodes": {"orders-api:8080": 1}}):
+            result = await alert_checker._check_upstream_health(
+                transport=httpx.MockTransport(handler)
+            )
+
+        assert result == [("orders", False)]
+
+    @pytest.mark.asyncio
+    async def test_list_form_nodes_are_probed_instead_of_reported_down(self):
+        """Regression: list-form ``nodes`` used to be a permanent false "down"."""
+        import httpx
+        from app.services import alert_checker
+
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(str(request.url))
+            return httpx.Response(200)
+
+        listing = {
+            "id": "orders",
+            "nodes": [{"host": "orders-api", "port": 8080, "weight": 1}],
+        }
+        with _upstream_listing(listing):
+            result = await alert_checker._check_upstream_health(
+                transport=httpx.MockTransport(handler)
+            )
+
+        assert result == [("orders", True)]
+        assert seen == ["http://orders-api:8080/health"]
+
+    @pytest.mark.asyncio
+    async def test_list_form_nodes_still_report_down_when_unreachable(self):
+        import httpx
+        from app.services import alert_checker
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused")
+
+        listing = {
+            "id": "orders",
+            "nodes": [{"host": "orders-api", "port": 8080, "weight": 1}],
+        }
+        with _upstream_listing(listing):
+            result = await alert_checker._check_upstream_health(
+                transport=httpx.MockTransport(handler)
+            )
+
+        assert result == [("orders", False)]
+
+    @pytest.mark.asyncio
+    async def test_one_reachable_node_is_enough(self):
+        import httpx
+        from app.services import alert_checker
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "dead":
+                raise httpx.ConnectError("connection refused")
+            return httpx.Response(200)
+
+        listing = {"id": "orders", "nodes": {"dead:8080": 1, "alive:8080": 1}}
+        with _upstream_listing(listing):
+            result = await alert_checker._check_upstream_health(
+                transport=httpx.MockTransport(handler)
+            )
+
+        assert result == [("orders", True)]
+
+    @pytest.mark.asyncio
+    async def test_upstream_without_weighted_nodes_is_unhealthy(self):
+        import httpx
+        from app.services import alert_checker
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("no node should be probed")
+
+        with _upstream_listing({"id": "orders", "nodes": {}}):
+            result = await alert_checker._check_upstream_health(
+                transport=httpx.MockTransport(handler)
+            )
+
+        assert result == [("orders", False)]
+
+    @pytest.mark.asyncio
+    async def test_litellm_upstream_uses_the_liveliness_path(self):
+        import httpx
+        from app.services import alert_checker
+
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.url.path)
+            return httpx.Response(200)
+
+        with _upstream_listing({"id": "litellm", "nodes": {"litellm:4000": 1}}):
+            await alert_checker._check_upstream_health(
+                transport=httpx.MockTransport(handler)
+            )
+
+        assert seen == ["/health/liveliness"]
+
+    @pytest.mark.asyncio
+    async def test_host_header_follows_pass_host_node(self):
+        import httpx
+        from app.services import alert_checker
+
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request.headers["Host"])
+            return httpx.Response(200)
+
+        listing = {
+            "id": "orders",
+            "pass_host": "node",
+            "scheme": "https",
+            "nodes": {"orders-api:8443": 1},
+        }
+        with _upstream_listing(listing):
+            await alert_checker._check_upstream_health(
+                transport=httpx.MockTransport(handler)
+            )
+
+        assert seen == ["orders-api"]
+
+    @pytest.mark.asyncio
+    async def test_one_broken_upstream_does_not_abort_the_others(self):
+        """A probe raising outside the transport must not lose the whole list."""
+        import httpx
+        from app.services import alert_checker
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200)
+
+        real_probe = alert_checker._probe_upstream
+
+        async def flaky_probe(client, limiter, upstream):
+            if upstream.get("id") == "broken":
+                raise RuntimeError("probe bug")
+            return await real_probe(client, limiter, upstream)
+
+        listing = (
+            {"id": "broken", "nodes": {"a:80": 1}},
+            {"id": "orders", "nodes": {"orders-api:8080": 1}},
+        )
+        with _upstream_listing(*listing), \
+             patch("app.services.alert_checker._probe_upstream", new=flaky_probe):
+            result = await alert_checker._check_upstream_health(
+                transport=httpx.MockTransport(handler)
+            )
+
+        assert result == [("orders", True)]
+
+
+class TestActiveInstanceGating:
+    """Blue/green: only the active color may run side-effectful cycles."""
+
+    @staticmethod
+    def _loop_patches(active, *, monotonic, interval=60):
+        stop = RuntimeError("stop loop")
+        delays: list[float] = []
+
+        async def stop_after_sleep(delay: float):
+            delays.append(delay)
+            if len(delays) >= len(monotonic) // 2:
+                raise stop
+
+        return delays, (
+            patch("app.services.alert_checker.is_active_instance",
+                  new=AsyncMock(side_effect=active)),
+            patch("app.services.alert_checker._get_check_interval_seconds",
+                  new=AsyncMock(return_value=interval)),
+            patch("app.services.alert_checker._get_trigger_after_failures",
+                  new=AsyncMock(return_value=2)),
+            patch("app.services.alert_checker._monotonic", side_effect=monotonic),
+            patch("app.services.alert_checker.asyncio.sleep",
+                  new=AsyncMock(side_effect=stop_after_sleep)),
+        )
+
+    @pytest.mark.asyncio
+    async def test_standby_color_skips_the_check_but_keeps_its_cadence(self):
+        from app.services import alert_checker
+
+        state = AlertStateManager()
+        delays, patches = self._loop_patches([False], monotonic=[100.0, 115.0])
+        with patch("app.services.alert_checker.run_single_check",
+                   new_callable=AsyncMock) as check:
+            for p in patches:
+                p.start()
+            try:
+                task = await alert_checker.start_checker(state)
+                with pytest.raises(RuntimeError, match="stop loop"):
+                    await task
+            finally:
+                for p in patches:
+                    p.stop()
+
+        check.assert_not_called()
+        # Still wakes on the normal interval, so a promotion is picked up fast.
+        assert delays == [45.0]
+
+    @pytest.mark.asyncio
+    async def test_active_color_runs_the_check(self):
+        from app.services import alert_checker
+
+        state = AlertStateManager()
+        delays, patches = self._loop_patches([True], monotonic=[100.0, 115.0])
+        with patch("app.services.alert_checker.run_single_check",
+                   new_callable=AsyncMock) as check:
+            for p in patches:
+                p.start()
+            try:
+                task = await alert_checker.start_checker(state)
+                with pytest.raises(RuntimeError, match="stop loop"):
+                    await task
+            finally:
+                for p in patches:
+                    p.stop()
+
+        check.assert_awaited_once()
+        assert delays == [45.0]
+
+    @pytest.mark.asyncio
+    async def test_promotion_is_picked_up_without_a_restart(self):
+        """Standby → active between cycles must start checking on the next tick."""
+        from app.services import alert_checker
+
+        state = AlertStateManager()
+        delays, patches = self._loop_patches(
+            [False, True], monotonic=[100.0, 115.0, 160.0, 175.0]
+        )
+        with patch("app.services.alert_checker.run_single_check",
+                   new_callable=AsyncMock) as check:
+            for p in patches:
+                p.start()
+            try:
+                task = await alert_checker.start_checker(state)
+                with pytest.raises(RuntimeError, match="stop loop"):
+                    await task
+            finally:
+                for p in patches:
+                    p.stop()
+
+        assert check.await_count == 1
+        assert delays == [45.0, 45.0]

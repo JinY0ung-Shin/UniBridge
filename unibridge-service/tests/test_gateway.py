@@ -2139,13 +2139,21 @@ class TestScopeConsumerRouteValues:
 class TestProtectedRouteNameInvariant:
     async def test_put_system_route_forces_name_to_id(self, client, admin_token):
         """System routes must keep name == id — the Prometheus route label uses
-        the name (prefer_name) and fixed-id filters rely on it."""
+        the name (prefer_name) and fixed-id filters rely on it. The edit itself
+        is allowed (topology is unchanged), but the rename is overridden."""
+        existing = {
+            "id": "llm-proxy",
+            "name": "llm-proxy",
+            "uri": "/api/llm/*",
+            "upstream_id": "litellm",
+            "methods": ["POST", "GET"],
+        }
         saved = {"id": "llm-proxy", "uri": "/api/llm/*", "name": "llm-proxy"}
         with (
             patch(
                 "app.routers.gateway.apisix_client.list_resources",
                 new_callable=AsyncMock,
-                return_value={"items": []},
+                return_value={"items": [deepcopy(existing)]},
             ),
             patch(
                 "app.routers.gateway.apisix_client.put_resource",
@@ -2158,6 +2166,7 @@ class TestProtectedRouteNameInvariant:
                 json={
                     "uri": "/api/llm/*",
                     "upstream_id": "litellm",
+                    "methods": ["POST", "GET"],
                     "name": "renamed-llm",
                 },
                 headers=auth_header(admin_token),

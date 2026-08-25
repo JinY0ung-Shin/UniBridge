@@ -1,0 +1,80 @@
+# Alertmanager configuration for UniBridge.
+#
+# Prometheus (prometheus/prometheus.yml → `alerting:`) sends the fired rules of
+# prometheus/rules/*.yml here; this file fans them out to a single receiver:
+# the unibridge-service webhook at POST /internal/alertmanager, which re-uses
+# the app's existing 담당자/관리자 e-mail pipeline. All six shipped rules are
+# severity=critical, so there is no per-severity split — everything goes to the
+# one receiver.
+#
+# ── TOKEN SUBSTITUTION (REQUIRED) ────────────────────────────────────────────
+# Alertmanager does NOT expand environment variables in this file. The literal
+# placeholder `__ALERTMANAGER_WEBHOOK_TOKEN__` below MUST be replaced with the
+# value of ALERTMANAGER_WEBHOOK_TOKEN (the same secret unibridge-service reads)
+# before Alertmanager starts. Two supported ways:
+#
+#   (a) Render at deploy time — e.g. mount this file read-only and have the
+#       container entrypoint write the substituted copy to a writable path:
+#         command: >
+#           sh -c 'sed "s|__ALERTMANAGER_WEBHOOK_TOKEN__|$${ALERTMANAGER_WEBHOOK_TOKEN}|"
+#                  /etc/alertmanager/alertmanager.yml > /tmp/alertmanager.yml &&
+#                  exec /bin/alertmanager --config.file=/tmp/alertmanager.yml
+#                  --storage.path=/alertmanager'
+#       (`$$` escapes the compose interpolation so the shell expands it.)
+#
+#   (b) Use a token file instead — drop the `credentials:` line below and use
+#         credentials_file: /etc/alertmanager/webhook-token
+#       with that file mounted (or written by the deploy script) containing the
+#       token and nothing else.
+#
+# If the token is left unsubstituted, unibridge-service answers 401 and every
+# delivery fails — the alerts stay visible in the Alertmanager UI, but nobody
+# gets an e-mail. Alertmanager also requires >= 0.24 for `http_config.authorization`.
+#
+# ── HONEST LIMITATION ────────────────────────────────────────────────────────
+# UniBridgeServiceDown is the alert this whole path exists for (the in-app
+# checker runs inside unibridge-service and cannot report its own death), and
+# it is also the case where the webhook POST itself fails: the receiver is the
+# service that is down. Alertmanager being a separate container does NOT make
+# the e-mail go out in that window. What it does buy:
+#   - the alert is raised, grouped and visible in the Alertmanager UI/API,
+#   - delivery is retried, and a still-firing alert is re-sent every
+#     repeat_interval (3h below), so it lands as soon as the app is back,
+#   - a second, app-independent receiver (SMTP, Slack, PagerDuty) can be added
+#     under `receivers:` later without touching the app.
+# For true out-of-band paging while the app is down, add such a receiver.
+
+global:
+  # How long after the last evaluation an alert with no explicit endsAt is
+  # considered resolved. Keep above Prometheus' evaluation_interval (15s).
+  resolve_timeout: 5m
+
+route:
+  receiver: 'unibridge-webhook'
+  # One notification per alert rule; the receiver dispatches each alert in the
+  # batch separately, so grouping only controls batching, not fan-out.
+  group_by: ['alertname']
+  group_wait: 30s
+  group_interval: 5m
+  # Re-send a still-firing alert every 3h. Also the recovery path for a
+  # delivery that failed because unibridge-service was the thing that was down.
+  repeat_interval: 3h
+
+receivers:
+  - name: 'unibridge-webhook'
+    webhook_configs:
+      # Internal docker-network address; Alertmanager itself publishes no host
+      # port. The /_api/ prefix is the nginx-facing path only — Alertmanager
+      # talks to the service directly.
+      - url: 'http://unibridge-service:8000/internal/alertmanager'
+        # Recoveries flow through the same endpoint and become alert_type
+        # "resolved" ("정상 복구" in the mail template).
+        send_resolved: true
+        # Cap one POST body. Every alert in a batch becomes an e-mail; with six
+        # rules a batch this large cannot occur in practice, so this only bounds
+        # a pathological case. 0 would mean unlimited.
+        max_alerts: 50
+        http_config:
+          authorization:
+            type: Bearer
+            credentials: __ALERTMANAGER_WEBHOOK_TOKEN__

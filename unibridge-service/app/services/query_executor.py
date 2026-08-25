@@ -270,12 +270,22 @@ async def _execute(
         stmt = stmt.bindparams(**params)
 
     async with engine.connect() as conn:
-        result = await conn.execute(stmt)
-
         if is_select:
-            columns = list(result.keys())
-            # Use cursor-based limiting instead of SQL wrapping
-            all_rows = result.fetchmany(limit + 1) if limit else result.fetchall()
+            # Read through a server-side (streaming) cursor rather than
+            # buffering the whole result set: `conn.execute()` makes the driver
+            # materialise every row in memory at execute time, so `limit` would
+            # only trim the response after the damage was done. With
+            # `conn.stream()` rows are pulled in batches and we stop at
+            # limit + 1 — the extra row is what tells us the result was
+            # truncated — so peak memory is bounded by the limit, not by the
+            # size of the table.
+            async with conn.stream(stmt) as result:
+                columns = list(result.keys())
+                if limit:
+                    all_rows = await result.fetchmany(limit + 1)
+                else:
+                    # Defensive: execute_query() always passes a positive limit.
+                    all_rows = [row async for row in result]
 
             truncated = False
             if limit and len(all_rows) > limit:
@@ -286,6 +296,7 @@ async def _execute(
             row_count = len(rows)
         else:
             # DML / DDL - commit and return rowcount
+            result = await conn.execute(stmt)
             await conn.commit()
             if result.returns_rows:
                 # Handle RETURNING clauses
@@ -329,6 +340,10 @@ async def execute_query(
     Raises any DB-level exceptions on failure.
     """
     effective_limit = limit or settings_manager.default_row_limit
+    # Hard ceiling on rows ever pulled into service memory. Clamp rather than
+    # reject: callers legitimately ask for very large result sets and
+    # `truncated` already tells them the response was cut short.
+    effective_limit = min(effective_limit, settings.MAX_ROW_LIMIT)
     effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
 
     # Reject multi-statement SQL for non-admin users

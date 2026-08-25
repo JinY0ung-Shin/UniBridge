@@ -209,6 +209,11 @@ services:
       - APISIX_QUERY_ROUTE_CONNECT_TIMEOUT=${APISIX_QUERY_ROUTE_CONNECT_TIMEOUT:-10}
       - APISIX_UNIBRIDGE_SERVICE_NODE=${APISIX_UNIBRIDGE_SERVICE_NODE:-unibridge-service:8000}
       - APISIX_LLM_CONVERTER_NODE=${APISIX_LLM_CONVERTER_NODE:-llm-converter:4001}
+      # Single-stack: empty self-node = single-instance mode, background loops
+      # (alert checker, retention) always run. Only the blue/green split stack
+      # sets a real self-node to gate the standby color.
+      - UNIBRIDGE_SELF_NODE=${UNIBRIDGE_SELF_NODE:-}
+      - RUN_BACKGROUND_TASKS=${RUN_BACKGROUND_TASKS:-true}
       - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
       - NODE_EXPORTER_JOB=${NODE_EXPORTER_JOB:-nodes}
       - NODE_EXPORTER_DISK_MOUNTPOINTS=${NODE_EXPORTER_DISK_MOUNTPOINTS:-}
@@ -218,6 +223,9 @@ services:
       - EXTERNAL_SERVICES_JOB=${EXTERNAL_SERVICES_JOB:-external-services}
       - PROMETHEUS_SERVICES_FILE_SD_PATH=${PROMETHEUS_SERVICES_FILE_SD_PATH:-/etc/prometheus/file_sd/services.json}
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
+      # Bearer token verifying the internal Alertmanager webhook receiver.
+      # Empty = receiver disabled (503); set it to enable infra-alert email.
+      - ALERTMANAGER_WEBHOOK_TOKEN=${ALERTMANAGER_WEBHOOK_TOKEN:-}
       - KEYCLOAK_ISSUER_URL=${KEYCLOAK_ISSUER_URL:-}
       - KEYCLOAK_JWKS_URL=${KEYCLOAK_JWKS_URL:-}
       - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
@@ -332,6 +340,49 @@ services:
       - ./prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:9115/-/healthy >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - apihub-net
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 128m
+    cpus: "0.25"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.25"
+    # Routes Prometheus's fired rules to the unibridge-service webhook, which
+    # reuses the app's owner/admin email pipeline. Alertmanager does not expand
+    # env vars in its config, so substitute the bearer token into a writable
+    # copy at startup then exec the binary ($$ escapes compose interpolation so
+    # the container shell expands it). When ALERTMANAGER_WEBHOOK_TOKEN is unset
+    # the literal placeholder stays as the credential (valid, non-empty) and the
+    # app returns 503 for the endpoint — alerts stay visible in the Alertmanager
+    # UI but no mail goes out until the operator sets the token. See
+    # alertmanager/alertmanager.yml.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >
+        sed "s|__ALERTMANAGER_WEBHOOK_TOKEN__|$${ALERTMANAGER_WEBHOOK_TOKEN:-__ALERTMANAGER_WEBHOOK_TOKEN__}|g"
+        /etc/alertmanager/alertmanager.yml > /tmp/alertmanager.yml
+        && exec /bin/alertmanager --config.file=/tmp/alertmanager.yml --storage.path=/alertmanager
+    environment:
+      - ALERTMANAGER_WEBHOOK_TOKEN=${ALERTMANAGER_WEBHOOK_TOKEN:-}
+    expose:
+      - "9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9093/-/healthy >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -548,6 +599,10 @@ services:
       # templates — e.g. newer Qwen — reject them): user = role-swap to user in
       # place (default), hoist = merge all into one leading system, asis = pass through.
       - CONVERTER_MID_SYSTEM_POLICY=${CONVERTER_MID_SYSTEM_POLICY:-user}
+      # Which models the policy above applies to: case-insensitive regex searched
+      # against the outbound model name. Empty = the converter's own default
+      # (qwen3.<digit>, i.e. the strict Qwen3.5/3.6/3.8 line); set .* for all models.
+      - CONVERTER_MID_SYSTEM_MODEL_PATTERN=${CONVERTER_MID_SYSTEM_MODEL_PATTERN:-}
     expose:
       - "4001"
     volumes:
@@ -630,6 +685,7 @@ volumes:
   etcd-data:
   prometheus-data:
   grafana-data:
+  alertmanager-data:
   # Prometheus file_sd targets written by unibridge-service from the
   # MonitoredHost registry; mounted read-only into Prometheus.
   prometheus-file-sd:

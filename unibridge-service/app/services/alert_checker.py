@@ -3,11 +3,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Any
+
+import httpx
 from sqlalchemy import select
 
+from app.config import settings
 from app.database import async_session
 from app.models import AlertSettings, MonitoredHost, MonitoredService
 from app.services import server_monitor
+from app.services.active_color import is_active_instance
 from app.services.alert_mutes import MuteIndex, load_mute_index
 from app.services.alert_owner_dispatcher import dispatch_alert
 from app.services.alert_state import AlertStateManager, save_alert_state_to_db
@@ -28,6 +33,14 @@ _ROUTE_ID_BY_NAME: dict[str, str] = {}
 _ROUTE_LABEL_CACHE_TS: float = 0.0
 _ROUTE_LABEL_TTL = 300.0  # 5 minutes
 _UPSTREAM_NAME_BY_ID: dict[str, str] = {}
+
+# Upstream probe budget. The same 5s ceiling the gateway's route test uses, and
+# a cap on how much work one cycle may spend: at most 3 nodes per upstream and
+# 8 in-flight requests overall, so a fleet of dead upstreams still finishes well
+# inside the (>=30s) check interval instead of stalling the whole cycle.
+_UPSTREAM_PROBE_TIMEOUT = 5.0
+_MAX_PROBED_NODES_PER_UPSTREAM = 3
+_MAX_CONCURRENT_NODE_PROBES = 8
 
 
 async def _get_check_interval_seconds() -> int:
@@ -197,28 +210,187 @@ async def _check_nas_health() -> list[tuple[str, bool]]:
     return results
 
 
-async def _check_upstream_health() -> list[tuple[str, bool]]:
-    """Check APISIX upstream health. Returns [(upstream_id, is_healthy)]."""
+# ── Upstream reachability probe ──────────────────────────────────────────────
+# The four helpers below mirror `app/routers/gateway.py`'s route-test probe
+# (_http_scheme_for_upstream / _health_path_for_route / _node_host /
+# _host_header_for_upstream). They are replicated rather than imported because
+# nothing under `app/services/` imports a router today: pulling
+# `app.routers.gateway` in here would invert the layering and drag its whole
+# import chain (api_keys → auth → database → …) into a module that `app.main`
+# deliberately imports late, from its lifespan. Four tiny pure functions are the
+# cheaper half of that trade. Keep them in sync with gateway.py if that probe
+# changes.
+
+
+def _upstream_scheme(upstream: dict[str, Any]) -> str:
+    scheme = upstream.get("scheme")
+    return scheme if scheme in {"http", "https"} else "http"
+
+
+def _upstream_health_path(upstream: dict[str, Any]) -> str:
+    """Health path for a bare upstream (no route context).
+
+    LiteLLM answers on /health/liveliness, not /health — the same special case
+    gateway.py's `_health_path_for_route` makes, keyed here on the upstream
+    itself since there is no route to consult.
+    """
+    identifiers = {str(upstream.get("id") or ""), str(upstream.get("name") or "")}
+    if "litellm" in identifiers:
+        return "/health/liveliness"
+    return "/health"
+
+
+def _node_host(node_addr: str) -> str:
+    host, _sep, _port = node_addr.rpartition(":")
+    return host.strip("[]") if host else node_addr.strip("[]")
+
+
+def _upstream_host_header(upstream: dict[str, Any], node_addr: str) -> str:
+    pass_host = upstream.get("pass_host", "pass")
+    if pass_host == "node":
+        return _node_host(node_addr)
+    if pass_host == "rewrite" and isinstance(upstream.get("upstream_host"), str):
+        return upstream["upstream_host"]
+    return settings.HOST_IP
+
+
+def _is_positive_weight(weight: Any) -> bool:
+    return isinstance(weight, (int, float)) and not isinstance(weight, bool) and weight > 0
+
+
+def _upstream_node_addresses(nodes: Any) -> list[str]:
+    """Normalize APISIX upstream nodes to an ordered list of ``host:port``.
+
+    APISIX accepts (and the Admin API echoes back) two shapes for ``nodes``:
+    the map form ``{"host:port": weight}`` and the list form
+    ``[{"host": …, "port": …, "weight": …}]``. Handling only the map form is
+    what produced the permanent false "down" for list-form upstreams.
+
+    Zero-weight nodes are dropped: they take no traffic, so their reachability
+    says nothing about whether the upstream can serve. An upstream left with no
+    weighted node cannot serve at all and is reported unhealthy — which is what
+    the old weight-only check got right.
+    """
+    if isinstance(nodes, dict):
+        return [str(addr) for addr, weight in nodes.items() if _is_positive_weight(weight)]
+    if isinstance(nodes, list):
+        addresses: list[str] = []
+        for node in nodes:
+            if not isinstance(node, dict) or not _is_positive_weight(node.get("weight", 1)):
+                continue
+            host = node.get("host")
+            if host is None:
+                continue
+            port = node.get("port")
+            addresses.append(f"{host}:{port}" if port is not None else str(host))
+        return addresses
+    return []
+
+
+async def _probe_node(
+    client: httpx.AsyncClient,
+    limiter: asyncio.Semaphore,
+    url: str,
+    headers: dict[str, str],
+) -> bool:
+    """True when the node answered with *any* HTTP status.
+
+    Reachability, not correctness: a 404 (or a 401 on an authenticated
+    upstream) still proves the port is open and something is speaking HTTP,
+    which is exactly what "is this backend up?" asks. Only transport failures —
+    connection refused, DNS failure, TLS error, timeout — mean down.
+    """
+    async with limiter:
+        try:
+            resp = await client.get(url, headers=headers)
+        except Exception as exc:  # noqa: BLE001 - any transport failure means unreachable
+            logger.debug("Upstream node probe failed: %s (%s)", url, exc)
+            return False
+    logger.debug("Upstream node probe reached %s (HTTP %d)", url, resp.status_code)
+    return True
+
+
+async def _probe_upstream(
+    client: httpx.AsyncClient,
+    limiter: asyncio.Semaphore,
+    upstream: dict[str, Any],
+) -> bool:
+    """True when at least one weighted node of this upstream is reachable."""
+    addresses = _upstream_node_addresses(upstream.get("nodes"))
+    if not addresses:
+        return False
+    scheme = _upstream_scheme(upstream)
+    path = _upstream_health_path(upstream)
+    probes = [
+        _probe_node(
+            client,
+            limiter,
+            f"{scheme}://{addr}{path}",
+            {"Host": _upstream_host_header(upstream, addr)},
+        )
+        for addr in addresses[:_MAX_PROBED_NODES_PER_UPSTREAM]
+    ]
+    return any(await asyncio.gather(*probes))
+
+
+async def _check_upstream_health(*, transport: Any | None = None) -> list[tuple[str, bool]]:
+    """Probe every APISIX upstream's nodes. Returns [(upstream_id, is_healthy)].
+
+    This used to read the APISIX *config* only — an upstream counted as healthy
+    whenever its ``nodes`` map was non-empty with any positive weight. That is
+    close to a tautology: the config describes where traffic should go, never
+    whether anything is listening there, so a crashed backend reported "healthy"
+    forever while the alert text promised to say when it was "down". The mirror
+    image was just as bad: list-form ``nodes`` missed the ``isinstance(…, dict)``
+    guard and produced a permanent false "down". Both are fixed by normalizing
+    the node shapes and actually talking to the nodes.
+
+    ``transport`` is injectable for tests, mirroring
+    :func:`app.services.server_monitor.probe_metrics_endpoint`.
+    """
     global _UPSTREAM_NAME_BY_ID
     from app.services import apisix_client
-    results = []
+
     try:
         data = await apisix_client.list_resources("upstreams")
-        names: dict[str, str] = {}
-        for item in data.get("items", []):
-            uid = item.get("id", "unknown")
-            uid_str = str(uid)
-            name = item.get("name")
-            if name:
-                names[uid_str] = str(name)
-            nodes = item.get("nodes", {})
-            is_healthy = bool(nodes) and any(
-                w > 0 for w in (nodes.values() if isinstance(nodes, dict) else [])
-            )
-            results.append((uid_str, is_healthy))
-        _UPSTREAM_NAME_BY_ID = names
+        items = [item for item in data.get("items", []) if isinstance(item, dict)]
     except Exception as exc:
+        # APISIX unreachable: report nothing rather than flipping every upstream
+        # to "down" on our own blindness (the caller only updates the state of
+        # upstreams it hears about).
         logger.warning("Upstream health check failed: %s", exc)
+        return []
+
+    _UPSTREAM_NAME_BY_ID = {
+        str(item.get("id", "unknown")): str(item["name"])
+        for item in items
+        if item.get("name")
+    }
+    if not items:
+        return []
+
+    ssl_verify: str | bool = settings.SSL_CA_CERT_PATH or settings.SSL_VERIFY
+    limiter = asyncio.Semaphore(_MAX_CONCURRENT_NODE_PROBES)
+    async with httpx.AsyncClient(
+        timeout=_UPSTREAM_PROBE_TIMEOUT, verify=ssl_verify, transport=transport
+    ) as client:
+        outcomes = await asyncio.gather(
+            *(_probe_upstream(client, limiter, item) for item in items),
+            return_exceptions=True,
+        )
+
+    results: list[tuple[str, bool]] = []
+    for item, outcome in zip(items, outcomes):
+        uid_str = str(item.get("id", "unknown"))
+        if isinstance(outcome, BaseException):
+            # A malformed upstream (or a bug in the probe path) must not abort
+            # the rest of the check: drop this one for this cycle, leaving its
+            # existing alert state untouched rather than guessing at it.
+            logger.warning(
+                "Upstream '%s' health probe raised unexpectedly: %s", uid_str, outcome
+            )
+            continue
+        results.append((uid_str, outcome))
     return results
 
 
@@ -748,11 +920,21 @@ async def start_checker(state: AlertStateManager) -> asyncio.Task:
         while True:
             cycle_start = _monotonic()
             check_interval = await _get_check_interval_seconds()
-            trigger_after_failures = await _get_trigger_after_failures()
-            try:
-                await run_single_check(state, trigger_after_failures=trigger_after_failures)
-            except Exception:
-                logger.exception("Alert checker cycle failed")
+            # Blue/green runs both colors against the same meta DB and the same
+            # APISIX, so an ungated cycle would send every alert mail twice and
+            # let the two processes race on persisted alert state. The gate is
+            # re-evaluated every cycle rather than once at startup: a promote or
+            # rollback only rewrites the APISIX upstream, it does not restart
+            # containers, so the newly active color must start checking (and the
+            # demoted one must stop) on the next tick without any restart.
+            # `is_active_instance` logs its own transitions; staying quiet here
+            # keeps a standby color from writing a line every interval.
+            if await is_active_instance():
+                trigger_after_failures = await _get_trigger_after_failures()
+                try:
+                    await run_single_check(state, trigger_after_failures=trigger_after_failures)
+                except Exception:
+                    logger.exception("Alert checker cycle failed")
             elapsed = _monotonic() - cycle_start
             await asyncio.sleep(max(0.0, check_interval - elapsed))
 

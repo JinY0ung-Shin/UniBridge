@@ -325,10 +325,47 @@ def _validate_service_keys_payload(body: dict[str, Any]) -> None:
         _validate_service_keys([body.get("service_key")])
 
 
+def _redact_service_key_headers(route: dict[str, Any]) -> None:
+    """Mask the proxy-rewrite header values on a route, in place.
+
+    ``gateway.routes.read`` grants sight of a route's configuration, not of the
+    upstream credentials the route injects. Those sit in
+    ``plugins.proxy-rewrite.headers.set``/``.add`` and would otherwise travel in
+    cleartext alongside their own masked copy in ``service_keys``. Callers that
+    need the real values (``test_route``) read the route from APISIX directly
+    rather than through this view.
+    """
+    plugins = route.get("plugins")
+    if not isinstance(plugins, dict):
+        return
+    pr = plugins.get("proxy-rewrite")
+    if not isinstance(pr, dict):
+        return
+    headers = pr.get("headers")
+    if not isinstance(headers, dict):
+        return
+    for op in ("set", "add"):
+        values = headers.get(op)
+        if not isinstance(values, dict):
+            continue
+        headers[op] = {
+            name: _mask_value(value) if isinstance(value, str) else value
+            for name, value in values.items()
+        }
+
+
 def _attach_service_key_fields(route: dict[str, Any]) -> None:
+    """Render the client-facing view of a route's service keys.
+
+    Masking the raw ``plugins`` values here rather than at each call site keeps
+    them from disagreeing: a response can't carry a secret in cleartext next to
+    its own mask. Extraction runs first so the masked fields are derived from
+    the real values.
+    """
     service_keys = _extract_service_keys(route)
     route["service_keys"] = service_keys
     route["service_key"] = service_keys[0] if service_keys else None
+    _redact_service_key_headers(route)
 
 
 def _handle_apisix_error(exc: HTTPStatusError, resource: str) -> NoReturn:
@@ -401,6 +438,63 @@ async def get_route(
 # APISIX caps route names at 100 chars (rule_name schema); enforcing it here
 # turns the opaque schema error into a clean 400.
 _ROUTE_NAME_MAX_LEN = 100
+
+
+def _has_key_auth(route: dict[str, Any]) -> bool:
+    plugins = route.get("plugins")
+    return isinstance(plugins, dict) and "key-auth" in plugins
+
+
+def _normalized_methods(route: dict[str, Any]) -> frozenset[str] | None:
+    """Method restriction as an order-insensitive set, or None for "any method".
+
+    APISIX treats an absent or empty ``methods`` list as unrestricted, so both
+    normalize to the same value; the list's order carries no meaning.
+    """
+    methods = route.get("methods")
+    if not isinstance(methods, list) or not methods:
+        return None
+    return frozenset(str(method) for method in methods)
+
+
+def _reject_protected_route_changes(
+    body: dict[str, Any], existing_route: dict[str, Any] | None
+) -> None:
+    """Refuse topology and auth changes to a system route; allow safe edits.
+
+    Rotating a service key or adjusting a timeout on a built-in route is
+    harmless. Re-pointing its uri/upstream_id/methods is not: the route injects
+    service-key headers, which would then be delivered to a host of the caller's
+    choosing. Dropping key-auth would likewise expose a built-in endpoint.
+
+    ``body`` must already carry its final plugins so this sees the outcome of
+    the request rather than its stated intent.
+
+    Fails closed: a system route missing from APISIX gives nothing to compare
+    against, and letting the write through would let a caller re-create it
+    pointing anywhere — so that case is refused too.
+    """
+    if existing_route is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "System-managed route is not registered in APISIX; refusing to "
+                "create or modify it here (it is provisioned at startup)"
+            ),
+        )
+    if (
+        body.get("uri") != existing_route.get("uri")
+        or body.get("upstream_id") != existing_route.get("upstream_id")
+        or _normalized_methods(body) != _normalized_methods(existing_route)
+        or (_has_key_auth(existing_route) and not _has_key_auth(body))
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "System-managed route topology (uri/upstream_id/methods/auth) "
+                "cannot be modified"
+            ),
+        )
 
 
 @router.put("/routes/{route_id}")
@@ -501,6 +595,10 @@ async def save_route(
 
     body = _inject_plugins(body, existing_plugins)
     _apply_route_timeout(body, existing_route)
+    # Runs on the assembled body so the comparison sees what would actually be
+    # written, not what the caller claimed to be changing.
+    if route_id in PROTECTED_ROUTE_IDS:
+        _reject_protected_route_changes(body, existing_route)
     plugins = body.get("plugins")
     if isinstance(plugins, dict) and "key-auth" in plugins:
         body = apply_master_consumer_restriction(
@@ -782,6 +880,15 @@ async def save_upstream(
     _admin: CurrentUser = Depends(require_permission("gateway.upstreams.write")),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    # System upstreams back the built-in routes, several of which inject
+    # service-key headers. Repointing one's nodes would deliver those secrets to
+    # an attacker-chosen host, so they are read-only here. Mirrors
+    # delete_upstream; app startup provisions them through apisix_client.
+    if upstream_id in PROTECTED_UPSTREAM_IDS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="System-managed upstream cannot be modified",
+        )
     existing_upstream: dict[str, Any] | None = None
     try:
         existing_upstream = await apisix_client.get_resource("upstreams", upstream_id)

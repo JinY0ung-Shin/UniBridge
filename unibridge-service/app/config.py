@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     DEFAULT_QUERY_TIMEOUT: int = 30
     DEFAULT_ROW_LIMIT: int = 10000
+    # Hard ceiling on the number of rows any single query may return, enforced
+    # in query_executor regardless of the per-request or admin default limit.
+    # SELECT reads stream server-side and stop at limit+1, so this bounds the
+    # rows ever pulled into service memory (512m container) and stops a caller
+    # from OOMing the service with one large `SELECT *`.
+    MAX_ROW_LIMIT: int = 1_000_000
     RATE_LIMIT_PER_MINUTE: int = 60
     MAX_CONCURRENT_QUERIES: int = 5
     ENABLE_DEV_TOKEN_ENDPOINT: bool = False
@@ -23,6 +29,17 @@ class Settings(BaseSettings):
     APISIX_ADMIN_KEY: str = ""
     APISIX_INTERNAL_PROXY_SECRET: str = ""
     APISIX_PROVISION_ON_START: bool = True
+    # Blue/green: hard off-switch for the in-app background loops (alert
+    # checker, retention cleanup). Normal deployments leave this true —
+    # per-cycle activity is additionally gated by UNIBRIDGE_SELF_NODE via
+    # app.services.active_color.is_active_instance().
+    RUN_BACKGROUND_TASKS: bool = True
+    # This instance's own upstream node address (e.g.
+    # "unibridge-service-blue:8000"). When set, background loops only act
+    # while the APISIX 'unibridge-service' upstream points at this node (this
+    # color is active), so a standby color never double-sends alerts or
+    # double-runs retention. Empty = single-instance mode: always active.
+    UNIBRIDGE_SELF_NODE: str = ""
     # Gateway read/send timeout (seconds) for the query route. APISIX defaults to
     # 60s, which cuts long queries before the app's own timeout fires; keep this
     # above the app's max req.timeout (300s) so the app wins the race and returns
@@ -37,6 +54,13 @@ class Settings(BaseSettings):
     APISIX_UNIBRIDGE_SERVICE_NODE: str = "unibridge-service:8000"
     APISIX_LLM_CONVERTER_NODE: str = "llm-converter:4001"
     PROMETHEUS_URL: str = "http://prometheus:9090"
+    # Shared bearer token guarding the internal Alertmanager webhook receiver
+    # (POST /_api/internal/alertmanager). Alertmanager posts infra alerts —
+    # including unibridge-service self-down, which the in-app checker cannot
+    # detect — and the app fans them out through the existing owner/admin email
+    # pipeline. Empty = the endpoint is disabled (503), so a deployment without
+    # Alertmanager wired is never left with an unauthenticated dispatch surface.
+    ALERTMANAGER_WEBHOOK_TOKEN: str = ""
     # Server (host) monitoring: Prometheus scrape job for node_exporter agents,
     # and the file-based service-discovery targets file the service writes from
     # the MonitoredHost registry (must be on a volume shared with Prometheus).

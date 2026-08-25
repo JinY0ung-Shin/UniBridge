@@ -206,6 +206,49 @@ services:
     networks:
       - apihub-net
 
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 128m
+    cpus: "0.25"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.25"
+    # Routes Prometheus's fired rules to the unibridge-service webhook, which
+    # reuses the app's owner/admin email pipeline. Alertmanager does not expand
+    # env vars in its config, so substitute the bearer token into a writable
+    # copy at startup then exec the binary ($$ escapes compose interpolation so
+    # the container shell expands it). When ALERTMANAGER_WEBHOOK_TOKEN is unset
+    # the literal placeholder stays as the credential (valid, non-empty) and the
+    # app returns 503 for the endpoint — alerts stay visible in the Alertmanager
+    # UI but no mail goes out until the operator sets the token. See
+    # alertmanager/alertmanager.yml.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >
+        sed "s|__ALERTMANAGER_WEBHOOK_TOKEN__|$${ALERTMANAGER_WEBHOOK_TOKEN:-__ALERTMANAGER_WEBHOOK_TOKEN__}|g"
+        /etc/alertmanager/alertmanager.yml > /tmp/alertmanager.yml
+        && exec /bin/alertmanager --config.file=/tmp/alertmanager.yml --storage.path=/alertmanager
+    environment:
+      - ALERTMANAGER_WEBHOOK_TOKEN=${ALERTMANAGER_WEBHOOK_TOKEN:-}
+    expose:
+      - "9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9093/-/healthy >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - apihub-net
+
   grafana:
     image: grafana/grafana-oss:12.4.3
     restart: unless-stopped
@@ -400,6 +443,8 @@ volumes:
     name: ${ETCD_DATA_VOLUME:-unibridge_etcd-data}
   prometheus-data:
     name: ${PROMETHEUS_DATA_VOLUME:-unibridge_prometheus-data}
+  alertmanager-data:
+    name: ${ALERTMANAGER_DATA_VOLUME:-unibridge_alertmanager-data}
   prometheus-file-sd:
     name: ${PROMETHEUS_FILE_SD_VOLUME:-unibridge_prometheus-file-sd}
   grafana-data:

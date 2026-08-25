@@ -683,10 +683,39 @@ deploy_color() {
   fi
   commit_active_color "$target" "$old"
 
-  if [[ -n "$old" && "$old" != "$target" && "$STOP_OLD_AFTER_PROMOTE" == "true" ]]; then
-    echo "Waiting ${DRAIN_SECONDS}s before stopping old $old stack..."
-    sleep "$DRAIN_SECONDS"
-    compose_app "$old" "$(color_port "$old")" "false" "$old" stop
+  if [[ -n "$old" && "$old" != "$target" ]]; then
+    if [[ "$STOP_OLD_AFTER_PROMOTE" == "true" ]]; then
+      echo "Waiting ${DRAIN_SECONDS}s before stopping old $old stack..."
+      sleep "$DRAIN_SECONDS"
+      compose_app "$old" "$(color_port "$old")" "false" "$old" stop
+    else
+      # Disarm boot-time APISIX provisioning on the standby we are keeping alive.
+      #
+      # promote_apisix is the ONLY intended writer of the upstream -> color
+      # mapping, but APISIX_PROVISION_ON_START / APISIX_*_NODE are baked into a
+      # container's environment when it is *created*. The first-ever deploy
+      # creates its color with provision=true pinned to itself, and the app stack
+      # runs with `restart: unless-stopped` — so a host reboot, dockerd restart or
+      # OOM restart re-runs that container's lifespan and silently PUTs the
+      # unibridge-service/llm-converter upstreams back at the OLD color, while the
+      # edge proxy and the active-color state file still say $target. Split brain,
+      # no warning. Recreating the standby with provision_on_start=false removes
+      # that hazard permanently. provision_route_color is set to the now-active
+      # $target so that even a pathological forced provisioning could only point
+      # forward, never backward. --no-build reuses the old color's already-built
+      # image (never rebuild the old checkout); --wait makes a bad recreate
+      # visible instead of silent.
+      echo "Disarming APISIX boot provisioning on standby $old stack..."
+      if ! compose_app "$old" "$(color_port "$old")" "false" "$target" up -d --no-build --wait; then
+        echo "WARNING: could not recreate standby $old with APISIX_PROVISION_ON_START=false." >&2
+        echo "         The promotion to $target SUCCEEDED and is left in place, but $old still has" >&2
+        echo "         a stale APISIX_PROVISION_ON_START=true baked into its container env: if it" >&2
+        echo "         restarts (host reboot, dockerd restart, OOM) it will re-point the APISIX" >&2
+        echo "         unibridge-service/llm-converter upstreams back at $old." >&2
+        echo "         Fix by re-running this deploy, or by taking the standby down:" >&2
+        echo "           scripts/deploy-bluegreen.sh stop $old" >&2
+      fi
+    fi
   fi
 
   echo "Active color: $target"

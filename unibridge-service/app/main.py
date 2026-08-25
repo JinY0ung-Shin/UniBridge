@@ -29,6 +29,7 @@ from app.routers import (
     config_transfer,
     external_metrics,
     gateway,
+    internal_alerts,
     nas,
     query,
     query_history,
@@ -773,6 +774,7 @@ app.include_router(api_keys.router)
 app.include_router(config_transfer.router)
 app.include_router(gateway.router)
 app.include_router(external_metrics.router)
+app.include_router(internal_alerts.router)
 app.include_router(s3.router)
 app.include_router(nas.router)
 app.include_router(servers.router)

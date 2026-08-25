@@ -1,5 +1,6 @@
 import pytest
 from pydantic import ValidationError
+from app.config import settings
 from app.schemas import (
     DBConnectionCreate,
     QueryRequest,
@@ -69,3 +70,24 @@ def test_query_timeout_is_capped_at_connection_limit(model, payload):
     model(**payload, timeout=300)
     with pytest.raises(ValidationError):
         model(**payload, timeout=301)
+
+
+def test_query_request_limit_is_capped_at_max_row_limit():
+    """The API boundary rejects limits above the executor's hard row ceiling."""
+    assert QueryRequest(database="main", sql="SELECT 1", limit=1).limit == 1
+    assert (
+        QueryRequest(database="main", sql="SELECT 1", limit=settings.MAX_ROW_LIMIT).limit
+        == settings.MAX_ROW_LIMIT
+    )
+
+    with pytest.raises(ValidationError):
+        QueryRequest(database="main", sql="SELECT 1", limit=2_000_000)
+    with pytest.raises(ValidationError):
+        QueryRequest(database="main", sql="SELECT 1", limit=0)
+
+
+def test_query_request_limit_bound_matches_settings():
+    """Field constraints must be literals, so guard against drift from config."""
+    assert settings.MAX_ROW_LIMIT == 1_000_000
+    metadata = QueryRequest.model_fields["limit"].metadata
+    assert any(getattr(m, "le", None) == settings.MAX_ROW_LIMIT for m in metadata)
