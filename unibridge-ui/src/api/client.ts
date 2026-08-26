@@ -1112,6 +1112,8 @@ export interface AlertSettings {
   server_mem_warn_pct?: number;
   server_gpu_util_warn_pct?: number;
   server_gpu_mem_warn_pct?: number;
+  /** Global default for the daily below-target GPU report; 0 disables it. */
+  server_gpu_util_target_pct?: number;
   server_disk_forecast_hours?: number;
   repeat_alert_after_cycles?: number;
   updated_at?: string | null;
@@ -1128,7 +1130,9 @@ export interface AlertResourceOwner {
 export interface AlertHistoryEntry {
   id: number;
   channel_id: number | null;
-  alert_type: 'triggered' | 'resolved';
+  /** "report" rows are scheduled digests (e.g. the daily GPU under-target
+   *  mail), not a state change of an alert. */
+  alert_type: 'triggered' | 'resolved' | 'report';
   target: string;
   display_target?: string | null;
   severity?: string | null;
@@ -1325,6 +1329,10 @@ export interface MonitoredServer {
   gpu_address: string | null;
   gpu_util_warn_pct: number | null;
   gpu_mem_warn_pct: number | null;
+  /** Trailing-24h average GPU utilization the host is expected to reach; the
+   *  daily report mails assignees when it falls short. null inherits the global
+   *  default, 0 turns the report off for this host. */
+  gpu_util_target_pct: number | null;
   status?: 'up' | 'down' | 'unknown' | 'disabled' | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -1344,6 +1352,7 @@ export interface MonitoredServerInput {
   gpu_address?: string | null;
   gpu_util_warn_pct?: number | null;
   gpu_mem_warn_pct?: number | null;
+  gpu_util_target_pct?: number | null;
 }
 
 export interface ServerMetricSeries {

@@ -299,6 +299,13 @@ class AlertSettings(Base):
     # for that host (and a per-host 0 disables it for that host alone).
     server_gpu_util_warn_pct = Column(Float, default=90.0, nullable=False, server_default="90.0")
     server_gpu_mem_warn_pct = Column(Float, default=90.0, nullable=False, server_default="90.0")
+    # Target GPU utilisation for the daily under-utilisation report. 0 = the
+    # daily report is off; a per-host override re-enables it for that host.
+    server_gpu_util_target_pct = Column(Float, default=0.0, nullable=False, server_default="0.0")
+    # Runtime marker (UTC) for the last completed daily GPU report run — not user
+    # config, so it is deliberately absent from the settings schemas and the
+    # config export/import snapshot.
+    server_gpu_report_last_sent_at = Column(UtcDateTime, nullable=True)
     # predict_linear horizon (hours) for "disk will fill within N hours". 0 disables forecasting.
     server_disk_forecast_hours = Column(Float, default=24.0, nullable=False, server_default="24.0")
     # Re-notify cadence for a still-firing alert: 0 = notify once per transition;
@@ -321,7 +328,7 @@ class AlertHistory(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     channel_id = Column(Integer, ForeignKey("alert_channels.id", ondelete="SET NULL"), nullable=True)
     resource_type = Column(String(20), nullable=True)
-    alert_type = Column(String(20), nullable=False)  # "triggered" / "resolved"
+    alert_type = Column(String(20), nullable=False)  # "triggered" / "resolved" / "report"
     # Which monitoring rule produced the row ("db_health", "route_error_rate",
     # "server_disk", …) — the AlertState.alert_type key. Distinct from
     # ``alert_type`` above, which carries the transition. Nullable: rows written
@@ -416,6 +423,9 @@ class MonitoredHost(Base):
     mem_warn_pct = Column(Float, nullable=True)
     gpu_util_warn_pct = Column(Float, nullable=True)
     gpu_mem_warn_pct = Column(Float, nullable=True)
+    # Target utilisation for the daily under-utilisation report: null = inherit
+    # the AlertSettings global default, 0 = report off for this host.
+    gpu_util_target_pct = Column(Float, nullable=True)
     created_at = Column(UtcDateTime, default=utcnow, nullable=False)
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
 

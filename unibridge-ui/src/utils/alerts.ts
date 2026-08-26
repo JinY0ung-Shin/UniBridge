@@ -23,6 +23,7 @@ export const RULE_TYPES = [
   'server_gpu_down',
   'server_gpu_util',
   'server_gpu_mem',
+  'server_gpu_underutil',
   'external_service_down',
 ] as const;
 
@@ -44,6 +45,7 @@ const RULE_LABEL_KEYS: Record<string, string> = {
   server_gpu_down: 'alerts.typeServerGpuDown',
   server_gpu_util: 'alerts.typeServerGpuUtil',
   server_gpu_mem: 'alerts.typeServerGpuMem',
+  server_gpu_underutil: 'alerts.typeServerGpuUnderutil',
   external_service_down: 'alerts.typeExternalServiceDown',
 };
 

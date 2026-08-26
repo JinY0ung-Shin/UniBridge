@@ -693,6 +693,7 @@ class AlertSettingsResponse(BaseModel):
     server_mem_warn_pct: float
     server_gpu_util_warn_pct: float
     server_gpu_mem_warn_pct: float
+    server_gpu_util_target_pct: float
     server_disk_forecast_hours: float
     repeat_alert_after_cycles: int
     updated_at: datetime | None = None
@@ -712,6 +713,8 @@ class AlertSettingsUpdate(BaseModel):
     # 0 disables the GPU alert globally (per-host overrides can re-enable it).
     server_gpu_util_warn_pct: float | None = Field(None, ge=0, le=100)
     server_gpu_mem_warn_pct: float | None = Field(None, ge=0, le=100)
+    # 0 disables the daily GPU under-utilisation report globally.
+    server_gpu_util_target_pct: float | None = Field(None, ge=0, le=100)
     server_disk_forecast_hours: float | None = Field(None, ge=0, le=720)
     repeat_alert_after_cycles: int | None = Field(None, ge=0, le=1000)
 
@@ -734,6 +737,7 @@ class AlertSettingsUpdate(BaseModel):
             "server_mem_warn_pct",
             "server_gpu_util_warn_pct",
             "server_gpu_mem_warn_pct",
+            "server_gpu_util_target_pct",
             "server_disk_forecast_hours",
             "repeat_alert_after_cycles",
         ):
@@ -803,7 +807,7 @@ class ResourceOwnerResponse(BaseModel):
 class AlertHistoryResponse(BaseModel):
     id: int
     channel_id: int | None = None
-    alert_type: str  # transition: "triggered" | "resolved"
+    alert_type: str  # transition: "triggered" | "resolved", or "report" for scheduled mails
     rule_type: str | None = None  # monitoring rule: "db_health", "server_disk", …
     target: str
     display_target: str | None = None
@@ -952,6 +956,7 @@ class MonitoredHostCreate(BaseModel):
     mem_warn_pct: float | None = Field(None, ge=0, le=100)
     gpu_util_warn_pct: float | None = Field(None, ge=0, le=100)
     gpu_mem_warn_pct: float | None = Field(None, ge=0, le=100)
+    gpu_util_target_pct: float | None = Field(None, ge=0, le=100)
 
     @field_validator("name")
     @classmethod
@@ -992,6 +997,7 @@ class MonitoredHostUpdate(BaseModel):
     mem_warn_pct: float | None = Field(None, ge=0, le=100)
     gpu_util_warn_pct: float | None = Field(None, ge=0, le=100)
     gpu_mem_warn_pct: float | None = Field(None, ge=0, le=100)
+    gpu_util_target_pct: float | None = Field(None, ge=0, le=100)
 
     @field_validator("address")
     @classmethod
@@ -1029,6 +1035,7 @@ class MonitoredHostResponse(BaseModel):
     mem_warn_pct: float | None = None
     gpu_util_warn_pct: float | None = None
     gpu_mem_warn_pct: float | None = None
+    gpu_util_target_pct: float | None = None  # daily report target; null = inherit global, 0 = off
     status: str | None = None  # "up" | "down" | "unknown" — live from Prometheus
     created_at: datetime | None = None
     updated_at: datetime | None = None

@@ -1043,6 +1043,8 @@ class TestActiveInstanceGating:
             patch("app.services.alert_checker._get_trigger_after_failures",
                   new=AsyncMock(return_value=2)),
             patch("app.services.alert_checker._monotonic", side_effect=monotonic),
+            patch("app.services.alert_checker.maybe_send_gpu_util_report",
+                  new=AsyncMock(return_value=None)),
             patch("app.services.alert_checker.asyncio.sleep",
                   new=AsyncMock(side_effect=stop_after_sleep)),
         )
@@ -1113,3 +1115,51 @@ class TestActiveInstanceGating:
 
         assert check.await_count == 1
         assert delays == [45.0, 45.0]
+
+    @pytest.mark.asyncio
+    async def test_daily_gpu_report_runs_only_on_the_active_color(self):
+        from app.services import alert_checker
+
+        for active, expected in ((True, 1), (False, 0)):
+            state = AlertStateManager()
+            _delays, patches = self._loop_patches([active], monotonic=[100.0, 115.0])
+            for p in patches:
+                p.start()
+            try:
+                # Entered after the shared patches so this mock is the live one.
+                with patch("app.services.alert_checker.run_single_check", new_callable=AsyncMock), \
+                     patch("app.services.alert_checker.maybe_send_gpu_util_report",
+                           new_callable=AsyncMock) as report:
+                    task = await alert_checker.start_checker(state)
+                    with pytest.raises(RuntimeError, match="stop loop"):
+                        await task
+            finally:
+                for p in patches:
+                    p.stop()
+            assert report.await_count == expected
+
+    @pytest.mark.asyncio
+    async def test_report_and_health_checks_cannot_break_each_other(self):
+        """Each runs in its own try, so one failing never skips the other."""
+        from app.services import alert_checker
+
+        state = AlertStateManager()
+        delays, patches = self._loop_patches([True], monotonic=[100.0, 115.0])
+        for p in patches:
+            p.start()
+        try:
+            with patch("app.services.alert_checker.run_single_check",
+                       new=AsyncMock(side_effect=RuntimeError("check exploded"))) as check, \
+                 patch("app.services.alert_checker.maybe_send_gpu_util_report",
+                       new=AsyncMock(side_effect=RuntimeError("report exploded"))) as report:
+                task = await alert_checker.start_checker(state)
+                with pytest.raises(RuntimeError, match="stop loop"):
+                    await task
+        finally:
+            for p in patches:
+                p.stop()
+
+        check.assert_awaited_once()
+        report.assert_awaited_once()
+        # The loop kept its cadence rather than dying on either failure.
+        assert delays == [45.0]

@@ -200,22 +200,25 @@ async def test_gpu_fields_roundtrip_and_clear(client, admin_token):
     h = auth_header(admin_token)
     created = await client.post("/admin/servers", headers=h, json={
         "name": "gpu1", "address": "1.2.3.4:9100", "gpu_address": "1.2.3.4:9400",
-        "gpu_util_warn_pct": 85, "gpu_mem_warn_pct": 0,
+        "gpu_util_warn_pct": 85, "gpu_mem_warn_pct": 0, "gpu_util_target_pct": 30,
     })
     assert created.status_code == 201, created.text
     host_id = created.json()["id"]
     assert created.json()["gpu_address"] == "1.2.3.4:9400"
     assert created.json()["gpu_util_warn_pct"] == 85
     assert created.json()["gpu_mem_warn_pct"] == 0
+    assert created.json()["gpu_util_target_pct"] == 30
 
     resp = await client.put(
         f"/admin/servers/{host_id}",
         headers=h,
-        json={"gpu_address": "1.2.3.4:9401", "gpu_mem_warn_pct": 70},
+        json={"gpu_address": "1.2.3.4:9401", "gpu_mem_warn_pct": 70, "gpu_util_target_pct": 0},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["gpu_address"] == "1.2.3.4:9401"
     assert resp.json()["gpu_mem_warn_pct"] == 70
+    # 0 = the daily under-utilisation report is off for this host, not "unset".
+    assert resp.json()["gpu_util_target_pct"] == 0
 
     # Blank input is how the UI turns GPU monitoring off.
     resp = await client.put(f"/admin/servers/{host_id}", headers=h, json={"gpu_address": "   "})

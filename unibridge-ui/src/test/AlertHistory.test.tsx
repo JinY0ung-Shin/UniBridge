@@ -55,6 +55,45 @@ describe('AlertHistory page', () => {
     expect(screen.getByText('pending')).toBeInTheDocument();
   });
 
+  it('badges each alert type, keeping report visually apart from triggered/resolved', async () => {
+    mockGet.mockResolvedValue([
+      makeEntry({ id: 1, alert_type: 'triggered', message: 'down' }),
+      makeEntry({ id: 2, alert_type: 'resolved', message: 'recovered' }),
+      makeEntry({ id: 3, alert_type: 'report', rule_type: 'server_gpu_underutil', message: 'idle gpu' }),
+    ]);
+    renderWithProviders(<AlertHistory />);
+    await waitFor(() => expect(screen.getByText('idle gpu')).toBeInTheDocument());
+
+    const table = within(screen.getByRole('table'));
+    expect(table.getByText('Triggered')).toHaveClass('badge-error');
+    expect(table.getByText('Resolved')).toHaveClass('badge-ok');
+    expect(table.getByText('Report')).toHaveClass('badge-neutral');
+    expect(table.getByText('GPU below target utilization')).toBeInTheDocument();
+  });
+
+  it('offers report alongside triggered and resolved in the type filter', async () => {
+    mockGet.mockResolvedValue([makeEntry()]);
+    renderWithProviders(<AlertHistory />);
+    await waitFor(() => expect(mockGet).toHaveBeenCalled());
+
+    const select = screen.getByRole('combobox', { name: /Alert Type|알림 유형/i });
+    expect([...select.querySelectorAll('option')].map((o) => o.getAttribute('value'))).toEqual([
+      '',
+      'triggered',
+      'resolved',
+      'report',
+    ]);
+
+    fireEvent.change(select, { target: { value: 'report' } });
+    fireEvent.click(screen.getByRole('button', { name: /Search|검색/i }));
+
+    await waitFor(() => {
+      expect(mockGet).toHaveBeenLastCalledWith(
+        expect.objectContaining({ alert_type: 'report', offset: 0 }),
+      );
+    });
+  });
+
   it('applies filters and resets to page 0', async () => {
     mockGet.mockResolvedValue([makeEntry()]);
     renderWithProviders(<AlertHistory />);
@@ -179,7 +218,7 @@ describe('AlertHistory page', () => {
     const ruleSelect = screen.getByRole('combobox', { name: /Rule|규칙/i });
     expect(ruleSelect).toHaveAttribute('id', 'alert-history-rule-filter');
     // every rule identifier is offered, plus the "all" option
-    expect(ruleSelect.querySelectorAll('option')).toHaveLength(15);
+    expect(ruleSelect.querySelectorAll('option')).toHaveLength(16);
 
     fireEvent.change(ruleSelect, { target: { value: 'server_disk_forecast' } });
     fireEvent.click(screen.getByRole('button', { name: /Search|검색/i }));

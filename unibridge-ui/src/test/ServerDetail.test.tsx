@@ -71,6 +71,7 @@ describe('ServerDetail page', () => {
     gpu_address: null,
     gpu_util_warn_pct: null,
     gpu_mem_warn_pct: null,
+    gpu_util_target_pct: null,
     status: 'up' as const,
   };
 

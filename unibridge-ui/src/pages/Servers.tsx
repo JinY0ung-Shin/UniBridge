@@ -32,13 +32,14 @@ interface FormState {
   gpu_address: string;
   gpu_util_warn_pct: string;
   gpu_mem_warn_pct: string;
+  gpu_util_target_pct: string;
 }
 
 const emptyForm: FormState = {
   name: '', address: '', description: '', enabled: true,
   disk_mountpoints: '',
   disk_warn_pct: '', disk_crit_pct: '', cpu_warn_pct: '', mem_warn_pct: '',
-  gpu_address: '', gpu_util_warn_pct: '', gpu_mem_warn_pct: '',
+  gpu_address: '', gpu_util_warn_pct: '', gpu_mem_warn_pct: '', gpu_util_target_pct: '',
 };
 
 function pctOrNull(value: string): number | null {
@@ -174,6 +175,7 @@ function Servers() {
       gpu_address: server.gpu_address ?? '',
       gpu_util_warn_pct: numToStr(server.gpu_util_warn_pct),
       gpu_mem_warn_pct: numToStr(server.gpu_mem_warn_pct),
+      gpu_util_target_pct: numToStr(server.gpu_util_target_pct),
     });
     setEditingId(server.id);
     setShowModal(true);
@@ -187,6 +189,7 @@ function Servers() {
       mem_warn_pct: pctOrNull(form.mem_warn_pct),
       gpu_util_warn_pct: pctOrNull(form.gpu_util_warn_pct),
       gpu_mem_warn_pct: pctOrNull(form.gpu_mem_warn_pct),
+      gpu_util_target_pct: pctOrNull(form.gpu_util_target_pct),
     };
     const diskMountpoints = strOrNull(form.disk_mountpoints);
     const gpuAddress = strOrNull(form.gpu_address);
@@ -464,6 +467,13 @@ function Servers() {
               <div className="form-group">
                 <label htmlFor="server-gpu-mem-warn">{t('servers.gpuMemWarn')}</label>
                 <input id="server-gpu-mem-warn" type="number" min={0} max={100} value={form.gpu_mem_warn_pct} onChange={(e) => setForm({ ...form, gpu_mem_warn_pct: e.target.value })} placeholder="90" aria-label={t('servers.gpuMemWarn')} />
+              </div>
+              <div className="form-group">
+                <label htmlFor="server-gpu-util-target">
+                  {t('servers.gpuUtilTarget')}{' '}
+                  <span id="server-gpu-util-target-hint" className="hint">{t('servers.gpuUtilTargetHint')}</span>
+                </label>
+                <input id="server-gpu-util-target" type="number" min={0} max={100} value={form.gpu_util_target_pct} onChange={(e) => setForm({ ...form, gpu_util_target_pct: e.target.value })} placeholder="0" aria-label={t('servers.gpuUtilTarget')} aria-describedby="server-gpu-util-target-hint" />
               </div>
             </div>
 

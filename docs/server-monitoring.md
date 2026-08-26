@@ -170,6 +170,46 @@ dies you get one `server_down`, not a pair. Thresholds default to 90/90 in
 > to 0 (off) or to something deliberately high; memory and `server_gpu_down` are
 > the load-bearing signals there.
 
+### Daily under-utilisation report
+
+The GPU signals above all fire when usage is *too high*. The daily report is the
+inverse: it surfaces GPU servers that sat idle, so wasted capacity gets noticed
+instead of quietly costing money.
+
+Once a day at **08:00 KST** UniBridge takes each GPU host's **trailing-24h
+average GPU utilisation** (the mean across that host's cards, the same collapse
+the alerts use) and mails the host's 담당자 plus the 관리자 for every host that
+came in **below its target**. Hosts at or above target send nothing — a quiet
+mailbox means the fleet is busy.
+
+Targets work like the other thresholds, except the default is *off*:
+
+| Setting                              | Where                                | Meaning                                  |
+|--------------------------------------|--------------------------------------|------------------------------------------|
+| `server_gpu_util_target_pct`         | **Alert settings → Server thresholds** | Global default. **0 = report off** everywhere. |
+| `gpu_util_target_pct`                | **Servers** → per host                 | Empty = inherit the global default; **0 = report off** for that host. |
+
+So a single global target of, say, 30% switches the report on for every GPU
+host, and a host that is *meant* to idle (a spare, a dev box) opts out with a
+per-host 0. The reverse also works: leave the global at 0 and set a target on
+just the two hosts you care about.
+
+The send hour is `GPU_UTIL_REPORT_HOUR_KST` (default `8`). KST is treated as a
+fixed UTC+9 offset — Korea has no DST — so the container needs no tzdata.
+
+Practical notes:
+
+* **Downtime catches up.** The check runs on every checker cycle (~60s) and the
+  once-a-day marker is a KST calendar date, so if UniBridge was down at 08:00
+  the report still goes out later the same day — once, not once per cycle.
+* **A mute skips that day's mail.** Muting a server suppresses its report the
+  same way it suppresses its alerts, but nothing is queued: this is a report,
+  not an incident, so there is no delayed re-fire when the mute lifts.
+* **A host with no data is skipped** (with a log line) rather than reported as
+  0% — an exporter that was down all day is already `server_gpu_down`'s job.
+* **It appears in alert history** as a `report` entry with rule type
+  `server_gpu_underutil`, alongside the triggered/resolved rows.
+
 ### Multi-GPU hosts
 
 dcgm-exporter exposes one series **per GPU** (labels `gpu`, `UUID`,

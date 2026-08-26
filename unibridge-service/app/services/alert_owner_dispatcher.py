@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 
 ASSIGNEE_RESOURCE_TYPES = {"db", "s3", "nas", "route", "server", "service"}
 
+# Mail subject/status wording per transition. Anything that is not one of the two
+# incident transitions is a scheduled report (e.g. the daily GPU
+# under-utilisation mail), which must not read as a recovery.
+_STATUS_LABELS = {"triggered": "장애 발생", "resolved": "정상 복구"}
+
 
 async def dispatch_alert(
     *,
@@ -46,9 +51,10 @@ async def dispatch_alert(
     sent. Upstream alerts intentionally skip assignee routing and notify only
     admins because upstreams are route internals in the UI.
 
-    ``alert_type`` is the transition ("triggered"/"resolved"); ``rule_type`` is
-    the monitoring rule that produced it ("db_health", "server_disk", …). Both
-    are recorded on the history row.
+    ``alert_type`` is the transition ("triggered"/"resolved") — or "report" for a
+    scheduled mail that announces no incident; ``rule_type`` is the monitoring
+    rule that produced it ("db_health", "server_disk", …). Both are recorded on
+    the history row.
     """
     history = AlertHistory(
         channel_id=None,
@@ -255,7 +261,7 @@ def _render_payload(
     severity: str | None = None,
     target_description: str | None = None,
 ) -> str:
-    status_label = "장애 발생" if alert_type == "triggered" else "정상 복구"
+    status_label = _STATUS_LABELS.get(alert_type, "정기 리포트")
     return render_template(
         payload_template,
         alert_type=alert_type,

@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     # per-host collapse that server_down relies on.
     DCGM_EXPORTER_JOB: str = "gpu-nodes"
     PROMETHEUS_GPU_FILE_SD_PATH: str = "/etc/prometheus/file_sd/gpus.json"
+    # Hour (KST, 0-23) at which the daily GPU under-utilisation report is sent.
+    # KST is a fixed UTC+9 offset, so this needs no tzdata in the image.
+    GPU_UTIL_REPORT_HOUR_KST: int = 8
     # External API-service monitoring: Prometheus scrape job for services that
     # expose RED metrics (http_requests_total + http_request_duration_seconds)
     # without routing through the gateway, and the file-based service-discovery

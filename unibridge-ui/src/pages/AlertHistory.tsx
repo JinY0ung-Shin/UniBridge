@@ -14,6 +14,25 @@ const EMPTY_FILTER_FORM = {
   target: '',
 };
 
+/*
+ * `alert_type` is its own namespace, unrelated to the `rule_type` identifiers
+ * in `utils/alerts`: it says what the row is, not what fired. "report" rows are
+ * scheduled digests, so they read as neither an outage nor a recovery — a
+ * backend that grows a fourth type falls back to neutral rather than being
+ * mislabelled as one of these three.
+ */
+const ALERT_TYPE_BADGES: Record<string, string> = {
+  triggered: 'badge-error',
+  resolved: 'badge-ok',
+  report: 'badge-neutral',
+};
+
+const ALERT_TYPE_LABEL_KEYS: Record<string, string> = {
+  triggered: 'alerts.triggered',
+  resolved: 'alerts.resolved',
+  report: 'alerts.report',
+};
+
 function AlertHistory() {
   const { t } = useTranslation();
   const [page, setPage] = useState(0);
@@ -75,6 +94,7 @@ function AlertHistory() {
             <option value="">{t('alerts.filterAlertType')}</option>
             <option value="triggered">{t('alerts.triggered')}</option>
             <option value="resolved">{t('alerts.resolved')}</option>
+            <option value="report">{t('alerts.report')}</option>
           </select>
         </div>
         <div className="filter-field">
@@ -143,13 +163,11 @@ function AlertHistory() {
                     <td className="cell-timestamp">{formatKST(entry.sent_at)}</td>
                     <td>
                       <span
-                        className={`badge ${
-                          entry.alert_type === 'triggered' ? 'badge-error' : 'badge-ok'
-                        }`}
+                        className={`badge ${ALERT_TYPE_BADGES[entry.alert_type] ?? 'badge-neutral'}`}
                       >
-                        {entry.alert_type === 'triggered'
-                          ? t('alerts.triggered')
-                          : t('alerts.resolved')}
+                        {ALERT_TYPE_LABEL_KEYS[entry.alert_type]
+                          ? t(ALERT_TYPE_LABEL_KEYS[entry.alert_type])
+                          : entry.alert_type}
                       </span>
                     </td>
                     <td className="cell-rule">

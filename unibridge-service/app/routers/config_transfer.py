@@ -1223,6 +1223,7 @@ async def _apply_monitored_host(
     host.mem_warn_pct = body.mem_warn_pct
     host.gpu_util_warn_pct = body.gpu_util_warn_pct
     host.gpu_mem_warn_pct = body.gpu_mem_warn_pct
+    host.gpu_util_target_pct = body.gpu_util_target_pct
     await ctx.db.commit()
     await ctx.db.refresh(host)
 

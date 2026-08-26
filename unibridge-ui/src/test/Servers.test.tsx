@@ -49,6 +49,7 @@ function makeServer(overrides = {}) {
     gpu_address: null,
     gpu_util_warn_pct: null,
     gpu_mem_warn_pct: null,
+    gpu_util_target_pct: null,
     status: 'up' as const,
     ...overrides,
   };
@@ -182,6 +183,14 @@ describe('Servers', () => {
     );
     expect(screen.getByRole('spinbutton', { name: 'GPU util warn % (0=off)' })).toBeInTheDocument();
     expect(screen.getByRole('spinbutton', { name: 'GPU memory warn % (0=off)' })).toBeInTheDocument();
+
+    const gpuTarget = screen.getByRole('spinbutton', { name: 'GPU target util % · daily report' });
+    expect(gpuTarget).toHaveAttribute('id', 'server-gpu-util-target');
+    expect(gpuTarget).toHaveAttribute('aria-describedby', 'server-gpu-util-target-hint');
+    expect(screen.getByText(/Mails the assignees at 08:00 KST/i)).toHaveAttribute(
+      'id',
+      'server-gpu-util-target-hint',
+    );
   });
 
   it('creates a trimmed server with numeric and inherited threshold values', async () => {
@@ -199,6 +208,7 @@ describe('Servers', () => {
     await user.type(screen.getByRole('spinbutton', { name: 'CPU warn %' }), '85');
     await user.type(screen.getByRole('textbox', { name: 'GPU exporter address (dcgm)' }), ' 10.0.0.9:39400 ');
     await user.type(screen.getByRole('spinbutton', { name: 'GPU util warn % (0=off)' }), '95');
+    await user.type(screen.getByRole('spinbutton', { name: 'GPU target util % · daily report' }), '30');
     await user.click(screen.getByRole('checkbox', { name: /Enabled/ }));
     await user.click(screen.getByRole('button', { name: 'Create' }));
 
@@ -215,6 +225,7 @@ describe('Servers', () => {
       mem_warn_pct: null,
       gpu_util_warn_pct: 95,
       gpu_mem_warn_pct: null,
+      gpu_util_target_pct: 30,
     }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add server' })).not.toBeInTheDocument());
   });
@@ -231,6 +242,7 @@ describe('Servers', () => {
       gpu_address: '10.0.0.5:39400',
       gpu_util_warn_pct: 88,
       gpu_mem_warn_pct: 77,
+      gpu_util_target_pct: 40,
     })]);
     mockedUpdateServer.mockResolvedValue(makeServer());
     const user = userEvent.setup();
@@ -242,6 +254,7 @@ describe('Servers', () => {
     expect(screen.getByRole('spinbutton', { name: 'Disk warn %' })).toHaveValue(70);
     expect(screen.getByRole('textbox', { name: 'GPU exporter address (dcgm)' })).toHaveValue('10.0.0.5:39400');
     expect(screen.getByRole('spinbutton', { name: 'GPU util warn % (0=off)' })).toHaveValue(88);
+    expect(screen.getByRole('spinbutton', { name: 'GPU target util % · daily report' })).toHaveValue(40);
     await user.clear(screen.getByRole('textbox', { name: 'node_exporter address' }));
     await user.type(screen.getByRole('textbox', { name: 'node_exporter address' }), ' new.example:39100 ');
     await user.clear(screen.getByRole('textbox', { name: 'Disk mountpoints' }));
@@ -262,6 +275,7 @@ describe('Servers', () => {
       mem_warn_pct: 83,
       gpu_util_warn_pct: 88,
       gpu_mem_warn_pct: 77,
+      gpu_util_target_pct: 40,
     }));
   });
 

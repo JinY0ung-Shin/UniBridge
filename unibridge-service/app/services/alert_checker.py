@@ -16,6 +16,7 @@ from app.services.active_color import is_active_instance
 from app.services.alert_mutes import MuteIndex, load_mute_index
 from app.services.alert_owner_dispatcher import dispatch_alert
 from app.services.alert_state import AlertStateManager, save_alert_state_to_db
+from app.services.gpu_report import maybe_send_gpu_util_report
 from app.services.server_monitor import ServerThresholds
 
 logger = logging.getLogger(__name__)
@@ -935,6 +936,13 @@ async def start_checker(state: AlertStateManager) -> asyncio.Task:
                     await run_single_check(state, trigger_after_failures=trigger_after_failures)
                 except Exception:
                     logger.exception("Alert checker cycle failed")
+                # Separate try: the daily GPU report is a scheduled side errand,
+                # not part of health checking, so neither its failure nor the
+                # health checks' may take the other down.
+                try:
+                    await maybe_send_gpu_util_report()
+                except Exception:
+                    logger.exception("Daily GPU utilisation report failed")
             elapsed = _monotonic() - cycle_start
             await asyncio.sleep(max(0.0, check_interval - elapsed))
 

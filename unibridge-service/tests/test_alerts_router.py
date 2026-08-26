@@ -288,6 +288,7 @@ async def test_get_and_update_alert_settings(client, admin_token):
         "check_interval_seconds": 90,
         "server_gpu_util_warn_pct": 75,
         "server_gpu_mem_warn_pct": 0,  # 0 = GPU memory alerting off globally
+        "server_gpu_util_target_pct": 35,  # daily under-utilisation report target
     }
     resp = await client.put(
         "/admin/alerts/settings",

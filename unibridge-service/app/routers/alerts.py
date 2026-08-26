@@ -129,6 +129,7 @@ def _build_settings_response(settings: AlertSettings) -> AlertSettingsResponse:
         server_mem_warn_pct=settings.server_mem_warn_pct,
         server_gpu_util_warn_pct=settings.server_gpu_util_warn_pct,
         server_gpu_mem_warn_pct=settings.server_gpu_mem_warn_pct,
+        server_gpu_util_target_pct=settings.server_gpu_util_target_pct,
         server_disk_forecast_hours=settings.server_disk_forecast_hours,
         repeat_alert_after_cycles=settings.repeat_alert_after_cycles,
         updated_at=settings.updated_at,
@@ -149,6 +150,7 @@ def _settings_audit_snapshot(settings: AlertSettings) -> dict[str, Any]:
         "server_mem_warn_pct": settings.server_mem_warn_pct,
         "server_gpu_util_warn_pct": settings.server_gpu_util_warn_pct,
         "server_gpu_mem_warn_pct": settings.server_gpu_mem_warn_pct,
+        "server_gpu_util_target_pct": settings.server_gpu_util_target_pct,
         "server_disk_forecast_hours": settings.server_disk_forecast_hours,
         "repeat_alert_after_cycles": settings.repeat_alert_after_cycles,
     }
@@ -363,6 +365,8 @@ async def update_alert_settings(
         settings.server_gpu_util_warn_pct = body.server_gpu_util_warn_pct
     if body.server_gpu_mem_warn_pct is not None:
         settings.server_gpu_mem_warn_pct = body.server_gpu_mem_warn_pct
+    if body.server_gpu_util_target_pct is not None:
+        settings.server_gpu_util_target_pct = body.server_gpu_util_target_pct
     if body.server_disk_forecast_hours is not None:
         settings.server_disk_forecast_hours = body.server_disk_forecast_hours
     if body.repeat_alert_after_cycles is not None:
@@ -790,7 +794,7 @@ def _render_channel_recipients_json(
 
 @router.get("/history", response_model=list[AlertHistoryResponse])
 async def list_history(
-    alert_type: str | None = Query(None, description="Transition: triggered | resolved"),
+    alert_type: str | None = Query(None, description="Transition: triggered | resolved | report"),
     rule_type: str | None = Query(None, description="Monitoring rule, e.g. db_health"),
     target: str | None = Query(None),
     from_date: datetime | None = Query(None),

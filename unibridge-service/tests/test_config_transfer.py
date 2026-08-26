@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -36,6 +37,9 @@ CHANNEL_HEADER_SECRET = "Bearer channel-header-secret"
 ROUTE_SERVICE_KEY = "upstream-service-key-value"
 
 PLACEHOLDER = "<excluded>"
+
+# Runtime marker for the daily GPU report — never part of the portable config.
+GPU_REPORT_MARKER = datetime(2026, 8, 20, 23, 5, tzinfo=timezone.utc)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -159,7 +163,7 @@ async def seed_full_config(engine) -> None:
         db.add(MonitoredHost(
             name="web1", address="10.0.0.5:9100", description="edge",
             labels=json.dumps({"env": "prod"}), disk_mountpoints="/,/data",
-            gpu_address="10.0.0.5:9400", disk_warn_pct=70.0,
+            gpu_address="10.0.0.5:9400", disk_warn_pct=70.0, gpu_util_target_pct=25.0,
         ))
         db.add(MonitoredService(
             name="billing", address="10.0.0.9:8080", metrics_path="/actuator/prometheus",
@@ -171,7 +175,11 @@ async def seed_full_config(engine) -> None:
         )
         db.add(channel)
         await db.flush()
-        db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails=json.dumps(["ops@example.com"])))
+        db.add(AlertSettings(
+            id=1, mail_channel_id=channel.id, admin_emails=json.dumps(["ops@example.com"]),
+            server_gpu_util_target_pct=35.0,
+            server_gpu_report_last_sent_at=GPU_REPORT_MARKER,
+        ))
         db.add(ResourceOwner(resource_type="db", resource_id="analytics", emails=json.dumps(["owner@example.com"])))
         await db.commit()
 
@@ -276,11 +284,16 @@ class TestExport:
         assert sections["db_permissions"][0]["allowed_tables"] == ["orders"]
         assert sections["query_templates"][0]["path"] == "sales/daily"
         assert sections["monitored_hosts"][0]["gpu_address"] == "10.0.0.5:9400"
+        assert sections["monitored_hosts"][0]["gpu_util_target_pct"] == 25.0
         assert sections["monitored_hosts"][0]["labels"] == {"env": "prod"}
         assert sections["monitored_services"][0]["metrics_path"] == "/actuator/prometheus"
         # The mail channel link travels by name, not by row id.
         assert sections["alert_settings"]["mail_channel_name"] == "mail-a"
         assert sections["alert_settings"]["admin_emails"] == ["ops@example.com"]
+        assert sections["alert_settings"]["server_gpu_util_target_pct"] == 35.0
+        # The daily-report marker is runtime state: exporting it would let an
+        # import stamp another deployment's "already sent today" onto this one.
+        assert "server_gpu_report_last_sent_at" not in sections["alert_settings"]
         assert sections["alert_recipients"][0]["emails"] == ["owner@example.com"]
         assert "rate_limit_per_minute" in sections["system_settings"]
         assert list(sections) == [
@@ -425,7 +438,8 @@ class TestDryRun:
                               "description": "", "labels": None, "disk_mountpoints": None,
                               "gpu_address": None, "disk_warn_pct": None, "disk_crit_pct": None,
                               "cpu_warn_pct": None, "mem_warn_pct": None,
-                              "gpu_util_warn_pct": None, "gpu_mem_warn_pct": None}],
+                              "gpu_util_warn_pct": None, "gpu_mem_warn_pct": None,
+                              "gpu_util_target_pct": None}],
             routes=[{"id": "svc-a", "name": "service-a", "uri": "/api/svc-a/*",
                      "upstream_id": "svc-a-up", "plugins": {"key-auth": {}}}],
         )
@@ -594,6 +608,31 @@ class TestApply:
             settings_row = (await db.execute(select(AlertSettings))).scalar_one()
         assert settings_row.mail_channel_id == before
         assert settings_row.check_interval_seconds == 90
+
+    async def test_imports_gpu_report_targets_and_keeps_the_marker(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        await seed_full_config(seeded_db)
+        doc = export_doc(
+            monitored_hosts=[{"name": "web1", "address": "10.0.0.5:9100",
+                              "gpu_address": "10.0.0.5:9400", "gpu_util_target_pct": 45.0}],
+            alert_settings={"server_gpu_util_target_pct": 15.0},
+        )
+        resp = await do_import(
+            client, admin_token, dry_run=False,
+            sections=["monitored_hosts", "alert_settings"], doc=doc,
+        )
+        assert resp.status_code == 200, resp.text
+
+        async with factory_for(seeded_db)() as db:
+            host = (await db.execute(
+                select(MonitoredHost).where(MonitoredHost.name == "web1")
+            )).scalar_one()
+            settings_row = (await db.execute(select(AlertSettings))).scalar_one()
+        assert host.gpu_util_target_pct == 45.0
+        assert settings_row.server_gpu_util_target_pct == 15.0
+        # Importing config must not stamp another deployment's run history here.
+        assert settings_row.server_gpu_report_last_sent_at == GPU_REPORT_MARKER
 
     async def test_applies_system_settings(
         self, client, admin_token, seeded_db, apisix_state, restore_settings_manager

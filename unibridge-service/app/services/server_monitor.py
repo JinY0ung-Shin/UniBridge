@@ -363,6 +363,16 @@ def _q_gpu_util_pct() -> str:
     return f'avg by (host) (DCGM_FI_DEV_GPU_UTIL{{job="{_gpu_job()}"}})'
 
 
+def _q_gpu_util_avg_24h() -> str:
+    # Trailing-24h mean utilisation across the host's GPUs, for the daily
+    # under-utilisation report. Same avg-by-host collapse as _q_gpu_util_pct,
+    # with the per-series average taken over the window first.
+    return (
+        f'avg by (host) (avg_over_time('
+        f'DCGM_FI_DEV_GPU_UTIL{{job="{_gpu_job()}"}}[24h]))'
+    )
+
+
 def _q_gpu_mem_pct() -> str:
     # dcgm reports framebuffer used/free in MiB. The division is label-matched,
     # so the percentage is computed per GPU first and only then averaged across
@@ -447,6 +457,17 @@ async def gpu_up_map() -> dict[str, bool] | None:
         logger.warning("Could not query GPU exporter up status: %s", exc)
         return None
     return {host: value >= 1.0 for host, value in _map_by_host(results).items()}
+
+
+async def gpu_util_daily_avg_map() -> dict[str, float]:
+    """Return {host_name: trailing-24h average GPU utilisation %}.
+
+    Unlike :func:`gpu_up_map` this deliberately lets Prometheus errors
+    propagate: the daily report caller uses a failed query to defer its
+    once-per-day marker and retry on the next cycle, which it cannot do if the
+    failure is flattened into an empty map.
+    """
+    return _map_by_host(await prometheus_client.instant_query(_q_gpu_util_avg_24h()))
 
 
 def _map_by_host(results: list[dict[str, Any]]) -> dict[str, float]:

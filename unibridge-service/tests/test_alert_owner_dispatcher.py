@@ -496,6 +496,35 @@ async def test_dispatch_alert_sends_headers_and_alert_placeholders(engine):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_alert_labels_a_scheduled_report_as_such(engine):
+    """A "report" must not borrow the recovery wording — it announces no incident."""
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        channel = await _seed_mail_channel(
+            db, payload_template='{"recipients":{{recipients_json}},"status":"{{status}}"}'
+        )
+        db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails='["ops@example.com"]'))
+        await db.commit()
+
+    send = AsyncMock(return_value=(True, None))
+    with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
+         patch("app.services.alert_owner_dispatcher.send_webhook", send):
+        await dispatch_alert(
+            resource_type="server",
+            resource_id="gpu1",
+            alert_type="report",
+            rule_type="server_gpu_underutil",
+            target="gpu1",
+            message="Server 'gpu1' 24h average GPU utilisation is 4.0%.",
+            display_target="gpu1",
+        )
+
+    assert json.loads(send.await_args.kwargs["payload"])["status"] == "정기 리포트"
+    histories = await _history_rows(session_factory)
+    assert (histories[0].alert_type, histories[0].rule_type) == ("report", "server_gpu_underutil")
+
+
+@pytest.mark.asyncio
 async def test_dispatch_alert_requires_recipient_item_template(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:

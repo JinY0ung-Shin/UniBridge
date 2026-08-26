@@ -130,6 +130,7 @@ def _host_response(host: MonitoredHost, status: str | None = None) -> MonitoredH
         mem_warn_pct=host.mem_warn_pct,
         gpu_util_warn_pct=host.gpu_util_warn_pct,
         gpu_mem_warn_pct=host.gpu_mem_warn_pct,
+        gpu_util_target_pct=host.gpu_util_target_pct,
         status=status,
         created_at=host.created_at,
         updated_at=host.updated_at,
@@ -151,6 +152,7 @@ def _audit_snapshot(host: MonitoredHost) -> dict[str, Any]:
         "mem_warn_pct": host.mem_warn_pct,
         "gpu_util_warn_pct": host.gpu_util_warn_pct,
         "gpu_mem_warn_pct": host.gpu_mem_warn_pct,
+        "gpu_util_target_pct": host.gpu_util_target_pct,
     }
 
 
@@ -223,6 +225,7 @@ async def create_server(
         mem_warn_pct=body.mem_warn_pct,
         gpu_util_warn_pct=body.gpu_util_warn_pct,
         gpu_mem_warn_pct=body.gpu_mem_warn_pct,
+        gpu_util_target_pct=body.gpu_util_target_pct,
     )
     db.add(host)
     try:
@@ -273,7 +276,7 @@ async def update_server(
         host.gpu_address = body.gpu_address
     for field in (
         "disk_warn_pct", "disk_crit_pct", "cpu_warn_pct", "mem_warn_pct",
-        "gpu_util_warn_pct", "gpu_mem_warn_pct",
+        "gpu_util_warn_pct", "gpu_mem_warn_pct", "gpu_util_target_pct",
     ):
         if field in body.model_fields_set:
             setattr(host, field, getattr(body, field))

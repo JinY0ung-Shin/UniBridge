@@ -322,6 +322,26 @@ describe('AlertSettings page', () => {
     );
   });
 
+  it('delivery tab saves the global GPU target utilization', async () => {
+    renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
+    const targetInput = await screen.findByLabelText(
+      /Server GPU target utilization|서버 GPU 목표 사용률/i,
+    );
+    // the fixture omits it, so the panel falls back to its "off" default
+    await waitFor(() => expect(targetInput).toHaveValue(0));
+
+    await userEvent.clear(targetInput);
+    await userEvent.type(targetInput, '35');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save Settings$|^설정 저장$/i }));
+
+    await waitFor(() => expect(mocks.updateSettings).toHaveBeenCalled());
+    expect(mocks.updateSettings.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ server_gpu_util_target_pct: 35 }),
+    );
+  });
+
   it('delivery tab disables settings save before settings have loaded', async () => {
     mocks.getSettings.mockReturnValue(new Promise(() => undefined));
     renderWithProviders(<AlertSettings />);
