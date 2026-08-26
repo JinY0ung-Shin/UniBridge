@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import os
 import stat
+import zipfile
 from collections.abc import AsyncGenerator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -53,6 +54,54 @@ def _iso(ts: float | None) -> str | None:
     if ts is None:
         return None
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+# ZIP entries carry a DOS timestamp, which cannot express anything before 1980.
+_ZIP_MIN_DATE_TIME = (1980, 1, 1, 0, 0, 0)
+
+# zipfile switches an entry to the ZIP64 layout above this uncompressed size.
+_ZIP64_FORCE_THRESHOLD = 0x7FFFFFFF
+
+
+def _zip_date_time(ts: float) -> tuple[int, ...]:
+    """Render a POSIX mtime as a ZipInfo date_time 6-tuple.
+
+    Anything the DOS format cannot represent (pre-1980, or an mtime so far out
+    that fromtimestamp overflows) is clamped instead of raising mid-stream.
+    """
+    try:
+        parts = datetime.fromtimestamp(ts, tz=timezone.utc).timetuple()[:6]
+    except (OSError, OverflowError, ValueError):
+        return _ZIP_MIN_DATE_TIME
+    if parts[0] < 1980:
+        return _ZIP_MIN_DATE_TIME
+    return parts
+
+
+class _ZipStreamSink:
+    """Unseekable in-memory sink that ``zipfile.ZipFile`` writes a ZIP into.
+
+    Exposes ONLY ``write``/``flush``: with no ``seek``/``tell``, ZipFile takes
+    its unseekable-output path and emits a data descriptor after each member
+    instead of rewinding to patch the local header — which is what makes a
+    chunked, never-buffered-whole ZIP possible. ``drain`` hands the bytes
+    produced so far to the streaming generator and empties the buffer.
+    """
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+
+    def write(self, data: bytes) -> int:
+        self._buf.extend(data)
+        return len(data)
+
+    def flush(self) -> None:
+        pass
+
+    def drain(self) -> bytes:
+        out = bytes(self._buf)
+        del self._buf[:]
+        return out
 
 
 class NASConnectionManager:
@@ -413,6 +462,165 @@ class NASConnectionManager:
                     os.close(fd)
                 except OSError:
                     pass
+
+        return _gen(), meta
+
+    async def open_zip_stream(
+        self,
+        alias: str,
+        relpaths: list[str],
+    ) -> tuple[AsyncGenerator[bytes, None], dict[str, Any]]:
+        """Stream several alias-relative files as one ZIP (ZIP_STORED).
+
+        Every path is validated and opened up front in a SINGLE blocking pass,
+        so the request either fails with a clean HTTP status before a byte is
+        sent, or streams from descriptors that are already proven regular files
+        inside the base. Failures carry the offending client-supplied relpath on
+        ``exc.nas_relpath`` so the router can name it (never a server path).
+        """
+        base, config = self._require(alias)
+        show_hidden: bool = config["show_hidden"]
+        follow_symlinks: bool = config["follow_symlinks"]
+        cap = self._effective_cap(alias)
+        chunk_size = settings.NAS_STREAM_CHUNK_BYTES
+
+        def _open_all() -> tuple[list[tuple[str, int, int, float]], int]:
+            self._probe_base(base)
+            entries: list[tuple[str, int, int, float]] = []
+            seen: set[str] = set()
+            total = 0
+            current = ""
+            try:
+                for relpath in relpaths:
+                    current = relpath
+                    rel_clean = sanitize_relpath(relpath, settings.NAS_MAX_PATH_BYTES)
+                    # Existence-hiding for hidden targets, as in open_read_stream.
+                    if not show_hidden and _is_hidden_name(rel_clean.name):
+                        raise FileNotFoundError("Not found")
+
+                    arcname = str(rel_clean)
+                    if arcname in seen:
+                        # A path listed twice would produce a duplicate member.
+                        continue
+                    seen.add(arcname)
+
+                    target = safe_resolve(
+                        base.real_path, relpath, follow_symlinks=follow_symlinks
+                    )
+                    fd = open_regular_fd(target, follow_symlinks=follow_symlinks)
+                    try:
+                        st = os.fstat(fd)
+                    except BaseException:
+                        os.close(fd)
+                        raise
+                    size = int(st.st_size)
+                    entries.append((arcname, fd, size, st.st_mtime))
+                    total += size
+                    if cap is not None and total > cap:
+                        raise NasTooLargeError("Selection exceeds the maximum download size")
+            except BaseException as exc:
+                # Nothing will ever stream, so no descriptor may survive.
+                for _arc, opened_fd, _size, _mtime in entries:
+                    try:
+                        os.close(opened_fd)
+                    except OSError:
+                        pass
+                exc.nas_relpath = current
+                raise
+            return entries, total
+
+        entries, total = await self._run_blocking(_open_all)
+        meta = {
+            "filename": f"{alias}-files.zip",
+            "content_type": "application/zip",
+            "file_count": len(entries),
+            "total_size": total,
+        }
+
+        async def _gen() -> AsyncGenerator[bytes, None]:
+            sink = _ZipStreamSink()
+            zf = zipfile.ZipFile(
+                sink, mode="w", compression=zipfile.ZIP_STORED, allowZip64=True
+            )
+            member: Any = None
+            try:
+                for arcname, fd, size, mtime in entries:
+                    zinfo = zipfile.ZipInfo(arcname, date_time=_zip_date_time(mtime))
+                    # file_size drives zipfile's ZIP64 decision; the data
+                    # descriptor written at member close records what was
+                    # actually read, so a file that shrank stays consistent.
+                    zinfo.file_size = size
+                    zinfo.external_attr = 0o644 << 16
+
+                    def _start(zinfo: zipfile.ZipInfo = zinfo, size: int = size) -> bytes:
+                        nonlocal member
+                        member = zf.open(
+                            zinfo,
+                            mode="w",
+                            force_zip64=size >= _ZIP64_FORCE_THRESHOLD,
+                        )
+                        return sink.drain()
+
+                    header = await self._run_blocking(_start)
+                    if header:
+                        yield header
+
+                    # Never read past the fstat'd size: a file being appended to
+                    # concurrently must not desync the entry it was sized for.
+                    remaining = size
+                    while remaining > 0:
+                        want = min(chunk_size, remaining)
+
+                        def _copy(fd: int = fd, want: int = want) -> tuple[int, bytes]:
+                            data = os.read(fd, want)
+                            if data:
+                                member.write(data)
+                            return len(data), sink.drain()
+
+                        # One executor hop per chunk: the read AND the zip write
+                        # both block, and calls are strictly sequential so the
+                        # (thread-unsafe) member handle is only ever touched by
+                        # one nas-fs thread at a time.
+                        read_len, payload = await self._run_blocking(_copy)
+                        if payload:
+                            yield payload
+                        if read_len == 0:
+                            break  # file shrank under us; the descriptor records reality
+                        remaining -= read_len
+
+                    def _end_member() -> bytes:
+                        nonlocal member
+                        member.close()
+                        member = None
+                        return sink.drain()
+
+                    trailer = await self._run_blocking(_end_member)
+                    if trailer:
+                        yield trailer
+
+                def _end_archive() -> bytes:
+                    zf.close()
+                    return sink.drain()
+
+                central_directory = await self._run_blocking(_end_archive)
+                if central_directory:
+                    yield central_directory
+            finally:
+                # Always release everything, even on client abort / exception.
+                if member is not None:
+                    try:
+                        member.close()
+                    except Exception:
+                        pass
+                try:
+                    zf.close()
+                except Exception:
+                    pass
+                for _arc, open_fd, _size, _mtime in entries:
+                    try:
+                        os.close(open_fd)
+                    except OSError:
+                        pass
 
         return _gen(), meta
 

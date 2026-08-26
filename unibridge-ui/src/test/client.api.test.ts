@@ -734,6 +734,50 @@ describe('api client API helpers', () => {
     expect((await mod.downloadNasEntry('n', '')).filename).toBe('download');
   });
 
+  it('downloadNasZip POSTs the path list and names the archive from the header', async () => {
+    const mod = await importClient(keycloak);
+    let captured: InternalAxiosRequestConfig | undefined;
+    mod.default.defaults.adapter = vi.fn(async (config) => {
+      captured = config;
+      return {
+        data: new Blob(['zip']),
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-disposition': "attachment; filename*=UTF-8''n-files.zip" },
+        config,
+      };
+    }) as unknown as AxiosAdapter;
+
+    let result = await mod.downloadNasZip('n', ['docs/a.txt', 'b.txt']);
+    expect(captured!.method).toBe('post');
+    expect(captured!.url).toBe('/nas/n/download-zip');
+    expect(captured!.responseType).toBe('blob');
+    expect(JSON.parse(captured!.data)).toEqual({ paths: ['docs/a.txt', 'b.txt'] });
+    expect(result.filename).toBe('n-files.zip');
+
+    // The ZIP stream may arrive with no Content-Disposition at all.
+    mod.default.defaults.adapter = vi.fn(async (config) => ({
+      data: new Blob([]), status: 200, statusText: 'OK', headers: {}, config,
+    })) as unknown as AxiosAdapter;
+    result = await mod.downloadNasZip('n', ['b.txt']);
+    expect(result.filename).toBe('n-files.zip');
+  });
+
+  it('readBlobErrorDetail digs the FastAPI detail out of a blob error body', async () => {
+    const mod = await importClient(keycloak);
+    const blobError = { response: { data: new Blob([JSON.stringify({ detail: 'too many paths' })]) } };
+    expect(await mod.readBlobErrorDetail(blobError)).toBe('too many paths');
+
+    // A plain JSON body works too — the interceptor may have parsed it already.
+    expect(await mod.readBlobErrorDetail({ response: { data: { detail: 'gone' } } })).toBe('gone');
+
+    // Anything unreadable or non-string degrades to undefined, never a throw.
+    expect(await mod.readBlobErrorDetail({ response: { data: new Blob(['<html>502</html>']) } })).toBeUndefined();
+    expect(await mod.readBlobErrorDetail({ response: { data: { detail: { loc: ['paths'] } } } })).toBeUndefined();
+    expect(await mod.readBlobErrorDetail(new Error('network'))).toBeUndefined();
+    expect(await mod.readBlobErrorDetail(undefined)).toBeUndefined();
+  });
+
   it('getAlertStatus widens a legacy bare-array response', async () => {
     const mod = await importClient(keycloak);
     mod.default.defaults.adapter = makeAdapter(() => [

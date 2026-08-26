@@ -1774,6 +1774,13 @@ export async function getNasEntryMetadata(
   return data;
 }
 
+function parseAttachmentFilename(disposition: string, fallback: string): string {
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;\s]+)/i);
+  const plainMatch = disposition.match(/filename="([^"]+)"/i);
+  const raw = utf8Match?.[1] ?? plainMatch?.[1];
+  return raw ? decodeURIComponent(raw) : fallback;
+}
+
 export async function downloadNasEntry(
   alias: string,
   path: string,
@@ -1787,13 +1794,45 @@ export async function downloadNasEntry(
     },
   });
   const disposition = response.headers['content-disposition'] || '';
-  const utf8Match = disposition.match(/filename\*=UTF-8''([^;\s]+)/i);
-  const plainMatch = disposition.match(/filename="([^"]+)"/i);
-  const raw = utf8Match?.[1] ?? plainMatch?.[1];
-  const filename = raw
-    ? decodeURIComponent(raw)
-    : path.split('/').pop() || 'download';
+  const filename = parseAttachmentFilename(disposition, path.split('/').pop() || 'download');
   return { blob: response.data as Blob, filename };
+}
+
+/**
+ * Batch download: the server streams a ZIP of `paths`. The response is chunked,
+ * so there is no Content-Length to drive a progress bar — callers show an
+ * indeterminate busy state instead.
+ */
+export async function downloadNasZip(
+  alias: string,
+  paths: string[],
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await client.post(
+    `/nas/${alias}/download-zip`,
+    { paths },
+    { responseType: 'blob' },
+  );
+  const disposition = response.headers['content-disposition'] || '';
+  const filename = parseAttachmentFilename(disposition, `${alias}-files.zip`);
+  return { blob: response.data as Blob, filename };
+}
+
+/**
+ * Pull the FastAPI `detail` out of a failed blob request. With
+ * `responseType: 'blob'` axios hands back the *error* body as a Blob too, so
+ * the JSON has to be read out of it before it can be shown. Returns undefined
+ * whenever the body is not a readable JSON detail string.
+ */
+export async function readBlobErrorDetail(error: unknown): Promise<string | undefined> {
+  const data = (error as { response?: { data?: unknown } } | null)?.response?.data;
+  try {
+    const text = data instanceof Blob ? await data.text() : null;
+    const parsed: unknown = text !== null ? JSON.parse(text) : data;
+    const detail = (parsed as { detail?: unknown } | null)?.detail;
+    return typeof detail === 'string' ? detail : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /* ── Config export / import ── */

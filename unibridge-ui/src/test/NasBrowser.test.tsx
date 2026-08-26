@@ -3,6 +3,8 @@ vi.mock('../api/client', () => ({
   getNasEntries: vi.fn(),
   getNasEntryMetadata: vi.fn(),
   downloadNasEntry: vi.fn(),
+  downloadNasZip: vi.fn(),
+  readBlobErrorDetail: vi.fn(),
 }));
 
 vi.mock('react-router-dom', async () => {
@@ -20,6 +22,8 @@ import {
   getNasEntries,
   getNasEntryMetadata,
   downloadNasEntry,
+  downloadNasZip,
+  readBlobErrorDetail,
 } from '../api/client';
 import i18n from '../i18n';
 import NasBrowser from '../pages/NasBrowser';
@@ -28,6 +32,8 @@ import { renderWithProviders } from './helpers';
 const mockEntries = vi.mocked(getNasEntries);
 const mockMeta = vi.mocked(getNasEntryMetadata);
 const mockDownload = vi.mocked(downloadNasEntry);
+const mockZip = vi.mocked(downloadNasZip);
+const mockBlobDetail = vi.mocked(readBlobErrorDetail);
 const clipboardWriteText = vi.fn();
 
 /** A NasEntry exactly per contract §6/§10 — name/path/is_dir/size/modified_time, nothing else. */
@@ -83,11 +89,25 @@ function labelRe(...keys: string[]) {
 
 const NAS_PERMISSIONS = ['nas.connections.read', 'nas.browse'];
 
+/** Stub the objectURL + anchor plumbing a blob save goes through; returns the click spy. */
+function stubBlobSaving() {
+  Object.defineProperty(window.URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:mock') });
+  Object.defineProperty(window.URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+  return vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+}
+
+function selectBox(name: string) {
+  return screen.getByRole('checkbox', { name: i18n.t('nas.selectFile', { name }) });
+}
+
 describe('NasBrowser page', () => {
   beforeEach(() => {
     mockEntries.mockReset();
     mockMeta.mockReset();
     mockDownload.mockReset();
+    mockZip.mockReset();
+    mockBlobDetail.mockReset();
+    mockBlobDetail.mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: clipboardWriteText },
@@ -446,5 +466,165 @@ describe('NasBrowser page', () => {
     await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
     expect(screen.getByText(i18n.t('nas.entryCountMore', { count: 1 }))).toBeInTheDocument();
     expect(screen.getByText(i18n.t('nas.truncatedNotice'))).toBeInTheDocument();
+  });
+
+  /* ── Multi-select ZIP download ── */
+
+  it('offers a selection checkbox on files but never on folders', async () => {
+    mockEntries.mockResolvedValue(
+      makeListResponse({
+        folders: [makeEntry({ name: 'logs', path: 'logs', is_dir: true, size: null })],
+        files: [makeEntry({ name: 'a.txt', path: 'a.txt', size: 10 })],
+        total_count: 2,
+      }),
+    );
+    renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+
+    expect(selectBox('a.txt')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('checkbox', { name: i18n.t('nas.selectFile', { name: 'logs' }) }),
+    ).not.toBeInTheDocument();
+    // Only the header checkbox and the single file's checkbox exist.
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2);
+  });
+
+  it('downloads the selected files as one ZIP and clears the selection', async () => {
+    mockEntries.mockResolvedValue(
+      makeListResponse({
+        files: [
+          makeEntry({ name: 'a.txt', path: 'a.txt', size: 10 }),
+          makeEntry({ name: 'b.txt', path: 'docs/b.txt', size: 20 }),
+          makeEntry({ name: 'c.txt', path: 'c.txt', size: 30 }),
+        ],
+        total_count: 3,
+      }),
+    );
+    mockZip.mockResolvedValue({ blob: new Blob(['zip']), filename: 'nas-main-files.zip' });
+    const clickSpy = stubBlobSaving();
+
+    renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+
+    fireEvent.click(selectBox('a.txt'));
+    fireEvent.click(selectBox('b.txt'));
+
+    const bar = screen.getByRole('group', { name: i18n.t('nas.selection') });
+    expect(within(bar).getByText(i18n.t('nas.selectedCount', { count: 2 }))).toBeInTheDocument();
+    // Summed from the listing entries — 10 B + 20 B; c.txt's own 30 B stays out of the bar.
+    expect(within(bar).getByText('30 B')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('nas.downloadZip') }));
+
+    // Exactly the selected paths, addressed relative to the alias — c.txt stays out.
+    await waitFor(() => expect(mockZip).toHaveBeenCalledWith('nas-main', ['a.txt', 'docs/b.txt']));
+    expect(clickSpy).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.queryByText(i18n.t('nas.selectedCount', { count: 2 }))).not.toBeInTheDocument(),
+    );
+    clickSpy.mockRestore();
+  });
+
+  it('selects and deselects every listed file from the header checkbox', async () => {
+    mockEntries.mockResolvedValue(
+      makeListResponse({
+        files: [
+          makeEntry({ name: 'a.txt', path: 'a.txt', size: 10 }),
+          makeEntry({ name: 'b.txt', path: 'b.txt', size: 20 }),
+        ],
+        total_count: 2,
+      }),
+    );
+    renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+
+    const selectAll = screen.getByRole('checkbox', { name: i18n.t('nas.selectAllFiles') });
+
+    // Partial selection puts the header checkbox in the indeterminate state.
+    fireEvent.click(selectBox('a.txt'));
+    expect((selectAll as HTMLInputElement).indeterminate).toBe(true);
+
+    fireEvent.click(selectAll);
+    expect(screen.getByText(i18n.t('nas.selectedCount', { count: 2 }))).toBeInTheDocument();
+    expect(selectBox('a.txt')).toBeChecked();
+    expect(selectBox('b.txt')).toBeChecked();
+    expect((selectAll as HTMLInputElement).indeterminate).toBe(false);
+
+    fireEvent.click(selectAll);
+    expect(screen.queryByText(i18n.t('nas.selectedCount', { count: 2 }))).not.toBeInTheDocument();
+    expect(selectBox('a.txt')).not.toBeChecked();
+  });
+
+  it('surfaces the server detail when the ZIP download fails and keeps the selection', async () => {
+    mockEntries.mockResolvedValue(
+      makeListResponse({
+        files: [makeEntry({ name: 'a.txt', path: 'a.txt', size: 10 })],
+        total_count: 1,
+      }),
+    );
+    mockZip.mockRejectedValue(new Error('boom'));
+    mockBlobDetail.mockResolvedValue('File not found: a.txt');
+
+    renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+
+    fireEvent.click(selectBox('a.txt'));
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('nas.downloadZip') }));
+
+    const toast = await screen.findByRole('alert');
+    expect(toast).toHaveTextContent(i18n.t('nas.zipDownloadFailed'));
+    expect(toast).toHaveTextContent('File not found: a.txt');
+    // A failed batch must not throw the selection away — the user retries as-is.
+    expect(screen.getByText(i18n.t('nas.selectedCount', { count: 1 }))).toBeInTheDocument();
+    expect(selectBox('a.txt')).toBeChecked();
+  });
+
+  it('drops the selection when the browser changes directory', async () => {
+    mockEntries
+      .mockResolvedValueOnce(
+        makeListResponse({
+          folders: [makeEntry({ name: 'logs', path: 'logs', is_dir: true, size: null })],
+          files: [makeEntry({ name: 'a.txt', path: 'a.txt', size: 10 })],
+          total_count: 2,
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeListResponse({
+          path: 'logs',
+          files: [makeEntry({ name: '2026.txt', path: 'logs/2026.txt', size: 10 })],
+          total_count: 1,
+        }),
+      );
+    renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+
+    fireEvent.click(selectBox('a.txt'));
+    expect(screen.getByText(i18n.t('nas.selectedCount', { count: 1 }))).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('logs'));
+
+    await waitFor(() => expect(screen.getByText('2026.txt')).toBeInTheDocument());
+    expect(screen.queryByText(i18n.t('nas.selectedCount', { count: 1 }))).not.toBeInTheDocument();
+    expect(selectBox('2026.txt')).not.toBeChecked();
+  });
+
+  it('includes the batch ZIP endpoint in the API examples', async () => {
+    mockEntries.mockResolvedValue(
+      makeListResponse({
+        files: [makeEntry({ name: 'file.txt', path: 'file.txt', size: 5 })],
+        total_count: 1,
+      }),
+    );
+    renderWithProviders(<NasBrowser />, { permissions: NAS_PERMISSIONS });
+    await waitFor(() => expect(screen.getByText('file.txt')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: labelRe('nas.apiExamples') }));
+    const dialog = await screen.findByRole('dialog');
+
+    expect(dialog).toHaveTextContent('/api/nas/nas-main/download-zip');
+    expect(dialog).toHaveTextContent('-X POST');
+    expect(dialog).toHaveTextContent('{"paths":["file.txt"]}');
+    // The single-file example must survive alongside it.
+    expect(dialog).toHaveTextContent('/api/nas/nas-main/download?path=file.txt');
   });
 });

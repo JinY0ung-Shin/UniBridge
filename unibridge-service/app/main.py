@@ -341,7 +341,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         {
                             "name": "nas-api",
                             "uri": "/api/nas/*",
-                            "methods": ["GET"],
+                            "methods": ["GET", "POST"],
                             "upstream_id": "unibridge-service",
                             "plugins": {
                                 "key-auth": {},

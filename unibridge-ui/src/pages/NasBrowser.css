@@ -130,11 +130,66 @@
   color: var(--text-secondary);
 }
 
+/* ── Selection bar ── */
+
+.nas-selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent-blue, #0070f3) 35%, transparent);
+  background: color-mix(in srgb, var(--accent-blue, #0070f3) 8%, transparent);
+  border-radius: var(--radius-md);
+}
+
+.nas-selection-count {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.nas-selection-size {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.nas-selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.nas-selection-actions .nas-spinner {
+  margin-right: 6px;
+  border-color: color-mix(in srgb, currentColor 35%, transparent);
+  border-top-color: currentColor;
+}
+
 /* ── Table ── */
 
 .nas-table .nas-actions-col {
   text-align: right;
   width: 1%;
+}
+
+.nas-table .nas-select-col,
+.nas-table .nas-select-cell {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.nas-select-checkbox {
+  cursor: pointer;
+  accent-color: var(--accent-blue, #0070f3);
+  vertical-align: middle;
+}
+
+.nas-select-checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .nas-row-folder td {
@@ -439,5 +494,14 @@
 
   .nas-search {
     max-width: none;
+  }
+
+  .nas-selection-actions {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .nas-selection-actions .btn {
+    flex: 1;
   }
 }

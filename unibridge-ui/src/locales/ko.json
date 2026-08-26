@@ -945,7 +945,16 @@
     "previewTruncated": "파일이 너무 길어 일부만 표시합니다. 전체 내용은 다운로드해 주세요.",
     "entryCountMore": "항목 {{count}}개 이상",
     "truncatedNotice": "이 디렉터리에 항목이 너무 많아 일부만 표시됩니다. 검색어로 범위를 좁혀 보세요.",
-    "parentDirectory": "상위 폴더로 이동"
+    "parentDirectory": "상위 폴더로 이동",
+    "selection": "선택한 파일",
+    "selectFile": "\"{{name}}\" 선택",
+    "selectAllFiles": "파일 전체 선택",
+    "selectedCount": "선택 {{count}}개",
+    "clearSelection": "선택 해제",
+    "downloadZip": "선택한 파일 ZIP으로 다운로드",
+    "downloadingZip": "ZIP 준비 중...",
+    "zipDownloadFailed": "선택한 파일 다운로드 실패",
+    "downloadZipExample": "여러 파일 ZIP 다운로드"
   },
   "alerts": {
     "settingsTitle": "알림 설정",

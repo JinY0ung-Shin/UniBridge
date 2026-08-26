@@ -122,6 +122,7 @@ class Settings(BaseSettings):
     NAS_STREAM_CHUNK_BYTES: int = 1024 * 1024
     NAS_MAX_PATH_BYTES: int = 4096
     NAS_FS_OP_TIMEOUT_SECONDS: float = 10.0          # per-op timeout so a hung NFS/FIFO syscall cannot wedge the service
+    NAS_MAX_BATCH_FILES: int = 100                   # max files a single batch (zip) download may request
 
     # S3 / S3-compatible object storage blocking-call isolation
     S3_MAX_WORKERS: int = 8

@@ -13,7 +13,12 @@ from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_ro
 from app.config import settings
 from app.database import get_db
 from app.models import NASConnection
-from app.schemas import NasConnectionCreate, NasConnectionResponse, NasConnectionUpdate
+from app.schemas import (
+    NasBatchDownloadRequest,
+    NasConnectionCreate,
+    NasConnectionResponse,
+    NasConnectionUpdate,
+)
 from app.services.audit import log_admin_action
 from app.services.nas_manager import nas_manager
 from app.services.nas_security import NasSecurityError, NasTooLargeError, NasUnavailableError
@@ -243,29 +248,34 @@ async def _require_nas_browse(
 
 
 def _handle_nas_error(alias: str, exc: Exception) -> NoReturn:
+    # A batch op tags the failure with the client-supplied RELATIVE path that
+    # tripped it, so a caller sending many paths learns which one failed. Only
+    # ever the caller's own input — never a resolved server path.
+    relpath = getattr(exc, "nas_relpath", None)
+    where = f": {relpath}" if relpath else ""
     if isinstance(exc, NasTooLargeError):
         logger.warning("NAS file too large for '%s': %s", alias, exc)
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail="File too large for download",
+            detail=f"File too large for download{where}",
         )
     if isinstance(exc, NasUnavailableError):
         logger.warning("NAS unavailable for '%s': %s", alias, exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="NAS mount unavailable",
+            detail=f"NAS mount unavailable{where}",
         )
     if isinstance(exc, (NasSecurityError, ValueError)):
         logger.warning("NAS invalid path for '%s': %s", alias, exc)
-        raise HTTPException(status_code=400, detail="Invalid path")
+        raise HTTPException(status_code=400, detail=f"Invalid path{where}")
     if isinstance(exc, (FileNotFoundError, NotADirectoryError)):
-        raise HTTPException(status_code=404, detail="Resource not found")
+        raise HTTPException(status_code=404, detail=f"Resource not found{where}")
     if isinstance(exc, IsADirectoryError):
-        raise HTTPException(status_code=400, detail="Target is a directory")
+        raise HTTPException(status_code=400, detail=f"Target is a directory{where}")
     if isinstance(exc, PermissionError):
-        raise HTTPException(status_code=403, detail="NAS access denied")
+        raise HTTPException(status_code=403, detail=f"NAS access denied{where}")
     logger.error("Unexpected NAS error for '%s': %s", alias, exc)
-    raise HTTPException(status_code=502, detail="NAS operation failed")
+    raise HTTPException(status_code=502, detail=f"NAS operation failed{where}")
 
 
 @router.get("/nas/{alias}/entries")
@@ -330,4 +340,38 @@ async def download_nas_entry(
         gen,
         media_type=meta["content_type"],
         headers=headers,
+    )
+
+
+@router.post("/nas/{alias}/download-zip")
+async def download_nas_zip(
+    alias: str,
+    body: NasBatchDownloadRequest,
+    _user: CurrentUser | ApiKeyUser = Depends(_require_nas_browse),
+) -> StreamingResponse:
+    """Proxy-download several NAS files as one streamed ZIP (read-only, no Range)."""
+    if not nas_manager.has_connection(alias):
+        raise HTTPException(status_code=404, detail=f"NAS connection '{alias}' not found")
+
+    if len(body.paths) > settings.NAS_MAX_BATCH_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many paths (max {settings.NAS_MAX_BATCH_FILES})",
+        )
+
+    try:
+        gen, meta = await nas_manager.open_zip_stream(alias, body.paths)
+    except Exception as exc:
+        _handle_nas_error(alias, exc)
+
+    filename = meta["filename"]
+    # No Content-Length: the archive is built while it streams, and a member
+    # whose file changed under us makes the final size unknowable up front.
+    return StreamingResponse(
+        gen,
+        media_type=meta["content_type"],
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "X-Content-Type-Options": "nosniff",
+        },
     )

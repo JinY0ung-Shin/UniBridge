@@ -4,7 +4,9 @@ import { useTranslation } from 'react-i18next';
 import {
   getNasEntries,
   downloadNasEntry,
+  downloadNasZip,
   getNasEntryMetadata,
+  readBlobErrorDetail,
   type NasEntry,
   type NasEntryMetadata,
 } from '../api/client';
@@ -20,6 +22,21 @@ function formatBytes(bytes: number | null): string {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+}
+
+/** Push an already-fetched blob to disk under `filename`. */
+function saveBlob(blob: Blob, filename: string): void {
+  const url = window.URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } finally {
+    setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+  }
 }
 
 /* ── In-browser preview ──────────────────────────────────────────────────── */
@@ -61,6 +78,14 @@ function iconClassFor(entry: NasEntry): string {
   if (kind === 'text') return 'nas-icon-text';
   return 'nas-icon-file';
 }
+
+/** Selected file paths, stamped with the listing they were picked from. */
+interface Selection {
+  key: string;
+  paths: Set<string>;
+}
+
+const NO_SELECTION: ReadonlySet<string> = new Set<string>();
 
 interface PreviewState {
   entry: NasEntry;
@@ -121,7 +146,11 @@ function getExampleFilePath(currentPath: string, files: NasEntry[]): string {
   return normalizedPath ? `${normalizedPath}/example.csv` : 'example.csv';
 }
 
-function buildNasApiUrl(alias: string, endpoint: string, params: Record<string, string | number>): string {
+function buildNasApiUrl(
+  alias: string,
+  endpoint: string,
+  params: Record<string, string | number> = {},
+): string {
   const url = new URL(`/api/nas/${encodeURIComponent(alias)}/${endpoint}`, window.location.origin);
   Object.entries(params).forEach(([key, value]) => {
     url.searchParams.set(key, String(value));
@@ -131,6 +160,11 @@ function buildNasApiUrl(alias: string, endpoint: string, params: Record<string, 
 
 function buildNasCurl(url: string): string {
   return `curl -k \\\n  -H 'apikey: <YOUR_API_KEY>' \\\n  '${url}'`;
+}
+
+function buildNasZipCurl(url: string, filePath: string): string {
+  const body = JSON.stringify({ paths: [filePath] });
+  return `curl -k -X POST \\\n  -H 'apikey: <YOUR_API_KEY>' \\\n  -H 'Content-Type: application/json' \\\n  -d '${body}' \\\n  -o files.zip \\\n  '${url}'`;
 }
 
 function buildNasApiExamples(
@@ -158,6 +192,10 @@ function buildNasApiExamples(
       labelKey: 'nas.downloadExample',
       curl: buildNasCurl(buildNasApiUrl(alias, 'download', { path: filePath })),
     },
+    {
+      labelKey: 'nas.downloadZipExample',
+      curl: buildNasZipCurl(buildNasApiUrl(alias, 'download-zip'), filePath),
+    },
   ];
 }
 
@@ -180,9 +218,19 @@ function NasBrowser() {
   const [metadataModal, setMetadataModal] = useState<NasEntryMetadata | null>(null);
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [downloadingPaths, setDownloadingPaths] = useState<Set<string>>(new Set());
+  // A selection only means something against the listing it was made from, so
+  // it is stamped with that listing's identity: once the alias, directory, or
+  // filter moves on, the stamp no longer matches and the selection reads empty.
+  const [selection, setSelection] = useState<Selection>({ key: '', paths: new Set() });
+  const [batchDownloading, setBatchDownloading] = useState(false);
   const [apiExamplesOpen, setApiExamplesOpen] = useState(false);
   const [apiExamplesCopied, setApiExamplesCopied] = useState(false);
   const apiExamplesCopyTimeoutRef = useRef<number | null>(null);
+
+  // Separator cannot appear in an alias, path, or search term.
+  const listingKey = [alias ?? '', path, search].join('\u0000');
+  const selectedPaths: ReadonlySet<string> =
+    selection.key === listingKey ? selection.paths : NO_SELECTION;
 
   // Monotonic id so out-of-order list responses can be discarded.
   const fetchReqId = useRef(0);
@@ -268,17 +316,7 @@ function NasBrowser() {
     setDownloadingPaths((prev) => new Set(prev).add(entryPath));
     try {
       const { blob, filename } = await downloadNasEntry(alias, entryPath);
-      const url = window.URL.createObjectURL(blob);
-      try {
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      } finally {
-        setTimeout(() => window.URL.revokeObjectURL(url), 1000);
-      }
+      saveBlob(blob, filename);
     } catch {
       addToast({ type: 'error', title: t('nas.downloadFailed') });
     } finally {
@@ -287,6 +325,48 @@ function NasBrowser() {
         next.delete(entryPath);
         return next;
       });
+    }
+  }
+
+  function updateSelection(apply: (paths: Set<string>) => void) {
+    setSelection((prev) => {
+      const next = new Set(prev.key === listingKey ? prev.paths : []);
+      apply(next);
+      return { key: listingKey, paths: next };
+    });
+  }
+
+  function toggleSelected(entryPath: string) {
+    updateSelection((paths) => {
+      if (!paths.delete(entryPath)) paths.add(entryPath);
+    });
+  }
+
+  function toggleSelectAll() {
+    updateSelection((paths) => {
+      const everySelected = files.length > 0 && files.every((f) => paths.has(f.path));
+      files.forEach((f) => (everySelected ? paths.delete(f.path) : paths.add(f.path)));
+    });
+  }
+
+  function clearSelection() {
+    setSelection({ key: listingKey, paths: new Set() });
+  }
+
+  // The ZIP is streamed without a Content-Length, so there is no progress to
+  // report — the button just goes busy until the blob lands.
+  async function handleBatchDownload() {
+    if (!alias || batchDownloading || selectedPaths.size === 0) return;
+    setBatchDownloading(true);
+    try {
+      const { blob, filename } = await downloadNasZip(alias, [...selectedPaths]);
+      saveBlob(blob, filename);
+      clearSelection();
+    } catch (err) {
+      const detail = await readBlobErrorDetail(err);
+      addToast({ type: 'error', title: t('nas.zipDownloadFailed'), message: detail });
+    } finally {
+      setBatchDownloading(false);
     }
   }
 
@@ -425,6 +505,13 @@ function NasBrowser() {
   }
 
   const shownCount = folders.length + files.length;
+  const selectedCount = selectedPaths.size;
+  const selectedSize = files.reduce(
+    (total, f) => (selectedPaths.has(f.path) && f.size != null ? total + f.size : total),
+    0,
+  );
+  const allFilesSelected = files.length > 0 && files.every((f) => selectedPaths.has(f.path));
+  const someFilesSelected = !allFilesSelected && files.some((f) => selectedPaths.has(f.path));
   const searching = search.length > 0;
   const isEmpty = shownCount === 0 && !loading && !errored;
   const countHasMore = hasMore || truncated;
@@ -503,6 +590,29 @@ function NasBrowser() {
         <div className="nas-notice" role="status">{t('nas.truncatedNotice')}</div>
       )}
 
+      {/* Selection actions — only while something is selected */}
+      {selectedCount > 0 && (
+        <div className="nas-selection-bar" role="group" aria-label={t('nas.selection')}>
+          <span className="nas-selection-count">{t('nas.selectedCount', { count: selectedCount })}</span>
+          <span className="nas-selection-size mono">{formatBytes(selectedSize)}</span>
+          <div className="nas-selection-actions">
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              onClick={handleBatchDownload}
+              disabled={batchDownloading}
+              aria-busy={batchDownloading}
+            >
+              {batchDownloading && <span className="nas-spinner" aria-hidden="true" />}
+              {batchDownloading ? t('nas.downloadingZip') : t('nas.downloadZip')}
+            </button>
+            <button type="button" className="btn btn-sm btn-secondary" onClick={clearSelection}>
+              {t('nas.clearSelection')}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Entry listing */}
       {loading && shownCount === 0 ? (
         <div className="loading-message" role="status">{t('nas.loadingEntries')}</div>
@@ -511,6 +621,19 @@ function NasBrowser() {
           <table className="data-table nas-table">
             <thead>
               <tr>
+                <th scope="col" className="nas-select-col">
+                  <input
+                    type="checkbox"
+                    className="nas-select-checkbox"
+                    ref={(el) => {
+                      if (el) el.indeterminate = someFilesSelected;
+                    }}
+                    checked={allFilesSelected}
+                    onChange={toggleSelectAll}
+                    disabled={files.length === 0}
+                    aria-label={t('nas.selectAllFiles')}
+                  />
+                </th>
                 <th scope="col">{t('nas.fileName')}</th>
                 <th scope="col">{t('nas.size')}</th>
                 <th scope="col">{t('nas.lastModified')}</th>
@@ -527,6 +650,7 @@ function NasBrowser() {
                   onClick={navigateUp}
                   onKeyDown={(event) => handleFolderRowKeyDown(event, navigateUp)}
                 >
+                  <td className="nas-select-cell"></td>
                   <td className="cell-alias">
                     <span className="nas-name-btn nas-icon nas-icon-folder nas-icon--up" title={t('nas.parentDirectory')}>
                       ..
@@ -547,6 +671,7 @@ function NasBrowser() {
                   onClick={() => goToPath(f.path)}
                   onKeyDown={(event) => handleFolderRowKeyDown(event, () => goToPath(f.path))}
                 >
+                  <td className="nas-select-cell"></td>
                   <td className="cell-alias">
                     <span className="nas-name-btn nas-icon nas-icon-folder">
                       {f.name}
@@ -562,6 +687,16 @@ function NasBrowser() {
                 const busy = downloadingPaths.has(file.path);
                 return (
                   <tr key={file.path}>
+                    <td className="nas-select-cell">
+                      <input
+                        type="checkbox"
+                        className="nas-select-checkbox"
+                        checked={selectedPaths.has(file.path)}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => { e.stopPropagation(); toggleSelected(file.path); }}
+                        aria-label={t('nas.selectFile', { name: file.name })}
+                      />
+                    </td>
                     <td className="cell-alias">
                       <button
                         type="button"

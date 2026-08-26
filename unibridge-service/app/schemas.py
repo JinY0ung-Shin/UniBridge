@@ -1275,6 +1275,10 @@ class NasConnectionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class NasBatchDownloadRequest(BaseModel):
+    paths: list[str] = Field(..., min_length=1)
+
+
 # ── Config transfer (export / import) ───────────────────────────────────────
 
 class ConfigExportResponse(BaseModel):

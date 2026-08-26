@@ -187,9 +187,13 @@ GET /api/nas/company-nas/entries?path=reports&limit=100
 GET /api/nas/company-nas/entries?path=reports&q=invoice&limit=100
 GET /api/nas/company-nas/metadata?path=reports/2026/a.csv
 GET /api/nas/company-nas/download?path=reports/2026/a.csv
+POST /api/nas/company-nas/download-zip
+     {"paths": ["reports/2026/a.csv", "reports/2026/b.csv"]}
 ```
 
 The `q` parameter searches only the immediate `path` directory by case-insensitive file or folder name substring. It is not recursive.
+
+`download-zip` streams the requested files as a single ZIP archive (`{alias}-files.zip`, no compression). Limits: at most `NAS_MAX_BATCH_FILES` paths per request (default 100), combined size capped by the connection's `max_download_bytes` and the global `NAS_MAX_DOWNLOAD_BYTES` (413 when exceeded). Any invalid or missing path fails the whole request before streaming starts, naming the offending relative path.
 
 ### Self-service registration (approval-gated)
 
