@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
 from sqlalchemy import select
 
+from app import metrics
 from app.config import settings
 from app.database import async_session
 from app.models import AlertSettings, MonitoredHost, MonitoredService
@@ -43,6 +45,20 @@ _UPSTREAM_NAME_BY_ID: dict[str, str] = {}
 _UPSTREAM_PROBE_TIMEOUT = 5.0
 _MAX_PROBED_NODES_PER_UPSTREAM = 3
 _MAX_CONCURRENT_NODE_PROBES = 8
+
+# Per-probe timeout for the connection health checks (DB, NAS) comes from
+# settings.DB_HEALTHCHECK_TIMEOUT_SECONDS. Without it a single unresponsive
+# backend blocks the whole alert cycle indefinitely, so no other alert fires
+# while one DB hangs. The one setting bounds both check kinds; the probes also
+# run concurrently under this cap so N dead backends finish in ~one timeout, not
+# N. asyncio.wait_for hands control back on timeout even when the underlying
+# blocking call keeps running in a worker thread, so the cycle proceeds
+# regardless.
+_MAX_CONCURRENT_HEALTH_PROBES = 8
+
+# Failure cause a health probe can report, so the outbound mail can say a target
+# "timed out" rather than merely "failed". None means healthy or a plain failure.
+_REASON_TIMEOUT = "timeout"
 
 
 async def _get_check_interval_seconds() -> int:
@@ -170,18 +186,48 @@ async def _resolve_route_id(label_value: str) -> str:
     return _ROUTE_ID_BY_NAME.get(label_value, label_value)
 
 
-async def _check_db_health() -> list[tuple[str, bool]]:
-    """Check all registered DB connections. Returns [(alias, is_healthy)]."""
+async def _probe_health_bounded(
+    label: str,
+    aliases: list[str],
+    probe: Callable[[str], Awaitable[tuple[bool, str]]],
+) -> list[tuple[str, bool, str | None]]:
+    """Run one manager's connectivity probes concurrently, each under a timeout.
+
+    Returns ``[(alias, is_healthy, reason)]`` in ``aliases`` order, where
+    ``reason`` is :data:`_REASON_TIMEOUT` for a probe that hung past the timeout
+    and ``None`` for a healthy result or a plain failure. Bounding each probe is
+    the fix for a hung backend wedging the whole cycle; the concurrency cap keeps
+    N unreachable backends finishing in ~one timeout rather than serialising N.
+    """
+    if not aliases:
+        return []
+    timeout = settings.DB_HEALTHCHECK_TIMEOUT_SECONDS
+    limiter = asyncio.Semaphore(_MAX_CONCURRENT_HEALTH_PROBES)
+
+    async def _one(alias: str) -> tuple[str, bool, str | None]:
+        async with limiter:
+            try:
+                ok, _ = await asyncio.wait_for(probe(alias), timeout=timeout)
+                return alias, ok, None
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "%s health check for '%s' timed out after %ss",
+                    label, alias, timeout,
+                )
+                return alias, False, _REASON_TIMEOUT
+            except Exception as exc:
+                logger.warning("%s health check failed for '%s': %s", label, alias, exc)
+                return alias, False, None
+
+    return list(await asyncio.gather(*(_one(alias) for alias in aliases)))
+
+
+async def _check_db_health() -> list[tuple[str, bool, str | None]]:
+    """Check all registered DB connections. Returns [(alias, is_healthy, reason)]."""
     from app.services.connection_manager import connection_manager
-    results = []
-    for alias in connection_manager.list_aliases():
-        try:
-            ok, _ = await connection_manager.test_connection(alias)
-            results.append((alias, ok))
-        except Exception as exc:
-            logger.warning("DB health check failed for '%s': %s", alias, exc)
-            results.append((alias, False))
-    return results
+    return await _probe_health_bounded(
+        "DB", connection_manager.list_aliases(), connection_manager.test_connection,
+    )
 
 
 async def _check_s3_health() -> list[tuple[str, bool]]:
@@ -198,18 +244,18 @@ async def _check_s3_health() -> list[tuple[str, bool]]:
     return results
 
 
-async def _check_nas_health() -> list[tuple[str, bool]]:
-    """Check registered NAS connections. Returns [(alias, is_healthy)]."""
+async def _check_nas_health() -> list[tuple[str, bool, str | None]]:
+    """Check registered NAS connections. Returns [(alias, is_healthy, reason)].
+
+    ``nas_manager.test_connection`` already bounds its own filesystem syscall via
+    ``_run_blocking``; the outer timeout here is defence in depth (a saturated
+    executor could still delay reaching that bound) and gives the same uniform
+    "timed out" wording the DB check now uses.
+    """
     from app.services.nas_manager import nas_manager
-    results = []
-    for alias in nas_manager.list_aliases():
-        try:
-            ok, _ = await nas_manager.test_connection(alias)
-            results.append((alias, ok))
-        except Exception as exc:
-            logger.warning("NAS health check failed for '%s': %s", alias, exc)
-            results.append((alias, False))
-    return results
+    return await _probe_health_bounded(
+        "NAS", nas_manager.list_aliases(), nas_manager.test_connection,
+    )
 
 
 # ── Upstream reachability probe ──────────────────────────────────────────────
@@ -418,12 +464,18 @@ async def _check_route_error_rate() -> list[tuple[str, float, float]] | None:
             'sum by (route) (increase(apisix_http_status[5m]))'
         )
         if not total_results:
+            # This is the checker's one direct Prometheus call, so it doubles as
+            # the liveness signal for "can the checker reach Prometheus?" — an
+            # empty (no-traffic) answer is still a successful query.
+            metrics.set_alert_checker_prometheus_up(True)
             return []
         err_results = await prometheus_client.instant_query(
             'sum by (route) (increase(apisix_http_status{code=~"5.."}[5m]))'
         )
+        metrics.set_alert_checker_prometheus_up(True)
     except Exception as exc:
         logger.warning("Route error rate check failed: %s", exc)
+        metrics.set_alert_checker_prometheus_up(False)
         return None
 
     err_map: dict[str, float] = {}
@@ -524,13 +576,17 @@ async def _check_server_health(
         )
         await _persist_state_safely(state, sig.alert_type, sig.target)
         if outbound:
-            await dispatch_alert(
+            result = await dispatch_alert(
                 resource_type="server", resource_id=sig.target,
                 alert_type=outbound, rule_type=sig.alert_type,
                 target=sig.target, message=sig.message,
                 display_target=sig.display, rate=sig.value, threshold=sig.threshold,
                 monitor_label=sig.monitor_label, severity=sig.severity,
                 target_description=sig.description,
+            )
+            await _handle_dispatch_result(
+                state, outbound=outbound, result=result,
+                rule_type=sig.alert_type, target=sig.target,
             )
 
 
@@ -587,13 +643,17 @@ async def _check_service_health(
         )
         await _persist_state_safely(state, sig.alert_type, sig.target)
         if outbound:
-            await dispatch_alert(
+            result = await dispatch_alert(
                 resource_type="service", resource_id=sig.target,
                 alert_type=outbound, rule_type=sig.alert_type,
                 target=sig.target, message=sig.message,
                 display_target=sig.display, rate=None, threshold=None,
                 monitor_label=sig.monitor_label, severity=sig.severity,
                 target_description=sig.description,
+            )
+            await _handle_dispatch_result(
+                state, outbound=outbound, result=result,
+                rule_type=sig.alert_type, target=sig.target,
             )
 
 
@@ -679,6 +739,58 @@ def _outbound_alert_type(
     return None
 
 
+async def _rearm_pending_after_failed_dispatch(
+    state: AlertStateManager,
+    rule_type: str,
+    target: str,
+) -> None:
+    """Mark an announced-but-undelivered trigger as still pending, and persist it.
+
+    ``_outbound_alert_type`` clears ``pending_notify`` the instant it decides to
+    notify a trigger, and the caller persists that *before* dispatch. If the send
+    then fails, that cleared flag would bury the incident forever: no later cycle
+    has a transition of its own and ``pending_notify`` is already False. Setting
+    it back to True (and re-persisting so a restart keeps it) lets the next
+    cycle's ``pending and not muted and status == "alert"`` branch re-announce
+    it.
+    """
+    state.set_pending_notify(rule_type, target, True)
+    await _persist_state_safely(state, rule_type, target)
+
+
+async def _handle_dispatch_result(
+    state: AlertStateManager,
+    *,
+    outbound: str,
+    result: bool | None,
+    rule_type: str,
+    target: str,
+) -> None:
+    """React to what :func:`dispatch_alert` reported for one just-sent alert.
+
+    ``result`` is tri-state (see :func:`dispatch_alert`): True = delivered,
+    None = nothing to deliver to (a skip, not a failure), False = a delivery was
+    attempted and failed. Only a failed *trigger* is re-armed, so the next cycle
+    re-announces it. A failed *recovery* is deliberately left alone — the target
+    is healthy again, so a missed recovery is self-correcting and re-arming would
+    only risk a spurious re-trigger — but it is logged.
+    """
+    if result is not False:
+        return
+    if outbound == "triggered":
+        logger.warning(
+            "Alert dispatch for %s/%s failed to deliver — re-arming to retry next cycle",
+            rule_type, target,
+        )
+        await _rearm_pending_after_failed_dispatch(state, rule_type, target)
+    else:
+        logger.warning(
+            "Recovery dispatch for %s/%s failed to deliver — not re-arming "
+            "(target is healthy, so the missed recovery is self-correcting)",
+            rule_type, target,
+        )
+
+
 async def _evaluate_route_error_rule(
     state: AlertStateManager,
     *,
@@ -723,13 +835,17 @@ async def _evaluate_route_error_rule(
             f"Route '{display}' 5xx error rate is "
             f"{rate:.1f}% (threshold: {threshold}%)."
         )
-        await dispatch_alert(
+        result = await dispatch_alert(
             resource_type="route", resource_id=route_id,
             alert_type=outbound, rule_type="route_error_rate",
             target=route_id, message=msg,
             display_target=display,
             rate=rate, threshold=threshold,
             monitor_label="라우트 에러율",
+        )
+        await _handle_dispatch_result(
+            state, outbound=outbound, result=result,
+            rule_type="route_error_rate", target=route_id,
         )
 
 
@@ -750,7 +866,7 @@ async def run_single_check(
 
     # 1. DB health
     db_results = await _check_db_health()
-    for alias, is_healthy in db_results:
+    for alias, is_healthy, reason in db_results:
         was_alerting = state.get_status("db_health", alias) == "alert"
         transition = state.update(
             "db_health", alias,
@@ -765,12 +881,24 @@ async def run_single_check(
         )
         await _persist_state_safely(state, "db_health", alias)
         if outbound:
-            msg = f"Database '{alias}' connection {'restored' if outbound == 'resolved' else 'failed'}."
-            await dispatch_alert(
+            if outbound == "resolved":
+                msg = f"Database '{alias}' connection restored."
+            elif reason == _REASON_TIMEOUT:
+                msg = (
+                    f"Database '{alias}' health check timed out after "
+                    f"{settings.DB_HEALTHCHECK_TIMEOUT_SECONDS:g}s."
+                )
+            else:
+                msg = f"Database '{alias}' connection failed."
+            result = await dispatch_alert(
                 resource_type="db", resource_id=alias,
                 alert_type=outbound, rule_type="db_health",
                 target=alias, message=msg,
                 display_target=alias, monitor_label="DB 헬스체크",
+            )
+            await _handle_dispatch_result(
+                state, outbound=outbound, result=result,
+                rule_type="db_health", target=alias,
             )
 
     # 2. S3 connection health
@@ -791,16 +919,20 @@ async def run_single_check(
         await _persist_state_safely(state, "s3_health", alias)
         if outbound:
             msg = f"S3 connection '{alias}' {'restored' if outbound == 'resolved' else 'is unavailable'}."
-            await dispatch_alert(
+            result = await dispatch_alert(
                 resource_type="s3", resource_id=alias,
                 alert_type=outbound, rule_type="s3_health",
                 target=alias, message=msg,
                 display_target=alias, monitor_label="S3 연결 상태",
             )
+            await _handle_dispatch_result(
+                state, outbound=outbound, result=result,
+                rule_type="s3_health", target=alias,
+            )
 
     # 3. NAS connection health
     nas_results = await _check_nas_health()
-    for alias, is_healthy in nas_results:
+    for alias, is_healthy, reason in nas_results:
         was_alerting = state.get_status("nas_health", alias) == "alert"
         transition = state.update(
             "nas_health", alias,
@@ -815,12 +947,24 @@ async def run_single_check(
         )
         await _persist_state_safely(state, "nas_health", alias)
         if outbound:
-            msg = f"NAS connection '{alias}' {'restored' if outbound == 'resolved' else 'is unavailable'}."
-            await dispatch_alert(
+            if outbound == "resolved":
+                msg = f"NAS connection '{alias}' restored."
+            elif reason == _REASON_TIMEOUT:
+                msg = (
+                    f"NAS connection '{alias}' health check timed out after "
+                    f"{settings.DB_HEALTHCHECK_TIMEOUT_SECONDS:g}s."
+                )
+            else:
+                msg = f"NAS connection '{alias}' is unavailable."
+            result = await dispatch_alert(
                 resource_type="nas", resource_id=alias,
                 alert_type=outbound, rule_type="nas_health",
                 target=alias, message=msg,
                 display_target=alias, monitor_label="NAS 연결 상태",
+            )
+            await _handle_dispatch_result(
+                state, outbound=outbound, result=result,
+                rule_type="nas_health", target=alias,
             )
 
     # 4. Upstream health
@@ -849,11 +993,15 @@ async def run_single_check(
                 msg = f"Upstream '{display}' has no weighted nodes configured."
             else:
                 msg = f"Upstream '{display}' is down (no reachable node)."
-            await dispatch_alert(
+            result = await dispatch_alert(
                 resource_type="upstream", resource_id=uid,
                 alert_type=outbound, rule_type="upstream_health",
                 target=uid, message=msg,
                 display_target=display, monitor_label="업스트림 헬스체크",
+            )
+            await _handle_dispatch_result(
+                state, outbound=outbound, result=result,
+                rule_type="upstream_health", target=uid,
             )
 
     # 5. Server (host) health via node_exporter metrics

@@ -58,7 +58,7 @@ class TestAlertChecker:
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
-            mock_db.return_value = [("mydb", False)]
+            mock_db.return_value = [("mydb", False, None)]
             mock_up.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
@@ -83,7 +83,7 @@ class TestAlertChecker:
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
-            mock_db.return_value = [("mydb", True)]
+            mock_db.return_value = [("mydb", True, None)]
             mock_up.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
@@ -110,7 +110,7 @@ class TestAlertChecker:
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = []
-            mock_nas.return_value = [("reports-nas", False)]
+            mock_nas.return_value = [("reports-nas", False, None)]
             mock_up.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
@@ -133,7 +133,7 @@ class TestAlertChecker:
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
-            mock_db.return_value = [("mydb", True)]
+            mock_db.return_value = [("mydb", True, None)]
             mock_up.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
@@ -242,7 +242,7 @@ class TestAlertChecker:
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
-            mock_db.return_value = [("boot-db", False)]
+            mock_db.return_value = [("boot-db", False, None)]
             mock_up.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
@@ -263,7 +263,7 @@ class TestAlertChecker:
              patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
-            mock_db.side_effect = [[("boot-db", False)], [("boot-db", True)]]
+            mock_db.side_effect = [[("boot-db", False, None)], [("boot-db", True, None)]]
             mock_up.return_value = []
 
             await run_single_check(state, trigger_after_failures=2)
@@ -573,6 +573,28 @@ class TestCheckRouteErrorRate:
         assert results is None
 
     @pytest.mark.asyncio
+    async def test_prometheus_up_gauge_flips_on_failure_and_success(self):
+        """#48(b): the checker's Prometheus liveness gauge tracks its query."""
+        from prometheus_client import REGISTRY
+
+        from app.services.alert_checker import _check_route_error_rate
+
+        with patch(
+            "app.services.prometheus_client.instant_query",
+            new=AsyncMock(side_effect=RuntimeError("prom down")),
+        ):
+            assert await _check_route_error_rate() is None
+        assert REGISTRY.get_sample_value("unibridge_alert_checker_prometheus_up") == 0.0
+
+        # A successful query — even one that returns no traffic — flips it back.
+        with patch(
+            "app.services.prometheus_client.instant_query",
+            new=AsyncMock(return_value=[]),
+        ):
+            assert await _check_route_error_rate() == []
+        assert REGISTRY.get_sample_value("unibridge_alert_checker_prometheus_up") == 1.0
+
+    @pytest.mark.asyncio
     async def test_route_error_rate_resolves_active_alert_when_route_has_no_traffic(self):
         state = AlertStateManager()
         # Drive the route (keyed by plain route_id) into an active alert.
@@ -764,7 +786,7 @@ async def test_run_single_check_respects_trigger_after_failures(monkeypatch, see
     monkeypatch.setattr(
         alert_checker,
         "_check_db_health",
-        lambda: _async_return([("main-db", False)]),
+        lambda: _async_return([("main-db", False, None)]),
     )
     monkeypatch.setattr(
         alert_checker, "_check_upstream_health", lambda: _async_return([]),
@@ -1245,3 +1267,96 @@ class TestActiveInstanceGating:
         report.assert_awaited_once()
         # The loop kept its cadence rather than dying on either failure.
         assert delays == [45.0]
+
+
+class TestFailedDispatchRearm:
+    """#15: a trigger whose delivery fails must be retried, not lost.
+
+    ``dispatch_alert`` now reports delivery (True = sent, None = skipped,
+    False = failed). The checker re-arms ``pending_notify`` only for a failed
+    *trigger*, so the next cycle re-announces it; a skip or a success does not
+    re-arm, and neither does a failed recovery.
+    """
+
+    @staticmethod
+    def _db_down_patches(dispatch_result):
+        return (
+            patch("app.services.alert_checker._check_db_health",
+                  new=AsyncMock(return_value=[("mydb", False, None)])),
+            patch("app.services.alert_checker._check_upstream_health",
+                  new=AsyncMock(return_value=[])),
+            patch("app.services.alert_checker._check_route_error_rate",
+                  new=AsyncMock(return_value=[])),
+            patch("app.services.alert_checker.dispatch_alert",
+                  new=AsyncMock(return_value=dispatch_result)),
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_trigger_is_reannounced_next_cycle(self):
+        state = AlertStateManager()
+        # Seed fail_count=1 so the first cycle crosses N=2 and triggers.
+        state.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
+        db_p, up_p, route_p, disp_p = self._db_down_patches(False)
+        with db_p, up_p, route_p, disp_p as mock_dispatch:
+            await run_single_check(state, trigger_after_failures=2)
+            assert mock_dispatch.await_count == 1
+            assert mock_dispatch.await_args.kwargs["alert_type"] == "triggered"
+            # Failed delivery re-armed the incident.
+            assert state.get_pending_notify("db_health", "mydb") is True
+
+            # Next cycle has no transition of its own, but the pending flag
+            # drives a fresh announcement.
+            await run_single_check(state, trigger_after_failures=2)
+            assert mock_dispatch.await_count == 2
+            assert mock_dispatch.await_args.kwargs["alert_type"] == "triggered"
+            assert state.get_pending_notify("db_health", "mydb") is True
+
+    @pytest.mark.asyncio
+    async def test_successful_trigger_is_not_reannounced(self):
+        state = AlertStateManager()
+        state.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
+        db_p, up_p, route_p, disp_p = self._db_down_patches(True)
+        with db_p, up_p, route_p, disp_p as mock_dispatch:
+            await run_single_check(state, trigger_after_failures=2)
+            assert mock_dispatch.await_count == 1
+            assert state.get_pending_notify("db_health", "mydb") is False
+            await run_single_check(state, trigger_after_failures=2)
+            # No re-announcement: the first delivery succeeded.
+            assert mock_dispatch.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_skipped_dispatch_is_not_treated_as_failure(self):
+        state = AlertStateManager()
+        state.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
+        db_p, up_p, route_p, disp_p = self._db_down_patches(None)
+        with db_p, up_p, route_p, disp_p as mock_dispatch:
+            await run_single_check(state, trigger_after_failures=2)
+            assert mock_dispatch.await_count == 1
+            # None (skipped — e.g. no recipients) is not a delivery failure.
+            assert state.get_pending_notify("db_health", "mydb") is False
+            await run_single_check(state, trigger_after_failures=2)
+            assert mock_dispatch.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_resolved_is_not_rearmed(self):
+        state = AlertStateManager()
+        # An announced, active alert (pending_notify False = already announced).
+        state.update("db_health", "mydb", is_healthy=False, trigger_after_failures=1)
+        assert state.get_status("db_health", "mydb") == "alert"
+
+        with patch("app.services.alert_checker._check_db_health",
+                   new=AsyncMock(return_value=[("mydb", True, None)])), \
+             patch("app.services.alert_checker._check_upstream_health",
+                   new=AsyncMock(return_value=[])), \
+             patch("app.services.alert_checker._check_route_error_rate",
+                   new=AsyncMock(return_value=[])), \
+             patch("app.services.alert_checker.dispatch_alert",
+                   new=AsyncMock(return_value=False)) as mock_dispatch:
+            await run_single_check(state, trigger_after_failures=1)
+
+        mock_dispatch.assert_awaited_once()
+        assert mock_dispatch.await_args.kwargs["alert_type"] == "resolved"
+        # A lost recovery is self-correcting: the target is healthy, so we do
+        # not re-arm (that would risk a spurious re-trigger).
+        assert state.get_status("db_health", "mydb") == "ok"
+        assert state.get_pending_notify("db_health", "mydb") is False

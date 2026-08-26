@@ -323,7 +323,9 @@ async def test_dispatch_alert_records_dispatch_metric(engine):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_alert_records_failure_without_assignees_or_admins(engine):
+async def test_dispatch_alert_skips_when_no_assignees_or_admins(engine):
+    """No recipients is a skip (success None / returns None), not a delivery
+    failure — the caller must not retry it and it must not count as a failure."""
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db)
@@ -333,7 +335,7 @@ async def test_dispatch_alert_records_failure_without_assignees_or_admins(engine
     send = AsyncMock(return_value=(True, None))
     with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_alert(
+        result = await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="triggered",
@@ -342,15 +344,18 @@ async def test_dispatch_alert_records_failure_without_assignees_or_admins(engine
             display_target="payment-db",
         )
 
+    assert result is None
     send.assert_not_awaited()
     histories = await _history_rows(session_factory)
     assert len(histories) == 1
-    assert histories[0].success is False
+    assert histories[0].success is None
     assert "No assignees or admins" in histories[0].error_detail
 
 
 @pytest.mark.asyncio
-async def test_dispatch_alert_records_failure_without_mail_channel(engine):
+async def test_dispatch_alert_skips_when_no_mail_channel(engine):
+    """No configured channel is a skip (success None / returns None): an
+    unconfigured deployment must not be treated as a dispatch failure."""
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         db.add(AlertSettings(id=1, admin_emails=json.dumps(["admin@example.com"])))
@@ -359,7 +364,7 @@ async def test_dispatch_alert_records_failure_without_mail_channel(engine):
     send = AsyncMock(return_value=(True, None))
     with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_alert(
+        result = await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="triggered",
@@ -368,11 +373,12 @@ async def test_dispatch_alert_records_failure_without_mail_channel(engine):
             display_target="payment-db",
         )
 
+    assert result is None
     send.assert_not_awaited()
     histories = await _history_rows(session_factory)
     assert len(histories) == 1
     assert histories[0].channel_id is None
-    assert histories[0].success is False
+    assert histories[0].success is None
     assert "Mail channel not configured" in histories[0].error_detail
 
 
@@ -413,7 +419,10 @@ async def test_dispatch_alert_records_template_error(engine):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_alert_records_failure_for_disabled_mail_channel(engine):
+async def test_dispatch_alert_skips_for_disabled_mail_channel(engine):
+    """A disabled channel means alerts were intentionally switched off — a skip
+    (success None), not a delivery failure that should retry or trip the
+    meta-alert."""
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         channel = await _seed_mail_channel(db, enabled=False)
@@ -427,7 +436,7 @@ async def test_dispatch_alert_records_failure_for_disabled_mail_channel(engine):
     send = AsyncMock(return_value=(True, None))
     with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_alert(
+        result = await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="triggered",
@@ -435,11 +444,12 @@ async def test_dispatch_alert_records_failure_for_disabled_mail_channel(engine):
             message="Database failed",
         )
 
+    assert result is None
     send.assert_not_awaited()
     histories = await _history_rows(session_factory)
     assert len(histories) == 1
     assert histories[0].channel_id == channel.id
-    assert histories[0].success is False
+    assert histories[0].success is None
     assert "disabled" in histories[0].error_detail
 
 
@@ -589,14 +599,16 @@ async def test_dispatch_alert_records_webhook_failure_and_exception(engine):
     send = AsyncMock(side_effect=[(False, "timeout"), RuntimeError("network down")])
     with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
          patch("app.services.alert_owner_dispatcher.send_webhook", send):
-        await dispatch_alert(
+        # A configured channel that fails to deliver returns False so the caller
+        # can re-arm and retry — for both a returned error and a raised one.
+        failed_send = await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="triggered",
             target="payment-db",
             message="Database failed",
         )
-        await dispatch_alert(
+        raised_send = await dispatch_alert(
             resource_type="db",
             resource_id="payment-db",
             alert_type="resolved",
@@ -604,10 +616,49 @@ async def test_dispatch_alert_records_webhook_failure_and_exception(engine):
             message="Database recovered",
         )
 
+    assert failed_send is False
+    assert raised_send is False
     histories = await _history_rows(session_factory)
     assert [history.success for history in histories] == [False, False]
     assert histories[0].error_detail == "timeout"
     assert histories[1].error_detail == "network down"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_alert_return_value_is_tristate(engine):
+    """The return mirrors AlertHistory.success: True sent, None skipped, False failed."""
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        channel = await _seed_mail_channel(db)
+        db.add(AlertSettings(id=1, mail_channel_id=channel.id, admin_emails="[]"))
+        await _seed_resource_owner(db, emails=["owner@example.com"])
+        # A second resource whose alerts are switched off, to exercise the skip.
+        await _seed_resource_owner(
+            db, resource_type="nas", resource_id="reports",
+            emails=["ops@example.com"],
+        )
+        owner = (
+            await db.execute(
+                select(ResourceOwner).where(ResourceOwner.resource_type == "nas")
+            )
+        ).scalar_one()
+        owner.alerts_enabled = False
+        await db.commit()
+
+    send = AsyncMock(return_value=(True, None))
+    with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
+         patch("app.services.alert_owner_dispatcher.send_webhook", send):
+        sent = await dispatch_alert(
+            resource_type="db", resource_id="payment-db",
+            alert_type="triggered", target="payment-db", message="down",
+        )
+        skipped = await dispatch_alert(
+            resource_type="nas", resource_id="reports",
+            alert_type="triggered", target="reports", message="down",
+        )
+
+    assert sent is True
+    assert skipped is None
 
 
 @pytest.mark.asyncio

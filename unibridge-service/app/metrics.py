@@ -19,6 +19,7 @@ class MetricsRecorder:
     connection_pool_in_use: Gauge
     meta_db_up: Gauge
     active_instance: Gauge
+    alert_checker_prometheus_up: Gauge
 
     def record_query(
         self,
@@ -66,11 +67,14 @@ class MetricsRecorder:
     def set_active_instance(self, is_active: bool) -> None:
         self.active_instance.set(1 if is_active else 0)
 
+    def set_alert_checker_prometheus_up(self, is_up: bool) -> None:
+        self.alert_checker_prometheus_up.set(1 if is_up else 0)
+
 
 def create_metrics(
     *, registry: CollectorRegistry = REGISTRY,
 ) -> MetricsRecorder:
-    return MetricsRecorder(
+    recorder = MetricsRecorder(
         query_duration=Histogram(
             "unibridge_query_duration_seconds",
             "Database query execution duration.",
@@ -116,7 +120,20 @@ def create_metrics(
             "side-effectful background work, 0 when it is standby.",
             registry=registry,
         ),
+        # 1 while the alert checker's Prometheus queries are succeeding, 0 once
+        # one fails. Initialised to 1 (below) so an instance that has not yet
+        # run a cycle — a fresh boot, or a standby color that never queries —
+        # never reads as down. A companion rule guards on active_instance so a
+        # demoted color frozen at 0 cannot false-fire either.
+        alert_checker_prometheus_up=Gauge(
+            "unibridge_alert_checker_prometheus_up",
+            "1 when the alert checker's last Prometheus query succeeded, 0 when "
+            "it failed.",
+            registry=registry,
+        ),
     )
+    recorder.alert_checker_prometheus_up.set(1)
+    return recorder
 
 
 recorder = create_metrics()
@@ -166,6 +183,10 @@ def set_meta_db_up(is_up: bool) -> None:
 
 def set_active_instance(is_active: bool) -> None:
     recorder.set_active_instance(is_active)
+
+
+def set_alert_checker_prometheus_up(is_up: bool) -> None:
+    recorder.set_alert_checker_prometheus_up(is_up)
 
 
 async def monitor_meta_db_health(*, interval_seconds: int = 15) -> None:

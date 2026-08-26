@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     JWT_SECRET: str = ""
     JWT_ALGORITHM: str = "HS256"
     DEFAULT_QUERY_TIMEOUT: int = 30
+    # Per-DB probe timeout for the alert checker's health cycle, so one
+    # unresponsive database cannot stall the whole cycle (see alert_checker).
+    DB_HEALTHCHECK_TIMEOUT_SECONDS: float = 10.0
     DEFAULT_ROW_LIMIT: int = 10000
     # Hard ceiling on the number of rows any single query may return, enforced
     # in query_executor regardless of the per-request or admin default limit.

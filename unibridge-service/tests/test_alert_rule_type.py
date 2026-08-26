@@ -63,9 +63,9 @@ async def _run_cycle(state, *, trigger_after_failures=1, **overrides):
 @pytest.mark.parametrize(
     "probe,results,expected_rule,expected_resource_type",
     [
-        ("_check_db_health", [("mydb", False)], "db_health", "db"),
+        ("_check_db_health", [("mydb", False, None)], "db_health", "db"),
         ("_check_s3_health", [("archive", False)], "s3_health", "s3"),
-        ("_check_nas_health", [("reports", False)], "nas_health", "nas"),
+        ("_check_nas_health", [("reports", False, None)], "nas_health", "nas"),
         (
             "_check_upstream_health",
             [("up-1", False, "unreachable")],

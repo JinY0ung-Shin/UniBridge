@@ -42,7 +42,7 @@ async def dispatch_alert(
     monitor_label: str = "",
     severity: str | None = None,
     target_description: str | None = None,
-) -> None:
+) -> bool | None:
     """Send an alert to the resource's assignees (담당자) plus the global admins (관리자).
 
     Recipients are the union of supported resource assignee emails and the
@@ -55,6 +55,18 @@ async def dispatch_alert(
     scheduled mail that announces no incident; ``rule_type`` is the monitoring
     rule that produced it ("db_health", "server_disk", …). Both are recorded on
     the history row.
+
+    Returns the delivery outcome, matching ``AlertHistory.success``:
+
+    - ``True``  — the webhook/mail actually went out.
+    - ``None``  — nothing was delivered because there was nothing to deliver to
+      (no mail channel configured, channel missing/disabled, alerts disabled for
+      the resource, or no recipients). This is a *skip*, not a failure — the
+      caller must not retry it, and it must not count toward the dispatch-failure
+      metric that the meta-alert watches.
+    - ``False`` — a delivery was attempted against a configured channel and
+      failed (send error/exception, or an unrenderable channel template). The
+      caller re-arms a failed *trigger* so the next cycle retries it.
     """
     history = AlertHistory(
         channel_id=None,
@@ -75,14 +87,16 @@ async def dispatch_alert(
         async with async_session() as db:
             settings = await _load_settings(db)
             if settings is None or settings.mail_channel_id is None:
+                history.success = None
                 history.error_detail = "Mail channel not configured"
-                return
+                return history.success
 
             history.channel_id = settings.mail_channel_id
             channel = await _load_enabled_mail_channel(db, settings.mail_channel_id)
             if channel is None:
+                history.success = None
                 history.error_detail = "Mail channel missing or disabled"
-                return
+                return history.success
 
             channel_template = channel.payload_template
             channel_recipient_item_template = channel.recipient_item_template
@@ -90,7 +104,7 @@ async def dispatch_alert(
             channel_webhook_url = channel.webhook_url
             if channel_recipient_item_template is None or not channel_recipient_item_template.strip():
                 history.error_detail = "recipient_item_template is required for mail channel"
-                return
+                return history.success
 
             alerts_enabled, emails = await _resolve_recipients(
                 db,
@@ -101,11 +115,12 @@ async def dispatch_alert(
             if not alerts_enabled:
                 history.success = None
                 history.error_detail = "Alerts disabled for resource"
-                return
+                return history.success
             history.recipients = json.dumps(emails, ensure_ascii=False)
             if not emails:
+                history.success = None
                 history.error_detail = "No assignees or admins configured for resource"
-                return
+                return history.success
 
         try:
             recipients_json = render_recipient_items(
@@ -131,8 +146,11 @@ async def dispatch_alert(
                 "headers": _parse_headers(channel_headers),
             }
         except Exception as exc:
+            # Channel is configured but its template will not render — a real
+            # delivery failure worth surfacing and retrying, so leave success
+            # False rather than treating it as a skip.
             history.error_detail = str(exc)
-            return
+            return history.success
 
         try:
             ok, err = await send_webhook(**send_args)
@@ -156,6 +174,7 @@ async def dispatch_alert(
         except Exception as exc:
             logger.warning("Alert metric recording failed: %s", exc)
         await _record_history(history)
+    return history.success
 
 
 async def _record_history(history: AlertHistory) -> None:

@@ -4,16 +4,21 @@ Operator runbook for backing up and restoring UniBridge state.
 
 **Directory naming**: this source directory is `backup/` and is tracked in git. Runtime snapshot output lands in `snapshots/` (gitignored) under the project root. The two names are intentionally distinct to prevent confusion between code and runtime artifacts.
 
-## What's backed up
+## Backup coverage
 
-| Component | Source | Output | Why critical |
-|---|---|---|---|
-| etcd | volume `etcd-data` | `etcd.snap` | APISIX routes, consumers, plugin configs |
-| unibridge-service metadata | Postgres service `unibridge-db` by default, or legacy SQLite `unibridge-data` (`meta.db`) when `META_DB_URL=sqlite...` | `unibridge-meta.sql.gz` (Postgres) or `unibridge-meta.db.gz` (SQLite) | API keys, encrypted credentials, user settings |
-| Keycloak Postgres | volume `keycloak-db-data` | `keycloak-db.sql.gz` | users, realms, clients |
-| LiteLLM Postgres | volume `litellm-db-data` | `litellm-db.sql.gz` | LLM keys, budgets, usage history |
+Every stateful volume in the stack is listed here, backed up or not, so nothing is silently uncovered.
 
-Prometheus time-series data is intentionally **not** backed up — retention is already configured in the Prometheus container and the data is regeneratable over time.
+| Component | Source | Backed up? | Output / bound | Why |
+|---|---|---|---|---|
+| etcd | volume `etcd-data` | **Yes** | `etcd.snap` | APISIX routes, consumers, plugin configs |
+| unibridge-service metadata | Postgres service `unibridge-db` by default, or legacy SQLite `unibridge-data` (`meta.db`) when `META_DB_URL=sqlite...` | **Yes** | `unibridge-meta.sql.gz` (Postgres) or `unibridge-meta.db.gz` (SQLite) | API keys, encrypted credentials, user settings |
+| Keycloak Postgres | volume `keycloak-db-data` | **Yes** | `keycloak-db.sql.gz` | users, realms, clients |
+| LiteLLM Postgres | volume `litellm-db-data` | **Yes** | `litellm-db.sql.gz` | LLM keys, budgets, usage history |
+| LiteLLM conversation dataset | volume `litellm-dataset` | **No** | bounded by `LITELLM_DATASET_RETENTION_DAYS` / `LITELLM_DATASET_MAX_TOTAL_BYTES` | Fine-tuning capture (full prompts/responses); regenerable and can grow large — see README "LLM conversation capture" |
+| Grafana | volume `grafana-data` | **No** | — | Grafana's own SQLite (sessions, ad-hoc UI edits). Dashboards, datasources, and provisioning live in `grafana/` in the repo, so nothing critical is here |
+| Prometheus | volume `prometheus-data` | **No** | in-container retention | Time-series, regeneratable over time |
+
+The three **No** rows are intentional. The LiteLLM conversation dataset is training data captured for fine-tuning: it is not operational state, it can be re-collected, and it grows without a natural ceiling, so folding it into snapshots would balloon them — it is size-bounded by its retention envs instead (both default `0` = unbounded; set them to cap it). `grafana-data` and `prometheus-data` hold only regenerable or repo-provisioned state. To back the dataset up anyway, `tar` the `litellm-dataset` volume out of band — `backup.sh` deliberately leaves it out and marks the seam.
 
 ## Blue-green deployments
 

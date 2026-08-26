@@ -97,3 +97,50 @@ groups:
         annotations:
           summary: "Query traffic is not producing audit writes"
           description: "Successful query execution is happening while successful audit write rate is zero."
+
+  # Meta-alerts on the alerting pipeline itself. These are warning severity, not
+  # critical: they say the alerting machinery is degraded, not that a monitored
+  # target is down. They are grouped apart from unibridge-critical so the
+  # severity split stays legible.
+  #
+  # CIRCULAR-DEPENDENCY WARNING: both rules flow through the ordinary path —
+  # Alertmanager → the app's /_api/internal/alertmanager webhook → the same
+  # owner/admin mail pipeline. If that mail path is entirely down, the very
+  # alerts warning you about it may not deliver either. The out-of-band views are
+  # the Alertmanager UI and the optional direct-SMTP fallback.
+  - name: unibridge-alerting-health
+    rules:
+      # The dispatcher increments unibridge_alert_dispatch_total{status="failure"}
+      # only for a delivery that was attempted against a configured channel and
+      # failed — a send error or an unrenderable template. "No channel / no
+      # recipients / alerts disabled" record status="skipped", so an unconfigured
+      # deployment does not trip this. increase()>0 over 15m catches even a single
+      # failed send; the 5m `for` debounces a lone transient blip.
+      - alert: UniBridgeAlertDispatchFailing
+        expr: sum(increase(unibridge_alert_dispatch_total{status="failure"}[15m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "UniBridge alert delivery is failing"
+          description: "unibridge-service attempted to send one or more alerts through its configured channel and the send failed in the last 15 minutes. Alert notifications may not be reaching their recipients. NOTE: this alert rides the same mail pipeline it is reporting on — if mail is fully down, check the Alertmanager UI / SMTP fallback directly."
+
+      # The gauge is 1 while the checker's Prometheus queries succeed and 0 after
+      # one fails; it is initialised to 1 so an instance that has not yet run a
+      # cycle never reads as down. The `and unibridge_active_instance == 1` guard
+      # scopes this to the color that actually runs the checker: a standby (never
+      # queries, stays 1) is excluded, and — crucially — a demoted color whose
+      # gauge is frozen at 0 from when it was active is excluded too, so it cannot
+      # false-fire forever. No series at all (an image without the gauge) yields
+      # an empty vector and does not fire.
+      - alert: UniBridgeAlertCheckerPrometheusDown
+        expr: |
+          unibridge_alert_checker_prometheus_up == 0
+          and
+          unibridge_active_instance == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "UniBridge alert checker cannot query Prometheus"
+          description: "The active unibridge-service instance's alert checker has been unable to query Prometheus for 5 minutes, so route-error-rate and any Prometheus-derived alerts are not being evaluated."

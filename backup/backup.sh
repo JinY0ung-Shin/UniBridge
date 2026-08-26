@@ -30,6 +30,14 @@ main() {
   backup_postgres litellm-db  litellm  litellm                     "$dest/litellm-db.sql.gz"
   backup_unibridge_meta "$dest"
 
+  # Not backed up on purpose: the litellm-dataset volume (LLM conversation
+  # capture for fine-tuning) is regenerable training data that grows without
+  # bound, so it would balloon snapshots. It is size-bounded by
+  # LITELLM_DATASET_RETENTION_DAYS / LITELLM_DATASET_MAX_TOTAL_BYTES instead
+  # (see backup/README.md "Backup coverage"). To include it anyway, tar the
+  # volume into "$dest" here — write_manifest and rotate_old then cover it
+  # automatically.
+
   write_manifest "$dest" "$stamp"
 
   find "$dest" -type f -exec chmod 600 {} +

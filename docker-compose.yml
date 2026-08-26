@@ -563,6 +563,12 @@ services:
       - AUTO_REDIRECT_UI_LOGIN_TO_SSO=true
       # Fine-tuning dataset capture dir, written by custom_callbacks.py.
       - LITELLM_DATASET_DIR=/var/lib/litellm-dataset
+      # Retention for that capture (both 0 = unlimited, the default). Enforced
+      # opportunistically inside custom_callbacks.py; see README.md "LLM
+      # conversation capture". The dataset volume is intentionally not a backup
+      # target (backup/README.md), so these are its only size bound.
+      - LITELLM_DATASET_RETENTION_DAYS=${LITELLM_DATASET_RETENTION_DAYS:-0}
+      - LITELLM_DATASET_MAX_TOTAL_BYTES=${LITELLM_DATASET_MAX_TOTAL_BYTES:-0}
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
       - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/ssl/tls.crt:ro

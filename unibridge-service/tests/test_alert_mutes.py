@@ -428,7 +428,9 @@ async def _run_db_cycle(state, *, healthy: bool, mutes: MuteIndex | None = None)
     with patches[1], patches[2], patches[3], patches[4], patches[5], \
          patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as db_probe, \
          patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as dispatch:
-        db_probe.return_value = [("mydb", healthy)]
+        # (alias, is_healthy, reason) — reason is None for a normal healthy/failed
+        # result; only a probe timeout carries a distinct reason.
+        db_probe.return_value = [("mydb", healthy, None)]
         await alert_checker.run_single_check(
             state, trigger_after_failures=1, mutes=mutes or MuteIndex(),
         )

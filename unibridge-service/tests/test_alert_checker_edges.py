@@ -1,6 +1,7 @@
 """Edge and failure-path coverage for the periodic alert checker."""
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -139,13 +140,18 @@ async def test_check_db_health_isolates_each_connection_failure(
     from app.services.connection_manager import connection_manager
 
     monkeypatch.setattr(connection_manager, "list_aliases", lambda: ["ok", "broken"])
-    monkeypatch.setattr(
-        connection_manager,
-        "test_connection",
-        AsyncMock(side_effect=[(True, "connected"), RuntimeError("dial failed")]),
-    )
 
-    assert await alert_checker._check_db_health() == [("ok", True), ("broken", False)]
+    async def fake_test(alias):
+        if alias == "broken":
+            raise RuntimeError("dial failed")
+        return True, "connected"
+
+    monkeypatch.setattr(connection_manager, "test_connection", fake_test)
+
+    assert await alert_checker._check_db_health() == [
+        ("ok", True, None),
+        ("broken", False, None),
+    ]
     assert "DB health check failed for 'broken'" in caplog.text
 
 
@@ -155,14 +161,58 @@ async def test_check_nas_health_isolates_each_connection_failure(
     from app.services.nas_manager import nas_manager
 
     monkeypatch.setattr(nas_manager, "list_aliases", lambda: ["ok", "broken"])
-    monkeypatch.setattr(
-        nas_manager,
-        "test_connection",
-        AsyncMock(side_effect=[(True, "mounted"), RuntimeError("mount vanished")]),
-    )
 
-    assert await alert_checker._check_nas_health() == [("ok", True), ("broken", False)]
+    async def fake_test(alias):
+        if alias == "broken":
+            raise RuntimeError("mount vanished")
+        return True, "mounted"
+
+    monkeypatch.setattr(nas_manager, "test_connection", fake_test)
+
+    assert await alert_checker._check_nas_health() == [
+        ("ok", True, None),
+        ("broken", False, None),
+    ]
     assert "NAS health check failed for 'broken'" in caplog.text
+
+
+async def test_check_db_health_times_out_a_hung_probe_without_blocking_others(
+    monkeypatch, caplog
+) -> None:
+    """A DB whose probe hangs past the timeout is reported unhealthy with a
+    timeout reason, and does not stall the probes for the healthy DBs."""
+    from app.services.connection_manager import connection_manager
+
+    monkeypatch.setattr(connection_manager, "list_aliases", lambda: ["fast", "hung"])
+    monkeypatch.setattr(alert_checker.settings, "DB_HEALTHCHECK_TIMEOUT_SECONDS", 0.05)
+
+    async def fake_test(alias):
+        if alias == "hung":
+            await asyncio.sleep(10)  # cancelled by the wait_for timeout
+        return True, "connected"
+
+    monkeypatch.setattr(connection_manager, "test_connection", fake_test)
+
+    assert await alert_checker._check_db_health() == [
+        ("fast", True, None),
+        ("hung", False, "timeout"),
+    ]
+    assert "timed out after 0.05s" in caplog.text
+
+
+async def test_check_nas_health_times_out_a_hung_probe(monkeypatch) -> None:
+    from app.services.nas_manager import nas_manager
+
+    monkeypatch.setattr(nas_manager, "list_aliases", lambda: ["hung"])
+    monkeypatch.setattr(alert_checker.settings, "DB_HEALTHCHECK_TIMEOUT_SECONDS", 0.05)
+
+    async def fake_test(alias):
+        await asyncio.sleep(10)  # cancelled by the wait_for timeout
+        return True, "mounted"
+
+    monkeypatch.setattr(nas_manager, "test_connection", fake_test)
+
+    assert await alert_checker._check_nas_health() == [("hung", False, "timeout")]
 
 
 async def test_check_upstream_health_classifies_nodes_and_caches_names(monkeypatch):

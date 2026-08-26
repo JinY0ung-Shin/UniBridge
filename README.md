@@ -432,6 +432,46 @@ Caveats worth knowing:
   `litellm` `proxy_admin`). The entrypoint also re-syncs the client's secret
   and redirect URI from env on every boot, same as Grafana's client.
 
+### LLM conversation capture
+
+Every **successful** LLM call through LiteLLM is appended as one JSON line to a
+fine-tuning dataset by [`litellm/custom_callbacks.py`](./litellm/custom_callbacks.py).
+This is deliberate data collection, so know what it keeps and where:
+
+- **What is stored**: the full request messages and the raw response, verbatim,
+  plus token counts, cost, model, and per-user attribution (the
+  `x-litellm-end-user-id` APISIX forwards — every call authenticates as the
+  master key, so this is the only identity available). Prompts and completions
+  are stored in the clear. Failed calls are not captured.
+- **Where**: the `litellm-dataset` Docker volume (container path
+  `LITELLM_DATASET_DIR`, default `/var/lib/litellm-dataset`), as
+  `dataset-YYYYMMDD.jsonl` files rotated daily by UTC date. The same volume name
+  is shared by the single-stack and blue-green layouts, so a capture started
+  under one carries over to the other. `scripts/build_finetune_dataset.py` turns
+  these into a training-ready dataset offline.
+- **Not a backup target**: these files are regenerable training data and can
+  grow large, so backups intentionally skip them (see
+  [`backup/README.md`](./backup/README.md)). Retention is therefore their **only**
+  size guard.
+- **Retention** (opportunistic, enforced from the capture path itself — no cron):
+  - `LITELLM_DATASET_RETENTION_DAYS` — delete files older than N days
+    (`0` = keep forever, the default).
+  - `LITELLM_DATASET_MAX_TOTAL_BYTES` — cap the combined size of all dataset
+    files, deleting oldest-first past the cap (`0` = no cap, the default). The
+    current day's file is never deleted, so the cap can be briefly exceeded by at
+    most one day of capture.
+
+  A full sweep runs at most once per process per day (at the UTC rollover); with
+  a byte cap set, an extra size sweep may run every few minutes so a busy day
+  cannot outrun the cap. Both default to `0`, preserving the original unbounded
+  behaviour for anyone relying on full history. Cleanup never blocks or fails a
+  request; deletions are logged to the LiteLLM container log.
+- **To disable capture entirely**: remove the
+  `callbacks: custom_callbacks.proxy_handler_instance` line from
+  [`litellm/config.yaml`](./litellm/config.yaml) and restart LiteLLM
+  (`docker compose restart litellm`, or restart it in the infra project on a
+  blue-green host). Existing files remain on the volume until removed manually.
+
 ### Server (host) monitoring
 
 Register Linux servers running `node_exporter` to monitor reachability, disk
