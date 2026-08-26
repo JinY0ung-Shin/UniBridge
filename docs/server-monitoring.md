@@ -31,8 +31,51 @@ global 관리자, webhook/mail channel, alert history, and the Alert Status UI).
   `host` label, still no reload. See [GPU monitoring](#gpu-monitoring-optional).
 * The alert checker (the same ~60s loop that checks DB/NAS/route health) queries
   Prometheus for each host signal, compares against thresholds, and feeds the
-  result through the shared alert-state machine and `dispatch_alert`. No
-  Alertmanager is required — alerts reuse UniBridge recipients, audit, and UI.
+  result through the shared alert-state machine and `dispatch_alert`. Everything
+  on this page reuses UniBridge recipients, audit, and UI; no Alertmanager is
+  involved in the host signals.
+
+### The other alerting path
+
+Host alerts (this page) are not the whole picture. UniBridge runs **two
+complementary paths**, and both end in the same mailbox and the same alert
+history:
+
+| | Evaluated by | Covers | Recipients |
+|---|---|---|---|
+| **In-app checker** | unibridge-service, ~60s loop | registered resources: hosts, DBs, gateway routes, S3/NAS | resource 담당자 + 관리자 |
+| **Prometheus rules → Alertmanager → webhook** | the Prometheus and Alertmanager containers | the platform itself: APISIX 5xx rate, unibridge-service reachability, metadata/Keycloak/LiteLLM DBs, missing audit writes, no active blue-green color | 관리자 |
+
+The second path exists because the checker runs *inside* unibridge-service and
+therefore cannot report its own death — `UniBridgeServiceDown` is precisely the
+alert it can never raise. Separate containers can. Alertmanager POSTs the fired
+rules to `/_api/internal/alertmanager`, which turns each into mail plus an alert
+history entry with rule type `prometheus_alert`. The rules live in
+[`prometheus/rules/unibridge-alerts.yml`](../prometheus/rules/unibridge-alerts.yml)
+and the routing in
+[`alertmanager/alertmanager.yml`](../alertmanager/alertmanager.yml).
+
+> **`ALERTMANAGER_WEBHOOK_TOKEN` must be set for that path to deliver anything.**
+> It is empty by default and the receiver then rejects every delivery with 503 —
+> the alerts are visible in the Alertmanager UI but silently produce no mail. The
+> app logs the reason once per process on the first rejected delivery.
+
+Two wrinkles worth knowing:
+
+* **The service-down mail depends on the service.** The webhook receiver is the
+  thing that is down, so those alerts arrive on Alertmanager's next retry, once
+  the app is back. Setting `ALERTMANAGER_SMTP_HOST` + `ALERTMANAGER_SMTP_TO`
+  (full set in `.env.example`) adds a **direct-SMTP copy of just the two
+  service-down alerts** that never touches the app. Off by default; when off, the
+  fallback route and receiver are stripped from the rendered config.
+* **In the blue-green stack, `up` can lie.** The `unibridge-service` scrape
+  target is a DNS alias that *both* colors answer, so a dead active color with a
+  live standby still scrapes `up == 1`. The `unibridge-service-colors` job scrapes
+  each color by name, and `UniBridgeNoActiveInstance` fires when no instance
+  reports `unibridge_active_instance == 1` — the edge serving a dead or demoted
+  color, a state in which in-app background alerting is silent too. Those two
+  per-color targets are expectedly **down** in the single-stack compose, where
+  the names do not resolve; nothing alerts on that.
 
 ## Setup
 

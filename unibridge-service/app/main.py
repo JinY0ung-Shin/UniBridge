@@ -40,6 +40,7 @@ from app.routers import (
     users,
 )
 from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
+from app.services.apisix_client import upstream_node_addresses
 from app.services.apisix_system_resources import QUERY_TEMPLATE_WRITE_ROUTE_ID
 from app.services.connection_manager import connection_manager
 from app.services.s3_manager import s3_manager
@@ -108,6 +109,48 @@ async def _preserve_consumer_restriction(
     new_plugins["consumer-restriction"] = consumer_restriction
     new_body["plugins"] = new_plugins
     return new_body
+
+
+async def _put_upstream_if_unclaimed(upstream_id: str, body: dict[str, object]) -> bool:
+    """PUT a color-pinned upstream unless another color already claims it.
+
+    The blue/green deploy script's promote step is the only intended writer of
+    the upstream -> color mapping, but the node this instance would write is
+    baked into its container env at creation time. A container created as (or
+    forced to) provision=true that later restarts — host reboot, dockerd
+    restart, OOM — would otherwise re-point live traffic at its own color and
+    silently undo a promotion. So: an existing upstream whose nodes differ from
+    ours means this instance is not the active color; leave it alone.
+
+    Returns True when the PUT was issued. Only a missing upstream counts as
+    unclaimed — any other admin-API failure propagates so the caller's retry
+    loop sees it instead of mistaking an outage for an absent upstream.
+    """
+    from app.services import apisix_client
+
+    desired = upstream_node_addresses(body.get("nodes"))
+    try:
+        existing = await apisix_client.get_resource("upstreams", upstream_id)
+    except Exception as exc:
+        if not _is_missing_route_error(exc):
+            raise
+    else:
+        # An upstream with no usable node serves nothing, so it is a broken
+        # leftover rather than a claim — repair it.
+        current = upstream_node_addresses(existing.get("nodes"))
+        if current and current != desired:
+            logger.warning(
+                "APISIX upstream %s already points at %s, not %s — leaving it alone. "
+                "This instance is not the active color; only the deploy script's "
+                "promote step may switch upstreams.",
+                upstream_id,
+                sorted(current),
+                sorted(desired),
+            )
+            return False
+
+    await apisix_client.put_resource("upstreams", upstream_id, body)
+    return True
 
 
 @asynccontextmanager
@@ -214,8 +257,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         for _attempt in range(1, _max_retries + 1):
             try:
                 # Ensure upstream for unibridge-service exists
-                await apisix_client.put_resource(
-                    "upstreams",
+                await _put_upstream_if_unclaimed(
                     "unibridge-service",
                     {
                         "name": "unibridge-service",
@@ -464,8 +506,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     # serve reliably, then forwards to LiteLLM. The converter speaks
                     # plain HTTP on the internal network (it forwards to LiteLLM over
                     # HTTPS itself).
-                    await apisix_client.put_resource(
-                        "upstreams",
+                    await _put_upstream_if_unclaimed(
                         "llm-converter",
                         {
                             "name": "llm-converter",

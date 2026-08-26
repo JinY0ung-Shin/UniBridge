@@ -80,6 +80,8 @@ cp .env.example .env
 | `NAS_ALLOWED_ROOTS` | `NAS_CONTAINER_PATH` | Comma-separated container paths allowed as NAS connection `base_path` roots |
 | `NODE_EXPORTER_DISK_MOUNTPOINTS` | empty | Optional global comma-separated disk mountpoint default for server monitoring; per-server settings override it |
 | `S3_OP_TIMEOUT_SECONDS` | 30 | Per-operation timeout for S3-compatible storage calls |
+| `ALERTMANAGER_WEBHOOK_TOKEN` | empty | Bearer token Alertmanager uses to POST fired Prometheus rules into the app's alert pipeline. **Empty means infra alerts send no mail** — the receiver answers 503. See [Infra alerting](#infra-alerting-prometheus--alertmanager) |
+| `ALERTMANAGER_SMTP_HOST`, `ALERTMANAGER_SMTP_TO` | empty | Set both to add a direct-SMTP mail path for the service-down alerts, so that mail does not depend on the app being up. Empty = off. Companions: `ALERTMANAGER_SMTP_PORT` (25), `_FROM`, `_USERNAME`, `_PASSWORD`, `_REQUIRE_TLS` (true) |
 
 ### 3. TLS certificates
 
@@ -432,6 +434,34 @@ separate lines. GPU hosts can optionally run NVIDIA `dcgm-exporter` as well
 ([`deploy/dcgm-exporter/`](./deploy/dcgm-exporter/docker-compose.yml)) for GPU
 down/utilisation/memory alerts and per-GPU charts. Full guide:
 [`docs/server-monitoring.md`](./docs/server-monitoring.md).
+
+### Infra alerting (Prometheus → Alertmanager)
+
+Registered resources (DBs, hosts, routes, S3/NAS) are watched by the in-app
+alert checker. The *platform's own* components are watched by Prometheus rules in
+[`prometheus/rules/unibridge-alerts.yml`](./prometheus/rules/unibridge-alerts.yml)
+instead — APISIX 5xx rate, unibridge-service reachability, the metadata DB, the
+Keycloak/LiteLLM DB TCP probes, missing audit writes, and (blue-green only)
+"no color reports itself active". Those go to Alertmanager, which POSTs them to
+`/_api/internal/alertmanager`; the app turns each one into mail for the global
+관리자 plus an entry in alert history (rule type `prometheus_alert`).
+
+**Set `ALERTMANAGER_WEBHOOK_TOKEN` or this path sends nothing.** It is empty by
+default, and the receiver then rejects every delivery with 503: the alerts still
+appear in the Alertmanager UI, but no mail goes out. The app logs the reason once
+per process when the first delivery is rejected. Use the same value on both
+sides — one `.env` variable feeds the app and the rendered Alertmanager config.
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # -> .env
+```
+
+For `UniBridgeServiceDown` and `UniBridgeNoActiveInstance` the receiver is the
+service that is down, so the mail only lands once the app is back. Setting
+`ALERTMANAGER_SMTP_HOST` + `ALERTMANAGER_SMTP_TO` (see `.env.example` for the
+full set) adds a direct-SMTP copy of just those two alerts that does not involve
+the app at all. It is off by default, and when off the fallback route and
+receiver are stripped from the rendered config entirely.
 
 ## Backups
 

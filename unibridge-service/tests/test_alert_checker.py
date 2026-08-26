@@ -151,7 +151,7 @@ class TestAlertChecker:
              patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
              patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
             mock_db.return_value = []
-            mock_up.return_value = [("order-svc", False)]
+            mock_up.return_value = [("order-svc", False, "unreachable")]
 
             await run_single_check(state, trigger_after_failures=2)
 
@@ -162,8 +162,49 @@ class TestAlertChecker:
             assert kwargs["resource_id"] == "order-svc"
             assert kwargs["alert_type"] == "triggered"
             assert kwargs["target"] == "order-svc"
-            assert kwargs["message"] == "Upstream 'order-svc' is down."
+            assert kwargs["message"] == "Upstream 'order-svc' is down (no reachable node)."
             assert kwargs["display_target"] == "order-svc"
+
+    @pytest.mark.asyncio
+    async def test_upstream_with_no_weighted_nodes_says_so(self):
+        """An empty node map is a config fault, not an unreachable backend."""
+        state = AlertStateManager()
+        state.update("upstream_health", "order-svc", is_healthy=False, trigger_after_failures=2)
+
+        with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+             patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+             patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+            mock_db.return_value = []
+            mock_up.return_value = [("order-svc", False, "no_nodes")]
+
+            await run_single_check(state, trigger_after_failures=2)
+
+            kwargs = mock_dispatch.call_args.kwargs
+            assert kwargs["message"] == "Upstream 'order-svc' has no weighted nodes configured."
+            # Same alert identity as any other upstream failure, so mutes and
+            # recoveries keyed on it keep working.
+            assert kwargs["rule_type"] == "upstream_health"
+            assert kwargs["target"] == "order-svc"
+            assert kwargs["monitor_label"] == "업스트림 헬스체크"
+
+    @pytest.mark.asyncio
+    async def test_upstream_recovery_message_is_unchanged(self):
+        state = AlertStateManager()
+        state.update("upstream_health", "order-svc", is_healthy=False, trigger_after_failures=1)
+
+        with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+             patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+             patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+            mock_db.return_value = []
+            mock_up.return_value = [("order-svc", True, None)]
+
+            await run_single_check(state, trigger_after_failures=1)
+
+            kwargs = mock_dispatch.call_args.kwargs
+            assert kwargs["alert_type"] == "resolved"
+            assert kwargs["message"] == "Upstream 'order-svc' recovered."
 
     @pytest.mark.asyncio
     async def test_upstream_health_dispatch_includes_name_in_display(self):
@@ -180,7 +221,7 @@ class TestAlertChecker:
                  patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
                  patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
                 mock_db.return_value = []
-                mock_up.return_value = [("upstream-1", False)]
+                mock_up.return_value = [("upstream-1", False, "unreachable")]
 
                 await run_single_check(state, trigger_after_failures=2)
 
@@ -823,7 +864,7 @@ class TestUpstreamReachabilityProbe:
                 transport=httpx.MockTransport(handler)
             )
 
-        assert result == [("orders", False)]
+        assert result == [("orders", False, "unreachable")]
 
     @pytest.mark.asyncio
     async def test_reachable_node_is_healthy(self):
@@ -841,7 +882,7 @@ class TestUpstreamReachabilityProbe:
                 transport=httpx.MockTransport(handler)
             )
 
-        assert result == [("orders", True)]
+        assert result == [("orders", True, None)]
         assert seen == ["http://orders-api:8080/health"]
 
     @pytest.mark.asyncio
@@ -858,7 +899,7 @@ class TestUpstreamReachabilityProbe:
                 transport=httpx.MockTransport(handler)
             )
 
-        assert result == [("orders", True)]
+        assert result == [("orders", True, None)]
 
     @pytest.mark.asyncio
     async def test_timeout_is_unhealthy(self):
@@ -873,7 +914,7 @@ class TestUpstreamReachabilityProbe:
                 transport=httpx.MockTransport(handler)
             )
 
-        assert result == [("orders", False)]
+        assert result == [("orders", False, "unreachable")]
 
     @pytest.mark.asyncio
     async def test_list_form_nodes_are_probed_instead_of_reported_down(self):
@@ -896,7 +937,7 @@ class TestUpstreamReachabilityProbe:
                 transport=httpx.MockTransport(handler)
             )
 
-        assert result == [("orders", True)]
+        assert result == [("orders", True, None)]
         assert seen == ["http://orders-api:8080/health"]
 
     @pytest.mark.asyncio
@@ -916,7 +957,7 @@ class TestUpstreamReachabilityProbe:
                 transport=httpx.MockTransport(handler)
             )
 
-        assert result == [("orders", False)]
+        assert result == [("orders", False, "unreachable")]
 
     @pytest.mark.asyncio
     async def test_one_reachable_node_is_enough(self):
@@ -934,7 +975,7 @@ class TestUpstreamReachabilityProbe:
                 transport=httpx.MockTransport(handler)
             )
 
-        assert result == [("orders", True)]
+        assert result == [("orders", True, None)]
 
     @pytest.mark.asyncio
     async def test_upstream_without_weighted_nodes_is_unhealthy(self):
@@ -949,7 +990,48 @@ class TestUpstreamReachabilityProbe:
                 transport=httpx.MockTransport(handler)
             )
 
-        assert result == [("orders", False)]
+        assert result == [("orders", False, "no_nodes")]
+
+    @pytest.mark.asyncio
+    async def test_non_http_upstream_with_nodes_is_healthy_without_probing(self):
+        """A GET against a grpc/tcp/kafka port proves nothing, so it is not sent.
+
+        Deliberate scope limit: those upstreams fall back to the config-only
+        judgment, which is why their only detectable failure is "no nodes".
+        """
+        import httpx
+        from app.services import alert_checker
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("a non-HTTP upstream must not be probed")
+
+        for scheme in ("grpc", "grpcs", "tcp", "tls", "udp", "kafka"):
+            listing = {"id": "orders", "scheme": scheme, "nodes": {"orders-grpc:9090": 1}}
+            with _upstream_listing(listing):
+                result = await alert_checker._check_upstream_health(
+                    transport=httpx.MockTransport(handler)
+                )
+            assert result == [("orders", True, None)], scheme
+
+    @pytest.mark.asyncio
+    async def test_non_http_upstream_without_weighted_nodes_is_unhealthy(self):
+        import httpx
+        from app.services import alert_checker
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("a non-HTTP upstream must not be probed")
+
+        listing = {
+            "id": "orders",
+            "scheme": "grpc",
+            "nodes": [{"host": "orders-grpc", "port": 9090, "weight": 0}],
+        }
+        with _upstream_listing(listing):
+            result = await alert_checker._check_upstream_health(
+                transport=httpx.MockTransport(handler)
+            )
+
+        assert result == [("orders", False, "no_nodes")]
 
     @pytest.mark.asyncio
     async def test_litellm_upstream_uses_the_liveliness_path(self):
@@ -1019,7 +1101,7 @@ class TestUpstreamReachabilityProbe:
                 transport=httpx.MockTransport(handler)
             )
 
-        assert result == [("orders", True)]
+        assert result == [("orders", True, None)]
 
 
 class TestActiveInstanceGating:

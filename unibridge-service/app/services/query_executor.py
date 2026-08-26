@@ -451,7 +451,7 @@ async def execute_clickhouse_query(
     inside the worker thread. This keeps the client protected even when the
     awaiting coroutine times out while the thread continues running.
     """
-    effective_limit = limit or settings_manager.default_row_limit
+    effective_limit = min(limit or settings_manager.default_row_limit, settings.MAX_ROW_LIMIT)
     effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
 
     if check_multi_statement(sql):
@@ -589,7 +589,7 @@ async def execute_neo4j_query(
     ``readonly=True`` (the default) opens the session in READ access mode, so
     the server rejects writes; pass ``False`` only for authorized data writes.
     """
-    effective_limit = limit or settings_manager.default_row_limit
+    effective_limit = min(limit or settings_manager.default_row_limit, settings.MAX_ROW_LIMIT)
     effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
     try:
         return await asyncio.wait_for(

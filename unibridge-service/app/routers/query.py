@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import metrics
 from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_role_permissions, require_permission
+from app.config import settings
 from app.database import get_db
 from app.db_types import utcnow
 from app.models import DBConnection, Permission, QueryTemplate
@@ -533,7 +534,9 @@ async def execute(
             # the executor; statement_type was normalized to "select" by
             # _detect_statement_type so the upstream gates pass uniformly.
             raw_form = detect_sparql_statement_type(req.sql)
-            effective_limit = req.limit or settings_manager.default_row_limit
+            effective_limit = min(
+                req.limit or settings_manager.default_row_limit, settings.MAX_ROW_LIMIT
+            )
             response = await execute_graphdb_query(
                 client=graphdb_client,
                 repo=repo,
@@ -786,11 +789,18 @@ async def execute_template(
         )
 
     execute_body = body or QueryTemplateExecuteRequest()
+    template_limit = (
+        execute_body.limit if execute_body.limit is not None else template.default_limit
+    )
+    # Templates stored before MAX_ROW_LIMIT was enforced may exceed QueryRequest's
+    # own ceiling; clamp here so they still execute instead of raising in-handler.
+    if template_limit is not None:
+        template_limit = min(template_limit, settings.MAX_ROW_LIMIT)
     request = QueryRequest(
         database=template.db_alias,
         sql=template.sql,
         params=execute_body.params,
-        limit=execute_body.limit if execute_body.limit is not None else template.default_limit,
+        limit=template_limit,
         timeout=execute_body.timeout if execute_body.timeout is not None else template.timeout,
     )
     return await execute(request, user=user, db=db)

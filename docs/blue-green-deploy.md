@@ -302,3 +302,31 @@ the flag, but if the script detects that APISIX has lost or drifted from its
 core routes (e.g. an etcd reset or a stale LLM route after gateway migration) it
 forces re-provisioning on the next `deploy` so the system cannot silently come
 up with no or broken routes.
+
+Boot-time provisioning cannot demote the active color. `APISIX_PROVISION_ON_START`
+and the pinned `APISIX_UNIBRIDGE_SERVICE_NODE` / `APISIX_LLM_CONVERTER_NODE`
+values are baked into a container's environment when it is *created*, and the app
+stack runs with `restart: unless-stopped`, so a container created with
+provisioning armed re-runs it on every host reboot, dockerd restart, or OOM
+restart. The service therefore skips a color-pinned upstream write, with a
+warning, whenever that upstream already exists pointing at nodes other than its
+own: `promote` is the only writer of the upstream-to-color mapping. A first
+boot, a matching refresh, and a genuinely missing upstream still provision
+normally. The colorless `litellm` upstream and all routes are unaffected, since
+routes reference `upstream_id` rather than nodes and so carry no color.
+
+After a promotion the script also clears the flag on the standby it keeps alive,
+but only when that standby is actually armed: it inspects the
+`unibridge-service-<color>` container's environment and skips the recreate when
+`APISIX_PROVISION_ON_START=false` is already set. This matters because recreating
+the standby re-runs the *old* image's lifespan, including `alembic upgrade head`.
+If the release just promoted carried a migration, that old image does not know
+the new revision, so an unnecessary recreate would leave the rollback target in a
+boot-crash loop. The active color is never recreated here.
+
+One gap remains. If etcd is wiped **and** an armed container restarts, its
+upstream is genuinely absent, so it writes its own baked color, which may no
+longer be the active one. Nothing inside a container can do better, because the
+active color lives in the host-side state file. The next `deploy` detects the
+missing or drifted core routes and re-provisions on the color it promotes, which
+repairs the mapping.

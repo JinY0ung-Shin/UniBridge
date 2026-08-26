@@ -69,7 +69,7 @@ class QueryTemplateCreate(BaseModel):
     description: str = Field("", max_length=255)
     database: str = Field(..., min_length=1, description="Database alias to run the template against")
     sql: str = Field(..., min_length=1, description="Read-only SQL/Cypher template using named bind parameters")
-    default_limit: int | None = Field(None, ge=1)
+    default_limit: int | None = Field(None, ge=1, le=1_000_000)
     timeout: int | None = Field(None, ge=1, le=300)
     enabled: bool = True
 
@@ -89,7 +89,7 @@ class QueryTemplateUpdate(BaseModel):
     description: str | None = Field(None, max_length=255)
     database: str | None = Field(None, min_length=1)
     sql: str | None = Field(None, min_length=1)
-    default_limit: int | None = Field(None, ge=1)
+    default_limit: int | None = Field(None, ge=1, le=1_000_000)
     timeout: int | None = Field(None, ge=1, le=300)
     enabled: bool | None = None
 
@@ -106,7 +106,7 @@ class QueryTemplateAgentCreate(BaseModel):
     description: str = Field("", max_length=255)
     database: str = Field(..., min_length=1)
     sql: str = Field(..., min_length=1)
-    default_limit: int | None = Field(None, ge=1)
+    default_limit: int | None = Field(None, ge=1, le=1_000_000)
     timeout: int | None = Field(None, ge=1, le=300)
 
     model_config = {"extra": "forbid"}
@@ -129,7 +129,7 @@ class QueryTemplateAgentUpdate(BaseModel):
 
     sql: str | None = Field(None, min_length=1)
     description: str | None = Field(None, max_length=255)
-    default_limit: int | None = Field(None, ge=1)
+    default_limit: int | None = Field(None, ge=1, le=1_000_000)
     timeout: int | None = Field(None, ge=1, le=300)
     expected_updated_at: datetime | None = None
 
@@ -169,7 +169,7 @@ class QueryTemplateResponse(BaseModel):
 
 class QueryTemplateExecuteRequest(BaseModel):
     params: dict[str, Any] | None = Field(None, description="Named bind parameters for the stored query")
-    limit: int | None = Field(None, ge=1, description="Override the template default row limit")
+    limit: int | None = Field(None, ge=1, le=1_000_000, description="Override the template default row limit")
     timeout: int | None = Field(None, ge=1, le=300, description="Override the template default timeout")
 
 

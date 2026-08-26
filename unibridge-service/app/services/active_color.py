@@ -16,37 +16,13 @@ recreating containers.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
+from app import metrics
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 _last_logged_active: bool | None = None
-
-
-def _is_positive_weight(weight: Any) -> bool:
-    return isinstance(weight, (int, float)) and not isinstance(weight, bool) and weight > 0
-
-
-def _node_addresses(nodes: Any) -> set[str]:
-    """Normalize APISIX upstream nodes (dict or list form) to ``host:port`` strings."""
-    if isinstance(nodes, dict):
-        return {str(addr) for addr, weight in nodes.items() if _is_positive_weight(weight)}
-    if isinstance(nodes, list):
-        addresses: set[str] = set()
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            if not _is_positive_weight(node.get("weight", 1)):
-                continue
-            host = node.get("host")
-            if host is None:
-                continue
-            port = node.get("port")
-            addresses.add(f"{host}:{port}" if port is not None else str(host))
-        return addresses
-    return set()
 
 
 async def is_active_instance() -> bool:
@@ -59,26 +35,33 @@ async def is_active_instance() -> bool:
       routes to this node. Fails open when APISIX is unreachable: with no way
       to tell which color is active, a brief window of duplicate alerts beats
       both colors going silent.
+
+    Every decision is published to the ``unibridge_active_instance`` gauge —
+    that is the only place the "no color is active anywhere" failure is
+    visible, since neither process can observe the other's silence.
     """
     global _last_logged_active
 
     if not settings.RUN_BACKGROUND_TASKS:
+        metrics.set_active_instance(False)
         return False
     self_node = settings.UNIBRIDGE_SELF_NODE.strip()
     if not self_node:
+        metrics.set_active_instance(True)
         return True
 
     try:
         from app.services import apisix_client
 
         upstream = await apisix_client.get_resource("upstreams", "unibridge-service")
-        active = self_node in _node_addresses(upstream.get("nodes"))
+        active = self_node in apisix_client.upstream_node_addresses(upstream.get("nodes"))
     except Exception as exc:
         if _last_logged_active is not True:
             logger.warning(
                 "Active-color check against APISIX failed (%s) — assuming active", exc
             )
             _last_logged_active = True
+        metrics.set_active_instance(True)
         return True
 
     if active is not _last_logged_active:
@@ -89,4 +72,5 @@ async def is_active_instance() -> bool:
             "enabled" if active else "paused (standby color)",
         )
         _last_logged_active = active
+    metrics.set_active_instance(active)
     return active

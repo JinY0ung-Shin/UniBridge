@@ -12,13 +12,17 @@ never report its own death — ``UniBridgeServiceDown`` / ``UniBridgeMetaDbDown`
 are exactly the alerts it cannot raise. Prometheus + Alertmanager are separate
 containers and can. (When the app is down the POST obviously fails too; the
 alert stays visible in the Alertmanager UI and is redelivered on the next
-``repeat_interval``, once the app is back. See ``alertmanager/alertmanager.yml``.)
+``repeat_interval``, once the app is back. The service-down alerts also route to
+an optional direct-SMTP receiver that does not involve the app at all — see
+``alertmanager/alertmanager.yml``.)
 
 Auth: a shared bearer token (``ALERTMANAGER_WEBHOOK_TOKEN``), never a user JWT —
 Alertmanager is a machine. An empty setting disables the endpoint (503) so a
 deployment without Alertmanager wired never exposes an unauthenticated dispatch
-surface. Reachable in-cluster as ``POST /internal/alertmanager`` and, through
-the UI nginx ``/_api/`` rewrite, as ``POST /_api/internal/alertmanager``.
+surface; the first rejected delivery logs a warning naming the missing setting,
+because that 503 is otherwise indistinguishable from working alerting.
+Reachable in-cluster as ``POST /internal/alertmanager`` and, through the UI
+nginx ``/_api/`` rewrite, as ``POST /_api/internal/alertmanager``.
 
 Recipients: infra alerts are not tied to a registered DB/S3/host, so they carry
 ``resource_type="infra"`` — deliberately *not* in
@@ -75,6 +79,12 @@ MAX_ALERTS_PER_REQUEST = 100
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
+# A stock deployment leaves ALERTMANAGER_WEBHOOK_TOKEN empty, so Alertmanager's
+# deliveries 503 and nothing anywhere says why. Say it once: Alertmanager retries
+# a failed group every few minutes forever, and logging per request would bury
+# the logs it is trying to draw attention to. Reset in tests.
+_disabled_warning_logged = False
+
 
 def _clean(value: Any, limit: int) -> str:
     """Flatten one label/annotation into a single safe line.
@@ -100,6 +110,16 @@ def _verify_token(authorization: str | None) -> None:
     """
     expected = settings.ALERTMANAGER_WEBHOOK_TOKEN
     if not expected:
+        global _disabled_warning_logged
+        if not _disabled_warning_logged:
+            _disabled_warning_logged = True
+            logger.warning(
+                "Alertmanager posted to /internal/alertmanager but "
+                "ALERTMANAGER_WEBHOOK_TOKEN is empty: Prometheus alert forwarding "
+                "is disabled and every delivery is rejected with 503. Set it to "
+                "the same value the Alertmanager config renders. Logged once per "
+                "process."
+            )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Alertmanager webhook not configured",

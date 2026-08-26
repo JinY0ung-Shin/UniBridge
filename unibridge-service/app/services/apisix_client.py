@@ -31,6 +31,36 @@ def _validate_resource_id(resource_id: str) -> None:
         raise ValueError(f"Invalid resource ID: {resource_id!r}")
 
 
+def _is_positive_weight(weight: Any) -> bool:
+    return isinstance(weight, (int, float)) and not isinstance(weight, bool) and weight > 0
+
+
+def upstream_node_addresses(nodes: Any) -> set[str]:
+    """Normalize APISIX upstream ``nodes`` to a set of ``host:port`` strings.
+
+    APISIX stores nodes either as ``{"host:port": weight}`` or as
+    ``[{"host": ..., "port": ..., "weight": ...}]`` depending on how the
+    upstream was written; zero/negative/malformed weights are dropped. This is
+    the one shared normalizer — use it instead of assuming the dict form.
+    """
+    if isinstance(nodes, dict):
+        return {str(addr) for addr, weight in nodes.items() if _is_positive_weight(weight)}
+    if isinstance(nodes, list):
+        addresses: set[str] = set()
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            if not _is_positive_weight(node.get("weight", 1)):
+                continue
+            host = node.get("host")
+            if host is None:
+                continue
+            port = node.get("port")
+            addresses.add(f"{host}:{port}" if port is not None else str(host))
+        return addresses
+    return set()
+
+
 def _headers() -> dict[str, str]:
     return {"X-API-KEY": settings.APISIX_ADMIN_KEY}
 

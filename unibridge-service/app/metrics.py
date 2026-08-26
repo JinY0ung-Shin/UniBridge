@@ -18,6 +18,7 @@ class MetricsRecorder:
     audit_log_write_total: Counter
     connection_pool_in_use: Gauge
     meta_db_up: Gauge
+    active_instance: Gauge
 
     def record_query(
         self,
@@ -62,6 +63,9 @@ class MetricsRecorder:
     def set_meta_db_up(self, is_up: bool) -> None:
         self.meta_db_up.set(1 if is_up else 0)
 
+    def set_active_instance(self, is_active: bool) -> None:
+        self.active_instance.set(1 if is_active else 0)
+
 
 def create_metrics(
     *, registry: CollectorRegistry = REGISTRY,
@@ -102,6 +106,14 @@ def create_metrics(
         meta_db_up=Gauge(
             "unibridge_meta_db_up",
             "Metadata database health status, 1 for up and 0 for down.",
+            registry=registry,
+        ),
+        # Scraped from both blue and green, so a Prometheus rule can catch the
+        # case no process can see from the inside: no color reporting 1.
+        active_instance=Gauge(
+            "unibridge_active_instance",
+            "1 when this instance is the active blue/green color and runs "
+            "side-effectful background work, 0 when it is standby.",
             registry=registry,
         ),
     )
@@ -150,6 +162,10 @@ def set_connection_pool_in_use(*, db_alias: str, in_use: int | float) -> None:
 
 def set_meta_db_up(is_up: bool) -> None:
     recorder.set_meta_db_up(is_up)
+
+
+def set_active_instance(is_active: bool) -> None:
+    recorder.set_active_instance(is_active)
 
 
 async def monitor_meta_db_health(*, interval_seconds: int = 15) -> None:

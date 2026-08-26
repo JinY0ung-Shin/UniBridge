@@ -219,22 +219,55 @@ services:
           cpus: "0.25"
     # Routes Prometheus's fired rules to the unibridge-service webhook, which
     # reuses the app's owner/admin email pipeline. Alertmanager does not expand
-    # env vars in its config, so substitute the bearer token into a writable
-    # copy at startup then exec the binary ($$ escapes compose interpolation so
-    # the container shell expands it). When ALERTMANAGER_WEBHOOK_TOKEN is unset
-    # the literal placeholder stays as the credential (valid, non-empty) and the
-    # app returns 503 for the endpoint — alerts stay visible in the Alertmanager
-    # UI but no mail goes out until the operator sets the token. See
-    # alertmanager/alertmanager.yml.
+    # env vars in its config, so render a writable copy at startup and exec the
+    # binary against it ($$ escapes compose interpolation so the container shell
+    # expands it). Two stages:
+    #   1. Strip the optional SMTP fallback unless ALERTMANAGER_SMTP_HOST and
+    #      ALERTMANAGER_SMTP_TO are both set — deleting its two marker blocks
+    #      keeps the rendered config valid in either mode. The SMTP password is
+    #      written to a file read via auth_password_file instead of being
+    #      substituted: `|`, `&` or `\` in a password corrupts a sed
+    #      replacement silently.
+    #   2. Substitute the placeholders. When ALERTMANAGER_WEBHOOK_TOKEN is unset
+    #      the literal placeholder stays as the credential (valid, non-empty)
+    #      and the app returns 503 for the endpoint — alerts stay visible in the
+    #      Alertmanager UI but no mail goes out until the operator sets the
+    #      token (the app logs that reason once per process).
+    # umask 077 covers both rendered files, which carry the bearer token and the
+    # SMTP password. See alertmanager/alertmanager.yml.
+    # Keep this block identical in docker-compose.yml and docker-compose.infra.yml.
     entrypoint:
       - /bin/sh
       - -c
       - >
-        sed "s|__ALERTMANAGER_WEBHOOK_TOKEN__|$${ALERTMANAGER_WEBHOOK_TOKEN:-__ALERTMANAGER_WEBHOOK_TOKEN__}|g"
-        /etc/alertmanager/alertmanager.yml > /tmp/alertmanager.yml
+        umask 077
+        && if [ -n "$${ALERTMANAGER_SMTP_HOST}" ] && [ -n "$${ALERTMANAGER_SMTP_TO}" ];
+        then printf '%s' "$${ALERTMANAGER_SMTP_PASSWORD}" > /tmp/alertmanager-smtp-password
+        && cp /etc/alertmanager/alertmanager.yml /tmp/alertmanager.src;
+        else sed -e '/# BEGIN smtp-fallback-route/,/# END smtp-fallback-route/d'
+        -e '/# BEGIN smtp-fallback-receiver/,/# END smtp-fallback-receiver/d'
+        /etc/alertmanager/alertmanager.yml > /tmp/alertmanager.src;
+        fi
+        && sed -e "s|__ALERTMANAGER_WEBHOOK_TOKEN__|$${ALERTMANAGER_WEBHOOK_TOKEN:-__ALERTMANAGER_WEBHOOK_TOKEN__}|g"
+        -e "s|__ALERTMANAGER_SMTP_HOST__|$${ALERTMANAGER_SMTP_HOST}|g"
+        -e "s|__ALERTMANAGER_SMTP_PORT__|$${ALERTMANAGER_SMTP_PORT:-25}|g"
+        -e "s|__ALERTMANAGER_SMTP_FROM__|$${ALERTMANAGER_SMTP_FROM:-alertmanager@unibridge.local}|g"
+        -e "s|__ALERTMANAGER_SMTP_TO__|$${ALERTMANAGER_SMTP_TO}|g"
+        -e "s|__ALERTMANAGER_SMTP_USERNAME__|$${ALERTMANAGER_SMTP_USERNAME}|g"
+        -e "s|__ALERTMANAGER_SMTP_REQUIRE_TLS__|$${ALERTMANAGER_SMTP_REQUIRE_TLS:-true}|g"
+        /tmp/alertmanager.src > /tmp/alertmanager.yml
         && exec /bin/alertmanager --config.file=/tmp/alertmanager.yml --storage.path=/alertmanager
     environment:
       - ALERTMANAGER_WEBHOOK_TOKEN=${ALERTMANAGER_WEBHOOK_TOKEN:-}
+      # App-independent mail path for the service-down alerts. Empty host or
+      # recipient disables it (both fallback blocks are stripped at render).
+      - ALERTMANAGER_SMTP_HOST=${ALERTMANAGER_SMTP_HOST:-}
+      - ALERTMANAGER_SMTP_PORT=${ALERTMANAGER_SMTP_PORT:-}
+      - ALERTMANAGER_SMTP_FROM=${ALERTMANAGER_SMTP_FROM:-}
+      - ALERTMANAGER_SMTP_TO=${ALERTMANAGER_SMTP_TO:-}
+      - ALERTMANAGER_SMTP_USERNAME=${ALERTMANAGER_SMTP_USERNAME:-}
+      - ALERTMANAGER_SMTP_PASSWORD=${ALERTMANAGER_SMTP_PASSWORD:-}
+      - ALERTMANAGER_SMTP_REQUIRE_TLS=${ALERTMANAGER_SMTP_REQUIRE_TLS:-}
     expose:
       - "9093"
     volumes:

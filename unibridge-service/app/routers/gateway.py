@@ -22,6 +22,7 @@ from app.models import ApiKeyAccess, QueryTemplate
 from app.routers.api_keys import apply_master_consumer_restriction, list_master_consumer_names
 from app.services import apisix_client
 from app.services import openapi_export
+from app.services.apisix_client import upstream_node_addresses
 from app.services import prometheus_client
 from app.services.alert_state import delete_alert_state
 from app.services.audit import log_admin_action
@@ -33,11 +34,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/gateway", tags=["Gateway"])
 
 MASK_KEEP = 4
+_MASK_PREFIX = "***"
 
 def _mask_value(value: str) -> str:
     if len(value) <= MASK_KEEP:
-        return "***"
-    return "***" + value[-MASK_KEEP:]
+        return _MASK_PREFIX
+    return _MASK_PREFIX + value[-MASK_KEEP:]
+
+
+# Exactly what `_mask_value` can emit: the prefix alone, or the prefix plus the
+# trailing characters it keeps. Derived from both constants so it cannot drift.
+_MASKED_VALUE_RE = re.compile(rf"^{re.escape(_MASK_PREFIX)}(?:.{{{MASK_KEEP}}})?$")
+
+
+def _is_masked_value(value: str) -> bool:
+    """True when a submitted value is a mask this API handed out, not a secret.
+
+    Collision accepted: a real secret shaped exactly like a mask cannot be
+    stored through this endpoint. Losing an unstorable secret beats overwriting
+    a live one with the literal ``***abcd``.
+    """
+    return bool(_MASKED_VALUE_RE.match(value))
 
 
 def _headers_set_for_route(route: dict[str, Any]) -> dict[str, str]:
@@ -217,7 +234,9 @@ def _inject_plugins(
     # - None: preserve existing headers entirely
     # - list: replace `set` with the provided entries. For each entry, an
     #   empty/missing header_value means "preserve existing value for this
-    #   header_name" (lets the UI edit other fields without retyping secrets).
+    #   header_name" (lets the UI edit other fields without retyping secrets),
+    #   and so does a masked one — reads hand out masks, so a client that PUTs
+    #   a GET response back verbatim must not store the mask as the secret.
     if service_keys is not None:
         existing_raw_headers = pr_config.get("headers")
         existing_headers = (
@@ -233,7 +252,7 @@ def _inject_plugins(
             if not name:
                 continue
             value = sk.get("header_value")
-            if value in (None, ""):
+            if value in (None, "") or (isinstance(value, str) and _is_masked_value(value)):
                 if name in existing_set:
                     new_set[name] = existing_set[name]
                 continue
@@ -714,13 +733,15 @@ async def test_route(
             detail=f"Failed to get upstream: {exc}",
         )
 
-    nodes = upstream.get("nodes", {})
-    if not nodes:
+    # Sorted so a multi-node upstream always tests the same node: an operator
+    # comparing two runs is then comparing the same target.
+    addresses = sorted(upstream_node_addresses(upstream.get("nodes")))
+    if not addresses:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Upstream has no nodes"
         )
 
-    first_addr = next(iter(nodes))
+    first_addr = addresses[0]
     scheme = _http_scheme_for_upstream(upstream)
     url = f"{scheme}://{first_addr}{_health_path_for_route(route)}"
     start = time.monotonic()

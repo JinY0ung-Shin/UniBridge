@@ -66,7 +66,12 @@ async def _run_cycle(state, *, trigger_after_failures=1, **overrides):
         ("_check_db_health", [("mydb", False)], "db_health", "db"),
         ("_check_s3_health", [("archive", False)], "s3_health", "s3"),
         ("_check_nas_health", [("reports", False)], "nas_health", "nas"),
-        ("_check_upstream_health", [("up-1", False)], "upstream_health", "upstream"),
+        (
+            "_check_upstream_health",
+            [("up-1", False, "unreachable")],
+            "upstream_health",
+            "upstream",
+        ),
     ],
 )
 @pytest.mark.asyncio

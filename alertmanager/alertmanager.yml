@@ -1,48 +1,55 @@
 # Alertmanager configuration for UniBridge.
 #
 # Prometheus (prometheus/prometheus.yml → `alerting:`) sends the fired rules of
-# prometheus/rules/*.yml here; this file fans them out to a single receiver:
-# the unibridge-service webhook at POST /internal/alertmanager, which re-uses
-# the app's existing 담당자/관리자 e-mail pipeline. All six shipped rules are
-# severity=critical, so there is no per-severity split — everything goes to the
-# one receiver.
+# prometheus/rules/*.yml here; this file fans them out to the unibridge-service
+# webhook at POST /internal/alertmanager, which re-uses the app's existing
+# 담당자/관리자 e-mail pipeline. Every shipped rule is severity=critical, so there
+# is no per-severity split — the only split is the service-down sub-route below,
+# which adds a second, app-independent delivery path.
 #
 # ── TOKEN SUBSTITUTION (REQUIRED) ────────────────────────────────────────────
-# Alertmanager does NOT expand environment variables in this file. The literal
-# placeholder `__ALERTMANAGER_WEBHOOK_TOKEN__` below MUST be replaced with the
-# value of ALERTMANAGER_WEBHOOK_TOKEN (the same secret unibridge-service reads)
-# before Alertmanager starts. Two supported ways:
+# Alertmanager does NOT expand environment variables in this file. This file is
+# mounted read-only and RENDERED at container start: the alertmanager service
+# entrypoint (identical in docker-compose.yml and docker-compose.infra.yml)
+# substitutes every `__…__` placeholder into /tmp/alertmanager.yml and execs the
+# binary against that copy. Placeholders must therefore stay literal here.
 #
-#   (a) Render at deploy time — e.g. mount this file read-only and have the
-#       container entrypoint write the substituted copy to a writable path:
-#         command: >
-#           sh -c 'sed "s|__ALERTMANAGER_WEBHOOK_TOKEN__|$${ALERTMANAGER_WEBHOOK_TOKEN}|"
-#                  /etc/alertmanager/alertmanager.yml > /tmp/alertmanager.yml &&
-#                  exec /bin/alertmanager --config.file=/tmp/alertmanager.yml
-#                  --storage.path=/alertmanager'
-#       (`$$` escapes the compose interpolation so the shell expands it.)
+# `__ALERTMANAGER_WEBHOOK_TOKEN__` becomes ALERTMANAGER_WEBHOOK_TOKEN — the same
+# secret unibridge-service reads. If it is left unset the placeholder survives
+# verbatim (a valid, non-empty credential) and unibridge-service answers 503 for
+# a deployment that never configured the token, or 401 for a mismatched one:
+# either way the alerts stay visible in the Alertmanager UI but nobody gets an
+# e-mail. The app logs that reason once per process. Alertmanager >= 0.24 is
+# required for `http_config.authorization`.
 #
-#   (b) Use a token file instead — drop the `credentials:` line below and use
-#         credentials_file: /etc/alertmanager/webhook-token
-#       with that file mounted (or written by the deploy script) containing the
-#       token and nothing else.
+# ── OPTIONAL SMTP FALLBACK (service-down alerts only) ────────────────────────
+# UniBridgeServiceDown / UniBridgeNoActiveInstance are the alerts this whole
+# path exists for (the in-app checker runs inside unibridge-service and cannot
+# report its own death), and they are also the case where the webhook POST
+# itself fails: the receiver is the service that is down. Without a second
+# path the mail only lands once the app is back (Alertmanager retries and
+# re-sends a still-firing alert every repeat_interval).
 #
-# If the token is left unsubstituted, unibridge-service answers 401 and every
-# delivery fails — the alerts stay visible in the Alertmanager UI, but nobody
-# gets an e-mail. Alertmanager also requires >= 0.24 for `http_config.authorization`.
+# So those two alerts get a sub-route to `unibridge-critical-fallback`, which is
+# the same webhook PLUS a direct SMTP e-mail that does not involve the app. It
+# is OFF by default: the deploy-time renderer DELETES the smtp-fallback marker
+# blocks (route + receiver) unless both ALERTMANAGER_SMTP_HOST and
+# ALERTMANAGER_SMTP_TO are set, so the shipped default stays webhook-only and
+# both rendered variants are valid configs. Do not reindent or reword the
+# marker comment lines — the renderer matches them literally.
 #
-# ── HONEST LIMITATION ────────────────────────────────────────────────────────
-# UniBridgeServiceDown is the alert this whole path exists for (the in-app
-# checker runs inside unibridge-service and cannot report its own death), and
-# it is also the case where the webhook POST itself fails: the receiver is the
-# service that is down. Alertmanager being a separate container does NOT make
-# the e-mail go out in that window. What it does buy:
-#   - the alert is raised, grouped and visible in the Alertmanager UI/API,
-#   - delivery is retried, and a still-firing alert is re-sent every
-#     repeat_interval (3h below), so it lands as soon as the app is back,
-#   - a second, app-independent receiver (SMTP, Slack, PagerDuty) can be added
-#     under `receivers:` later without touching the app.
-# For true out-of-band paging while the app is down, add such a receiver.
+# Substituted placeholders (all from the alertmanager service env; see
+# docker-compose.yml / docker-compose.infra.yml and .env.example):
+#   __ALERTMANAGER_SMTP_HOST__ / __ALERTMANAGER_SMTP_PORT__ (default 25)
+#   __ALERTMANAGER_SMTP_FROM__ (default alertmanager@unibridge.local)
+#   __ALERTMANAGER_SMTP_TO__   __ALERTMANAGER_SMTP_USERNAME__
+#   __ALERTMANAGER_SMTP_REQUIRE_TLS__ (default true; set false only for a
+#   plaintext relay on a trusted network — STARTTLS is attempted either way)
+# These go through `sed`, so a value containing `|`, `&` or `\` corrupts the
+# rendered config. The password deliberately does NOT: it is written to
+# /tmp/alertmanager-smtp-password by the entrypoint and read via
+# `auth_password_file`, which keeps it out of both sed and the rendered file.
+# Leaving the username empty skips SMTP AUTH entirely (open internal relay).
 
 global:
   # How long after the last evaluation an alert with no explicit endsAt is
@@ -59,6 +66,15 @@ route:
   # Re-send a still-firing alert every 3h. Also the recovery path for a
   # delivery that failed because unibridge-service was the thing that was down.
   repeat_interval: 3h
+  # BEGIN smtp-fallback-route
+  # The two alerts that mean "the webhook receiver itself is probably gone".
+  # `routes:` lives inside the marker block so deleting the block leaves a
+  # plain single-receiver route rather than a dangling empty key.
+  routes:
+    - receiver: 'unibridge-critical-fallback'
+      matchers:
+        - alertname=~"UniBridgeServiceDown|UniBridgeNoActiveInstance"
+  # END smtp-fallback-route
 
 receivers:
   - name: 'unibridge-webhook'
@@ -70,11 +86,35 @@ receivers:
         # Recoveries flow through the same endpoint and become alert_type
         # "resolved" ("정상 복구" in the mail template).
         send_resolved: true
-        # Cap one POST body. Every alert in a batch becomes an e-mail; with six
-        # rules a batch this large cannot occur in practice, so this only bounds
-        # a pathological case. 0 would mean unlimited.
+        # Cap one POST body. Every alert in a batch becomes an e-mail; with a
+        # handful of rules a batch this large cannot occur in practice, so this
+        # only bounds a pathological case. 0 would mean unlimited.
         max_alerts: 50
         http_config:
           authorization:
             type: Bearer
             credentials: __ALERTMANAGER_WEBHOOK_TOKEN__
+
+  # BEGIN smtp-fallback-receiver
+  # Same webhook as above (a service that is merely slow to scrape still gets
+  # the alert into the app's history/UI) plus the app-independent mail.
+  - name: 'unibridge-critical-fallback'
+    webhook_configs:
+      - url: 'http://unibridge-service:8000/internal/alertmanager'
+        send_resolved: true
+        max_alerts: 50
+        http_config:
+          authorization:
+            type: Bearer
+            credentials: __ALERTMANAGER_WEBHOOK_TOKEN__
+    email_configs:
+      - to: '__ALERTMANAGER_SMTP_TO__'
+        from: '__ALERTMANAGER_SMTP_FROM__'
+        smarthost: '__ALERTMANAGER_SMTP_HOST__:__ALERTMANAGER_SMTP_PORT__'
+        auth_username: '__ALERTMANAGER_SMTP_USERNAME__'
+        # Written by the entrypoint from ALERTMANAGER_SMTP_PASSWORD; see the
+        # header. Ignored by Alertmanager when auth_username is empty.
+        auth_password_file: /tmp/alertmanager-smtp-password
+        require_tls: __ALERTMANAGER_SMTP_REQUIRE_TLS__
+        send_resolved: true
+  # END smtp-fallback-receiver

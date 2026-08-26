@@ -6,6 +6,8 @@ override), since the only thing it touches is the dispatcher, which is patched.
 """
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -74,8 +76,23 @@ def dispatched(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def fresh_disabled_warning(monkeypatch):
+    """Restore the module-level once-per-process flag around a test."""
+    monkeypatch.setattr(internal_alerts, "_disabled_warning_logged", False)
+
+
 def auth(value: str = TOKEN) -> dict[str, str]:
     return {"Authorization": f"Bearer {value}"}
+
+
+def disabled_warnings(caplog) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "ALERTMANAGER_WEBHOOK_TOKEN" in r.getMessage()
+    ]
 
 
 class TestAuth:
@@ -118,6 +135,40 @@ class TestAuth:
         resp = await webhook_client.post("/internal/alertmanager", json=FIRING_PAYLOAD)
 
         assert resp.status_code == 503
+
+    async def test_disabled_logs_once_per_process(
+        self, webhook_client, monkeypatch, caplog, fresh_disabled_warning
+    ):
+        """The 503 is a silent no-op otherwise — say why, but only once.
+
+        Alertmanager retries a failed group every few minutes indefinitely, so a
+        per-request warning would bury the logs it exists to draw attention to.
+        """
+        monkeypatch.setattr(settings, "ALERTMANAGER_WEBHOOK_TOKEN", "")
+
+        with caplog.at_level(logging.WARNING, logger=internal_alerts.__name__):
+            first = await webhook_client.post(
+                "/internal/alertmanager", json=FIRING_PAYLOAD, headers=auth()
+            )
+            second = await webhook_client.post(
+                "/internal/alertmanager", json=FIRING_PAYLOAD, headers=auth()
+            )
+
+        assert (first.status_code, second.status_code) == (503, 503)
+        warnings = disabled_warnings(caplog)
+        assert len(warnings) == 1
+        assert "disabled" in warnings[0]
+
+    async def test_configured_token_logs_no_disabled_warning(
+        self, webhook_client, token, dispatched, caplog, fresh_disabled_warning
+    ):
+        with caplog.at_level(logging.WARNING, logger=internal_alerts.__name__):
+            resp = await webhook_client.post(
+                "/internal/alertmanager", json=FIRING_PAYLOAD, headers=auth()
+            )
+
+        assert resp.status_code == 200
+        assert disabled_warnings(caplog) == []
 
 
 class TestDispatch:

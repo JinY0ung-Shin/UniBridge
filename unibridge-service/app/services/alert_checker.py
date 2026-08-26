@@ -16,6 +16,7 @@ from app.services.active_color import is_active_instance
 from app.services.alert_mutes import MuteIndex, load_mute_index
 from app.services.alert_owner_dispatcher import dispatch_alert
 from app.services.alert_state import AlertStateManager, save_alert_state_to_db
+from app.services.apisix_client import upstream_node_addresses
 from app.services.gpu_report import maybe_send_gpu_util_report
 from app.services.server_monitor import ServerThresholds
 
@@ -212,20 +213,41 @@ async def _check_nas_health() -> list[tuple[str, bool]]:
 
 
 # ── Upstream reachability probe ──────────────────────────────────────────────
-# The four helpers below mirror `app/routers/gateway.py`'s route-test probe
-# (_http_scheme_for_upstream / _health_path_for_route / _node_host /
-# _host_header_for_upstream). They are replicated rather than imported because
-# nothing under `app/services/` imports a router today: pulling
+# Four of the helpers below (_upstream_scheme / _upstream_health_path /
+# _node_host / _upstream_host_header) mirror `app/routers/gateway.py`'s
+# route-test probe (_http_scheme_for_upstream / _health_path_for_route /
+# _node_host / _host_header_for_upstream). They are replicated rather than
+# imported because nothing under `app/services/` imports a router today: pulling
 # `app.routers.gateway` in here would invert the layering and drag its whole
 # import chain (api_keys → auth → database → …) into a module that `app.main`
 # deliberately imports late, from its lifespan. Four tiny pure functions are the
 # cheaper half of that trade. Keep them in sync with gateway.py if that probe
-# changes.
+# changes. Node normalization is not among them: both sides call
+# `apisix_client.upstream_node_addresses`.
+
+# Schemes this checker can probe. APISIX upstreams may also declare grpc, grpcs,
+# tcp, tls, udp or kafka; a GET /health against those proves nothing and usually
+# fails at the transport, i.e. reports a healthy backend as down. Those fall back
+# to the config-only judgment in `_probe_upstream` — a deliberate scope limit
+# (speaking those protocols is a different job), not an oversight.
+_HTTP_SCHEMES = {"http", "https"}
+
+# Distinguishable failure causes, so the outbound mail says which one it is. The
+# alert identity stays ("upstream_health", upstream_id) for both, leaving mute
+# and resolve behaviour untouched — only the message text differs.
+_REASON_NO_NODES = "no_nodes"
+_REASON_UNREACHABLE = "unreachable"
 
 
 def _upstream_scheme(upstream: dict[str, Any]) -> str:
     scheme = upstream.get("scheme")
-    return scheme if scheme in {"http", "https"} else "http"
+    return scheme if scheme in _HTTP_SCHEMES else "http"
+
+
+def _is_http_upstream(upstream: dict[str, Any]) -> bool:
+    """True when a GET probe is meaningful: an HTTP scheme, or none (APISIX defaults to http)."""
+    scheme = upstream.get("scheme")
+    return scheme is None or scheme in _HTTP_SCHEMES
 
 
 def _upstream_health_path(upstream: dict[str, Any]) -> str:
@@ -255,39 +277,6 @@ def _upstream_host_header(upstream: dict[str, Any], node_addr: str) -> str:
     return settings.HOST_IP
 
 
-def _is_positive_weight(weight: Any) -> bool:
-    return isinstance(weight, (int, float)) and not isinstance(weight, bool) and weight > 0
-
-
-def _upstream_node_addresses(nodes: Any) -> list[str]:
-    """Normalize APISIX upstream nodes to an ordered list of ``host:port``.
-
-    APISIX accepts (and the Admin API echoes back) two shapes for ``nodes``:
-    the map form ``{"host:port": weight}`` and the list form
-    ``[{"host": …, "port": …, "weight": …}]``. Handling only the map form is
-    what produced the permanent false "down" for list-form upstreams.
-
-    Zero-weight nodes are dropped: they take no traffic, so their reachability
-    says nothing about whether the upstream can serve. An upstream left with no
-    weighted node cannot serve at all and is reported unhealthy — which is what
-    the old weight-only check got right.
-    """
-    if isinstance(nodes, dict):
-        return [str(addr) for addr, weight in nodes.items() if _is_positive_weight(weight)]
-    if isinstance(nodes, list):
-        addresses: list[str] = []
-        for node in nodes:
-            if not isinstance(node, dict) or not _is_positive_weight(node.get("weight", 1)):
-                continue
-            host = node.get("host")
-            if host is None:
-                continue
-            port = node.get("port")
-            addresses.append(f"{host}:{port}" if port is not None else str(host))
-        return addresses
-    return []
-
-
 async def _probe_node(
     client: httpx.AsyncClient,
     limiter: asyncio.Semaphore,
@@ -315,11 +304,22 @@ async def _probe_upstream(
     client: httpx.AsyncClient,
     limiter: asyncio.Semaphore,
     upstream: dict[str, Any],
-) -> bool:
-    """True when at least one weighted node of this upstream is reachable."""
-    addresses = _upstream_node_addresses(upstream.get("nodes"))
+) -> tuple[bool, str | None]:
+    """Return (is_healthy, failure_reason) for one upstream.
+
+    Healthy means at least one weighted node answered the probe; the reason is
+    None then, and otherwise names which of the two failures it was so the
+    outbound alert can say so. Non-HTTP upstreams are judged on config alone,
+    so "no weighted nodes" is the only failure they can report.
+
+    Zero-weight nodes are dropped before probing: they take no traffic, so their
+    reachability says nothing about whether the upstream can serve.
+    """
+    addresses = sorted(upstream_node_addresses(upstream.get("nodes")))
     if not addresses:
-        return False
+        return False, _REASON_NO_NODES
+    if not _is_http_upstream(upstream):
+        return True, None
     scheme = _upstream_scheme(upstream)
     path = _upstream_health_path(upstream)
     probes = [
@@ -331,11 +331,15 @@ async def _probe_upstream(
         )
         for addr in addresses[:_MAX_PROBED_NODES_PER_UPSTREAM]
     ]
-    return any(await asyncio.gather(*probes))
+    if any(await asyncio.gather(*probes)):
+        return True, None
+    return False, _REASON_UNREACHABLE
 
 
-async def _check_upstream_health(*, transport: Any | None = None) -> list[tuple[str, bool]]:
-    """Probe every APISIX upstream's nodes. Returns [(upstream_id, is_healthy)].
+async def _check_upstream_health(
+    *, transport: Any | None = None
+) -> list[tuple[str, bool, str | None]]:
+    """Probe every APISIX upstream's nodes. Returns [(upstream_id, is_healthy, reason)].
 
     This used to read the APISIX *config* only — an upstream counted as healthy
     whenever its ``nodes`` map was non-empty with any positive weight. That is
@@ -380,7 +384,7 @@ async def _check_upstream_health(*, transport: Any | None = None) -> list[tuple[
             return_exceptions=True,
         )
 
-    results: list[tuple[str, bool]] = []
+    results: list[tuple[str, bool, str | None]] = []
     for item, outcome in zip(items, outcomes):
         uid_str = str(item.get("id", "unknown"))
         if isinstance(outcome, BaseException):
@@ -391,7 +395,8 @@ async def _check_upstream_health(*, transport: Any | None = None) -> list[tuple[
                 "Upstream '%s' health probe raised unexpectedly: %s", uid_str, outcome
             )
             continue
-        results.append((uid_str, outcome))
+        is_healthy, reason = outcome
+        results.append((uid_str, is_healthy, reason))
     return results
 
 
@@ -820,7 +825,7 @@ async def run_single_check(
 
     # 4. Upstream health
     upstream_results = await _check_upstream_health()
-    for uid, is_healthy in upstream_results:
+    for uid, is_healthy, reason in upstream_results:
         upstream_name = _UPSTREAM_NAME_BY_ID.get(uid)
         display = f"{upstream_name} ({uid})" if upstream_name and upstream_name != uid else uid
         was_alerting = state.get_status("upstream_health", uid) == "alert"
@@ -838,7 +843,12 @@ async def run_single_check(
         )
         await _persist_state_safely(state, "upstream_health", uid)
         if outbound:
-            msg = f"Upstream '{display}' {'recovered' if outbound == 'resolved' else 'is down'}."
+            if outbound == "resolved":
+                msg = f"Upstream '{display}' recovered."
+            elif reason == _REASON_NO_NODES:
+                msg = f"Upstream '{display}' has no weighted nodes configured."
+            else:
+                msg = f"Upstream '{display}' is down (no reachable node)."
             await dispatch_alert(
                 resource_type="upstream", resource_id=uid,
                 alert_type=outbound, rule_type="upstream_health",

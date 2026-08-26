@@ -18,6 +18,7 @@ from app.routers.gateway import (
     _get_step,
     _inject_plugins,
     _labels,
+    _mask_value,
     _service_headers_for_route,
     _validate_consumer,
 )
@@ -299,6 +300,55 @@ class TestInjectPlugins:
         assert pr["headers"]["set"] == {"X-Set": "v"}
         assert pr["headers"]["add"] == {"X-Trace": "1"}
         assert pr["headers"]["remove"] == ["X-Internal"]
+
+    def test_masked_value_preserves_the_stored_secret(self):
+        """Reads hand out masks; PUTting one back must not store the mask."""
+        secret = "sk-live-upstream-secret-9876"
+        body = {
+            "uri": "/test",
+            "service_keys": [
+                {"header_name": "X-Api-Key", "header_value": _mask_value(secret)}
+            ],
+        }
+        existing = {"proxy-rewrite": {"headers": {"set": {"X-Api-Key": secret}}}}
+        result = _inject_plugins(body, existing_plugins=existing)
+        assert result["plugins"]["proxy-rewrite"]["headers"]["set"] == {
+            "X-Api-Key": secret
+        }
+
+    def test_short_secret_mask_is_recognised_too(self):
+        """A secret of <= MASK_KEEP chars masks to bare stars, with no suffix."""
+        body = {
+            "uri": "/test",
+            "service_keys": [
+                {"header_name": "X-Api-Key", "header_value": _mask_value("ab")}
+            ],
+        }
+        existing = {"proxy-rewrite": {"headers": {"set": {"X-Api-Key": "ab"}}}}
+        result = _inject_plugins(body, existing_plugins=existing)
+        assert result["plugins"]["proxy-rewrite"]["headers"]["set"] == {"X-Api-Key": "ab"}
+
+    def test_mask_shaped_value_for_unknown_header_is_skipped(self):
+        """Nothing to preserve, and the mask itself is never storable."""
+        body = {
+            "uri": "/test",
+            "service_keys": [{"header_name": "X-New", "header_value": "***abcd"}],
+        }
+        assert "plugins" not in _inject_plugins(body)
+
+    def test_real_secret_longer_than_a_mask_is_stored(self):
+        """The guard is anchored to the mask shape, not to a leading '***'."""
+        body = {
+            "uri": "/test",
+            "service_keys": [
+                {"header_name": "X-Api-Key", "header_value": "***not-a-mask"}
+            ],
+        }
+        existing = {"proxy-rewrite": {"headers": {"set": {"X-Api-Key": "old"}}}}
+        result = _inject_plugins(body, existing_plugins=existing)
+        assert result["plugins"]["proxy-rewrite"]["headers"]["set"] == {
+            "X-Api-Key": "***not-a-mask"
+        }
 
     def test_empty_list_keeps_other_header_ops_but_drops_set(self):
         body = {"uri": "/test", "service_keys": []}
@@ -1197,6 +1247,121 @@ class TestRouteTest:
         assert resp.status_code == 200
         assert resp.json()["reachable"] is True
         assert capture["url"] == "https://litellm:4000/health/liveliness"
+
+    async def test_list_form_nodes_reach_the_probe_url(self, client, admin_token):
+        """Regression: list-form nodes used to yield a dict as the address, so
+        the probe URL was built from a stringified dict and always "failed"."""
+        route = {"id": "query-api", "upstream_id": "query-service"}
+        upstream = {
+            "id": "query-service",
+            "nodes": [{"host": "unibridge-service", "port": 8000, "weight": 1}],
+        }
+        response = SimpleNamespace(
+            status_code=200, json=lambda: {"status": "ok"}, text="ok"
+        )
+        capture: dict[str, object] = {}
+
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=[route, upstream],
+            ),
+            patch(
+                "app.routers.gateway.httpx.AsyncClient",
+                side_effect=lambda *args, **kwargs: _MockAsyncClient(response, capture),
+            ),
+        ):
+            resp = await client.post(
+                "/admin/gateway/routes/query-api/test", headers=auth_header(admin_token)
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["reachable"] is True
+        assert resp.json()["node"] == "unibridge-service:8000"
+        assert capture["url"] == "http://unibridge-service:8000/health"
+
+    async def test_multi_node_upstream_tests_the_same_node_every_time(
+        self, client, admin_token
+    ):
+        route = {"id": "query-api", "upstream_id": "query-service"}
+        upstream = {
+            "id": "query-service",
+            "nodes": {"zeta:8000": 1, "alpha:8000": 1, "mid:8000": 1},
+        }
+        response = SimpleNamespace(
+            status_code=200, json=lambda: {"status": "ok"}, text="ok"
+        )
+        capture: dict[str, object] = {}
+
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=[route, upstream],
+            ),
+            patch(
+                "app.routers.gateway.httpx.AsyncClient",
+                side_effect=lambda *args, **kwargs: _MockAsyncClient(response, capture),
+            ),
+        ):
+            resp = await client.post(
+                "/admin/gateway/routes/query-api/test", headers=auth_header(admin_token)
+            )
+
+        assert resp.status_code == 200
+        assert capture["url"] == "http://alpha:8000/health"
+
+    async def test_list_form_node_host_header_follows_pass_host_node(
+        self, client, admin_token
+    ):
+        route = {"id": "query-api", "upstream_id": "query-service"}
+        upstream = {
+            "id": "query-service",
+            "pass_host": "node",
+            "nodes": [{"host": "unibridge-service", "port": 8000, "weight": 1}],
+        }
+        response = SimpleNamespace(
+            status_code=200, json=lambda: {"status": "ok"}, text="ok"
+        )
+        capture: dict[str, object] = {}
+
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.get_resource",
+                new_callable=AsyncMock,
+                side_effect=[route, upstream],
+            ),
+            patch(
+                "app.routers.gateway.httpx.AsyncClient",
+                side_effect=lambda *args, **kwargs: _MockAsyncClient(response, capture),
+            ),
+        ):
+            resp = await client.post(
+                "/admin/gateway/routes/query-api/test", headers=auth_header(admin_token)
+            )
+
+        assert resp.status_code == 200
+        assert capture["headers"] == {"Host": "unibridge-service"}
+
+    async def test_upstream_whose_nodes_all_have_zero_weight_is_rejected(
+        self, client, admin_token
+    ):
+        """No node takes traffic, so there is nothing meaningful to probe."""
+        route = {"id": "query-api", "upstream_id": "query-service"}
+        upstream = {"id": "query-service", "nodes": {"unibridge-service:8000": 0}}
+
+        with patch(
+            "app.routers.gateway.apisix_client.get_resource",
+            new_callable=AsyncMock,
+            side_effect=[route, upstream],
+        ):
+            resp = await client.post(
+                "/admin/gateway/routes/query-api/test", headers=auth_header(admin_token)
+            )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Upstream has no nodes"
 
     async def test_uses_litellm_liveliness_for_llm_admin(self, client, admin_token):
         route = {"id": "llm-admin", "upstream_id": "litellm"}

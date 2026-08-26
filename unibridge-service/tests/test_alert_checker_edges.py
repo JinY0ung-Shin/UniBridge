@@ -194,9 +194,9 @@ async def test_check_upstream_health_classifies_nodes_and_caches_names(monkeypat
     assert await alert_checker._check_upstream_health(
         transport=httpx.MockTransport(handler)
     ) == [
-        ("healthy", True),
-        ("7", False),
-        ("unknown", False),
+        ("healthy", True, None),
+        ("7", False, "no_nodes"),
+        ("unknown", False, "no_nodes"),
     ]
     assert alert_checker._UPSTREAM_NAME_BY_ID == {"healthy": "Orders"}
 

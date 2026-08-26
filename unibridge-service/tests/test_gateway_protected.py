@@ -250,6 +250,36 @@ class TestSaveRouteProtectedTopology:
             "X-Api-Key": SECRET
         }
 
+    async def test_masked_value_round_trip_preserves_the_stored_secret(
+        self, client, admin_token
+    ):
+        """A scripted client that GETs a route and PUTs it back verbatim sends
+        the mask it was handed; storing it would destroy the real secret."""
+        with (
+            patch(
+                "app.routers.gateway.apisix_client.list_resources",
+                new_callable=AsyncMock,
+                return_value={"items": [_protected_route()]},
+            ),
+            patch(
+                "app.routers.gateway.apisix_client.put_resource",
+                new_callable=AsyncMock,
+                return_value=_protected_route(),
+            ) as mock_put,
+        ):
+            resp = await client.put(
+                "/admin/gateway/routes/llm-proxy",
+                json=_matching_body(
+                    service_keys=[{"header_name": "X-Api-Key", "header_value": MASKED}]
+                ),
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        call_body = mock_put.call_args[0][2]
+        assert call_body["plugins"]["proxy-rewrite"]["headers"]["set"] == {
+            "X-Api-Key": SECRET
+        }
+
     async def test_timeout_override_is_allowed(self, client, admin_token):
         with (
             patch(

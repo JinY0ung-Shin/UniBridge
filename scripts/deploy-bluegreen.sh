@@ -562,6 +562,26 @@ color_is_healthy() {
     && curl -kfsS --max-time 5 "https://127.0.0.1:$port/_api/health" >/dev/null 2>&1
 }
 
+# True only when the color's service container already has boot-time APISIX
+# provisioning switched off. Returns non-zero when it is armed, when the
+# container is gone, or when inspect fails — callers then fall through to the
+# recreate, i.e. fail toward disarming.
+standby_is_disarmed() {
+  local color="$1"
+  # Not validate_color: the caller's $old comes from the state file and is not
+  # pre-validated, and this runs after a successful promotion — a bad value must
+  # fall through to the (harmless, warned) recreate, not exit the script.
+  case "$color" in
+    blue|green) ;;
+    *) return 1 ;;
+  esac
+
+  local container_env
+  container_env="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
+    "unibridge-service-$color" 2>/dev/null)" || return 1
+  grep -qxF 'APISIX_PROVISION_ON_START=false' <<<"$container_env"
+}
+
 ensure_external_volume() {
   local volume="$1"
   if ! docker volume inspect "$volume" >/dev/null 2>&1; then
@@ -693,27 +713,45 @@ deploy_color() {
       #
       # promote_apisix is the ONLY intended writer of the upstream -> color
       # mapping, but APISIX_PROVISION_ON_START / APISIX_*_NODE are baked into a
-      # container's environment when it is *created*. The first-ever deploy
-      # creates its color with provision=true pinned to itself, and the app stack
-      # runs with `restart: unless-stopped` — so a host reboot, dockerd restart or
-      # OOM restart re-runs that container's lifespan and silently PUTs the
-      # unibridge-service/llm-converter upstreams back at the OLD color, while the
-      # edge proxy and the active-color state file still say $target. Split brain,
-      # no warning. Recreating the standby with provision_on_start=false removes
-      # that hazard permanently. provision_route_color is set to the now-active
-      # $target so that even a pathological forced provisioning could only point
-      # forward, never backward. --no-build reuses the old color's already-built
-      # image (never rebuild the old checkout); --wait makes a bad recreate
-      # visible instead of silent.
-      echo "Disarming APISIX boot provisioning on standby $old stack..."
-      if ! compose_app "$old" "$(color_port "$old")" "false" "$target" up -d --no-build --wait; then
-        echo "WARNING: could not recreate standby $old with APISIX_PROVISION_ON_START=false." >&2
-        echo "         The promotion to $target SUCCEEDED and is left in place, but $old still has" >&2
-        echo "         a stale APISIX_PROVISION_ON_START=true baked into its container env: if it" >&2
-        echo "         restarts (host reboot, dockerd restart, OOM) it will re-point the APISIX" >&2
-        echo "         unibridge-service/llm-converter upstreams back at $old." >&2
-        echo "         Fix by re-running this deploy, or by taking the standby down:" >&2
-        echo "           scripts/deploy-bluegreen.sh stop $old" >&2
+      # container's environment when it is *created*, and the app stack runs with
+      # `restart: unless-stopped` — so a host reboot, dockerd restart or OOM
+      # restart re-runs the lifespan of a container that was created armed (the
+      # first-ever deploy, or the etcd-reset path above). Two layers stop that
+      # from rolling traffic back:
+      #   1. the service refuses to overwrite a color-pinned upstream that
+      #      already points at another color (app/main.py
+      #      ::_put_upstream_if_unclaimed), so an armed restart can no longer
+      #      demote the active color — this is also what covers the now-ACTIVE
+      #      $target when the etcd-reset path armed it pinned to $old;
+      #   2. this recreate clears the armed env so the standby stops re-trying
+      #      (and warning) on every boot.
+      # Only recreate when the env is actually armed: a standby left over from a
+      # previous deploy was already created with provision=false, and recreating
+      # it would re-run the OLD image's lifespan — including `alembic upgrade
+      # head`, which cannot know a migration that shipped in the release we just
+      # promoted, leaving the rollback target in a boot-crash loop. The ACTIVE
+      # color is never recreated here for the same reason, and because it serves
+      # live traffic; layer 1 is its only guard by design.
+      # provision_route_color is the now-active $target so that even a
+      # pathological forced provisioning could only point forward, never
+      # backward. --no-build reuses the old color's already-built image (never
+      # rebuild the old checkout); --wait makes a bad recreate visible instead
+      # of silent.
+      if standby_is_disarmed "$old"; then
+        echo "Standby $old already disarmed (APISIX_PROVISION_ON_START=false) — skipping recreate."
+      else
+        echo "Disarming APISIX boot provisioning on standby $old stack..."
+        if ! compose_app "$old" "$(color_port "$old")" "false" "$target" up -d --no-build --wait; then
+          echo "WARNING: could not recreate standby $old with APISIX_PROVISION_ON_START=false." >&2
+          echo "         The promotion to $target SUCCEEDED and is left in place, but $old keeps a" >&2
+          echo "         stale APISIX_PROVISION_ON_START=true in its container env, so it re-runs" >&2
+          echo "         provisioning on every restart (host reboot, dockerd restart, OOM)." >&2
+          echo "         It can no longer pull traffic back to $old — the service refuses to" >&2
+          echo "         overwrite an upstream pointing at another color — but it will keep" >&2
+          echo "         rewriting routes and logging skip warnings until the env is cleared." >&2
+          echo "         Clear it by re-running this deploy, or by taking the standby down:" >&2
+          echo "           scripts/deploy-bluegreen.sh stop $old" >&2
+        fi
       fi
     fi
   fi

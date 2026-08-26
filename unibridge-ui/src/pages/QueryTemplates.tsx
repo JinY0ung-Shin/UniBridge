@@ -431,6 +431,7 @@ function QueryTemplates() {
                   id="template-limit"
                   type="number"
                   min={1}
+                  max={1000000}
                   value={form.default_limit}
                   onChange={(event) => updateForm('default_limit', event.target.value)}
                 />

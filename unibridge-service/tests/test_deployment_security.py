@@ -523,6 +523,98 @@ compose_app blue 3001 true green config
     )
 
 
+def _run_deploy_color_with_standby_env(
+    tmp_path: Path, docker_inspect_body: str, standby: str = "green"
+):
+    """Drive deploy_color blue over an active green standby with stubbed effects.
+
+    ``docker_inspect_body`` becomes the body of the stubbed ``docker inspect``,
+    which is what standby_is_disarmed reads. compose_app logs its color,
+    provision flag and pinned route color as ``CALL|...`` so the caller can tell
+    the target's own start apart from a standby recreate.
+    """
+    shell = f"""
+source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}
+active_color() {{ printf '%s' {shlex.quote(standby)}; }}
+require_shared_db_safe() {{ :; }}
+require_existing_infra_healthy() {{ :; }}
+ensure_shared_app_volumes() {{ :; }}
+wait_apisix_admin() {{ return 1; }}
+wait_color() {{ :; }}
+prepare_edge() {{ :; }}
+promote_apisix() {{ :; }}
+switch_edge() {{ return 0; }}
+commit_active_color() {{ :; }}
+compose_app() {{ printf 'CALL|%s|%s|%s\n' "$1" "$3" "$4"; }}
+docker() {{
+{docker_inspect_body}
+}}
+deploy_color blue
+"""
+    env = os.environ.copy()
+    env["ENV_FILE"] = str(tmp_path / "absent.env")
+    env["STOP_OLD_AFTER_PROMOTE"] = "false"
+    env.pop("APISIX_ADMIN_KEY", None)
+    return subprocess.run(
+        ["bash", "-c", shell],
+        check=False,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+
+def test_disarm_skips_recreating_a_standby_that_is_already_disarmed(tmp_path: Path) -> None:
+    result = _run_deploy_color_with_standby_env(
+        tmp_path,
+        """
+  [[ "$1" == "inspect" ]] || exit 40
+  printf '%s\n' 'APP_COLOR=green' 'APISIX_PROVISION_ON_START=false'
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = [line for line in result.stdout.splitlines() if line.startswith("CALL|")]
+    # Only the target color is started; recreating the standby would re-run the
+    # old image's `alembic upgrade head` against an already-migrated database.
+    assert calls == ["CALL|blue|false|blue"]
+    assert "already disarmed" in result.stdout
+
+
+def test_disarm_recreates_a_standby_that_is_still_armed(tmp_path: Path) -> None:
+    result = _run_deploy_color_with_standby_env(
+        tmp_path,
+        """
+  [[ "$1" == "inspect" ]] || exit 40
+  printf '%s\n' 'APP_COLOR=green' 'APISIX_PROVISION_ON_START=true'
+""",
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = [line for line in result.stdout.splitlines() if line.startswith("CALL|")]
+    # Standby recreate pins the route color forward to the newly active color.
+    assert calls == ["CALL|blue|false|blue", "CALL|green|false|blue"]
+
+
+def test_disarm_recreates_when_the_standby_env_cannot_be_inspected(tmp_path: Path) -> None:
+    result = _run_deploy_color_with_standby_env(tmp_path, "  return 1")
+
+    assert result.returncode == 0, result.stderr
+    calls = [line for line in result.stdout.splitlines() if line.startswith("CALL|")]
+    assert calls == ["CALL|blue|false|blue", "CALL|green|false|blue"]
+
+
+def test_disarm_does_not_abort_the_deploy_on_a_corrupt_previous_color(tmp_path: Path) -> None:
+    # The disarm check runs after the promotion is already committed, so an
+    # unusable $old must not exit the script and lose the success report.
+    result = _run_deploy_color_with_standby_env(
+        tmp_path, "  return 1", standby="purple"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Active color: blue" in result.stdout
+
+
 def test_rollback_refuses_to_recreate_an_unhealthy_inactive_color() -> None:
     shell = f"""
 source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}

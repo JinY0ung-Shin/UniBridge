@@ -235,6 +235,7 @@ def _template_create_operation() -> dict[str, Any]:
                             "default_limit": {
                                 "type": "integer",
                                 "minimum": 1,
+                                "maximum": 1000000,
                                 "nullable": True,
                             },
                             "timeout": {
@@ -289,6 +290,7 @@ def _template_update_operation(template: Any | None = None) -> dict[str, Any]:
                             "default_limit": {
                                 "type": "integer",
                                 "minimum": 1,
+                                "maximum": 1000000,
                                 "nullable": True,
                             },
                             "timeout": {

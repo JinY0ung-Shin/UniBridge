@@ -31,6 +31,28 @@ async def _fake_get_db():
     yield _FakeDb()
 
 
+def _keyed_get_resource(resources: dict[tuple[str, str], object]) -> AsyncMock:
+    """apisix_client.get_resource fake keyed by (resource, resource_id).
+
+    Order-independent on purpose: with a positional ``side_effect`` list, adding
+    a lookup anywhere in the lifespan silently shifts which response every later
+    call receives. Unmapped keys raise the "missing resource" error the lifespan
+    treats as first-boot creation, so an empty mapping means "nothing exists
+    yet". Map a key to an exception to make that one lookup fail.
+    """
+
+    def _get(resource, resource_id):
+        try:
+            value = resources[(resource, resource_id)]
+        except KeyError:
+            raise RuntimeError(f"404 {resource}/{resource_id} not found") from None
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    return AsyncMock(side_effect=_get)
+
+
 @pytest.mark.asyncio
 async def test_lifespan_provisions_llm_admin_route_when_master_key_set():
     app = FastAPI()
@@ -253,9 +275,15 @@ async def test_metrics_endpoint_exposes_prometheus_text(client):
 async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     app = FastAPI()
     put_resource = AsyncMock()
-    get_resource = AsyncMock(
-        side_effect=[
-            {
+    get_resource = _keyed_get_resource(
+        {
+            # Both color-pinned upstreams already point where this instance
+            # would write them, so the claim gate refreshes them in place.
+            ("upstreams", "unibridge-service"): {
+                "nodes": {"unibridge-service:8000": 1}
+            },
+            ("upstreams", "llm-converter"): {"nodes": {"llm-converter:4001": 1}},
+            ("routes", "query-api"): {
                 "id": "query-api",
                 "name": "query-api",
                 "uri": "/api/query/*",
@@ -267,7 +295,7 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 },
                 "status": 1,
             },
-            {
+            ("routes", "query-template-write-api"): {
                 "id": "query-template-write-api",
                 "name": "query-template-write-api",
                 "uri": "/api/query/templates/*",
@@ -279,7 +307,7 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 },
                 "status": 1,
             },
-            {
+            ("routes", "s3-api"): {
                 "id": "s3-api",
                 "name": "s3-api",
                 "uri": "/api/s3/*",
@@ -291,7 +319,7 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 },
                 "status": 1,
             },
-            {
+            ("routes", "nas-api"): {
                 "id": "nas-api",
                 "name": "nas-api",
                 "uri": "/api/nas/*",
@@ -303,7 +331,7 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 },
                 "status": 1,
             },
-            {
+            ("routes", "usages-api"): {
                 "id": "usages-api",
                 "name": "usages-api",
                 "uri": "/api/usages",
@@ -315,7 +343,7 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 },
                 "status": 1,
             },
-            {
+            ("routes", "llm-proxy"): {
                 "id": "llm-proxy",
                 "name": "llm-proxy",
                 "uri": "/api/llm/*",
@@ -327,7 +355,7 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 },
                 "status": 1,
             },
-            {
+            ("routes", "llm-messages"): {
                 "id": "llm-messages",
                 "name": "llm-messages",
                 "uri": "/api/llm/v1/messages",
@@ -340,7 +368,7 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 },
                 "status": 1,
             },
-            {
+            ("routes", "llm-responses"): {
                 "id": "llm-responses",
                 "name": "llm-responses",
                 "uri": "/api/llm/v1/responses",
@@ -353,7 +381,7 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 },
                 "status": 1,
             },
-        ]
+        }
     )
 
     with (
@@ -389,6 +417,15 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
         for call in put_resource.await_args_list
         if call.args[0] == "routes"
     }
+    upstream_ids = [
+        call.args[1]
+        for call in put_resource.await_args_list
+        if call.args[0] == "upstreams"
+    ]
+
+    # An upstream already on this instance's own nodes is refreshed, not skipped.
+    assert "unibridge-service" in upstream_ids
+    assert "llm-converter" in upstream_ids
 
     assert route_calls["query-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["query-consumer"]
@@ -436,18 +473,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
 async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation():
     app = FastAPI()
     put_resource = AsyncMock()
-    get_resource = AsyncMock(
-        side_effect=[
-            RuntimeError("route not found"),
-            RuntimeError("404 query-template write route missing"),
-            RuntimeError("404 s3 route missing"),
-            RuntimeError("404 nas route missing"),
-            RuntimeError("404 usages route missing"),
-            RuntimeError("404 route missing"),
-            RuntimeError("404 messages route missing"),
-            RuntimeError("404 responses route missing"),
-        ]
-    )
+    # Empty mapping: every route and upstream lookup reports "missing", which is
+    # exactly the first-boot state this test is about.
+    get_resource = _keyed_get_resource({})
 
     with (
         patch("app.main.validate_settings"),

@@ -26,6 +26,23 @@ scrape_configs:
     static_configs:
       - targets: ['unibridge-service:8000']
 
+  # Per-color scrape of the blue-green stack. The job above targets a Docker DNS
+  # alias that BOTH colors answer on, so it round-robins: with the active color
+  # dead and the standby alive, `up{job="unibridge-service"}` can still read 1
+  # while real traffic is down. These targets are the per-color aliases
+  # (docker-compose.app.yml), and `unibridge_active_instance` (1 = active,
+  # 0 = standby) tells the rules which color the edge is actually serving — see
+  # UniBridgeNoActiveInstance in rules/unibridge-alerts.yml.
+  #
+  # In the single-stack docker-compose.yml these two names do not resolve, so
+  # both targets are EXPECTEDLY DOWN there; only the blue-green stack uses them.
+  # Nothing alerts on that: UniBridgeServiceDown watches the job above, and the
+  # active-instance rule keys on the gauge, which a down target never reports.
+  - job_name: 'unibridge-service-colors'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['unibridge-service-blue:8000', 'unibridge-service-green:8000']
+
   - job_name: 'litellm'
     scheme: https
     tls_config:

@@ -26,6 +26,39 @@ groups:
           summary: "UniBridge service is down"
           description: "Prometheus cannot scrape unibridge-service metrics."
 
+      # Complements UniBridgeServiceDown, which cannot see this case: the
+      # `unibridge-service` job's DNS alias is answered by both blue and green,
+      # so a dead active color with a live standby still scrapes up==1. Every
+      # instance reporting 0 means the edge is serving a demoted or dead color,
+      # or both colors think they are standby — and in that state the in-app
+      # background alerting (gated on the active color) is silent too.
+      #
+      # The gauge is 1 on the active color and 0 on every standby, so the sum IS
+      # the number of active instances and `== 0` is "none of them". Written as a
+      # sum rather than `count(… == 1) == 0` because that form can never fire:
+      # the filter yields an empty vector, and count() over an empty vector is
+      # itself empty, not 0.
+      #
+      # The same empty-vector rule is the guard against false-firing on images
+      # that do not export the gauge yet — no series at all means "unknown", not
+      # "nothing active", and sums to nothing rather than to 0. Total
+      # unreachability (both colors gone, or single-stack down) is likewise not
+      # this alert's job; UniBridgeServiceDown covers it.
+      #
+      # Deliberately unfiltered by job: the gauge arrives from both the
+      # `unibridge-service` alias job and `unibridge-service-colors`, and summing
+      # all of them keeps the rule working in the single-stack compose (where
+      # only the alias job has a target, always reporting 1) and keeps it firing
+      # if the per-color targets are ever misconfigured away.
+      - alert: UniBridgeNoActiveInstance
+        expr: sum(unibridge_active_instance) == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No UniBridge instance reports itself active"
+          description: "Every scraped unibridge-service instance reports unibridge_active_instance=0. The edge may be routing to a dead or demoted color, and in-app background alerting is silent while no instance is active."
+
       - alert: UniBridgeMetaDbDown
         expr: unibridge_meta_db_up == 0
         for: 1m
