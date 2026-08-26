@@ -539,7 +539,7 @@ class _StreamState:
         self.finish: Optional[str] = None
         self.reasoning: Optional[dict] = None  # {id, oi, buf}
         self.text: Optional[dict] = None        # {id, oi, buf}
-        self.tools: dict[int, dict] = {}         # upstream tool index -> {id, oi, call_id, name, buf}
+        self.tools: dict[int, dict] = {}         # upstream tool index -> {id, oi, call_id, upstream_id, name, buf}
         self.tool_order: list[int] = []
 
 
@@ -811,18 +811,27 @@ async def chat_stream_to_responses_events(
                     continue
                 fn = tc.get("function") or {}
                 incoming_id = tc.get("id")
+                has_incoming_id = isinstance(incoming_id, str) and bool(incoming_id)
                 existing = s.tools.get(tci)
                 # Some non-conformant upstreams reuse a single index for distinct
                 # sequential tool calls. A delta carrying a NON-EMPTY id that
-                # differs from the open item's call_id is a new call, not a
-                # continuation — close the current item and open a fresh one so the
-                # second call's id/name/arguments are not merged into the first
-                # (which would corrupt args into e.g. {"a":1}{"b":2}).
+                # differs from the id the open item was given upstream is a new
+                # call, not a continuation — close the current item and open a
+                # fresh one so the second call's id/name/arguments are not merged
+                # into the first (which would corrupt args into e.g.
+                # {"a":1}{"b":2}).
+                #
+                # The comparison is against ``upstream_id`` — the id the upstream
+                # actually supplied, ``None`` until one arrives — never the emitted
+                # ``call_id``, which is synthesized when the opening delta carried
+                # no id. A real id arriving on a later fragment of that SAME call
+                # can never match a synthesized ``call_...`` and would split one
+                # call into two.
                 is_new_call = (
                     existing is not None
-                    and isinstance(incoming_id, str)
-                    and bool(incoming_id)
-                    and incoming_id != existing["call_id"]
+                    and existing["upstream_id"] is not None
+                    and has_incoming_id
+                    and incoming_id != existing["upstream_id"]
                 )
                 if existing is None or is_new_call:
                     if is_new_call:
@@ -834,7 +843,8 @@ async def chat_stream_to_responses_events(
                     for e in close_text():
                         yield e
                     t = {"id": _new_fc_id(), "oi": s.next_oi,
-                         "call_id": incoming_id or f"call_{uuid.uuid4().hex[:16]}",
+                         "call_id": incoming_id if has_incoming_id else f"call_{uuid.uuid4().hex[:16]}",
+                         "upstream_id": incoming_id if has_incoming_id else None,
                          "name": fn.get("name") or "", "buf": []}
                     s.next_oi += 1
                     s.tools[tci] = t
@@ -844,6 +854,12 @@ async def chat_stream_to_responses_events(
                                          "call_id": t["call_id"], "name": t["name"], "arguments": ""}})
                 else:
                     t = s.tools[tci]
+                    # A real id on a call opened without one is metadata for THIS
+                    # call. Only ``upstream_id`` adopts it: ``call_id`` already
+                    # went out on output_item.added, and the client correlates its
+                    # function_call_output against that value.
+                    if t["upstream_id"] is None and has_incoming_id:
+                        t["upstream_id"] = incoming_id
                     if not t["name"] and fn.get("name"):
                         t["name"] = fn["name"]
                 args_frag = fn.get("arguments")

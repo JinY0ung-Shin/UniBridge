@@ -584,6 +584,85 @@ async def test_stream_tool_index_reuse_continuation_fragment_still_appends():
     assert fcs[0]["arguments"] == '{"x":1}'
 
 
+async def test_stream_late_arriving_id_backfills_without_splitting():
+    # A call whose opening delta carries no id is emitted with a synthesized
+    # call_id. When the real upstream id shows up on a later fragment of that
+    # SAME call it is metadata, not a second call — comparing it against the
+    # synthesized id would split one call into two.
+    chunks = [
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"arguments": '{"city":'}}]}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "upstream_9", "type": "function",
+             "function": {"name": "weather", "arguments": '"Seoul"}'}}]}}]},
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+    events, holder = await _run_stream(chunks)
+    fcs = [it for it in events[-1]["response"]["output"] if it["type"] == "function_call"]
+    assert len(fcs) == 1
+    assert fcs[0]["arguments"] == '{"city":"Seoul"}'
+    assert fcs[0]["name"] == "weather"  # late name is adopted too
+    assert len(holder["assistant_message"]["tool_calls"]) == 1
+
+
+async def test_stream_synthesized_call_id_is_not_rewritten_by_a_late_real_id():
+    # output_item.added has already told the client this item's call_id, and the
+    # client correlates its function_call_output against it, so a real id
+    # arriving afterwards must not rewrite it: added, the arguments deltas, done
+    # and the final output[] entry all have to agree.
+    chunks = [
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"name": "weather", "arguments": '{"city":'}}]}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "upstream_9", "function": {"arguments": '"Seoul"}'}}]}}]},
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+    events, holder = await _run_stream(chunks)
+    added = [e for e in events if e["type"] == "response.output_item.added"]
+    assert len(added) == 1
+    item_id, call_id = added[0]["item"]["id"], added[0]["item"]["call_id"]
+    assert call_id.startswith("call_") and call_id != "upstream_9"
+
+    arg_deltas = [e for e in events if e["type"] == "response.function_call_arguments.delta"]
+    assert {e["item_id"] for e in arg_deltas} == {item_id}
+
+    done = [e for e in events if e["type"] == "response.output_item.done"]
+    assert len(done) == 1
+    assert done[0]["item"]["id"] == item_id
+    assert done[0]["item"]["call_id"] == call_id
+
+    fcs = [it for it in events[-1]["response"]["output"] if it["type"] == "function_call"]
+    assert [(fc["id"], fc["call_id"]) for fc in fcs] == [(item_id, call_id)]
+    assert [tc["id"] for tc in holder["assistant_message"]["tool_calls"]] == [call_id]
+
+
+async def test_stream_id_less_open_then_two_distinct_real_ids_splits_once():
+    # Backfilling the first real id must not disable the split guard: a SECOND,
+    # different real id on the same index still opens a new call. The first
+    # call keeps the call_id it was emitted with (not the backfilled call_a),
+    # and each call keeps only its own arguments.
+    chunks = [
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "function": {"name": "f1", "arguments": '{"x":'}}]}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_a", "function": {"arguments": "1}"}}]}}]},
+        {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_b", "type": "function",
+             "function": {"name": "f2", "arguments": '{"y":2}'}}]}}]},
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+    events, holder = await _run_stream(chunks)
+    added = [e for e in events if e["type"] == "response.output_item.added"]
+    first_call_id = added[0]["item"]["call_id"]
+    assert first_call_id not in ("call_a", "call_b")
+
+    fcs = [it for it in events[-1]["response"]["output"] if it["type"] == "function_call"]
+    assert [fc["call_id"] for fc in fcs] == [first_call_id, "call_b"]
+    assert [fc["arguments"] for fc in fcs] == ['{"x":1}', '{"y":2}']
+    assert [fc["name"] for fc in fcs] == ["f1", "f2"]
+    assert len(holder["assistant_message"]["tool_calls"]) == 2
+
+
 async def test_stream_text_then_refusal_not_blended_in_persisted_content():
     chunks = [
         {"choices": [{"delta": {"content": "hello"}}]},
