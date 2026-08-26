@@ -311,7 +311,7 @@ async def get_current_user_or_apikey(
     consumer_name = request.headers.get("x-consumer-username")
     if consumer_name and credentials is None:
         if not settings.ENABLE_DEV_TOKEN_ENDPOINT:
-            expected = settings.APISIX_INTERNAL_PROXY_SECRET or settings.APISIX_ADMIN_KEY
+            expected = settings.APISIX_INTERNAL_PROXY_SECRET
             provided = request.headers.get(APISIX_INTERNAL_PROXY_HEADER, "")
             if not expected or not _constant_time_header_equal(provided, expected):
                 raise HTTPException(

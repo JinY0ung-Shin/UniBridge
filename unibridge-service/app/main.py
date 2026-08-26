@@ -53,6 +53,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 APISIX_INTERNAL_PROXY_HEADER = "X-UniBridge-Internal-Proxy"
+# System routes provisioned with _internal_proxy_headers() — the ones whose
+# requests reach this app through APISIX and are authenticated by that header.
+# Must stay in sync with the _internal_proxy_headers() call sites below;
+# tests/test_internal_proxy_secret.py asserts it does.
+INTERNAL_PROXY_ROUTE_IDS = (
+    "query-api",
+    QUERY_TEMPLATE_WRITE_ROUTE_ID,
+    "s3-api",
+    "nas-api",
+    "usages-api",
+)
 
 
 def _is_missing_route_error(exc: Exception) -> bool:
@@ -63,16 +74,78 @@ def _is_missing_route_error(exc: Exception) -> bool:
     return "404" in message or "not found" in message
 
 
+def _internal_proxy_secret() -> str:
+    return getattr(settings, "APISIX_INTERNAL_PROXY_SECRET", "")
+
+
 def _internal_proxy_headers(
     extra_headers: dict[str, str] | None = None,
 ) -> dict[str, dict[str, str]]:
     headers = dict(extra_headers or {})
-    secret = getattr(settings, "APISIX_INTERNAL_PROXY_SECRET", "") or getattr(
-        settings, "APISIX_ADMIN_KEY", ""
-    )
+    secret = _internal_proxy_secret()
     if secret:
         headers[APISIX_INTERNAL_PROXY_HEADER] = secret
     return {"set": headers} if headers else {}
+
+
+async def _reconcile_internal_proxy_header() -> None:
+    """Refresh X-UniBridge-Internal-Proxy on the system routes that already exist.
+
+    Route provisioning is the only other writer of this header, and steady-state
+    blue/green containers boot with APISIX_PROVISION_ON_START=false — so after
+    APISIX_INTERNAL_PROXY_SECRET is rotated, etcd would keep injecting the old
+    value while this app expects the new one and every proxied /api/query|s3|nas|
+    usages request would 401. GET-mutate-PUT rewrites only the header value, so
+    consumer-restriction and every other field on the route survive. The header
+    carries no color, so both colors reconcile to the same value: running this on
+    a standby color is idempotent and is not a promotion.
+    """
+    secret = _internal_proxy_secret()
+    if not secret:
+        # validate_settings() refuses to boot without the secret, so an empty one
+        # only happens with validation patched out — nothing to reconcile toward.
+        return
+
+    from app.services import apisix_client
+
+    for route_id in INTERNAL_PROXY_ROUTE_IDS:
+        try:
+            route = await apisix_client.get_resource("routes", route_id)
+        except Exception as exc:
+            if _is_missing_route_error(exc):
+                # First boot: provisioning creates it carrying the current secret.
+                continue
+            raise
+
+        plugins = route.get("plugins") or {}
+        proxy_rewrite = plugins.get("proxy-rewrite") or {}
+        headers = proxy_rewrite.get("headers") or {}
+        header_set = headers.get("set") or {}
+        if header_set.get(APISIX_INTERNAL_PROXY_HEADER) == secret:
+            continue
+
+        # id/create_time/update_time are server-managed metadata, not config.
+        new_body = {
+            key: value
+            for key, value in route.items()
+            if key not in ("id", "create_time", "update_time")
+        }
+        new_body["plugins"] = {
+            **plugins,
+            "proxy-rewrite": {
+                **proxy_rewrite,
+                "headers": {
+                    **headers,
+                    "set": {**header_set, APISIX_INTERNAL_PROXY_HEADER: secret},
+                },
+            },
+        }
+        await apisix_client.put_resource("routes", route_id, new_body)
+        logger.info(
+            "Refreshed %s on APISIX route %s",
+            APISIX_INTERNAL_PROXY_HEADER,
+            route_id,
+        )
 
 
 async def _preserve_consumer_restriction(
@@ -599,6 +672,42 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("Skipping APISIX route provisioning because APISIX_PROVISION_ON_START=false")
 
+    # Reconcile the internal-proxy header on EVERY boot, regardless of
+    # APISIX_PROVISION_ON_START: it is the only thing that carries a rotated
+    # APISIX_INTERNAL_PROXY_SECRET into etcd on a steady-state color, which boots
+    # with provisioning off (see _reconcile_internal_proxy_header). When
+    # provisioning did run just above, the routes already carry the current
+    # secret and every route here no-ops. Runs before the restriction replay so
+    # the replay's route snapshot already holds the new value. Retries like the
+    # global-rule PUT — the GET is what tells a rotation apart from a no-op, so a
+    # reconcile that never reached APISIX may be leaving auth broken.
+    _ip_max_retries = 10
+    for _ip_attempt in range(1, _ip_max_retries + 1):
+        try:
+            await _reconcile_internal_proxy_header()
+            break
+        except Exception as exc:
+            if _ip_attempt < _ip_max_retries:
+                _delay = min(2**_ip_attempt, 15)  # 2,4,8,15,15,… capped
+                logger.warning(
+                    "Internal-proxy header reconcile attempt %d/%d failed: %s — "
+                    "retrying in %ds",
+                    _ip_attempt,
+                    _ip_max_retries,
+                    exc,
+                    _delay,
+                )
+                await _asyncio.sleep(_delay)
+            else:
+                logger.error(
+                    "Internal-proxy header reconcile failed after %d attempts: %s — "
+                    "failing startup: a rotated APISIX_INTERNAL_PROXY_SECRET that "
+                    "never reached APISIX 401s every gateway-proxied request",
+                    _ip_max_retries,
+                    exc,
+                )
+                raise
+
     # Replay stored API-key consumer-restrictions on EVERY boot, regardless of
     # APISIX_PROVISION_ON_START. The database is the source of truth for
     # per-consumer route access; this reconciles APISIX with it. It only updates
@@ -766,6 +875,12 @@ app = FastAPI(
     description="Unified API hub for database queries, gateway management, and access control.",
     version="1.0.0",
     lifespan=lifespan,
+    # ENABLE_API_DOCS gates the interactive docs: the edge proxies /_api/docs,
+    # /_api/redoc and /_api/openapi.json straight through, so by default the
+    # schema of the internal admin API must not be served at all.
+    docs_url="/docs" if settings.ENABLE_API_DOCS else None,
+    redoc_url="/redoc" if settings.ENABLE_API_DOCS else None,
+    openapi_url="/openapi.json" if settings.ENABLE_API_DOCS else None,
 )
 Instrumentator().instrument(app).expose(
     app,

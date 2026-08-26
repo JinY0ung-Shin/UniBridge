@@ -34,6 +34,8 @@ DB_PASSWORD = "super-secret-db-password"
 S3_ACCESS_KEY = "AKIAEXAMPLEACCESSKEY"
 S3_SECRET_KEY = "s3-secret-access-key-value"
 CHANNEL_HEADER_SECRET = "Bearer channel-header-secret"
+# A webhook URL is a credential in its own right: the token lives in the query.
+CHANNEL_WEBHOOK_URL = "https://hooks.example.com/mail?token=channel-webhook-token"
 ROUTE_SERVICE_KEY = "upstream-service-key-value"
 
 PLACEHOLDER = "<excluded>"
@@ -170,7 +172,7 @@ async def seed_full_config(engine) -> None:
             scheme="http", description="billing api",
         ))
         channel = AlertChannel(
-            name="mail-a", webhook_url="https://hooks.example.com/mail",
+            name="mail-a", webhook_url=CHANNEL_WEBHOOK_URL,
             payload_template="{}", headers=json.dumps({"Authorization": CHANNEL_HEADER_SECRET}),
         )
         db.add(channel)
@@ -226,7 +228,7 @@ class TestExport:
 
         for secret in (
             DB_PASSWORD, S3_ACCESS_KEY, S3_SECRET_KEY,
-            CHANNEL_HEADER_SECRET, ROUTE_SERVICE_KEY,
+            CHANNEL_HEADER_SECRET, CHANNEL_WEBHOOK_URL, ROUTE_SERVICE_KEY,
         ):
             assert secret not in serialized, f"{secret!r} leaked into the export"
 
@@ -246,7 +248,9 @@ class TestExport:
         # NAS connections hold no credentials, so nothing is dropped.
         assert "secrets_excluded" not in sections["nas_connections"][0]
         assert sections["alert_channels"][0]["headers"] == {"Authorization": PLACEHOLDER}
+        assert sections["alert_channels"][0]["webhook_url"] == PLACEHOLDER
         assert sections["alert_channels"][0]["secrets_excluded"] is True
+        assert "channel-webhook-token" not in serialized
 
     async def test_export_omits_builtin_routes_and_consumer_restriction(
         self, client, admin_token, seeded_db, apisix_state
@@ -705,6 +709,7 @@ class TestRoundTrip:
             channel = (await db.execute(select(AlertChannel))).scalar_one()
         assert decrypt_password(conn.password_encrypted) == DB_PASSWORD
         assert json.loads(channel.headers) == {"Authorization": CHANNEL_HEADER_SECRET}
+        assert channel.webhook_url == CHANNEL_WEBHOOK_URL
 
         route = apisix_state["routes"]["svc-a"]
         assert route["plugins"]["proxy-rewrite"]["headers"]["set"] == {
@@ -732,6 +737,39 @@ class TestSkips:
         assert reasons["routes"] == "builtin route (auto-provisioned)"
         assert reasons["upstreams"] == "builtin upstream (auto-provisioned)"
         assert apisix_state["routes"] == {} and apisix_state["upstreams"] == {}
+
+    async def test_route_shadowing_a_system_namespace_is_rejected(
+        self, client, admin_token, apisix_state
+    ):
+        # A config import writes straight to APISIX, so it must honour the same
+        # system-namespace guard save_route enforces — else it is a bypass.
+        doc = export_doc(
+            routes=[{"id": "sneaky", "name": "sneaky", "uri": "/api/query/exec",
+                     "upstream_id": "unibridge-service"}],
+        )
+        resp = await do_import(
+            client, admin_token, dry_run=False, sections=["routes"], doc=doc
+        )
+        assert resp.status_code == 200, resp.text
+        row = rows_for(resp.json(), "routes")[0]
+        assert row["action"] == "error"
+        assert "/api/query" in row["reason"]
+        assert apisix_state["routes"] == {}
+
+    async def test_route_outside_system_namespaces_still_imports(
+        self, client, admin_token, apisix_state
+    ):
+        doc = export_doc(
+            routes=[{"id": "myservice", "name": "myservice", "uri": "/api/myservice/*",
+                     "upstream_id": "unibridge-service"}],
+        )
+        resp = await do_import(
+            client, admin_token, dry_run=False, sections=["routes"], doc=doc
+        )
+        assert resp.status_code == 200, resp.text
+        row = rows_for(resp.json(), "routes")[0]
+        assert row["action"] == "create"
+        assert "myservice" in apisix_state["routes"]
 
     async def test_system_role_is_skipped(self, client, admin_token, seeded_db, apisix_state):
         doc = export_doc(roles=[{"name": "admin", "description": "hijack", "is_system": True,
@@ -889,6 +927,79 @@ class TestRoutePlugins:
         plugins = apisix_state["routes"]["svc-new"]["plugins"]
         assert "headers" not in plugins["proxy-rewrite"]
         assert PLACEHOLDER not in json.dumps(apisix_state["routes"]["svc-new"])
+
+
+# ── Import: alert channel webhook URLs ──────────────────────────────────────
+
+
+class TestAlertChannelWebhookUrl:
+    def _channel_doc(self, **overrides) -> dict:
+        return export_doc(alert_channels=[{
+            "name": "mail-a", "webhook_url": PLACEHOLDER, "payload_template": "{}",
+            "recipient_item_template": None, "headers": {"Authorization": PLACEHOLDER},
+            "enabled": True, "secrets_excluded": True, **overrides,
+        }])
+
+    async def test_placeholder_keeps_the_stored_url(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        await seed_full_config(seeded_db)
+        doc = self._channel_doc(payload_template='{"v":2}')
+        resp = await do_import(
+            client, admin_token, dry_run=False, sections=["alert_channels"], doc=doc
+        )
+        assert resp.status_code == 200, resp.text
+        row = rows_for(resp.json(), "alert_channels")[0]
+        assert row["action"] == "update"
+        assert row["reason"] == "webhook URL unchanged"
+
+        async with factory_for(seeded_db)() as db:
+            channel = (await db.execute(select(AlertChannel))).scalar_one()
+        assert channel.webhook_url == CHANNEL_WEBHOOK_URL
+        assert channel.payload_template == '{"v":2}'
+
+    async def test_new_channel_with_placeholder_url_errors(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        doc = self._channel_doc(name="mail-new", headers=None)
+        resp = await do_import(
+            client, admin_token, dry_run=False, sections=["alert_channels"], doc=doc
+        )
+        assert resp.status_code == 200, resp.text
+        row = rows_for(resp.json(), "alert_channels")[0]
+        assert row["action"] == "error"
+        assert "webhook_url not in export" in row["reason"]
+
+        async with factory_for(seeded_db)() as db:
+            channels = (await db.execute(select(AlertChannel))).scalars().all()
+        assert channels == []
+
+    async def test_dry_run_reports_the_same_error(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        doc = self._channel_doc(name="mail-new", headers=None)
+        resp = await do_import(
+            client, admin_token, dry_run=True, sections=["alert_channels"], doc=doc
+        )
+        row = rows_for(resp.json(), "alert_channels")[0]
+        assert row["action"] == "error"
+        assert "webhook_url not in export" in row["reason"]
+
+    async def test_hand_edited_url_still_applies(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        """An operator who re-enters the URL in the file gets it written."""
+        await seed_full_config(seeded_db)
+        doc = self._channel_doc(webhook_url="https://hooks.example.com/moved")
+        resp = await do_import(
+            client, admin_token, dry_run=False, sections=["alert_channels"], doc=doc
+        )
+        assert resp.status_code == 200, resp.text
+        assert rows_for(resp.json(), "alert_channels")[0]["reason"] is None
+
+        async with factory_for(seeded_db)() as db:
+            channel = (await db.execute(select(AlertChannel))).scalar_one()
+        assert channel.webhook_url == "https://hooks.example.com/moved"
 
 
 # ── Import: error isolation ─────────────────────────────────────────────────

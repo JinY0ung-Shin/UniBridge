@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
 from urllib.parse import urlparse
 
@@ -62,3 +63,51 @@ def validate_webhook_url(url: str) -> str:
             raise ValueError("webhook_url cannot target private/internal addresses")
 
     return url
+
+
+_URL_IN_TEXT = re.compile(r"https?://[^\s'\"<>]+", re.IGNORECASE)
+
+# Below this length a URL fragment is not a credential, and replacing it
+# everywhere would corrupt unrelated words in the surrounding message.
+_MIN_REDACTED_LENGTH = 4
+
+
+def mask_webhook_url(url: str) -> str:
+    """Reconstruct from hostname/port only so userinfo, path, query, and fragment never leak to non-writers."""
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return "***"
+    if not parsed.scheme or not host:
+        return "***"
+    if port is not None:
+        host = f"{host}:{port}"
+    return f"{parsed.scheme}://{host}/***"
+
+
+def _secret_parts(url: str) -> list[str]:
+    """The substrings of ``url`` that must never surface in shared text.
+
+    The path is deliberately not one of them: it is already covered by the
+    scheme-anchored pass, and a path segment doubles as an ordinary word often
+    enough ("/private") that replacing it everywhere corrupts the message.
+    """
+    parsed = urlparse(url)
+    candidates = (parsed.query, parsed.fragment, parsed.username, parsed.password)
+    return [part for part in candidates if part and len(part) >= _MIN_REDACTED_LENGTH]
+
+
+def redact_webhook_url(text: str, url: str) -> str:
+    """Strip webhook credentials out of a message that is logged or persisted.
+
+    Every URL in ``text`` is reduced to scheme://host, then any token-bearing
+    fragment of ``url`` that survived is replaced: clients render URLs in forms
+    that differ from the stored string (normalised, quoted, split across a
+    message), so matching the string itself is not enough.
+    """
+    redacted = _URL_IN_TEXT.sub(lambda match: mask_webhook_url(match.group(0)), text)
+    for part in _secret_parts(url):
+        redacted = redacted.replace(part, "***")
+    return redacted

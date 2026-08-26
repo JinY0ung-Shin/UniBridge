@@ -893,6 +893,68 @@ async def test_apikey_user_rejects_untrusted_consumer_header_in_production(monke
 
 
 @pytest.mark.asyncio
+async def test_apikey_user_rejects_apisix_admin_key_as_proxy_secret(monkeypatch):
+    """The APISIX admin key is no longer a valid internal-proxy secret.
+
+    It used to be the fallback, which put the highest-privilege gateway
+    credential in every route config and on every proxied request. Anything
+    still presenting it must be rejected, not silently trusted.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+    from fastapi import HTTPException
+    from app.auth import get_current_user_or_apikey, settings
+
+    monkeypatch.setattr(settings, "ENABLE_DEV_TOKEN_ENDPOINT", False)
+    monkeypatch.setattr(settings, "APISIX_INTERNAL_PROXY_SECRET", "proxy-secret")
+    monkeypatch.setattr(settings, "APISIX_ADMIN_KEY", "admin-secret")
+
+    mock_request = MagicMock()
+    mock_request.headers = {
+        "x-consumer-username": "my-app-key",
+        "x-unibridge-internal-proxy": "admin-secret",
+    }
+    mock_db = AsyncMock()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user_or_apikey(
+            request=mock_request, credentials=None, db=mock_db
+        )
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Untrusted API key proxy headers"
+    mock_db.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apikey_user_rejects_consumer_header_when_proxy_secret_unset(monkeypatch):
+    """With no dedicated secret configured there is nothing to trust.
+
+    validate_settings() refuses to boot in this state; if it is ever reached
+    anyway, auth must fail closed rather than fall back to another secret.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+    from fastapi import HTTPException
+    from app.auth import get_current_user_or_apikey, settings
+
+    monkeypatch.setattr(settings, "ENABLE_DEV_TOKEN_ENDPOINT", False)
+    monkeypatch.setattr(settings, "APISIX_INTERNAL_PROXY_SECRET", "")
+    monkeypatch.setattr(settings, "APISIX_ADMIN_KEY", "admin-secret")
+
+    mock_request = MagicMock()
+    mock_request.headers = {
+        "x-consumer-username": "my-app-key",
+        "x-unibridge-internal-proxy": "admin-secret",
+    }
+    mock_db = AsyncMock()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user_or_apikey(
+            request=mock_request, credentials=None, db=mock_db
+        )
+    assert exc_info.value.status_code == 401
+    mock_db.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_apikey_user_rejects_non_ascii_proxy_secret_without_500(monkeypatch):
     """Malformed/non-ASCII proxy secret headers should fail as 401, not TypeError."""
     from unittest.mock import AsyncMock, MagicMock

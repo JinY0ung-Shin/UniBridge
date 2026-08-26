@@ -203,7 +203,9 @@ services:
       - ENABLE_DEV_TOKEN_ENDPOINT=${ENABLE_DEV_TOKEN_ENDPOINT:-false}
       - APISIX_ADMIN_URL=${APISIX_ADMIN_URL:-http://apisix:9180}
       - APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:?APISIX_ADMIN_KEY is required}
-      - APISIX_INTERNAL_PROXY_SECRET=${APISIX_INTERNAL_PROXY_SECRET:-${APISIX_ADMIN_KEY}}
+      # Must be its own secret, never a copy of APISIX_ADMIN_KEY — it is stored
+      # in plaintext in the etcd route configs and sent on every proxied request.
+      - APISIX_INTERNAL_PROXY_SECRET=${APISIX_INTERNAL_PROXY_SECRET:?APISIX_INTERNAL_PROXY_SECRET is required — generate one with python3 -c 'import secrets; print(secrets.token_urlsafe(32))'}
       - APISIX_PROVISION_ON_START=${APISIX_PROVISION_ON_START:-true}
       - APISIX_QUERY_ROUTE_TIMEOUT=${APISIX_QUERY_ROUTE_TIMEOUT:-310}
       - APISIX_QUERY_ROUTE_CONNECT_TIMEOUT=${APISIX_QUERY_ROUTE_CONNECT_TIMEOUT:-10}

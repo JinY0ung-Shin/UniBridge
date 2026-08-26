@@ -15,7 +15,13 @@ from httpx import HTTPStatusError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import CurrentUser, get_current_user, get_role_permissions, require_permission
+from app.auth import (
+    APISIX_INTERNAL_PROXY_HEADER,
+    CurrentUser,
+    get_current_user,
+    get_role_permissions,
+    require_permission,
+)
 from app.config import settings
 from app.database import get_db
 from app.models import ApiKeyAccess, QueryTemplate
@@ -213,10 +219,28 @@ def _host_header_for_upstream(upstream: dict[str, Any], node_addr: str) -> str:
     return settings.HOST_IP
 
 
+# Headers the startup provisioning injects on system routes, lowercased because
+# HTTP header names are case-insensitive and ``authorization`` must not slip past
+# a check for ``Authorization``. The internal-proxy marker is what
+# ``auth.py`` authenticates gateway-proxied requests with (dropping it 401s every
+# call on that route until the next boot reconciles it); the other two carry the
+# LiteLLM master key and the end-user attribution on the LLM routes. See
+# app/main.py ``_internal_proxy_headers`` and the LiteLLM route provisioning.
+_SYSTEM_INJECTED_HEADERS = frozenset(
+    {APISIX_INTERNAL_PROXY_HEADER, "authorization", "x-litellm-end-user-id"}
+)
+
+
 def _inject_plugins(
-    body: dict[str, Any], existing_plugins: dict[str, Any] | None = None
+    body: dict[str, Any],
+    existing_plugins: dict[str, Any] | None = None,
+    protected: bool = False,
 ) -> dict[str, Any]:
-    """Inject service_keys, strip_prefix, and require_auth into APISIX plugins config, preserving others."""
+    """Inject service_keys, strip_prefix, and require_auth into APISIX plugins config, preserving others.
+
+    ``protected`` marks a system-managed route, whose provisioned headers are
+    carried through a service-key edit instead of being replaced by it.
+    """
     legacy_service_key = body.pop("service_key", None)
     service_keys = body.pop("service_keys", None)
     if service_keys is None and legacy_service_key is not None:
@@ -256,7 +280,22 @@ def _inject_plugins(
                 if name in existing_set:
                     new_set[name] = existing_set[name]
                 continue
+            if protected and name.lower() in _SYSTEM_INJECTED_HEADERS:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Header '{name}' on a system-managed route is set by "
+                        "startup provisioning and cannot be given a value here"
+                    ),
+                )
             new_set[name] = value
+        # A service-key edit replaces `set` wholesale, which on a system route
+        # would drop the provisioned headers the route's auth depends on — so they
+        # survive regardless of what the request listed.
+        if protected:
+            for name, value in existing_set.items():
+                if name.lower() in _SYSTEM_INJECTED_HEADERS:
+                    new_set[name] = value
         if new_set:
             existing_headers["set"] = new_set
         else:
@@ -458,6 +497,45 @@ async def get_route(
 # turns the opaque schema error into a clean 400.
 _ROUTE_NAME_MAX_LEN = 100
 
+# URIs of the routes provisioned at startup (app/main.py's APISIX provisioning
+# block — keep in sync when a route is added there). Held as a constant so the
+# shadowing guard below still stands when the live APISIX listing is unavailable.
+_SYSTEM_ROUTE_URIS = (
+    "/api/query/*",
+    "/api/query/templates/*",
+    "/api/s3/*",
+    "/api/nas/*",
+    "/api/usages",
+    "/api/llm/*",
+    "/api/llm-admin/*",
+    "/api/llm/v1/messages",
+    "/api/llm/v1/responses",
+)
+
+
+def _uri_namespace(uri: str) -> str:
+    """The path prefix a route uri governs, minus any trailing APISIX wildcard."""
+    return (uri[:-1] if uri.endswith("*") else uri).rstrip("/")
+
+
+def _shadowed_system_uri(uri: str, system_uris: list[str]) -> str | None:
+    """The system route uri a candidate uri competes with, or None.
+
+    APISIX resolves overlapping patterns by priority and specificity, so a route
+    sharing a system route's path namespace can capture its traffic — caller API
+    keys and request bodies — toward an upstream of the writer's choosing. Both
+    directions of containment count: a path nested under a system namespace, and
+    a wildcard broad enough to swallow one.
+    """
+    candidate = _uri_namespace(uri)
+    for system_uri in system_uris:
+        system = _uri_namespace(system_uri)
+        if candidate == system or candidate.startswith(system + "/"):
+            return system_uri
+        if uri.endswith("*") and system.startswith(candidate):
+            return system_uri
+    return None
+
 
 def _has_key_auth(route: dict[str, Any]) -> bool:
     plugins = route.get("plugins")
@@ -476,15 +554,76 @@ def _normalized_methods(route: dict[str, Any]) -> frozenset[str] | None:
     return frozenset(str(method) for method in methods)
 
 
+# The only top-level fields a write may change on a system route. ``timeout``
+# and ``labels`` are what _apply_route_timeout maintains; ``desc`` is a comment.
+# Everything else is frozen, so a write cannot disable the route (``status``),
+# re-order it against another (``priority``), or re-scope which requests it
+# serves (``hosts``/``vars``/``service_id``/``script``/…).
+_PROTECTED_ROUTE_MUTABLE_KEYS = frozenset({"timeout", "desc", "labels"})
+
+# Per-plugin fields that may change. Rotating an injected upstream credential is
+# the one plugin edit a system route accepts, and those live in
+# proxy-rewrite's ``headers`` (``set``/``add``) — its ``regex_uri`` and
+# ``use_real_request_uri_unsafe`` decide the forwarded path and stay frozen.
+_PROTECTED_ROUTE_MUTABLE_PLUGIN_FIELDS = {"proxy-rewrite": frozenset({"headers"})}
+
+# Present on a route read but not part of its configuration: APISIX bookkeeping
+# plus this API's own response decorations, which a client that PUTs a GET
+# response back verbatim sends along.
+_ROUTE_COMPARE_IGNORED_KEYS = frozenset(
+    {
+        "id",
+        "create_time",
+        "update_time",
+        "system",
+        "timeout_seconds",
+        "timeout_override",
+    }
+)
+
+
+def _first_protected_route_change(
+    body: dict[str, Any], existing_route: dict[str, Any]
+) -> str | None:
+    """Path of the first frozen field a write would change, or None.
+
+    An allowlist rather than a list of known-dangerous fields: anything this
+    router does not explicitly permit reaches APISIX verbatim, so a denylist
+    leaves every field nobody thought of open. ``uri``/``upstream_id``/
+    ``methods``/key-auth are checked separately (they keep their own message).
+    """
+    skip = _ROUTE_COMPARE_IGNORED_KEYS | _PROTECTED_ROUTE_MUTABLE_KEYS | {"plugins", "methods"}
+    for key in sorted(set(body) | set(existing_route)):
+        if key not in skip and body.get(key) != existing_route.get(key):
+            return key
+
+    body_plugins = body.get("plugins") or {}
+    existing_plugins = existing_route.get("plugins") or {}
+    if not isinstance(body_plugins, dict) or not isinstance(existing_plugins, dict):
+        return "plugins"
+    for name in sorted(set(body_plugins) | set(existing_plugins)):
+        new, old = body_plugins.get(name), existing_plugins.get(name)
+        if new == old:
+            continue
+        mutable = _PROTECTED_ROUTE_MUTABLE_PLUGIN_FIELDS.get(name)
+        if mutable is None or not isinstance(new, dict) or not isinstance(old, dict):
+            return f"plugins.{name}"
+        for field in sorted(set(new) | set(old)):
+            if field not in mutable and new.get(field) != old.get(field):
+                return f"plugins.{name}.{field}"
+    return None
+
+
 def _reject_protected_route_changes(
     body: dict[str, Any], existing_route: dict[str, Any] | None
 ) -> None:
-    """Refuse topology and auth changes to a system route; allow safe edits.
+    """Refuse any change to a system route beyond the few that are safe.
 
     Rotating a service key or adjusting a timeout on a built-in route is
     harmless. Re-pointing its uri/upstream_id/methods is not: the route injects
     service-key headers, which would then be delivered to a host of the caller's
-    choosing. Dropping key-auth would likewise expose a built-in endpoint.
+    choosing. Dropping key-auth would likewise expose a built-in endpoint, and
+    ``status: 0`` would take a built-in endpoint offline.
 
     ``body`` must already carry its final plugins so this sees the outcome of
     the request rather than its stated intent.
@@ -512,6 +651,15 @@ def _reject_protected_route_changes(
             detail=(
                 "System-managed route topology (uri/upstream_id/methods/auth) "
                 "cannot be modified"
+            ),
+        )
+    changed = _first_protected_route_change(body, existing_route)
+    if changed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"System-managed route field '{changed}' cannot be modified "
+                "(only service keys, timeout, desc and labels are editable)"
             ),
         )
 
@@ -592,6 +740,24 @@ async def save_route(
     )
 
     if route_id not in PROTECTED_ROUTE_IDS:
+        # The live listing covers a system route whose uri drifted from the
+        # provisioning constants; the constants cover a listing that came back
+        # without it, so an APISIX hiccup cannot open the namespace.
+        system_uris = set(_SYSTEM_ROUTE_URIS)
+        system_uris.update(
+            item["uri"]
+            for item in all_routes
+            if item.get("id") in PROTECTED_ROUTE_IDS and isinstance(item.get("uri"), str)
+        )
+        shadowed = _shadowed_system_uri(uri, sorted(system_uris))
+        if shadowed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"URI '{uri}' overlaps the system route namespace '{shadowed}'. "
+                    "Pick a path outside the built-in gateway namespaces."
+                ),
+            )
         for other in all_routes:
             if other.get("id") == route_id:
                 continue
@@ -612,7 +778,9 @@ async def save_route(
     if existing_route is None and body.get("require_auth") is None:
         body["require_auth"] = True
 
-    body = _inject_plugins(body, existing_plugins)
+    body = _inject_plugins(
+        body, existing_plugins, protected=route_id in PROTECTED_ROUTE_IDS
+    )
     _apply_route_timeout(body, existing_route)
     # Runs on the assembled body so the comparison sees what would actually be
     # written, not what the caller claimed to be changing.
@@ -1285,7 +1453,7 @@ def _labels(route: str | list[str] | None, consumer: str | None, *extra: str) ->
         parts.append('route!="llm-messages"')
         parts.append('route!="llm-responses"')
     if consumer:
-        parts.append(f'consumer="{consumer}"')
+        parts.append(f'consumer="{_promql_str(consumer)}"')
     return "{" + ",".join(parts) + "}" if parts else ""
 
 
@@ -1394,8 +1562,12 @@ def _llm_key_selector(api_key: str | None) -> str:
     the LiteLLM ``end_user`` (``x-litellm-end-user-id: $consumer_name`` on the
     ``llm-proxy`` route), so filtering on ``end_user`` scopes every litellm
     metric to a single key. Returns an empty string (no selector) when unscoped.
+
+    Validating here rather than in each handler keeps every ``api_key`` filter on
+    one check: the value is a consumer name, and it reaches a PromQL matcher.
     """
-    return f'{{end_user="{api_key}"}}' if api_key else ""
+    _validate_consumer(api_key)
+    return f'{{end_user="{_promql_str(api_key)}"}}' if api_key else ""
 
 
 def _llm_consumer_extra(api_key: str | None) -> tuple[str, ...]:
@@ -1403,9 +1575,11 @@ def _llm_consumer_extra(api_key: str | None) -> tuple[str, ...]:
 
     ``apisix_http_status`` carries the API-key name as ``consumer`` (the same
     value the litellm ``end_user`` holds), so status/error series can be scoped
-    to the same key the litellm counters are filtered by.
+    to the same key the litellm counters are filtered by. Validated like
+    :func:`_llm_key_selector`.
     """
-    return (f'consumer="{api_key}"',) if api_key else ()
+    _validate_consumer(api_key)
+    return (f'consumer="{_promql_str(api_key)}"',) if api_key else ()
 
 
 def _metric_label(row: dict[str, Any], *names: str) -> str:
@@ -1944,7 +2118,7 @@ async def usages_payload(
     span = max(int(end - start), 1)
 
     if include_llm:
-        hs = f'{{consumer="{consumer}"}}' if consumer else ""
+        hs = f'{{consumer="{_promql_str(consumer)}"}}' if consumer else ""
     else:
         hs = _labels(None, consumer)
     try:

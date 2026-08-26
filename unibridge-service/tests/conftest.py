@@ -12,6 +12,7 @@ os.environ.update({
     "ENABLE_DEV_TOKEN_ENDPOINT": "true",
     "APISIX_ADMIN_URL": "http://localhost:19180",
     "APISIX_ADMIN_KEY": "test-apisix-key",
+    "APISIX_INTERNAL_PROXY_SECRET": "test-internal-proxy-secret",
     "PROMETHEUS_URL": "http://localhost:19090",
 })
 

@@ -55,12 +55,24 @@ cp .env.example .env
 | `KC_ADMIN_PASSWORD` | Fail-fast secret for the Keycloak admin console |
 | `KC_DB_PASSWORD` | Fail-fast secret for the Keycloak database |
 | `APISIX_ADMIN_KEY` | Fail-fast secret for the APISIX admin API |
+| `APISIX_INTERNAL_PROXY_SECRET` | Fail-fast secret APISIX injects as `X-UniBridge-Internal-Proxy`; unibridge-service trusts gateway-set API-key identity headers only on requests carrying it. Generate a **dedicated** value with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` — never reuse `APISIX_ADMIN_KEY` |
 | `KEYCLOAK_SERVICE_CLIENT_SECRET` | Fail-fast shared secret used by Keycloak and unibridge-service |
 | `LITELLM_DB_PASSWORD` | Fail-fast secret for the LiteLLM database |
 | `LITELLM_MASTER_KEY` | Fail-fast secret for LiteLLM admin/API access |
 | `ETCD_ROOT_PASSWORD` | Set this unless `ETCD_ALLOW_NONE_AUTH=yes` for dev-only etcd without auth |
 | `HOST_IP` | Server IP or hostname that browsers access (not `localhost` in production) |
 | `JWT_SECRET` | Required when not using Keycloak-issued tokens; generate a separate strong value |
+
+> **Upgrading an existing deployment:** `APISIX_INTERNAL_PROXY_SECRET` used to fall back to
+> `APISIX_ADMIN_KEY`, so it may be missing from an older `.env` — set it before the next deploy or
+> Compose refuses to start the service. No manual gateway work is needed: unibridge-service
+> rewrites the header value on its system routes at boot, so a rotated secret reaches APISIX even
+> on a color that boots with `APISIX_PROVISION_ON_START=false`.
+>
+> Because APISIX routes are shared between the blue and green colors, *changing* the value
+> interrupts gateway API-key traffic from the moment the new color boots until it is promoted (the
+> old color still expects the old value) — rotate in a maintenance window. Deploys that leave the
+> value alone are no-ops, and JWT/UI traffic is never affected.
 
 **Optional:**
 

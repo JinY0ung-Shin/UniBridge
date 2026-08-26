@@ -16,6 +16,7 @@ from app.schemas import (
     ResourceOwnerUpsert,
 )
 from app.services.alert_state import AlertStateManager
+from app.services.webhook_security import mask_webhook_url
 
 
 class TestAlertModels:
@@ -122,23 +123,22 @@ class TestAlertSchemas:
 
 class TestMaskWebhookUrl:
     def test_strips_userinfo(self):
-        from app.routers.alerts import _mask_webhook_url
-        masked = _mask_webhook_url("https://token:secret@hooks.example.com/path/X?q=1")
+        masked = mask_webhook_url("https://token:secret@hooks.example.com/path/X?q=1")
         assert "token" not in masked
         assert "secret" not in masked
         assert masked == "https://hooks.example.com/***"
 
     def test_preserves_port(self):
-        from app.routers.alerts import _mask_webhook_url
-        assert _mask_webhook_url("https://hooks.example.com:8443/svc/abc") == "https://hooks.example.com:8443/***"
+        assert mask_webhook_url("https://hooks.example.com:8443/svc/abc") == "https://hooks.example.com:8443/***"
 
     def test_strips_path_query_fragment(self):
-        from app.routers.alerts import _mask_webhook_url
-        assert _mask_webhook_url("https://hooks.example.com/p?q=1#f") == "https://hooks.example.com/***"
+        assert mask_webhook_url("https://hooks.example.com/p?q=1#f") == "https://hooks.example.com/***"
 
     def test_unparseable_url_falls_back_to_stars(self):
-        from app.routers.alerts import _mask_webhook_url
-        assert _mask_webhook_url("not a url") == "***"
+        assert mask_webhook_url("not a url") == "***"
+
+    def test_invalid_port_falls_back_to_stars(self):
+        assert mask_webhook_url("https://hooks.example.com:notaport/x") == "***"
 
 
 class TestAlertPermissions:

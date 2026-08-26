@@ -173,6 +173,9 @@ _SINGLETON_ROW = "global"
 EXPORT_NOTES = (
     "secrets are never exported: database passwords, S3 credentials, "
     "alert channel header values and gateway service-key headers are omitted",
+    "alert channel webhook URLs are omitted too — they embed an auth token in "
+    "their path or query, and have to be re-entered for a channel the target "
+    "deployment does not already have",
     "api keys / consumers are not exported",
     "built-in routes and upstreams are provisioned at boot and are not exported",
     "the consumer-restriction plugin is stripped from exported routes; "
@@ -389,26 +392,27 @@ async def _export_monitored_services(db: AsyncSession) -> list[dict[str, Any]]:
 
 
 async def _export_alert_channels(db: AsyncSession) -> list[dict[str, Any]]:
-    """Channels export with their webhook URL but never their header values.
+    """Channels export with neither their webhook URL nor their header values.
 
-    Header names are kept (with the placeholder as value) so an operator can see
-    which secrets have to be re-entered after an import.
+    A webhook URL is itself a credential — Slack/Teams-style hooks carry their
+    auth token in the path or query — so it leaves as the placeholder. Header
+    names are kept (with the placeholder as value) so an operator can see which
+    secrets have to be re-entered after an import.
     """
     result = await db.execute(select(AlertChannel).order_by(AlertChannel.name))
     items: list[dict[str, Any]] = []
     for channel in result.scalars().all():
         headers = _json_object(channel.headers)
-        item: dict[str, Any] = {
+        items.append({
             "name": channel.name,
-            "webhook_url": channel.webhook_url,
+            "webhook_url": SECRET_PLACEHOLDER,
             "payload_template": channel.payload_template,
             "recipient_item_template": channel.recipient_item_template,
             "headers": {name: SECRET_PLACEHOLDER for name in headers} if headers else None,
             "enabled": bool(channel.enabled),
-        }
-        if headers:
-            item["secrets_excluded"] = True
-        items.append(item)
+            # Every channel has a webhook URL, so every channel is partial.
+            "secrets_excluded": True,
+        })
     return items
 
 
@@ -736,6 +740,23 @@ async def _apply_route(
 ) -> tuple[str, str | None]:
     if route_id in PROTECTED_ROUTE_IDS:
         return "skip", "builtin route (auto-provisioned)"
+
+    # Same guard as save_route: an import writes straight to APISIX, so without
+    # it a config file is a bypass around the system-namespace shadowing check.
+    from app.routers.gateway import _SYSTEM_ROUTE_URIS, _shadowed_system_uri
+
+    uri = item.get("uri")
+    if isinstance(uri, str):
+        shadowed = _shadowed_system_uri(uri, sorted(_SYSTEM_ROUTE_URIS))
+        if shadowed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"URI '{uri}' overlaps the system route namespace "
+                    f"'{shadowed}'. Pick a path outside the built-in gateway "
+                    "namespaces."
+                ),
+            )
 
     existing = await _get_apisix_resource("routes", route_id)
     action = "update" if existing else "create"
@@ -1321,6 +1342,31 @@ async def _import_monitored_services(ctx: _ImportContext, raw: Any) -> None:
 # ── Import: alerting ────────────────────────────────────────────────────────
 
 
+_WEBHOOK_URL_UNCHANGED = "webhook URL unchanged"
+
+
+def _channel_webhook_url(item: dict[str, Any], existing: AlertChannel | None) -> Any:
+    """Resolve an exported webhook URL against the channel's live value.
+
+    The export carries the placeholder instead of the URL, so on an existing
+    channel it means "keep what is stored". A new channel has nothing to keep
+    and would be created unusable, which is worth an error rather than a row
+    that silently never delivers.
+    """
+    url = item.get("webhook_url")
+    if url != SECRET_PLACEHOLDER:
+        return url
+    if existing is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "webhook_url not in export — create the channel under Alert "
+                "channels first, then re-import"
+            ),
+        )
+    return existing.webhook_url
+
+
 def _channel_headers(
     item: dict[str, Any], existing: AlertChannel | None
 ) -> tuple[dict[str, str] | None, list[str]]:
@@ -1348,17 +1394,21 @@ async def _apply_alert_channel(
     result = await ctx.db.execute(select(AlertChannel).where(AlertChannel.name == name))
     channel = result.scalar_one_or_none()
     headers, dropped = _channel_headers(item, channel)
+    webhook_url = _channel_webhook_url(item, channel)
     # Validates the webhook URL through the same SSRF guard the channel API uses.
     body = AlertChannelCreate.model_validate(
-        {**item, "name": name, "headers": headers}
+        {**item, "name": name, "headers": headers, "webhook_url": webhook_url}
     )
     action = "update" if channel is not None else "create"
-    reason = (
-        "header value(s) not in export — re-enter in Alert channels: "
-        + ", ".join(dropped)
-        if dropped
-        else None
-    )
+    reasons: list[str] = []
+    if item.get("webhook_url") == SECRET_PLACEHOLDER:
+        reasons.append(_WEBHOOK_URL_UNCHANGED)
+    if dropped:
+        reasons.append(
+            "header value(s) not in export — re-enter in Alert channels: "
+            + ", ".join(dropped)
+        )
+    reason = "; ".join(reasons) or None
     if ctx.dry_run:
         return action, reason
 

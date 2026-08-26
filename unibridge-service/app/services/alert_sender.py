@@ -5,7 +5,11 @@ import logging
 
 import httpx
 
-from app.services.webhook_security import validate_webhook_url
+from app.services.webhook_security import (
+    mask_webhook_url,
+    redact_webhook_url,
+    validate_webhook_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +99,12 @@ async def send_webhook(
     payload: str,
     headers: dict[str, str] | None,
 ) -> tuple[bool, str | None]:
-    """POST payload to webhook URL. Returns (success, error_detail)."""
+    """POST payload to webhook URL. Returns (success, error_detail).
+
+    The detail is stored on the alert history row and shown to ``alerts.read``
+    holders, and client errors quote the URL they failed on — so both the detail
+    and the log line carry the masked URL, never the token in its path or query.
+    """
     send_headers = {"Content-Type": "application/json"}
     if headers:
         send_headers.update(headers)
@@ -106,5 +115,7 @@ async def send_webhook(
             resp.raise_for_status()
         return True, None
     except Exception as exc:
-        logger.warning("Webhook send failed to %s: %s", url, exc)
-        return False, str(exc)
+        reason = redact_webhook_url(str(exc), url)
+        detail = f"{type(exc).__name__}: {reason}" if reason else type(exc).__name__
+        logger.warning("Webhook send failed to %s: %s", mask_webhook_url(url), detail)
+        return False, detail

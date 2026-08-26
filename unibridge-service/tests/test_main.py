@@ -215,7 +215,9 @@ async def test_lifespan_can_skip_apisix_route_provisioning():
     # Route/upstream provisioning is skipped entirely when the flag is false —
     # but the prometheus global rule is still reconciled on every boot (it is
     # the only place prefer_name lives; see main.py), so exactly that one PUT
-    # goes out and it must pin prefer_name.
+    # goes out and it must pin prefer_name. The internal-proxy header reconcile
+    # also runs on every boot but has no secret configured here, so it touches
+    # nothing; test_internal_proxy_secret.py covers it with one set.
     assert [call.args[:2] for call in put_resource.await_args_list] == [
         ("global_rules", "prometheus")
     ]
@@ -283,6 +285,10 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 "nodes": {"unibridge-service:8000": 1}
             },
             ("upstreams", "llm-converter"): {"nodes": {"llm-converter:4001": 1}},
+            # The internal-proxy routes already carry the configured secret, so
+            # the boot header reconcile no-ops and every route PUT asserted below
+            # comes from provisioning. Rotation is covered in
+            # test_internal_proxy_secret.py.
             ("routes", "query-api"): {
                 "id": "query-api",
                 "name": "query-api",
@@ -292,6 +298,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 "plugins": {
                     "key-auth": {},
                     "consumer-restriction": {"whitelist": ["query-consumer"]},
+                    "proxy-rewrite": {
+                        "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}
+                    },
                 },
                 "status": 1,
             },
@@ -304,6 +313,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 "plugins": {
                     "key-auth": {},
                     "consumer-restriction": {"whitelist": ["template-editor"]},
+                    "proxy-rewrite": {
+                        "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}
+                    },
                 },
                 "status": 1,
             },
@@ -316,6 +328,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 "plugins": {
                     "key-auth": {},
                     "consumer-restriction": {"whitelist": ["s3-consumer"]},
+                    "proxy-rewrite": {
+                        "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}
+                    },
                 },
                 "status": 1,
             },
@@ -328,6 +343,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 "plugins": {
                     "key-auth": {},
                     "consumer-restriction": {"whitelist": ["nas-consumer"]},
+                    "proxy-rewrite": {
+                        "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}
+                    },
                 },
                 "status": 1,
             },
@@ -340,6 +358,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 "plugins": {
                     "key-auth": {},
                     "consumer-restriction": {"whitelist": ["usages-consumer"]},
+                    "proxy-rewrite": {
+                        "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}
+                    },
                 },
                 "status": 1,
             },
@@ -718,3 +739,14 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     assert events.index(("routes", "usages-api")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "llm-proxy")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "llm-admin")) < events.index(("replay", "_ReplayDb"))
+
+
+class TestApiDocsGate:
+    """/docs, /redoc and /openapi.json disclose the whole admin API schema and
+    the edge proxies them straight through — they must stay off unless
+    ENABLE_API_DOCS is set (it is not in tests, matching the default)."""
+
+    @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+    async def test_api_docs_endpoints_are_disabled_by_default(self, client, path):
+        resp = await client.get(path)
+        assert resp.status_code == 404

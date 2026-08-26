@@ -10,8 +10,6 @@ from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from urllib.parse import urlparse
-
 from app.auth import CurrentUser, get_role_permissions, require_permission
 from app.database import get_db
 from app.models import (
@@ -39,21 +37,11 @@ from app.schemas import (
 from app.services import alert_mutes, apisix_client
 from app.services.alert_sender import render_recipient_items, render_template, send_webhook
 from app.services.audit import log_admin_action
+from app.services.webhook_security import mask_webhook_url
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/alerts", tags=["Alerts"])
-
-
-def _mask_webhook_url(url: str) -> str:
-    """Reconstruct from hostname/port only so userinfo, path, query, and fragment never leak to non-writers."""
-    parsed = urlparse(url)
-    if not parsed.scheme or not parsed.hostname:
-        return "***"
-    host = parsed.hostname
-    if parsed.port is not None:
-        host = f"{host}:{parsed.port}"
-    return f"{parsed.scheme}://{host}/***"
 
 
 RESOURCE_TYPES = {"db", "s3", "nas", "route", "server", "service"}
@@ -174,7 +162,7 @@ def _channel_audit_snapshot(ch: AlertChannel) -> dict[str, Any]:
         headers = None
     return {
         "name": ch.name,
-        "webhook_url": _mask_webhook_url(ch.webhook_url),
+        "webhook_url": mask_webhook_url(ch.webhook_url),
         "payload_template": ch.payload_template,
         "recipient_item_template": ch.recipient_item_template,
         "headers": {k: "***" for k in headers} if isinstance(headers, dict) else None,
@@ -592,7 +580,7 @@ async def list_channels(
     channels = result.scalars().all()
     rows = []
     for ch in channels:
-        webhook_url = ch.webhook_url if can_write else _mask_webhook_url(ch.webhook_url)
+        webhook_url = ch.webhook_url if can_write else mask_webhook_url(ch.webhook_url)
         headers = (json.loads(ch.headers) if ch.headers else None) if can_write else None
         rows.append(AlertChannelResponse(
             id=ch.id, name=ch.name, webhook_url=webhook_url,

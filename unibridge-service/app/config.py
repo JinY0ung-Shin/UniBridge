@@ -1,5 +1,9 @@
+import logging
+
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -25,8 +29,17 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 60
     MAX_CONCURRENT_QUERIES: int = 5
     ENABLE_DEV_TOKEN_ENDPOINT: bool = False
+    # /docs, /redoc and /openapi.json disclose the full admin API surface and
+    # the edge nginx forwards them (only /_api/metrics is blocked there), so
+    # they stay off unless a developer opts in locally.
+    ENABLE_API_DOCS: bool = False
     APISIX_ADMIN_URL: str = "http://apisix:9180"
     APISIX_ADMIN_KEY: str = ""
+    # Shared secret APISIX injects as X-UniBridge-Internal-Proxy on the system
+    # routes that proxy to this app; auth.py trusts APISIX-set consumer headers
+    # only on requests carrying it. Must be its own value, never APISIX_ADMIN_KEY
+    # — the header sits in plaintext in etcd route configs and rides every
+    # proxied request, so reusing the admin key hands out gateway control.
     APISIX_INTERNAL_PROXY_SECRET: str = ""
     APISIX_PROVISION_ON_START: bool = True
     # Blue/green: hard off-switch for the in-app background loops (alert
@@ -204,4 +217,18 @@ def validate_settings() -> None:
         raise RuntimeError(
             "APISIX_ADMIN_KEY is not set. "
             "Set it to your APISIX admin API key in .env."
+        )
+    # APISIX_INTERNAL_PROXY_SECRET authenticates gateway-proxied requests
+    if not settings.APISIX_INTERNAL_PROXY_SECRET:
+        raise RuntimeError(
+            "APISIX_INTERNAL_PROXY_SECRET is not set. "
+            "Generate a dedicated value with: "
+            "python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+        )
+    if settings.APISIX_INTERNAL_PROXY_SECRET == settings.APISIX_ADMIN_KEY:
+        logger.warning(
+            "APISIX_INTERNAL_PROXY_SECRET equals APISIX_ADMIN_KEY — the admin key is "
+            "then stored in plaintext in APISIX route configs and sent on every "
+            "proxied request. Rotate it to a dedicated value: "
+            "python -c \"import secrets; print(secrets.token_urlsafe(32))\""
         )
