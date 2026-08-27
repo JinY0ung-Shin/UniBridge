@@ -301,7 +301,9 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
     reasoning *depth* via its chat template, not via a request flag. Fields
     with a 1:1 analogue (``max_tokens``, ``temperature``, ``top_p``, ``stop``)
     are forwarded as-is. Fields that need a reshape map across:
-    ``output_config.effort`` → ``reasoning_effort``,
+    ``output_config.effort`` → ``reasoning_effort`` (also listed in
+    ``allowed_openai_params`` so LiteLLM forwards it for models outside its
+    gpt-5/o-series name map),
     ``output_config.format`` → ``response_format``,
     ``metadata.user_id`` → ``user``, and ``tool_choice``'s
     ``disable_parallel_tool_use`` → ``parallel_tool_calls``.
@@ -331,6 +333,13 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(output_config, dict):
         if output_config.get("effort"):
             out["reasoning_effort"] = output_config["effort"]
+            # LiteLLM only treats ``reasoning_effort`` as supported for models
+            # it name-matches as reasoning models (gpt-5/o-series); everything
+            # else silently drops it under ``drop_params: true`` and 400s
+            # without it. ``allowed_openai_params`` is LiteLLM's per-request
+            # escape hatch: it marks the param supported and forwards it
+            # verbatim to the backend.
+            out["allowed_openai_params"] = ["reasoning_effort"]
         rf = _output_format_to_response_format(output_config.get("format"))
         if rf is not None:
             out["response_format"] = rf

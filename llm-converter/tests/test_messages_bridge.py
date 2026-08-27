@@ -481,6 +481,9 @@ class TestRequestConversion:
         }
         out = anthropic_request_to_openai_body(body)
         assert out["reasoning_effort"] == "high"
+        # LiteLLM drops reasoning_effort for models outside its gpt-5/o-series
+        # name map unless the request whitelists it.
+        assert out["allowed_openai_params"] == ["reasoning_effort"]
         assert "output_config" not in out
 
     def test_output_config_without_effort_is_ignored(self):
@@ -494,6 +497,7 @@ class TestRequestConversion:
             }
             out = anthropic_request_to_openai_body(body)
             assert "reasoning_effort" not in out, f"failed for {oc!r}"
+            assert "allowed_openai_params" not in out, f"failed for {oc!r}"
 
     def test_output_config_format_becomes_response_format(self):
         """Anthropic ``output_config.format`` (json_schema) maps to OpenAI
@@ -542,6 +546,7 @@ class TestRequestConversion:
         }
         out = anthropic_request_to_openai_body(body)
         assert out["reasoning_effort"] == "low"
+        assert out["allowed_openai_params"] == ["reasoning_effort"]
         assert out["response_format"] == {"type": "json_object"}
 
     def test_metadata_user_id_becomes_user(self):
