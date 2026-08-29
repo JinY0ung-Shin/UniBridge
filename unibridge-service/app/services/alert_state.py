@@ -25,6 +25,8 @@ class AlertStateManager:
 
     Each entry: status ∈ {"ok", "alert"}, fail_count is the consecutive
     failure tally, since is the timestamp of the most recent status flip.
+    ``success_count`` is its recovery-side mirror — the consecutive healthy
+    tally accumulated while alerting, which drives resolve damping.
     ``severity`` (optional) carries the current host-signal severity while
     alerting, and ``cycles_in_alert`` drives re-notification cadence.
     ``pending_notify`` marks a "triggered" notification that a mute withheld and
@@ -49,6 +51,7 @@ class AlertStateManager:
             "since": entry["since"],
             "display_target": entry.get("display_target", target),
             "fail_count": entry.get("fail_count", 0),
+            "success_count": entry.get("success_count", 0),
             "severity": entry.get("severity"),
             "pending_notify": bool(entry.get("pending_notify", False)),
         }
@@ -62,6 +65,7 @@ class AlertStateManager:
         since: str,
         display_target: str | None = None,
         fail_count: int = 0,
+        success_count: int = 0,
         severity: str | None = None,
         pending_notify: bool = False,
     ) -> None:
@@ -70,6 +74,7 @@ class AlertStateManager:
             "since": since,
             "display_target": display_target or target,
             "fail_count": fail_count,
+            "success_count": success_count,
             "severity": severity,
             "cycles_in_alert": 0,
             "pending_notify": pending_notify,
@@ -99,17 +104,26 @@ class AlertStateManager:
         display_target: str | None = None,
         severity: str | None = None,
         repeat_after_cycles: int = 0,
+        resolve_after_successes: int = 1,
     ) -> str | None:
         """Update state and return transition type if changed.
 
         Returns "triggered" / "resolved" / None. fail_count drives status:
         flip to "alert" only when fail_count reaches trigger_after_failures.
 
+        ``resolve_after_successes`` is the symmetric recovery gate: an alerting
+        target flips back to "ok" only after that many consecutive healthy
+        cycles, and any unhealthy cycle breaks the streak. 1 (the default)
+        resolves on the first healthy cycle, which is the original behaviour.
+        While the streak is still building the incident stays open — status,
+        ``since`` and ``severity`` are all preserved — so nothing downstream
+        sees a half-resolved alert.
+
         ``severity`` (host signals) enables escalation: while already alerting,
         a rise in severity (e.g. warning → critical) re-fires "triggered".
         ``repeat_after_cycles`` > 0 re-fires "triggered" every N unhealthy
-        cycles while the alert persists. Callers that pass neither keep the
-        original binary behaviour exactly.
+        cycles while the alert persists. Callers that pass none of these keep
+        the original binary behaviour exactly.
         """
         key = (alert_type, target)
         now = datetime.now(timezone.utc).isoformat()
@@ -150,15 +164,29 @@ class AlertStateManager:
             was_alert = entry["status"] == "alert"
             entry["fail_count"] = 0
             entry["cycles_in_alert"] = 0
-            if was_alert:
-                entry["status"] = "ok"
-                entry["since"] = now
-                entry["severity"] = None
-                logger.info("Alert state %s/%s: alert → ok", alert_type, target)
-                return "resolved"
-            return None
+            if not was_alert:
+                entry["success_count"] = 0
+                return None
+            required = max(1, resolve_after_successes)
+            entry["success_count"] = entry.get("success_count", 0) + 1
+            if entry["success_count"] < required:
+                # Still alerting: the incident keeps its since/severity so a
+                # relapse mid-streak is indistinguishable from never having
+                # recovered, which is the whole point of the damping.
+                logger.info(
+                    "Alert state %s/%s healthy (%d/%d before resolving)",
+                    alert_type, target, entry["success_count"], required,
+                )
+                return None
+            entry["status"] = "ok"
+            entry["since"] = now
+            entry["severity"] = None
+            entry["success_count"] = 0
+            logger.info("Alert state %s/%s: alert → ok", alert_type, target)
+            return "resolved"
 
         # unhealthy
+        entry["success_count"] = 0
         entry["fail_count"] = entry.get("fail_count", 0) + 1
         if entry["status"] == "alert":
             entry["fail_count"] = min(entry["fail_count"], trigger_after_failures)
@@ -222,6 +250,7 @@ class AlertStateManager:
                 "since": entry["since"],
                 "display_target": entry.get("display_target", target),
                 "fail_count": entry.get("fail_count", 0),
+                "success_count": entry.get("success_count", 0),
                 "severity": entry.get("severity"),
                 "pending_notify": bool(entry.get("pending_notify", False)),
             })
@@ -270,6 +299,7 @@ async def save_alert_state_to_db(
     row.since = _parse_since(entry["since"])
     row.display_target = entry["display_target"]
     row.fail_count = int(entry["fail_count"])
+    row.success_count = int(entry.get("success_count", 0))
     row.severity = entry.get("severity")
     row.pending_notify = bool(entry.get("pending_notify", False))
     row.updated_at = utcnow()
@@ -297,6 +327,7 @@ async def load_alert_state_from_db(
             since=since.isoformat(),
             display_target=row.display_target,
             fail_count=row.fail_count,
+            success_count=row.success_count or 0,
             severity=row.severity,
             pending_notify=bool(row.pending_notify),
         )

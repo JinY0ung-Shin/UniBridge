@@ -422,7 +422,13 @@ def _checker_patches():
     )
 
 
-async def _run_db_cycle(state, *, healthy: bool, mutes: MuteIndex | None = None):
+async def _run_db_cycle(
+    state,
+    *,
+    healthy: bool,
+    mutes: MuteIndex | None = None,
+    resolve_after_successes: int = 1,
+):
     """One check cycle where the single DB connection reports ``healthy``."""
     patches = _checker_patches()
     with patches[1], patches[2], patches[3], patches[4], patches[5], \
@@ -432,7 +438,9 @@ async def _run_db_cycle(state, *, healthy: bool, mutes: MuteIndex | None = None)
         # result; only a probe timeout carries a distinct reason.
         db_probe.return_value = [("mydb", healthy, None)]
         await alert_checker.run_single_check(
-            state, trigger_after_failures=1, mutes=mutes or MuteIndex(),
+            state, trigger_after_failures=1,
+            resolve_after_successes=resolve_after_successes,
+            mutes=mutes or MuteIndex(),
         )
     return dispatch
 
@@ -533,6 +541,29 @@ async def test_recovery_of_an_announced_incident_beats_a_global_mute():
     assert dispatch.await_args.kwargs["alert_type"] == "resolved"
 
 
+@pytest.mark.asyncio
+async def test_deferred_trigger_is_not_announced_during_a_recovery_streak():
+    """Mute deferral meets recovery damping, end to end: the owed trigger waits
+    for a cycle where the target is failing rather than describing it as down
+    on a cycle where it came back."""
+    state = AlertStateManager()
+    await _run_db_cycle(
+        state, healthy=False, mutes=_muted("db", "mydb"), resolve_after_successes=3,
+    )
+    assert state.get_pending_notify("db_health", "mydb") is True
+
+    # Mute gone, but this cycle is healthy (1 of the 3 needed to resolve).
+    dispatch = await _run_db_cycle(state, healthy=True, resolve_after_successes=3)
+    dispatch.assert_not_awaited()
+    assert state.get_status("db_health", "mydb") == "alert"
+    assert state.get_pending_notify("db_health", "mydb") is True
+
+    # Failing again → the debt is paid on a cycle whose message is true.
+    dispatch = await _run_db_cycle(state, healthy=False, resolve_after_successes=3)
+    dispatch.assert_awaited_once()
+    assert dispatch.await_args.kwargs["alert_type"] == "triggered"
+
+
 # ── The suppression decision, exhaustively ───────────────────────────────────
 #
 # ``pending_notify`` means exactly "this incident has not been announced".
@@ -541,11 +572,12 @@ async def test_recovery_of_an_announced_incident_beats_a_global_mute():
 # resolve, and nothing unannounced ever gets one.
 
 
-def _state_with(status: str, *, pending: bool) -> AlertStateManager:
+def _state_with(status: str, *, pending: bool, fail_count: int = 0) -> AlertStateManager:
     state = AlertStateManager()
     state.set_entry(
         "db_health", "mydb",
         status=status, since="2026-01-01T00:00:00+00:00", pending_notify=pending,
+        fail_count=fail_count,
     )
     return state
 
@@ -597,6 +629,21 @@ def test_no_transition_while_still_muted_keeps_the_debt():
     state = _state_with("alert", pending=True)
     assert _decide(state, transition=None, muted=True, was_alerting=True) is None
     assert state.get_pending_notify("db_health", "mydb") is True
+
+
+def test_deferred_trigger_waits_for_a_failing_cycle():
+    """Recovery damping can leave an alert mid-healthy-streak. Announcing the
+    withheld trigger there would page people about a target that is fine right
+    now, so the debt is kept until the target is actually failing again."""
+    state = _state_with("alert", pending=True, fail_count=0)
+    assert _decide(state, transition=None, muted=False, was_alerting=True) is None
+    assert state.get_pending_notify("db_health", "mydb") is True
+
+
+def test_deferred_trigger_fires_once_the_target_is_failing_again():
+    state = _state_with("alert", pending=True, fail_count=1)
+    assert _decide(state, transition=None, muted=False, was_alerting=True) == "triggered"
+    assert state.get_pending_notify("db_health", "mydb") is False
 
 
 @pytest.mark.asyncio

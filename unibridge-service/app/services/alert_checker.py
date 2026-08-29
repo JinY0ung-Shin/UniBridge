@@ -91,6 +91,22 @@ async def _get_trigger_after_failures() -> int:
     return min(10, max(1, int(value)))
 
 
+async def _get_resolve_after_successes() -> int:
+    """Consecutive healthy cycles required before an alert resolves (1 = immediate)."""
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(AlertSettings.resolve_after_successes).where(AlertSettings.id == 1)
+            )
+            value = result.scalar_one_or_none()
+    except Exception as exc:
+        logger.warning("Failed to load alert resolve_after_successes: %s", exc)
+        return 5
+    if value is None:
+        return 5
+    return min(60, max(1, int(value)))
+
+
 def _normalize_route_error_threshold_pct(value: float | int | None) -> float:
     if value is None:
         return 10.0
@@ -537,6 +553,7 @@ async def _check_server_health(
     state: AlertStateManager,
     *,
     trigger_after_failures: int,
+    resolve_after_successes: int = 1,
     mutes: MuteIndex | None = None,
 ) -> None:
     """Evaluate node_exporter host signals and dispatch transitions.
@@ -566,6 +583,7 @@ async def _check_server_health(
             display_target=sig.display,
             severity=sig.severity,
             trigger_after_failures=trigger_after_failures,
+            resolve_after_successes=resolve_after_successes,
             repeat_after_cycles=repeat,
         )
         outbound = _outbound_alert_type(
@@ -605,6 +623,7 @@ async def _check_service_health(
     state: AlertStateManager,
     *,
     trigger_after_failures: int,
+    resolve_after_successes: int = 1,
     mutes: MuteIndex | None = None,
 ) -> None:
     """Evaluate external-service reachability signals and dispatch transitions.
@@ -633,6 +652,7 @@ async def _check_service_health(
             display_target=sig.display,
             severity=sig.severity,
             trigger_after_failures=trigger_after_failures,
+            resolve_after_successes=resolve_after_successes,
             repeat_after_cycles=repeat,
         )
         outbound = _outbound_alert_type(
@@ -699,7 +719,10 @@ def _outbound_alert_type(
       repeat cadence) is only a reminder of an incident recipients already know
       about, so it must not mark that incident unannounced.
     - A remembered trigger fires on the first unmuted cycle where the target is
-      still alerting, even though that cycle has no transition of its own.
+      still alerting *and* actually failing. The failing requirement matters
+      under recovery damping: an alert can sit in a healthy streak that has not
+      yet resolved, and the message generated for that cycle would describe a
+      target that is currently fine.
     - A recovery is delivered whenever its trigger was announced — a mute does
       not apply, because leaving a paged incident open is worse than one extra
       message. A recovery whose trigger was never announced stays silent.
@@ -730,12 +753,14 @@ def _outbound_alert_type(
         return "resolved"
 
     if pending and not muted and state.get_status(rule_type, target) == "alert":
-        state.set_pending_notify(rule_type, target, False)
-        logger.info(
-            "Alert %s/%s still firing after mute expiry — notifying now",
-            rule_type, target,
-        )
-        return "triggered"
+        entry = state.get_entry(rule_type, target)
+        if entry is not None and entry.get("fail_count", 0) > 0:
+            state.set_pending_notify(rule_type, target, False)
+            logger.info(
+                "Alert %s/%s still firing after mute expiry — notifying now",
+                rule_type, target,
+            )
+            return "triggered"
     return None
 
 
@@ -798,6 +823,7 @@ async def _evaluate_route_error_rule(
     rate: float,
     threshold: float,
     trigger_after_failures: int,
+    resolve_after_successes: int = 1,
     sample_count: float = 0.0,
     min_requests: int = 0,
     display_target: str | None = None,
@@ -822,6 +848,7 @@ async def _evaluate_route_error_rule(
         is_healthy=is_healthy,
         display_target=display,
         trigger_after_failures=trigger_after_failures,
+        resolve_after_successes=resolve_after_successes,
     )
     outbound = _outbound_alert_type(
         state, mutes if mutes is not None else MuteIndex(),
@@ -853,6 +880,7 @@ async def run_single_check(
     state: AlertStateManager,
     *,
     trigger_after_failures: int,
+    resolve_after_successes: int = 1,
     mutes: MuteIndex | None = None,
 ) -> None:
     """Execute one round of all health checks.
@@ -860,6 +888,9 @@ async def run_single_check(
     ``mutes`` is the active-suppression snapshot for this cycle; it gates
     outbound notifications only, never detection. Omit it and the current
     snapshot is loaded from the database.
+
+    ``resolve_after_successes`` is the recovery damping every check shares: an
+    alerting target resolves only after that many consecutive healthy cycles.
     """
     if mutes is None:
         mutes = await load_mute_index()
@@ -872,6 +903,7 @@ async def run_single_check(
             "db_health", alias,
             is_healthy=is_healthy,
             trigger_after_failures=trigger_after_failures,
+            resolve_after_successes=resolve_after_successes,
         )
         outbound = _outbound_alert_type(
             state, mutes,
@@ -909,6 +941,7 @@ async def run_single_check(
             "s3_health", alias,
             is_healthy=is_healthy,
             trigger_after_failures=trigger_after_failures,
+            resolve_after_successes=resolve_after_successes,
         )
         outbound = _outbound_alert_type(
             state, mutes,
@@ -938,6 +971,7 @@ async def run_single_check(
             "nas_health", alias,
             is_healthy=is_healthy,
             trigger_after_failures=trigger_after_failures,
+            resolve_after_successes=resolve_after_successes,
         )
         outbound = _outbound_alert_type(
             state, mutes,
@@ -978,6 +1012,7 @@ async def run_single_check(
             is_healthy=is_healthy,
             display_target=display,
             trigger_after_failures=trigger_after_failures,
+            resolve_after_successes=resolve_after_successes,
         )
         outbound = _outbound_alert_type(
             state, mutes,
@@ -1006,12 +1041,14 @@ async def run_single_check(
 
     # 5. Server (host) health via node_exporter metrics
     await _check_server_health(
-        state, trigger_after_failures=trigger_after_failures, mutes=mutes,
+        state, trigger_after_failures=trigger_after_failures,
+        resolve_after_successes=resolve_after_successes, mutes=mutes,
     )
 
     # 5b. External API-service reachability (RED-metrics registry)
     await _check_service_health(
-        state, trigger_after_failures=trigger_after_failures, mutes=mutes,
+        state, trigger_after_failures=trigger_after_failures,
+        resolve_after_successes=resolve_after_successes, mutes=mutes,
     )
 
     # 6. Route-level error rate (automatic for every route; global threshold)
@@ -1049,6 +1086,7 @@ async def run_single_check(
             rate=(errors / requests * 100.0) if requests > 0 else 0.0,
             threshold=route_threshold,
             trigger_after_failures=trigger_after_failures,
+            resolve_after_successes=resolve_after_successes,
             sample_count=requests,
             min_requests=route_min_requests,
             mutes=mutes,
@@ -1065,6 +1103,7 @@ async def run_single_check(
             rate=0.0,
             threshold=route_threshold,
             trigger_after_failures=trigger_after_failures,
+            resolve_after_successes=resolve_after_successes,
             sample_count=0.0,
             min_requests=route_min_requests,
             display_target=entry.get("display_target"),
@@ -1090,8 +1129,13 @@ async def start_checker(state: AlertStateManager) -> asyncio.Task:
             # keeps a standby color from writing a line every interval.
             if await is_active_instance():
                 trigger_after_failures = await _get_trigger_after_failures()
+                resolve_after_successes = await _get_resolve_after_successes()
                 try:
-                    await run_single_check(state, trigger_after_failures=trigger_after_failures)
+                    await run_single_check(
+                        state,
+                        trigger_after_failures=trigger_after_failures,
+                        resolve_after_successes=resolve_after_successes,
+                    )
                 except Exception:
                     logger.exception("Alert checker cycle failed")
                 # Separate try: the daily GPU report is a scheduled side errand,

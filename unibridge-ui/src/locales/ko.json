@@ -1011,6 +1011,8 @@
     "checkInterval": "확인 주기 (초)",
     "triggerAfterFailures": "연속 실패 횟수",
     "triggerAfterFailuresHelp": "이 횟수만큼 연속으로 실패해야 알람이 발송됩니다 (1~10).",
+    "resolveAfterSuccesses": "복구 판정 연속 성공 횟수",
+    "resolveAfterSuccessesHelp": "연속 N회 정상일 때만 복구 알림을 보냅니다. 1 = 즉시 복구 (경계값 진동 시 메일 폭주 억제)",
     "saveSettings": "설정 저장",
     "settingsChanged": "저장되지 않은 설정 변경 있음",
     "noSettingsChanges": "설정 변경 없음",

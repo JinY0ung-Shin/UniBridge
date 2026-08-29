@@ -86,6 +86,7 @@ async def _get_or_create_alert_settings(
             route_error_min_requests=20,
             check_interval_seconds=60,
             trigger_after_failures=2,
+            resolve_after_successes=5,
         )
         db.add(settings)
         try:
@@ -111,6 +112,7 @@ def _build_settings_response(settings: AlertSettings) -> AlertSettingsResponse:
         route_error_min_requests=settings.route_error_min_requests,
         check_interval_seconds=settings.check_interval_seconds,
         trigger_after_failures=settings.trigger_after_failures,
+        resolve_after_successes=settings.resolve_after_successes,
         server_disk_warn_pct=settings.server_disk_warn_pct,
         server_disk_crit_pct=settings.server_disk_crit_pct,
         server_cpu_warn_pct=settings.server_cpu_warn_pct,
@@ -132,6 +134,7 @@ def _settings_audit_snapshot(settings: AlertSettings) -> dict[str, Any]:
         "route_error_min_requests": settings.route_error_min_requests,
         "check_interval_seconds": settings.check_interval_seconds,
         "trigger_after_failures": settings.trigger_after_failures,
+        "resolve_after_successes": settings.resolve_after_successes,
         "server_disk_warn_pct": settings.server_disk_warn_pct,
         "server_disk_crit_pct": settings.server_disk_crit_pct,
         "server_cpu_warn_pct": settings.server_cpu_warn_pct,
@@ -341,6 +344,8 @@ async def update_alert_settings(
         settings.check_interval_seconds = body.check_interval_seconds
     if body.trigger_after_failures is not None:
         settings.trigger_after_failures = body.trigger_after_failures
+    if body.resolve_after_successes is not None:
+        settings.resolve_after_successes = body.resolve_after_successes
     if body.server_disk_warn_pct is not None:
         settings.server_disk_warn_pct = body.server_disk_warn_pct
     if body.server_disk_crit_pct is not None:

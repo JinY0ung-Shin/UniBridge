@@ -453,6 +453,60 @@ async def test_update_alert_settings_trigger_after_failures_out_of_range(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("value", [1, 60])
+async def test_update_alert_settings_resolve_after_successes(client, admin_token, value):
+    resp = await client.put(
+        "/admin/alerts/settings",
+        json={"resolve_after_successes": value},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["resolve_after_successes"] == value
+
+    resp_get = await client.get(
+        "/admin/alerts/settings",
+        headers=auth_header(admin_token),
+    )
+    assert resp_get.status_code == 200
+    assert resp_get.json()["resolve_after_successes"] == value
+
+
+@pytest.mark.asyncio
+async def test_get_alert_settings_defaults_resolve_after_successes_to_five(
+    client, admin_token,
+):
+    """Recovery damping ships on by default: five consecutive good cycles to resolve."""
+    resp = await client.get("/admin/alerts/settings", headers=auth_header(admin_token))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["resolve_after_successes"] == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_value", [0, -1, 61, 1000])
+async def test_update_alert_settings_resolve_after_successes_out_of_range(
+    client, admin_token, invalid_value,
+):
+    resp = await client.put(
+        "/admin/alerts/settings",
+        json={"resolve_after_successes": invalid_value},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_update_alert_settings_resolve_after_successes_rejects_null(
+    client, admin_token,
+):
+    resp = await client.put(
+        "/admin/alerts/settings",
+        json={"resolve_after_successes": None},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_update_alert_settings_trigger_after_failures_rejects_null(
     client, admin_token,
 ):

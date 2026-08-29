@@ -1106,6 +1106,7 @@ export interface AlertSettings {
   route_error_min_requests: number;
   check_interval_seconds: number;
   trigger_after_failures: number;
+  resolve_after_successes: number;
   server_disk_warn_pct?: number;
   server_disk_crit_pct?: number;
   server_cpu_warn_pct?: number;

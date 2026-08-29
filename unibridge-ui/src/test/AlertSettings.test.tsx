@@ -63,6 +63,7 @@ const settingsFixture = {
   route_error_min_requests: 20,
   check_interval_seconds: 60,
   trigger_after_failures: 2,
+  resolve_after_successes: 1,
 };
 
 const dbResourceFixture = {
@@ -319,6 +320,29 @@ describe('AlertSettings page', () => {
     await waitFor(() => expect(mocks.updateSettings).toHaveBeenCalled());
     expect(mocks.updateSettings.mock.calls[0][0]).toEqual(
       expect.objectContaining({ trigger_after_failures: 5 }),
+    );
+  });
+
+  it('delivery tab saves updated resolve_after_successes', async () => {
+    renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
+    const successesInput = await screen.findByLabelText(
+      /복구 판정 연속 성공 횟수|Consecutive successes to resolve/i,
+    );
+    await waitFor(() => expect(successesInput).toHaveValue(1));
+    expect(successesInput).toHaveAttribute('aria-describedby', 'resolve-after-successes-help');
+    expect(document.getElementById('resolve-after-successes-help')).toHaveTextContent(
+      /consecutive healthy checks/,
+    );
+
+    await userEvent.clear(successesInput);
+    await userEvent.type(successesInput, '3');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save Settings$|^설정 저장$/i }));
+
+    await waitFor(() => expect(mocks.updateSettings).toHaveBeenCalled());
+    expect(mocks.updateSettings.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ resolve_after_successes: 3 }),
     );
   });
 

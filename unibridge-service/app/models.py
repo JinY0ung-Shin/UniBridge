@@ -287,6 +287,17 @@ class AlertSettings(Base):
         nullable=False,
         server_default="2",
     )
+    # Recovery-side damping: how many consecutive healthy cycles an alerting
+    # target must show before it resolves. 1 = resolve on the first healthy
+    # cycle (the historical behaviour); higher values suppress the
+    # triggered/resolved mail pairs a signal oscillating around its threshold
+    # would otherwise produce. Applies to all alert types.
+    resolve_after_successes = Column(
+        Integer,
+        default=5,
+        nullable=False,
+        server_default="5",
+    )
     # ── Server (host) monitoring global defaults ──────────────────────────────
     # Percentage thresholds for node_exporter-derived host signals. A per-host
     # override (MonitoredHost.*) takes precedence when set; otherwise these apply.
@@ -318,6 +329,10 @@ class AlertSettings(Base):
         CheckConstraint(
             "trigger_after_failures BETWEEN 1 AND 10",
             name="ck_alert_settings_trigger_after_failures_range",
+        ),
+        CheckConstraint(
+            "resolve_after_successes BETWEEN 1 AND 60",
+            name="ck_alert_settings_resolve_after_successes_range",
         ),
     )
 
@@ -354,6 +369,10 @@ class AlertState(Base):
     since = Column(UtcDateTime, default=utcnow, nullable=False)
     display_target = Column(String(200), nullable=True)
     fail_count = Column(Integer, default=0, nullable=False, server_default="0")
+    # Consecutive healthy cycles observed while status='alert' — the recovery-side
+    # counterpart to fail_count, compared against
+    # AlertSettings.resolve_after_successes. Reset by any unhealthy cycle.
+    success_count = Column(Integer, default=0, nullable=False, server_default="0")
     severity = Column(String(20), nullable=True)  # current severity while alerting (host signals)
     # Set when a "triggered" notification was withheld because the target (or
     # everything) was muted. Survives restarts so a mute that expires while the

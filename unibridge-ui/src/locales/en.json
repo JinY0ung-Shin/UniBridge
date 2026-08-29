@@ -1011,6 +1011,8 @@
     "checkInterval": "Check Interval (seconds)",
     "triggerAfterFailures": "Consecutive failures to trigger",
     "triggerAfterFailuresHelp": "An alert fires only after this many consecutive failed checks (1–10).",
+    "resolveAfterSuccesses": "Consecutive successes to resolve",
+    "resolveAfterSuccessesHelp": "Resolve an active alert only after N consecutive healthy checks. 1 = resolve immediately (suppresses flapping mail storms)",
     "saveSettings": "Save Settings",
     "settingsChanged": "Unsaved settings changes",
     "noSettingsChanges": "No settings changes",

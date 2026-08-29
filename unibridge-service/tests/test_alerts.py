@@ -229,6 +229,75 @@ class TestAlertState:
         )
         assert transition is None
 
+    def test_default_resolves_on_the_first_healthy_cycle(self):
+        """Recovery damping is opt-in: omitting it keeps the original behaviour."""
+        mgr = AlertStateManager()
+        mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=1)
+        transition = mgr.update(
+            "db_health", "mydb", is_healthy=True, trigger_after_failures=1,
+        )
+        assert transition == "resolved"
+        assert mgr.get_status("db_health", "mydb") == "ok"
+
+    def test_resolve_damping_holds_the_alert_through_a_broken_streak(self):
+        """A target oscillating around its threshold must not mail on every crossing."""
+        mgr = AlertStateManager()
+        damped = {"trigger_after_failures": 2, "resolve_after_successes": 3}
+        mgr.update("db_health", "mydb", is_healthy=False, **damped)
+        assert mgr.update("db_health", "mydb", is_healthy=False, **damped) == "triggered"
+
+        # Two good, one bad, one good: the streak never reaches 3, and the bad
+        # cycle must not re-fire a trigger for an incident already open.
+        for healthy in (True, True, False, True):
+            assert mgr.update("db_health", "mydb", is_healthy=healthy, **damped) is None
+        assert mgr.get_status("db_health", "mydb") == "alert"
+
+    def test_resolve_damping_resolves_once_the_streak_completes(self):
+        mgr = AlertStateManager()
+        damped = {"trigger_after_failures": 2, "resolve_after_successes": 3}
+        mgr.update("db_health", "mydb", is_healthy=False, **damped)
+        mgr.update("db_health", "mydb", is_healthy=False, **damped)
+
+        transitions = [
+            mgr.update("db_health", "mydb", is_healthy=True, **damped) for _ in range(3)
+        ]
+        assert transitions == [None, None, "resolved"]
+        assert mgr.get_status("db_health", "mydb") == "ok"
+
+    def test_resolve_damping_keeps_the_incident_open_while_the_streak_builds(self):
+        """Mid-streak the alert is unchanged — same severity, same since."""
+        mgr = AlertStateManager()
+        damped = {"trigger_after_failures": 1, "resolve_after_successes": 3}
+        mgr.update(
+            "server_disk", "host-a", is_healthy=False, severity="critical", **damped,
+        )
+        opened = mgr.get_entry("server_disk", "host-a")
+
+        mgr.update("server_disk", "host-a", is_healthy=True, **damped)
+
+        entry = mgr.get_entry("server_disk", "host-a")
+        assert entry["status"] == "alert"
+        assert entry["severity"] == "critical"
+        assert entry["since"] == opened["since"]
+        assert entry["success_count"] == 1
+
+    def test_unhealthy_cycle_resets_the_recovery_streak(self):
+        mgr = AlertStateManager()
+        damped = {"trigger_after_failures": 1, "resolve_after_successes": 3}
+        mgr.update("db_health", "mydb", is_healthy=False, **damped)
+        mgr.update("db_health", "mydb", is_healthy=True, **damped)
+        mgr.update("db_health", "mydb", is_healthy=True, **damped)
+        assert mgr.get_entry("db_health", "mydb")["success_count"] == 2
+
+        mgr.update("db_health", "mydb", is_healthy=False, **damped)
+
+        assert mgr.get_entry("db_health", "mydb")["success_count"] == 0
+        # Back to square one: three fresh good cycles are needed.
+        transitions = [
+            mgr.update("db_health", "mydb", is_healthy=True, **damped) for _ in range(3)
+        ]
+        assert transitions == [None, None, "resolved"]
+
     def test_get_all_alerts(self):
         mgr = AlertStateManager()
         mgr.update("db_health", "db1", is_healthy=False, trigger_after_failures=1)
@@ -428,3 +497,29 @@ class TestAlertState:
         entry = restored.get_entry("db_health", "main-db")
         assert entry is not None
         assert entry["fail_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_recovery_streak_survives_a_restart(self, seeded_db):
+        """A restart mid-recovery must not hand the target a fresh streak."""
+        from app.services.alert_state import (
+            load_alert_state_from_db,
+            save_alert_state_to_db,
+        )
+
+        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        damped = {"trigger_after_failures": 1, "resolve_after_successes": 3}
+        mgr = AlertStateManager()
+        mgr.update("db_health", "main-db", is_healthy=False, **damped)
+        mgr.update("db_health", "main-db", is_healthy=True, **damped)
+        mgr.update("db_health", "main-db", is_healthy=True, **damped)
+
+        async with session_factory() as db:
+            await save_alert_state_to_db(db, mgr, "db_health", "main-db")
+
+        restored = AlertStateManager()
+        async with session_factory() as db:
+            await load_alert_state_from_db(db, restored)
+
+        assert restored.get_entry("db_health", "main-db")["success_count"] == 2
+        transition = restored.update("db_health", "main-db", is_healthy=True, **damped)
+        assert transition == "resolved"

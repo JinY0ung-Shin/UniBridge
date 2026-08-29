@@ -687,6 +687,7 @@ class AlertSettingsResponse(BaseModel):
     route_error_min_requests: int
     check_interval_seconds: int
     trigger_after_failures: int
+    resolve_after_successes: int
     server_disk_warn_pct: float
     server_disk_crit_pct: float
     server_cpu_warn_pct: float
@@ -706,6 +707,9 @@ class AlertSettingsUpdate(BaseModel):
     route_error_min_requests: int | None = Field(None, ge=0, le=1_000_000)
     check_interval_seconds: int | None = Field(None, ge=30, le=3600)
     trigger_after_failures: int | None = Field(None, ge=1, le=10)
+    # 1 = resolve on the first healthy cycle (unchanged behaviour); higher
+    # values damp a signal that oscillates around its threshold.
+    resolve_after_successes: int | None = Field(None, ge=1, le=60)
     server_disk_warn_pct: float | None = Field(None, ge=0, le=100)
     server_disk_crit_pct: float | None = Field(None, ge=0, le=100)
     server_cpu_warn_pct: float | None = Field(None, ge=0, le=100)
@@ -731,6 +735,7 @@ class AlertSettingsUpdate(BaseModel):
             "route_error_min_requests",
             "check_interval_seconds",
             "trigger_after_failures",
+            "resolve_after_successes",
             "server_disk_warn_pct",
             "server_disk_crit_pct",
             "server_cpu_warn_pct",

@@ -26,6 +26,7 @@ const defaultSettings: AlertSettings = {
   route_error_min_requests: 20,
   check_interval_seconds: 60,
   trigger_after_failures: 2,
+  resolve_after_successes: 5,
   server_disk_warn_pct: 80,
   server_disk_crit_pct: 90,
   server_cpu_warn_pct: 90,
@@ -229,6 +230,7 @@ export default function AlertDeliveryPanel() {
       route_error_min_requests: settingsForm.route_error_min_requests,
       check_interval_seconds: settingsForm.check_interval_seconds,
       trigger_after_failures: settingsForm.trigger_after_failures,
+      resolve_after_successes: settingsForm.resolve_after_successes,
       server_disk_warn_pct: settingsForm.server_disk_warn_pct,
       server_disk_crit_pct: settingsForm.server_disk_crit_pct,
       server_cpu_warn_pct: settingsForm.server_cpu_warn_pct,
@@ -354,6 +356,26 @@ export default function AlertDeliveryPanel() {
               aria-describedby="trigger-after-failures-help"
             />
             <p id="trigger-after-failures-help" className="form-hint">{t('alerts.triggerAfterFailuresHelp')}</p>
+          </div>
+          <div className="form-group">
+            <label htmlFor="resolve-after-successes">{t('alerts.resolveAfterSuccesses')}</label>
+            <input
+              id="resolve-after-successes"
+              type="number"
+              min={1}
+              max={60}
+              step={1}
+              value={settingsForm.resolve_after_successes}
+              disabled={!hasSettings || !canWrite}
+              onChange={(e) =>
+                setSettingsDraft((prev) => ({
+                  ...prev,
+                  resolve_after_successes: Number(e.target.value),
+                }))
+              }
+              aria-describedby="resolve-after-successes-help"
+            />
+            <p id="resolve-after-successes-help" className="form-hint">{t('alerts.resolveAfterSuccessesHelp')}</p>
           </div>
         </div>
 

@@ -99,6 +99,33 @@ class TestAlertChecker:
             assert kwargs["display_target"] == "mydb"
 
     @pytest.mark.asyncio
+    async def test_db_health_resolve_damping_needs_two_healthy_cycles(self):
+        """resolve_after_successes reaches every rule through run_single_check."""
+        state = AlertStateManager()
+        state.update("db_health", "mydb", is_healthy=False, trigger_after_failures=1)
+
+        async def _cycle():
+            with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+                 patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+                 patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
+                 patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+                mock_db.return_value = [("mydb", True, None)]
+                mock_up.return_value = []
+                await run_single_check(
+                    state, trigger_after_failures=1, resolve_after_successes=2,
+                )
+            return mock_dispatch
+
+        dispatch = await _cycle()
+        assert state.get_status("db_health", "mydb") == "alert"
+        dispatch.assert_not_called()
+
+        dispatch = await _cycle()
+        assert state.get_status("db_health", "mydb") == "ok"
+        dispatch.assert_called_once()
+        assert dispatch.call_args.kwargs["alert_type"] == "resolved"
+
+    @pytest.mark.asyncio
     async def test_nas_health_triggered(self):
         state = AlertStateManager()
         # Seed fail_count=1 so the next unhealthy observation crosses N=2.

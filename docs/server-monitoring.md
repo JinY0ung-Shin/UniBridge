@@ -158,6 +158,16 @@ crit threshold. Set **Re-notify every N cycles** (`repeat_alert_after_cycles`)
 to re-send a still-firing alert every N check cycles (0 = notify once per
 transition).
 
+**복구 판정 연속 성공 횟수** (`resolve_after_successes`) is the recovery-side
+mirror of `trigger_after_failures`: an alert resolves only after that many
+consecutive healthy cycles, and a single bad cycle restarts the streak. The
+default is 5 — recovery is announced only after five consecutive healthy
+cycles (about five minutes at the default check interval); set it to 1 to
+resolve on the first healthy cycle, as older releases did. Raise it further on
+hosts whose disk usage oscillates around the warn threshold — a write/delete
+pipeline that repeatedly crosses 80% would otherwise mail a triggered/resolved
+pair on every crossing.
+
 ## GPU monitoring (optional)
 
 GPU monitoring is per host and off by default: a server is monitored for
