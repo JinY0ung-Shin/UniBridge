@@ -30,10 +30,13 @@ _monotonic = time.monotonic
 # Route label cache: maps route_id → friendly label (name or uri), plus the
 # reverse (unambiguous route name → route_id) because with APISIX prefer_name
 # the Prometheus ``route`` label carries the name while alert state and
-# per-resource recipients stay keyed by route id.
+# per-resource recipients stay keyed by route id. The same listing also yields
+# upstream_id → [route_id], which is how an upstream alert finds the assignees
+# of the routes it serves — upstreams have no assignees of their own.
 # Refreshed lazily with a TTL to avoid hammering APISIX on every check.
 _ROUTE_LABEL_CACHE: dict[str, str] = {}
 _ROUTE_ID_BY_NAME: dict[str, str] = {}
+_ROUTE_IDS_BY_UPSTREAM: dict[str, list[str]] = {}
 _ROUTE_LABEL_CACHE_TS: float = 0.0
 _ROUTE_LABEL_TTL = 300.0  # 5 minutes
 _UPSTREAM_NAME_BY_ID: dict[str, str] = {}
@@ -130,18 +133,23 @@ async def _load_route_error_settings(db) -> tuple[float, int]:
 
 
 async def _refresh_route_labels() -> None:
-    """Refresh route_id → label cache from APISIX.
+    """Refresh the route caches from APISIX in one listing.
+
+    Rebuilds route_id → label, the reverse name → route_id map, and
+    upstream_id → [route_id] (routes with an inline upstream contribute
+    nothing, having no shared upstream to be alerted about).
 
     Updates `_ROUTE_LABEL_CACHE_TS` on both success AND failure so that the
     TTL governs retry cadence; otherwise an APISIX outage would cause every
     `_get_route_label` call to re-enter this function.
     """
-    global _ROUTE_LABEL_CACHE, _ROUTE_ID_BY_NAME, _ROUTE_LABEL_CACHE_TS
+    global _ROUTE_LABEL_CACHE, _ROUTE_ID_BY_NAME, _ROUTE_IDS_BY_UPSTREAM, _ROUTE_LABEL_CACHE_TS
     from app.services import apisix_client
     try:
         data = await apisix_client.list_resources("routes")
         items = data.get("items", [])
         new_cache: dict[str, str] = {}
+        route_ids_by_upstream: dict[str, list[str]] = {}
         for item in items:
             rid = str(item.get("id") or "")
             if not rid:
@@ -152,6 +160,9 @@ async def _refresh_route_labels() -> None:
                 uris = item.get("uris") or []
                 uri = uris[0] if uris else None
             new_cache[rid] = name or uri or rid
+            upstream_id = str(item.get("upstream_id") or "")
+            if upstream_id:
+                route_ids_by_upstream.setdefault(upstream_id, []).append(rid)
         # Reverse map: only names that identify exactly one route, and that
         # don't collide with a real route id (an id-shaped value must keep
         # resolving to itself).
@@ -170,6 +181,7 @@ async def _refresh_route_labels() -> None:
             id_by_name.pop(name, None)
         _ROUTE_LABEL_CACHE = new_cache
         _ROUTE_ID_BY_NAME = id_by_name
+        _ROUTE_IDS_BY_UPSTREAM = route_ids_by_upstream
     except Exception as exc:
         logger.warning("Failed to refresh route labels: %s", exc)
     finally:
@@ -185,6 +197,19 @@ async def _get_route_label(route_id: str) -> str:
     if _monotonic() - _ROUTE_LABEL_CACHE_TS > _ROUTE_LABEL_TTL:
         await _refresh_route_labels()
     return _ROUTE_LABEL_CACHE.get(route_id, route_id)
+
+
+async def _get_route_ids_for_upstream(upstream_id: str) -> list[str]:
+    """Ids of the routes that reference `upstream_id`, in APISIX listing order.
+
+    Shares the 5-minute route-label TTL, so the answer can lag a route that was
+    just repointed by up to one refresh window. That only changes who gets
+    copied on an upstream alert — never whether it fires, since the admins are
+    on it either way. Returns a copy so callers cannot mutate the cache.
+    """
+    if _monotonic() - _ROUTE_LABEL_CACHE_TS > _ROUTE_LABEL_TTL:
+        await _refresh_route_labels()
+    return list(_ROUTE_IDS_BY_UPSTREAM.get(upstream_id, []))
 
 
 async def _resolve_route_id(label_value: str) -> str:
@@ -1022,17 +1047,30 @@ async def run_single_check(
         )
         await _persist_state_safely(state, "upstream_health", uid)
         if outbound:
+            # Upstreams have no assignees of their own, so the alert borrows the
+            # ones from every route that depends on this upstream — and names
+            # those routes, or the mail lands on people with no idea why.
+            try:
+                route_ids = await _get_route_ids_for_upstream(uid)
+            except Exception as exc:  # noqa: BLE001 - CC list is never worth losing an alert over
+                logger.warning("Failed to resolve routes for upstream '%s': %s", uid, exc)
+                route_ids = []
+            affected = ""
+            if route_ids:
+                labels = ", ".join([await _get_route_label(rid) for rid in route_ids])
+                affected = f" Affected routes: {labels}."
             if outbound == "resolved":
-                msg = f"Upstream '{display}' recovered."
+                msg = f"Upstream '{display}' recovered.{affected}"
             elif reason == _REASON_NO_NODES:
-                msg = f"Upstream '{display}' has no weighted nodes configured."
+                msg = f"Upstream '{display}' has no weighted nodes configured.{affected}"
             else:
-                msg = f"Upstream '{display}' is down (no reachable node)."
+                msg = f"Upstream '{display}' is down (no reachable node).{affected}"
             result = await dispatch_alert(
                 resource_type="upstream", resource_id=uid,
                 alert_type=outbound, rule_type="upstream_health",
                 target=uid, message=msg,
                 display_target=display, monitor_label="업스트림 헬스체크",
+                assignee_refs=[("route", rid) for rid in route_ids],
             )
             await _handle_dispatch_result(
                 state, outbound=outbound, result=result,

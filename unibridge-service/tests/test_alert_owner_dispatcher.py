@@ -293,6 +293,103 @@ async def test_dispatch_alert_ignores_upstream_assignees_and_sends_to_admins(eng
 
 
 @pytest.mark.asyncio
+async def test_dispatch_alert_adds_referenced_assignees_in_ref_order(engine):
+    """An upstream alert reaches the assignees of the routes that reference it.
+
+    Upstreams have no assignees of their own, so the checker passes the
+    referencing routes as ``assignee_refs``; those addresses sit between the
+    primary resource's assignees and the admins, deduped case-insensitively.
+    """
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        channel = await _seed_mail_channel(db)
+        db.add(AlertSettings(
+            id=1,
+            mail_channel_id=channel.id,
+            admin_emails=json.dumps(["admin@x.com", "SHARED@x.com"]),
+        ))
+        await _seed_resource_owner(
+            db, resource_type="route", resource_id="r1",
+            emails=["a@x.com", "shared@x.com"],
+        )
+        await _seed_resource_owner(
+            db, resource_type="route", resource_id="r2", emails=["b@x.com"],
+        )
+        await db.commit()
+
+    send = AsyncMock(return_value=(True, None))
+    with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
+         patch("app.services.alert_owner_dispatcher.send_webhook", send):
+        result = await dispatch_alert(
+            resource_type="upstream",
+            resource_id="orders-upstream",
+            alert_type="triggered",
+            target="orders-upstream",
+            message="Upstream failed",
+            assignee_refs=[("route", "r1"), ("route", "r2")],
+        )
+
+    assert result is True
+    expected = ["a@x.com", "shared@x.com", "b@x.com", "admin@x.com"]
+    sent_payload = json.loads(send.await_args.kwargs["payload"])
+    assert sent_payload["recipients"] == [
+        {"emailAddress": email, "recipientType": "TO"} for email in expected
+    ]
+    histories = await _history_rows(session_factory)
+    assert json.loads(histories[0].recipients) == expected
+
+
+@pytest.mark.asyncio
+async def test_dispatch_alert_tolerates_broken_referenced_assignees(engine):
+    """A ref that is off, missing or corrupt drops itself, not the alert.
+
+    Unlike the primary resource, a referenced one is a courtesy recipient: it
+    can neither suppress the alert (``alerts_enabled=False``) nor fail it
+    (unparseable emails), because the admins must still be told.
+    """
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        channel = await _seed_mail_channel(db)
+        db.add(AlertSettings(
+            id=1,
+            mail_channel_id=channel.id,
+            admin_emails=json.dumps(["admin@x.com"]),
+        ))
+        muted = await _seed_resource_owner(
+            db, resource_type="route", resource_id="r1", emails=["muted@x.com"],
+        )
+        muted.alerts_enabled = False
+        # r2 deliberately has no ResourceOwner row at all.
+        await _seed_resource_owner(
+            db, resource_type="route", resource_id="r3", emails="not-json",
+        )
+        await _seed_resource_owner(
+            db, resource_type="route", resource_id="r4", emails=["r4@x.com"],
+        )
+        await db.commit()
+
+    send = AsyncMock(return_value=(True, None))
+    with patch("app.services.alert_owner_dispatcher.async_session", session_factory), \
+         patch("app.services.alert_owner_dispatcher.send_webhook", send):
+        result = await dispatch_alert(
+            resource_type="upstream",
+            resource_id="orders-upstream",
+            alert_type="triggered",
+            target="orders-upstream",
+            message="Upstream failed",
+            assignee_refs=[
+                ("route", "r1"), ("route", "r2"), ("route", "r3"), ("route", "r4"),
+            ],
+        )
+
+    assert result is True
+    send.assert_awaited_once()
+    histories = await _history_rows(session_factory)
+    assert json.loads(histories[0].recipients) == ["r4@x.com", "admin@x.com"]
+    assert histories[0].success is True
+
+
+@pytest.mark.asyncio
 async def test_dispatch_alert_records_dispatch_metric(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:

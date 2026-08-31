@@ -47,6 +47,37 @@ def _threshold_db(threshold: float = 10.0, min_requests: int = 0):
     )
 
 
+@pytest.fixture(autouse=True)
+def isolated_route_caches():
+    """Start every test with empty route caches that look freshly refreshed.
+
+    The upstream dispatch path asks which routes reference the upstream, and a
+    stale TTL would send that question to a real APISIX. Marking the (empty)
+    caches fresh keeps the lookup local — a test that wants a mapping primes the
+    globals itself — and restoring them afterwards stops one test's priming from
+    leaking into the next.
+    """
+    from app.services import alert_checker
+
+    saved = (
+        alert_checker._ROUTE_LABEL_CACHE,
+        alert_checker._ROUTE_ID_BY_NAME,
+        alert_checker._ROUTE_IDS_BY_UPSTREAM,
+        alert_checker._ROUTE_LABEL_CACHE_TS,
+    )
+    alert_checker._ROUTE_LABEL_CACHE = {}
+    alert_checker._ROUTE_ID_BY_NAME = {}
+    alert_checker._ROUTE_IDS_BY_UPSTREAM = {}
+    alert_checker._ROUTE_LABEL_CACHE_TS = alert_checker._monotonic()
+    yield
+    (
+        alert_checker._ROUTE_LABEL_CACHE,
+        alert_checker._ROUTE_ID_BY_NAME,
+        alert_checker._ROUTE_IDS_BY_UPSTREAM,
+        alert_checker._ROUTE_LABEL_CACHE_TS,
+    ) = saved
+
+
 class TestAlertChecker:
     @pytest.mark.asyncio
     async def test_db_health_triggered(self):
@@ -232,6 +263,80 @@ class TestAlertChecker:
             kwargs = mock_dispatch.call_args.kwargs
             assert kwargs["alert_type"] == "resolved"
             assert kwargs["message"] == "Upstream 'order-svc' recovered."
+
+    @pytest.mark.asyncio
+    async def test_upstream_alert_copies_and_names_the_routes_it_serves(self):
+        """Upstreams have no assignees, so the routes on them supply the people."""
+        from app.services import alert_checker
+
+        state = AlertStateManager()
+        state.update("upstream_health", "order-svc", is_healthy=False, trigger_after_failures=2)
+        alert_checker._ROUTE_IDS_BY_UPSTREAM = {"order-svc": ["r1", "r2"]}
+        alert_checker._ROUTE_LABEL_CACHE = {"r1": "Route One", "r2": "r2"}
+
+        with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+             patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+             patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+            mock_db.return_value = []
+            mock_up.return_value = [("order-svc", False, "unreachable")]
+
+            await run_single_check(state, trigger_after_failures=2)
+
+        mock_dispatch.assert_called_once()
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs["assignee_refs"] == [("route", "r1"), ("route", "r2")]
+        assert kwargs["message"] == (
+            "Upstream 'order-svc' is down (no reachable node)."
+            " Affected routes: Route One, r2."
+        )
+
+    @pytest.mark.asyncio
+    async def test_upstream_recovery_also_names_the_affected_routes(self):
+        from app.services import alert_checker
+
+        state = AlertStateManager()
+        state.update("upstream_health", "order-svc", is_healthy=False, trigger_after_failures=1)
+        alert_checker._ROUTE_IDS_BY_UPSTREAM = {"order-svc": ["r1", "r2"]}
+        alert_checker._ROUTE_LABEL_CACHE = {"r1": "Route One", "r2": "r2"}
+
+        with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+             patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+             patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+            mock_db.return_value = []
+            mock_up.return_value = [("order-svc", True, None)]
+
+            await run_single_check(state, trigger_after_failures=1)
+
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs["alert_type"] == "resolved"
+        assert kwargs["assignee_refs"] == [("route", "r1"), ("route", "r2")]
+        assert kwargs["message"] == (
+            "Upstream 'order-svc' recovered. Affected routes: Route One, r2."
+        )
+
+    @pytest.mark.asyncio
+    async def test_upstream_alert_survives_a_broken_route_mapping(self):
+        """A mapping failure degrades to the admin-only alert, never blocks it."""
+        state = AlertStateManager()
+        state.update("upstream_health", "order-svc", is_healthy=False, trigger_after_failures=2)
+
+        with patch("app.services.alert_checker._check_db_health", new_callable=AsyncMock) as mock_db, \
+             patch("app.services.alert_checker._check_upstream_health", new_callable=AsyncMock) as mock_up, \
+             patch("app.services.alert_checker._check_route_error_rate", new_callable=AsyncMock, return_value=[]), \
+             patch("app.services.alert_checker._get_route_ids_for_upstream",
+                   new=AsyncMock(side_effect=RuntimeError("apisix down"))), \
+             patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as mock_dispatch:
+            mock_db.return_value = []
+            mock_up.return_value = [("order-svc", False, "unreachable")]
+
+            await run_single_check(state, trigger_after_failures=2)
+
+        mock_dispatch.assert_called_once()
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs["assignee_refs"] == []
+        assert kwargs["message"] == "Upstream 'order-svc' is down (no reachable node)."
 
     @pytest.mark.asyncio
     async def test_upstream_health_dispatch_includes_name_in_display(self):
@@ -706,6 +811,40 @@ class TestRouteLabelCache:
             alert_checker._ROUTE_LABEL_CACHE = {}
             alert_checker._ROUTE_ID_BY_NAME = {}
             alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
+
+    @pytest.mark.asyncio
+    async def test_refresh_indexes_route_ids_by_shared_upstream(self):
+        """Routes with an inline upstream have no shared upstream to be alerted on."""
+        from app.services import alert_checker
+        alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
+        fake = {"items": [
+            {"id": "r1", "name": "orders", "upstream_id": "u1"},
+            {"id": "r2", "uri": "/orders/legacy", "upstream_id": "u1"},
+            {"id": "r3", "upstream_id": "u2"},
+            {"id": "r4"},                      # inline upstream → not indexed
+            {"id": "r5", "upstream_id": ""},   # blank reference → not indexed
+        ]}
+        with patch(
+            "app.services.apisix_client.list_resources",
+            new=AsyncMock(return_value=fake),
+        ):
+            await alert_checker._refresh_route_labels()
+
+        assert alert_checker._ROUTE_IDS_BY_UPSTREAM == {"u1": ["r1", "r2"], "u2": ["r3"]}
+        assert await alert_checker._get_route_ids_for_upstream("u1") == ["r1", "r2"]
+        assert await alert_checker._get_route_ids_for_upstream("unknown") == []
+
+    @pytest.mark.asyncio
+    async def test_route_ids_for_upstream_returns_a_copy(self):
+        """Callers build assignee refs from it; mutating the cache would poison
+        every later cycle."""
+        from app.services import alert_checker
+        alert_checker._ROUTE_IDS_BY_UPSTREAM = {"u1": ["r1"]}
+
+        route_ids = await alert_checker._get_route_ids_for_upstream("u1")
+        route_ids.append("r2")
+
+        assert alert_checker._ROUTE_IDS_BY_UPSTREAM == {"u1": ["r1"]}
 
     @pytest.mark.asyncio
     async def test_refresh_builds_reverse_name_map_skipping_collisions(self):

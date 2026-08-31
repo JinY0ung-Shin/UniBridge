@@ -43,7 +43,11 @@ def _probe_patches(**overrides):
 
 async def _run_cycle(state, *, trigger_after_failures=1, **overrides):
     patches = _probe_patches(**overrides)
+    # An upstream alert asks which routes reference the upstream; stub it so the
+    # cycle never reaches for a real APISIX.
     with patch("app.services.alert_checker._persist_state_safely", new_callable=AsyncMock), \
+         patch("app.services.alert_checker._get_route_ids_for_upstream",
+               new_callable=AsyncMock, return_value=[]), \
          patch("app.services.alert_checker.dispatch_alert", new_callable=AsyncMock) as dispatch:
         for p in patches:
             p.start()

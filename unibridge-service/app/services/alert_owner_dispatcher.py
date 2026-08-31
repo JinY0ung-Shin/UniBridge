@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -42,14 +43,23 @@ async def dispatch_alert(
     monitor_label: str = "",
     severity: str | None = None,
     target_description: str | None = None,
+    assignee_refs: Sequence[tuple[str, str]] | None = None,
 ) -> bool | None:
     """Send an alert to the resource's assignees (담당자) plus the global admins (관리자).
 
     Recipients are the union of supported resource assignee emails and the
     global admin emails. Admins receive every alert; a resource with no
     assignees still notifies the admins. With no recipients at all, nothing is
-    sent. Upstream alerts intentionally skip assignee routing and notify only
-    admins because upstreams are route internals in the UI.
+    sent.
+
+    ``assignee_refs`` adds further ``(resource_type, resource_id)`` pairs whose
+    assignees join the recipient list. Upstreams still have no assignees of
+    their own — they are route internals in the UI — so an upstream alert names
+    the routes that reference it here, and the people who own those routes hear
+    that their backend broke. A ref whose owner row is missing, has alerts
+    switched off, or holds unparseable emails drops only that ref: unlike the
+    primary resource it can neither suppress nor fail the alert, because the
+    admins must be told regardless.
 
     ``alert_type`` is the transition ("triggered"/"resolved") — or "report" for a
     scheduled mail that announces no incident; ``rule_type`` is the monitoring
@@ -111,6 +121,7 @@ async def dispatch_alert(
                 resource_type=resource_type,
                 resource_id=resource_id,
                 admin_emails_json=settings.admin_emails,
+                extra_refs=assignee_refs or (),
             )
             if not alerts_enabled:
                 history.success = None
@@ -210,11 +221,19 @@ async def _resolve_recipients(
     resource_type: str,
     resource_id: str,
     admin_emails_json: str | None,
+    extra_refs: Sequence[tuple[str, str]] = (),
 ) -> tuple[bool, list[str]]:
     """Union of the resource's assignee emails and the global admin emails.
 
-    Assignees come first, then admins, with duplicates removed (case-preserving,
+    Assignees come first, then the ``extra_refs`` assignees in the order the
+    refs were given, then admins, with duplicates removed (case-preserving,
     first occurrence wins).
+
+    Only the primary resource can veto the alert: its ``alerts_enabled=False``
+    returns ``(False, [])`` and its malformed email JSON propagates so the
+    dispatch is recorded as a failure. An extra ref that is off, missing or
+    corrupt merely contributes no addresses — a broken route-owner row must not
+    keep an upstream alert from reaching the admins.
     """
     assignees: list[str] = []
     if resource_type in ASSIGNEE_RESOURCE_TYPES:
@@ -231,17 +250,73 @@ async def _resolve_recipients(
                 return False, []
             assignees = _parse_emails(owner_emails_json)
 
+    referenced = await _resolve_referenced_assignees(db, extra_refs)
     admins = _parse_emails(admin_emails_json)
 
     seen: set[str] = set()
     recipients: list[str] = []
-    for email in [*assignees, *admins]:
+    for email in [*assignees, *referenced, *admins]:
         key = email.lower()
         if key in seen:
             continue
         seen.add(key)
         recipients.append(email)
     return True, recipients
+
+
+async def _resolve_referenced_assignees(
+    db: AsyncSession,
+    refs: Sequence[tuple[str, str]],
+) -> list[str]:
+    """Assignee emails of secondary resources, in the order the refs came in.
+
+    One query per resource type rather than one per ref, because a single
+    upstream can be referenced by a whole fleet of routes. The rows are indexed
+    by ref afterwards so the caller's ordering survives a batched lookup, which
+    returns rows in whatever order the DB likes.
+
+    Every per-ref problem is swallowed here: these are courtesy recipients on
+    someone else's alert, so a ref nobody owns, one with alerts switched off, or
+    one whose email column will not parse must not take the alert down with it.
+    """
+    ids_by_type: dict[str, list[str]] = {}
+    for ref_type, ref_id in refs:
+        if ref_type not in ASSIGNEE_RESOURCE_TYPES:
+            continue
+        ids_by_type.setdefault(ref_type, []).append(ref_id)
+    if not ids_by_type:
+        return []
+
+    rows: dict[tuple[str, str], tuple[str | None, bool]] = {}
+    for ref_type, ref_ids in ids_by_type.items():
+        result = await db.execute(
+            select(
+                ResourceOwner.resource_id,
+                ResourceOwner.emails,
+                ResourceOwner.alerts_enabled,
+            ).where(
+                ResourceOwner.resource_type == ref_type,
+                ResourceOwner.resource_id.in_(ref_ids),
+            )
+        )
+        for row_id, row_emails, row_alerts_enabled in result.all():
+            rows[(ref_type, row_id)] = (row_emails, row_alerts_enabled)
+
+    emails: list[str] = []
+    for ref_type, ref_id in refs:
+        row = rows.get((ref_type, ref_id))
+        if row is None:
+            continue
+        row_emails, row_alerts_enabled = row
+        if not row_alerts_enabled:
+            continue
+        try:
+            emails.extend(_parse_emails(row_emails))
+        except ValueError as exc:
+            logger.warning(
+                "Skipping assignees of referenced %s '%s': %s", ref_type, ref_id, exc
+            )
+    return emails
 
 
 def _parse_emails(emails_json: str | None) -> list[str]:
