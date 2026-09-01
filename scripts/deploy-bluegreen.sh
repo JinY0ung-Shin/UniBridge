@@ -319,7 +319,7 @@ wait_apisix_admin() {
 # pointing at an older gateway upstream) returns non-zero so the caller can force
 # re-provisioning.
 apisix_has_core_routes() {
-  local query_route query_template_write_route s3_route nas_route usages_route prometheus_route llm_proxy_route llm_admin_route llm_metrics_route messages_route responses_route litellm_upstream
+  local query_route query_template_write_route s3_route nas_route usages_route prometheus_route llm_proxy_route llm_admin_route llm_metrics_route messages_route responses_route models_route litellm_upstream
   query_route="$(apisix_get "routes/query-api")" || return 1
   [[ -n "$query_route" ]] || return 1
   route_has_internal_proxy_header "$query_route" || return 1
@@ -363,6 +363,10 @@ apisix_has_core_routes() {
 
   responses_route="$(apisix_get "routes/llm-responses")" || return 1
   json_contains_pair "$responses_route" "upstream_id" "llm-converter" || return 1
+
+  models_route="$(apisix_get "routes/llm-models")" || return 1
+  json_contains_pair "$models_route" "uri" "/api/llm/v1/models" || return 1
+  json_contains_pair "$models_route" "upstream_id" "llm-converter" || return 1
 
   litellm_upstream="$(apisix_get "upstreams/litellm")" || return 1
   json_contains_pair "$litellm_upstream" "scheme" "https" || return 1

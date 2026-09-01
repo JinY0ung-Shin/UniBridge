@@ -189,14 +189,21 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
 
     allowed_route_ids = set(allowed_routes)
     allow_all_routes = MASTER_ACCESS in allowed_route_ids
-    # ``llm-messages`` / ``llm-responses`` are the Anthropic- and Responses-shape
-    # siblings of ``llm-proxy`` served by the converter. Granting ``llm-proxy``
-    # implicitly grants both so existing stored keys keep working after the
-    # converter is rolled out without a data migration or UI change.
+    # ``llm-messages`` / ``llm-responses`` / ``llm-models`` are exact paths carved
+    # out of the ``/api/llm/*`` namespace and served by the converter. Granting
+    # ``llm-proxy`` implicitly grants them so existing stored keys keep working
+    # when one of these routes rolls out — no data migration, no UI change.
+    # Nothing is disclosed by doing so: a key that can already invoke every model
+    # through the catch-all learns nothing from their names.
     # One-directional: granting only a converter route does NOT widen access to
-    # the raw ``/api/llm/*`` proxy.
+    # the raw ``/api/llm/*`` proxy — so a discovery-only key is still possible by
+    # granting ``llm-models`` alone.
+    # Deliberately NOT in this set: ``llm-metrics``. LiteLLM's raw exposition
+    # carries every key's usage, so implying it from ``llm-proxy`` would hand one
+    # tenant another tenant's traffic — that one IS a disclosure and stays
+    # explicit.
     if "llm-proxy" in allowed_route_ids:
-        allowed_route_ids.update({"llm-messages", "llm-responses"})
+        allowed_route_ids.update({"llm-messages", "llm-responses", "llm-models"})
 
     # Collect changes needed: [(route_id, old_body, new_body)]
     changes: list[tuple[str, dict, dict]] = []

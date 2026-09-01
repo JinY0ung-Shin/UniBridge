@@ -162,6 +162,7 @@ async def _preserve_consumer_restriction(
         "usages-api",
         "prometheus-api",
         "llm-metrics",
+        "llm-models",
     }:
         return body
 
@@ -744,6 +745,52 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         )
 
                     logger.info("APISIX LLM converter routes provisioned successfully")
+
+                    # /api/llm/v1/models → the converter's model listing, which
+                    # advertises every LiteLLM model a second time under a
+                    # claude/ prefix so Claude Code can auto-detect one (it
+                    # filters the listing by vendor). No timeout override: a
+                    # listing returns immediately, unlike a completion.
+                    #
+                    # Like llm-messages/llm-responses, this carves an exact path
+                    # out of the /api/llm/* catch-all, so api_keys.py implies it
+                    # from an llm-proxy grant — existing keys keep listing models
+                    # without a re-grant, while an llm-models-only key can still
+                    # discover without invoking. Ships deny-all for the window
+                    # before the consumer-restriction replay, same as above.
+                    await apisix_client.put_resource(
+                        "routes",
+                        "llm-models",
+                        await _preserve_consumer_restriction(
+                            "llm-models",
+                            {
+                                "name": "llm-models",
+                                "desc": "Model listing with claude/-prefixed aliases via the converter",
+                                "uri": "/api/llm/v1/models",
+                                "methods": ["GET"],
+                                "priority": 10,
+                                "upstream_id": "llm-converter",
+                                "plugins": {
+                                    "key-auth": {},
+                                    "consumer-restriction": {
+                                        "whitelist": [api_keys.DENY_ALL_CONSUMER]
+                                    },
+                                    "proxy-rewrite": {
+                                        "regex_uri": ["^/api/llm(.*)", "$1"],
+                                        "use_real_request_uri_unsafe": True,
+                                        "headers": {
+                                            "set": {
+                                                "Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}",
+                                                "x-litellm-end-user-id": "$consumer_name",
+                                            },
+                                        },
+                                    },
+                                },
+                                "status": 1,
+                            },
+                        ),
+                    )
+                    logger.info("APISIX LLM models route provisioned successfully")
                 else:
                     logger.info(
                         "LITELLM_MASTER_KEY not set — skipping LiteLLM route provisioning"

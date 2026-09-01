@@ -85,6 +85,11 @@ _MID_SYSTEM_POLICIES = frozenset({"user", "hoist", "asis"})
 # over-match and reshape requests that never needed it.
 _DEFAULT_MID_SYSTEM_MODEL_PATTERN = r"qwen3\.\d"
 
+# Vendor prefix the model listing advertises aliases under. Claude Code discovers
+# models by asking for the list and keeping the ones that look like Claude models,
+# so every model needs a ``claude/``-prefixed twin to be selectable there.
+_DEFAULT_MODEL_ALIAS_PREFIX = "claude/"
+
 
 def _get_timeout() -> httpx.Timeout:
     """httpx timeout for the upstream client.
@@ -229,6 +234,25 @@ class _Settings:
             except re.error:
                 pass
         return re.compile(_DEFAULT_MID_SYSTEM_MODEL_PATTERN, re.IGNORECASE)
+
+    @property
+    def model_alias_prefix(self) -> str:
+        """Prefix for the aliased model ids ``GET /v1/models`` advertises
+        (``CONVERTER_MODEL_ALIAS_PREFIX``, default ``claude/``).
+
+        Claude Code auto-detects models from the listing by vendor, so each real
+        model is advertised twice: under its own id and under
+        ``{prefix}{id}``. ``/v1/messages`` and ``/v1/responses`` strip the prefix
+        back off on the way in, so an aliased id is callable.
+
+        Set to the empty string to disable both halves — no aliases in the
+        listing, no stripping on inbound requests. Unset (not empty) keeps the
+        default; that distinction is why this reads ``os.getenv`` directly
+        instead of going through a helper."""
+        raw = os.getenv("CONVERTER_MODEL_ALIAS_PREFIX")
+        if raw is None:
+            return _DEFAULT_MODEL_ALIAS_PREFIX
+        return raw.strip()
 
     @property
     def sse_heartbeat_seconds(self) -> float:

@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import AsyncIterator
 
 import httpx
@@ -68,6 +69,13 @@ if settings.trace:
 # trickles (or never finishes) the body cannot pin a worker forever — the
 # client's read timeout is left unbounded for legitimately long completions.
 _ERROR_BODY_READ_TIMEOUT = 120.0
+
+# A model listing is a small, immediate response — nothing generates. This is a
+# worker-safety net, not the user-visible deadline: Claude Code's discovery gives
+# up after ~3s, so a slow listing is already a failed discovery. Keeping this to
+# a single LiteLLM hop (no fan-out, no per-model probing) is what actually keeps
+# discovery inside the client's budget.
+_MODELS_TIMEOUT = 30.0
 
 app = FastAPI(title="UniBridge LLM Converter")
 
@@ -361,6 +369,180 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _model_alias_root(prefix: str) -> str:
+    """The bare vendor word of an alias prefix — ``claude/`` → ``claude``.
+
+    Used to recognize models that already look like the aliased vendor, so
+    ``claude-sonnet-4`` (a real Anthropic model proxied by LiteLLM) is not
+    advertised a second time as ``claude/claude-sonnet-4``.
+    """
+    return prefix.rstrip("/").lower()
+
+
+def _fill_model_entry(entry: dict, model_id: object) -> dict:
+    """Give one listing entry the union of the OpenAI and Anthropic model schemas.
+
+    The same listing is read by OpenAI-shaped clients (``object``, ``created``,
+    ``owned_by``) and Anthropic-shaped ones (``type``, ``display_name``,
+    ``created_at``), and neither tolerates the other's shape well. Filling both
+    means one response satisfies either parser.
+
+    Upstream fields win: only missing keys are added. ``created_at`` is derived
+    from ``created`` and both are left absent when upstream sent no timestamp —
+    a fabricated date is worse than a missing optional field.
+    """
+    entry["id"] = model_id
+    entry.setdefault("object", "model")
+    entry.setdefault("type", "model")
+    entry.setdefault("owned_by", "litellm")
+    if isinstance(model_id, str):
+        entry.setdefault("display_name", model_id)
+    created = entry.get("created")
+    if isinstance(created, (int, float)) and not isinstance(created, bool):
+        try:
+            entry.setdefault(
+                "created_at",
+                datetime.fromtimestamp(float(created), tz=timezone.utc).isoformat(),
+            )
+        except (OverflowError, OSError, ValueError):
+            pass
+    return entry
+
+
+def _augment_models_body(body: dict, prefix: str) -> dict:
+    """Return ``body`` with alias clones appended and both schemas filled in.
+
+    Non-list ``data`` is left alone: it is not a listing this understands, and
+    guessing at it would corrupt whatever it really is.
+    """
+    data = body.get("data")
+    if not isinstance(data, list):
+        return body
+
+    root = _model_alias_root(prefix)
+    entries: list = []
+    for item in data:
+        if not isinstance(item, dict):
+            entries.append(item)  # unrecognized entry, forwarded untouched
+            continue
+        model_id = item.get("id")
+        entries.append(_fill_model_entry(dict(item), model_id))
+        if (
+            prefix
+            and root
+            and isinstance(model_id, str)
+            and not model_id.lower().startswith(root)
+        ):
+            entries.append(_fill_model_entry(dict(item), f"{prefix}{model_id}"))
+
+    augmented = dict(body)
+    augmented.setdefault("object", "list")
+    augmented["data"] = entries
+    # Anthropic's listing is paginated; say so, truthfully, in one page.
+    augmented["has_more"] = False
+    augmented["first_id"] = entries[0].get("id") if _is_entry(entries, 0) else None
+    augmented["last_id"] = entries[-1].get("id") if _is_entry(entries, -1) else None
+    return augmented
+
+
+def _is_entry(entries: list, index: int) -> bool:
+    return bool(entries) and isinstance(entries[index], dict)
+
+
+@app.get("/v1/models")
+async def models(request: Request) -> Response:
+    """List the upstream models, each also advertised under the alias prefix.
+
+    Exists so Claude Code can auto-detect models through the gateway: it filters
+    the listing for Claude-looking ids, which no LiteLLM deployment name has, so
+    every model is advertised a second time as ``claude/<id>``. Those aliased ids
+    are callable — ``/v1/messages`` and ``/v1/responses`` strip the prefix back
+    off. ``CONVERTER_MODEL_ALIAS_PREFIX=""`` turns the whole behavior off and
+    makes this a plain passthrough.
+    """
+    fwd_headers = filter_headers(request.headers.items(), DROP_FROM_REQUEST)
+    upstream_url = f"{settings.LITELLM_URL}/v1/models"
+
+    client = _make_client(settings.request_timeout)
+    upstream_req = client.build_request("GET", upstream_url, headers=fwd_headers)
+    try:
+        try:
+            upstream = await asyncio.wait_for(
+                client.send(upstream_req), timeout=_MODELS_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "converter models: upstream timed out after %ss", _MODELS_TIMEOUT
+            )
+            return Response(
+                status_code=504,
+                content=json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "type": "timeout",
+                            "message": "upstream request timed out",
+                        },
+                    }
+                ).encode("utf-8"),
+                media_type="application/json",
+            )
+
+        resp_headers = filter_headers(upstream.headers.items(), DROP_FROM_RESPONSE)
+        content = upstream.content
+        media_type = upstream.headers.get("content-type")
+        # Anything that is not a 2xx JSON listing — an auth error, an HTML error
+        # page, a body that does not parse — is forwarded verbatim so the client
+        # sees what really happened upstream.
+        if 200 <= upstream.status_code < 300 and (media_type or "").lower().startswith(
+            "application/json"
+        ):
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                logger.warning(
+                    "converter models: upstream 2xx body is not JSON; forwarding raw"
+                )
+            else:
+                if isinstance(parsed, dict):
+                    augmented = _augment_models_body(
+                        parsed, settings.model_alias_prefix
+                    )
+                    content = json.dumps(augmented, ensure_ascii=False).encode("utf-8")
+                    media_type = "application/json"
+                    # ``content-length`` is invalidated by the rewrite; let
+                    # Starlette recompute it.
+                    resp_headers.pop("content-length", None)
+
+        return Response(
+            content=content,
+            status_code=upstream.status_code,
+            headers=resp_headers,
+            media_type=media_type,
+        )
+    finally:
+        await client.aclose()
+
+
+def _strip_model_alias_prefix(parsed: dict) -> None:
+    """Strip the advertised alias prefix off an inbound ``model``, in place.
+
+    ``GET /v1/models`` advertises ``{prefix}{id}`` twins of every model, so a
+    client that picked one sends it back here and LiteLLM would not recognize it.
+    Stripping before the bridges run means both the outbound body and the
+    mid-system model-pattern gate see the deployment's real name.
+
+    A model genuinely registered with a prefixed name would be shadowed by its
+    own alias — don't name deployments that way.
+    """
+    prefix = settings.model_alias_prefix
+    if not prefix:
+        return
+    model = parsed.get("model")
+    if isinstance(model, str) and model.startswith(prefix):
+        parsed["model"] = model[len(prefix) :]
+
+
 @app.post("/v1/messages")
 async def messages(request: Request) -> Response:
     """Translate an Anthropic Messages request through the OpenAI chat route."""
@@ -371,6 +553,8 @@ async def messages(request: Request) -> Response:
         return _bad_request("request body is not valid JSON")
     if not isinstance(parsed, dict):
         return _bad_request("request body must be a JSON object")
+
+    _strip_model_alias_prefix(parsed)
 
     _trace_incoming_messages_request(parsed)
 
@@ -602,6 +786,8 @@ async def responses(request: Request) -> Response:
         return _bad_request("request body is not valid JSON")
     if not isinstance(parsed, dict):
         return _bad_request("request body must be a JSON object")
+
+    _strip_model_alias_prefix(parsed)
 
     is_stream = bool(parsed.get("stream", False))
     store_flag = parsed.get("store", True)

@@ -123,11 +123,14 @@ async def test_sync_all_consumer_route_restrictions_replays_stored_allowed_route
 
 @pytest.mark.asyncio
 async def test_sync_consumer_restriction_grants_llm_messages_alongside_llm_proxy():
-    """Granting ``llm-proxy`` implicitly grants the converter route ``llm-messages``.
+    """Granting ``llm-proxy`` implicitly grants every converter route carved out
+    of ``/api/llm/*``: ``llm-messages``, ``llm-responses``, ``llm-models``.
 
     Existing stored keys list ``llm-proxy`` (the only LLM route that existed when
-    they were created) — without the alias they would be denied on the new
-    ``/api/llm/v1/messages`` route after the converter rolls out.
+    they were created) — without the alias they would be denied on each exact
+    path as it rolls out. ``llm-metrics`` is excluded on purpose: raw LiteLLM
+    metrics carry other keys' usage, which is a real disclosure, unlike model
+    names a key that can invoke them already knows.
     """
     from app.routers.api_keys import _sync_consumer_restriction
 
@@ -152,6 +155,16 @@ async def test_sync_consumer_restriction_grants_llm_messages_alongside_llm_proxy
             "uri": "/api/llm/v1/responses",
             "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}},
         },
+        "llm-models": {
+            "id": "llm-models",
+            "uri": "/api/llm/v1/models",
+            "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}},
+        },
+        "llm-metrics": {
+            "id": "llm-metrics",
+            "uri": "/api/llm/metrics",
+            "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": []}},
+        },
     }
 
     async def list_resources(resource_type):
@@ -166,21 +179,19 @@ async def test_sync_consumer_restriction_grants_llm_messages_alongside_llm_proxy
 
         await _sync_consumer_restriction(["llm-proxy"], "llm-user")
 
-    # Granting llm-proxy whitelists the consumer on the proxy AND both converter
-    # routes (llm-messages, llm-responses).
-    assert route_state["llm-proxy"]["plugins"]["consumer-restriction"] == {
-        "whitelist": ["llm-user"]
-    }
-    assert route_state["llm-messages"]["plugins"]["consumer-restriction"] == {
-        "whitelist": ["llm-user"]
-    }
-    assert route_state["llm-responses"]["plugins"]["consumer-restriction"] == {
-        "whitelist": ["llm-user"]
-    }
-    # ...but a route the key was not granted stays deny-all.
-    assert route_state["query-api"]["plugins"]["consumer-restriction"] == {
-        "whitelist": [DENY_ALL_CONSUMER]
-    }
+    # Granting llm-proxy whitelists the consumer on the proxy AND every converter
+    # route carved out of its namespace.
+    for route_id in ("llm-proxy", "llm-messages", "llm-responses", "llm-models"):
+        assert route_state[route_id]["plugins"]["consumer-restriction"] == {
+            "whitelist": ["llm-user"]
+        }, route_id
+    # ...but a route the key was not granted stays deny-all — including
+    # llm-metrics, which shares the /api/llm/ prefix yet exposes other keys'
+    # usage, so it is never implied.
+    for route_id in ("query-api", "llm-metrics"):
+        assert route_state[route_id]["plugins"]["consumer-restriction"] == {
+            "whitelist": [DENY_ALL_CONSUMER]
+        }, route_id
 
 
 @pytest.mark.asyncio

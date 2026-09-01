@@ -106,3 +106,21 @@ def test_lazy_settings_cover_disabled_deadlines_and_optional_values(monkeypatch)
     assert config.settings.emit_reasoning is False
     assert config.settings.trace is True
     assert config.settings.sse_heartbeat_seconds == 7.0
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, "claude/"),  # unset keeps the default
+        ("", ""),  # explicitly empty disables aliasing and stripping
+        ("   ", ""),  # whitespace-only is empty too
+        (" anthropic/ ", "anthropic/"),
+    ],
+)
+def test_model_alias_prefix_env_modes(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("CONVERTER_MODEL_ALIAS_PREFIX", raising=False)
+    else:
+        monkeypatch.setenv("CONVERTER_MODEL_ALIAS_PREFIX", raw)
+
+    assert config.settings.model_alias_prefix == expected

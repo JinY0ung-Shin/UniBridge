@@ -760,6 +760,7 @@ class TestSaveRouteUriShadowing:
             ("/api/prometheus/api/v1/query", "capture PromQL traffic"),
             ("/api/llm/v1/messages", "shadow the converter route"),
             ("/api/llm/metrics", "shadow the LiteLLM metrics route"),
+            ("/api/llm/v1/models", "shadow the model-discovery route"),
             ("/api/llm/chat/*", "capture LLM traffic (API keys ride along)"),
             ("/api/llm-admin/x", "reach the LiteLLM admin API"),
             ("/api/*", "swallow every namespace at once"),

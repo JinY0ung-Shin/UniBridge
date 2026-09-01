@@ -15,6 +15,8 @@ Browser ──HTTPS──> unibridge-ui (nginx)
                                           │                  → llm-converter → LiteLLM
                                           ├── /api/llm/v1/responses
                                           │                  → llm-converter → LiteLLM
+                                          ├── /api/llm/v1/models
+                                          │                  → llm-converter (listing + claude/ aliases)
                                           ├── /api/llm/metrics → LiteLLM raw Prometheus /metrics
                                           ├── /api/llm/*       → LiteLLM (LLM proxy)
                                           ├── /api/llm-admin/* → LiteLLM Admin UI/API
@@ -175,7 +177,7 @@ export UNIBRIDGE_API_KEY="<UniBridge API key>"
 Requirements and behavior:
 
 - Put provider/auth settings in user config (`~/.codex/config.toml`), not project `.codex/config.toml`; Codex ignores provider and auth redirects from project config.
-- Grant the API key LLM access. Granting the `llm-proxy` route also whitelists the converter routes `llm-messages` and `llm-responses`.
+- Grant the API key LLM access. Granting the `llm-proxy` route also whitelists the converter routes it fronts — `llm-messages`, `llm-responses`, and `llm-models` (the model listing; see [Model discovery for Claude Code](#model-discovery-for-claude-code)). It does **not** cover `llm-metrics`, which exposes every key's usage and stays an explicit grant.
 - Use a certificate Codex trusts. For self-signed dev certificates, install the CA locally or use a trusted certificate for the UniBridge UI endpoint.
 - Codex reasoning effort is forwarded as Responses `reasoning.effort`; `llm-converter` maps it to upstream Chat Completions `reasoning_effort`.
 - Streaming Responses events include `response.created`, `response.output_text.delta`, function-call argument deltas, terminal `response.completed` / `response.failed`, and monotonic `sequence_number` values.
@@ -338,6 +340,55 @@ Prometheus container runs without `--web.enable-admin-api` and
 `--web.enable-lifecycle`, so there is no delete-series, snapshot, or reload
 endpoint to call. Note that a key with this route sees **every** metric in the
 stack — there is no per-key metric scoping, unlike the in-app monitoring pages.
+
+### Model discovery for Claude Code
+
+`GET /api/llm/v1/models` lists every registered LiteLLM model, and lists each one
+a second time under a `claude/` prefix:
+
+```bash
+curl -H "apikey: $UNIBRIDGE_API_KEY" \
+  "https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/llm/v1/models"
+```
+
+The aliases exist because Claude Code's discovery keeps only model ids
+containing `claude` or `anthropic` (case-insensitive substring since v2.1.223;
+older builds require the id to *start* with one), and no LiteLLM deployment name
+does — `qwen3.5-32b` is dropped by the client, `claude/qwen3.5-32b` is kept. The
+aliases are not decorative: `claude/qwen3.5-32b` is callable at
+`/api/llm/v1/messages` exactly like `qwen3.5-32b`, because `llm-converter` strips
+the prefix on the way in. Every entry carries both the OpenAI and Anthropic field
+sets — including the `display_name` Claude Code requires — so either client's
+parser reads the same response. Set `CONVERTER_MODEL_ALIAS_PREFIX=""` to turn
+aliasing off entirely.
+
+**Enabling it in Claude Code.** Discovery is opt-in and needs two environment
+variables:
+
+```bash
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1      # v2.1.129+
+export ANTHROPIC_BASE_URL="https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/llm"
+```
+
+Authenticate the same way as [Codex](#codex-through-unibridge) — the gateway
+wants the key in an `apikey` header, which Claude Code sends via
+`ANTHROPIC_CUSTOM_HEADERS`; discovery includes those custom headers, so one
+setting covers both discovery and the Messages calls that follow. Without
+`ANTHROPIC_BASE_URL` discovery does not run at all.
+
+What the client does, and what it therefore needs from the deployment: it issues
+`GET /v1/models?limit=1000` (the query param is accepted and ignored — the
+listing is a single un-paginated page), gives up after a **3-second** timeout,
+does **not** follow redirects, and does **not** send `anthropic-version` on this
+request. So the endpoint must answer directly and quickly: it makes one hop to
+LiteLLM and nothing else. A slow or redirecting front end breaks discovery even
+though the same URL works fine under `curl`.
+
+The route has its own **`llm-models`** grant, but any key already granted
+`llm-proxy` gets it implicitly — the same way `llm-messages` and `llm-responses`
+are implied — so existing LLM keys discover models with no re-grant. The
+implication is one-directional: granting `llm-models` *alone* produces a
+discovery-only key that can list models and invoke none of them.
 
 ### LiteLLM raw `/metrics` through the gateway
 

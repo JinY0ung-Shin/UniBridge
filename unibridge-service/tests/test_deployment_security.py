@@ -450,6 +450,7 @@ def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
     for route_id, route_var, uri, upstream_id in (
         ("prometheus-api", "prometheus_route", "/api/prometheus/*", "prometheus"),
         ("llm-metrics", "llm_metrics_route", "/api/llm/metrics", "litellm"),
+        ("llm-models", "models_route", "/api/llm/v1/models", "llm-converter"),
     ):
         assert f'apisix_get "routes/{route_id}"' in script
         assert (

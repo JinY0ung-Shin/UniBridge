@@ -306,6 +306,62 @@ async def test_lifespan_provisions_litellm_metrics_route():
 
 
 @pytest.mark.asyncio
+async def test_lifespan_provisions_llm_models_route():
+    app = FastAPI()
+    put_resource = AsyncMock()
+
+    with (
+        patch("app.main.validate_settings"),
+        patch("app.main.init_db", new=AsyncMock()),
+        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.connection_manager.initialize", new=AsyncMock()),
+        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
+        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
+        patch("app.main.rate_limiter.update_limits"),
+        patch(
+            "app.main.settings",
+            SimpleNamespace(
+                LITELLM_MASTER_KEY="sk-test",
+                APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
+                APISIX_ADMIN_KEY="admin-secret",
+            ),
+        ),
+        patch("app.services.apisix_client.get_resource", _keyed_get_resource({})),
+        patch("app.services.apisix_client.put_resource", put_resource),
+        patch(
+            "app.services.alert_checker.start_checker",
+            new=AsyncMock(return_value=_DummyTask()),
+        ),
+        patch("app.routers.alerts.set_alert_state"),
+        patch("app.routers.users._kc_admin", None),
+    ):
+        async with lifespan(app):
+            pass
+
+    route = {
+        call.args[1]: call.args[2]
+        for call in put_resource.await_args_list
+        if call.args[0] == "routes"
+    }["llm-models"]
+
+    assert route["uri"] == "/api/llm/v1/models"
+    # The converter serves the listing (it appends the claude/ aliases), not
+    # LiteLLM directly.
+    assert route["upstream_id"] == "llm-converter"
+    assert route["methods"] == ["GET"]
+    # Beats the /api/llm/* catch-all, which is what gives this path its own grant.
+    assert route["priority"] == 10
+    assert route["plugins"]["key-auth"] == {}
+    assert route["plugins"]["consumer-restriction"] == {"whitelist": ["__deny_all__"]}
+    assert route["plugins"]["proxy-rewrite"]["regex_uri"] == ["^/api/llm(.*)", "$1"]
+    assert route["plugins"]["proxy-rewrite"]["use_real_request_uri_unsafe"] is True
+
+    headers = route["plugins"]["proxy-rewrite"]["headers"]["set"]
+    assert headers["Authorization"] == "Bearer sk-test"
+    assert headers["x-litellm-end-user-id"] == "$consumer_name"
+
+
+@pytest.mark.asyncio
 async def test_lifespan_can_skip_apisix_route_provisioning():
     app = FastAPI()
     put_resource = AsyncMock()
@@ -529,6 +585,19 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 },
                 "status": 1,
             },
+            ("routes", "llm-models"): {
+                "id": "llm-models",
+                "name": "llm-models",
+                "uri": "/api/llm/v1/models",
+                "methods": ["GET"],
+                "priority": 10,
+                "upstream_id": "llm-converter",
+                "plugins": {
+                    "key-auth": {},
+                    "consumer-restriction": {"whitelist": ["discovery-consumer"]},
+                },
+                "status": 1,
+            },
             ("routes", "llm-messages"): {
                 "id": "llm-messages",
                 "name": "llm-messages",
@@ -628,6 +697,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     assert route_calls["llm-metrics"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["scraper-consumer"]
     }
+    assert route_calls["llm-models"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["discovery-consumer"]
+    }
     llm_headers = route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]["headers"]["set"]
     assert llm_headers["Authorization"] == "Bearer sk-test"
     assert llm_headers["x-litellm-end-user-id"] == "$consumer_name"
@@ -716,6 +788,9 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
         "whitelist": ["__deny_all__"]
     }
     assert route_calls["llm-responses"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["__deny_all__"]
+    }
+    assert route_calls["llm-models"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["__deny_all__"]
     }
 
@@ -810,6 +885,8 @@ async def test_lifespan_skips_litellm_routes_when_master_key_missing():
     # llm-metrics is the inverse of prometheus-api: its upstream is litellm,
     # which only exists inside the master-key gate, so it must not be written.
     assert "llm-metrics" not in route_ids
+    # llm-models likewise: the converter upstream is created inside that gate.
+    assert "llm-models" not in route_ids
 
 
 @pytest.mark.asyncio
