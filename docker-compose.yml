@@ -304,7 +304,10 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.retention.time=60d'
     ports:
-      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+      # Query API/UI is reachable from the network by default. Prometheus has
+      # no auth of its own — set PROMETHEUS_BIND=127.0.0.1 to re-lock it to
+      # loopback if the host is not on a trusted network.
+      - "${PROMETHEUS_BIND:-0.0.0.0}:${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/rules:/etc/prometheus/rules:ro

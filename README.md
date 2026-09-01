@@ -141,7 +141,7 @@ details.
 | Keycloak Admin | `https://<HOST_IP>:<KEYCLOAK_PORT>/admin` |
 | API Gateway | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/*` |
 | LiteLLM | `https://<HOST_IP>:<LITELLM_PORT>` (admin UI at `/ui` signs in via UniBridge SSO, admins only) |
-| Prometheus | `http://<HOST_IP>:9090` (localhost only) |
+| Prometheus | `http://<HOST_IP>:9090` (no auth — network-exposed by default, re-lock with `PROMETHEUS_BIND=127.0.0.1`) |
 | Grafana | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana` (same-origin behind the UI) |
 
 Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`). No human users are seeded into the `apihub` realm by default. After first boot, sign in to the admin console and create the first `admin` user in the `apihub` realm (assign the `admin` realm role), then manage further users from the UI **Users** page.
@@ -243,7 +243,7 @@ The helper authenticates as the Keycloak master admin (the service account lacks
 | 4000 | LiteLLM (HTTPS) | public |
 | 8000 | unibridge-service | localhost only |
 | 9180 | APISIX admin | localhost only |
-| 9090 | Prometheus | localhost only |
+| 9090 | Prometheus | public by default (`PROMETHEUS_BIND` overrides; no built-in auth) |
 | 3300 | Grafana | localhost only (debug; public access is `/grafana` on the UI port) |
 
 ## Local Development (without Docker)
