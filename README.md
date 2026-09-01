@@ -357,6 +357,14 @@ aggregate views don't expose, including
 `litellm_llm_api_time_to_first_token_metric` and
 `litellm_deployment_latency_per_output_token`.
 
+True inter-token latency is exposed here too, as
+`litellm_inter_token_latency_seconds` — a per-model histogram recorded by this
+stack's custom callback (`litellm/custom_callbacks.py`), streamed requests only.
+LiteLLM itself publishes no real ITL: its
+`litellm_deployment_latency_per_output_token` divides the whole request duration
+by the output token count, so it folds TTFT into every sample and reads high for
+short answers. This one measures only the gaps between generated tokens.
+
 The grant is deliberately separate from `llm-proxy`: `/api/llm/metrics` is
 carved out of the `/api/llm/*` catch-all by route priority, so a scraper key can
 read metrics without being able to invoke any model. Note the difference from

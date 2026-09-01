@@ -40,6 +40,17 @@ build script extracts ``response["choices"][0]["message"]``, but keeping the
 whole object means a future schema can mine finish reasons, logprobs or
 reasoning content without re-capturing anything.
 
+Inter-token latency metric
+--------------------------
+The same hook also records a true inter-token latency (ITL) histogram,
+``litellm_inter_token_latency_seconds``. LiteLLM publishes no real ITL: its
+``litellm_deployment_latency_per_output_token`` divides the *whole* request
+duration by the output token count, so every sample carries TTFT in the
+numerator and reads high for short answers. This one measures only the gaps
+between generated tokens (completion time minus first-token time, over the gaps
+between tokens). Streamed requests only — without a first-token timestamp there
+is no gap to measure, so non-streamed calls record nothing.
+
 The never-raise constraint
 --------------------------
 This runs inside the live request path's logging hook. An exception escaping
@@ -61,6 +72,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from litellm.integrations.custom_logger import CustomLogger
+
+try:
+    from prometheus_client import Histogram
+except Exception:  # prometheus_client absent (e.g. a bare test venv)
+    Histogram = None  # type: ignore[assignment]
 
 # Bumped only on a breaking change to the record shape; the build script
 # refuses records it does not understand rather than guessing.
@@ -183,6 +199,43 @@ def _first_not_none(*values: Any) -> Any:
     return None
 
 
+# --- Inter-token latency metric ---------------------------------------------
+# Registered in the default prometheus_client registry, which is the one
+# LiteLLM's own /metrics endpoint serves — so this rides along on the endpoint
+# the stack Prometheus already scrapes and the llm-metrics gateway route
+# exposes, with no scrape target of its own.
+ITL_METRIC_NAME = "litellm_inter_token_latency_seconds"
+# Token gaps, not request durations: milliseconds for a healthy stream, up to a
+# couple of seconds for one that stalls mid-answer.
+ITL_BUCKETS = (0.001, 0.0025, 0.005, 0.01, 0.02, 0.04, 0.08, 0.15, 0.3, 0.6, 1.0, 2.0)
+
+
+def _build_itl_histogram() -> Any:
+    """The ITL histogram, or None when it cannot be registered.
+
+    Registration is an import-time side effect, so it has to tolerate both a
+    missing prometheus_client and this module being loaded twice in one process
+    (re-registering a metric name raises). Either way the recorder below no-ops
+    rather than letting an observability extra break the proxy.
+    """
+    if Histogram is None:
+        return None
+    try:
+        return Histogram(
+            ITL_METRIC_NAME,
+            "Mean inter-token latency of one streamed request in seconds, recorded "
+            "by UniBridge's custom callback (not an upstream LiteLLM metric)",
+            ["model"],
+            buckets=ITL_BUCKETS,
+        )
+    except Exception as e:
+        print(f"JsonlDatasetLogger: inter-token latency metric disabled: {e}")
+        return None
+
+
+_ITL_HISTOGRAM = _build_itl_histogram()
+
+
 class JsonlDatasetLogger(CustomLogger):
     """Append successful LLM calls to a daily-rotated JSONL file.
 
@@ -226,6 +279,9 @@ class JsonlDatasetLogger(CustomLogger):
         end_time: Any,
     ) -> None:
         """Write one JSONL record for a completed call. Never raises."""
+        # Self-contained and first: the helper swallows its own errors, so a
+        # metric problem can never cost the dataset line, nor the reverse.
+        self._record_inter_token_latency(kwargs, response_obj, end_time)
         try:
             built = self._build_record(kwargs, response_obj, end_time)
             if built is None:
@@ -307,6 +363,70 @@ class JsonlDatasetLogger(CustomLogger):
             "cost": _first_not_none(slo.get("response_cost"), kwargs.get("response_cost")),
         }
         return record, completed_at
+
+    @staticmethod
+    def _record_inter_token_latency(
+        kwargs: dict[str, Any], response_obj: Any, end_time: Any
+    ) -> None:
+        """Observe one streamed call's mean inter-token latency. Never raises.
+
+        ITL is the time from the first token to the last, spread over the gaps
+        between tokens — so it needs a first-token timestamp and at least two
+        completion tokens (one token has no gap). Anything else, including every
+        non-streamed call, is skipped silently: this is an extra signal, not a
+        contract, and a missing sample must never turn into a log line per
+        request.
+        """
+        if _ITL_HISTOGRAM is None:
+            return
+        try:
+            slo = kwargs.get("standard_logging_object")
+            if not isinstance(slo, dict):
+                slo = {}
+
+            if not _first_not_none(slo.get("stream"), kwargs.get("stream"), False):
+                return
+
+            first_token_at = _as_utc_datetime(
+                kwargs.get("completion_start_time")
+            ) or _as_utc_datetime(
+                _first_not_none(
+                    slo.get("completionStartTime"), slo.get("completion_start_time")
+                )
+            )
+            completed_at = _as_utc_datetime(end_time) or _as_utc_datetime(
+                _first_not_none(slo.get("endTime"), slo.get("end_time"))
+            )
+            if first_token_at is None or completed_at is None:
+                return
+
+            response = _as_dict(slo.get("response")) or _as_dict(response_obj) or {}
+            usage = response.get("usage")
+            if not isinstance(usage, dict):
+                usage = {}
+            try:
+                completion_tokens = int(
+                    _first_not_none(
+                        slo.get("completion_tokens"), usage.get("completion_tokens")
+                    )
+                )
+            except (TypeError, ValueError):
+                return
+            if completion_tokens < 2:
+                return
+
+            elapsed = (completed_at - first_token_at).total_seconds()
+            if elapsed < 0:
+                return  # clock skew between the two timestamps; not a measurement
+
+            # kwargs first, so the label matches the value LiteLLM's own token
+            # metrics carry — the dashboards group the two together on `model`.
+            model = kwargs.get("model") or slo.get("model") or "unknown"
+            _ITL_HISTOGRAM.labels(model=str(model)).observe(
+                elapsed / (completion_tokens - 1)
+            )
+        except Exception as e:
+            print(f"JsonlDatasetLogger metrics error: {e}")
 
     @staticmethod
     def _resolve_end_user(kwargs: dict[str, Any], metadata: dict[str, Any]) -> Any:

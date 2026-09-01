@@ -1,52 +1,17 @@
 """Tests for the dataset-retention logic in ``litellm/custom_callbacks.py`` (#44).
 
-``custom_callbacks.py`` imports ``litellm`` at module load, which is not
-installed in this dev/CI environment. So before importing the module under test
-we install a minimal stand-in for ``litellm.integrations.custom_logger`` and
-then load the file by path — exercising the *real* retention code, not a copy.
+``conftest.py`` loads the real module by path (stubbing ``litellm`` when it is
+not installed), so these exercise the actual retention code, not a copy.
 
 Run from the repo root: ``python -m pytest litellm/tests/``.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import pathlib
-import sys
-import tempfile
-import types
 from datetime import datetime, timezone
 
-# --- Make custom_callbacks importable without the real litellm dependency. ----
-try:  # pragma: no cover - depends on the environment
-    import litellm.integrations.custom_logger  # noqa: F401
-except Exception:
-    _litellm = sys.modules.setdefault("litellm", types.ModuleType("litellm"))
-    _integ = sys.modules.setdefault(
-        "litellm.integrations", types.ModuleType("litellm.integrations")
-    )
-    _cl = types.ModuleType("litellm.integrations.custom_logger")
-
-    class CustomLogger:  # minimal base: the module only subclasses it
-        def __init__(self, *args, **kwargs):
-            pass
-
-    _cl.CustomLogger = CustomLogger
-    _litellm.integrations = _integ
-    _integ.custom_logger = _cl
-    sys.modules["litellm.integrations.custom_logger"] = _cl
-
-# The module instantiates a logger at import; point its dir at a throwaway temp
-# location so import never touches the default /var/lib path.
-import os  # noqa: E402
-
-os.environ["LITELLM_DATASET_DIR"] = tempfile.mkdtemp(prefix="litellm-dataset-import-")
-
-_MODULE_PATH = pathlib.Path(__file__).resolve().parent.parent / "custom_callbacks.py"
-_spec = importlib.util.spec_from_file_location("custom_callbacks_under_test", _MODULE_PATH)
-cc = importlib.util.module_from_spec(_spec)
-assert _spec and _spec.loader
-_spec.loader.exec_module(cc)
+import custom_callbacks_under_test as cc
 
 
 # --- Helpers -----------------------------------------------------------------
