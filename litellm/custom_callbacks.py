@@ -46,10 +46,20 @@ The same hook also records a true inter-token latency (ITL) histogram,
 ``litellm_inter_token_latency_seconds``. LiteLLM publishes no real ITL: its
 ``litellm_deployment_latency_per_output_token`` divides the *whole* request
 duration by the output token count, so every sample carries TTFT in the
-numerator and reads high for short answers. This one measures only the gaps
-between generated tokens (completion time minus first-token time, over the gaps
-between tokens). Streamed requests only — without a first-token timestamp there
-is no gap to measure, so non-streamed calls record nothing.
+numerator and reads high for short answers. This one measures only the interval
+after the first token (completion time minus first-token time).
+
+The unit of observation is one *token gap*, not one request: a call that
+streamed N completion tokens contributes N-1 samples, each at that request's
+mean gap. So percentiles are token-weighted (a 2000-token generation counts
+2000× a 1-token one, which is what a decode-latency SLO means),
+``rate(_sum)/rate(_count)`` is the true token-weighted mean ITL, and
+``rate(_count)`` is streamed output-token throughput. The individual chunk
+timestamps are not visible at this hook, so within-request variance is smoothed
+to the mean — the aggregate is exact, one request's spread is not.
+
+Streamed requests only: without a first-token timestamp there is no gap to
+measure, so non-streamed calls record nothing.
 
 The never-raise constraint
 --------------------------
@@ -205,9 +215,22 @@ def _first_not_none(*values: Any) -> Any:
 # the stack Prometheus already scrapes and the llm-metrics gateway route
 # exposes, with no scrape target of its own.
 ITL_METRIC_NAME = "litellm_inter_token_latency_seconds"
-# Token gaps, not request durations: milliseconds for a healthy stream, up to a
-# couple of seconds for one that stalls mid-answer.
-ITL_BUCKETS = (0.001, 0.0025, 0.005, 0.01, 0.02, 0.04, 0.08, 0.15, 0.3, 0.6, 1.0, 2.0)
+# SGLang's sglang:inter_token_latency_seconds buckets verbatim
+# (python/sglang/srt/observability/metrics_collector.py, sgl-project/sglang main
+# as of 2026-09-01). Same semantic family — per-token-gap samples, token-weighted
+# — so histogram_quantile() over this metric is directly comparable with the
+# same query against an SGLang backend, no bucket-boundary caveat. vLLM's
+# vllm:inter_token_latency_seconds uses a coarser 0.01–80s ladder, so
+# comparisons against vLLM stay approximate.
+ITL_BUCKETS = (
+    0.002, 0.004, 0.006, 0.008, 0.010, 0.015, 0.020, 0.025, 0.030,
+    0.035, 0.040, 0.060, 0.080, 0.100, 0.200, 0.400, 0.600, 0.800,
+    1.0, 2.0, 4.0, 6.0, 8.0,
+)
+
+# Set once if the weighted fast path ever falls back, so the notice is a
+# one-liner per process instead of one per request.
+_ITL_FALLBACK_REPORTED = False
 
 
 def _build_itl_histogram() -> Any:
@@ -223,8 +246,10 @@ def _build_itl_histogram() -> Any:
     try:
         return Histogram(
             ITL_METRIC_NAME,
-            "Mean inter-token latency of one streamed request in seconds, recorded "
-            "by UniBridge's custom callback (not an upstream LiteLLM metric)",
+            "Inter-token latency in seconds, one sample per output-token gap, each "
+            "recorded at its request's mean gap (chunk timestamps are not visible at "
+            "this hook). Streamed requests only; recorded by UniBridge's custom "
+            "callback, not an upstream LiteLLM metric",
             ["model"],
             buckets=ITL_BUCKETS,
         )
@@ -234,6 +259,52 @@ def _build_itl_histogram() -> Any:
 
 
 _ITL_HISTOGRAM = _build_itl_histogram()
+
+
+def _observe_weighted(child: Any, value: float, count: int, total: float) -> None:
+    """Record ``count`` observations of ``value``, summing to ``total``, at once.
+
+    prometheus_client exposes no weighted observe, and a 2000-token answer would
+    otherwise mean 1999 ``observe()`` calls inside the request path's logging
+    hook. Buckets are stored non-cumulative and cumulated at collect time, so a
+    single ``inc(count)`` on the matching bucket is exactly equivalent to that
+    loop — the increment is what ``_count`` is derived from.
+
+    Boundary semantics mirror ``Histogram.observe``: first bound where
+    ``value <= bound`` wins, and prometheus_client always appends +Inf, so a
+    match always exists.
+
+    ``_upper_bounds`` / ``_buckets`` / ``_sum`` are private. They have been
+    stable for years, but every one of them is read *before* anything is
+    mutated: a fallback after a partial write would double-count, since
+    ``observe()`` increments the same sum again.
+    """
+    global _ITL_FALLBACK_REPORTED
+    try:
+        bounds = child._upper_bounds
+        buckets = child._buckets
+        sum_value = child._sum
+        if len(bounds) != len(buckets):
+            raise AttributeError("bucket layout does not match the bound list")
+    except Exception as e:
+        if not _ITL_FALLBACK_REPORTED:
+            _ITL_FALLBACK_REPORTED = True
+            print(
+                "JsonlDatasetLogger: inter-token latency weighted fast path "
+                f"unavailable (prometheus_client internals changed: {e}); "
+                "falling back to loop"
+            )
+        for _ in range(count):
+            child.observe(value)
+        return
+
+    # Past this point nothing may fall back to observe() — a retry would add the
+    # sum twice. A failure here propagates to the caller's never-raise wrapper.
+    for index, bound in enumerate(bounds):
+        if value <= bound:
+            buckets[index].inc(count)
+            break
+    sum_value.inc(total)
 
 
 class JsonlDatasetLogger(CustomLogger):
@@ -368,14 +439,15 @@ class JsonlDatasetLogger(CustomLogger):
     def _record_inter_token_latency(
         kwargs: dict[str, Any], response_obj: Any, end_time: Any
     ) -> None:
-        """Observe one streamed call's mean inter-token latency. Never raises.
+        """Observe one streamed call's token gaps. Never raises.
 
         ITL is the time from the first token to the last, spread over the gaps
         between tokens — so it needs a first-token timestamp and at least two
-        completion tokens (one token has no gap). Anything else, including every
-        non-streamed call, is skipped silently: this is an extra signal, not a
-        contract, and a missing sample must never turn into a log line per
-        request.
+        completion tokens (one token has no gap). The request contributes one
+        sample per gap, so percentiles weight a long generation proportionally.
+        Anything else, including every non-streamed call, is skipped silently:
+        this is an extra signal, not a contract, and a missing sample must never
+        turn into a log line per request.
         """
         if _ITL_HISTOGRAM is None:
             return
@@ -422,8 +494,12 @@ class JsonlDatasetLogger(CustomLogger):
             # kwargs first, so the label matches the value LiteLLM's own token
             # metrics carry — the dashboards group the two together on `model`.
             model = kwargs.get("model") or slo.get("model") or "unknown"
-            _ITL_HISTOGRAM.labels(model=str(model)).observe(
-                elapsed / (completion_tokens - 1)
+            gaps = completion_tokens - 1
+            _observe_weighted(
+                _ITL_HISTOGRAM.labels(model=str(model)),
+                elapsed / gaps,
+                gaps,
+                elapsed,
             )
         except Exception as e:
             print(f"JsonlDatasetLogger metrics error: {e}")

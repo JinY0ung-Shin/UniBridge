@@ -363,7 +363,17 @@ stack's custom callback (`litellm/custom_callbacks.py`), streamed requests only.
 LiteLLM itself publishes no real ITL: its
 `litellm_deployment_latency_per_output_token` divides the whole request duration
 by the output token count, so it folds TTFT into every sample and reads high for
-short answers. This one measures only the gaps between generated tokens.
+short answers. This one measures only the interval after the first token.
+
+Samples are token gaps, not requests: a call streaming N tokens contributes N−1
+samples at that request's mean gap, so percentiles are token-weighted the way a
+decode-latency SLO means them, `rate(..._sum[5m]) / rate(..._count[5m])` is the
+true mean ITL, and `rate(..._count[5m])` is streamed output-token throughput.
+Buckets are SGLang's `sglang:inter_token_latency_seconds` list verbatim, so
+`histogram_quantile()` here is directly comparable side-by-side with the same
+query against an SGLang backend. Per-chunk timestamps aren't available at the
+callback, so within-request variance is smoothed to the mean — aggregates are
+exact, a single request's spread is not.
 
 The grant is deliberately separate from `llm-proxy`: `/api/llm/metrics` is
 carved out of the `/api/llm/*` catch-all by route priority, so a scraper key can
