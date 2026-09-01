@@ -15,6 +15,7 @@ Browser ──HTTPS──> unibridge-ui (nginx)
                                           │                  → llm-converter → LiteLLM
                                           ├── /api/llm/v1/responses
                                           │                  → llm-converter → LiteLLM
+                                          ├── /api/llm/metrics → LiteLLM raw Prometheus /metrics
                                           ├── /api/llm/*       → LiteLLM (LLM proxy)
                                           ├── /api/llm-admin/* → LiteLLM Admin UI/API
                                           ├── /api/s3/*        → S3 connections
@@ -337,6 +338,31 @@ Prometheus container runs without `--web.enable-admin-api` and
 `--web.enable-lifecycle`, so there is no delete-series, snapshot, or reload
 endpoint to call. Note that a key with this route sees **every** metric in the
 stack — there is no per-key metric scoping, unlike the in-app monitoring pages.
+
+### LiteLLM raw `/metrics` through the gateway
+
+LiteLLM publishes its own Prometheus exposition, reachable through the fixed
+gateway route `llm-metrics` (grant `llm-metrics` to a key on the **API Keys**
+page):
+
+```bash
+curl -H "apikey: $UNIBRIDGE_API_KEY" \
+  "https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/llm/metrics"
+```
+
+This is the raw exposition format — counters and histograms accumulated since
+the LiteLLM process started, meant for an external Prometheus to scrape rather
+than for reading by hand. It carries the per-model latency detail that the
+aggregate views don't expose, including
+`litellm_llm_api_time_to_first_token_metric` and
+`litellm_deployment_latency_per_output_token`.
+
+The grant is deliberately separate from `llm-proxy`: `/api/llm/metrics` is
+carved out of the `/api/llm/*` catch-all by route priority, so a scraper key can
+read metrics without being able to invoke any model. Note the difference from
+`/api/prometheus/*` above — that one runs PromQL over history already stored by
+UniBridge's Prometheus (which scrapes LiteLLM internally anyway); this one is
+LiteLLM's live process state, for a scraper of your own.
 
 ### Grafana dashboards
 

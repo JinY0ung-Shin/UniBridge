@@ -14,5 +14,6 @@ PROTECTED_ROUTE_IDS = {
     "nas-api",
     "usages-api",
     "prometheus-api",
+    "llm-metrics",
 }
 PROTECTED_UPSTREAM_IDS = {"unibridge-service", "litellm", "llm-converter", "prometheus"}

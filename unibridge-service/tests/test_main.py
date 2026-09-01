@@ -246,6 +246,66 @@ async def test_lifespan_provisions_prometheus_query_route():
 
 
 @pytest.mark.asyncio
+async def test_lifespan_provisions_litellm_metrics_route():
+    app = FastAPI()
+    put_resource = AsyncMock()
+
+    with (
+        patch("app.main.validate_settings"),
+        patch("app.main.init_db", new=AsyncMock()),
+        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.connection_manager.initialize", new=AsyncMock()),
+        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
+        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
+        patch("app.main.rate_limiter.update_limits"),
+        patch(
+            "app.main.settings",
+            SimpleNamespace(
+                LITELLM_MASTER_KEY="sk-test",
+                APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
+                APISIX_ADMIN_KEY="admin-secret",
+            ),
+        ),
+        patch("app.services.apisix_client.get_resource", _keyed_get_resource({})),
+        patch("app.services.apisix_client.put_resource", put_resource),
+        patch(
+            "app.services.alert_checker.start_checker",
+            new=AsyncMock(return_value=_DummyTask()),
+        ),
+        patch("app.routers.alerts.set_alert_state"),
+        patch("app.routers.users._kc_admin", None),
+    ):
+        async with lifespan(app):
+            pass
+
+    route = {
+        call.args[1]: call.args[2]
+        for call in put_resource.await_args_list
+        if call.args[0] == "routes"
+    }["llm-metrics"]
+
+    assert route["uri"] == "/api/llm/metrics"
+    assert route["upstream_id"] == "litellm"
+    # Scrape-only: no other verb reaches LiteLLM through this route.
+    assert route["methods"] == ["GET"]
+    # Beats the /api/llm/* catch-all, which is what carves the metrics endpoint
+    # out of the llm-proxy grant into its own.
+    assert route["priority"] == 10
+    assert route["plugins"]["key-auth"] == {}
+    assert route["plugins"]["consumer-restriction"] == {"whitelist": ["__deny_all__"]}
+    assert route["plugins"]["proxy-rewrite"]["regex_uri"] == ["^/api/llm(.*)", "$1"]
+    assert route["plugins"]["proxy-rewrite"]["use_real_request_uri_unsafe"] is True
+
+    headers = route["plugins"]["proxy-rewrite"]["headers"]["set"]
+    # The master key rides along so the route keeps working on LiteLLM releases
+    # that gate /metrics behind bearer auth.
+    assert headers["Authorization"] == "Bearer sk-test"
+    # A scrape has no consumer semantics — tagging it as an end user would
+    # invent LiteLLM spend/usage rows for the scraper.
+    assert "x-litellm-end-user-id" not in headers
+
+
+@pytest.mark.asyncio
 async def test_lifespan_can_skip_apisix_route_provisioning():
     app = FastAPI()
     put_resource = AsyncMock()
@@ -456,6 +516,19 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 },
                 "status": 1,
             },
+            ("routes", "llm-metrics"): {
+                "id": "llm-metrics",
+                "name": "llm-metrics",
+                "uri": "/api/llm/metrics",
+                "methods": ["GET"],
+                "priority": 10,
+                "upstream_id": "litellm",
+                "plugins": {
+                    "key-auth": {},
+                    "consumer-restriction": {"whitelist": ["scraper-consumer"]},
+                },
+                "status": 1,
+            },
             ("routes", "llm-messages"): {
                 "id": "llm-messages",
                 "name": "llm-messages",
@@ -552,6 +625,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     assert route_calls["llm-proxy"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["llm-consumer"]
     }
+    assert route_calls["llm-metrics"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["scraper-consumer"]
+    }
     llm_headers = route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]["headers"]["set"]
     assert llm_headers["Authorization"] == "Bearer sk-test"
     assert llm_headers["x-litellm-end-user-id"] == "$consumer_name"
@@ -629,6 +705,9 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
     # prometheus-api likewise — an open metric read is the whole thing the
     # gateway route exists to prevent.
     assert route_calls["prometheus-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["__deny_all__"]
+    }
+    assert route_calls["llm-metrics"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["__deny_all__"]
     }
     # The converter routes ship deny-all by default so they are never callable by
@@ -728,6 +807,9 @@ async def test_lifespan_skips_litellm_routes_when_master_key_missing():
     assert "prometheus-api" in route_ids
     assert "llm-proxy" not in route_ids
     assert "llm-admin" not in route_ids
+    # llm-metrics is the inverse of prometheus-api: its upstream is litellm,
+    # which only exists inside the master-key gate, so it must not be written.
+    assert "llm-metrics" not in route_ids
 
 
 @pytest.mark.asyncio

@@ -444,14 +444,21 @@ def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
     ):
         assert f'apisix_get "routes/{route_id}"' in script
         assert f'route_has_internal_proxy_header "${route_var}" || return 1' in script
-    # prometheus-api carries no internal-proxy header (its upstream is
-    # Prometheus), so it is checked by topology instead — without it, deploys
-    # that boot with provisioning off would never create the route.
-    assert 'apisix_get "routes/prometheus-api"' in script
-    assert (
-        'json_contains_pair "$prometheus_route" "upstream_id" "prometheus" || return 1'
-        in script
-    )
+    # These routes proxy to something other than this app, so they carry no
+    # internal-proxy header and are checked by topology instead — without them,
+    # deploys that boot with provisioning off would never create the route.
+    for route_id, route_var, uri, upstream_id in (
+        ("prometheus-api", "prometheus_route", "/api/prometheus/*", "prometheus"),
+        ("llm-metrics", "llm_metrics_route", "/api/llm/metrics", "litellm"),
+    ):
+        assert f'apisix_get "routes/{route_id}"' in script
+        assert (
+            f'json_contains_pair "${route_var}" "uri" "{uri}" || return 1' in script
+        )
+        assert (
+            f'json_contains_pair "${route_var}" "upstream_id" "{upstream_id}" '
+            "|| return 1" in script
+        )
     for method in ("PUT", "PATCH", "DELETE"):
         assert (
             f'route_allows_method "$query_template_write_route" "{method}" || return 1'

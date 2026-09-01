@@ -161,6 +161,7 @@ async def _preserve_consumer_restriction(
         "nas-api",
         "usages-api",
         "prometheus-api",
+        "llm-metrics",
     }:
         return body
 
@@ -625,6 +626,53 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     )
 
                     logger.info("APISIX LiteLLM routes provisioned successfully")
+
+                    # /api/llm/metrics → LiteLLM's own Prometheus exposition.
+                    # Higher priority than the /api/llm/* catch-all so this exact
+                    # path wins, which is the point: it carves the metrics
+                    # endpoint out of the llm-proxy grant (same mechanism as the
+                    # converter routes below), so a scraper can be granted
+                    # monitoring access without any LLM invocation rights. The
+                    # master key is injected even though current LiteLLM serves
+                    # /metrics unauthenticated — newer releases gate it behind
+                    # bearer auth, and sending it now means an upgrade doesn't
+                    # silently turn every scrape into a 401. No
+                    # x-litellm-end-user-id: a scrape has no consumer semantics.
+                    # Ships deny-all like the routes above so it is never
+                    # callable by an arbitrary key between this PUT and the
+                    # consumer-restriction replay.
+                    await apisix_client.put_resource(
+                        "routes",
+                        "llm-metrics",
+                        await _preserve_consumer_restriction(
+                            "llm-metrics",
+                            {
+                                "name": "llm-metrics",
+                                "desc": "LiteLLM's own Prometheus /metrics exposition via the gateway",
+                                "uri": "/api/llm/metrics",
+                                "methods": ["GET"],
+                                "priority": 10,
+                                "upstream_id": "litellm",
+                                "plugins": {
+                                    "key-auth": {},
+                                    "consumer-restriction": {
+                                        "whitelist": [api_keys.DENY_ALL_CONSUMER]
+                                    },
+                                    "proxy-rewrite": {
+                                        "regex_uri": ["^/api/llm(.*)", "$1"],
+                                        "use_real_request_uri_unsafe": True,
+                                        "headers": {
+                                            "set": {
+                                                "Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}",
+                                            },
+                                        },
+                                    },
+                                },
+                                "status": 1,
+                            },
+                        ),
+                    )
+                    logger.info("APISIX LiteLLM metrics route provisioned successfully")
 
                     # ── LLM endpoint converter ──
                     # Translates Anthropic Messages and OpenAI Responses into the
