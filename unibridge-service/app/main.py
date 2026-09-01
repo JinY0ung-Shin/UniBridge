@@ -160,6 +160,7 @@ async def _preserve_consumer_restriction(
         "llm-responses",
         "nas-api",
         "usages-api",
+        "prometheus-api",
     }:
         return body
 
@@ -503,6 +504,58 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     ),
                 )
                 logger.info("APISIX usages route provisioned successfully")
+
+                # ── Prometheus query API ──
+                # External PromQL access rides the gateway instead of a raw host
+                # port: Prometheus has no auth of its own, so a published :9090
+                # is an open read of every metric. Behind key-auth the same
+                # surface is read-only — the container runs without
+                # --web.enable-admin-api / --web.enable-lifecycle, so there is
+                # nothing to write or reload through it. Ships inline deny-all
+                # like nas-api so the route is never callable by an arbitrary key
+                # between this PUT and the consumer-restriction replay below.
+                await apisix_client.put_resource(
+                    "upstreams",
+                    "prometheus",
+                    {
+                        "name": "prometheus",
+                        "type": "roundrobin",
+                        "scheme": "http",
+                        "nodes": {
+                            getattr(
+                                settings,
+                                "APISIX_PROMETHEUS_NODE",
+                                "prometheus:9090",
+                            ): 1
+                        },
+                    },
+                )
+                await apisix_client.put_resource(
+                    "routes",
+                    "prometheus-api",
+                    await _preserve_consumer_restriction(
+                        "prometheus-api",
+                        {
+                            "name": "prometheus-api",
+                            "desc": "Prometheus HTTP API (PromQL queries, read-only) via the gateway",
+                            "uri": "/api/prometheus/*",
+                            # POST carries form-encoded /api/v1/query bodies —
+                            # the only way to send a query too long for a URL.
+                            "methods": ["GET", "POST"],
+                            "upstream_id": "prometheus",
+                            "plugins": {
+                                "key-auth": {},
+                                "consumer-restriction": {"whitelist": [api_keys.DENY_ALL_CONSUMER]},
+                                "proxy-rewrite": {
+                                    "regex_uri": ["^/api/prometheus(.*)", "$1"],
+                                    "use_real_request_uri_unsafe": True,
+                                },
+                            },
+                            "status": 1,
+                        },
+                    ),
+                )
+                logger.info("APISIX Prometheus route provisioned successfully")
 
                 # ── LiteLLM upstream and routes ──
                 if settings.LITELLM_MASTER_KEY:

@@ -60,7 +60,7 @@ requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
   a 60s in-process cache (`invalidate_permission_cache()` after changes).
 - **APISIX consumer-restriction is preserved** on route updates for fixed route IDs
   (`query-api`, `llm-proxy`, `s3-api`, `llm-messages`, `llm-responses`, `nas-api`,
-  `usages-api`) via `main.py::_preserve_consumer_restriction` — don't clobber it.
+  `usages-api`, `prometheus-api`) via `main.py::_preserve_consumer_restriction` — don't clobber it.
 - **Request routing**: UI nginx → `/_api/*` = unibridge-service, `/api/*` = APISIX gateway.
 - **LiteLLM admin UI = Keycloak SSO, admins only** (`ui_access_mode: admin_only` +
   realm `admin` → `litellm:proxy_admin` composite). `GENERIC_CLIENT_USE_PKCE=true` is

@@ -149,6 +149,7 @@ async def test_lifespan_uses_configured_apisix_upstream_nodes():
                 APISIX_PROVISION_ON_START=True,
                 APISIX_UNIBRIDGE_SERVICE_NODE="unibridge-service-green:8000",
                 APISIX_LLM_CONVERTER_NODE="llm-converter-green:4001",
+                APISIX_PROMETHEUS_NODE="prometheus-alt:9090",
             ),
         ),
         patch("app.services.apisix_client.get_resource", AsyncMock(side_effect=RuntimeError("not found"))),
@@ -175,6 +176,73 @@ async def test_lifespan_uses_configured_apisix_upstream_nodes():
     assert upstream_calls["llm-converter"]["nodes"] == {
         "llm-converter-green:4001": 1
     }
+    assert upstream_calls["prometheus"]["nodes"] == {"prometheus-alt:9090": 1}
+
+
+@pytest.mark.asyncio
+async def test_lifespan_provisions_prometheus_query_route():
+    app = FastAPI()
+    put_resource = AsyncMock()
+
+    with (
+        patch("app.main.validate_settings"),
+        patch("app.main.init_db", new=AsyncMock()),
+        patch("app.main.get_db", side_effect=lambda: _fake_get_db()),
+        patch("app.main.connection_manager.initialize", new=AsyncMock()),
+        patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
+        patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
+        patch("app.main.rate_limiter.update_limits"),
+        patch(
+            "app.main.settings",
+            SimpleNamespace(
+                LITELLM_MASTER_KEY="sk-test",
+                APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
+                APISIX_ADMIN_KEY="admin-secret",
+            ),
+        ),
+        patch("app.services.apisix_client.get_resource", _keyed_get_resource({})),
+        patch("app.services.apisix_client.put_resource", put_resource),
+        patch(
+            "app.services.alert_checker.start_checker",
+            new=AsyncMock(return_value=_DummyTask()),
+        ),
+        patch("app.routers.alerts.set_alert_state"),
+        patch("app.routers.users._kc_admin", None),
+    ):
+        async with lifespan(app):
+            pass
+
+    upstream_calls = {
+        call.args[1]: call.args[2]
+        for call in put_resource.await_args_list
+        if call.args[0] == "upstreams"
+    }
+    route_calls = {
+        call.args[1]: call.args[2]
+        for call in put_resource.await_args_list
+        if call.args[0] == "routes"
+    }
+
+    assert upstream_calls["prometheus"]["scheme"] == "http"
+    assert upstream_calls["prometheus"]["nodes"] == {"prometheus:9090": 1}
+
+    route = route_calls["prometheus-api"]
+    assert route["uri"] == "/api/prometheus/*"
+    assert route["upstream_id"] == "prometheus"
+    # POST is needed for form-encoded /api/v1/query bodies.
+    assert route["methods"] == ["GET", "POST"]
+    assert route["plugins"]["key-auth"] == {}
+    # Ships deny-all so no arbitrary key can read metrics in the window before
+    # the consumer-restriction replay installs the real whitelist.
+    assert route["plugins"]["consumer-restriction"] == {"whitelist": ["__deny_all__"]}
+    assert route["plugins"]["proxy-rewrite"]["regex_uri"] == [
+        "^/api/prometheus(.*)",
+        "$1",
+    ]
+    assert route["plugins"]["proxy-rewrite"]["use_real_request_uri_unsafe"] is True
+    # The upstream is Prometheus, not this app, so the internal-proxy header
+    # must not be injected — it would leak the shared secret to a third party.
+    assert "headers" not in route["plugins"]["proxy-rewrite"]
 
 
 @pytest.mark.asyncio
@@ -364,6 +432,18 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 },
                 "status": 1,
             },
+            ("routes", "prometheus-api"): {
+                "id": "prometheus-api",
+                "name": "prometheus-api",
+                "uri": "/api/prometheus/*",
+                "methods": ["GET", "POST"],
+                "upstream_id": "prometheus",
+                "plugins": {
+                    "key-auth": {},
+                    "consumer-restriction": {"whitelist": ["prometheus-consumer"]},
+                },
+                "status": 1,
+            },
             ("routes", "llm-proxy"): {
                 "id": "llm-proxy",
                 "name": "llm-proxy",
@@ -466,6 +546,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     assert route_calls["usages-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["usages-consumer"]
     }
+    assert route_calls["prometheus-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["prometheus-consumer"]
+    }
     assert route_calls["llm-proxy"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["llm-consumer"]
     }
@@ -541,6 +624,11 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
     }
     # usages-api ships deny-all by default, same as nas-api.
     assert route_calls["usages-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["__deny_all__"]
+    }
+    # prometheus-api likewise — an open metric read is the whole thing the
+    # gateway route exists to prevent.
+    assert route_calls["prometheus-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["__deny_all__"]
     }
     # The converter routes ship deny-all by default so they are never callable by
@@ -635,6 +723,9 @@ async def test_lifespan_skips_litellm_routes_when_master_key_missing():
 
     assert "query-api" in route_ids
     assert "query-template-write-api" in route_ids
+    # Prometheus has nothing to do with LiteLLM: its route sits outside the
+    # master-key gate, so a deployment without LiteLLM still gets it.
+    assert "prometheus-api" in route_ids
     assert "llm-proxy" not in route_ids
     assert "llm-admin" not in route_ids
 

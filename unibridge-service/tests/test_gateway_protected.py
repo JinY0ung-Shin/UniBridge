@@ -757,6 +757,7 @@ class TestSaveRouteUriShadowing:
             ("/api/s3/list", "capture S3 traffic"),
             ("/api/nas/*", "duplicate the NAS namespace"),
             ("/api/usages", "shadow an exact system route"),
+            ("/api/prometheus/api/v1/query", "capture PromQL traffic"),
             ("/api/llm/v1/messages", "shadow the converter route"),
             ("/api/llm/chat/*", "capture LLM traffic (API keys ride along)"),
             ("/api/llm-admin/x", "reach the LiteLLM admin API"),

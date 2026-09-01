@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     APISIX_GATEWAY_ROUTE_CONNECT_TIMEOUT: int = 10
     APISIX_UNIBRIDGE_SERVICE_NODE: str = "unibridge-service:8000"
     APISIX_LLM_CONVERTER_NODE: str = "llm-converter:4001"
+    # Upstream node for the gateway's /api/prometheus/* route — the key-auth'd
+    # external path to the Prometheus HTTP API. Not color-pinned (Prometheus is
+    # shared infra, not part of the blue/green app pair).
+    APISIX_PROMETHEUS_NODE: str = "prometheus:9090"
     PROMETHEUS_URL: str = "http://prometheus:9090"
     # Shared bearer token guarding the internal Alertmanager webhook receiver
     # (POST /_api/internal/alertmanager). Alertmanager posts infra alerts —

@@ -19,6 +19,7 @@ Browser ──HTTPS──> unibridge-ui (nginx)
                                           ├── /api/llm-admin/* → LiteLLM Admin UI/API
                                           ├── /api/s3/*        → S3 connections
                                           ├── /api/nas/*       → Mounted NAS/local files
+                                          ├── /api/prometheus/* → Prometheus HTTP API (PromQL, read-only)
                                           └── Custom upstream services
 
 Keycloak   ── OIDC auth
@@ -141,7 +142,7 @@ details.
 | Keycloak Admin | `https://<HOST_IP>:<KEYCLOAK_PORT>/admin` |
 | API Gateway | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/*` |
 | LiteLLM | `https://<HOST_IP>:<LITELLM_PORT>` (admin UI at `/ui` signs in via UniBridge SSO, admins only) |
-| Prometheus | `http://<HOST_IP>:9090` (no auth — network-exposed by default, re-lock with `PROMETHEUS_BIND=127.0.0.1`) |
+| Prometheus | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/prometheus/*` (API-key auth via gateway; direct `:9090` is localhost-only, `PROMETHEUS_BIND` overrides) |
 | Grafana | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana` (same-origin behind the UI) |
 
 Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`). No human users are seeded into the `apihub` realm by default. After first boot, sign in to the admin console and create the first `admin` user in the `apihub` realm (assign the `admin` realm role), then manage further users from the UI **Users** page.
@@ -243,7 +244,7 @@ The helper authenticates as the Keycloak master admin (the service account lacks
 | 4000 | LiteLLM (HTTPS) | public |
 | 8000 | unibridge-service | localhost only |
 | 9180 | APISIX admin | localhost only |
-| 9090 | Prometheus | public by default (`PROMETHEUS_BIND` overrides; no built-in auth) |
+| 9090 | Prometheus | localhost only (`PROMETHEUS_BIND` overrides; external access via gateway `/api/prometheus/*`) |
 | 3300 | Grafana | localhost only (debug; public access is `/grafana` on the UI port) |
 
 ## Local Development (without Docker)
@@ -315,6 +316,27 @@ Operational defaults in `docker-compose.yml`:
 - Each service has an initial `deploy.resources.limits` CPU/memory cap for Docker Compose v2, plus `mem_limit`/`cpus` fallbacks for older Compose compatibility. Treat these as conservative starting values and tune from `docker stats` on the deploy host.
 - `unibridge-service` and `unibridge-ui` run with `init: true` for PID 1 signal handling and child process reaping.
 - Prometheus scrapes APISIX, LiteLLM, unibridge-service `/metrics`, and Blackbox TCP probes for the Postgres-backed services. Alert rules live under `prometheus/rules/`.
+
+### Prometheus query API through the gateway
+
+Prometheus has no authentication of its own, so its port stays on loopback
+(`PROMETHEUS_BIND`, default `127.0.0.1`) and external PromQL goes through the
+fixed gateway route `prometheus-api` instead — APISIX `key-auth` plus the same
+per-key route grants as every other built-in route (grant the `prometheus-api`
+route to a key on the **API Keys** page). The path after `/api/prometheus` is
+passed through unchanged, so any Prometheus HTTP API endpoint works:
+
+```bash
+curl -H "apikey: $UNIBRIDGE_API_KEY" \
+  "https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/prometheus/api/v1/query?query=up"
+```
+
+The route accepts `GET` and `POST` (the latter for form-encoded `/api/v1/query`
+bodies too long for a URL). Everything reachable through it is read-only: the
+Prometheus container runs without `--web.enable-admin-api` and
+`--web.enable-lifecycle`, so there is no delete-series, snapshot, or reload
+endpoint to call. Note that a key with this route sees **every** metric in the
+stack — there is no per-key metric scoping, unlike the in-app monitoring pages.
 
 ### Grafana dashboards
 

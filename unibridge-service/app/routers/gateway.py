@@ -506,6 +506,7 @@ _SYSTEM_ROUTE_URIS = (
     "/api/s3/*",
     "/api/nas/*",
     "/api/usages",
+    "/api/prometheus/*",
     "/api/llm/*",
     "/api/llm-admin/*",
     "/api/llm/v1/messages",
