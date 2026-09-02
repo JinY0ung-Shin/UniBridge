@@ -616,9 +616,25 @@ class TestRequestConversion:
         body = {
             "model": "m",
             "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"name": "Bash", "description": "", "input_schema": {}}],
             "tool_choice": {"type": "auto"},
         }
         out = anthropic_request_to_openai_body(body)
+        assert out["tool_choice"] == "auto"
+        assert "parallel_tool_calls" not in out
+
+    def test_tool_choice_without_tools_is_dropped(self):
+        """A ``tool_choice`` with no tools to choose from is not forwarded:
+        vLLM/SGLang reject it (and ``parallel_tool_calls``) outright when the
+        request carries no ``tools``."""
+        body = {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
+        }
+        out = anthropic_request_to_openai_body(body)
+        assert "tools" not in out
+        assert "tool_choice" not in out
         assert "parallel_tool_calls" not in out
 
     def test_stop_sequences_renamed(self):

@@ -413,15 +413,21 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
         if converted_tools:
             out["tools"] = converted_tools
 
-    tool_choice = body.get("tool_choice")
-    tc = _convert_tool_choice(tool_choice)
-    if tc is not None:
-        out["tool_choice"] = tc
-    # Anthropic carries the parallelism flag inside ``tool_choice``; OpenAI has
-    # a top-level ``parallel_tool_calls``. Only emit it when explicitly disabled
-    # (OpenAI's default is True), so we don't add noise to every request.
-    if isinstance(tool_choice, dict) and tool_choice.get("disable_parallel_tool_use") is True:
-        out["parallel_tool_calls"] = False
+    # Both knobs below are tool-dependent, so they follow the converted tool
+    # list rather than the inbound body: a client can send a ``tool_choice``
+    # with no (or only unconvertible) tools, and vLLM/SGLang 400 on either
+    # parameter when no ``tools`` are specified.
+    if out.get("tools"):
+        tool_choice = body.get("tool_choice")
+        tc = _convert_tool_choice(tool_choice)
+        if tc is not None:
+            out["tool_choice"] = tc
+        # Anthropic carries the parallelism flag inside ``tool_choice``; OpenAI
+        # has a top-level ``parallel_tool_calls``. Only emit it when explicitly
+        # disabled (OpenAI's default is True), so we don't add noise to every
+        # request.
+        if isinstance(tool_choice, dict) and tool_choice.get("disable_parallel_tool_use") is True:
+            out["parallel_tool_calls"] = False
 
     if "stream_options" in body:
         out["stream_options"] = body["stream_options"]

@@ -84,6 +84,55 @@ def test_request_tools_and_tool_choice_reshape():
     assert out["tool_choice"] == {"type": "function", "function": {"name": "f"}}
 
 
+def test_request_codex_compaction_empty_tools_drops_tool_params():
+    """Codex CLI hard-codes ``tool_choice``/``parallel_tool_calls`` on every
+    request and sends ``tools: []`` on tool-less turns — its automatic context
+    compaction request. vLLM/SGLang 400 on either parameter without tools."""
+    body = {
+        "model": "m",
+        "input": "summarize",
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+    }
+    out = responses_request_to_chat_body(body)
+    assert "tools" not in out
+    assert "tool_choice" not in out
+    assert "parallel_tool_calls" not in out
+
+
+def test_request_codex_compaction_only_builtin_tools_drops_tool_params():
+    """Same shape when every inbound tool is a non-function type the converter
+    drops (``web_search``, ``namespace``): the translated list ends up empty."""
+    body = {
+        "model": "m",
+        "input": "summarize",
+        "tools": [{"type": "web_search", "external_web_access": False}],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+    }
+    out = responses_request_to_chat_body(body)
+    assert "tools" not in out
+    assert "tool_choice" not in out
+    assert "parallel_tool_calls" not in out
+
+
+def test_request_codex_tool_params_kept_with_a_function_tool():
+    body = {
+        "model": "m",
+        "input": "summarize",
+        "tools": [{"type": "function", "name": "shell", "parameters": {"type": "object"}}],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+    }
+    out = responses_request_to_chat_body(body)
+    assert out["tools"] == [
+        {"type": "function", "function": {"name": "shell", "description": "", "parameters": {"type": "object"}}}
+    ]
+    assert out["tool_choice"] == "auto"
+    assert out["parallel_tool_calls"] is False
+
+
 def test_request_prior_messages_prepended_then_followup_instructions():
     prior = [{"role": "system", "content": "orig"}, {"role": "user", "content": "q1"},
              {"role": "assistant", "content": "a1"}]

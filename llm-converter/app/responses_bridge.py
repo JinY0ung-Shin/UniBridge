@@ -339,12 +339,22 @@ def responses_request_to_chat_body(
     if user:
         out["user"] = user
 
+    # Tool-dependent params follow the *translated* tool list, not the client's:
+    # Codex CLI hard-codes ``tool_choice: "auto"`` (plus ``parallel_tool_calls``)
+    # on every request and sends ``tools: []`` when the turn has no tools — its
+    # automatic context compaction request is the common case. An empty list also
+    # results from dropping non-function tool types (``web_search``,
+    # ``namespace``). vLLM/SGLang reject either parameter without tools
+    # ("'tool_choice' is only allowed when 'tools' are specified"), so both are
+    # emitted only alongside a non-empty tool list.
     tools = _tools_to_chat(body.get("tools"))
     if tools:
         out["tools"] = tools
-    tc = _tool_choice_to_chat(body.get("tool_choice"))
-    if tc is not None:
-        out["tool_choice"] = tc
+        tc = _tool_choice_to_chat(body.get("tool_choice"))
+        if tc is not None:
+            out["tool_choice"] = tc
+    else:
+        out.pop("parallel_tool_calls", None)
     rf = _text_format_to_response_format(body.get("text"))
     if rf is not None:
         out["response_format"] = rf

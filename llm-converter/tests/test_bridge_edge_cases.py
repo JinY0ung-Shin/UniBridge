@@ -313,6 +313,9 @@ def test_responses_request_forwards_sampling_metadata_and_user():
             "input": "hi",
             "temperature": 0.1,
             "top_p": 0.8,
+            # ``parallel_tool_calls`` only survives alongside a non-empty tool
+            # list (backends 400 on it otherwise), so the tool is load-bearing.
+            "tools": [{"type": "function", "name": "f", "parameters": {"type": "object"}}],
             "parallel_tool_calls": False,
             "metadata": {"tenant": "a"},
             "user": "user-1",
