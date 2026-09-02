@@ -34,3 +34,17 @@ Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
   after body parsing, before the request builders, so the mid-system model gate and the outbound
   body see the real deployment name. A model actually named `claude/...` upstream is shadowed by
   its own alias — don't register one that way.
+- `CONVERTER_REASONING_EFFORT_LEVELS` (default `low,medium,high`, `*` = passthrough) — the
+  backend's effort vocabulary. Both bridges forward the client's effort verbatim (via
+  `allowed_openai_params`), and vLLM/SGLang 400 on anything else, while Codex's ladder reaches
+  `xhigh`/`max`/`ultra`. `reasoning_effort.py` clamps a ladder value to the nearest listed level
+  (ties → the cheaper one) and drops an unknown name, so `reasoning_effort` is simply omitted.
+- `CONVERTER_LENGTH_AS_COMPLETED` (`auto`|`true`|`false`, default `auto`) — report a
+  `finish_reason=length` truncation as terminal `response.completed` rather than the
+  spec-correct `response.incomplete`. Codex CLI reads `incomplete` as a failed stream and
+  re-sends the entire turn up to `stream_max_retries` (5) times, so one truncation costs six.
+  `auto` detects Codex from the `originator` / `user-agent` headers (APISIX forwards both) and
+  leaves every other client on spec behaviour. Item statuses follow the terminal status.
+- `response.created` / `response.in_progress` omit the `instructions` + `tools` echo (Codex sends
+  ~39 KB of both and reads neither there); terminal events keep the full echo and stay
+  spec-complete.

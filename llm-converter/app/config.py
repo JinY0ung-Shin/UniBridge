@@ -85,6 +85,14 @@ _MID_SYSTEM_POLICIES = frozenset({"user", "hoist", "asis"})
 # over-match and reshape requests that never needed it.
 _DEFAULT_MID_SYSTEM_MODEL_PATTERN = r"qwen3\.\d"
 
+# Effort levels a vLLM/SGLang backend actually accepts. The OpenAI ladder the
+# clients send is wider (see ``reasoning_effort.EFFORT_LADDER``), and an
+# out-of-vocabulary value is a hard 400, not a silent downgrade.
+_DEFAULT_REASONING_EFFORT_LEVELS = frozenset({"low", "medium", "high"})
+
+_TRUTHY = frozenset({"true", "1", "yes", "on"})
+_FALSY = frozenset({"false", "0", "no", "off"})
+
 # Vendor prefix the model listing advertises aliases under. Claude Code discovers
 # models by asking for the list and keeping the ones that look like Claude models,
 # so every model needs a ``claude/``-prefixed twin to be selectable there.
@@ -262,6 +270,56 @@ class _Settings:
         reasoning; the heartbeat stops those intermediaries from dropping the
         socket. <= 0 disables it. Default 15s."""
         return float(_int_env("CONVERTER_SSE_HEARTBEAT_SECONDS", 15))
+
+    @property
+    def reasoning_effort_levels(self) -> frozenset[str] | None:
+        """Effort vocabulary the backend accepts
+        (``CONVERTER_REASONING_EFFORT_LEVELS``, default ``low,medium,high``).
+
+        Both bridges forward the client's effort as chat/completions
+        ``reasoning_effort`` alongside ``allowed_openai_params``, so LiteLLM
+        hands it to the backend verbatim — and vLLM/SGLang answer 400 on
+        anything outside ``low|medium|high``, while Codex's ladder reaches
+        ``xhigh``/``max``/``ultra`` and Claude Code's ``output_config.effort``
+        reaches ``max``. Values outside this set are clamped to the nearest
+        listed level (unknown names are dropped) so a too-ambitious effort
+        degrades instead of failing the request.
+
+        Comma-separated, case-insensitive; unset or blank keeps the default. The
+        literal ``*`` returns ``None``, which restores verbatim forwarding for a
+        backend that understands the full ladder."""
+        raw = os.getenv("CONVERTER_REASONING_EFFORT_LEVELS", "").strip()
+        if not raw:
+            return _DEFAULT_REASONING_EFFORT_LEVELS
+        if raw == "*":
+            return None
+        levels = frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
+        return levels or _DEFAULT_REASONING_EFFORT_LEVELS
+
+    @property
+    def length_as_completed(self) -> str:
+        """Whether a ``finish_reason=length`` truncation is reported as a
+        terminal ``response.completed`` instead of the spec-correct
+        ``response.incomplete`` (``CONVERTER_LENGTH_AS_COMPLETED``).
+
+        Codex CLI reads ``response.incomplete`` as a failed stream and re-sends
+        the entire turn up to ``stream_max_retries`` (default 5) times, so one
+        truncated generation costs six — and every retry truncates again.
+
+        * ``auto`` (default) — completed for Codex clients only, detected from
+          the ``originator`` / ``user-agent`` request headers; every other
+          client keeps the spec behaviour.
+        * ``true`` — completed for every client.
+        * ``false`` — spec behaviour always.
+
+        Unrecognized values fall back to ``auto``, matching
+        ``_int_env``/:attr:`mid_system_policy`."""
+        raw = os.getenv("CONVERTER_LENGTH_AS_COMPLETED", "").strip().lower()
+        if raw in _TRUTHY:
+            return "true"
+        if raw in _FALSY:
+            return "false"
+        return "auto"
 
 
 settings = _Settings()

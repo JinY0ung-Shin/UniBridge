@@ -40,6 +40,7 @@ from app.responses_bridge import (
     chat_stream_to_responses_events,
     new_response_id,
     previous_response_not_found_body,
+    resolve_length_as_completed,
     responses_request_to_chat_body,
 )
 from app.responses_state import conversation_store
@@ -789,6 +790,13 @@ async def responses(request: Request) -> Response:
 
     _strip_model_alias_prefix(parsed)
 
+    # Resolved once per request: the streaming path needs the same answer for
+    # every item status and the terminal event, and header inspection is only
+    # meaningful here (the bridge is HTTP-independent).
+    length_as_completed = resolve_length_as_completed(
+        settings.length_as_completed, request.headers
+    )
+
     is_stream = bool(parsed.get("stream", False))
     store_flag = parsed.get("store", True)
     prev_id = parsed.get("previous_response_id")
@@ -868,7 +876,9 @@ async def responses(request: Request) -> Response:
                         )
                     elif isinstance(chat, dict):
                         resp_obj = chat_response_to_responses_body(
-                            chat, parsed, response_id, emit_reasoning=settings.emit_reasoning
+                            chat, parsed, response_id,
+                            emit_reasoning=settings.emit_reasoning,
+                            length_as_completed=length_as_completed,
                         )
                         content = json.dumps(resp_obj, ensure_ascii=False).encode("utf-8")
                         media_type = "application/json"
@@ -963,6 +973,7 @@ async def responses(request: Request) -> Response:
                 request_body=parsed,
                 holder=holder,
                 emit_reasoning=settings.emit_reasoning,
+                length_as_completed=length_as_completed,
             )
             async for payload in events:
                 sn = payload.get("sequence_number")

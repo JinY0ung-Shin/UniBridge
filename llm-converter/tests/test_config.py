@@ -124,3 +124,46 @@ def test_model_alias_prefix_env_modes(monkeypatch, raw, expected):
         monkeypatch.setenv("CONVERTER_MODEL_ALIAS_PREFIX", raw)
 
     assert config.settings.model_alias_prefix == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, frozenset({"low", "medium", "high"})),  # unset keeps the default
+        ("", frozenset({"low", "medium", "high"})),  # blank too
+        (",  ,", frozenset({"low", "medium", "high"})),  # nothing survives parsing
+        ("*", None),  # passthrough: forward the client's value verbatim
+        ("low, HIGH ,,", frozenset({"low", "high"})),
+    ],
+)
+def test_reasoning_effort_levels_env_modes(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("CONVERTER_REASONING_EFFORT_LEVELS", raising=False)
+    else:
+        monkeypatch.setenv("CONVERTER_REASONING_EFFORT_LEVELS", raw)
+
+    assert config.settings.reasoning_effort_levels == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, "auto"),  # unset keeps header-based detection
+        ("", "auto"),
+        ("auto", "auto"),
+        ("maybe", "auto"),  # unrecognized falls back rather than failing requests
+        ("true", "true"),
+        (" ON ", "true"),
+        ("1", "true"),
+        ("false", "false"),
+        ("off", "false"),
+        ("0", "false"),
+    ],
+)
+def test_length_as_completed_env_modes(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("CONVERTER_LENGTH_AS_COMPLETED", raising=False)
+    else:
+        monkeypatch.setenv("CONVERTER_LENGTH_AS_COMPLETED", raw)
+
+    assert config.settings.length_as_completed == expected

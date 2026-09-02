@@ -104,10 +104,16 @@ cp .env.example .env
 Place cert files in `certs/`:
 
 ```bash
-# Self-signed (dev/test only)
-openssl req -x509 -newkey rsa:2048 -nodes \
+# Self-signed (dev/test only). The SAN and CA:FALSE are required: strict TLS
+# clients such as Codex CLI (rustls) ignore the CN and reject leaf certificates
+# that carry CA:TRUE, which is what `openssl req -x509` emits by default.
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
   -keyout certs/tls.key -out certs/tls.crt \
-  -days 365 -subj "/CN=${HOST_IP}"
+  -subj "/CN=${HOST_IP}" \
+  -addext "subjectAltName=IP:${HOST_IP}" \
+  -addext "basicConstraints=critical,CA:FALSE" \
+  -addext "keyUsage=digitalSignature,keyEncipherment" \
+  -addext "extendedKeyUsage=serverAuth"
 ```
 
 Or copy your real certificates:
@@ -116,6 +122,19 @@ Or copy your real certificates:
 cp /path/to/your/cert.crt certs/tls.crt
 cp /path/to/your/cert.key certs/tls.key
 ```
+
+#### Client trust for self-signed certificates
+
+- If the gateway is reached by a DNS name, add it to the SAN:
+  `-addext "subjectAltName=IP:${HOST_IP},DNS:gateway.example.internal"`.
+- CLI clients on other machines must trust the certificate explicitly. Codex CLI
+  honours `SSL_CERT_FILE`, so run `export SSL_CERT_FILE=/path/to/tls.crt` in the
+  shell that starts Codex — it has no option to skip verification.
+- With a private CA instead, put the full chain (leaf first, then CA) in
+  `certs/tls.crt` so every service that mounts `TLS_CERT_PATH` sees the chain,
+  and point the clients' `SSL_CERT_FILE` at the CA certificate.
+- Browsers also require the SAN once the certificate is trusted; the `CA:FALSE`
+  constraint is what strict non-browser clients such as Codex additionally enforce.
 
 ### 4. Start
 
@@ -159,6 +178,9 @@ Configure Codex in your user-level `~/.codex/config.toml`:
 ```toml
 model_provider = "unibridge"
 model = "<LiteLLM model id>"
+model_supports_reasoning_summaries = true   # required for Codex to send reasoning.effort for unknown model ids
+model_reasoning_effort = "medium"           # low | medium | high; forwarded as reasoning_effort
+show_raw_agent_reasoning = true             # optional: llm-converter streams raw reasoning text, not summaries
 
 [model_providers.unibridge]
 name = "UniBridge"
@@ -178,8 +200,11 @@ Requirements and behavior:
 
 - Put provider/auth settings in user config (`~/.codex/config.toml`), not project `.codex/config.toml`; Codex ignores provider and auth redirects from project config.
 - Grant the API key LLM access. Granting the `llm-proxy` route also whitelists the converter routes it fronts — `llm-messages`, `llm-responses`, and `llm-models` (the model listing; see [Model discovery for Claude Code](#model-discovery-for-claude-code)). It does **not** cover `llm-metrics`, which exposes every key's usage and stays an explicit grant.
-- Use a certificate Codex trusts. For self-signed dev certificates, install the CA locally or use a trusted certificate for the UniBridge UI endpoint.
-- Codex reasoning effort is forwarded as Responses `reasoning.effort`; `llm-converter` maps it to upstream Chat Completions `reasoning_effort`.
+- Use a certificate Codex trusts: it needs a SAN and `CA:FALSE` (see [TLS certificates](#3-tls-certificates)), and for self-signed certificates export `SSL_CERT_FILE=/path/to/tls.crt` (or the CA certificate) in the shell that runs Codex. Codex has no option to skip TLS verification.
+- Codex sends `reasoning.effort` only for models it has metadata for. For LiteLLM model ids Codex does not know, set `model_supports_reasoning_summaries = true` together with `model_reasoning_effort` in `config.toml`; `llm-converter` maps the effort to Chat Completions `reasoning_effort` and attaches `allowed_openai_params` so LiteLLM forwards it to the backend instead of dropping it. Because the value now reaches the backend verbatim, effort levels outside its vocabulary (`xhigh`, `max`) are clamped to the nearest accepted level — vLLM/SGLang reject anything but `low`/`medium`/`high` — configurable via `CONVERTER_REASONING_EFFORT_LEVELS`.
+- Do not name the provider `OpenAI` or `azure` (or use an Azure-style base URL): Codex then switches to remote compaction items the converter does not implement. `name = "UniBridge"` keeps compaction local.
+- With the default `CONVERTER_LENGTH_AS_COMPLETED=auto`, a `finish_reason=length` truncation is reported to Codex as `response.completed` instead of the spec-correct `response.incomplete`: Codex reads `incomplete` as a failed stream and re-sends the whole turn up to `stream_max_retries` (5) times, so one truncated generation costs six. Other clients keep the spec behaviour.
+- Codex's `stream_idle_timeout_ms` (default 300000) counts SSE events, not bytes; the converter's `: ping` heartbeat does not reset it, so raise it for backends with long time-to-first-token.
 - Streaming Responses events include `response.created`, `response.output_text.delta`, function-call argument deltas, terminal `response.completed` / `response.failed`, and monotonic `sequence_number` values.
 
 ### NAS mount

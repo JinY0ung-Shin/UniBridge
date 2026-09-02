@@ -153,6 +153,15 @@ services:
       - CONVERTER_RESPONSE_STORE_MAX_BYTES=${CONVERTER_RESPONSE_STORE_MAX_BYTES:-67108864}
       - CONVERTER_RESPONSE_STORE_MAX_ENTRY_BYTES=${CONVERTER_RESPONSE_STORE_MAX_ENTRY_BYTES:-16777216}
       - CONVERTER_EMIT_REASONING=${CONVERTER_EMIT_REASONING:-true}
+      # Codex CLI treats a `response.incomplete` (finish_reason=length) as a failed
+      # stream and re-sends the whole turn up to stream_max_retries (5) times.
+      # auto = report length as completed only for Codex clients (originator /
+      # user-agent header), true = for every client, false = spec behaviour always.
+      - CONVERTER_LENGTH_AS_COMPLETED=${CONVERTER_LENGTH_AS_COMPLETED:-auto}
+      # Backend reasoning_effort vocabulary. Out-of-range ladder values (xhigh,
+      # max, none, ...) are clamped to the nearest listed level, unknown strings
+      # are dropped; `*` forwards values verbatim.
+      - CONVERTER_REASONING_EFFORT_LEVELS=${CONVERTER_REASONING_EFFORT_LEVELS:-low,medium,high}
       # Opt-in verbose tracing: logs the full incoming /v1/messages body and each
       # decisive upstream chunk (finish_reason + tool_calls) at INFO. Diagnostic
       # only; leave off in normal operation.

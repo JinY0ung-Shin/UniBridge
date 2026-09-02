@@ -5,9 +5,13 @@ from __future__ import annotations
 from typing import AsyncIterator, Iterable, List
 
 from app.responses_bridge import (
+    _input_to_messages,
+    _usage_to_responses,
     assistant_message_from_chat,
     chat_response_to_responses_body,
     chat_stream_to_responses_events,
+    is_codex_client,
+    resolve_length_as_completed,
     responses_request_to_chat_body,
 )
 
@@ -42,6 +46,9 @@ def test_request_reasoning_effort_forwarded():
     body = {"model": "m", "input": "hello", "reasoning": {"effort": "high", "summary": "auto"}}
     out = responses_request_to_chat_body(body)
     assert out["reasoning_effort"] == "high"
+    # LiteLLM drops reasoning_effort for models outside its gpt-5/o-series name
+    # map unless the request marks it allowed.
+    assert out["allowed_openai_params"] == ["reasoning_effort"]
     assert "reasoning" not in out
 
 
@@ -258,6 +265,18 @@ def test_response_length_finish_is_incomplete():
     assert out["incomplete_details"] == {"reason": "max_output_tokens"}
 
 
+def test_response_length_finish_reported_as_completed_when_enabled():
+    chat = {"model": "m", "choices": [{"message": {"content": "partial"}, "finish_reason": "length"}]}
+    out = chat_response_to_responses_body(
+        chat, {"model": "m"}, "resp_1", length_as_completed=True
+    )
+    assert out["status"] == "completed"
+    assert out["incomplete_details"] is None
+    # The item status has to agree with the terminal status, or the client sees
+    # a completed response holding an incomplete message.
+    assert out["output"][0]["status"] == "completed"
+
+
 def test_assistant_message_from_chat():
     msg = {"role": "assistant", "content": "hi", "tool_calls": [{"id": "c", "type": "function",
                                                                   "function": {"name": "f", "arguments": "{}"}}]}
@@ -270,12 +289,12 @@ def test_assistant_message_from_chat():
 # ---------------------------------------------------------------------------
 
 
-async def _run_stream(chunks, request_body=None):
+async def _run_stream(chunks, request_body=None, *, length_as_completed=False):
     holder: dict = {}
     events = await _collect(
         chat_stream_to_responses_events(
             _as_async(chunks), response_id="resp_S", request_body=request_body or {"model": "m"},
-            holder=holder, emit_reasoning=True,
+            holder=holder, emit_reasoning=True, length_as_completed=length_as_completed,
         )
     )
     return events, holder
@@ -414,6 +433,19 @@ async def test_stream_length_finish_is_incomplete():
     # The truncated item also carries incomplete status, not completed.
     assert final["output"][0]["status"] == "incomplete"
     assert holder["status"] == "incomplete"
+
+
+async def test_stream_length_finish_reported_as_completed_when_enabled():
+    chunks = [
+        {"choices": [{"delta": {"content": "partial"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "length"}]},
+    ]
+    events, holder = await _run_stream(chunks, length_as_completed=True)
+    assert events[-1]["type"] == "response.completed"
+    final = events[-1]["response"]
+    assert final["incomplete_details"] is None
+    assert final["output"][0]["status"] == "completed"
+    assert holder["status"] == "completed"
 
 
 async def test_stream_refusal_emitted_as_refusal_events():
@@ -702,3 +734,235 @@ async def test_stream_index_reuse_then_disconnect_persists_each_call_once():
 
     ids = [tc["id"] for tc in holder.get("assistant_message", {}).get("tool_calls", [])]
     assert ids == ["call_a", "call_b"]  # no duplicate call_b
+
+
+# ---------------------------------------------------------------------------
+# Regression: defects found in the 2026-09 Codex CLI conformance run
+# ---------------------------------------------------------------------------
+
+_OMITTED_1 = "[1 non-text tool output part(s) omitted: tool results reach this model as text only]"
+
+
+def test_usage_null_counters_are_coerced_to_int_zero():
+    # Codex CLI deserializes the usage counters as required i64; a null from an
+    # OpenAI-compatible upstream would fail the whole turn with
+    # "invalid type: null, expected i64".
+    usage = _usage_to_responses(
+        {
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "total_tokens": None,
+            "prompt_tokens_details": {"cached_tokens": None},
+            "completion_tokens_details": None,
+        }
+    )
+    assert usage == {
+        "input_tokens": 0,
+        "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens": 0,
+        "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": 0,
+    }
+    for value in (
+        usage["input_tokens"],
+        usage["input_tokens_details"]["cached_tokens"],
+        usage["output_tokens"],
+        usage["output_tokens_details"]["reasoning_tokens"],
+        usage["total_tokens"],
+    ):
+        assert isinstance(value, int) and not isinstance(value, bool)
+
+
+def test_usage_real_counters_map_one_to_one():
+    assert _usage_to_responses(
+        {
+            "prompt_tokens": 19,
+            "completion_tokens": 10,
+            "total_tokens": 29,
+            "prompt_tokens_details": {"cached_tokens": 7},
+            "completion_tokens_details": {"reasoning_tokens": 4},
+        }
+    ) == {
+        "input_tokens": 19,
+        "input_tokens_details": {"cached_tokens": 7},
+        "output_tokens": 10,
+        "output_tokens_details": {"reasoning_tokens": 4},
+        "total_tokens": 29,
+    }
+
+
+def test_usage_non_dict_is_none():
+    assert _usage_to_responses(None) is None
+    assert _usage_to_responses("19") is None
+
+
+async def test_stream_null_usage_counter_reaches_client_as_int_zero():
+    chunks = [
+        {"choices": [{"delta": {"content": "hi"}}]},
+        {
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": None, "completion_tokens": 5, "total_tokens": None},
+        },
+    ]
+    events, _ = await _run_stream(chunks)
+    assert events[-1]["type"] == "response.completed"
+    usage = events[-1]["response"]["usage"]
+    assert usage["input_tokens"] == 0
+    assert isinstance(usage["input_tokens"], int)
+    assert usage["output_tokens"] == 5
+    assert usage["total_tokens"] == 0
+
+
+def test_request_reasoning_effort_carries_allowed_openai_params():
+    out = responses_request_to_chat_body({"model": "m", "input": "hi", "reasoning": {"effort": "high"}})
+    assert out["reasoning_effort"] == "high"
+    assert out["allowed_openai_params"] == ["reasoning_effort"]
+
+
+def test_request_without_reasoning_omits_both_keys():
+    out = responses_request_to_chat_body({"model": "m", "input": "hi"})
+    assert "reasoning_effort" not in out
+    assert "allowed_openai_params" not in out
+    # An effort-less reasoning object must not smuggle either key in either.
+    for reasoning in ({}, {"summary": "auto"}, {"effort": None}, {"effort": ""}, "high"):
+        out = responses_request_to_chat_body({"model": "m", "input": "hi", "reasoning": reasoning})
+        assert "reasoning_effort" not in out, f"failed for {reasoning!r}"
+        assert "allowed_openai_params" not in out, f"failed for {reasoning!r}"
+
+
+def test_request_function_call_output_image_part_leaves_placeholder():
+    # Codex's view_image tool returns an input_image data URL as the tool
+    # result. A chat role:"tool" message is text-only, so the part cannot be
+    # forwarded — the model must at least be told something was dropped.
+    messages = _input_to_messages(
+        [
+            {
+                "type": "function_call_output",
+                "call_id": "c1",
+                "output": [
+                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA", "detail": "high"}
+                ],
+            }
+        ]
+    )
+    assert messages == [{"role": "tool", "tool_call_id": "c1", "content": _OMITTED_1}]
+
+
+def test_request_function_call_output_text_plus_image_keeps_both():
+    out = responses_request_to_chat_body(
+        {
+            "model": "m",
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": "c1",
+                    "output": [
+                        {"type": "output_text", "text": "ok"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,AAAA", "detail": "high"},
+                    ],
+                }
+            ],
+        }
+    )
+    assert out["messages"][0] == {
+        "role": "tool",
+        "tool_call_id": "c1",
+        "content": f"ok\n{_OMITTED_1}",
+    }
+
+
+def test_request_function_call_output_counts_every_non_text_part():
+    messages = _input_to_messages(
+        [
+            {
+                "type": "function_call_output",
+                "call_id": "c1",
+                "output": [
+                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                    {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}},
+                    {"type": "encrypted_content", "data": "zzz"},
+                    "not-a-dict",  # non-dict parts are skipped, not counted
+                ],
+            }
+        ]
+    )
+    assert messages[0]["content"] == (
+        "[3 non-text tool output part(s) omitted: tool results reach this model as text only]"
+    )
+
+
+# ---------------------------------------------------------------------------
+# finish_reason=length reporting mode + Codex client detection
+# ---------------------------------------------------------------------------
+
+
+def test_is_codex_client_recognizes_both_headers():
+    assert is_codex_client({"originator": "codex_exec"}) is True
+    assert is_codex_client({"originator": "codex_vscode"}) is True
+    assert is_codex_client({"user-agent": "codex_cli_rs/0.144.3 (Ubuntu)"}) is True
+    # Case and surrounding whitespace are the client's business, not ours.
+    assert is_codex_client({"originator": " Codex_CLI_RS "}) is True
+
+
+def test_is_codex_client_rejects_other_clients():
+    assert is_codex_client({}) is False
+    assert is_codex_client({"user-agent": "python-httpx/0.28"}) is False
+    # A non-str value (or no headers object at all) must not raise.
+    assert is_codex_client({"originator": None}) is False
+    assert is_codex_client(None) is False
+
+
+def test_resolve_length_as_completed_modes():
+    codex = {"originator": "codex_exec"}
+    other = {"user-agent": "python-httpx/0.28"}
+    # auto -> per-client; true/false -> unconditional.
+    assert resolve_length_as_completed("auto", codex) is True
+    assert resolve_length_as_completed("auto", other) is False
+    assert resolve_length_as_completed("true", other) is True
+    assert resolve_length_as_completed("false", codex) is False
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle event size
+# ---------------------------------------------------------------------------
+
+
+async def test_opening_lifecycle_events_omit_the_request_echo():
+    tools = [{"type": "function", "name": "shell", "parameters": {"type": "object"}}]
+    chunks = [
+        {"choices": [{"delta": {"content": "hi"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    events, _ = await _run_stream(
+        chunks, {"model": "m", "instructions": "SYS", "tools": tools}
+    )
+    by_type = {e["type"]: e for e in events if "response" in e}
+    # Codex sends tens of KB of instructions + tools and reads neither field
+    # from the opening events, so they carry an empty echo.
+    for etype in ("response.created", "response.in_progress"):
+        assert by_type[etype]["response"]["tools"] == []
+        assert by_type[etype]["response"]["instructions"] is None
+    # The terminal event stays spec-complete.
+    terminal = by_type["response.completed"]["response"]
+    assert terminal["tools"] == tools
+    assert terminal["instructions"] == "SYS"
+
+
+# ---------------------------------------------------------------------------
+# Request: reasoning-effort clamp
+# ---------------------------------------------------------------------------
+
+
+def test_request_reasoning_effort_above_the_backend_vocabulary_is_clamped():
+    """Codex's ladder reaches xhigh/max; the backend sees the value verbatim."""
+    out = responses_request_to_chat_body({"model": "m", "input": "hi", "reasoning": {"effort": "xhigh"}})
+    assert out["reasoning_effort"] == "high"
+    assert out["allowed_openai_params"] == ["reasoning_effort"]
+
+
+def test_request_reasoning_effort_off_the_ladder_is_dropped_entirely():
+    out = responses_request_to_chat_body(
+        {"model": "m", "input": "hi", "reasoning": {"effort": "disabled"}}
+    )
+    assert "reasoning_effort" not in out
+    assert "allowed_openai_params" not in out

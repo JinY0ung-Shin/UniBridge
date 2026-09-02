@@ -271,7 +271,7 @@ def test_streaming_fallback_persists_complete_holder_and_supersedes_parent(monke
     conversation_store.put("resp_parent", [{"role": "user", "content": "old"}])
     monkeypatch.setattr(converter_main, "new_response_id", lambda: "resp_fallback")
 
-    async def fake_bridge(chunks, *, response_id, request_body, holder, emit_reasoning):
+    async def fake_bridge(chunks, *, response_id, request_body, holder, **_kwargs):
         holder["assistant_message"] = {"role": "assistant", "content": "partial"}
         yield {"type": "response.in_progress", "sequence_number": 0}
 

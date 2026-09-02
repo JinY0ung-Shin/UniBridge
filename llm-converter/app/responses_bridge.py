@@ -23,6 +23,7 @@ import uuid
 from typing import Any, AsyncIterator, Optional
 
 from .config import settings
+from .reasoning_effort import clamp_reasoning_effort
 from .system_norm import normalize_system_messages
 
 # ---------------------------------------------------------------------------
@@ -170,12 +171,27 @@ def _input_to_messages(input_data: Any) -> list[dict]:
             out = item.get("output", "")
             if isinstance(out, list):
                 # Responses allows output as an array of content parts; collapse
-                # the text parts rather than serializing the raw structure.
-                out = "".join(
-                    p.get("text", "")
-                    for p in out
-                    if isinstance(p, dict) and p.get("type") in ("output_text", "text", "input_text")
-                )
+                # the text parts rather than serializing the raw structure. A
+                # chat ``role:"tool"`` message is text-only, so non-text parts
+                # (Codex's view_image returns an ``input_image`` data URL) cannot
+                # be forwarded at all — count them and leave a placeholder line,
+                # or the model sees an empty tool result with no explanation.
+                texts: list[str] = []
+                omitted = 0
+                for p in out:
+                    if not isinstance(p, dict):
+                        continue
+                    if p.get("type") in ("output_text", "text", "input_text"):
+                        texts.append(p.get("text", ""))
+                    else:
+                        omitted += 1
+                out = "".join(texts)
+                if omitted:
+                    placeholder = (
+                        f"[{omitted} non-text tool output part(s) omitted: "
+                        "tool results reach this model as text only]"
+                    )
+                    out = f"{out}\n{placeholder}" if out else placeholder
             elif not isinstance(out, str):
                 out = json.dumps(out, ensure_ascii=False)
             messages.append(
@@ -305,7 +321,19 @@ def responses_request_to_chat_body(
 
     reasoning = body.get("reasoning")
     if isinstance(reasoning, dict) and reasoning.get("effort"):
-        out["reasoning_effort"] = reasoning["effort"]
+        # LiteLLM only treats ``reasoning_effort`` as supported for models it
+        # name-matches as reasoning models (gpt-5/o-series); everything else
+        # silently drops it under ``drop_params: true`` and 400s without it.
+        # ``allowed_openai_params`` is LiteLLM's per-request escape hatch: it
+        # marks the param supported and forwards it verbatim to the backend.
+        # Because it now arrives verbatim, the value is first clamped to the
+        # backend's vocabulary — Codex's ladder reaches ``xhigh``/``max``, which
+        # vLLM/SGLang reject outright.
+        # Kept identical to the Anthropic bridge (``messages_bridge.py``).
+        effort = clamp_reasoning_effort(reasoning.get("effort"), settings.reasoning_effort_levels)
+        if effort is not None:
+            out["reasoning_effort"] = effort
+            out["allowed_openai_params"] = ["reasoning_effort"]
 
     user = body.get("user") or body.get("safety_identifier")
     if user:
@@ -335,27 +363,103 @@ def responses_request_to_chat_body(
 # ---------------------------------------------------------------------------
 
 
+def _as_int(value: Any, default: int = 0) -> int:
+    """Coerce an upstream token counter to int; null/garbage -> default."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        try:
+            return int(value)
+        except (ValueError, OverflowError):  # NaN / inf
+            return default
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
 def _usage_to_responses(usage: Any) -> Optional[dict]:
+    """Map chat-completions ``usage`` to the Responses usage shape.
+
+    Every emitted counter goes through :func:`_as_int`: strict clients
+    deserialize these as *required* integers — Codex CLI reads
+    ``input_tokens``/``output_tokens``/``total_tokens`` always, and
+    ``cached_tokens``/``reasoning_tokens`` whenever their ``*_details`` object
+    is present — so an upstream ``null`` (some OpenAI-compatible backends emit
+    one) kills the whole turn with "invalid type: null, expected i64" after any
+    tool call has already executed. Both the non-streaming path
+    (:func:`chat_response_to_responses_body`) and the streaming path
+    (:func:`chat_stream_to_responses_events`) build usage here, so this is the
+    single place the coercion is needed.
+    """
     if not isinstance(usage, dict):
         return None
     pd = usage.get("prompt_tokens_details") or {}
     cd = usage.get("completion_tokens_details") or {}
     return {
-        "input_tokens": usage.get("prompt_tokens", 0),
-        "input_tokens_details": {"cached_tokens": pd.get("cached_tokens", 0) if isinstance(pd, dict) else 0},
-        "output_tokens": usage.get("completion_tokens", 0),
-        "output_tokens_details": {"reasoning_tokens": cd.get("reasoning_tokens", 0) if isinstance(cd, dict) else 0},
-        "total_tokens": usage.get("total_tokens", 0),
+        "input_tokens": _as_int(usage.get("prompt_tokens")),
+        "input_tokens_details": {
+            "cached_tokens": _as_int(pd.get("cached_tokens")) if isinstance(pd, dict) else 0
+        },
+        "output_tokens": _as_int(usage.get("completion_tokens")),
+        "output_tokens_details": {
+            "reasoning_tokens": _as_int(cd.get("reasoning_tokens")) if isinstance(cd, dict) else 0
+        },
+        "total_tokens": _as_int(usage.get("total_tokens")),
     }
 
 
-def _finish_to_status(finish: Any) -> tuple[str, Optional[dict]]:
+def _finish_to_status(finish: Any, *, length_as_completed: bool = False) -> tuple[str, Optional[dict]]:
     if finish == "length":
+        if length_as_completed:
+            # Some clients treat the spec-correct terminal ``response.incomplete``
+            # as a stream failure and retry the whole turn (see
+            # :func:`resolve_length_as_completed`); report the truncation as a
+            # normal completion for those.
+            return "completed", None
         return "incomplete", {"reason": "max_output_tokens"}
     if finish == "content_filter":
         return "incomplete", {"reason": "content_filter"}
     # stop / tool_calls / function_call / None → completed
     return "completed", None
+
+
+def _header(headers: Any, name: str) -> str:
+    """Case-insensitive header lookup tolerant of a missing/odd value.
+
+    ``headers`` is a Starlette ``Headers`` (already case-insensitive) or a plain
+    dict with lowercase keys, so tests can pass either.
+    """
+    try:
+        value = headers.get(name)
+    except AttributeError:
+        return ""
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
+def is_codex_client(headers: Any) -> bool:
+    """True when the request comes from Codex CLI.
+
+    Codex stamps every request with ``originator`` (``codex_exec`` /
+    ``codex_cli_rs`` / ``codex_vscode``) and a ``codex_cli_rs/<version>``
+    user-agent; APISIX forwards both to the converter unchanged.
+    """
+    return _header(headers, "originator").startswith("codex") or _header(
+        headers, "user-agent"
+    ).startswith("codex_")
+
+
+def resolve_length_as_completed(mode: str, headers: Any) -> bool:
+    """Resolve ``CONVERTER_LENGTH_AS_COMPLETED`` against the request headers."""
+    if mode == "true":
+        return True
+    if mode == "false":
+        return False
+    return is_codex_client(headers)
 
 
 def _build_response_object(
@@ -369,8 +473,18 @@ def _build_response_object(
     usage: Optional[dict],
     incomplete_details: Optional[dict] = None,
     error: Optional[dict] = None,
+    echo_request: bool = True,
 ) -> dict:
-    """Assemble a Responses ``response`` object, echoing inbound request params."""
+    """Assemble a Responses ``response`` object, echoing inbound request params.
+
+    ``echo_request=False`` blanks the two unbounded echoes (``instructions`` and
+    ``tools``) and is used for the non-terminal lifecycle events only: Codex
+    sends ~21 KB of instructions plus ~18 KB of tools, so echoing them into
+    ``response.created`` and ``response.in_progress`` triples the SSE volume of
+    a turn whose real payload is a few hundred bytes, and the client reads
+    neither field there. Terminal events keep the full echo and stay
+    spec-complete.
+    """
     return {
         "id": response_id,
         "object": "response",
@@ -378,7 +492,7 @@ def _build_response_object(
         "status": status,
         "error": error,
         "incomplete_details": incomplete_details,
-        "instructions": request_body.get("instructions"),
+        "instructions": request_body.get("instructions") if echo_request else None,
         "max_output_tokens": request_body.get("max_output_tokens"),
         "model": model,
         "output": output,
@@ -389,7 +503,7 @@ def _build_response_object(
         "temperature": request_body.get("temperature"),
         "text": request_body.get("text") or {"format": {"type": "text"}},
         "tool_choice": request_body.get("tool_choice", "auto"),
-        "tools": request_body.get("tools", []) or [],
+        "tools": (request_body.get("tools", []) or []) if echo_request else [],
         "top_p": request_body.get("top_p"),
         "truncation": request_body.get("truncation", "disabled"),
         "usage": usage,
@@ -423,13 +537,14 @@ def chat_response_to_responses_body(
     response_id: str,
     *,
     emit_reasoning: bool = True,
+    length_as_completed: bool = False,
 ) -> dict:
     """Translate a non-streaming chat completion into a Responses object."""
     choices = chat.get("choices") or [{}]
     choice = choices[0] if choices else {}
     message = choice.get("message") or {}
     finish = choice.get("finish_reason")
-    status, incomplete = _finish_to_status(finish)
+    status, incomplete = _finish_to_status(finish, length_as_completed=length_as_completed)
     item_status = "incomplete" if status == "incomplete" else "completed"
 
     output: list[dict] = []
@@ -550,6 +665,7 @@ async def chat_stream_to_responses_events(
     request_body: dict,
     holder: dict,
     emit_reasoning: bool = True,
+    length_as_completed: bool = False,
 ) -> AsyncIterator[dict]:
     """Convert parsed chat-completions SSE chunks into Responses SSE event dicts.
 
@@ -574,6 +690,9 @@ async def chat_stream_to_responses_events(
                     request_body=request_body, model=model, created_at=created_at,
                     response_id=response_id, status=status, output=output, usage=usage,
                     incomplete_details=incomplete,
+                    # The opening events repeat the request echo for no reader —
+                    # see :func:`_build_response_object`. Terminal events keep it.
+                    echo_request=etype not in ("response.created", "response.in_progress"),
                 ),
             }
         )
@@ -581,7 +700,8 @@ async def chat_stream_to_responses_events(
     def item_status() -> str:
         # An item still open when the stream truncates inherits the truncation
         # status; items closed earlier (because a new item started) are complete.
-        return "incomplete" if _finish_to_status(s.finish)[0] == "incomplete" else "completed"
+        truncated = _finish_to_status(s.finish, length_as_completed=length_as_completed)[0]
+        return "incomplete" if truncated == "incomplete" else "completed"
 
     def close_reasoning() -> list[dict]:
         if s.reasoning is None:
@@ -882,7 +1002,7 @@ async def chat_stream_to_responses_events(
                 yield e
 
         final_output = [it for _, it in sorted(s.output, key=lambda x: x[0])]
-        status, incomplete = _finish_to_status(s.finish)
+        status, incomplete = _finish_to_status(s.finish, length_as_completed=length_as_completed)
         # Populate the holder BEFORE the terminal event so the route can persist
         # the transcript before the client (which now has the response id) can
         # fire a follow-up that chains off it.

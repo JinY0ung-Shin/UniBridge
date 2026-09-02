@@ -315,3 +315,43 @@ def test_streaming_strips_upstream_cache_headers_so_route_values_win():
     assert resp.status_code == 200
     assert resp.headers["cache-control"] == "no-cache"
     assert resp.headers["x-accel-buffering"] == "no"
+
+
+@pytest.mark.parametrize(
+    ("env", "headers", "expected"),
+    [
+        # auto (default): Codex gets a completed terminal event, because it
+        # treats response.incomplete as a failed stream and re-sends the whole
+        # turn up to stream_max_retries times.
+        (None, {"originator": "codex_exec"}, "response.completed"),
+        # Every other client keeps the spec behaviour.
+        (None, {}, "response.incomplete"),
+        # An explicit false is spec behaviour even for Codex.
+        ("false", {"originator": "codex_exec"}, "response.incomplete"),
+        # An explicit true applies to every client.
+        ("true", {}, "response.completed"),
+    ],
+)
+def test_streaming_length_finish_reporting_mode(monkeypatch, env, headers, expected):
+    if env is None:
+        monkeypatch.delenv("CONVERTER_LENGTH_AS_COMPLETED", raising=False)
+    else:
+        monkeypatch.setenv("CONVERTER_LENGTH_AS_COMPLETED", env)
+
+    sse = (
+        "data: " + json.dumps({"choices": [{"delta": {"content": "partial"}}]}) + "\n\n"
+        "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "length"}]}) + "\n\n"
+        "data: [DONE]\n\n"
+    ).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+
+    client = TestClient(_make_app(handler))
+    resp = client.post(
+        "/v1/responses", headers=headers, json={"model": "m", "stream": True, "input": "hi"}
+    )
+    assert resp.status_code == 200
+
+    events = _parse_sse(resp.text)
+    assert events[-1]["type"] == expected

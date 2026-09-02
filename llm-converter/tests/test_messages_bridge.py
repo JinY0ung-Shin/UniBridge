@@ -499,6 +499,28 @@ class TestRequestConversion:
             assert "reasoning_effort" not in out, f"failed for {oc!r}"
             assert "allowed_openai_params" not in out, f"failed for {oc!r}"
 
+    def test_output_config_effort_above_the_backend_vocabulary_is_clamped(self):
+        """Claude Code's ladder reaches ``max``/``xhigh``; the value now reaches
+        the backend verbatim, and vLLM/SGLang 400 on anything but low|medium|high."""
+        body = {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "output_config": {"effort": "xhigh"},
+        }
+        out = anthropic_request_to_openai_body(body)
+        assert out["reasoning_effort"] == "high"
+        assert out["allowed_openai_params"] == ["reasoning_effort"]
+
+    def test_output_config_effort_off_the_ladder_is_dropped_entirely(self):
+        body = {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "output_config": {"effort": "disabled"},
+        }
+        out = anthropic_request_to_openai_body(body)
+        assert "reasoning_effort" not in out
+        assert "allowed_openai_params" not in out
+
     def test_output_config_format_becomes_response_format(self):
         """Anthropic ``output_config.format`` (json_schema) maps to OpenAI
         ``response_format`` with the schema nested under ``json_schema``."""

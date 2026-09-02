@@ -40,6 +40,7 @@ import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .config import settings
+from .reasoning_effort import clamp_reasoning_effort
 from .system_norm import normalize_system_messages
 
 
@@ -332,14 +333,20 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
     output_config = body.get("output_config")
     if isinstance(output_config, dict):
         if output_config.get("effort"):
-            out["reasoning_effort"] = output_config["effort"]
             # LiteLLM only treats ``reasoning_effort`` as supported for models
             # it name-matches as reasoning models (gpt-5/o-series); everything
             # else silently drops it under ``drop_params: true`` and 400s
             # without it. ``allowed_openai_params`` is LiteLLM's per-request
             # escape hatch: it marks the param supported and forwards it
-            # verbatim to the backend.
-            out["allowed_openai_params"] = ["reasoning_effort"]
+            # verbatim to the backend. Verbatim is also why the value is
+            # clamped first: Claude Code's effort ladder reaches ``max``, which
+            # a vLLM/SGLang backend rejects outright.
+            effort = clamp_reasoning_effort(
+                output_config.get("effort"), settings.reasoning_effort_levels
+            )
+            if effort is not None:
+                out["reasoning_effort"] = effort
+                out["allowed_openai_params"] = ["reasoning_effort"]
         rf = _output_format_to_response_format(output_config.get("format"))
         if rf is not None:
             out["response_format"] = rf
