@@ -45,6 +45,15 @@ Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
   re-sends the entire turn up to `stream_max_retries` (5) times, so one truncation costs six.
   `auto` detects Codex from the `originator` / `user-agent` headers (APISIX forwards both) and
   leaves every other client on spec behaviour. Item statuses follow the terminal status.
+- `CONVERTER_FLATTEN_NAMESPACE_TOOLS` (default `true`) — Codex bundles its client-side tools
+  (`multi_agent_v1` sub-agents: spawn/send_input/wait/close/resume, and `image_gen`) inside a
+  Responses `namespace` tool that chat/completions can't represent, so unflattened they're dropped
+  and the model reports them missing. When on, `/v1/responses` flattens each namespace's inner
+  functions to top-level chat functions on the request and re-stamps the originating `namespace`
+  on the returned `function_call` items — Codex routes a call by `{namespace, name}` and a chat
+  tool call carries only `function.name` — so Codex sub-agents / `image_gen` are callable through
+  the gateway. `false` restores the drop. `/v1/responses` only (Anthropic clients don't send
+  namespace tools); the persisted chain transcript stays name-only.
 - `response.created` / `response.in_progress` omit the `instructions` + `tools` echo (Codex sends
   ~39 KB of both and reads neither there); terminal events keep the full echo and stay
   spec-complete.

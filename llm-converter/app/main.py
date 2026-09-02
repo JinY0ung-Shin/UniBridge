@@ -38,6 +38,7 @@ from app.responses_bridge import (
     assistant_message_from_chat,
     chat_response_to_responses_body,
     chat_stream_to_responses_events,
+    namespace_map_from_tools,
     new_response_id,
     previous_response_not_found_body,
     resolve_length_as_completed,
@@ -797,6 +798,13 @@ async def responses(request: Request) -> Response:
         settings.length_as_completed, request.headers
     )
 
+    # Codex bundles its client-side tools (multi_agent_v1 sub-agents, image_gen)
+    # in a Responses ``namespace`` tool the request path flattens to top-level
+    # chat functions. This maps each flattened function back to its namespace so
+    # the response paths can re-stamp it onto returned calls for Codex to route.
+    # Built from the ORIGINAL request tools (the chat body no longer has them).
+    namespace_map = namespace_map_from_tools(parsed.get("tools"))
+
     is_stream = bool(parsed.get("stream", False))
     store_flag = parsed.get("store", True)
     prev_id = parsed.get("previous_response_id")
@@ -879,6 +887,7 @@ async def responses(request: Request) -> Response:
                             chat, parsed, response_id,
                             emit_reasoning=settings.emit_reasoning,
                             length_as_completed=length_as_completed,
+                            namespace_map=namespace_map,
                         )
                         content = json.dumps(resp_obj, ensure_ascii=False).encode("utf-8")
                         media_type = "application/json"
@@ -974,6 +983,7 @@ async def responses(request: Request) -> Response:
                 holder=holder,
                 emit_reasoning=settings.emit_reasoning,
                 length_as_completed=length_as_completed,
+                namespace_map=namespace_map,
             )
             async for payload in events:
                 sn = payload.get("sequence_number")

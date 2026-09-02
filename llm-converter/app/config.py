@@ -321,5 +321,30 @@ class _Settings:
             return "false"
         return "auto"
 
+    @property
+    def flatten_namespace_tools(self) -> bool:
+        """Whether to flatten a Responses ``namespace`` tool's inner functions
+        into top-level chat/completions functions
+        (``CONVERTER_FLATTEN_NAMESPACE_TOOLS``, default true).
+
+        Codex CLI bundles its client-side tools — the ``multi_agent_v1``
+        sub-agent controls (spawn_agent / send_input / wait_agent / close_agent /
+        resume_agent) and ``image_gen`` — inside a Responses ``namespace`` tool, a
+        container shape chat/completions has no way to represent. Left
+        unflattened the whole namespace is dropped, its functions never reach the
+        backend, and the model reports the tools missing.
+
+        When true the converter flattens each namespace's inner functions to
+        top-level chat functions on the request and re-stamps the originating
+        ``namespace`` onto the ``function_call`` items it emits on the response —
+        Codex routes a returned call by ``{namespace, name}`` (a chat/completions
+        tool call carries only ``function.name``), so without the re-stamp it
+        cannot dispatch the call back to the client-side tool. When false the old
+        drop behaviour is restored.
+
+        Missing, empty, or unrecognized values fall back to the default, matching
+        ``_bool_env``."""
+        return _bool_env("CONVERTER_FLATTEN_NAMESPACE_TOOLS", True)
+
 
 settings = _Settings()

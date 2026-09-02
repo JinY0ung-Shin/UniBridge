@@ -201,6 +201,46 @@ def _input_to_messages(input_data: Any) -> list[dict]:
     return messages
 
 
+def _function_tool_to_chat(t: Any) -> Optional[dict]:
+    """Translate one Responses function tool to a chat ``{type, function}`` dict.
+
+    Returns ``None`` for a non-dict entry or one with no name. Accepts both the
+    Responses internally-tagged flat form (``{type, name, ...}``) and the
+    already-nested chat form (``{type, function: {...}}``), and preserves an
+    explicit ``strict`` flag from either. Used for top-level function tools and
+    for the inner functions of a flattened ``namespace`` tool, which share this
+    exact shape.
+    """
+    if not isinstance(t, dict):
+        return None
+    # Responses uses internally-tagged ({type, name, ...}); accept the
+    # already-nested chat form too.
+    if isinstance(t.get("function"), dict):
+        fn = t["function"]
+    else:
+        fn = {
+            "name": t.get("name"),
+            "description": t.get("description", ""),
+            "parameters": t.get("parameters", {}),
+        }
+    if not fn.get("name"):
+        return None
+    chat_fn: dict[str, Any] = {
+        "name": fn.get("name"),
+        "description": fn.get("description", "") or "",
+        "parameters": fn.get("parameters", {}) or {},
+    }
+    # Responses function tools are strict by default; preserve an explicit
+    # strict flag (from the nested or flat form) so structured-output
+    # guarantees the caller asked for survive the reshape.
+    strict = fn.get("strict")
+    if strict is None and isinstance(t.get("strict"), bool):
+        strict = t.get("strict")
+    if strict is not None:
+        chat_fn["strict"] = strict
+    return {"type": "function", "function": chat_fn}
+
+
 def _tools_to_chat(tools: Any) -> list[dict]:
     out: list[dict] = []
     if not isinstance(tools, list):
@@ -208,35 +248,57 @@ def _tools_to_chat(tools: Any) -> list[dict]:
     for t in tools:
         if not isinstance(t, dict):
             continue
-        if t.get("type") != "function":
-            # Built-in tools (web_search, file_search, …) have no chat equivalent.
+        ttype = t.get("type")
+        if ttype == "function":
+            chat = _function_tool_to_chat(t)
+            if chat is not None:
+                out.append(chat)
+        elif ttype == "namespace" and settings.flatten_namespace_tools:
+            # Codex bundles its client-side tools (multi_agent_v1 sub-agent
+            # controls, image_gen) inside a Responses ``namespace`` container that
+            # chat/completions cannot represent. Flatten each inner function to a
+            # top-level chat function; the originating namespace is re-stamped on
+            # the returned function_call (see ``namespace_map_from_tools`` and the
+            # response paths) so Codex can route the call back to the client-side
+            # tool.
+            for inner in t.get("tools") or []:
+                chat = _function_tool_to_chat(inner)
+                if chat is not None:
+                    out.append(chat)
+        # Other built-in tools (web_search, file_search, …) — and namespace tools
+        # when flattening is off — have no chat equivalent and are dropped.
+    return out
+
+
+def namespace_map_from_tools(tools: Any) -> dict[str, str]:
+    """Map ``{inner_function_name: namespace_name}`` for the response path.
+
+    A Responses ``namespace`` tool bundles inner functions the request path
+    flattens to top-level chat functions; a chat/completions tool call comes back
+    with only ``function.name`` (no namespace), so this map lets the response
+    paths re-stamp the originating ``namespace`` onto each returned
+    ``function_call`` — which is how Codex routes it back to the client-side tool.
+
+    Empty when :attr:`app.config.settings.flatten_namespace_tools` is off (the
+    namespaces were dropped, so nothing routes back). A name is included exactly
+    when it would be flattened (this reuses :func:`_function_tool_to_chat`), so
+    malformed inner entries (non-dict, missing name) are ignored gracefully. If an
+    inner name repeats across namespaces the last wins — real data has no such
+    collision, and keeping it simple is deliberate.
+    """
+    out: dict[str, str] = {}
+    if not settings.flatten_namespace_tools or not isinstance(tools, list):
+        return out
+    for t in tools:
+        if not isinstance(t, dict) or t.get("type") != "namespace":
             continue
-        # Responses uses internally-tagged ({type, name, ...}); accept the
-        # already-nested chat form too.
-        if isinstance(t.get("function"), dict):
-            fn = t["function"]
-        else:
-            fn = {
-                "name": t.get("name"),
-                "description": t.get("description", ""),
-                "parameters": t.get("parameters", {}),
-            }
-        if not fn.get("name"):
+        ns = t.get("name")
+        if not isinstance(ns, str) or not ns:
             continue
-        chat_fn: dict[str, Any] = {
-            "name": fn.get("name"),
-            "description": fn.get("description", "") or "",
-            "parameters": fn.get("parameters", {}) or {},
-        }
-        # Responses function tools are strict by default; preserve an explicit
-        # strict flag (from the nested or flat form) so structured-output
-        # guarantees the caller asked for survive the reshape.
-        strict = fn.get("strict")
-        if strict is None and isinstance(t.get("strict"), bool):
-            strict = t.get("strict")
-        if strict is not None:
-            chat_fn["strict"] = strict
-        out.append({"type": "function", "function": chat_fn})
+        for inner in t.get("tools") or []:
+            chat = _function_tool_to_chat(inner)
+            if chat is not None:
+                out[chat["function"]["name"]] = ns
     return out
 
 
@@ -343,8 +405,9 @@ def responses_request_to_chat_body(
     # Codex CLI hard-codes ``tool_choice: "auto"`` (plus ``parallel_tool_calls``)
     # on every request and sends ``tools: []`` when the turn has no tools — its
     # automatic context compaction request is the common case. An empty list also
-    # results from dropping non-function tool types (``web_search``,
-    # ``namespace``). vLLM/SGLang reject either parameter without tools
+    # results from dropping built-in tool types with no chat equivalent
+    # (``web_search`` and, when ``flatten_namespace_tools`` is off, ``namespace``).
+    # vLLM/SGLang reject either parameter without tools
     # ("'tool_choice' is only allowed when 'tools' are specified"), so both are
     # emitted only alongside a non-empty tool list.
     tools = _tools_to_chat(body.get("tools"))
@@ -548,8 +611,15 @@ def chat_response_to_responses_body(
     *,
     emit_reasoning: bool = True,
     length_as_completed: bool = False,
+    namespace_map: Optional[dict] = None,
 ) -> dict:
-    """Translate a non-streaming chat completion into a Responses object."""
+    """Translate a non-streaming chat completion into a Responses object.
+
+    ``namespace_map`` (``{function_name: namespace}``, from
+    :func:`namespace_map_from_tools`) re-stamps the originating ``namespace`` onto
+    a returned ``function_call`` so a client that routes by ``{namespace, name}``
+    (Codex CLI) can dispatch it; calls with no mapping stay spec-clean.
+    """
     choices = chat.get("choices") or [{}]
     choice = choices[0] if choices else {}
     message = choice.get("message") or {}
@@ -606,16 +676,20 @@ def chat_response_to_responses_body(
             # keeping a later function_call_output round-trip resolvable.
             cid = f"call_{uuid.uuid4().hex[:16]}"
             tc["id"] = cid
-        output.append(
-            {
-                "id": _new_fc_id(),
-                "type": "function_call",
-                "status": item_status,
-                "call_id": cid,
-                "name": fn.get("name") or "",
-                "arguments": args if isinstance(args, str) else json.dumps(args or {}, ensure_ascii=False),
-            }
-        )
+        fc_item: dict[str, Any] = {
+            "id": _new_fc_id(),
+            "type": "function_call",
+            "status": item_status,
+            "call_id": cid,
+            "name": fn.get("name") or "",
+            "arguments": args if isinstance(args, str) else json.dumps(args or {}, ensure_ascii=False),
+        }
+        # Re-stamp the originating namespace so Codex can route the call back to
+        # its client-side tool. Only when mapped — other calls stay spec-clean.
+        ns = namespace_map.get(fn.get("name")) if namespace_map else None
+        if ns:
+            fc_item["namespace"] = ns
+        output.append(fc_item)
 
     created_at = chat.get("created")
     if not isinstance(created_at, int):
@@ -664,7 +738,7 @@ class _StreamState:
         self.finish: Optional[str] = None
         self.reasoning: Optional[dict] = None  # {id, oi, buf}
         self.text: Optional[dict] = None        # {id, oi, buf}
-        self.tools: dict[int, dict] = {}         # upstream tool index -> {id, oi, call_id, upstream_id, name, buf}
+        self.tools: dict[int, dict] = {}         # upstream tool index -> {id, oi, call_id, upstream_id, name, namespace, buf}
         self.tool_order: list[int] = []
 
 
@@ -676,14 +750,26 @@ async def chat_stream_to_responses_events(
     holder: dict,
     emit_reasoning: bool = True,
     length_as_completed: bool = False,
+    namespace_map: Optional[dict] = None,
 ) -> AsyncIterator[dict]:
     """Convert parsed chat-completions SSE chunks into Responses SSE event dicts.
 
     ``holder`` is populated on completion with ``assistant_message`` (chat-format,
     for conversation persistence) and ``status``. Every emitted event carries a
     monotonically increasing ``sequence_number`` starting at 0.
+
+    ``namespace_map`` (``{function_name: namespace}``, from
+    :func:`namespace_map_from_tools`) re-stamps the originating ``namespace`` onto
+    the emitted ``function_call`` item — in its ``response.output_item.added`` and
+    ``response.output_item.done`` events alike — so a client routing by
+    ``{namespace, name}`` (Codex CLI) can dispatch it. The persisted transcript
+    stays name-only: the backend knows the flattened name, not the namespace.
     """
     s = _StreamState()
+
+    def ns_for(name: str) -> Optional[str]:
+        """Namespace a returned tool call routes back to, or None when unmapped."""
+        return namespace_map.get(name) if namespace_map and name else None
     model = request_body.get("model") or ""
     created_at = int(time.time())
 
@@ -781,6 +867,10 @@ async def chat_stream_to_responses_events(
             "id": t["id"], "type": "function_call", "status": item_status(),
             "call_id": t["call_id"], "name": t["name"], "arguments": args,
         }
+        # Re-stamp the namespace (resolved when the name became known) so the
+        # done item — and the terminal output[] built from it — routes back.
+        if t.get("namespace"):
+            item["namespace"] = t["namespace"]
         evs = [
             bump({"type": "response.function_call_arguments.done", "item_id": t["id"],
                   "output_index": t["oi"], "name": t["name"], "arguments": args}),
@@ -972,16 +1062,20 @@ async def chat_stream_to_responses_events(
                         yield e
                     for e in close_text():
                         yield e
+                    name = fn.get("name") or ""
                     t = {"id": _new_fc_id(), "oi": s.next_oi,
                          "call_id": incoming_id if has_incoming_id else f"call_{uuid.uuid4().hex[:16]}",
                          "upstream_id": incoming_id if has_incoming_id else None,
-                         "name": fn.get("name") or "", "buf": []}
+                         "name": name, "namespace": ns_for(name), "buf": []}
                     s.next_oi += 1
                     s.tools[tci] = t
                     s.tool_order.append(tci)
+                    added_item = {"id": t["id"], "type": "function_call", "status": "in_progress",
+                                  "call_id": t["call_id"], "name": t["name"], "arguments": ""}
+                    if t["namespace"]:
+                        added_item["namespace"] = t["namespace"]
                     yield bump({"type": "response.output_item.added", "output_index": t["oi"],
-                                "item": {"id": t["id"], "type": "function_call", "status": "in_progress",
-                                         "call_id": t["call_id"], "name": t["name"], "arguments": ""}})
+                                "item": added_item})
                 else:
                     t = s.tools[tci]
                     # A real id on a call opened without one is metadata for THIS
@@ -992,6 +1086,9 @@ async def chat_stream_to_responses_events(
                         t["upstream_id"] = incoming_id
                     if not t["name"] and fn.get("name"):
                         t["name"] = fn["name"]
+                        # Name arrived on a later fragment — resolve its namespace
+                        # now so the done item (and terminal output) can stamp it.
+                        t["namespace"] = ns_for(t["name"])
                 args_frag = fn.get("arguments")
                 if isinstance(args_frag, str) and args_frag:
                     t["buf"].append(args_frag)

@@ -158,6 +158,10 @@ services:
       # auto = report length as completed only for Codex clients (originator /
       # user-agent header), true = for every client, false = spec behaviour always.
       - CONVERTER_LENGTH_AS_COMPLETED=${CONVERTER_LENGTH_AS_COMPLETED:-auto}
+      # Flatten Codex's multi_agent_v1 sub-agent / image_gen namespace tools to
+      # top-level chat functions and re-stamp the namespace on returned calls, so
+      # Codex sub-agents work through the gateway. false restores the old drop.
+      - CONVERTER_FLATTEN_NAMESPACE_TOOLS=${CONVERTER_FLATTEN_NAMESPACE_TOOLS:-true}
       # Backend reasoning_effort vocabulary. Out-of-range ladder values (xhigh,
       # max, none, ...) are clamped to the nearest listed level, unknown strings
       # are dropped; `*` forwards values verbatim.

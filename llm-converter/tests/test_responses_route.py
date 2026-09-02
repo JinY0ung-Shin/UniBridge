@@ -355,3 +355,66 @@ def test_streaming_length_finish_reporting_mode(monkeypatch, env, headers, expec
 
     events = _parse_sse(resp.text)
     assert events[-1]["type"] == expected
+
+
+def _namespace_request(stream=False):
+    return {
+        "model": "m",
+        "stream": stream,
+        "input": "spawn an agent",
+        "tools": [
+            {"type": "namespace", "name": "multi_agent_v1", "tools": [
+                {"type": "function", "name": "spawn_agent", "parameters": {"type": "object"}},
+            ]},
+        ],
+    }
+
+
+def test_namespace_tool_call_flattened_and_stamped_end_to_end():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        tool_calls = [{"id": "call_1", "type": "function",
+                       "function": {"name": "spawn_agent", "arguments": "{}"}}]
+        return httpx.Response(
+            200, headers={"content-type": "application/json"},
+            content=json.dumps(
+                _chat_json(content=None, tool_calls=tool_calls, finish="tool_calls")
+            ).encode(),
+        )
+
+    client = TestClient(_make_app(handler))
+    resp = client.post("/v1/responses", json=_namespace_request())
+    assert resp.status_code == 200
+    # the namespace's inner function was flattened onto the upstream chat request
+    up_tools = [t["function"]["name"] for t in captured["body"]["tools"]]
+    assert "spawn_agent" in up_tools
+    # and the returned call carries the namespace so Codex can route it back
+    fc = next(it for it in resp.json()["output"] if it["type"] == "function_call")
+    assert fc["name"] == "spawn_agent"
+    assert fc["namespace"] == "multi_agent_v1"
+
+
+def test_namespace_tool_call_stamped_end_to_end_streaming():
+    sse = (
+        "data: " + json.dumps({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_1", "type": "function",
+             "function": {"name": "spawn_agent", "arguments": "{}"}}]}}]}) + "\n\n"
+        "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}) + "\n\n"
+        "data: [DONE]\n\n"
+    ).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+
+    client = TestClient(_make_app(handler))
+    resp = client.post("/v1/responses", json=_namespace_request(stream=True))
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    added = next(e for e in events
+                 if e["type"] == "response.output_item.added"
+                 and e["item"]["type"] == "function_call")
+    assert added["item"]["namespace"] == "multi_agent_v1"
+    fc = next(it for it in events[-1]["response"]["output"] if it["type"] == "function_call")
+    assert fc["namespace"] == "multi_agent_v1"
