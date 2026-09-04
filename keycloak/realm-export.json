@@ -6,6 +6,9 @@
   "bruteForceProtected": true,
   "loginWithEmailAllowed": false,
   "duplicateEmailsAllowed": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 86400,
+  "ssoSessionMaxLifespan": 604800,
   "roles": {
     "realm": [
       {
