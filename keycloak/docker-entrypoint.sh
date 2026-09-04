@@ -72,6 +72,27 @@ for i in $(seq 1 60); do
 
     echo "[init] Authenticated via service account."
 
+    # Keep session policy deterministic even when the realm already existed.
+    # Startup realm import skips existing realms, so sync these settings through
+    # the bootstrap admin and then restore the service-account kcadm session.
+    if [ -n "${KC_BOOTSTRAP_ADMIN_USERNAME}" ] && [ -n "${KC_BOOTSTRAP_ADMIN_PASSWORD}" ] \
+      && "$KCADM" config credentials --server http://localhost:8080 --realm master \
+           --user "${KC_BOOTSTRAP_ADMIN_USERNAME}" --password "${KC_BOOTSTRAP_ADMIN_PASSWORD}" >/dev/null 2>&1 \
+      && "$KCADM" update realms/apihub \
+           -s accessTokenLifespan=300 \
+           -s ssoSessionIdleTimeout=86400 \
+           -s ssoSessionMaxLifespan=604800 >/dev/null 2>&1; then
+      echo "[init] Synced session policy: access=5m, idle=24h, max=7d"
+      "$KCADM" config credentials --server http://localhost:8080 --realm apihub \
+        --client "${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}" \
+        --secret "${KEYCLOAK_SERVICE_CLIENT_SECRET}" >/dev/null 2>&1 || true
+    else
+      echo "[init] WARNING: Failed to sync Keycloak session policy"
+      "$KCADM" config credentials --server http://localhost:8080 --realm apihub \
+        --client "${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}" \
+        --secret "${KEYCLOAK_SERVICE_CLIENT_SECRET}" >/dev/null 2>&1 || true
+    fi
+
     # Update apihub-ui client redirect URIs and web origins
     # kcadm.sh returns JSON array: [ { "id" : "uuid" } ]
     if command -v jq >/dev/null 2>&1; then
