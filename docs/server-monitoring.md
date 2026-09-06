@@ -152,6 +152,9 @@ Global defaults live in **Alert settings → Server thresholds**
 live on each server. The disk-fill forecast uses Prometheus `predict_linear`
 over a 6h window — a genuine "will fill within N hours" early warning rather
 than a static threshold. Set the forecast horizon to 0 to disable it.
+Any `server_disk_forecast` alert still active when the horizon is set to 0 is
+resolved on the next check cycle (with the normal resolve notification),
+bypassing recovery damping.
 
 `server_disk` escalates: a warning re-fires as critical when usage crosses the
 crit threshold. Set **Re-notify every N cycles** (`repeat_alert_after_cycles`)

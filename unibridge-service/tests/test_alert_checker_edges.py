@@ -419,6 +419,194 @@ async def test_check_server_health_persists_and_dispatches_transition(monkeypatc
     }
 
 
+def _seed_active_forecast_alert(state: AlertStateManager) -> None:
+    assert state.update(
+        "server_disk_forecast", "host-a",
+        is_healthy=False,
+        trigger_after_failures=1,
+        display_target="Host A",
+        severity="warning",
+    ) == "triggered"
+
+
+_FORECAST_RESOLVE_KWARGS = {
+    "resource_type": "server",
+    "resource_id": "host-a",
+    "alert_type": "resolved",
+    "rule_type": "server_disk_forecast",
+    "target": "host-a",
+    "message": (
+        "Server 'Host A' disk fill forecasting is disabled; "
+        "projection alert cleared."
+    ),
+    "display_target": "Host A",
+    "rate": None,
+    "threshold": None,
+    "monitor_label": "서버 디스크 예측",
+    "severity": None,
+    "target_description": "",
+}
+
+
+async def test_check_server_health_resolves_forecast_alert_when_forecast_disabled(
+    monkeypatch
+) -> None:
+    host = SimpleNamespace(name="host-a", enabled=True)
+    monkeypatch.setattr(
+        alert_checker,
+        "_load_server_monitoring",
+        AsyncMock(
+            return_value=([host], alert_checker.ServerThresholds(forecast_hours=0), 0)
+        ),
+    )
+    evaluate = AsyncMock(return_value=[])
+    monkeypatch.setattr(alert_checker.server_monitor, "evaluate_hosts", evaluate)
+    persist = AsyncMock()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(alert_checker, "_persist_state_safely", persist)
+    monkeypatch.setattr(alert_checker, "dispatch_alert", dispatch)
+    state = AlertStateManager()
+    _seed_active_forecast_alert(state)
+
+    # resolve_after_successes=5 is deliberate: an admin switching the forecast
+    # off must clear the alert on this very cycle, damping notwithstanding.
+    await alert_checker._check_server_health(
+        state, trigger_after_failures=1, resolve_after_successes=5
+    )
+
+    assert state.get_status("server_disk_forecast", "host-a") == "ok"
+    evaluate.assert_awaited_once()
+    persist.assert_awaited_once_with(state, "server_disk_forecast", "host-a")
+    dispatch.assert_awaited_once()
+    assert dispatch.await_args.kwargs == _FORECAST_RESOLVE_KWARGS
+
+
+async def test_check_server_health_resolves_forecast_alert_with_no_host_enabled(
+    monkeypatch
+) -> None:
+    host = SimpleNamespace(name="host-a", enabled=False)
+    monkeypatch.setattr(
+        alert_checker,
+        "_load_server_monitoring",
+        AsyncMock(
+            return_value=([host], alert_checker.ServerThresholds(forecast_hours=0), 0)
+        ),
+    )
+    evaluate = AsyncMock(return_value=[])
+    monkeypatch.setattr(alert_checker.server_monitor, "evaluate_hosts", evaluate)
+    persist = AsyncMock()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(alert_checker, "_persist_state_safely", persist)
+    monkeypatch.setattr(alert_checker, "dispatch_alert", dispatch)
+    state = AlertStateManager()
+    _seed_active_forecast_alert(state)
+
+    await alert_checker._check_server_health(
+        state, trigger_after_failures=1, resolve_after_successes=5
+    )
+
+    assert state.get_status("server_disk_forecast", "host-a") == "ok"
+    evaluate.assert_not_awaited()
+    persist.assert_awaited_once_with(state, "server_disk_forecast", "host-a")
+    dispatch.assert_awaited_once()
+    assert dispatch.await_args.kwargs == _FORECAST_RESOLVE_KWARGS
+
+
+async def test_check_server_health_keeps_forecast_alert_while_forecast_enabled(
+    monkeypatch
+) -> None:
+    host = SimpleNamespace(name="host-a", enabled=True)
+    monkeypatch.setattr(
+        alert_checker,
+        "_load_server_monitoring",
+        AsyncMock(
+            return_value=([host], alert_checker.ServerThresholds(forecast_hours=24), 0)
+        ),
+    )
+    monkeypatch.setattr(
+        alert_checker.server_monitor, "evaluate_hosts", AsyncMock(return_value=[])
+    )
+    persist = AsyncMock()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(alert_checker, "_persist_state_safely", persist)
+    monkeypatch.setattr(alert_checker, "dispatch_alert", dispatch)
+    state = AlertStateManager()
+    _seed_active_forecast_alert(state)
+
+    await alert_checker._check_server_health(
+        state, trigger_after_failures=1, resolve_after_successes=5
+    )
+
+    assert state.get_status("server_disk_forecast", "host-a") == "alert"
+    persist.assert_not_awaited()
+    dispatch.assert_not_awaited()
+
+
+async def test_check_server_health_forecast_disabled_without_forecast_state_is_quiet(
+    monkeypatch
+) -> None:
+    host = SimpleNamespace(name="host-a", enabled=True)
+    monkeypatch.setattr(
+        alert_checker,
+        "_load_server_monitoring",
+        AsyncMock(
+            return_value=([host], alert_checker.ServerThresholds(forecast_hours=0), 0)
+        ),
+    )
+    monkeypatch.setattr(
+        alert_checker.server_monitor, "evaluate_hosts", AsyncMock(return_value=[])
+    )
+    persist = AsyncMock()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(alert_checker, "_persist_state_safely", persist)
+    monkeypatch.setattr(alert_checker, "dispatch_alert", dispatch)
+
+    await alert_checker._check_server_health(
+        AlertStateManager(), trigger_after_failures=1, resolve_after_successes=5
+    )
+
+    persist.assert_not_awaited()
+    dispatch.assert_not_awaited()
+
+
+async def test_check_server_health_clears_pending_forecast_failures_when_disabled(
+    monkeypatch
+) -> None:
+    host = SimpleNamespace(name="host-a", enabled=True)
+    monkeypatch.setattr(
+        alert_checker,
+        "_load_server_monitoring",
+        AsyncMock(
+            return_value=([host], alert_checker.ServerThresholds(forecast_hours=0), 0)
+        ),
+    )
+    monkeypatch.setattr(
+        alert_checker.server_monitor, "evaluate_hosts", AsyncMock(return_value=[])
+    )
+    persist = AsyncMock()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(alert_checker, "_persist_state_safely", persist)
+    monkeypatch.setattr(alert_checker, "dispatch_alert", dispatch)
+    state = AlertStateManager()
+    assert state.update(
+        "server_disk_forecast", "host-a",
+        is_healthy=False,
+        trigger_after_failures=2,
+        display_target="Host A",
+        severity="warning",
+    ) is None
+    assert state.get_entry("server_disk_forecast", "host-a")["fail_count"] == 1
+
+    await alert_checker._check_server_health(
+        state, trigger_after_failures=2, resolve_after_successes=5
+    )
+
+    entry = state.get_entry("server_disk_forecast", "host-a")
+    assert entry["status"] == "ok"
+    assert entry["fail_count"] == 0
+    persist.assert_awaited_once_with(state, "server_disk_forecast", "host-a")
+    dispatch.assert_not_awaited()
+
 async def test_load_service_monitoring_reads_services_and_repeat(monkeypatch) -> None:
     service = SimpleNamespace(name="orders", enabled=True)
     settings = SimpleNamespace(repeat_alert_after_cycles=4)

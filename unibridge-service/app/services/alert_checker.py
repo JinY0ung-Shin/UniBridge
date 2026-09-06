@@ -589,6 +589,9 @@ async def _check_server_health(
 
     A failure to load the registry/thresholds is isolated to this step so it
     can never abort the DB/NAS/upstream/route checks in the same cycle.
+
+    A disabled disk-fill forecast is handled before host enablement is even
+    considered — see :func:`_resolve_disabled_forecast_alerts`.
     """
     mutes = mutes if mutes is not None else MuteIndex()
     try:
@@ -596,41 +599,124 @@ async def _check_server_health(
     except Exception as exc:  # noqa: BLE001
         logger.warning("Server health check skipped (config load failed): %s", exc)
         return
+    forecast_off = not (thresholds.forecast_hours and thresholds.forecast_hours > 0)
+    if forecast_off:
+        await _resolve_disabled_forecast_alerts(
+            state,
+            mutes=mutes,
+            trigger_after_failures=trigger_after_failures,
+            repeat=repeat,
+        )
     enabled = [h for h in hosts if getattr(h, "enabled", False)]
     if not enabled:
         return
     signals = await server_monitor.evaluate_hosts(enabled, thresholds)
     for sig in signals:
-        was_alerting = state.get_status(sig.alert_type, sig.target) == "alert"
-        transition = state.update(
-            sig.alert_type, sig.target,
-            is_healthy=sig.is_healthy,
-            display_target=sig.display,
-            severity=sig.severity,
+        await _process_host_signal(
+            state, sig,
             trigger_after_failures=trigger_after_failures,
             resolve_after_successes=resolve_after_successes,
-            repeat_after_cycles=repeat,
+            repeat=repeat,
+            mutes=mutes,
         )
-        outbound = _outbound_alert_type(
-            state, mutes,
-            rule_type=sig.alert_type, target=sig.target, transition=transition,
+
+
+async def _process_host_signal(
+    state: AlertStateManager,
+    sig: server_monitor.HostSignal,
+    *,
+    trigger_after_failures: int,
+    resolve_after_successes: int,
+    repeat: int,
+    mutes: MuteIndex,
+) -> None:
+    """Run one host signal through the state machine and dispatch pipeline.
+
+    The per-signal half of :func:`_check_server_health`, factored out so
+    synthetic signals (see :func:`_resolve_disabled_forecast_alerts`) take the
+    exact same path as evaluated ones: state update → mute gate → persist →
+    dispatch → dispatch-result handling.
+    """
+    was_alerting = state.get_status(sig.alert_type, sig.target) == "alert"
+    transition = state.update(
+        sig.alert_type, sig.target,
+        is_healthy=sig.is_healthy,
+        display_target=sig.display,
+        severity=sig.severity,
+        trigger_after_failures=trigger_after_failures,
+        resolve_after_successes=resolve_after_successes,
+        repeat_after_cycles=repeat,
+    )
+    outbound = _outbound_alert_type(
+        state, mutes,
+        rule_type=sig.alert_type, target=sig.target, transition=transition,
+        resource_type="server", resource_id=sig.target,
+        was_alerting=was_alerting,
+    )
+    await _persist_state_safely(state, sig.alert_type, sig.target)
+    if outbound:
+        result = await dispatch_alert(
             resource_type="server", resource_id=sig.target,
-            was_alerting=was_alerting,
+            alert_type=outbound, rule_type=sig.alert_type,
+            target=sig.target, message=sig.message,
+            display_target=sig.display, rate=sig.value, threshold=sig.threshold,
+            monitor_label=sig.monitor_label, severity=sig.severity,
+            target_description=sig.description,
         )
-        await _persist_state_safely(state, sig.alert_type, sig.target)
-        if outbound:
-            result = await dispatch_alert(
-                resource_type="server", resource_id=sig.target,
-                alert_type=outbound, rule_type=sig.alert_type,
-                target=sig.target, message=sig.message,
-                display_target=sig.display, rate=sig.value, threshold=sig.threshold,
-                monitor_label=sig.monitor_label, severity=sig.severity,
-                target_description=sig.description,
-            )
-            await _handle_dispatch_result(
-                state, outbound=outbound, result=result,
-                rule_type=sig.alert_type, target=sig.target,
-            )
+        await _handle_dispatch_result(
+            state, outbound=outbound, result=result,
+            rule_type=sig.alert_type, target=sig.target,
+        )
+
+
+async def _resolve_disabled_forecast_alerts(
+    state: AlertStateManager,
+    *,
+    mutes: MuteIndex,
+    trigger_after_failures: int,
+    repeat: int,
+) -> None:
+    """Clear lingering forecast alerts once the disk-fill forecast is switched off.
+
+    With ``forecast_hours <= 0`` :func:`server_monitor.evaluate_hosts` emits no
+    ``server_disk_forecast`` signals at all, so an already-firing projection
+    alert would never see a healthy cycle: it would stay active forever — no
+    recovery mail, still listed as active in the UI, and reloaded on every
+    restart. Synthesising one healthy signal per lingering entry pushes it
+    through the normal pipeline instead, so the recovery is announced (and mutes
+    honoured) exactly like any other. A still-pending failure streak on an "ok"
+    entry is cleared too, so a stale count cannot survive a later re-enable.
+
+    Recovery damping is deliberately bypassed (``resolve_after_successes=1``):
+    an admin turned the feature off, so there is no oscillation to damp and no
+    reason to keep the incident open for another N cycles that will never come.
+    """
+    for entry in state.get_entries(alert_type="server_disk_forecast"):
+        if entry["status"] == "ok" and not entry.get("fail_count", 0):
+            continue
+        display = entry["display_target"]
+        sig = server_monitor.HostSignal(
+            alert_type="server_disk_forecast",
+            target=entry["target"],
+            display=display,
+            is_healthy=True,
+            severity=None,
+            value=None,
+            threshold=None,
+            message=(
+                f"Server '{display}' disk fill forecasting is disabled; "
+                "projection alert cleared."
+            ),
+            monitor_label="서버 디스크 예측",
+            description="",
+        )
+        await _process_host_signal(
+            state, sig,
+            trigger_after_failures=trigger_after_failures,
+            resolve_after_successes=1,
+            repeat=repeat,
+            mutes=mutes,
+        )
 
 
 async def _load_service_monitoring() -> tuple[list[MonitoredService], int]:
