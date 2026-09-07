@@ -446,6 +446,52 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _token_count(value: Any) -> Optional[int]:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return max(0, value)
+    return None
+
+
+def _usage_to_anthropic(usage: Any) -> Dict[str, Any]:
+    """Split LiteLLM's inclusive prompt count into Anthropic's three buckets.
+
+    LiteLLM chat/completions includes cache reads AND writes in prompt_tokens
+    (including its Anthropic adapter). Details and top-level cache fields are
+    aliases, not additional counts. Prefer normalized details when available.
+    """
+    usage = usage if isinstance(usage, dict) else {}
+    details = usage.get("prompt_tokens_details")
+    details = details if isinstance(details, dict) else {}
+
+    def first_count(*values: Any) -> int:
+        for value in values:
+            count = _token_count(value)
+            if count is not None:
+                return count
+        return 0
+
+    read = first_count(details.get("cached_tokens"), usage.get("cache_read_input_tokens"))
+    created = first_count(
+        details.get("cache_creation_tokens"), details.get("cache_write_tokens"),
+        usage.get("cache_creation_input_tokens"),
+    )
+    result: Dict[str, Any] = {
+        "input_tokens": max(0, first_count(usage.get("prompt_tokens")) - read - created),
+        "output_tokens": first_count(usage.get("completion_tokens")),
+        "cache_read_input_tokens": read,
+        "cache_creation_input_tokens": created,
+    }
+    creation = details.get("cache_creation_token_details")
+    if not isinstance(creation, dict):
+        creation = usage.get("cache_creation")
+    if isinstance(creation, dict):
+        result["cache_creation"] = {
+            key: first_count(creation.get(key))
+            for key in ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+        }
+    return result
+
+
 class _StreamState:
     """Mutable cursor tracking the in-progress Anthropic block structure.
 
@@ -462,8 +508,7 @@ class _StreamState:
         "current_tool_by_index",
         "model",
         "message_id",
-        "input_tokens",
-        "output_tokens",
+        "usage",
         "finish_reason",
         "started",
         "last_tool_index",
@@ -492,8 +537,7 @@ class _StreamState:
         self.last_tool_index: Optional[int] = None
         self.model = model
         self.message_id = f"msg_{uuid.uuid4().hex[:24]}"
-        self.input_tokens = 0
-        self.output_tokens = 0
+        self.usage: Dict[str, Any] = {}
         self.finish_reason: Optional[str] = None
         self.started = False
 
@@ -577,10 +621,7 @@ def _message_start_event(state: _StreamState) -> Dict[str, Any]:
             "content": [],
             "stop_reason": None,
             "stop_sequence": None,
-            "usage": {
-                "input_tokens": state.input_tokens,
-                "output_tokens": 0,
-            },
+            "usage": {**_usage_to_anthropic(state.usage), "output_tokens": 0},
         },
     }
 
@@ -728,12 +769,17 @@ async def openai_stream_to_anthropic_events(
         # alongside a regular delta — handle both.
         usage = chunk.get("usage")
         if isinstance(usage, dict):
-            pt = usage.get("prompt_tokens")
-            if isinstance(pt, int):
-                state.input_tokens = pt
-            ct = usage.get("completion_tokens")
-            if isinstance(ct, int):
-                state.output_tokens = ct
+            # Counts are cumulative, not increments. Keep earlier fields when
+            # later usage chunks contain only output counts or null details.
+            for key, value in usage.items():
+                if isinstance(value, dict):
+                    previous = state.usage.get(key)
+                    state.usage[key] = {
+                        **(previous if isinstance(previous, dict) else {}),
+                        **{k: v for k, v in value.items() if v is not None},
+                    }
+                elif value is not None:
+                    state.usage[key] = value
 
         choices = chunk.get("choices") or []
         if not choices:
@@ -844,10 +890,7 @@ async def openai_stream_to_anthropic_events(
     yield {
         "type": "message_delta",
         "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-        "usage": {
-            "input_tokens": state.input_tokens,
-            "output_tokens": state.output_tokens,
-        },
+        "usage": _usage_to_anthropic(state.usage),
     }
     yield {"type": "message_stop"}
 
@@ -905,8 +948,5 @@ def openai_response_to_anthropic_body(body: Dict[str, Any]) -> Dict[str, Any]:
         "content": content_blocks,
         "stop_reason": stop_reason,
         "stop_sequence": None,
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens", 0),
-            "output_tokens": usage.get("completion_tokens", 0),
-        },
+        "usage": _usage_to_anthropic(usage),
     }

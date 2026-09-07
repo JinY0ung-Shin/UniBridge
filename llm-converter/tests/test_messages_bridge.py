@@ -1486,7 +1486,10 @@ class TestNonStreamingResponseConversion:
         assert out["model"] == "m"
         assert out["stop_reason"] == "end_turn"
         assert out["content"] == [{"type": "text", "text": "Hello!"}]
-        assert out["usage"] == {"input_tokens": 10, "output_tokens": 5}
+        assert out["usage"] == {
+            "input_tokens": 10, "output_tokens": 5,
+            "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+        }
 
     def test_reasoning_plus_text_plus_tool(self):
         body = {

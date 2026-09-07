@@ -157,7 +157,51 @@ def test_non_streaming_translates_openai_to_anthropic():
     assert data["role"] == "assistant"
     assert data["content"] == [{"type": "text", "text": "Hi there"}]
     assert data["stop_reason"] == "end_turn"
-    assert data["usage"] == {"input_tokens": 3, "output_tokens": 2}
+    assert data["usage"] == {
+        "input_tokens": 3, "output_tokens": 2,
+        "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+    }
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_messages_route_preserves_cache_usage(stream):
+    usage = {
+        "prompt_tokens": 1000, "completion_tokens": 50,
+        "prompt_tokens_details": {"cached_tokens": 800, "cache_creation_tokens": 100},
+    }
+
+    def handler(request):
+        assert request.url.path == "/v1/chat/completions"
+        if stream:
+            assert json.loads(request.content)["stream_options"]["include_usage"] is True
+            return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                  content=_openai_sse([
+                                      {"choices": [{"delta": {"content": "OK"}}]},
+                                      {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+                                      {"choices": [], "usage": usage},
+                                  ]))
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}],
+            "usage": usage,
+        })
+
+    client = TestClient(_make_app(handler))
+    response = client.post("/v1/messages", json={
+        "model": "test", "stream": stream, "max_tokens": 100,
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert response.status_code == 200
+    if stream:
+        events = _parse_sse(response.text)
+        start = next(e for e in events if e["type"] == "message_start")
+        assert start["message"]["usage"]["cache_read_input_tokens"] == 0
+        actual = next(e for e in events if e["type"] == "message_delta")["usage"]
+    else:
+        actual = response.json()["usage"]
+    assert actual == {
+        "input_tokens": 100, "output_tokens": 50,
+        "cache_read_input_tokens": 800, "cache_creation_input_tokens": 100,
+    }
 
 
 def test_messages_route_forwards_anthropic_image_as_openai_image_url():
