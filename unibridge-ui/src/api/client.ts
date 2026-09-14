@@ -1147,7 +1147,30 @@ export interface AlertHistoryEntry {
   rule_type?: string | null;
 }
 
+export interface AlertObservation {
+  message?: string | null;
+  healthy: boolean;
+  checked_at: string;
+  value?: number | null;
+  threshold?: number | null;
+  unit?: string | null;
+  reason?: string | null;
+  requests?: number | null;
+  min_requests?: number | null;
+  window_seconds?: number | null;
+}
+
 export interface AlertStatus {
+  current?: AlertObservation | null;
+  incident?: AlertObservation | null;
+  collection_error?: string | null;
+  attempted_at?: string | null;
+  stale?: boolean;
+  success_count?: number;
+  fail_count?: number;
+  resolve_after_successes?: number;
+  trigger_after_failures?: number;
+  check_interval_seconds?: number;
   target: string;
   type: string;
   status: 'ok' | 'alert';

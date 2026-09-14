@@ -237,3 +237,9 @@
   color: var(--text-secondary);
   white-space: nowrap;
 }
+
+.alert-observation { min-width: 280px; max-width: 560px; white-space: normal; overflow-wrap: anywhere; line-height: 1.6; }
+.alert-observation > strong { display: block; margin-bottom: 4px; }
+.alert-observation-label { font-weight: 600; }
+.alert-observation-meta { font-size: 0.8rem; color: var(--text-secondary); }
+.alert-observation--unavailable { color: var(--color-warning, #b45309); }

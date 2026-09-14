@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -54,6 +55,7 @@ class AlertStateManager:
             "success_count": entry.get("success_count", 0),
             "severity": entry.get("severity"),
             "pending_notify": bool(entry.get("pending_notify", False)),
+            "details": entry.get("details", {}),
         }
 
     def set_entry(
@@ -68,6 +70,7 @@ class AlertStateManager:
         success_count: int = 0,
         severity: str | None = None,
         pending_notify: bool = False,
+        details: dict | None = None,
     ) -> None:
         self._states[(alert_type, target)] = {
             "status": status,
@@ -78,6 +81,7 @@ class AlertStateManager:
             "severity": severity,
             "cycles_in_alert": 0,
             "pending_notify": pending_notify,
+            "details": details or {},
         }
 
     def get_pending_notify(self, alert_type: str, target: str) -> bool:
@@ -95,6 +99,49 @@ class AlertStateManager:
         return True
 
     def update(
+        self,
+        alert_type: str,
+        target: str,
+        *,
+        is_healthy: bool,
+        trigger_after_failures: int,
+        display_target: str | None = None,
+        severity: str | None = None,
+        repeat_after_cycles: int = 0,
+        resolve_after_successes: int = 1,
+        observation: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Keep the latest observation separate from the incident's opening evidence."""
+        was_alerting = self.get_status(alert_type, target) == "alert"
+        transition = self._update(
+            alert_type, target, is_healthy=is_healthy,
+            trigger_after_failures=trigger_after_failures,
+            display_target=display_target, severity=severity,
+            repeat_after_cycles=repeat_after_cycles,
+            resolve_after_successes=resolve_after_successes,
+        )
+        entry = self._states[(alert_type, target)]
+        details = entry.setdefault("details", {})
+        current = {
+            **(observation or {}),
+            "healthy": is_healthy,
+            "checked_at": utcnow().isoformat(),
+        }
+        details["current"] = current
+        details.pop("collection_error", None)
+        details.pop("attempted_at", None)
+        if transition == "triggered" and not was_alerting:
+            details["incident"] = dict(current)
+        return transition
+
+    def mark_unavailable(self, alert_type: str, target: str, message: str) -> None:
+        entry = self._states.get((alert_type, target))
+        if entry is not None:
+            details = entry.setdefault("details", {})
+            details["collection_error"] = message
+            details["attempted_at"] = utcnow().isoformat()
+
+    def _update(
         self,
         alert_type: str,
         target: str,
@@ -253,6 +300,7 @@ class AlertStateManager:
                 "success_count": entry.get("success_count", 0),
                 "severity": entry.get("severity"),
                 "pending_notify": bool(entry.get("pending_notify", False)),
+                "details": entry.get("details", {}),
             })
         return rows
 
@@ -302,6 +350,7 @@ async def save_alert_state_to_db(
     row.success_count = int(entry.get("success_count", 0))
     row.severity = entry.get("severity")
     row.pending_notify = bool(entry.get("pending_notify", False))
+    row.details = json.dumps(entry.get("details", {}), ensure_ascii=False)
     row.updated_at = utcnow()
     await db.commit()
 
@@ -330,6 +379,7 @@ async def load_alert_state_from_db(
             success_count=row.success_count or 0,
             severity=row.severity,
             pending_notify=bool(row.pending_notify),
+            details=json.loads(row.details) if row.details else {},
         )
 
 

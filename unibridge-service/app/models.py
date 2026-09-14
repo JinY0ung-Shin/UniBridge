@@ -378,6 +378,7 @@ class AlertState(Base):
     # everything) was muted. Survives restarts so a mute that expires while the
     # alert is still firing still produces exactly one notification.
     pending_notify = Column(Boolean, default=False, nullable=False, server_default="false")
+    details = Column(Text, nullable=True)  # latest observation and incident opening evidence
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)
 
     __table_args__ = (

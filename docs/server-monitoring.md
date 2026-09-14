@@ -318,3 +318,25 @@ the same way — point the agent at the local dcgm-exporter too and keep the sam
 * **Container-level metrics** — add cAdvisor for per-container CPU/memory.
 * **Alert grouping/correlation** — multiple signals firing on one host are
   currently independent alerts.
+
+
+### Alert status details
+
+The Alert Status page (`/alerts/status`) includes opening evidence and the latest
+observation for each checker rule. Values update on every check, independently
+of notification delivery and mute settings. Route observations include the 5-minute
+request count and error-rate threshold; host observations include the measured
+value and the rule threshold. Connection checks expose known diagnostic categories
+(timeout, connection refused, authentication, DNS, TLS), never raw connection errors.
+
+An incident can remain open while its latest observation is healthy: the page
+shows the recovery streak, for example **3/5 checks**, and the configured check
+interval in seconds. Missing collection results are marked unavailable. Observations
+older than two configured check intervals are also marked unavailable; their values
+remain visible explicitly as last-known observations, not current measurements.
+
+Opening evidence and latest observations persist across restarts. Existing incidents
+from before this feature have no opening evidence; the UI says so and acquires fresh
+observations on subsequent checks. This view describes observed symptoms, not a
+root-cause diagnosis. Prometheus/Alertmanager notifications remain in alert history
+and do not become checker status rows.

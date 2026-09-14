@@ -538,7 +538,8 @@ async def test_check_server_health_keeps_forecast_alert_while_forecast_enabled(
     )
 
     assert state.get_status("server_disk_forecast", "host-a") == "alert"
-    persist.assert_not_awaited()
+    persist.assert_awaited_once_with(state, "server_disk_forecast", "host-a")
+    assert state.get_entry("server_disk_forecast", "host-a")["details"]["collection_error"]
     dispatch.assert_not_awaited()
 
 

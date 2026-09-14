@@ -227,6 +227,21 @@ async def _resolve_route_id(label_value: str) -> str:
     return _ROUTE_ID_BY_NAME.get(label_value, label_value)
 
 
+def _connection_failure_reason(message: str) -> str | None:
+    """Expose diagnostic categories without credentials or raw connection strings."""
+    message = message.lower()
+    for reason, patterns in (
+        ("timeout", ("timed out", "timeout")),
+        ("connection_refused", ("connection refused",)),
+        ("authentication_failed", ("authentication failed", "login failed", "access denied", "password authentication")),
+        ("dns_failed", ("name or service not known", "name resolution", "getaddrinfo")),
+        ("tls_failed", ("certificate verify failed", "ssl handshake", "tls handshake")),
+    ):
+        if any(pattern in message for pattern in patterns):
+            return reason
+    return None
+
+
 async def _probe_health_bounded(
     label: str,
     aliases: list[str],
@@ -248,8 +263,8 @@ async def _probe_health_bounded(
     async def _one(alias: str) -> tuple[str, bool, str | None]:
         async with limiter:
             try:
-                ok, _ = await asyncio.wait_for(probe(alias), timeout=timeout)
-                return alias, ok, None
+                ok, detail = await asyncio.wait_for(probe(alias), timeout=timeout)
+                return alias, ok, None if ok else _connection_failure_reason(detail)
             except asyncio.TimeoutError:
                 logger.warning(
                     "%s health check for '%s' timed out after %ss",
@@ -258,7 +273,7 @@ async def _probe_health_bounded(
                 return alias, False, _REASON_TIMEOUT
             except Exception as exc:
                 logger.warning("%s health check failed for '%s': %s", label, alias, exc)
-                return alias, False, None
+                return alias, False, _connection_failure_reason(str(exc))
 
     return list(await asyncio.gather(*(_one(alias) for alias in aliases)))
 
@@ -611,6 +626,18 @@ async def _check_server_health(
     if not enabled:
         return
     signals = await server_monitor.evaluate_hosts(enabled, thresholds)
+    observed = {(sig.alert_type, sig.target) for sig in signals}
+    enabled_names = {getattr(h, "name", None) for h in enabled}
+    for entry in state.get_entries():
+        if forecast_off and entry["type"] == "server_disk_forecast":
+            continue
+        if (
+            entry["target"] in enabled_names
+            and entry["type"].startswith("server_")
+            and (entry["type"], entry["target"]) not in observed
+        ):
+            state.mark_unavailable(entry["type"], entry["target"], "No current metric available; collection failed or signal is unavailable")
+            await _persist_state_safely(state, entry["type"], entry["target"])
     for sig in signals:
         await _process_host_signal(
             state, sig,
@@ -641,6 +668,9 @@ async def _process_host_signal(
     transition = state.update(
         sig.alert_type, sig.target,
         is_healthy=sig.is_healthy,
+        observation={"message": sig.message, "value": getattr(sig, "value", None),
+                     "threshold": getattr(sig, "threshold", None),
+                     "unit": "%" if getattr(sig, "value", None) is not None else None},
         display_target=sig.display,
         severity=sig.severity,
         trigger_after_failures=trigger_after_failures,
@@ -755,11 +785,16 @@ async def _check_service_health(
     if not enabled:
         return
     signals = await server_monitor.evaluate_services(enabled)
+    if not signals:
+        for entry in state.get_entries(alert_type="external_service_down"):
+            state.mark_unavailable(entry["type"], entry["target"], "Service metrics could not be collected")
+            await _persist_state_safely(state, entry["type"], entry["target"])
     for sig in signals:
         was_alerting = state.get_status(sig.alert_type, sig.target) == "alert"
         transition = state.update(
             sig.alert_type, sig.target,
             is_healthy=sig.is_healthy,
+            observation={"message": sig.message},
             display_target=sig.display,
             severity=sig.severity,
             trigger_after_failures=trigger_after_failures,
@@ -957,6 +992,9 @@ async def _evaluate_route_error_rule(
         "route_error_rate",
         route_id,
         is_healthy=is_healthy,
+        observation={"message": "Insufficient traffic to evaluate error rate" if sample_count < min_requests else "Route 5xx error rate",
+                     "value": rate, "threshold": threshold, "unit": "%",
+                     "requests": sample_count, "min_requests": min_requests, "window_seconds": 300},
         display_target=display,
         trigger_after_failures=trigger_after_failures,
         resolve_after_successes=resolve_after_successes,
@@ -1013,6 +1051,8 @@ async def run_single_check(
         transition = state.update(
             "db_health", alias,
             is_healthy=is_healthy,
+            observation={"message": "Database connection check succeeded" if is_healthy else "Database connection check failed",
+                         "reason": reason},
             trigger_after_failures=trigger_after_failures,
             resolve_after_successes=resolve_after_successes,
         )
@@ -1051,6 +1091,8 @@ async def run_single_check(
         transition = state.update(
             "s3_health", alias,
             is_healthy=is_healthy,
+            observation={"message": "S3 connection check succeeded" if is_healthy else "S3 connection check failed",
+                         "reason": None},
             trigger_after_failures=trigger_after_failures,
             resolve_after_successes=resolve_after_successes,
         )
@@ -1081,6 +1123,8 @@ async def run_single_check(
         transition = state.update(
             "nas_health", alias,
             is_healthy=is_healthy,
+            observation={"message": "NAS connection check succeeded" if is_healthy else "NAS connection check failed",
+                         "reason": reason},
             trigger_after_failures=trigger_after_failures,
             resolve_after_successes=resolve_after_successes,
         )
@@ -1121,6 +1165,8 @@ async def run_single_check(
         transition = state.update(
             "upstream_health", uid,
             is_healthy=is_healthy,
+            observation={"message": "Upstream reachability check succeeded" if is_healthy else "Upstream reachability check failed",
+                         "reason": reason},
             display_target=display,
             trigger_after_failures=trigger_after_failures,
             resolve_after_successes=resolve_after_successes,
@@ -1178,6 +1224,9 @@ async def run_single_check(
     # 6. Route-level error rate (automatic for every route; global threshold)
     route_results = await _check_route_error_rate()
     if route_results is None:
+        for entry in state.get_entries(alert_type="route_error_rate"):
+            state.mark_unavailable(entry["type"], entry["target"], "Prometheus query failed")
+            await _persist_state_safely(state, entry["type"], entry["target"])
         return
 
     active_route_alerts = state.get_entries(alert_type="route_error_rate", status="alert")

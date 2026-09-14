@@ -826,7 +826,30 @@ class AlertHistoryResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AlertObservation(BaseModel):
+    message: str | None = None
+    healthy: bool
+    checked_at: datetime
+    value: float | None = None
+    threshold: float | None = None
+    unit: str | None = None
+    reason: str | None = None
+    requests: float | None = None
+    min_requests: int | None = None
+    window_seconds: int | None = None
+
+
 class AlertStatusResponse(BaseModel):
+    current: AlertObservation | None = None
+    incident: AlertObservation | None = None
+    collection_error: str | None = None
+    attempted_at: datetime | None = None
+    stale: bool = True
+    success_count: int = 0
+    fail_count: int = 0
+    resolve_after_successes: int = 5
+    trigger_after_failures: int = 2
+    check_interval_seconds: int = 60
     target: str
     type: str
     status: str  # "ok" | "alert"

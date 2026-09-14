@@ -478,3 +478,34 @@ describe('AlertStatus page', () => {
     expect(screen.queryByRole('button', { name: 'Unmute all alerts' })).not.toBeInTheDocument();
   });
 });
+
+
+describe('Alert observation details', () => {
+  it('shows opening evidence, current values and recovery progress', async () => {
+    mockGetMutes.mockResolvedValue(NO_MUTES);
+    mockGet.mockResolvedValue(statusResult([{
+      target: 'cpu-worker', type: 'server_cpu', status: 'alert', since: '2026-04-30T11:00:00Z',
+      current: { message: 'CPU now normal', healthy: true, checked_at: '2026-04-30T11:05:00Z', value: 54, threshold: 90, unit: '%' },
+      incident: { message: 'CPU exceeded threshold', healthy: false, checked_at: '2026-04-30T11:00:00Z', value: 96, threshold: 90, unit: '%' },
+      success_count: 3, resolve_after_successes: 5, check_interval_seconds: 60, stale: false,
+    }]));
+    renderWithProviders(<AlertStatus />);
+    expect(await screen.findByText('CPU exceeded threshold')).toBeInTheDocument();
+    expect(screen.getByText('CPU now normal')).toBeInTheDocument();
+    expect(screen.getByText(/3\/5/)).toBeInTheDocument();
+    expect(screen.getByText(/54.0%/)).toBeInTheDocument();
+  });
+
+  it('does not present a stale healthy observation as confirmed recovery', async () => {
+    mockGetMutes.mockResolvedValue(NO_MUTES);
+    mockGet.mockResolvedValue(statusResult([{
+      target: 'stale-worker', type: 'server_cpu', status: 'alert', since: null,
+      current: { message: 'Last CPU observation', healthy: true, checked_at: '2026-04-30T11:05:00Z' },
+      success_count: 3, resolve_after_successes: 5, stale: true, collection_error: 'Prometheus query failed',
+    }]));
+    renderWithProviders(<AlertStatus />);
+    expect(await screen.findByText(/Current status unavailable|최신 상태 확인 불가/)).toBeInTheDocument();
+    expect(screen.queryByText(/3\/5/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Prometheus query failed/)).toBeInTheDocument();
+  });
+});

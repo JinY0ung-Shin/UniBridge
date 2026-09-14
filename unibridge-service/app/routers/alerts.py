@@ -1017,6 +1017,10 @@ async def alert_status(
     if _alert_state is None:
         return AlertStatusListResponse(global_muted_until=index.global_until, items=[])
 
+    settings_row = (await db.execute(select(AlertSettings).where(AlertSettings.id == 1))).scalar_one_or_none()
+    interval = settings_row.check_interval_seconds if settings_row else 60
+    recovery_count = settings_row.resolve_after_successes if settings_row else 5
+    trigger_count = settings_row.trigger_after_failures if settings_row else 2
     items: list[AlertStatusResponse] = []
     for entry in _alert_state.get_entries():
         rule_type = entry["type"]
@@ -1027,7 +1031,21 @@ async def alert_status(
             if resource_type is not None
             else index.global_until
         )
+        details = entry.get("details", {})
+        current = details.get("current")
+        checked_at = datetime.fromisoformat(current["checked_at"]) if current else None
+        stale = checked_at is None or (datetime.now(timezone.utc) - checked_at).total_seconds() > interval * 2
         items.append(AlertStatusResponse(
+            current=current,
+            incident=details.get("incident"),
+            collection_error=details.get("collection_error"),
+            attempted_at=details.get("attempted_at"),
+            stale=stale,
+            success_count=entry.get("success_count", 0),
+            fail_count=entry.get("fail_count", 0),
+            resolve_after_successes=recovery_count,
+            trigger_after_failures=trigger_count,
+            check_interval_seconds=interval,
             # ``target`` stays the friendly label for backwards compatibility;
             # resource_type/resource_id carry the addressable mute key.
             target=entry["display_target"],

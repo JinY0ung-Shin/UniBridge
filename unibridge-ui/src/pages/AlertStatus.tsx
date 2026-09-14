@@ -221,6 +221,47 @@ function MuteCell({
   );
 }
 
+export function AlertDetails({ entry }: { entry: AlertStatusEntry }) {
+  const { t } = useTranslation();
+  const current = entry.current;
+  const unavailable = !current || entry.stale || !!entry.collection_error;
+  const recovering = entry.status === 'alert' && current?.healthy;
+  const pending = entry.status === 'ok' && current && !current.healthy;
+  const status = unavailable ? t('alerts.observationUnavailable')
+    : recovering ? t('alerts.observationRecovering', { count: entry.success_count ?? 0, total: entry.resolve_after_successes ?? 5 })
+    : pending ? t('alerts.observationPending', { count: entry.fail_count ?? 0, total: entry.trigger_after_failures ?? 2 })
+    : current?.healthy ? t('alerts.statusHealthy') : t('alerts.observationFailing');
+  return (
+    <div className="alert-observation">
+      <strong className={unavailable ? 'alert-observation--unavailable' : ''}>{status}</strong>
+      {entry.status === 'alert' && (
+        <div><span className="alert-observation-label">{t('alerts.observationIncident')}: </span>
+          {entry.incident?.message || t('alerts.observationNoIncident')}
+          {entry.incident?.reason && <span> ({t(`alerts.observationReason_${entry.incident.reason}`, { defaultValue: entry.incident.reason })})</span>}
+          {entry.incident?.value != null && <span> · {entry.incident.value.toFixed(1)}{entry.incident.unit ?? ''}
+            {entry.incident.threshold != null && <> / {t('alerts.observationThreshold')} {entry.incident.threshold}{entry.incident.unit ?? ''}</>}
+          </span>}
+        </div>
+      )}
+      {current && <>
+        <div><span className="alert-observation-label">{t(unavailable ? 'alerts.observationLastKnown' : 'alerts.observationCurrent')}: </span>
+          {current.message || (current.healthy ? t('alerts.statusHealthy') : t('alerts.observationFailing'))}
+          {current.reason && <span> ({t(`alerts.observationReason_${current.reason}`, { defaultValue: current.reason })})</span>}
+        </div>
+        {current.value != null && <div>
+          {t('alerts.observationValue')}: {current.value.toFixed(1)}{current.unit ?? ''}
+          {current.threshold != null && <> · {t('alerts.observationThreshold')}: {current.threshold}{current.unit ?? ''}</>}
+        </div>}
+        {current.requests != null && <div>{t('alerts.observationRequests', { count: Math.round(current.requests), minimum: current.min_requests ?? 0 })}</div>}
+        <div className="alert-observation-meta">{t('alerts.observationChecked')}: {formatKST(current.checked_at)}</div>
+      </>}
+      {entry.collection_error && <div className="alert-observation--unavailable">{t('alerts.observationCollectionFailed')}: {entry.collection_error}</div>}
+      {entry.attempted_at && <div className="alert-observation-meta">{t('alerts.observationAttempted')}: {formatKST(entry.attempted_at)}</div>}
+      <div className="alert-observation-meta">{t('alerts.observationInterval', { seconds: entry.check_interval_seconds ?? 60 })}</div>
+    </div>
+  );
+}
+
 function AlertStatus() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -411,6 +452,7 @@ function AlertStatus() {
                     <tr>
                       <th scope="col">{t('alerts.ruleType')}</th>
                       <th scope="col">{t('alerts.target')}</th>
+                      <th scope="col">{t('alerts.observationDetails')}</th>
                       <th scope="col">{t('alerts.statusSince')}</th>
                       <th scope="col">{t('alerts.statusDuration')}</th>
                       <th scope="col">{t('alerts.muteColumn')}</th>
@@ -433,6 +475,7 @@ function AlertStatus() {
                           )}
                         </td>
                         <td className="cell-target">{e.target || '*'}</td>
+                        <td><AlertDetails entry={e} /></td>
                         <td className="cell-timestamp">{formatKST(e.since)}</td>
                         <td className="cell-duration">{formatDuration(e.since)}</td>
                         <td>{renderMuteCell(e)}</td>
@@ -461,6 +504,7 @@ function AlertStatus() {
                     <tr>
                       <th scope="col">{t('alerts.ruleType')}</th>
                       <th scope="col">{t('alerts.target')}</th>
+                      <th scope="col">{t('alerts.observationDetails')}</th>
                       <th scope="col">{t('alerts.muteColumn')}</th>
                     </tr>
                   </thead>
@@ -476,6 +520,7 @@ function AlertStatus() {
                           </span>
                         </td>
                         <td className="cell-target">{e.target || '*'}</td>
+                        <td><AlertDetails entry={e} /></td>
                         <td>{renderMuteCell(e)}</td>
                       </tr>
                     ))}
