@@ -64,6 +64,19 @@ SERVER_ALERT_TYPES = (
     "server_mem",
 ) + GPU_ALERT_TYPES
 
+# Human labels for host signals (used in notifications); single source so the
+# evaluator and any synthesised signals can never drift apart.
+HOST_SIGNAL_LABELS: dict[str, str] = {
+    "server_down": "서버 상태",
+    "server_disk": "서버 디스크 사용률",
+    "server_disk_forecast": "서버 디스크 예측",
+    "server_cpu": "서버 CPU 사용률",
+    "server_mem": "서버 메모리 사용률",
+    "server_gpu_down": "서버 GPU 수집 상태",
+    "server_gpu_util": "서버 GPU 사용률",
+    "server_gpu_mem": "서버 GPU 메모리 사용률",
+}
+
 
 def _job() -> str:
     return settings.NODE_EXPORTER_JOB
@@ -494,6 +507,70 @@ def _effective(override: float | None, default: float) -> float:
 # ── Evaluation ───────────────────────────────────────────────────────────────
 
 
+# Why a host signal is switched off, as a ``{display}`` template rendered by the
+# caller. Templates rather than finished strings because the alert checker knows
+# the display name each state entry was stored under, while this module only
+# sees the host row.
+DISABLED_FORECAST_MESSAGE = (
+    "Server '{display}' disk fill forecasting is disabled; projection alert cleared."
+)
+DISABLED_GPU_MESSAGE = "Server '{display}' GPU monitoring is disabled; alert cleared."
+DISABLED_GPU_UTIL_MESSAGE = (
+    "Server '{display}' GPU utilisation alerting is disabled (threshold 0); alert cleared."
+)
+DISABLED_GPU_MEM_MESSAGE = (
+    "Server '{display}' GPU memory alerting is disabled (threshold 0); alert cleared."
+)
+
+
+def disabled_signals(
+    hosts: list[Any],
+    thresholds: ServerThresholds,
+) -> dict[tuple[str, str], str]:
+    """(alert_type, host name) pairs that are switched off by configuration, with a
+    human message explaining why -- for enabled hosts only.
+
+    :func:`evaluate_hosts` emits nothing for these, so the checker needs this map
+    to tell "disabled" apart from "collection failed" (which it marks
+    unavailable). Values are ``{display}`` templates; the checker renders them
+    against the display name the entry is stored under.
+
+    Pure and synchronous on purpose: it reads the same host columns and
+    thresholds :func:`evaluate_hosts` consults, so the two can never disagree
+    about which signals exist, without a second Prometheus round trip.
+    """
+    off: dict[tuple[str, str], str] = {}
+    forecast_off = not (thresholds.forecast_hours and thresholds.forecast_hours > 0)
+    for host in hosts:
+        if not getattr(host, "enabled", True):
+            continue
+        name = str(getattr(host, "name", "") or "")
+        if not name:
+            continue
+        if forecast_off:
+            off[("server_disk_forecast", name)] = DISABLED_FORECAST_MESSAGE
+        if not _gpu_address(host):
+            # Defensive: the servers router already clears these when GPU
+            # monitoring is switched off for a host, so this only catches state
+            # that escaped it (an interrupted request, a restored backup).
+            for alert_type in GPU_ALERT_TYPES:
+                off[(alert_type, name)] = DISABLED_GPU_MESSAGE
+            continue
+        # A threshold of 0 means "do not alert on this" -- the same test
+        # ``evaluate_hosts`` applies in steps 6a/6b before emitting a signal.
+        util_warn = _effective(
+            getattr(host, "gpu_util_warn_pct", None), thresholds.gpu_util_warn_pct
+        )
+        if util_warn <= 0:
+            off[("server_gpu_util", name)] = DISABLED_GPU_UTIL_MESSAGE
+        mem_warn = _effective(
+            getattr(host, "gpu_mem_warn_pct", None), thresholds.gpu_mem_warn_pct
+        )
+        if mem_warn <= 0:
+            off[("server_gpu_mem", name)] = DISABLED_GPU_MEM_MESSAGE
+    return off
+
+
 async def evaluate_hosts(
     hosts: list[Any],
     thresholds: ServerThresholds,
@@ -553,7 +630,7 @@ async def evaluate_hosts(
                 if is_up else
                 f"Server '{display}' is unreachable (node_exporter scrape is down)."
             ),
-            monitor_label="서버 상태",
+            monitor_label=HOST_SIGNAL_LABELS["server_down"],
             description=description,
         ))
         # When a host is down its other series are stale/absent — skip them so a
@@ -594,7 +671,7 @@ async def evaluate_hosts(
                     f"Server '{display}' disk usage is {disk_pct:.1f}% "
                     f"(warn {warn:.0f}% / crit {crit:.0f}%)."
                 ),
-                monitor_label="서버 디스크 사용률",
+                monitor_label=HOST_SIGNAL_LABELS["server_disk"],
                 description=description,
             ))
 
@@ -617,7 +694,7 @@ async def evaluate_hosts(
                             if will_fill else
                             f"Server '{display}' disk fill projection cleared."
                         ),
-                        monitor_label="서버 디스크 예측",
+                        monitor_label=HOST_SIGNAL_LABELS["server_disk_forecast"],
                         description=description,
                     ))
 
@@ -634,7 +711,7 @@ async def evaluate_hosts(
                 value=cpu_pct,
                 threshold=warn,
                 message=f"Server '{display}' CPU usage is {cpu_pct:.1f}% (threshold {warn:.0f}%).",
-                monitor_label="서버 CPU 사용률",
+                monitor_label=HOST_SIGNAL_LABELS["server_cpu"],
                 description=description,
             ))
 
@@ -651,7 +728,7 @@ async def evaluate_hosts(
                 value=mem_pct,
                 threshold=warn,
                 message=f"Server '{display}' memory usage is {mem_pct:.1f}% (threshold {warn:.0f}%).",
-                monitor_label="서버 메모리 사용률",
+                monitor_label=HOST_SIGNAL_LABELS["server_mem"],
                 description=description,
             ))
 
@@ -673,7 +750,7 @@ async def evaluate_hosts(
                 if gpu_is_up else
                 f"Server '{display}' GPU metrics are unavailable (dcgm-exporter scrape is down)."
             ),
-            monitor_label="서버 GPU 수집 상태",
+            monitor_label=HOST_SIGNAL_LABELS["server_gpu_down"],
             description=description,
         ))
         # Same reasoning as the node-down skip above: with the exporter down the
@@ -697,7 +774,7 @@ async def evaluate_hosts(
                     f"Server '{display}' GPU usage is {gpu_util_pct:.1f}% "
                     f"(threshold {warn:.0f}%, avg across GPUs)."
                 ),
-                monitor_label="서버 GPU 사용률",
+                monitor_label=HOST_SIGNAL_LABELS["server_gpu_util"],
                 description=description,
             ))
 
@@ -717,7 +794,7 @@ async def evaluate_hosts(
                     f"Server '{display}' GPU memory usage is {gpu_mem_pct:.1f}% "
                     f"(threshold {warn:.0f}%, avg across GPUs)."
                 ),
-                monitor_label="서버 GPU 메모리 사용률",
+                monitor_label=HOST_SIGNAL_LABELS["server_gpu_mem"],
                 description=description,
             ))
 

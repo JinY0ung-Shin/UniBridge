@@ -419,6 +419,16 @@ async def test_check_server_health_persists_and_dispatches_transition(monkeypatc
     }
 
 
+def _stub_discard(monkeypatch) -> AsyncMock:
+    """Replace the retire-time discard with a memory-only one (no DB in unit tests)."""
+    async def _discard(state: AlertStateManager, alert_type: str, target: str) -> None:
+        state.discard(alert_type, target)
+
+    mock = AsyncMock(side_effect=_discard)
+    monkeypatch.setattr(alert_checker, "_discard_state_safely", mock)
+    return mock
+
+
 def _seed_active_forecast_alert(state: AlertStateManager) -> None:
     assert state.update(
         "server_disk_forecast", "host-a",
@@ -467,6 +477,7 @@ async def test_check_server_health_resolves_forecast_alert_when_forecast_disable
     monkeypatch.setattr(alert_checker, "dispatch_alert", dispatch)
     state = AlertStateManager()
     _seed_active_forecast_alert(state)
+    discard = _stub_discard(monkeypatch)
 
     # resolve_after_successes=5 is deliberate: an admin switching the forecast
     # off must clear the alert on this very cycle, damping notwithstanding.
@@ -474,7 +485,8 @@ async def test_check_server_health_resolves_forecast_alert_when_forecast_disable
         state, trigger_after_failures=1, resolve_after_successes=5
     )
 
-    assert state.get_status("server_disk_forecast", "host-a") == "ok"
+    assert state.get_entry("server_disk_forecast", "host-a") is None
+    discard.assert_awaited_once_with(state, "server_disk_forecast", "host-a")
     evaluate.assert_awaited_once()
     persist.assert_awaited_once_with(state, "server_disk_forecast", "host-a")
     dispatch.assert_awaited_once()
@@ -500,12 +512,14 @@ async def test_check_server_health_resolves_forecast_alert_with_no_host_enabled(
     monkeypatch.setattr(alert_checker, "dispatch_alert", dispatch)
     state = AlertStateManager()
     _seed_active_forecast_alert(state)
+    discard = _stub_discard(monkeypatch)
 
     await alert_checker._check_server_health(
         state, trigger_after_failures=1, resolve_after_successes=5
     )
 
-    assert state.get_status("server_disk_forecast", "host-a") == "ok"
+    assert state.get_entry("server_disk_forecast", "host-a") is None
+    discard.assert_awaited_once_with(state, "server_disk_forecast", "host-a")
     evaluate.assert_not_awaited()
     persist.assert_awaited_once_with(state, "server_disk_forecast", "host-a")
     dispatch.assert_awaited_once()
@@ -598,15 +612,229 @@ async def test_check_server_health_clears_pending_forecast_failures_when_disable
     ) is None
     assert state.get_entry("server_disk_forecast", "host-a")["fail_count"] == 1
 
+    discard = _stub_discard(monkeypatch)
+
     await alert_checker._check_server_health(
         state, trigger_after_failures=2, resolve_after_successes=5
     )
 
-    entry = state.get_entry("server_disk_forecast", "host-a")
-    assert entry["status"] == "ok"
-    assert entry["fail_count"] == 0
+    # The pending streak is cleared by the synthesised healthy signal, and the
+    # row itself is retired in the same cycle — a check that is off has no status.
+    assert state.get_entry("server_disk_forecast", "host-a") is None
+    discard.assert_awaited_once_with(state, "server_disk_forecast", "host-a")
     persist.assert_awaited_once_with(state, "server_disk_forecast", "host-a")
     dispatch.assert_not_awaited()
+
+
+
+def _gpu_host(**overrides):
+    """An enabled GPU host; only the attributes a test cares about are set."""
+    return SimpleNamespace(
+        name="gpu-a", enabled=True, gpu_address="10.0.0.1:9400", **overrides
+    )
+
+
+def _server_checker_stubs(monkeypatch, *, hosts, thresholds, signals=()):
+    """Wire _check_server_health to fixed config/evaluation and DB-free side effects."""
+    monkeypatch.setattr(
+        alert_checker,
+        "_load_server_monitoring",
+        AsyncMock(return_value=(list(hosts), thresholds, 0)),
+    )
+    monkeypatch.setattr(
+        alert_checker.server_monitor, "evaluate_hosts",
+        AsyncMock(return_value=list(signals)),
+    )
+    persist = AsyncMock()
+    dispatch = AsyncMock()
+    monkeypatch.setattr(alert_checker, "_persist_state_safely", persist)
+    monkeypatch.setattr(alert_checker, "dispatch_alert", dispatch)
+    return persist, dispatch, _stub_discard(monkeypatch)
+
+
+async def test_check_server_health_retires_gpu_util_alert_when_threshold_zeroed(
+    monkeypatch
+) -> None:
+    """A per-host threshold of 0 resolves the open alert and drops the row."""
+    persist, dispatch, discard = _server_checker_stubs(
+        monkeypatch,
+        hosts=[_gpu_host(gpu_util_warn_pct=0)],
+        thresholds=alert_checker.ServerThresholds(),
+    )
+    state = AlertStateManager()
+    assert state.update(
+        "server_gpu_util", "gpu-a",
+        is_healthy=False,
+        trigger_after_failures=1,
+        display_target="GPU A",
+        severity="warning",
+    ) == "triggered"
+
+    # resolve_after_successes=5: damping must not hold open an incident whose
+    # check will never report again.
+    await alert_checker._check_server_health(
+        state, trigger_after_failures=1, resolve_after_successes=5
+    )
+
+    assert state.get_entry("server_gpu_util", "gpu-a") is None
+    discard.assert_awaited_once_with(state, "server_gpu_util", "gpu-a")
+    persist.assert_awaited_once_with(state, "server_gpu_util", "gpu-a")
+    dispatch.assert_awaited_once()
+    assert dispatch.await_args.kwargs == {
+        "resource_type": "server",
+        "resource_id": "gpu-a",
+        "alert_type": "resolved",
+        "rule_type": "server_gpu_util",
+        "target": "gpu-a",
+        "message": (
+            "Server 'GPU A' GPU utilisation alerting is disabled (threshold 0); "
+            "alert cleared."
+        ),
+        "display_target": "GPU A",
+        "rate": None,
+        "threshold": None,
+        "monitor_label": "서버 GPU 사용률",
+        "severity": None,
+        "target_description": "",
+    }
+    # Nothing was left behind to be misreported as a collection failure.
+    assert state.get_entries() == []
+
+
+async def test_check_server_health_discards_ok_gpu_entry_when_global_threshold_zeroed(
+    monkeypatch
+) -> None:
+    """A healthy row for a switched-off check is retired silently."""
+    persist, dispatch, discard = _server_checker_stubs(
+        monkeypatch,
+        hosts=[_gpu_host(gpu_util_warn_pct=None)],
+        thresholds=alert_checker.ServerThresholds(gpu_util_warn_pct=0),
+    )
+    state = AlertStateManager()
+    state.update(
+        "server_gpu_util", "gpu-a",
+        is_healthy=True,
+        trigger_after_failures=1,
+        display_target="GPU A",
+    )
+
+    await alert_checker._check_server_health(
+        state, trigger_after_failures=1, resolve_after_successes=5
+    )
+
+    assert state.get_entry("server_gpu_util", "gpu-a") is None
+    discard.assert_awaited_once_with(state, "server_gpu_util", "gpu-a")
+    persist.assert_not_awaited()
+    dispatch.assert_not_awaited()
+
+
+async def test_check_server_health_still_marks_missing_gpu_signal_unavailable(
+    monkeypatch
+) -> None:
+    """A positive threshold with no signal is a collection failure, not a retirement."""
+    persist, dispatch, discard = _server_checker_stubs(
+        monkeypatch,
+        hosts=[_gpu_host(gpu_util_warn_pct=90)],
+        thresholds=alert_checker.ServerThresholds(),
+    )
+    state = AlertStateManager()
+    state.update(
+        "server_gpu_util", "gpu-a",
+        is_healthy=True,
+        trigger_after_failures=1,
+        display_target="GPU A",
+    )
+
+    await alert_checker._check_server_health(
+        state, trigger_after_failures=1, resolve_after_successes=5
+    )
+
+    entry = state.get_entry("server_gpu_util", "gpu-a")
+    assert entry is not None
+    assert entry["details"]["collection_error"]
+    discard.assert_not_awaited()
+    persist.assert_awaited_once_with(state, "server_gpu_util", "gpu-a")
+    dispatch.assert_not_awaited()
+
+
+async def test_check_server_health_retires_only_the_disabled_gpu_signal(
+    monkeypatch
+) -> None:
+    """Zeroing gpu_mem leaves the still-enabled gpu_util row reporting normally."""
+    util_signal = alert_checker.server_monitor.HostSignal(
+        alert_type="server_gpu_util",
+        target="gpu-a",
+        display="GPU A",
+        is_healthy=True,
+        severity=None,
+        value=12.0,
+        threshold=90.0,
+        message="Server 'GPU A' GPU usage is 12.0% (threshold 90%, avg across GPUs).",
+        monitor_label="서버 GPU 사용률",
+        description="",
+    )
+    persist, dispatch, discard = _server_checker_stubs(
+        monkeypatch,
+        hosts=[_gpu_host(gpu_mem_warn_pct=0)],
+        thresholds=alert_checker.ServerThresholds(),
+        signals=[util_signal],
+    )
+    state = AlertStateManager()
+    for alert_type in ("server_gpu_util", "server_gpu_mem"):
+        state.update(
+            alert_type, "gpu-a",
+            is_healthy=True,
+            trigger_after_failures=1,
+            display_target="GPU A",
+        )
+
+    await alert_checker._check_server_health(
+        state, trigger_after_failures=1, resolve_after_successes=5
+    )
+
+    assert state.get_entry("server_gpu_mem", "gpu-a") is None
+    discard.assert_awaited_once_with(state, "server_gpu_mem", "gpu-a")
+    entry = state.get_entry("server_gpu_util", "gpu-a")
+    assert entry is not None
+    assert entry["details"]["current"]["value"] == 12.0
+    assert "collection_error" not in entry["details"]
+    persist.assert_awaited_once_with(state, "server_gpu_util", "gpu-a")
+    dispatch.assert_not_awaited()
+
+
+async def test_discard_state_safely_removes_memory_and_db_row(db_session, monkeypatch) -> None:
+    """Retiring a row must reach the DB (delete + commit), not just the in-memory map."""
+    from app.services.alert_state import load_alert_state_from_db, save_alert_state_to_db
+
+    state = AlertStateManager()
+    state.update(
+        "server_gpu_util", "gpu-a",
+        is_healthy=True, trigger_after_failures=1, display_target="GPU A",
+    )
+    await save_alert_state_to_db(db_session, state, "server_gpu_util", "gpu-a")
+    monkeypatch.setattr(alert_checker, "async_session", lambda: _SessionContext(db_session))
+
+    await alert_checker._discard_state_safely(state, "server_gpu_util", "gpu-a")
+
+    assert state.get_entry("server_gpu_util", "gpu-a") is None
+    restored = AlertStateManager()
+    await load_alert_state_from_db(db_session, restored)
+    assert restored.get_entry("server_gpu_util", "gpu-a") is None
+
+
+async def test_discard_state_safely_clears_memory_even_when_db_fails(monkeypatch, caplog) -> None:
+    state = AlertStateManager()
+    state.update("server_gpu_util", "gpu-a", is_healthy=True, trigger_after_failures=1)
+    monkeypatch.setattr(
+        alert_checker, "async_session",
+        lambda: _SessionContext(enter_error=RuntimeError("db down")),
+    )
+
+    await alert_checker._discard_state_safely(state, "server_gpu_util", "gpu-a")
+
+    assert state.get_entry("server_gpu_util", "gpu-a") is None
+    assert "Failed to delete alert state server_gpu_util/gpu-a" in caplog.text
+
 
 async def test_load_service_monitoring_reads_services_and_repeat(monkeypatch) -> None:
     service = SimpleNamespace(name="orders", enabled=True)

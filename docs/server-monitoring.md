@@ -221,6 +221,11 @@ dies you get one `server_down`, not a pair. Thresholds default to 90/90 in
 **Alert settings → Server thresholds**, with per-host overrides on each server;
 **0 disables** that check for the host.
 
+Setting a threshold to 0 (or the forecast horizon to 0) *retires* that signal's
+status row: an open alert is resolved with a normal recovery notification, and
+the row disappears from Alert Status rather than lingering as "unavailable".
+Re-enabling the check recreates the row on the next check.
+
 > **GPU utilisation pinned at 100% is normal** on training nodes — that's the
 > hardware doing its job, not an incident. On those hosts set the util threshold
 > to 0 (off) or to something deliberately high; memory and `server_gpu_down` are
@@ -331,7 +336,8 @@ value and the rule threshold. Connection checks expose known diagnostic categori
 
 An incident can remain open while its latest observation is healthy: the page
 shows the recovery streak, for example **3/5 checks**, and the configured check
-interval in seconds. Missing collection results are marked unavailable. Observations
+interval in seconds. Missing collection results are marked unavailable; checks
+switched off by configuration are retired instead (see GPU signals above). Observations
 older than two configured check intervals are also marked unavailable; their values
 remain visible explicitly as last-known observations, not current measurements.
 

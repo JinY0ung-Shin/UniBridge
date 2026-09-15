@@ -8,10 +8,12 @@ from unittest.mock import AsyncMock, patch
 
 from app.services import server_monitor
 from app.services.server_monitor import (
+    GPU_ALERT_TYPES,
     ServerThresholds,
     build_gpu_targets,
     build_service_targets,
     build_targets,
+    disabled_signals,
     evaluate_hosts,
     evaluate_services,
     metric_query,
@@ -469,6 +471,82 @@ async def test_per_host_zero_gpu_threshold_disables_for_that_host():
     types = {s.alert_type for s in signals}
     assert "server_gpu_util" not in types
     assert "server_gpu_mem" in types
+
+
+# ── disabled signals (what evaluate_hosts deliberately omits) ─────────────
+
+_GPU_ADDRESS = "10.0.0.1:9400"
+
+
+def test_disabled_signals_reports_zero_gpu_thresholds():
+    th = ServerThresholds(gpu_util_warn_pct=0, gpu_mem_warn_pct=0, forecast_hours=24)
+    off = disabled_signals([_host("gpu1", gpu_address=_GPU_ADDRESS)], th)
+    assert set(off) == {("server_gpu_util", "gpu1"), ("server_gpu_mem", "gpu1")}
+    assert off[("server_gpu_util", "gpu1")].format(display="GPU 1") == (
+        "Server 'GPU 1' GPU utilisation alerting is disabled (threshold 0); alert cleared."
+    )
+    assert off[("server_gpu_mem", "gpu1")].format(display="GPU 1") == (
+        "Server 'GPU 1' GPU memory alerting is disabled (threshold 0); alert cleared."
+    )
+
+
+def test_disabled_signals_respects_positive_per_host_override():
+    """A per-host threshold re-enables one signal while the global 0 disables the other."""
+    th = ServerThresholds(gpu_util_warn_pct=0, gpu_mem_warn_pct=0, forecast_hours=24)
+    hosts = [
+        _host("gpu1", gpu_address=_GPU_ADDRESS, gpu_util_warn_pct=80),
+        _host("gpu2", "10.0.0.2:9100", gpu_address="10.0.0.2:9400"),
+    ]
+    off = disabled_signals(hosts, th)
+    assert ("server_gpu_util", "gpu1") not in off
+    assert ("server_gpu_mem", "gpu1") in off
+    assert ("server_gpu_util", "gpu2") in off
+
+
+def test_disabled_signals_covers_every_gpu_type_without_an_address():
+    th = ServerThresholds(forecast_hours=24)
+    off = disabled_signals([_host("web1")], th)
+    assert set(off) == {(t, "web1") for t in GPU_ALERT_TYPES}
+    assert off[("server_gpu_down", "web1")].format(display="web1") == (
+        "Server 'web1' GPU monitoring is disabled; alert cleared."
+    )
+
+
+def test_disabled_signals_never_disables_scrape_health_for_a_gpu_host():
+    """server_gpu_down is not threshold-gated, so it is never retired on a GPU host."""
+    th = ServerThresholds(gpu_util_warn_pct=0, gpu_mem_warn_pct=0, forecast_hours=0)
+    off = disabled_signals([_host("gpu1", gpu_address=_GPU_ADDRESS)], th)
+    assert ("server_gpu_down", "gpu1") not in off
+
+
+def test_disabled_signals_ignores_disabled_hosts():
+    th = ServerThresholds(gpu_util_warn_pct=0, gpu_mem_warn_pct=0, forecast_hours=0)
+    hosts = [_host("gpu1", gpu_address=_GPU_ADDRESS, enabled=False), _host("web1", enabled=False)]
+    assert disabled_signals(hosts, th) == {}
+
+
+def test_disabled_signals_reports_forecast_off_per_enabled_host():
+    th = ServerThresholds(forecast_hours=0)
+    hosts = [_host("web1"), _host("gpu1", gpu_address=_GPU_ADDRESS)]
+    off = disabled_signals(hosts, th)
+    assert ("server_disk_forecast", "web1") in off
+    assert ("server_disk_forecast", "gpu1") in off
+    # Byte-for-byte the wording the forecast recovery mail has always used.
+    assert off[("server_disk_forecast", "web1")].format(display="Web 1") == (
+        "Server 'Web 1' disk fill forecasting is disabled; projection alert cleared."
+    )
+
+
+def test_disabled_signals_tolerates_hosts_without_optional_attributes():
+    """Bare host rows (no gpu/threshold columns) must not raise."""
+    th = ServerThresholds(forecast_hours=0)
+    off = disabled_signals([SimpleNamespace(name="h", enabled=True)], th)
+    assert set(off) == {(t, "h") for t in GPU_ALERT_TYPES} | {("server_disk_forecast", "h")}
+
+
+def test_disabled_signals_skips_hosts_without_a_name():
+    th = ServerThresholds(forecast_hours=0)
+    assert disabled_signals([SimpleNamespace(name="", enabled=True)], th) == {}
 
 
 # ── state-machine: severity escalation + repeat ───────────────────────────────
