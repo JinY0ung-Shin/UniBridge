@@ -132,12 +132,12 @@ services:
     restart: unless-stopped
     init: true
     logging: *default-logging
-    mem_limit: 256m
+    mem_limit: 512m
     cpus: "0.50"
     deploy:
       resources:
         limits:
-          memory: 256m
+          memory: 512m
           cpus: "0.50"
     environment:
       - LITELLM_URL=${LITELLM_CONVERTER_UPSTREAM:-https://litellm:4000}

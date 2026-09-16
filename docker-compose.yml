@@ -517,12 +517,12 @@ services:
     image: ghcr.io/berriai/litellm:main-v1.83.14-stable.patch.3
     restart: unless-stopped
     logging: *default-logging
-    mem_limit: 1g
+    mem_limit: 2g
     cpus: "1.00"
     deploy:
       resources:
         limits:
-          memory: 1g
+          memory: 2g
           cpus: "1.00"
     entrypoint: ["sh", "-c"]
     command:
@@ -605,12 +605,12 @@ services:
     restart: unless-stopped
     init: true
     logging: *default-logging
-    mem_limit: 256m
+    mem_limit: 512m
     cpus: "0.50"
     deploy:
       resources:
         limits:
-          memory: 256m
+          memory: 512m
           cpus: "0.50"
     environment:
       - LITELLM_URL=${LITELLM_CONVERTER_UPSTREAM:-https://litellm:4000}
