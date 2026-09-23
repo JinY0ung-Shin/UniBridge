@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -85,6 +86,57 @@ REQUIRED_BLANK_ENV_SECRETS = {
     "LITELLM_MASTER_KEY",
 }
 
+BLUEGREEN_SHARED_ENV_SERVICES = ("unibridge-service", "llm-converter", "unibridge-ui")
+
+# Keys whose value expression legitimately differs between docker-compose.yml
+# (single stack) and docker-compose.app.yml (one project per color). Everything
+# else must be identical, or the split production stack silently runs on
+# different settings than the single-stack file documents.
+COLOR_SPECIFIC_ENV = {
+    # Route target pinned to the color APISIX currently serves, not this one.
+    "APISIX_UNIBRIDGE_SERVICE_NODE",
+    # Same, for the converter upstream.
+    "APISIX_LLM_CONVERTER_NODE",
+    # This container's own node identity; empty single-stack = always active.
+    "UNIBRIDGE_SELF_NODE",
+    # Public port: the edge proxy owns it in blue/green, the UI owns it alone
+    # in the single stack.
+    "UNIBRIDGE_UI_PORT",
+    # nginx proxies to the per-color service alias in blue/green.
+    "UNIBRIDGE_SERVICE_UPSTREAM",
+}
+
+COMPOSE_FILES = (
+    COMPOSE_FILE,
+    BLUEGREEN_INFRA_COMPOSE_FILE,
+    BLUEGREEN_APP_COMPOSE_FILE,
+    BLUEGREEN_EDGE_COMPOSE_FILE,
+)
+
+COMPOSE_VARIABLE_PATTERN = re.compile(r"\$\{([A-Z][A-Z0-9_]*)")
+
+# Exported inline by scripts/deploy-bluegreen.sh before every `docker compose`
+# invocation (compose_app / compose_edge / compose_infra), so they never need a
+# .env entry. Keep in sync with that script.
+DEPLOY_SCRIPT_PROVIDED_ENV = {
+    "APP_COLOR",
+    "UNIBRIDGE_UI_PORT",
+    "APISIX_PROVISION_ON_START",
+    "APISIX_UNIBRIDGE_SERVICE_NODE",
+    "APISIX_LLM_CONVERTER_NODE",
+    "UNIBRIDGE_NETWORK_NAME",
+    "EDGE_CONFIG_PATH",
+}
+
+# Operator-supplied image overrides for pulling pre-built images instead of
+# building locally. Deliberately undocumented knobs with safe defaults, so the
+# "known somewhere else in the repo" rule below does not cover them.
+COMPOSE_IMAGE_OVERRIDE_ENV = {
+    "UNIBRIDGE_SERVICE_IMAGE",
+    "LLM_CONVERTER_IMAGE",
+    "UNIBRIDGE_UI_IMAGE",
+}
+
 REQUIRED_REALM_USERNAMES = {"service-account-apihub-service"}
 FORBIDDEN_REALM_USERNAMES = {"apihub-admin", "apihub-dev", "apihub-viewer"}
 
@@ -102,6 +154,60 @@ def _parse_env_assignments(path: Path) -> dict[str, str]:
 
 def _load_yaml(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _service_environment(compose: dict, service: str) -> dict[str, str]:
+    """Parse a service's ``environment:`` list of ``KEY=value`` strings."""
+    entries = compose["services"][service]["environment"]
+    assert isinstance(entries, list), service
+    parsed: dict[str, str] = {}
+    for entry in entries:
+        key, _, value = entry.partition("=")
+        parsed[key] = value
+    return parsed
+
+
+def _env_example_names() -> set[str]:
+    """Names .env.example defines, both live (``NAME=``) and commented-out."""
+    names: set[str] = set()
+    for raw_line in ENV_EXAMPLE_FILE.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^#?\s*([A-Z][A-Z0-9_]*)=", raw_line.strip())
+        if match:
+            names.add(match.group(1))
+    return names
+
+
+def _names_mentioned_outside_compose(candidates: set[str]) -> set[str]:
+    """Subset of ``candidates`` that any other tracked repo file mentions.
+
+    A compose variable that appears nowhere else — not in app config, a script,
+    a Dockerfile or the docs — is a dangling name: its ``${NAME:-default}``
+    can never be overridden because nothing else knows it exists.
+    """
+    listing = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    compose_names = {path.name for path in COMPOSE_FILES}
+    token_pattern = re.compile(r"[A-Z][A-Z0-9_]{2,}")
+    found: set[str] = set()
+    for relative in listing.stdout.split("\0"):
+        if not relative or Path(relative).name in compose_names:
+            continue
+        path = REPO_ROOT / relative
+        try:
+            if not path.is_file() or path.stat().st_size > 2_000_000:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        found |= candidates & set(token_pattern.findall(text))
+        if found == candidates:
+            break
+    return found
 
 
 def test_docker_compose_applies_operational_defaults_to_all_services() -> None:
@@ -235,6 +341,79 @@ def test_bluegreen_app_uses_color_specific_targets_and_deferred_apisix_promotion
     assert (
         "UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service-${APP_COLOR}}"
         in ui_env
+    )
+
+
+def test_bluegreen_app_env_matches_single_stack() -> None:
+    single_stack = _load_yaml(COMPOSE_FILE)
+    bluegreen_app = _load_yaml(BLUEGREEN_APP_COMPOSE_FILE)
+
+    for service in BLUEGREEN_SHARED_ENV_SERVICES:
+        expected = _service_environment(single_stack, service)
+        actual = _service_environment(bluegreen_app, service)
+
+        # No compose file uses `env_file:`, so a key missing from the
+        # blue/green `environment:` list cannot be set in production at all.
+        missing = sorted(set(expected) - set(actual))
+        extra = sorted(set(actual) - set(expected))
+        assert not missing, (
+            f"{service}: docker-compose.app.yml is missing environment keys "
+            f"present in docker-compose.yml: {missing}"
+        )
+        assert not extra, (
+            f"{service}: docker-compose.app.yml defines environment keys "
+            f"absent from docker-compose.yml: {extra}"
+        )
+
+        drifted = sorted(
+            key
+            for key in expected
+            if key not in COLOR_SPECIFIC_ENV and expected[key] != actual[key]
+        )
+        assert not drifted, (
+            f"{service}: value expressions drifted between docker-compose.yml "
+            f"and docker-compose.app.yml for {drifted} — "
+            + "; ".join(
+                f"{key}: root={expected[key]!r} app={actual[key]!r}"
+                for key in drifted
+            )
+        )
+
+        # Guard the allowlist itself: a key listed as color-specific that no
+        # longer differs is stale and hides future drift.
+        stale = sorted(
+            key
+            for key in COLOR_SPECIFIC_ENV & set(expected) & set(actual)
+            if expected[key] == actual[key]
+        )
+        assert not stale, (
+            f"{service}: COLOR_SPECIFIC_ENV entries no longer differ and should "
+            f"be removed from the allowlist: {stale}"
+        )
+
+
+def test_compose_variable_references_are_defined() -> None:
+    referenced: dict[str, list[str]] = {}
+    for compose_path in COMPOSE_FILES:
+        text = compose_path.read_text(encoding="utf-8")
+        for name in COMPOSE_VARIABLE_PATTERN.findall(text):
+            referenced.setdefault(name, []).append(compose_path.name)
+
+    known = (
+        _env_example_names()
+        | DEPLOY_SCRIPT_PROVIDED_ENV
+        | COMPOSE_IMAGE_OVERRIDE_ENV
+    )
+    candidates = set(referenced) - known
+    known |= _names_mentioned_outside_compose(candidates)
+
+    dangling = sorted(set(referenced) - known)
+    assert not dangling, (
+        "compose files reference variables that exist nowhere else in the repo "
+        "(typo, or a knob renamed on one side only): "
+        + "; ".join(
+            f"{name} in {sorted(set(referenced[name]))}" for name in dangling
+        )
     )
 
 

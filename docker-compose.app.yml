@@ -35,7 +35,7 @@ services:
       - TZ=UTC
       - HOST_IP=${HOST_IP:-localhost}
       - KEYCLOAK_PORT=${KEYCLOAK_PORT:-8443}
-      - UNIBRIDGE_UI_PORT=${UNIBRIDGE_EDGE_PORT:-${PUBLIC_UNIBRIDGE_UI_PORT:-3000}}
+      - UNIBRIDGE_UI_PORT=${UNIBRIDGE_EDGE_PORT:-${UNIBRIDGE_UI_PORT:-3000}}
       - META_DB_URL=${META_DB_URL:-postgresql+asyncpg://unibridge:${UNIBRIDGE_DB_PASSWORD}@unibridge-db:5432/unibridge}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
       - JWT_SECRET=${JWT_SECRET}
@@ -50,6 +50,8 @@ services:
       # none (silent 404s — etcd/APISIX is shared, not per-color). The deploy
       # script always sets this explicitly, passing false for inactive colors.
       - APISIX_PROVISION_ON_START=${APISIX_PROVISION_ON_START:-true}
+      - APISIX_QUERY_ROUTE_TIMEOUT=${APISIX_QUERY_ROUTE_TIMEOUT:-310}
+      - APISIX_QUERY_ROUTE_CONNECT_TIMEOUT=${APISIX_QUERY_ROUTE_CONNECT_TIMEOUT:-10}
       - APISIX_UNIBRIDGE_SERVICE_NODE=${APISIX_UNIBRIDGE_SERVICE_NODE:-unibridge-service-${APP_COLOR}:8000}
       - APISIX_LLM_CONVERTER_NODE=${APISIX_LLM_CONVERTER_NODE:-llm-converter-${APP_COLOR}:4001}
       # Blue/green: this container's OWN upstream node identity (always its own
@@ -61,9 +63,12 @@ services:
       - RUN_BACKGROUND_TASKS=${RUN_BACKGROUND_TASKS:-true}
       - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
       - NODE_EXPORTER_JOB=${NODE_EXPORTER_JOB:-nodes}
+      - NODE_EXPORTER_DISK_MOUNTPOINTS=${NODE_EXPORTER_DISK_MOUNTPOINTS:-}
       - PROMETHEUS_FILE_SD_PATH=${PROMETHEUS_FILE_SD_PATH:-/etc/prometheus/file_sd/nodes.json}
       - DCGM_EXPORTER_JOB=${DCGM_EXPORTER_JOB:-gpu-nodes}
       - PROMETHEUS_GPU_FILE_SD_PATH=${PROMETHEUS_GPU_FILE_SD_PATH:-/etc/prometheus/file_sd/gpus.json}
+      - EXTERNAL_SERVICES_JOB=${EXTERNAL_SERVICES_JOB:-external-services}
+      - PROMETHEUS_SERVICES_FILE_SD_PATH=${PROMETHEUS_SERVICES_FILE_SD_PATH:-/etc/prometheus/file_sd/services.json}
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
       # Bearer token verifying the internal Alertmanager webhook receiver.
       # Empty = receiver disabled (503); set it to enable infra-alert email.
@@ -143,10 +148,13 @@ services:
       - LITELLM_URL=${LITELLM_CONVERTER_UPSTREAM:-https://litellm:4000}
       - CONVERTER_TLS_CA=${CONVERTER_TLS_CA-/etc/ssl/litellm-ca.crt}
       - CONVERTER_TLS_VERIFY=${CONVERTER_TLS_VERIFY:-false}
+      # Upstream httpx timeouts (seconds; read 0 = unbounded for long streams).
       - CONVERTER_REQUEST_TIMEOUT=${CONVERTER_REQUEST_TIMEOUT:-0}
       - CONVERTER_CONNECT_TIMEOUT=${CONVERTER_CONNECT_TIMEOUT:-10}
-      - CONVERTER_WRITE_TIMEOUT=${CONVERTER_WRITE_TIMEOUT:-30}
+      - CONVERTER_WRITE_TIMEOUT=${CONVERTER_WRITE_TIMEOUT:-120}
       - CONVERTER_POOL_TIMEOUT=${CONVERTER_POOL_TIMEOUT:-10}
+      # Idle SSE keepalive (seconds) so proxies don't drop silent streams; 0 disables.
+      - CONVERTER_SSE_HEARTBEAT_SECONDS=${CONVERTER_SSE_HEARTBEAT_SECONDS:-15}
       - CONVERTER_RESPONSE_STORE_PATH=${CONVERTER_RESPONSE_STORE_PATH:-/var/lib/llm-converter/responses.sqlite3}
       - CONVERTER_RESPONSE_STORE_TTL=${CONVERTER_RESPONSE_STORE_TTL:-3600}
       - CONVERTER_RESPONSE_STORE_MAX=${CONVERTER_RESPONSE_STORE_MAX:-10000}
