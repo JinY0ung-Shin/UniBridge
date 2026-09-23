@@ -548,6 +548,19 @@ series. API-key (`consumer`) labels are unaffected — admin-created keys alread
 carry their human-readable key name; personal self-service keys show as
 `self_<id>`.
 
+### LiteLLM request timeout and retries
+
+`litellm/config.yaml` caps a single upstream call at `request_timeout: 600`,
+matching the 600s read timeout the APISIX LLM routes already enforce — LiteLLM
+waiting longer than the gateway it sits behind only holds a worker open. The
+timeout is the provider's httpx timeout, so it bounds a connect or an idle read
+against a wedged vLLM/SGLang backend without cutting a stream that keeps
+emitting chunks. `num_retries: 2` still covers connection-level failures, but
+`router_settings.retry_policy.TimeoutErrorRetries: 0` stops a request that
+already timed out from being re-sent, which would otherwise put three copies of
+the same work on a backend that is already saturated. The file is bind-mounted,
+so restart LiteLLM to pick up a change.
+
 ### LiteLLM admin UI SSO
 
 The LiteLLM admin UI (`https://<HOST_IP>:<LITELLM_PORT>/ui`) signs in with

@@ -36,6 +36,9 @@ step "LLM converter tests and coverage"
     --cov-report=term-missing:skip-covered
 )
 
+step "LiteLLM proxy config and callback tests"
+run python3 -m pytest litellm/tests/ -v --tb=short
+
 step "Backend lint"
 (
   cd unibridge-service
@@ -71,7 +74,7 @@ step "Frontend install/lint/test/build"
 )
 
 step "Shell script syntax"
-run bash -n backup/backup.sh backup/restore.sh backup/lib/*.sh keycloak/enable-self-registration.sh
+run bash -n backup/backup.sh backup/restore.sh backup/lib/*.sh keycloak/enable-self-registration.sh scripts/deploy-bluegreen.sh
 run sh -n apisix/docker-entrypoint.sh keycloak/docker-entrypoint.sh unibridge-ui/entrypoint.sh
 
 if [[ "${RUN_LIVE_E2E:-}" == "1" ]]; then

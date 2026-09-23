@@ -12,6 +12,12 @@ litellm_settings:
   service_callback: ["prometheus"]
   enable_end_user_cost_tracking_prometheus_only: true
   drop_params: true
+  # Hard ceiling on a single upstream call, matching the 600s read timeout the
+  # APISIX LLM routes already enforce (app/main.py) — waiting longer than the
+  # gateway is pointless. Implemented as the provider httpx timeout, so it
+  # bounds connect/idle-read on a wedged backend without cutting a stream that
+  # keeps emitting chunks.
+  request_timeout: 600
   num_retries: 2
   # Fine-tuning dataset capture: every successful call is appended as JSONL to
   # the litellm-dataset volume (see litellm/custom_callbacks.py). This is the
@@ -22,6 +28,15 @@ litellm_settings:
   # `"no-log": true` in the request body and silently skip all logging,
   # leaving holes in both the metrics and the captured dataset.
   global_disable_no_log_param: true
+
+router_settings:
+  # num_retries above still covers connection-level failures, but a request
+  # that already burned request_timeout must not be re-sent: retrying it puts
+  # three copies of the same work on a backend that is already saturated.
+  # router_settings overrides litellm_settings for the error classes it lists;
+  # everything not listed here keeps num_retries.
+  retry_policy:
+    TimeoutErrorRetries: 0
 
 model_list: []
 # Models are managed via LiteLLM Admin UI (/ui)
