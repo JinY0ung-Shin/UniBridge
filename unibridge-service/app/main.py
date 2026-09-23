@@ -970,6 +970,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.retention_task = asyncio.create_task(run_retention_loop())
 
+    # Gateway-side expiry enforcement. The LLM routes never reach this app, so
+    # an expired key is only stopped by dropping it from the APISIX
+    # consumer-restriction whitelists — which this loop keeps in sync with the
+    # database on the active color.
+    from app.services.consumer_restrictions import run_expiry_reconcile_loop
+
+    app.state.api_key_expiry_task = asyncio.create_task(run_expiry_reconcile_loop())
+
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────
@@ -980,6 +988,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except asyncio.CancelledError:
             pass
         logger.info("Log retention cleanup stopped")
+
+    if hasattr(app.state, "api_key_expiry_task"):
+        app.state.api_key_expiry_task.cancel()
+        try:
+            await app.state.api_key_expiry_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("API key expiry reconcile stopped")
 
     if hasattr(app.state, "meta_db_metrics_task"):
         app.state.meta_db_metrics_task.cancel()

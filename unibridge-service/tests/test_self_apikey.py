@@ -573,3 +573,175 @@ async def test_expired_self_key_rejected_on_query_api(app, client, seeded_db):
     )
     assert resp.status_code == 401
     assert resp.json()["detail"] == "API key expired"
+
+
+# ── Gateway-side expiry: renew/regenerate restore the route whitelists ───────
+
+
+async def _set_expiry(seeded_db, sub, when):
+    from sqlalchemy import update
+
+    session_factory = async_sessionmaker(
+        seeded_db, class_=AsyncSession, expire_on_commit=False
+    )
+    async with session_factory() as db:
+        await db.execute(
+            update(ApiKeyAccess).where(ApiKeyAccess.owner == sub).values(expires_at=when)
+        )
+        await db.commit()
+
+
+async def _read_expiry(seeded_db, sub):
+    from sqlalchemy import select as sa_select
+
+    session_factory = async_sessionmaker(
+        seeded_db, class_=AsyncSession, expire_on_commit=False
+    )
+    async with session_factory() as db:
+        result = await db.execute(
+            sa_select(ApiKeyAccess).where(ApiKeyAccess.owner == sub)
+        )
+        return result.scalar_one().expires_at
+
+
+@pytest.mark.asyncio
+async def test_renew_readds_the_consumer_to_route_whitelists(app, client, seeded_db):
+    """The expiry reconcile drops a lapsed key from every whitelist; renewing
+    has to put it back, or the key 403s at the gateway until the next cycle."""
+    from datetime import datetime, timedelta, timezone
+
+    _override_user(app, sub="alice-sub-1", username="alice")
+    consumer_name = _self_consumer_name("alice-sub-1")
+    with _patch_apisix() as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        mock_apisix.delete_resource = AsyncMock()
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+
+        assert (await client.post("/admin/api-keys/me")).status_code == 201
+
+    await _set_expiry(
+        seeded_db, "alice-sub-1", datetime.now(timezone.utc) - timedelta(days=1)
+    )
+
+    # APISIX as the reconcile loop left it: the consumer is off every whitelist.
+    with _patch_apisix() as mock_apisix:
+        mock_apisix.get_resource = AsyncMock(return_value={
+            "plugins": {"key-auth": {"key": "the-same-key-value"}},
+        })
+        mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.list_resources = AsyncMock(return_value={"items": [
+            {
+                "id": "query-api", "uri": "/query/*",
+                "plugins": {
+                    "key-auth": {},
+                    "consumer-restriction": {"whitelist": ["__deny_all__"]},
+                },
+            },
+            {
+                "id": "s3-api", "uri": "/s3/*",
+                "plugins": {
+                    "key-auth": {},
+                    "consumer-restriction": {"whitelist": ["__deny_all__"]},
+                },
+            },
+        ]})
+
+        renew = await client.post("/admin/api-keys/me/renew")
+        assert renew.status_code == 200
+
+        route_puts = {
+            call.args[1]: call.args[2]
+            for call in mock_apisix.put_resource.await_args_list
+            if call.args[0] == "routes"
+        }
+
+    assert consumer_name in route_puts["query-api"]["plugins"][
+        "consumer-restriction"]["whitelist"]
+    assert consumer_name in route_puts["s3-api"]["plugins"][
+        "consumer-restriction"]["whitelist"]
+    # The key value was never touched — renew is not a re-issuance.
+    assert renew.json()["key_created"] is False
+
+
+@pytest.mark.asyncio
+async def test_renew_aborts_with_502_and_keeps_the_stored_expiry(app, client, seeded_db):
+    """An APISIX failure must not leave a stored expiry the gateway ignores."""
+    from datetime import datetime, timedelta, timezone
+
+    _override_user(app, sub="alice-sub-1", username="alice")
+    with _patch_apisix() as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        mock_apisix.delete_resource = AsyncMock()
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+
+        assert (await client.post("/admin/api-keys/me")).status_code == 201
+
+    lapsed = datetime.now(timezone.utc) - timedelta(days=1)
+    await _set_expiry(seeded_db, "alice-sub-1", lapsed)
+
+    with _patch_apisix() as mock_apisix:
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        mock_apisix.put_resource = AsyncMock(side_effect=RuntimeError("apisix down"))
+        mock_apisix.list_resources = AsyncMock(return_value={"items": [
+            {
+                "id": "query-api", "uri": "/query/*",
+                "plugins": {
+                    "key-auth": {},
+                    "consumer-restriction": {"whitelist": ["__deny_all__"]},
+                },
+            },
+        ]})
+
+        renew = await client.post("/admin/api-keys/me/renew")
+
+    assert renew.status_code == 502
+    stored = await _read_expiry(seeded_db, "alice-sub-1")
+    assert abs((stored - lapsed).total_seconds()) < 1
+
+
+@pytest.mark.asyncio
+async def test_regenerate_resyncs_the_route_whitelists(app, client, seeded_db):
+    """A regenerated key is a fresh issuance — it belongs back on its routes."""
+    from datetime import datetime, timedelta, timezone
+
+    _override_user(app, sub="alice-sub-1", username="alice")
+    consumer_name = _self_consumer_name("alice-sub-1")
+    with _patch_apisix() as mock_apisix:
+        mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.get_resource = AsyncMock(side_effect=Exception("not found"))
+        mock_apisix.delete_resource = AsyncMock()
+        mock_apisix.list_resources = AsyncMock(return_value={"items": []})
+
+        assert (await client.post("/admin/api-keys/me")).status_code == 201
+
+    await _set_expiry(
+        seeded_db, "alice-sub-1", datetime.now(timezone.utc) - timedelta(days=1)
+    )
+
+    with _patch_apisix() as mock_apisix:
+        mock_apisix.get_resource = AsyncMock(side_effect=_http_status_error(404))
+        mock_apisix.put_resource = AsyncMock(return_value={})
+        mock_apisix.list_resources = AsyncMock(return_value={"items": [
+            {
+                "id": "query-api", "uri": "/query/*",
+                "plugins": {
+                    "key-auth": {},
+                    "consumer-restriction": {"whitelist": ["__deny_all__"]},
+                },
+            },
+        ]})
+
+        regen = await client.post("/admin/api-keys/me/regenerate")
+        assert regen.status_code == 200
+
+        route_puts = {
+            call.args[1]: call.args[2]
+            for call in mock_apisix.put_resource.await_args_list
+            if call.args[0] == "routes"
+        }
+
+    assert consumer_name in route_puts["query-api"]["plugins"][
+        "consumer-restriction"]["whitelist"]
+    assert 29.9 < _days_from_now(regen.json()["expires_at"]) <= 30.0

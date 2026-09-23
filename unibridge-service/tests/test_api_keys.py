@@ -81,10 +81,12 @@ async def test_sync_all_consumer_route_restrictions_replays_stored_allowed_route
                 SimpleNamespace(
                     consumer_name="limited-app",
                     allowed_routes=json.dumps(["llm-proxy"]),
+                    expires_at=None,
                 ),
                 SimpleNamespace(
                     consumer_name="deny-app",
                     allowed_routes=None,
+                    expires_at=None,
                 ),
             ]
         )
@@ -257,10 +259,12 @@ async def test_sync_all_consumer_route_restrictions_skips_malformed_allowed_rout
                 SimpleNamespace(
                     consumer_name="bad-app",
                     allowed_routes=malformed_allowed_routes,
+                    expires_at=None,
                 ),
                 SimpleNamespace(
                     consumer_name="good-app",
                     allowed_routes=json.dumps(["llm-proxy"]),
+                    expires_at=None,
                 ),
             ]
         )
@@ -281,7 +285,9 @@ async def test_sync_all_consumer_route_restrictions_skips_malformed_allowed_rout
 
     with (
         patch("app.routers.api_keys.apisix_client") as mock_apisix,
-        patch("app.routers.api_keys.logger.warning") as logger_warning,
+        patch(
+            "app.services.consumer_restrictions.logger.warning"
+        ) as logger_warning,
     ):
         mock_apisix.list_resources = AsyncMock(side_effect=list_resources)
         mock_apisix.put_resource = AsyncMock(side_effect=put_resource)
@@ -289,7 +295,8 @@ async def test_sync_all_consumer_route_restrictions_skips_malformed_allowed_rout
         await sync_all_consumer_route_restrictions(db)
 
     logger_warning.assert_called_once_with(
-        "Skipping malformed allowed_routes for consumer '%s' during startup replay",
+        "Skipping malformed allowed_routes for consumer '%s' during "
+        "consumer-restriction reconcile",
         "bad-app",
     )
     assert route_state["llm-proxy"]["plugins"]["consumer-restriction"] == {

@@ -13,7 +13,9 @@ Python 3.12, SQLAlchemy async + Alembic, meta store = SQLite.
 - `app/database.py`    — engine, `get_db()`, `init_db()` (auto `alembic upgrade head`).
 - `app/routers/`       — admin, alerts, api_keys, gateway, nas, query, query_history, roles, s3, users.
 - `app/services/`      — APISIX client, connection/query executors, alert pipeline,
-  S3/NAS managers, SQL/SPARQL validators, audit, openapi export, etc.
+  S3/NAS managers, SQL/SPARQL validators, audit, openapi export,
+  `consumer_restrictions.py` (reconciles APISIX consumer-restriction whitelists
+  with the API-key store — this is where key expiry is enforced at the gateway), etc.
 - `app/middleware/rate_limiter.py` — per-user rate + concurrency limits.
 
 ## Migrations

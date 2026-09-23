@@ -346,6 +346,22 @@ Operational defaults in `docker-compose.yml`:
 - `unibridge-service` and `unibridge-ui` run with `init: true` for PID 1 signal handling and child process reaping.
 - Prometheus scrapes APISIX, LiteLLM, unibridge-service `/metrics`, and Blackbox TCP probes for the Postgres-backed services. Alert rules live under `prometheus/rules/`.
 
+### API key expiry at the gateway
+
+Self-service keys carry a 30-day TTL (`expires_at`); admin-created keys default
+to no expiry. The app rejects an expired key with `401 API key expired`, but the
+LLM routes (`llm-proxy`, `llm-messages`, `llm-responses`, `llm-models`) go APISIX
+→ llm-converter → LiteLLM without ever reaching the app, so expiry is enforced at
+the gateway instead: every `key-auth` route's `consumer-restriction` whitelist is
+reconciled against the database at boot and then every 5 minutes on the active
+blue/green color, and an expired key is dropped from all of them. It then gets
+`403` from APISIX on every gateway route. The APISIX consumer itself is kept —
+it holds the only copy of the key value — so **Renew** (same key value) and
+**Regenerate** (new key value) both restore gateway access immediately rather
+than waiting for the next reconcile pass. Consumers that the database does not
+know about are never touched, and a key whose stored grants fail to parse keeps
+its current whitelist membership instead of being revoked over a storage bug.
+
 ### Prometheus query API through the gateway
 
 Prometheus has no authentication of its own, so its port stays on loopback

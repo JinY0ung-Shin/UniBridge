@@ -18,14 +18,20 @@ from app.models import ApiKeyAccess
 from app.schemas import ApiKeyCreate, ApiKeyResponse, ApiKeyUpdate
 from app.services import apisix_client
 from app.services.audit import log_admin_action
+from app.services.consumer_restrictions import (
+    DENY_ALL_CONSUMER,
+    MASTER_ACCESS,
+    decode_json_list as _decode_json_list,
+    expand_allowed_routes,
+    is_expired,
+    reconcile_consumer_route_restrictions,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/api-keys", tags=["API Keys"])
 
 MASK_KEEP = 4
-DENY_ALL_CONSUMER = "__deny_all__"
-MASTER_ACCESS = "*"
 
 
 def _build_limit_count_plugin(rate_limit_per_minute: int | None) -> dict | None:
@@ -71,17 +77,6 @@ def _extract_api_key(consumer: dict, mask: bool = True) -> str | None:
     if not key:
         return None
     return _mask_key(key) if mask else key
-
-
-def _decode_json_list(value: str | None) -> list[str]:
-    if not value:
-        return []
-    decoded = json.loads(value)
-    if not isinstance(decoded, list) or any(
-        not isinstance(item, str) for item in decoded
-    ):
-        raise ValueError("Expected JSON string list")
-    return decoded
 
 
 def _is_master_access(allowed_databases: list[str], allowed_routes: list[str]) -> bool:
@@ -142,8 +137,14 @@ async def list_master_consumer_names(db: AsyncSession) -> list[str]:
                 access.consumer_name,
             )
             continue
-        if _is_master_access(allowed_databases, allowed_routes):
-            masters.append(access.consumer_name)
+        if not _is_master_access(allowed_databases, allowed_routes):
+            continue
+        # An expired master key must not be auto-whitelisted onto a newly
+        # created key-auth route — that would hand it back the gateway access
+        # the expiry reconcile has already taken away.
+        if is_expired(access):
+            continue
+        masters.append(access.consumer_name)
     return masters
 
 
@@ -187,23 +188,11 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
             detail=f"Failed to list APISIX routes for consumer-restriction sync: {exc}",
         )
 
-    allowed_route_ids = set(allowed_routes)
+    # The implication table (``llm-proxy`` → the converter routes carved out of
+    # its namespace, and why ``llm-metrics`` is excluded) lives with the
+    # reconcile service so both paths widen grants identically.
+    allowed_route_ids = expand_allowed_routes(allowed_routes)
     allow_all_routes = MASTER_ACCESS in allowed_route_ids
-    # ``llm-messages`` / ``llm-responses`` / ``llm-models`` are exact paths carved
-    # out of the ``/api/llm/*`` namespace and served by the converter. Granting
-    # ``llm-proxy`` implicitly grants them so existing stored keys keep working
-    # when one of these routes rolls out — no data migration, no UI change.
-    # Nothing is disclosed by doing so: a key that can already invoke every model
-    # through the catch-all learns nothing from their names.
-    # One-directional: granting only a converter route does NOT widen access to
-    # the raw ``/api/llm/*`` proxy — so a discovery-only key is still possible by
-    # granting ``llm-models`` alone.
-    # Deliberately NOT in this set: ``llm-metrics``. LiteLLM's raw exposition
-    # carries every key's usage, so implying it from ``llm-proxy`` would hand one
-    # tenant another tenant's traffic — that one IS a disclosure and stays
-    # explicit.
-    if "llm-proxy" in allowed_route_ids:
-        allowed_route_ids.update({"llm-messages", "llm-responses", "llm-models"})
 
     # Collect changes needed: [(route_id, old_body, new_body)]
     changes: list[tuple[str, dict, dict]] = []
@@ -221,7 +210,8 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
 
         new_plugins = dict(plugins)
         cr = new_plugins.get("consumer-restriction", {})
-        whitelist = set(cr.get("whitelist", []))
+        stored_whitelist = list(cr.get("whitelist", []))
+        whitelist = set(stored_whitelist)
         whitelist.discard(DENY_ALL_CONSUMER)
 
         if allow_all_routes or route_id in allowed_route_ids:
@@ -231,6 +221,13 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
 
         if not whitelist:
             whitelist.add(DENY_ALL_CONSUMER)
+
+        # A PUT that would rewrite the whitelist to what APISIX already stores
+        # is pure churn: it burns an etcd write per route per key, and on boot
+        # the replay multiplies that by every key. Skip it — and with it the
+        # rollback bookkeeping, since an unchanged route has nothing to undo.
+        if sorted(whitelist) == sorted(stored_whitelist):
+            continue
 
         new_plugins["consumer-restriction"] = {"whitelist": sorted(whitelist)}
 
@@ -262,20 +259,23 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
 
 
 async def sync_all_consumer_route_restrictions(db: AsyncSession) -> None:
-    result = await db.execute(
-        select(ApiKeyAccess).order_by(ApiKeyAccess.consumer_name.asc())
-    )
-    for access in result.scalars().all():
-        try:
-            allowed_routes = _decode_json_list(access.allowed_routes)
-        except (json.JSONDecodeError, ValueError):
-            logger.warning(
-                "Skipping malformed allowed_routes for consumer '%s' during startup replay",
-                access.consumer_name,
-            )
-            continue
+    """Boot replay: rebuild every key-auth route whitelist from the database.
 
-        await _sync_consumer_restriction(allowed_routes, access.consumer_name)
+    Thin wrapper over
+    :func:`app.services.consumer_restrictions.reconcile_consumer_route_restrictions`
+    — the same pass the periodic expiry loop runs, so a cold boot and a running
+    instance converge on identical whitelists, and a color booting after an etcd
+    reset restores the real access rules instead of leaving routes at deny-all.
+
+    Reconciling all keys at once (rather than replaying them one at a time) turns
+    what used to be N keys × M routes PUTs into one route listing plus a PUT for
+    only the routes whose whitelist actually differs. Expired keys are left out,
+    which is what stops an expired key from surviving at the gateway.
+
+    The APISIX client is passed explicitly so the router-level test patches
+    (``patch("app.routers.api_keys.apisix_client")``) still reach it.
+    """
+    await reconcile_consumer_route_restrictions(db, client=apisix_client)
 
 
 @router.get("", response_model=list[ApiKeyResponse])
@@ -511,6 +511,17 @@ async def regenerate_my_api_key(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to rotate key: {exc}")
     # A regenerated key is effectively a fresh issuance — restart the 30-day clock.
     access.expires_at = utcnow() + SELF_KEY_TTL
+    # ...and a fresh issuance has to be back on the gateway whitelists, which
+    # the expiry reconcile removes it from once the old key lapses. Sync before
+    # the commit so an APISIX failure leaves the stored expiry untouched and the
+    # next reconcile still sees the key as expired.
+    try:
+        await _sync_consumer_restriction(
+            _decode_json_list(access.allowed_routes), access.consumer_name
+        )
+    except HTTPException:
+        await db.rollback()
+        raise
     await db.commit()
     await db.refresh(access)
     return _to_response(access, api_key=new_key, key_created=True)
@@ -533,6 +544,18 @@ async def renew_my_api_key(
 
     before_expires_at = access.expires_at
     access.expires_at = utcnow() + SELF_KEY_TTL
+    # Renewing has to undo the revocation: once the key lapsed, the expiry
+    # reconcile dropped this consumer from every route whitelist, and bumping
+    # ``expires_at`` alone would leave it 403-ing at the gateway until the next
+    # reconcile cycle. Sync first so an APISIX failure aborts the renew with the
+    # database unchanged instead of promising an expiry the gateway ignores.
+    try:
+        await _sync_consumer_restriction(
+            _decode_json_list(access.allowed_routes), access.consumer_name
+        )
+    except HTTPException:
+        await db.rollback()
+        raise
     await db.commit()
     await db.refresh(access)
 
