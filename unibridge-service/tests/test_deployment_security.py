@@ -721,6 +721,72 @@ compose_app blue 3001 true green config
     )
 
 
+def _run_require_existing_infra_healthy(inspect_states: dict[str, str]) -> subprocess.CompletedProcess:
+    """Run require_existing_infra_healthy with compose/docker stubbed.
+
+    ``inspect_states`` maps a service name to the ``status|health|restart|exit``
+    line the stubbed ``docker inspect`` prints for it. Every listed service gets
+    a container id (``cid-<service>``) so the "not running" branch never fires.
+    """
+    services = "\n".join(inspect_states)
+    cases = "\n".join(
+        f"    *cid-{shlex.quote(service)}) printf '%s\\n' {shlex.quote(state)} ;;"
+        for service, state in inspect_states.items()
+    )
+    shell = f"""
+source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}
+compose_infra() {{
+  case "$1" in
+    config) printf '%s\\n' {shlex.quote(services)} ;;
+    ps) printf 'cid-%s\\n' "${{@: -1}}" ;;
+  esac
+}}
+docker() {{
+  case "$1" in
+    network) return 0 ;;
+    inspect)
+      case "${{@: -1}}" in
+{cases}
+      esac
+      ;;
+  esac
+}}
+require_existing_infra_healthy
+"""
+    return subprocess.run(["bash", "-c", shell], check=False, text=True, capture_output=True)
+
+
+def test_require_existing_infra_healthy_accepts_completed_one_shot_bootstrap() -> None:
+    # etcd-init is `restart: "no"`: it exits 0 once etcd auth is bootstrapped
+    # and drops off a plain `compose ps -q`. A deploy must not read that as an
+    # infra outage — before this, every blue/green deploy aborted on it.
+    result = _run_require_existing_infra_healthy(
+        {
+            "etcd": "running|healthy|unless-stopped|0",
+            "etcd-init": "exited|none|no|0",
+            "apisix": "running|none|unless-stopped|0",
+        }
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_require_existing_infra_healthy_rejects_crashed_or_failed_services() -> None:
+    # A long-running service that exited is still an outage, and so is a
+    # one-shot that failed — only `restart: "no"` + exit 0 is the healthy shape.
+    crashed = _run_require_existing_infra_healthy(
+        {"etcd": "exited|none|unless-stopped|0", "etcd-init": "exited|none|no|0"}
+    )
+    assert crashed.returncode == 1
+    assert "infra service is not ready: etcd" in crashed.stderr
+
+    failed_bootstrap = _run_require_existing_infra_healthy(
+        {"etcd": "running|healthy|unless-stopped|0", "etcd-init": "exited|none|no|1"}
+    )
+    assert failed_bootstrap.returncode == 1
+    assert "infra service is not ready: etcd-init" in failed_bootstrap.stderr
+
+
 def _run_deploy_color_with_standby_env(
     tmp_path: Path, docker_inspect_body: str, standby: str = "green"
 ):
@@ -871,7 +937,7 @@ NETWORK_NAME=test-network
 compose_infra() {{
   if [[ "$1" == "config" && "$2" == "--services" ]]; then
     printf '%s\n' apisix postgres
-  elif [[ "$1" == "ps" && "$2" == "-q" ]]; then
+  elif [[ "$1" == "ps" && "$2" == "-aq" ]]; then
     printf 'id-%s\n' "$3"
   else
     exit 30
@@ -882,9 +948,10 @@ docker() {{
     return 0
   fi
   if [[ "$1" == "inspect" ]]; then
+    # status|health|restart-policy|exit-code, the script's own inspect format.
     case "${{@: -1}}" in
-      id-apisix) printf '%s\n' 'running|none' ;;
-      id-postgres) printf '%s\n' 'running|healthy' ;;
+      id-apisix) printf '%s\n' 'running|none|unless-stopped|0' ;;
+      id-postgres) printf '%s\n' 'running|healthy|unless-stopped|0' ;;
       *) exit 31 ;;
     esac
     return 0

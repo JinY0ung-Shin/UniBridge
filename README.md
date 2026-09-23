@@ -725,9 +725,32 @@ The third command introspects every `UtcDateTime` column, skips tables that don'
 
 > **SQLite-only.** The lexicographic-compare bug fixed by this script is specific to SQLite. PostgreSQL / MSSQL deployments store datetimes as native timestamp types and do not need this step; the script will hard-stop with `RuntimeError` if run against a non-SQLite backend.
 
-## etcd Authentication Migration Guide
+## etcd 인증 및 이미지 마이그레이션 가이드
 
-etcd는 APISIX의 설정 저장소로, 기본적으로 인증이 활성화되어 있습니다. 기존 환경에서 업그레이드하는 경우 아래 절차를 따라주세요.
+etcd는 APISIX의 설정 저장소입니다. 라우트·업스트림·컨슈머 전체가 여기에만 저장되므로 기본적으로
+인증이 활성화되어 있습니다.
+
+이미지는 업스트림 `quay.io/coreos/etcd:v3.5.33`을 사용합니다. 이전에 쓰던 `bitnamilegacy/etcd:3.5.11`은
+Bitnami가 2025년 8월 무료 이미지를 아카이브로 옮기면서 동결된 태그라, 보안 업데이트가 더 이상
+제공되지 않습니다.
+
+업스트림 이미지는 distroless(셸·`rm`·`curl` 없음)이고 Bitnami의 `ALLOW_NONE_AUTHENTICATION` /
+`ETCD_ROOT_PASSWORD` 부트스트랩이 없습니다. 그 역할은 일회성 서비스 `etcd-init`이 대신합니다
+(`etcd/init-auth.sh`, 이미지 `unibridge-etcd-tools:3.5.33`, `etcd/Dockerfile`에서 빌드). 이 서비스는
+멱등이라 `up`할 때마다 다시 실행되고, APISIX는 `service_completed_successfully`로 부트스트랩 완료를
+기다린 뒤에 기동합니다. 같은 이미지를 `backup/lib/etcd.sh`의 스냅샷 저장·복구에도 사용합니다.
+
+> 일회성 서비스에 대한 `--wait` 지원은 **Docker Compose 2.20 이상**이 필요합니다.
+> `docker compose version`으로 확인하세요.
+
+프로젝트 이름은 배치에 따라 다릅니다.
+
+| 배치 | 명령 접두사 |
+|---|---|
+| 블루-그린(프로덕션) | `docker compose -p unibridge-infra -f docker-compose.infra.yml` |
+| 단일 스택(dev) | `docker compose` |
+
+아래 명령은 블루-그린 기준입니다. 단일 스택이면 접두사만 바꿔서 실행하세요.
 
 ### 신규 설치
 
@@ -738,35 +761,99 @@ etcd는 APISIX의 설정 저장소로, 기본적으로 인증이 활성화되어
 ETCD_ROOT_PASSWORD=your-strong-password-here
 ```
 
-### 기존 환경에서 마이그레이션
+### Bitnami 이미지 → 업스트림 이미지 전환 (기존 호스트)
 
-기존에 인증 없이 운영하던 etcd 볼륨이 있는 경우, 두 가지 방법 중 택일합니다.
+데이터는 **그대로 두고 in-place로 전환**합니다. `ETCD_DATA_DIR=/bitnami/etcd/data`와 `etcd-data` 볼륨의
+마운트 경로 `/bitnami/etcd`를 의도적으로 유지하기 때문에, 3.5 마이너가 같은 업스트림 etcd가 기존 데이터
+디렉터리를 그대로 읽습니다. export/import나 라우트 재프로비저닝이 필요 없습니다.
 
-**방법 1: 볼륨 초기화 (권장, 설정 데이터 재생성)**
+**1. 먼저 백업**
 
 ```bash
-# 1. 서비스 중지
-docker compose down
-
-# 2. etcd 볼륨 삭제 (APISIX 라우트/업스트림 설정이 초기화됩니다)
-docker volume rm unibridge_etcd-data
-
-# 3. .env에 패스워드 설정
-#    ETCD_ROOT_PASSWORD=your-strong-password-here
-
-# 4. 재시작 (APISIX 라우트는 unibridge-service 기동 시 자동 재프로비저닝)
-docker compose up -d
+./backup/backup.sh
 ```
 
-> APISIX 라우트(query-api, llm-proxy, llm-admin)와 업스트림은 `unibridge-service` 시작 시 자동으로 재생성됩니다. 수동으로 추가한 커스텀 라우트/업스트림만 다시 등록하면 됩니다.
+**2. 이미지 준비** (etcd가 내려가기 전에 미리 받아두면 중단 시간이 줄어듭니다)
 
-**방법 2: 인증 없이 유지 (개발/테스트 전용)**
+```bash
+docker compose -p unibridge-infra -f docker-compose.infra.yml build etcd-init
+docker compose -p unibridge-infra -f docker-compose.infra.yml pull etcd
+```
+
+**3. 전환** (같은 볼륨, 같은 자리)
+
+```bash
+docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait etcd etcd-init apisix
+```
+
+etcd 컨테이너는 이미지가 바뀌었으므로 재생성되지만, APISIX 컨테이너는 `depends_on`만 바뀌었으므로
+**재생성되지 않습니다**. APISIX는 그동안 캐시된 라우팅 설정으로 계속 프록시합니다(데이터 플레인 9080은
+무중단).
+
+> **APISIX Admin API는 약 1분간 503입니다.** etcd의 인증 토큰은 메모리에만 있어서 재기동하면
+> 무효화되고, APISIX가 캐시된 토큰을 쓰는 동안 `{"error_msg":"etcdserver: invalid auth token"}`을
+> 반환합니다. 토큰이 갱신되면 저절로 복구됩니다. 이 구간에 `unibridge-service`를 재기동하면 부팅 시
+> 라우트 프로비저닝이 실패하므로, 앱 배포는 Admin API가 200으로 돌아온 뒤에 진행하세요.
+
+**4. 검증**
+
+```bash
+# etcd: 자격증명으로 health (인증이 켜져 있으면 무자격 호출은 실패하는 게 정상)
+docker compose -p unibridge-infra -f docker-compose.infra.yml exec etcd etcdctl endpoint health
+docker compose -p unibridge-infra -f docker-compose.infra.yml exec etcd etcdctl endpoint status -w table
+
+# etcd-init: 멱등 재실행 로그 ("already enabled")
+docker compose -p unibridge-infra -f docker-compose.infra.yml logs etcd-init
+
+# APISIX: 전환 전과 라우트 개수가 같은지 (503이면 1분 기다렸다 재시도)
+curl -s -H "X-API-KEY: $APISIX_ADMIN_KEY" http://127.0.0.1:9180/apisix/admin/routes | jq '.total'
+```
+
+**5. 롤백**
+
+compose 변경을 되돌린 뒤, Bitnami 이미지는 uid 1001로 실행되므로 업스트림 etcd가 root로 쓴 파일의
+소유권을 되돌려야 합니다. 전환은 이 한 가지 이유로 **단방향**입니다.
+
+```bash
+git checkout -- docker-compose.yml docker-compose.infra.yml
+docker compose -p unibridge-infra -f docker-compose.infra.yml stop etcd
+docker run --rm -v unibridge_etcd-data:/bitnami/etcd --entrypoint chown \
+  unibridge-etcd-tools:3.5.33 -R 1001:0 /bitnami/etcd
+docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait etcd apisix
+```
+
+볼륨 이름은 `.env`의 `ETCD_DATA_VOLUME`(기본 `unibridge_etcd-data`)을 따릅니다. 데이터가 손상된
+최후의 경우에는 1단계 백업으로 복구합니다.
+
+```bash
+./backup/restore.sh etcd ./snapshots/<stamp>
+```
+
+### 인증 없이 운영 (개발/테스트 전용)
 
 ```bash
 # .env
 ETCD_ALLOW_NONE_AUTH=yes
 # ETCD_ROOT_PASSWORD는 비워두거나 생략
 ```
+
+`ETCD_ROOT_PASSWORD`가 비어 있는데 `ETCD_ALLOW_NONE_AUTH`가 `no`이면 `etcd-init`이 종료 코드 1로
+중단하고 APISIX도 기동하지 않습니다. 인증 없는 etcd로 실수로 뜨는 것을 막기 위한 의도된 동작입니다.
+
+### 인증 없는 기존 볼륨을 초기화하고 다시 시작 (선택)
+
+기존에 인증 없이 운영하던 볼륨에 인증을 켜려면 `etcd-init`이 자동으로 root 사용자를 만들고 인증을
+활성화하므로 보통 아무것도 할 필요가 없습니다. 상태를 완전히 비우고 싶을 때만 아래를 사용하세요.
+
+```bash
+docker compose -p unibridge-infra -f docker-compose.infra.yml down
+docker volume rm unibridge_etcd-data
+# .env에 ETCD_ROOT_PASSWORD 설정 후
+docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait
+```
+
+> APISIX 라우트와 업스트림은 `unibridge-service` 시작 시 자동으로 재생성됩니다. 수동으로 추가한
+> 커스텀 라우트/업스트림만 다시 등록하면 됩니다.
 
 ## Key Features
 

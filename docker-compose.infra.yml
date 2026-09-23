@@ -8,7 +8,11 @@ name: ${UNIBRIDGE_INFRA_PROJECT:-unibridge-infra}
 
 services:
   etcd:
-    image: bitnamilegacy/etcd:3.5.11
+    # Upstream CoreOS etcd. This replaced bitnamilegacy/etcd:3.5.11: Bitnami
+    # moved its free images to that archive in Aug 2025, so the old tag is
+    # frozen and gets no security updates — and etcd is the only store of every
+    # APISIX route, upstream and consumer.
+    image: quay.io/coreos/etcd:v3.5.33
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 256m
@@ -19,20 +23,60 @@ services:
           memory: 256m
           cpus: "0.50"
     environment:
-      - ALLOW_NONE_AUTHENTICATION=${ETCD_ALLOW_NONE_AUTH:-no}
-      - ETCD_ROOT_PASSWORD=${ETCD_ROOT_PASSWORD:-}
+      # The data directory deliberately keeps the Bitnami layout
+      # (/bitnami/etcd/data on the etcd-data volume). Same 3.5 minor, same
+      # on-disk format, so an existing volume migrates in place on the next
+      # `up` — no export/import, no route re-provisioning.
+      - ETCD_DATA_DIR=/bitnami/etcd/data
+      - ETCD_NAME=etcd
+      - ETCD_INITIAL_CLUSTER=etcd=http://etcd:2380
+      - ETCD_INITIAL_CLUSTER_STATE=new
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd:2380
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
       - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
       - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      # Healthcheck credentials only. `etcdctl endpoint health` is rejected
+      # once auth is on unless it authenticates, and the server ignores these
+      # while auth is still off, so one value covers both states. The Bitnami
+      # image already kept the root password in this container's environment.
+      - ETCDCTL_USER=root:${ETCD_ROOT_PASSWORD:-}
     expose:
       - "2379"
     volumes:
       - etcd-data:/bitnami/etcd
     healthcheck:
-      test: ["CMD-SHELL", "if [ -n \"$ETCD_ROOT_PASSWORD\" ]; then etcdctl --user root:\"$ETCD_ROOT_PASSWORD\" auth status 2>/dev/null | grep -q 'Authentication Status: true' && etcdctl endpoint health --user root --password \"$ETCD_ROOT_PASSWORD\"; else etcdctl endpoint health; fi"]
+      # Exec form on purpose: the upstream image is distroless and has no shell.
+      test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 5s
       timeout: 5s
       retries: 30
       start_period: 15s
+    networks:
+      - apihub-net
+
+  # One-shot: creates the etcd root user and enables authentication, the job
+  # the Bitnami image did from ALLOW_NONE_AUTHENTICATION/ETCD_ROOT_PASSWORD.
+  # Idempotent — compose re-runs it on every `up`. Also the image
+  # backup/lib/etcd.sh runs snapshot save/restore from (ETCD_TOOLS_IMAGE).
+  etcd-init:
+    build: ./etcd
+    image: unibridge-etcd-tools:3.5.33
+    restart: "no"
+    logging: *default-logging
+    mem_limit: 64m
+    cpus: "0.25"
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+          cpus: "0.25"
+    environment:
+      - ETCD_ENDPOINTS=http://etcd:2379
+      - ETCD_ROOT_PASSWORD=${ETCD_ROOT_PASSWORD:-}
+      - ETCD_ALLOW_NONE_AUTH=${ETCD_ALLOW_NONE_AUTH:-no}
+    depends_on:
+      etcd:
+        condition: service_healthy
     networks:
       - apihub-net
 
@@ -62,6 +106,11 @@ services:
     depends_on:
       etcd:
         condition: service_healthy
+      # Never talk to an etcd whose auth bootstrap has not finished: APISIX
+      # would connect unauthenticated, succeed, and then start failing the
+      # moment etcd-init flips auth on.
+      etcd-init:
+        condition: service_completed_successfully
     networks:
       - apihub-net
 

@@ -10,7 +10,7 @@ Every stateful volume in the stack is listed here, backed up or not, so nothing 
 
 | Component | Source | Backed up? | Output / bound | Why |
 |---|---|---|---|---|
-| etcd | volume `etcd-data` | **Yes** | `etcd.snap` | APISIX routes, consumers, plugin configs |
+| etcd | volume `etcd-data` (mounted at `/bitnami/etcd`) | **Yes** | `etcd.snap` | APISIX routes, consumers, plugin configs |
 | unibridge-service metadata | Postgres service `unibridge-db` by default, or legacy SQLite `unibridge-data` (`meta.db`) when `META_DB_URL=sqlite...` | **Yes** | `unibridge-meta.sql.gz` (Postgres) or `unibridge-meta.db.gz` (SQLite) | API keys, encrypted credentials, user settings |
 | Keycloak Postgres | volume `keycloak-db-data` | **Yes** | `keycloak-db.sql.gz` | users, realms, clients |
 | LiteLLM Postgres | volume `litellm-db-data` | **Yes** | `litellm-db.sql.gz` | LLM keys, budgets, usage history |
@@ -58,6 +58,13 @@ File permissions are set to `600`, the per-run directory to `700`. Backups conta
 - `bash`, `flock`, `find`, `sha256sum`, `gzip` (all standard)
 - `pg_dump`/`psql` in the bundled Postgres containers for the default metadata store; `sqlite3` in `unibridge-service` only for legacy SQLite metadata deployments.
 - **`jq` or `python3`** on the host — `restore.sh` uses one of them to verify `manifest.json` SHA256 before destructive actions. If neither is installed, restore will refuse to run.
+- **The `unibridge-etcd-tools:3.5.33` image**, built from `etcd/Dockerfile`. etcd runs the upstream CoreOS image, which is distroless — no shell, no `rm`, no writable temp dir — so snapshots cannot be taken by `exec`ing into it. `backup/lib/etcd.sh` runs `etcdctl` / `etcdutl` from this shell-capable sibling image instead, on the etcd container's own docker network. Compose builds it as part of the `etcd-init` service; build it by hand if it is missing:
+  ```
+  docker compose build etcd-init
+  # blue-green host:
+  docker compose -p unibridge-infra -f docker-compose.infra.yml build etcd-init
+  ```
+  Override the tag with `ETCD_TOOLS_IMAGE=` if you keep it in a registry rather than building locally.
 
 ## Scheduling (cron)
 
@@ -144,6 +151,8 @@ A backup you haven't tested restoring is a wish, not a backup. Recommended drill
 - **`docker compose exec` fails with "no container"**: a service is down. Start it (`docker compose up -d <svc>`) before running backup. On a blue-green host, start infra services with `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d <svc>` and app colors with `scripts/deploy-bluegreen.sh` — a plain `docker compose up -d` would boot a second single-stack instance onto the same volumes.
 - **`cannot resolve volume for '<service>'`**: the service's container has never been created in this project. Materialize the volume first, then retry: `docker compose up -d` on a single stack, or `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d` on a blue-green host (stateful services live in the infra stack).
 - **etcd snapshot size is suspiciously small (<10KB)**: snapshot likely failed silently. Check that `ETCD_ROOT_PASSWORD` matches `.env` and that the `etcd` container is healthy. An empty-but-valid etcd snapshot is ~20KB.
+- **`Unable to find image 'unibridge-etcd-tools:3.5.33'`**: the etcd tooling image was never built on this host. Build it with `docker compose build etcd-init` (add `-p unibridge-infra -f docker-compose.infra.yml` on a blue-green host).
+- **APISIX Admin API returns 503 `etcdserver: invalid auth token` right after an etcd restore**: etcd's auth tokens live in memory and are lost when it restarts, while APISIX keeps using its cached one. Proxying is unaffected — the data plane serves its cached routes throughout — and the Admin API recovers on its own in about a minute. Wait it out rather than restarting APISIX mid-restore.
 - **Postgres restore hangs on `DROP TABLE`**: the consumer service is still connected. The restore script stops the known consumers automatically; if you invoked the library function directly, pass the consumer service name.
 - **Metadata restore leaves APISIX serving with stale consumer cache**: unibridge-meta restore does not restart APISIX. If API keys were changed, restart it to clear its in-memory consumer cache: `docker compose restart apisix`, or `docker compose -p unibridge-infra -f docker-compose.infra.yml restart apisix` on a blue-green host.
 - **`another backup/restore is already running`**: flock is held by an in-flight run. Check for orphan processes if you're sure none is running, then remove `.backup.lock`.

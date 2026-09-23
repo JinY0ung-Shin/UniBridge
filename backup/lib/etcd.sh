@@ -2,41 +2,67 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-# etcd image used in docker-compose.yml and docker-compose.infra.yml.
-# Kept in sync with the service image.
-ETCD_IMAGE="${ETCD_IMAGE:-bitnamilegacy/etcd:3.5.11}"
+# etcdctl/etcdutl toolbox built from etcd/Dockerfile by the `etcd-init` service
+# in docker-compose.yml / docker-compose.infra.yml. The etcd server image itself
+# is distroless (no shell, no rm, no temp dirs), so snapshots are taken and
+# restored from sibling containers of this image instead of `exec`ing into etcd.
+# Build it by hand with `docker compose build etcd-init` if it is missing.
+ETCD_TOOLS_IMAGE="${ETCD_TOOLS_IMAGE:-unibridge-etcd-tools:3.5.33}"
 
-# Path inside the bitnami etcd container where the data volume is mounted.
+# Client endpoint of the etcd service, as seen from a sibling container on the
+# same docker network.
+ETCD_ENDPOINT="${ETCD_ENDPOINT:-http://etcd:2379}"
+
+# Path inside the etcd container where the data volume is mounted. The upstream
+# image keeps the old Bitnami path on purpose (ETCD_DATA_DIR=/bitnami/etcd/data)
+# so existing volumes migrate in place — see the compose comment.
 ETCD_MOUNT="/bitnami/etcd"
 
 backup_etcd() {
   local out="$1"
-  local remote_tmp="/tmp/etcd-backup.snap"
 
-  log "etcd: taking snapshot"
+  # docker -v needs absolute paths, and the snapshot is written by a container,
+  # so the host directory has to exist before the mount is created.
+  local out_dir out_file
+  out_dir="$(cd "$(dirname "$out")" && pwd)" || die "backup directory not found: $(dirname "$out")"
+  out_file="$(basename "$out")"
+
+  local network
+  network="$(resolve_network etcd)"
+  log "etcd: taking snapshot via $ETCD_TOOLS_IMAGE on network $network"
+
+  local -a run_args=(
+    run --rm
+    --network "$network"
+    # Write as the invoking user so the snapshot is not left root-owned and the
+    # chmod below (and backup.sh's final chmod sweep) can actually apply.
+    --user "$(id -u):$(id -g)"
+    -v "${out_dir}:/out"
+    --entrypoint etcdctl
+  )
   # Pass the password via environment (ETCDCTL_USER), never argv, so it does
   # not appear in `ps` on the host or in /proc/*/cmdline inside the container.
   if [[ -n "${ETCD_ROOT_PASSWORD:-}" ]]; then
-    infra_compose exec -T \
-      -e "ETCDCTL_USER=root:${ETCD_ROOT_PASSWORD}" \
-      etcd etcdctl --command-timeout=30s snapshot save "$remote_tmp"
-  else
-    infra_compose exec -T \
-      etcd etcdctl --command-timeout=30s snapshot save "$remote_tmp"
+    run_args+=(-e "ETCDCTL_USER=root:${ETCD_ROOT_PASSWORD}")
   fi
 
-  infra_compose cp "etcd:${remote_tmp}" "$out"
-  infra_compose exec -T etcd rm -f "$remote_tmp"
+  docker "${run_args[@]}" "$ETCD_TOOLS_IMAGE" \
+    --endpoints "$ETCD_ENDPOINT" --command-timeout=30s snapshot save "/out/${out_file}" \
+    || die "etcd snapshot failed (is the etcd container running and does ETCD_ROOT_PASSWORD match?)"
+
+  chmod 600 "$out"
   log "etcd: snapshot saved to $out ($(size_of "$out") bytes)"
 }
 
-# Restore uses a one-shot root container that mounts the etcd data volume
-# directly. This avoids the permission problems (bitnami runs as UID 1001 and
-# cannot recreate /bitnami/etcd subdirectories) and the data-dir hot-swap race
-# that breaks restoring into a running etcd.
+# Restore uses a one-shot container that mounts the etcd data volume directly.
+# This avoids the data-dir hot-swap race that breaks restoring into a running
+# etcd, and it needs no chown: the upstream etcd image runs as root, so the
+# files etcdutl writes as root are exactly what etcd expects to find.
 restore_etcd() {
   local snap="$1"
   [[ -f "$snap" ]] || die "snapshot not found: $snap"
+  # Absolute path for the bind mount below.
+  snap="$(cd "$(dirname "$snap")" && pwd)/$(basename "$snap")"
 
   # Resolve volume name while the etcd container still exists.
   local volume
@@ -65,27 +91,25 @@ EOF
   docker volume create "$volume" >/dev/null
 
   log "etcd: running one-shot restore container (as root)"
-  # Snapshot is piped via stdin so no temp file needs cleanup, no `docker cp`
-  # into a stopped container, no shell quoting of paths from the host side.
-  docker run --rm -i --user 0:0 \
+  # The volume is brand new, so there is nothing to delete first — which is why
+  # this works in an image without `rm`. etcdutl creates ${ETCD_MOUNT}/data.
+  docker run --rm \
     -v "${volume}:${ETCD_MOUNT}" \
-    --entrypoint sh \
-    "$ETCD_IMAGE" -c "
-      set -e
-      cat > /tmp/snap
-      rm -rf ${ETCD_MOUNT}/data
-      if command -v etcdutl >/dev/null 2>&1; then
-        etcdutl snapshot restore /tmp/snap --data-dir=${ETCD_MOUNT}/data
-      else
-        ETCDCTL_API=3 etcdctl snapshot restore /tmp/snap --data-dir=${ETCD_MOUNT}/data
-      fi
-      chown -R 1001:0 ${ETCD_MOUNT}
-      rm -f /tmp/snap
-    " < "$snap"
+    -v "${snap}:/tmp/snap:ro" \
+    --entrypoint etcdutl \
+    "$ETCD_TOOLS_IMAGE" \
+    snapshot restore /tmp/snap --data-dir="${ETCD_MOUNT}/data" \
+    || die "etcd snapshot restore failed"
 
   log "etcd: starting etcd and waiting for healthy"
   infra_compose up -d --wait etcd
-  log "etcd: starting apisix"
+  # Bringing up apisix also runs etcd-init, because apisix depends on it with
+  # service_completed_successfully. Do NOT `up --wait etcd-init` on its own:
+  # compose fails a --wait whose selected set contains a service that exits,
+  # even with exit 0, unless a selected service depends on its completion.
+  # The bootstrap is a no-op here — the snapshot carries etcd's own auth state
+  # — but it still verifies ETCD_ROOT_PASSWORD before apisix connects.
+  log "etcd: running the auth bootstrap and starting apisix"
   infra_compose up -d --wait apisix
   log "etcd: restore complete"
 }

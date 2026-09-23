@@ -272,6 +272,29 @@ resolve_volume() {
   printf '%s' "$name"
 }
 
+# Resolve the docker network <service>'s container is attached to. Needed to
+# run sibling one-shot containers (etcd tooling) that must reach the service by
+# its compose alias. The name is not guessable: docker-compose.infra.yml pins
+# it to $UNIBRIDGE_NETWORK_NAME (default unibridge-net) while the single-stack
+# file lets compose prefix it with the project name.
+resolve_network() {
+  local service="$1"
+
+  local cid
+  cid="$(infra_compose ps -aq "$service" 2>/dev/null | head -1)" || true
+  [[ -n "$cid" ]] || \
+    die "cannot resolve network for '$service': no container exists (start the stack first)"
+
+  local name
+  # One network per line, then take the first: the stack attaches every service
+  # to a single network, and a multi-homed container has no "right" answer here.
+  name="$(docker inspect -f \
+    '{{range $net, $_ := .NetworkSettings.Networks}}{{$net}}{{"\n"}}{{end}}' \
+    "$cid" | head -1)"
+  [[ -n "$name" ]] || die "cannot resolve network for '$service'"
+  printf '%s' "$name"
+}
+
 # Acquire a single-instance lock for the duration of the script.
 # Prevents cron overlap from stomping on partial backups.
 acquire_lock() {

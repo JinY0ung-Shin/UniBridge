@@ -630,7 +630,10 @@ require_existing_infra_healthy() {
 
   local service container_id state
   for service in "${services[@]}"; do
-    container_id="$(compose_infra ps -q "$service")"
+    # -a: one-shot bootstraps (restart: "no", e.g. etcd-init) exit as soon as
+    # they finish and drop off a plain `ps -q`, but their container still
+    # exists and its exit code is the health signal.
+    container_id="$(compose_infra ps -aq "$service" | head -n1)"
     if [[ -z "$container_id" ]]; then
       echo "ERROR: infra service is not running: $service" >&2
       echo "       Active traffic was not changed. Run with" >&2
@@ -638,9 +641,12 @@ require_existing_infra_healthy() {
       return 1
     fi
 
-    state="$(docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id" 2>/dev/null || true)"
+    state="$(docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.HostConfig.RestartPolicy.Name}}|{{.State.ExitCode}}' "$container_id" 2>/dev/null || true)"
     case "$state" in
-      running\|healthy|running\|none) ;;
+      running\|healthy\|*|running\|none\|*) ;;
+      # A one-shot service (restart: "no") that exited 0 is in its healthy
+      # state: its dependents already gated on service_completed_successfully.
+      exited\|none\|no\|0|exited\|none\|\|0) ;;
       *)
         echo "ERROR: infra service is not ready: $service ($state)" >&2
         echo "       Active traffic was not changed. Run with" >&2
