@@ -561,6 +561,39 @@ already timed out from being re-sent, which would otherwise put three copies of
 the same work on a backend that is already saturated. The file is bind-mounted,
 so restart LiteLLM to pick up a change.
 
+### Upgrading LiteLLM
+
+The image tag is pinned in both `docker-compose.infra.yml` and
+`docker-compose.yml`; change it in both. LiteLLM runs its own Prisma migrations
+against `litellm-db` on boot, and it is a single infra instance, so an upgrade
+is a short LLM outage that blue/green does not cover:
+
+```bash
+./backup/backup.sh                     # litellm-db.sql.gz is part of the snapshot
+docker compose -p unibridge-infra -f docker-compose.infra.yml pull litellm
+docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait litellm
+```
+
+To roll back, put the previous tag back and run the same `up -d --wait`. In the
+1.83 → 1.102 rehearsal, 1.102 applied 53 migrations and was healthy in about
+17s. 1.83 then booted on the migrated database with nothing pending and served
+traffic, so a rollback only needed the tag. Keep the backup anyway, since a
+downgraded proxy can't use data written to the newer columns.
+
+Notes for the 1.83 → 1.102 jump:
+
+- 1.102 requires auth on `/metrics` by default; 1.83 didn't. The `litellm`
+  Prometheus scrape job sends no credentials, so `litellm/config.yaml` sets
+  `require_auth_for_metrics_endpoint: false`, and `litellm/tests` fails if that
+  line is dropped.
+- Requests made with the master key (every APISIX-routed call) are recorded
+  under the alias `litellm_proxy_master_key` instead of a key hash, both in
+  spend logs and in the `hashed_api_key` metric label. Per-key attribution uses
+  the `end_user` label, which is unchanged.
+- 1.83.14 never emitted `litellm_input_cached_tokens_metric`, so the
+  cached-token cards and Grafana panels stayed empty. 1.102 emits it, and they
+  start filling after the upgrade.
+
 ### LiteLLM admin UI SSO
 
 The LiteLLM admin UI (`https://<HOST_IP>:<LITELLM_PORT>/ui`) signs in with

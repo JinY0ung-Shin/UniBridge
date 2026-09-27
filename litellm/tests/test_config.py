@@ -54,3 +54,10 @@ def test_logging_bypass_stays_closed_and_metrics_stay_on(config) -> None:
     # Unsupported params are dropped rather than 400-ing the whole call.
     assert litellm_settings["drop_params"] is True
     assert "prometheus" in litellm_settings["success_callback"]
+
+
+def test_metrics_endpoint_stays_scrapable_without_credentials(config) -> None:
+    # Newer LiteLLM (1.102 here) defaults this to true; the Prometheus
+    # `litellm` scrape job sends no credentials, so dropping the key would 401
+    # every scrape and blank the LLM dashboards.
+    assert config["litellm_settings"]["require_auth_for_metrics_endpoint"] is False

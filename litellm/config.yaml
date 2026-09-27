@@ -28,6 +28,12 @@ litellm_settings:
   # `"no-log": true` in the request body and silently skip all logging,
   # leaving holes in both the metrics and the captured dataset.
   global_disable_no_log_param: true
+  # Newer LiteLLM requires auth on /metrics by default (1.83 didn't; 1.102
+  # does). The Prometheus `litellm` scrape job (prometheus/prometheus.yml)
+  # sends no credentials, so keep the old behavior; external reads go through
+  # the key-auth'd `llm-metrics` APISIX route, which injects the master key
+  # anyway.
+  require_auth_for_metrics_endpoint: false
 
 router_settings:
   # num_retries above still covers connection-level failures, but a request
