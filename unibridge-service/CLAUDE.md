@@ -11,7 +11,8 @@ Python 3.12, SQLAlchemy async + Alembic, meta store = SQLite.
 - `app/config.py`      — `Settings` (pydantic-settings) + `validate_settings()` fail-fast.
 - `app/models.py`      — SQLAlchemy ORM (`Base`). `app/schemas.py` — Pydantic request/response.
 - `app/database.py`    — engine, `get_db()`, `init_db()` (auto `alembic upgrade head`).
-- `app/routers/`       — admin, alerts, api_keys, gateway, nas, query, query_history, roles, s3, users.
+- `app/routers/`       — admin, alerts, api_keys, config_transfer, external_metrics, gateway,
+  internal_alerts, nas, query, query_history, query_metrics, roles, s3, servers, usages, users.
 - `app/services/`      — APISIX client, connection/query executors, alert pipeline,
   S3/NAS managers, SQL/SPARQL validators, audit, openapi export,
   `consumer_restrictions.py` (reconciles APISIX consumer-restriction whitelists

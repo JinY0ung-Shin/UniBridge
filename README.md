@@ -502,7 +502,7 @@ on every boot, which likewise converges hand-created clients (whose
 console-generated secret would otherwise fail token exchange with
 `invalid_client`) onto the `.env` values.
 Grafana ships with provisioned dashboards that mirror the UniBridge monitoring UI —
-Overview, Gateway, LLM, External APIs, and Servers — running the same PromQL
+Overview, Gateway, LLM, DB Queries, External APIs, and Servers — running the same PromQL
 against the same Prometheus, so both show identical numbers. Dashboards are
 code: JSON under [`grafana/dashboards/`](./grafana/dashboards/), datasource and
 loader config under `grafana/provisioning/` (mounted read-only; UI edits are
@@ -676,6 +676,37 @@ This is deliberate data collection, so know what it keeps and where:
   [`litellm/config.yaml`](./litellm/config.yaml) and restart LiteLLM
   (`docker compose restart litellm`, or restart it in the infra project on a
   blue-green host). Existing files remain on the volume until removed manually.
+
+### DB query monitoring
+
+**Query Monitoring** (data section of the sidebar) shows query count, error rate
+(errors + timeouts), timeouts, execution time and rows returned per API key and
+per database, over the same ranges and calendar buckets as the gateway page.
+The two tables cross-filter: pick a key (or click its row) and the database
+table narrows to that key, and vice versa. The page reads UniBridge's own
+`unibridge_query_duration_seconds` / `unibridge_query_rows_returned` histograms,
+whose `consumer` label is the API key's consumer name, or `__ui__` for queries
+run from the UI (JWT callers, shown as "(UI / direct)"). Series recorded before
+the label existed appear as "(before per-key tracking)" until Prometheus
+retention (60d) drops them, so per-key history starts at the upgrade while
+per-database totals keep their full history. Execution time is measured in-app
+(connection acquire → result fetched) and counts successful queries only.
+Requests rejected before execution (permission 403, unknown database 404, rate
+limit 429) are not counted; API-key traffic through the gateway still shows
+them per key under the `query-api` route on the gateway page. Access follows
+gateway monitoring: `gateway.monitoring.read` sees every key and the UI row,
+`gateway.monitoring.self` only the caller's own key. The Grafana mirror is the
+"DB Query Monitoring" dashboard (`unibridge-queries`).
+
+Writing PromQL over `unibridge_*` metrics yourself: they are scraped by two
+jobs. `unibridge-service-colors` scrapes each blue/green color separately;
+`unibridge-service` hits a DNS alias both colors answer on, so on a blue-green
+host its counters alternate between two processes and `increase()`/`rate()`
+inflate by orders of magnitude. The backend and the dashboard read the colors
+job whenever any of its targets is up and fall back to `unibridge-service` only
+on single-stack hosts (`_gated` in
+[`unibridge-service/app/routers/query_metrics.py`](./unibridge-service/app/routers/query_metrics.py));
+never sum the two jobs.
 
 ### Server (host) monitoring
 
@@ -897,7 +928,7 @@ docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait
 - **APISIX Gateway** — Route management, upstream config, API key auth
 - **RBAC** — 22 granular permissions, dynamic role management
 - **API Keys** — External access with per-database/route restrictions
-- **Monitoring** — Prometheus metrics, request trends, latency percentiles
+- **Monitoring** — Prometheus metrics, request trends, latency percentiles, per-API-key × per-database query stats
 - **User Management** — Keycloak integration, role assignment
 - **Audit Logging** — Full query history with filters
 - **i18n** — Korean / English

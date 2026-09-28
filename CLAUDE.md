@@ -68,6 +68,10 @@ requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
   load-bearing, not hardening — without it logins 500 on Keycloak's userinfo issuer
   check. Free tier caps LiteLLM's user table at 5 rows and rejected non-admin logins
   still insert rows. See README "LiteLLM admin UI SSO".
+- **`unibridge_*` metrics are scraped by two jobs**: `unibridge-service` is a DNS alias both
+  blue/green colors answer on (round-robin → counters alternate → `increase()` inflates);
+  `unibridge-service-colors` is per-color. PromQL over them (backend or Grafana) must use
+  the gated form in `app/routers/query_metrics.py::_gated` — never sum the two jobs.
 - **TZ=UTC everywhere**; timestamps stored UTC (see `scripts/backfill_utc_timestamps.py`).
 - `.omc/`, `docs/superpowers/`, `certs/`, `unibridge-service/data/` are gitignored — tooling
   artifacts / local state, not app code.
