@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from prometheus_client import REGISTRY, CollectorRegistry, Counter, Gauge, Histogram
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
+
+# ``consumer`` label value for queries run by JWT callers (the UI playground or a
+# direct /_api call), which have no API key. API keys named ``__…__`` are rejected
+# at creation (app/routers/api_keys.py), so this can never collide with a real key.
+UI_QUERY_CONSUMER = "__ui__"
+
+# Every ``status`` value the query router records.
+QUERY_STATUSES = ("success", "error", "timeout")
 
 
 @dataclass
@@ -20,6 +28,8 @@ class MetricsRecorder:
     meta_db_up: Gauge
     active_instance: Gauge
     alert_checker_prometheus_up: Gauge
+    # (db_alias, db_type, consumer) combinations whose children are pre-created.
+    _primed_query_labels: set[tuple[str, str, str]] = field(default_factory=set)
 
     def record_query(
         self,
@@ -27,19 +37,44 @@ class MetricsRecorder:
         db_alias: str,
         db_type: str,
         status: str,
+        consumer: str,
         duration_seconds: float,
         row_count: int | None = None,
     ) -> None:
+        # A labelled child only exists once used, so the first scrape already
+        # reads it at 1 and ``increase()`` never counts that first observation.
+        # Creating every status child (and the rows child) at 0 the first time a
+        # combination is seen keeps e.g. the first error after many successes
+        # visible. The very first query of a new combination (after each deploy,
+        # since the process starts empty) is still not counted.
+        combination = (db_alias, db_type, consumer)
+        if combination not in self._primed_query_labels:
+            for known_status in QUERY_STATUSES:
+                self.query_duration.labels(
+                    db_alias=db_alias,
+                    db_type=db_type,
+                    status=known_status,
+                    consumer=consumer,
+                )
+            self.query_rows_returned.labels(
+                db_alias=db_alias,
+                db_type=db_type,
+                consumer=consumer,
+            )
+            self._primed_query_labels.add(combination)
+
         self.query_duration.labels(
             db_alias=db_alias,
             db_type=db_type,
             status=status,
+            consumer=consumer,
         ).observe(max(duration_seconds, 0.0))
 
         if row_count is not None:
             self.query_rows_returned.labels(
                 db_alias=db_alias,
                 db_type=db_type,
+                consumer=consumer,
             ).observe(max(row_count, 0))
 
     def record_alert_dispatch(
@@ -78,14 +113,14 @@ def create_metrics(
         query_duration=Histogram(
             "unibridge_query_duration_seconds",
             "Database query execution duration.",
-            ["db_alias", "db_type", "status"],
+            ["db_alias", "db_type", "status", "consumer"],
             buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60),
             registry=registry,
         ),
         query_rows_returned=Histogram(
             "unibridge_query_rows_returned",
             "Rows returned by successful database queries.",
-            ["db_alias", "db_type"],
+            ["db_alias", "db_type", "consumer"],
             buckets=(0, 1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000, 10000),
             registry=registry,
         ),
@@ -144,6 +179,7 @@ def record_query(
     db_alias: str,
     db_type: str,
     status: str,
+    consumer: str,
     duration_seconds: float,
     row_count: int | None = None,
 ) -> None:
@@ -151,6 +187,7 @@ def record_query(
         db_alias=db_alias,
         db_type=db_type,
         status=status,
+        consumer=consumer,
         duration_seconds=duration_seconds,
         row_count=row_count,
     )

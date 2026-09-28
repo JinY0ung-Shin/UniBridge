@@ -284,6 +284,7 @@ async def _record_failed_query(
     db: AsyncSession,
     *,
     username: str,
+    consumer: str,
     database_alias: str,
     db_type: str,
     sql: str,
@@ -297,6 +298,7 @@ async def _record_failed_query(
         db_alias=database_alias,
         db_type=db_type,
         status=metric_status,
+        consumer=consumer,
         duration_seconds=duration_seconds,
     )
     try:
@@ -322,6 +324,11 @@ async def execute(
     """Execute an SQL query against a registered database."""
 
     username = f"apikey:{user.consumer_name}" if isinstance(user, ApiKeyUser) else user.username
+    # Query metrics are attributed per API key; JWT callers have no key, so they
+    # all share the reserved UI consumer.
+    metric_consumer = (
+        user.consumer_name if isinstance(user, ApiKeyUser) else metrics.UI_QUERY_CONSUMER
+    )
 
     # JWT users are not pre-counted by RateLimitMiddleware because it must not
     # trust unverified Bearer claims. API key users are still pre-counted from
@@ -378,6 +385,7 @@ async def execute(
         await _record_failed_query(
             db,
             username=username,
+            consumer=metric_consumer,
             database_alias=req.database,
             db_type=db_type,
             sql=req.sql,
@@ -556,6 +564,7 @@ async def execute(
             db_alias=req.database,
             db_type=db_type,
             status="timeout",
+            consumer=metric_consumer,
             duration_seconds=time.monotonic() - query_started_at,
         )
         try:
@@ -577,6 +586,7 @@ async def execute(
         await _record_failed_query(
             db,
             username=username,
+            consumer=metric_consumer,
             database_alias=req.database,
             db_type=db_type,
             sql=req.sql,
@@ -592,6 +602,7 @@ async def execute(
             db_alias=req.database,
             db_type=db_type,
             status="error",
+            consumer=metric_consumer,
             duration_seconds=time.monotonic() - query_started_at,
         )
         try:
@@ -614,6 +625,7 @@ async def execute(
         db_alias=req.database,
         db_type=db_type,
         status="success",
+        consumer=metric_consumer,
         duration_seconds=response.elapsed_ms / 1000,
         row_count=response.row_count,
     )

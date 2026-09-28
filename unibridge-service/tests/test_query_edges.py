@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,8 +11,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app import metrics
 from app.auth import ApiKeyUser, CurrentUser
+from app.models import ApiKeyAccess
 from app.routers import query
 from app.schemas import (
     QueryRequest,
@@ -118,6 +123,7 @@ async def test_record_failed_query_survives_audit_failure(monkeypatch, caplog):
     await query._record_failed_query(
         MagicMock(),
         username="alice",
+        consumer=metrics.UI_QUERY_CONSUMER,
         database_alias="main",
         db_type="postgres",
         sql="SELECT 1",
@@ -128,6 +134,7 @@ async def test_record_failed_query_survives_audit_failure(monkeypatch, caplog):
     )
 
     record_metric.assert_called_once()
+    assert record_metric.call_args.kwargs["consumer"] == metrics.UI_QUERY_CONSUMER
     assert "Failed to write audit log for failed query" in caplog.text
 
 
@@ -258,6 +265,116 @@ async def test_execute_timeout_survives_audit_failure(client, admin_token, caplo
     assert response.json()["detail"] == "Query timed out"
     assert record_metric.call_args.kwargs["status"] == "timeout"
     assert "Failed to write audit log for timed-out query" in caplog.text
+
+
+async def _seed_query_api_key(seeded_db, consumer_name: str) -> None:
+    session_factory = async_sessionmaker(
+        seeded_db, class_=AsyncSession, expire_on_commit=False
+    )
+    async with session_factory() as db:
+        db.add(
+            ApiKeyAccess(
+                consumer_name=consumer_name,
+                allowed_databases=json.dumps(["*"]),
+                allowed_routes=json.dumps(["query-api"]),
+            )
+        )
+        await db.commit()
+
+
+@contextmanager
+def _postgres_execution(execute_query: AsyncMock, record_metric: MagicMock):
+    with (
+        patch("app.routers.query.connection_manager.get_db_type", return_value="postgres"),
+        patch("app.routers.query.connection_manager.get_engine", return_value=MagicMock()),
+        patch("app.routers.query.execute_query", new=execute_query),
+        patch("app.routers.query.metrics.record_query", record_metric),
+        patch("app.routers.query.log_query", new_callable=AsyncMock),
+    ):
+        yield
+
+
+async def test_query_metrics_attribute_api_key_calls_to_the_consumer(client, seeded_db):
+    await _seed_query_api_key(seeded_db, "etl-app")
+    record_metric = MagicMock()
+    execute_query = AsyncMock(return_value=_query_response())
+    with _postgres_execution(execute_query, record_metric):
+        response = await client.post(
+            "/query/execute",
+            json={"database": "main", "sql": "SELECT 1"},
+            headers={"X-Consumer-Username": "etl-app"},
+        )
+
+    assert response.status_code == 200, response.text
+    record_metric.assert_called_once()
+    assert record_metric.call_args.kwargs["consumer"] == "etl-app"
+    assert record_metric.call_args.kwargs["status"] == "success"
+
+
+async def test_query_metrics_attribute_jwt_calls_to_the_ui_consumer(client, admin_token):
+    record_metric = MagicMock()
+    execute_query = AsyncMock(return_value=_query_response())
+    with _postgres_execution(execute_query, record_metric):
+        response = await client.post(
+            "/query/execute",
+            json={"database": "main", "sql": "SELECT 1"},
+            headers=auth_header(admin_token),
+        )
+
+    assert response.status_code == 200, response.text
+    record_metric.assert_called_once()
+    assert record_metric.call_args.kwargs["consumer"] == metrics.UI_QUERY_CONSUMER
+
+
+@pytest.mark.parametrize(
+    "side_effect,expected_http,expected_status",
+    [
+        (asyncio.TimeoutError, 408, "timeout"),
+        (HTTPException(status_code=504, detail="timed out"), 504, "timeout"),
+        (RuntimeError("driver failure"), 400, "error"),
+    ],
+)
+async def test_failed_query_metrics_keep_the_api_key_consumer(
+    client, seeded_db, side_effect, expected_http, expected_status
+):
+    await _seed_query_api_key(seeded_db, "etl-app")
+    record_metric = MagicMock()
+    execute_query = AsyncMock(side_effect=side_effect)
+    with _postgres_execution(execute_query, record_metric):
+        response = await client.post(
+            "/query/execute",
+            json={"database": "main", "sql": "SELECT 1"},
+            headers={"X-Consumer-Username": "etl-app"},
+        )
+
+    assert response.status_code == expected_http, response.text
+    record_metric.assert_called_once()
+    assert record_metric.call_args.kwargs["consumer"] == "etl-app"
+    assert record_metric.call_args.kwargs["status"] == expected_status
+
+
+async def test_rejected_statement_metric_keeps_the_api_key_consumer(client, seeded_db):
+    await _seed_query_api_key(seeded_db, "etl-app")
+    record_metric = MagicMock()
+    with (
+        patch("app.routers.query.connection_manager.get_db_type", return_value="postgres"),
+        patch(
+            "app.routers.query._detect_statement_type",
+            side_effect=HTTPException(status_code=422, detail="Unsupported statement"),
+        ),
+        patch("app.routers.query.metrics.record_query", record_metric),
+        patch("app.routers.query.log_query", new_callable=AsyncMock),
+    ):
+        response = await client.post(
+            "/query/execute",
+            json={"database": "main", "sql": "SELECT 1"},
+            headers={"X-Consumer-Username": "etl-app"},
+        )
+
+    assert response.status_code == 422, response.text
+    record_metric.assert_called_once()
+    assert record_metric.call_args.kwargs["consumer"] == "etl-app"
+    assert record_metric.call_args.kwargs["status"] == "error"
 
 
 async def test_execute_generic_failure_hides_internal_error(

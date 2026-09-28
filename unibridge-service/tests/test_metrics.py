@@ -21,21 +21,75 @@ def test_query_metrics_record_duration_and_returned_rows() -> None:
         db_alias="analytics",
         db_type="postgres",
         status="success",
+        consumer="etl-app",
         duration_seconds=0.25,
         row_count=7,
     )
 
     output = _output(registry)
     assert (
-        'unibridge_query_duration_seconds_count{db_alias="analytics",'
+        'unibridge_query_duration_seconds_count{consumer="etl-app",db_alias="analytics",'
         'db_type="postgres",status="success"} 1.0'
     ) in output
     assert (
-        'unibridge_query_rows_returned_count{db_alias="analytics",db_type="postgres"} 1.0'
+        'unibridge_query_rows_returned_count{consumer="etl-app",db_alias="analytics",'
+        'db_type="postgres"} 1.0'
     ) in output
     assert (
-        'unibridge_query_rows_returned_sum{db_alias="analytics",db_type="postgres"} 7.0'
+        'unibridge_query_rows_returned_sum{consumer="etl-app",db_alias="analytics",'
+        'db_type="postgres"} 7.0'
     ) in output
+
+
+def test_first_sighting_primes_every_status_child() -> None:
+    registry = CollectorRegistry()
+    recorder = metrics.create_metrics(registry=registry)
+
+    recorder.record_query(
+        db_alias="analytics",
+        db_type="postgres",
+        status="success",
+        consumer="etl-app",
+        duration_seconds=0.1,
+        row_count=2,
+    )
+
+    # The first error after this success moves 0 → 1, which increase() counts.
+    output = _output(registry)
+    labels = 'consumer="etl-app",db_alias="analytics",db_type="postgres"'
+    assert f'unibridge_query_duration_seconds_count{{{labels},status="success"}} 1.0' in output
+    assert f'unibridge_query_duration_seconds_count{{{labels},status="error"}} 0.0' in output
+    assert f'unibridge_query_duration_seconds_count{{{labels},status="timeout"}} 0.0' in output
+    assert set(metrics.QUERY_STATUSES) == {"success", "error", "timeout"}
+
+
+def test_first_failure_primes_the_rows_child() -> None:
+    registry = CollectorRegistry()
+    recorder = metrics.create_metrics(registry=registry)
+
+    recorder.record_query(
+        db_alias="analytics",
+        db_type="postgres",
+        status="error",
+        consumer="etl-app",
+        duration_seconds=0.1,
+    )
+
+    output = _output(registry)
+    labels = 'consumer="etl-app",db_alias="analytics",db_type="postgres"'
+    assert f"unibridge_query_rows_returned_count{{{labels}}} 0.0" in output
+    assert f'unibridge_query_duration_seconds_count{{{labels},status="success"}} 0.0' in output
+    assert f'unibridge_query_duration_seconds_count{{{labels},status="error"}} 1.0' in output
+
+
+def test_ui_query_consumer_is_a_reserved_key_name() -> None:
+    from app.routers.gateway import _SAFE_CONSUMER_RE
+
+    # api_keys rejects ``__…__`` names, so no real key can share this label value,
+    # and it still passes the monitoring consumer filter.
+    assert metrics.UI_QUERY_CONSUMER.startswith("__")
+    assert metrics.UI_QUERY_CONSUMER.endswith("__")
+    assert _SAFE_CONSUMER_RE.match(metrics.UI_QUERY_CONSUMER)
 
 
 def test_alert_dispatch_metric_records_rule_channel_and_status() -> None:
@@ -73,6 +127,7 @@ def test_metrics_clamp_negative_observations_and_record_audit_write() -> None:
         db_alias="analytics",
         db_type="postgres",
         status="failure",
+        consumer=metrics.UI_QUERY_CONSUMER,
         duration_seconds=-1,
         row_count=-5,
     )
@@ -81,11 +136,12 @@ def test_metrics_clamp_negative_observations_and_record_audit_write() -> None:
 
     output = _output(registry)
     assert (
-        'unibridge_query_duration_seconds_sum{db_alias="analytics",'
+        'unibridge_query_duration_seconds_sum{consumer="__ui__",db_alias="analytics",'
         'db_type="postgres",status="failure"} 0.0'
     ) in output
     assert (
-        'unibridge_query_rows_returned_sum{db_alias="analytics",db_type="postgres"} 0.0'
+        'unibridge_query_rows_returned_sum{consumer="__ui__",db_alias="analytics",'
+        'db_type="postgres"} 0.0'
     ) in output
     assert 'unibridge_connection_pool_in_use{db_alias="analytics"} 0.0' in output
     assert 'unibridge_audit_log_write_total{status="failure"} 1.0' in output
@@ -99,6 +155,7 @@ def test_module_level_metric_helpers_delegate_to_recorder(monkeypatch) -> None:
         db_alias="warehouse",
         db_type="clickhouse",
         status="success",
+        consumer="etl-app",
         duration_seconds=0.5,
         row_count=3,
     )
@@ -113,6 +170,7 @@ def test_module_level_metric_helpers_delegate_to_recorder(monkeypatch) -> None:
         db_alias="warehouse",
         db_type="clickhouse",
         status="success",
+        consumer="etl-app",
         duration_seconds=0.5,
         row_count=3,
     )
