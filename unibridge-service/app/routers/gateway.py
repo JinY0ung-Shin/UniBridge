@@ -1788,7 +1788,7 @@ def _assemble_grouped_breakdown(
     (missing buckets filled with 0). Series whose total is 0 are dropped; the
     series beyond the top-12 by total collapse into a single "(others)" series.
     """
-    rounder = round if unit == "requests" else (lambda v: round(v, 4))
+    rounder = round if unit in ("requests", "queries") else (lambda v: round(v, 4))
 
     raw_series: list[dict[str, Any]] = []
     for key, ts_map in per_key_points.items():
