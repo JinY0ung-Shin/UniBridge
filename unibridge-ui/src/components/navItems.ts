@@ -15,6 +15,9 @@ export interface NavItem {
   /** Hide the item when the user has ANY of these permissions, even if
    *  `permission` matches. The route itself stays reachable by URL. */
   hiddenForPermissions?: string[];
+  /** Never pick this item as the landing page (firstAccessiblePath skips it);
+   *  it still shows in the sidebar. */
+  excludeFromLanding?: boolean;
 }
 
 export const navItems: NavItem[] = [
@@ -22,6 +25,9 @@ export const navItems: NavItem[] = [
   { to: '/connections', labelKey: 'nav.connections', icon: 'Connections', section: 'data', permission: 'query.databases.read' },
   { to: '/permissions', labelKey: 'nav.permissions', icon: 'Permissions', section: 'data', permission: 'query.permissions.read' },
   { to: '/audit-logs', labelKey: 'nav.auditLogs', icon: 'Audit Logs', section: 'data', permission: 'query.audit.read' },
+  // Same any-of gate as Gateway Monitoring, but listed earlier in the array:
+  // keep self-scoped users (seeded `user` role) landing on Gateway Monitoring.
+  { to: '/query-monitoring', labelKey: 'nav.queryMonitoring', icon: 'Gateway Monitoring', section: 'data', permission: ['gateway.monitoring.read', 'gateway.monitoring.self'], excludeFromLanding: true },
   { to: '/query', labelKey: 'nav.queryPlayground', icon: 'Query Playground', section: 'data', permission: 'query.execute' },
   { to: '/query-templates', labelKey: 'nav.queryTemplates', icon: 'Query Templates', section: 'data', permission: 'query.settings.read' },
   { to: '/query-settings', labelKey: 'nav.querySettings', icon: 'Query Settings', section: 'data', permission: 'query.settings.read' },
@@ -64,6 +70,6 @@ export function isNavItemVisible(item: NavItem, perms: string[]): boolean {
  *  landing page for users who cannot see the dashboard. Mirrors sidebar
  *  visibility so users never land on a page their menu doesn't show. */
 export function firstAccessiblePath(perms: string[]): string | null {
-  const item = navItems.find((i) => i.to !== '/' && isNavItemVisible(i, perms));
+  const item = navItems.find((i) => i.to !== '/' && !i.excludeFromLanding && isNavItemVisible(i, perms));
   return item ? item.to : null;
 }

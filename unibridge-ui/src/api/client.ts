@@ -825,7 +825,7 @@ export interface BucketedSeries {
 export interface BucketedBreakdown {
   buckets: number[];
   series: BucketedSeries[];
-  unit: 'tokens' | 'requests';
+  unit: 'tokens' | 'requests' | 'queries';
 }
 
 export async function getLlmByModelSeries(
@@ -1581,6 +1581,159 @@ export async function getExternalHandlersComparison(
 ): Promise<HandlerComparisonResponse> {
   const { data } = await client.get('/admin/external/metrics/handlers-comparison', {
     params: { ...timeParams(sel), service },
+  });
+  return data;
+}
+
+/* ── Query (DB) monitoring (unibridge_query_* metrics) ── */
+
+// Execution times in these payloads cover successful queries only; error
+// rates count errors and timeouts together.
+
+export interface QueryMetricsSummary {
+  total_queries: number;
+  error_rate: number;
+  timeouts: number;
+  /** null when the window has no successful queries. */
+  avg_latency_ms: number | null;
+  p95_latency_ms: number | null;
+  avg_rows: number | null;
+}
+
+/** null = no successful queries at that step: a gap in the chart, not 0 ms. */
+export interface QueryLatencyPoint {
+  timestamp: number;
+  value: number | null;
+}
+
+export interface QueryLatencyData {
+  p50: QueryLatencyPoint[];
+  p95: QueryLatencyPoint[];
+  p99: QueryLatencyPoint[];
+}
+
+export interface QueryOutcomePoint {
+  timestamp: number;
+  success: number;
+  error: number;
+  timeout: number;
+}
+
+export type QueryDatabaseComparisonRow = {
+  database: string;
+  db_type: string | null;
+  queries: number;
+  share: number;
+  error_rate: number;
+  avg_latency_ms: number | null;
+  latency_p95_ms: number | null;
+  avg_rows: number | null;
+};
+
+export type QueryDatabasesComparison = {
+  total_queries: number;
+  databases: QueryDatabaseComparisonRow[];
+};
+
+export type QueryConsumerComparisonRow = {
+  consumer: string;
+  queries: number;
+  share: number;
+  error_rate: number;
+  avg_latency_ms: number | null;
+  latency_p95_ms: number | null;
+  avg_rows: number | null;
+};
+
+export type QueryConsumersComparison = {
+  total_queries: number;
+  consumers: QueryConsumerComparisonRow[];
+};
+
+export async function getQueryMetricsSummary(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  consumer?: string,
+  database?: string,
+): Promise<QueryMetricsSummary> {
+  const { data } = await client.get('/admin/query/metrics/summary', {
+    params: { ...timeParams(sel), consumer, database },
+  });
+  return data;
+}
+
+export async function getQueryMetricsTotal(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  consumer?: string,
+  database?: string,
+  bucket: Bucket = 'auto',
+): Promise<TimeSeriesPoint[]> {
+  const { data } = await client.get('/admin/query/metrics/queries-total', {
+    params: { ...timeParams(sel), ...bucketParam(bucket), consumer, database },
+  });
+  return data;
+}
+
+export async function getQueryMetricsOutcomes(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  consumer?: string,
+  database?: string,
+  bucket: Bucket = 'auto',
+): Promise<QueryOutcomePoint[]> {
+  const { data } = await client.get('/admin/query/metrics/outcomes', {
+    params: { ...timeParams(sel), ...bucketParam(bucket), consumer, database },
+  });
+  return data;
+}
+
+export async function getQueryMetricsLatency(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  consumer?: string,
+  database?: string,
+): Promise<QueryLatencyData> {
+  const { data } = await client.get('/admin/query/metrics/latency', {
+    params: { ...timeParams(sel), consumer, database },
+  });
+  return data;
+}
+
+export async function getQueryDatabasesComparison(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  consumer?: string,
+): Promise<QueryDatabasesComparison> {
+  const { data } = await client.get('/admin/query/metrics/databases-comparison', {
+    params: { ...timeParams(sel), consumer },
+  });
+  return data;
+}
+
+export async function getQueryConsumersComparison(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  database?: string,
+): Promise<QueryConsumersComparison> {
+  const { data } = await client.get('/admin/query/metrics/consumers-comparison', {
+    params: { ...timeParams(sel), database },
+  });
+  return data;
+}
+
+export async function getQueryDatabasesSeries(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  consumer?: string,
+  bucket: Bucket = 'auto',
+): Promise<BucketedBreakdown> {
+  const { data } = await client.get('/admin/query/metrics/databases-comparison-series', {
+    params: { ...timeParams(sel), ...bucketParam(bucket), consumer },
+  });
+  return data;
+}
+
+export async function getQueryConsumersSeries(
+  sel: TimeSelection = DEFAULT_SELECTION,
+  database?: string,
+  bucket: Bucket = 'auto',
+): Promise<BucketedBreakdown> {
+  const { data } = await client.get('/admin/query/metrics/consumers-comparison-series', {
+    params: { ...timeParams(sel), ...bucketParam(bucket), database },
   });
   return data;
 }

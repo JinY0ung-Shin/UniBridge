@@ -7,6 +7,7 @@ import {
 import { useChartTheme } from './useChartTheme';
 import { type Bucket } from '../utils/timeRange';
 import { formatBucketLabel } from '../utils/time';
+import { QUERY_UI_CONSUMER, QUERY_UNTRACKED_CONSUMER } from '../utils/monitoring';
 import type { BucketedBreakdown } from '../api/client';
 
 interface BucketedBreakdownViewProps {
@@ -15,8 +16,12 @@ interface BucketedBreakdownViewProps {
   bucket: Bucket;
   loading?: boolean;
   error?: boolean;
-  unit: 'tokens' | 'requests';
+  unit: BucketedBreakdown['unit'];
   valueFmt?: (n: number) => string;
+  /** Translate the query-monitoring consumer sentinels (`__ui__`,
+   *  `(untracked)`). Only for per-API-key breakdowns: other dimensions (e.g.
+   *  free-form DB aliases) may legitimately carry those strings. */
+  queryConsumerLabels?: boolean;
 }
 
 /** Default compact value formatter (used when the page passes none). */
@@ -49,6 +54,7 @@ function BucketedBreakdownView({
   error,
   unit,
   valueFmt,
+  queryConsumerLabels = false,
 }: BucketedBreakdownViewProps) {
   const { t } = useTranslation();
   const chartColors = useChartTheme();
@@ -58,6 +64,10 @@ function BucketedBreakdownView({
   const seriesLabel = (key: string) => {
     if (key === '(others)') return t('breakdown.others');
     if (key === '(no api key)') return t('breakdown.noApiKey');
+    if (queryConsumerLabels) {
+      if (key === QUERY_UI_CONSUMER) return t('breakdown.uiQueries');
+      if (key === QUERY_UNTRACKED_CONSUMER) return t('breakdown.untracked');
+    }
     return key;
   };
 

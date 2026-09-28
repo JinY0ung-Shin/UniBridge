@@ -9,6 +9,7 @@ const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Connections = lazy(() => import('./pages/Connections'));
 const Permissions = lazy(() => import('./pages/Permissions'));
 const AuditLogs = lazy(() => import('./pages/AuditLogs'));
+const QueryMonitoring = lazy(() => import('./pages/QueryMonitoring'));
 const QueryPlayground = lazy(() => import('./pages/QueryPlayground'));
 const QueryTemplates = lazy(() => import('./pages/QueryTemplates'));
 const GatewayRoutes = lazy(() => import('./pages/GatewayRoutes'));
@@ -100,6 +101,7 @@ function App() {
           <Route path="/connections" element={<ProtectedRoute permission="query.databases.read"><Connections /></ProtectedRoute>} />
           <Route path="/permissions" element={<ProtectedRoute permission="query.permissions.read"><Permissions /></ProtectedRoute>} />
           <Route path="/audit-logs" element={<ProtectedRoute permission="query.audit.read"><AuditLogs /></ProtectedRoute>} />
+          <Route path="/query-monitoring" element={<ProtectedRoute permission={['gateway.monitoring.read', 'gateway.monitoring.self']}><QueryMonitoring /></ProtectedRoute>} />
           <Route path="/query" element={<ProtectedRoute permission="query.execute"><QueryPlayground /></ProtectedRoute>} />
           <Route path="/query-templates" element={<ProtectedRoute permission="query.settings.read"><QueryTemplates /></ProtectedRoute>} />
           <Route path="/query-settings" element={<ProtectedRoute permission="query.settings.read"><QuerySettings /></ProtectedRoute>} />

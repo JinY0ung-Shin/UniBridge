@@ -308,6 +308,7 @@ describe('App', () => {
     expect(screen.getByText('Connections')).toBeInTheDocument();
     expect(screen.getByText('Permissions')).toBeInTheDocument();
     expect(screen.getByText('Audit Logs')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Query Monitoring' })).toHaveAttribute('href', '/query-monitoring');
     expect(screen.getByText('Query Playground')).toBeInTheDocument();
     expect(screen.getByText('Query Templates')).toBeInTheDocument();
     expect(screen.getByText('Gateway Routes')).toBeInTheDocument();

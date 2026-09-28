@@ -72,4 +72,46 @@ describe('BucketedBreakdownView', () => {
     expect(screen.getByText('Total')).toHaveClass('breakdown-cell--right');
     expect(screen.getByText('5')).toHaveClass('breakdown-cell--total');
   });
+
+  const sentinelData = {
+    buckets: [1772323200],
+    series: [
+      { key: '__ui__', total: 4, points: [4] },
+      { key: '(untracked)', total: 2, points: [2] },
+      { key: 'alice', total: 1, points: [1] },
+    ],
+    unit: 'queries' as const,
+  };
+
+  it('translates the query-monitoring consumer sentinels when opted in', () => {
+    renderWithProviders(
+      <BucketedBreakdownView
+        title="Queries by API key"
+        bucket="day"
+        unit="queries"
+        data={sentinelData}
+        queryConsumerLabels
+      />,
+    );
+
+    expect(screen.getByText('(UI / direct)')).toBeInTheDocument();
+    expect(screen.getByText('(before per-key tracking)')).toBeInTheDocument();
+    expect(screen.getByText('alice')).toBeInTheDocument();
+    expect(screen.queryByText('__ui__')).not.toBeInTheDocument();
+  });
+
+  it('leaves free-form keys such as DB aliases untouched by default', () => {
+    renderWithProviders(
+      <BucketedBreakdownView
+        title="Queries by database"
+        bucket="day"
+        unit="queries"
+        data={sentinelData}
+      />,
+    );
+
+    expect(screen.getByText('__ui__')).toBeInTheDocument();
+    expect(screen.getByText('(untracked)')).toBeInTheDocument();
+    expect(screen.queryByText('(UI / direct)')).not.toBeInTheDocument();
+  });
 });

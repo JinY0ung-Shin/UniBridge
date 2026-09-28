@@ -592,6 +592,39 @@ describe('api client API helpers', () => {
     ]);
   });
 
+  it('query metrics helpers forward time, consumer, database, and bucket parameters', async () => {
+    const mod = await importClient(keycloak);
+    const calls: Array<{ url?: string; params?: Record<string, unknown> }> = [];
+    mod.default.defaults.adapter = makeAdapter((c) => {
+      calls.push({ url: c.url, params: c.params });
+      return {};
+    });
+
+    const selection = { kind: 'preset', value: '6h' } as const;
+    const custom = { kind: 'custom', start: 100, end: 200 } as const;
+    await mod.getQueryMetricsSummary(selection, 'alice', 'orders-db');
+    await mod.getQueryMetricsTotal(custom, undefined, 'orders-db', 'day');
+    await mod.getQueryMetricsOutcomes(selection, '__ui__', undefined, 'hour');
+    await mod.getQueryMetricsLatency(selection, 'alice');
+    await mod.getQueryDatabasesComparison(selection, 'alice');
+    await mod.getQueryConsumersComparison(selection, 'orders-db');
+    await mod.getQueryDatabasesSeries(selection, 'alice', 'week');
+    await mod.getQueryConsumersSeries(custom, 'orders-db', 'day');
+    await mod.getQueryMetricsSummary();
+
+    expect(calls).toEqual([
+      { url: '/admin/query/metrics/summary', params: { range: '6h', consumer: 'alice', database: 'orders-db' } },
+      { url: '/admin/query/metrics/queries-total', params: { start: 100, end: 200, bucket: 'day', consumer: undefined, database: 'orders-db' } },
+      { url: '/admin/query/metrics/outcomes', params: { range: '6h', bucket: 'hour', consumer: '__ui__', database: undefined } },
+      { url: '/admin/query/metrics/latency', params: { range: '6h', consumer: 'alice', database: undefined } },
+      { url: '/admin/query/metrics/databases-comparison', params: { range: '6h', consumer: 'alice' } },
+      { url: '/admin/query/metrics/consumers-comparison', params: { range: '6h', database: 'orders-db' } },
+      { url: '/admin/query/metrics/databases-comparison-series', params: { range: '6h', bucket: 'week', consumer: 'alice' } },
+      { url: '/admin/query/metrics/consumers-comparison-series', params: { start: 100, end: 200, bucket: 'day', database: 'orders-db' } },
+      { url: '/admin/query/metrics/summary', params: { range: '1h', consumer: undefined, database: undefined } },
+    ]);
+  });
+
   it('NAS connection and browse endpoints preserve path parameters', async () => {
     const mod = await importClient(keycloak);
     const calls: Array<{ method?: string; url?: string; params?: unknown }> = [];
