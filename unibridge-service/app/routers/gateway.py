@@ -1341,6 +1341,21 @@ def _get_step(time_range: str) -> str:
     return RANGE_STEPS.get(time_range, "60s")
 
 
+_MIN_RATE_WINDOW_SECONDS = 300
+
+
+def _rate_window(step: str) -> str:
+    """``rate()`` window for a range query sampled every ``step``.
+
+    A fixed 5m window at a 1h/6h/12h step only sees the last 5 minutes of each
+    step and silently drops everything in between (spikes included). A window
+    of at least one step makes consecutive samples tile the range; the 300s
+    floor keeps the previous smoothing at short ranges. Steps in this module
+    are always ``"<int>s"``.
+    """
+    return f"{max(int(step.removesuffix('s')), _MIN_RATE_WINDOW_SECONDS)}s"
+
+
 def _validate_route(route: str | None) -> None:
     if route and (
         len(route) > _ROUTE_FILTER_MAX_LEN or any(ord(ch) < 32 for ch in route)
@@ -1458,31 +1473,43 @@ def _labels(route: str | list[str] | None, consumer: str | None, *extra: str) ->
     return "{" + ",".join(parts) + "}" if parts else ""
 
 
+# APISIX observes every request into ``apisix_http_latency`` up to three times:
+# type="request" (total latency L), type="upstream" (U) and type="apisix"
+# (L − U). Summing across types blends them — an average comes out at ~2/3 of
+# L and p50 near the true p25 — so every latency selector pins the
+# end-to-end "request" series. Pass it as an ``extra`` matcher to ``_labels``.
+_REQUEST_LATENCY = 'type="request"'
+
+
 # Short-TTL route listing cache: the UI fires several route-filtered metrics
 # endpoints concurrently on every refresh, and each expands its filter via the
 # APISIX admin API — cache the listing so that fan-out costs one call.
 _ROUTE_LISTING_CACHE: list[dict[str, Any]] = []
-_ROUTE_LISTING_CACHE_TS: float = 0.0
+# -inf = never fetched (or invalidated). monotonic() counts from host boot, so a
+# 0.0 stamp would read as fresh for the first TTL seconds of host uptime.
+_ROUTE_LISTING_CACHE_TS: float = float("-inf")
 _ROUTE_LISTING_TTL = 30.0
+_monotonic = time.monotonic
 
 
 async def _list_routes_cached() -> list[dict[str, Any]]:
     """Route listing items with a short TTL. Failures raise (not cached) so
     callers pick their own degradation and recovery is immediate."""
     global _ROUTE_LISTING_CACHE, _ROUTE_LISTING_CACHE_TS
-    if time.monotonic() - _ROUTE_LISTING_CACHE_TS <= _ROUTE_LISTING_TTL:
+    if _monotonic() - _ROUTE_LISTING_CACHE_TS <= _ROUTE_LISTING_TTL:
         return _ROUTE_LISTING_CACHE
     listing = await apisix_client.list_resources("routes")
     _ROUTE_LISTING_CACHE = listing.get("items", [])
-    _ROUTE_LISTING_CACHE_TS = time.monotonic()
+    _ROUTE_LISTING_CACHE_TS = _monotonic()
     return _ROUTE_LISTING_CACHE
 
 
 def _invalidate_route_listing_cache() -> None:
-    """Route saves/deletes change the id↔name mapping the monitoring filter
-    expansion relies on — force the next lookup to refetch."""
+    """Route saves/deletes (and config imports) change the id↔name mapping the
+    monitoring filter expansion and row names rely on — force the next lookup
+    to refetch."""
     global _ROUTE_LISTING_CACHE_TS
-    _ROUTE_LISTING_CACHE_TS = 0.0
+    _ROUTE_LISTING_CACHE_TS = float("-inf")
 
 
 async def _route_filter_values(route: str) -> list[str]:
@@ -1594,25 +1621,53 @@ def _metric_label(row: dict[str, Any], *names: str) -> str:
     return "unknown"
 
 
-async def _route_name_map() -> dict[str, str]:
-    """Route id → friendly name from APISIX. Failure here is non-fatal: callers
-    still return Prometheus data, just without the friendly name."""
-    name_map: dict[str, str] = {}
+async def _route_listing_or_empty() -> list[dict[str, Any]]:
+    """The cached APISIX route listing, for decorating metric rows. Failure
+    here is non-fatal: callers still return Prometheus data, just without the
+    friendly name / route id."""
     try:
-        routes_listing = await apisix_client.list_resources("routes")
-        for item in routes_listing.get("items", []):
-            rid = item.get("id")
-            rname = item.get("name")
-            if rid and rname:
-                name_map[str(rid)] = rname
-                # Under prefer_name the Prometheus label may already carry the
-                # name; mapping it to itself keeps the payload "name" filled.
-                # setdefault so an id-keyed entry wins if some name collides
-                # with another route's id.
-                name_map.setdefault(str(rname), str(rname))
+        return await _list_routes_cached()
     except Exception as exc:
         logger.warning("Failed to fetch route names from APISIX: %s", exc)
+        return []
+
+
+def _route_name_map(items: list[dict[str, Any]]) -> dict[str, str]:
+    """Route label → friendly name, from a route listing."""
+    name_map: dict[str, str] = {}
+    for item in items:
+        rid = item.get("id")
+        rname = item.get("name")
+        if rid and rname:
+            name_map[str(rid)] = rname
+            # Under prefer_name the Prometheus label may already carry the
+            # name; mapping it to itself keeps the payload "name" filled.
+            # setdefault so an id-keyed entry wins if some name collides
+            # with another route's id.
+            name_map.setdefault(str(rname), str(rname))
     return name_map
+
+
+def _route_id_map(items: list[dict[str, Any]]) -> dict[str, str]:
+    """Route label → APISIX route id, for labels that pin down one route.
+
+    Same rules as ``_route_filter_values``: an id-shaped label resolves as an
+    id first; a name resolves only when exactly one route carries it and it
+    doesn't collide with another route's id. Ambiguous labels are left out —
+    their series already mix several routes.
+    """
+    route_ids = {str(item["id"]) for item in items if item.get("id")}
+    id_map = {rid: rid for rid in route_ids}
+    owners_by_name: dict[str, set[str]] = {}
+    for item in items:
+        rid = str(item.get("id") or "")
+        name = str(item.get("name") or "")
+        if rid and name:
+            owners_by_name.setdefault(name, set()).add(rid)
+    for name, owners in owners_by_name.items():
+        if len(owners) == 1 and name not in route_ids:
+            id_map[name] = next(iter(owners))
+    return id_map
 
 
 def _extract_scalar(results: list[dict[str, Any]]) -> float:
@@ -1627,20 +1682,30 @@ def _extract_scalar(results: list[dict[str, Any]]) -> float:
         return 0.0
 
 
-def _extract_timeseries(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Extract time series points from Prometheus range query result."""
+def _extract_timeseries(
+    results: list[dict[str, Any]], *, nan_as_none: bool = False
+) -> list[dict[str, Any]]:
+    """Extract time series points from Prometheus range query result.
+
+    NaN (or unparseable) samples become 0.0 — right for counts and rates. A
+    quantile series passes ``nan_as_none=True``: there NaN means no traffic in
+    the window, an undefined percentile rather than 0ms, so the point is kept
+    (index-aligned with sibling p50/p95/p99 series) with a ``None`` value.
+    """
     if not results:
         return []
+    missing = None if nan_as_none else 0.0
     values = results[0].get("values", [])
     points = []
     for ts, val in values:
         try:
             v = float(val)
             if v != v:  # NaN
-                v = 0.0
+                points.append({"timestamp": int(ts), "value": missing})
+                continue
             points.append({"timestamp": int(ts), "value": round(v, 4)})
         except (ValueError, TypeError):
-            points.append({"timestamp": int(ts), "value": 0.0})
+            points.append({"timestamp": int(ts), "value": missing})
     return points
 
 
@@ -1907,6 +1972,7 @@ async def metrics_summary(
     consumer = _scope_consumer(scope, route_filter or route, consumer)
     hs = _labels(route_filter, consumer)
     hs5 = _labels(route_filter, consumer, 'code=~"5.."')
+    hl = _labels(route_filter, consumer, _REQUEST_LATENCY)
     try:
         total_results, error_rate_results, latency_results = await asyncio.gather(
             prometheus_client.instant_query(
@@ -1919,8 +1985,8 @@ async def metrics_summary(
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
-                f"sum(increase(apisix_http_latency_sum{hs}[{tw.promql_window}])) "
-                f"/ sum(increase(apisix_http_latency_count{hs}[{tw.promql_window}]))",
+                f"sum(increase(apisix_http_latency_sum{hl}[{tw.promql_window}])) "
+                f"/ sum(increase(apisix_http_latency_count{hl}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
         )
@@ -1949,7 +2015,7 @@ async def metrics_requests(
     hs = _labels(route_filter, consumer)
     try:
         results = await prometheus_client.range_query(
-            f"sum(rate(apisix_http_status{hs}[5m]))",
+            f"sum(rate(apisix_http_status{hs}[{_rate_window(tw.step)}]))",
             duration=tw.promql_window,
             step=tw.step,
             start=tw.start,
@@ -2007,20 +2073,21 @@ async def metrics_latency(
     _validate_route(route)
     route_filter = await _route_filter_values(route) if route else None
     consumer = _scope_consumer(scope, route_filter or route, consumer)
-    hs = _labels(route_filter, consumer)
+    hl = _labels(route_filter, consumer, _REQUEST_LATENCY)
     step = tw.step
+    window = _rate_window(step)
     try:
         p50, p95, p99 = await asyncio.gather(
             prometheus_client.range_query(
-                f"histogram_quantile(0.5, sum(rate(apisix_http_latency_bucket{hs}[5m])) by (le))",
+                f"histogram_quantile(0.5, sum(rate(apisix_http_latency_bucket{hl}[{window}])) by (le))",
                 duration=tw.promql_window, step=step, start=tw.start, end=tw.end,
             ),
             prometheus_client.range_query(
-                f"histogram_quantile(0.95, sum(rate(apisix_http_latency_bucket{hs}[5m])) by (le))",
+                f"histogram_quantile(0.95, sum(rate(apisix_http_latency_bucket{hl}[{window}])) by (le))",
                 duration=tw.promql_window, step=step, start=tw.start, end=tw.end,
             ),
             prometheus_client.range_query(
-                f"histogram_quantile(0.99, sum(rate(apisix_http_latency_bucket{hs}[5m])) by (le))",
+                f"histogram_quantile(0.99, sum(rate(apisix_http_latency_bucket{hl}[{window}])) by (le))",
                 duration=tw.promql_window, step=step, start=tw.start, end=tw.end,
             ),
         )
@@ -2030,9 +2097,9 @@ async def metrics_latency(
         )
 
     return {
-        "p50": _extract_timeseries(p50),
-        "p95": _extract_timeseries(p95),
-        "p99": _extract_timeseries(p99),
+        "p50": _extract_timeseries(p50, nan_as_none=True),
+        "p95": _extract_timeseries(p95, nan_as_none=True),
+        "p99": _extract_timeseries(p99, nan_as_none=True),
     }
 
 
@@ -2058,7 +2125,7 @@ async def metrics_top_routes(
     # Fold pre-prefer_name id rows onto their name row (same merge as
     # usages_payload) so a window spanning the flip doesn't list one logical
     # route twice and burn two top-10 slots.
-    name_map = await _route_name_map()
+    name_map = _route_name_map(await _route_listing_or_empty())
     counts: dict[str, int] = {}
     for r in results:
         route = r.get("metric", {}).get("route", "unknown")
@@ -2132,7 +2199,7 @@ async def usages_payload(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
 
-    name_map = await _route_name_map()
+    name_map = _route_name_map(await _route_listing_or_empty())
 
     # Series recorded before the prefer_name flip (or before a route rename)
     # carry the route *id* while newer samples carry the *name*, so a day
@@ -2198,19 +2265,22 @@ async def metrics_routes_comparison(
 
     Every value is computed over the full resolved window (``promql_window``):
     counts/errors via ``increase()``, and p50/p95 via ``histogram_quantile`` over
-    the whole-window bucket rate — not a trailing 5-minute snapshot. ``share`` uses
-    the grand total across all routes as denominator (same as consumers-comparison),
-    so it stays accurate even though only the top-10 rows are returned.
+    the whole-window bucket rate — not a trailing 5-minute snapshot. Every route
+    with traffic in the window is returned (no top-N cap), busiest first; ``share``
+    uses the grand total across all routes as denominator (same as
+    consumers-comparison). ``route_id`` maps the label back to its APISIX route id
+    (under ``prefer_name`` the label is the route name) when that is unambiguous.
     """
     consumer = _scope_consumer(scope, None, consumer)
     # Routes-comparison never targets a single route — it groups by route.
     # Default selector hides llm-proxy (LLM monitoring page covers that).
     hs = _labels(None, consumer)
     hs5 = _labels(None, consumer, 'code=~"5.."')
+    hl = _labels(None, consumer, _REQUEST_LATENCY)
     try:
         requests_res, errors_res, p50_res, p95_res, total_res = await asyncio.gather(
             prometheus_client.instant_query(
-                f"topk(10, sum by (route) (increase(apisix_http_status{hs}[{tw.promql_window}])))",
+                f"sum by (route) (increase(apisix_http_status{hs}[{tw.promql_window}]))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
@@ -2219,12 +2289,12 @@ async def metrics_routes_comparison(
             ),
             prometheus_client.instant_query(
                 f"histogram_quantile(0.5, sum by (route, le) "
-                f"(rate(apisix_http_latency_bucket{hs}[{tw.promql_window}])))",
+                f"(rate(apisix_http_latency_bucket{hl}[{tw.promql_window}])))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
                 f"histogram_quantile(0.95, sum by (route, le) "
-                f"(rate(apisix_http_latency_bucket{hs}[{tw.promql_window}])))",
+                f"(rate(apisix_http_latency_bucket{hl}[{tw.promql_window}])))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
@@ -2257,11 +2327,12 @@ async def metrics_routes_comparison(
     p50_map = _map_route_value(p50_res)
     p95_map = _map_route_value(p95_res)
 
-    name_map = await _route_name_map()
+    route_items = await _route_listing_or_empty()
+    name_map = _route_name_map(route_items)
+    id_map = _route_id_map(route_items)
 
-    # Denominator for share is the true total across all routes (respecting the
-    # consumer filter), not just the top-10 rows, so shares stay accurate when
-    # more than 10 routes are active. Mirrors consumers-comparison.
+    # Denominator for share is the grand total across all routes (respecting the
+    # consumer filter) from its own query. Mirrors consumers-comparison.
     total = _extract_scalar(total_res)
     routes: list[dict[str, Any]] = []
     for route, req in requests_map.items():
@@ -2276,6 +2347,7 @@ async def metrics_routes_comparison(
         routes.append({
             "route": route,
             "name": name_map.get(route),
+            "route_id": id_map.get(route),
             "requests": req_rounded,
             "share": round(share, 2),
             "error_rate": round(error_rate, 2),
@@ -2301,6 +2373,7 @@ async def metrics_consumers_comparison(
     forced = _scope_consumer(scope, None, None)
     hs = _labels(None, forced)
     hs5 = _labels(None, forced, 'code=~"5.."')
+    hl = _labels(None, forced, _REQUEST_LATENCY)
     try:
         requests_res, errors_res, p50_res, p95_res, total_res = await asyncio.gather(
             prometheus_client.instant_query(
@@ -2313,12 +2386,12 @@ async def metrics_consumers_comparison(
             ),
             prometheus_client.instant_query(
                 f"histogram_quantile(0.5, sum by (consumer, le) "
-                f"(rate(apisix_http_latency_bucket{hs}[{tw.promql_window}])))",
+                f"(rate(apisix_http_latency_bucket{hl}[{tw.promql_window}])))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(
                 f"histogram_quantile(0.95, sum by (consumer, le) "
-                f"(rate(apisix_http_latency_bucket{hs}[{tw.promql_window}])))",
+                f"(rate(apisix_http_latency_bucket{hl}[{tw.promql_window}])))",
                 eval_time=tw.eval_time,
             ),
             prometheus_client.instant_query(

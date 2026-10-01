@@ -771,6 +771,40 @@ class TestSkips:
         assert row["action"] == "create"
         assert "myservice" in apisix_state["routes"]
 
+    async def test_route_import_refreshes_the_monitoring_route_cache(
+        self, client, admin_token, apisix_state
+    ):
+        from app.routers import gateway
+
+        assert await gateway._list_routes_cached() == []  # primed before import
+        doc = export_doc(
+            routes=[{"id": "myservice", "name": "myservice", "uri": "/api/myservice/*",
+                     "upstream_id": "unibridge-service"}],
+        )
+        resp = await do_import(
+            client, admin_token, dry_run=False, sections=["routes"], doc=doc
+        )
+        assert resp.status_code == 200, resp.text
+        # Well within the 30s TTL, yet monitoring already sees the new route.
+        assert [r["id"] for r in await gateway._list_routes_cached()] == ["myservice"]
+
+    async def test_dry_run_route_import_keeps_the_monitoring_route_cache(
+        self, client, admin_token, apisix_state
+    ):
+        from app.routers import gateway
+
+        await gateway._list_routes_cached()
+        primed = gateway._ROUTE_LISTING_CACHE_TS
+        doc = export_doc(
+            routes=[{"id": "myservice", "name": "myservice", "uri": "/api/myservice/*",
+                     "upstream_id": "unibridge-service"}],
+        )
+        resp = await do_import(
+            client, admin_token, dry_run=True, sections=["routes"], doc=doc
+        )
+        assert resp.status_code == 200, resp.text
+        assert gateway._ROUTE_LISTING_CACHE_TS == primed
+
     async def test_system_role_is_skipped(self, client, admin_token, seeded_db, apisix_state):
         doc = export_doc(roles=[{"name": "admin", "description": "hijack", "is_system": True,
                                  "permissions": ["query.execute"]}])

@@ -33,6 +33,18 @@ def dispose_app_database_engine():
     asyncio.run(engine.dispose())
 
 
+@pytest.fixture(autouse=True)
+def fresh_route_listing_cache():
+    """The gateway router caches the APISIX route listing (30s TTL) in a module
+    global; reset it so one test's ``list_resources`` mock can't leak into the
+    next test's route names, ids or filter expansion."""
+    from app.routers import gateway
+
+    gateway._invalidate_route_listing_cache()
+    yield
+    gateway._invalidate_route_listing_cache()
+
+
 @pytest.fixture
 async def engine():
     eng = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -161,3 +173,19 @@ async def alerts_reader_token(seeded_db):
 
 def auth_header(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def fresh_module_copy(name: str):
+    """A throwaway, freshly executed copy of module ``name`` (not registered in
+    ``sys.modules``): its globals hold their import-time values, which the
+    shared copy may have lost to earlier tests.
+
+    Only for modules whose import has no global side effects: re-executing one
+    that registers Prometheus metrics or ORM tables (e.g. ``app.metrics``,
+    ``app.models``) raises duplicate-registration errors."""
+    import importlib.util
+
+    spec = importlib.util.find_spec(name)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module

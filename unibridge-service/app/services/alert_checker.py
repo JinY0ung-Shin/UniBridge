@@ -41,7 +41,10 @@ _monotonic = time.monotonic
 _ROUTE_LABEL_CACHE: dict[str, str] = {}
 _ROUTE_ID_BY_NAME: dict[str, str] = {}
 _ROUTE_IDS_BY_UPSTREAM: dict[str, list[str]] = {}
-_ROUTE_LABEL_CACHE_TS: float = 0.0
+# -inf = never refreshed. _monotonic() counts from host boot, so a 0.0 stamp
+# would look fresh for the first TTL of host uptime and serve the empty caches
+# (labels unresolved, upstream alerts without their routes' assignees).
+_ROUTE_LABEL_CACHE_TS: float = float("-inf")
 _ROUTE_LABEL_TTL = 300.0  # 5 minutes
 _UPSTREAM_NAME_BY_ID: dict[str, str] = {}
 

@@ -743,7 +743,11 @@ async def _apply_route(
 
     # Same guard as save_route: an import writes straight to APISIX, so without
     # it a config file is a bypass around the system-namespace shadowing check.
-    from app.routers.gateway import _SYSTEM_ROUTE_URIS, _shadowed_system_uri
+    from app.routers.gateway import (
+        _SYSTEM_ROUTE_URIS,
+        _invalidate_route_listing_cache,
+        _shadowed_system_uri,
+    )
 
     uri = item.get("uri")
     if isinstance(uri, str):
@@ -772,6 +776,9 @@ async def _apply_route(
         return action, reason
 
     result = await apisix_client.put_resource("routes", route_id, body)
+    # Like save_route: monitoring maps route labels to names/ids from a cached
+    # listing, which would otherwise lag this write by up to its TTL.
+    _invalidate_route_listing_cache()
     await ctx.audit(
         action=action,
         resource_type="route",

@@ -30,6 +30,7 @@ from app.routers.gateway import (
     _extract_scalar,
     _extract_timeseries,
     _grouped_volume_series,
+    _rate_window,
     _volume_series,
     resolve_time_window,
 )
@@ -159,12 +160,14 @@ async def requests(
     service: str | None = Query(None, description="Filter by service name"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> list[dict[str, Any]]:
-    """Request rate (req/s) over time, via a trailing 5m rate (mirrors gateway)."""
+    """Request rate (req/s) over time; the rate window spans at least one step
+    so no traffic falls between samples (mirrors gateway, see ``_rate_window``)."""
     _validate_service(service)
     sel = _sel(service)
+    window = _rate_window(tw.step)
     expr = (
-        f"sum(rate(http_requests_total{{{sel}}}[5m])) "
-        f"or sum(rate(http_request_duration_seconds_count{{{sel}}}[5m]))"
+        f"sum(rate(http_requests_total{{{sel}}}[{window}])) "
+        f"or sum(rate(http_request_duration_seconds_count{{{sel}}}[{window}]))"
     )
     try:
         results = await prometheus_client.range_query(
@@ -232,7 +235,8 @@ async def latency(
     service: str | None = Query(None, description="Filter by service name"),
     _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
 ) -> dict[str, list[dict[str, Any]]]:
-    """p50/p95/p99 latency (ms) series, via a trailing 5m bucket rate.
+    """p50/p95/p99 latency (ms) series, via a bucket rate over at least one step
+    (see ``_rate_window``).
 
     The histogram is in seconds; the ``* 1000`` is applied in PromQL so the
     returned values are milliseconds (matching ``avg_latency_ms`` and the gateway
@@ -241,18 +245,19 @@ async def latency(
     _validate_service(service)
     sel = _sel(service)
     step = tw.step
+    window = _rate_window(step)
     try:
         p50, p95, p99 = await asyncio.gather(
             prometheus_client.range_query(
-                f"({_quantile_expr(0.5, sel, '5m')}) * 1000",
+                f"({_quantile_expr(0.5, sel, window)}) * 1000",
                 duration=tw.promql_window, step=step, start=tw.start, end=tw.end,
             ),
             prometheus_client.range_query(
-                f"({_quantile_expr(0.95, sel, '5m')}) * 1000",
+                f"({_quantile_expr(0.95, sel, window)}) * 1000",
                 duration=tw.promql_window, step=step, start=tw.start, end=tw.end,
             ),
             prometheus_client.range_query(
-                f"({_quantile_expr(0.99, sel, '5m')}) * 1000",
+                f"({_quantile_expr(0.99, sel, window)}) * 1000",
                 duration=tw.promql_window, step=step, start=tw.start, end=tw.end,
             ),
         )
@@ -262,9 +267,9 @@ async def latency(
         )
 
     return {
-        "p50": _extract_timeseries(p50),
-        "p95": _extract_timeseries(p95),
-        "p99": _extract_timeseries(p99),
+        "p50": _extract_timeseries(p50, nan_as_none=True),
+        "p95": _extract_timeseries(p95, nan_as_none=True),
+        "p99": _extract_timeseries(p99, nan_as_none=True),
     }
 
 

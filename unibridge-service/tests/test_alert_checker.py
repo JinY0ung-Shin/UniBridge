@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-import time
 
 import pytest
 from unittest.mock import AsyncMock, patch
 
 from app.services.alert_checker import run_single_check
 from app.services.alert_state import AlertStateManager
+from tests.conftest import fresh_module_copy
 
 
 class _FakeResult:
@@ -909,17 +909,28 @@ class TestRouteLabelCache:
             alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
 
     @pytest.mark.asyncio
+    async def test_never_refreshed_cache_refreshes_right_after_host_boot(self):
+        """_monotonic() counts from host boot: seconds after a reboot the
+        never-refreshed cache must still refresh, or the first cycles resolve
+        no route names (state keyed by name, upstream alerts lose assignees)."""
+        # A fresh copy holds the import-time cache state; the shared module's
+        # was overwritten by this file's isolation fixture.
+        checker = fresh_module_copy("app.services.alert_checker")
+        list_mock = AsyncMock(return_value={"items": [{"id": "r1", "name": "orders"}]})
+        with patch.object(checker, "_monotonic", return_value=5.0), \
+             patch("app.services.apisix_client.list_resources", new=list_mock):
+            assert await checker._resolve_route_id("orders") == "r1"
+            assert await checker._get_route_label("r1") == "orders"
+        assert list_mock.await_count == 1  # refreshed once, then fresh within TTL
+
+    @pytest.mark.asyncio
     async def test_get_route_label_skips_refresh_within_ttl_after_failure(self):
         """After a failed refresh, subsequent calls within TTL must NOT
         re-fetch — otherwise N routes = N APISIX calls/cycle."""
         from app.services import alert_checker
         alert_checker._ROUTE_LABEL_CACHE = {}
-        # Force the cache to look expired. Setting TS to 0 only works when the
-        # process's monotonic clock is already > TTL, which is not guaranteed
-        # on freshly-booted CI runners.
-        alert_checker._ROUTE_LABEL_CACHE_TS = (
-            time.monotonic() - alert_checker._ROUTE_LABEL_TTL - 10.0
-        )
+        # The never-refreshed sentinel: stale whatever the host's uptime.
+        alert_checker._ROUTE_LABEL_CACHE_TS = float("-inf")
         call_count = {"n": 0}
 
         async def failing(*a, **kw):

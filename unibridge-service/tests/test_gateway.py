@@ -1708,7 +1708,7 @@ class TestMetricsRoutesComparison:
             {"metric": {"route": "route-b"}, "value": [0, "60.0"]},
         ]
         # Grand total equals the visible rows' sum here (1000 + 500); a separate
-        # test covers the case where the grand total exceeds the top-10 rows.
+        # test covers a grand total above the rows' sum.
         total_result = [{"value": [0, "1500"]}]
 
         mock = AsyncMock(
@@ -1738,9 +1738,10 @@ class TestMetricsRoutesComparison:
         assert b["error_rate"] == 0.0
         assert b["latency_p50_ms"] == pytest.approx(30.0)
 
-    async def test_share_uses_grand_total_not_top10(self, client, admin_token):
-        # Only the top-10 rows are returned, but far more traffic exists. Share and
-        # total_requests must use the grand-total query, not the visible-row sum.
+    async def test_share_uses_grand_total_query(self, client, admin_token):
+        # Traffic outside the returned rows still counts (e.g. requests that
+        # matched no route carry an empty route label). Share and total_requests
+        # must use the grand-total query, not the visible-row sum.
         requests_result = [
             {"metric": {"route": "route-a"}, "value": [0, "1000"]},
             {"metric": {"route": "route-b"}, "value": [0, "500"]},
@@ -2085,18 +2086,10 @@ class TestMetricsUsages:
 
 
 class TestRouteFilter:
-    """Verify the optional route query parameter filters PromQL correctly."""
+    """Verify the optional route query parameter filters PromQL correctly.
 
-    @pytest.fixture(autouse=True)
-    def _fresh_route_listing_cache(self):
-        """The id↔name expansion caches the APISIX route listing (30s TTL);
-        reset it so each test's list_resources mock (or its absence) applies."""
-        from app.routers import gateway as gw
-        gw._ROUTE_LISTING_CACHE = []
-        gw._ROUTE_LISTING_CACHE_TS = 0.0
-        yield
-        gw._ROUTE_LISTING_CACHE = []
-        gw._ROUTE_LISTING_CACHE_TS = 0.0
+    The route listing cache the id↔name expansion uses is reset per test by
+    the autouse ``fresh_route_listing_cache`` fixture in conftest."""
 
     async def test_summary_with_route_filter(self, client, admin_token):
         total = [{"value": [0, "50"]}]
