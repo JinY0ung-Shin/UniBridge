@@ -82,6 +82,42 @@
   margin-bottom: 0;
 }
 
+/* Muted row count beside a comparison panel title */
+.chart-panel__count {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+}
+
+/* ── Scrollable comparison table ──
+   The route comparison lists every route with traffic. Ten rows (~520px)
+   fit without a scrollbar; beyond that the table scrolls inside the panel
+   while the header stays pinned (same idiom as .results-table). */
+
+.comparison-scroll {
+  max-height: 560px;
+  overflow-y: auto;
+  /* Rows focused via (Shift+)Tab scroll into view below the pinned header,
+     not under it. */
+  scroll-padding-top: 40px;
+}
+
+.comparison-scroll thead {
+  position: sticky;
+  top: 0;
+  /* Above .bar-cell__text (z-index: 1, same stacking context), which would
+     otherwise paint scrolled numbers over the header. */
+  z-index: 2;
+}
+
+/* Collapsed table borders scroll away with the rows, so the pinned header
+   draws its divider as an inset shadow instead. */
+.comparison-scroll thead th {
+  border-bottom: none;
+  box-shadow: inset 0 -1px 0 var(--border-default);
+}
+
 .comparison-table .cell-metric {
   text-align: right;
   font-family: var(--font-mono);

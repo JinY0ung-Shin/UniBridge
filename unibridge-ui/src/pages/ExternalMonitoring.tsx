@@ -26,8 +26,8 @@ import './GatewayMonitoring.css';
 import TimeRangeSelector from '../components/TimeRangeSelector';
 import BucketSelector from '../components/BucketSelector';
 import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket, bucketTooCoarse } from '../utils/timeRange';
-import { formatChartTime, formatChartTimestamp, formatBucketLabel } from '../utils/time';
-import { errorRateColor } from '../utils/monitoring';
+import { formatChartTimestamp, formatBucketLabel } from '../utils/time';
+import { errorRateColor, hasLatencyValues, latencyLineDots, timeKeyedAxis, toLatencyChartRows } from '../utils/monitoring';
 import GrafanaLink from '../components/GrafanaLink';
 
 function BarCell({ value, max, suffix = '' }: { value: number; max: number; suffix?: string }) {
@@ -73,6 +73,11 @@ function ExternalMonitoring() {
   const chartColors = useChartTheme();
   const volumeLabel = (ts: number) =>
     bucket === 'auto' ? formatChartTimestamp(ts, span) : formatBucketLabel(ts, bucket);
+  // Time-series charts key on each row's epoch (see timeKeyedAxis): trend and
+  // latency lines tick span-aware and name the point time on hover; volume
+  // bars tick as before and, on calendar buckets, name the bucket period.
+  const pointAxis = timeKeyedAxis((ts) => formatChartTimestamp(ts, span));
+  const volumeAxis = timeKeyedAxis(volumeLabel, bucket === 'auto' ? undefined : volumeLabel);
 
   const toggleSort = (column: ServiceSortColumn) => setSort((prev) => toggleSortState(prev, column));
   const toggleHandlerSort = (column: HandlerSortColumn) =>
@@ -208,20 +213,10 @@ function ExternalMonitoring() {
   }, [comparisonQuery.data]);
 
   const summary = summaryQuery.data;
-  const requestsData = (requestsQuery.data ?? []).map((p) => ({
-    time: formatChartTime(p.timestamp),
-    rps: p.value,
-  }));
+  const requestsData = (requestsQuery.data ?? []).map((p) => ({ ts: p.timestamp, rps: p.value }));
 
-  const latencyData = latencyQuery.data;
-  // Missing percentile points stay null so the lines show gaps instead of
-  // misleading dips to zero.
-  const latencyChartData = (latencyData?.p50 ?? []).map((p, i) => ({
-    time: formatChartTime(p.timestamp),
-    p50: p.value,
-    p95: latencyData?.p95?.[i]?.value ?? null,
-    p99: latencyData?.p99?.[i]?.value ?? null,
-  }));
+  const latencyChartData = toLatencyChartRows(latencyQuery.data);
+  const latencyDots = latencyLineDots(latencyChartData);
 
   const isLoading = summaryQuery.isLoading;
   const isError = summaryQuery.isError;
@@ -355,9 +350,10 @@ function ExternalMonitoring() {
             <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <LineChart data={requestsData}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
+                <XAxis {...pointAxis.xAxis} stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
+                  {...pointAxis.tooltip}
                   contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
                   labelStyle={{ color: chartColors.axis }}
                   itemStyle={{ color: chartColors.textSecondary }}
@@ -381,11 +377,12 @@ function ExternalMonitoring() {
         {(requestsTotalQuery.data ?? []).length > 0 ? (
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%" minWidth={0}>
-              <BarChart data={(requestsTotalQuery.data ?? []).map((p) => ({ time: volumeLabel(p.timestamp), requests: Math.round(p.value) }))}>
+              <BarChart data={(requestsTotalQuery.data ?? []).map((p) => ({ ts: p.timestamp, requests: Math.round(p.value) }))}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
+                <XAxis {...volumeAxis.xAxis} stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
+                  {...volumeAxis.tooltip}
                   contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
                   labelStyle={{ color: chartColors.axis }}
                   itemStyle={{ color: chartColors.textSecondary }}
@@ -439,22 +436,23 @@ function ExternalMonitoring() {
       {/* Latency */}
       <div className="chart-panel">
         <div className="chart-panel__title">{t('gatewayMonitoring.latency')}</div>
-        {latencyChartData.length > 0 ? (
+        {hasLatencyValues(latencyChartData) ? (
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <LineChart data={latencyChartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
+                <XAxis {...pointAxis.xAxis} stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
+                  {...pointAxis.tooltip}
                   contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
                   labelStyle={{ color: chartColors.axis }}
                   itemStyle={{ color: chartColors.textSecondary }}
                 />
                 <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
-                <Line type="monotone" dataKey="p50" stroke={chartColors.green} strokeWidth={2} dot={false} name="P50" />
-                <Line type="monotone" dataKey="p95" stroke={chartColors.yellow} strokeWidth={2} dot={false} name="P95" />
-                <Line type="monotone" dataKey="p99" stroke={chartColors.red} strokeWidth={2} dot={false} name="P99" />
+                <Line type="monotone" dataKey="p50" stroke={chartColors.green} strokeWidth={2} dot={latencyDots.p50} name="P50" />
+                <Line type="monotone" dataKey="p95" stroke={chartColors.yellow} strokeWidth={2} dot={latencyDots.p95} name="P95" />
+                <Line type="monotone" dataKey="p99" stroke={chartColors.red} strokeWidth={2} dot={latencyDots.p99} name="P99" />
               </LineChart>
             </ResponsiveContainer>
           </div>

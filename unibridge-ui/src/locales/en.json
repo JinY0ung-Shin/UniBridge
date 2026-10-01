@@ -682,6 +682,7 @@
     "noLatencyData": "No latency data available",
     "topRoutes": "Top Routes by Traffic",
     "routeComparison": "Route Comparison ({{range}} total)",
+    "routeCount": "{{count}} routes",
     "share": "Share",
     "latencyP50": "p50 (ms)",
     "latencyP95": "p95 (ms)",

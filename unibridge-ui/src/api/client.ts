@@ -587,10 +587,18 @@ export interface TopRoute {
   requests: number;
 }
 
+/** Series point that may carry no value — e.g. a latency quantile over a window
+ *  with no traffic. The point is kept (null) so series stay index-aligned
+ *  instead of faking a 0. */
+export interface NullableTimeSeriesPoint {
+  timestamp: number;
+  value: number | null;
+}
+
 export interface LatencyData {
-  p50: TimeSeriesPoint[];
-  p95: TimeSeriesPoint[];
-  p99: TimeSeriesPoint[];
+  p50: NullableTimeSeriesPoint[];
+  p95: NullableTimeSeriesPoint[];
+  p99: NullableTimeSeriesPoint[];
 }
 
 export async function getMetricsSummary(
@@ -657,6 +665,9 @@ export async function getMetricsRequestsTotal(
 export type RouteComparisonRow = {
   route: string;
   name?: string | null;
+  /** APISIX route id the `route` label resolves to (the label is the route
+   *  name under prefer_name); null when it can't be attributed to one route. */
+  route_id?: string | null;
   requests: number;
   share: number;
   error_rate: number;

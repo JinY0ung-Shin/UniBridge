@@ -1,13 +1,33 @@
 vi.mock('recharts', () => ({
   ResponsiveContainer: ({ children }: { children: React.ReactNode }) => <div data-testid="responsive-container">{children}</div>,
-  LineChart: ({ children }: { children: React.ReactNode }) => <div data-testid="line-chart">{children}</div>,
-  BarChart: ({ children }: { children: React.ReactNode }) => <div data-testid="bar-chart">{children}</div>,
-  Line: () => null,
+  // Rows and per-line/tooltip props are exposed so tests can check labels,
+  // null gaps (no connectNulls) and the tooltip's full point time.
+  LineChart: ({ children, data }: { children: React.ReactNode; data?: unknown }) => (
+    <div data-testid="line-chart" data-points={JSON.stringify(data ?? [])}>{children}</div>
+  ),
+  BarChart: ({ children, data }: { children: React.ReactNode; data?: unknown }) => (
+    <div data-testid="bar-chart" data-points={JSON.stringify(data ?? [])}>{children}</div>
+  ),
+  Line: ({ dataKey, connectNulls, dot }: { dataKey: string; connectNulls?: boolean; dot?: unknown }) => (
+    <span
+      data-testid={`line-${dataKey}`}
+      data-connect-nulls={String(Boolean(connectNulls))}
+      data-dot={typeof dot}
+    />
+  ),
   Bar: () => null,
-  XAxis: () => null,
+  // The axis key and a tick probed at epoch 0 (= 1/1 09:00 KST) are exposed so
+  // tests can check charts key on `ts` and tick span/bucket-aware.
+  XAxis: ({ dataKey, tickFormatter }: { dataKey?: unknown; tickFormatter?: (value: unknown, index: number) => unknown }) => (
+    <span data-testid="x-axis" data-key={String(dataKey)} data-tick={tickFormatter ? String(tickFormatter(0, 0)) : ''} />
+  ),
   YAxis: () => null,
   CartesianGrid: () => null,
-  Tooltip: () => null,
+  // Tooltip labels are probed at epoch 0 (= 1/1 09:00 KST): the point time, or
+  // the bucket period on calendar-bucket bars.
+  Tooltip: ({ labelFormatter }: { labelFormatter?: (label: unknown, payload: unknown[]) => unknown }) => (
+    <span data-testid="tooltip" data-label={labelFormatter ? String(labelFormatter(0, [])) : ''} />
+  ),
   Legend: () => null,
   Cell: () => null,
   LabelList: () => null,
@@ -25,7 +45,7 @@ vi.mock('../api/client', () => ({
   getExternalHandlersComparison: vi.fn(),
 }));
 
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   getExternalSummary,
@@ -60,6 +80,90 @@ describe('ExternalMonitoring', () => {
     mockedComparison.mockResolvedValue({ total_requests: 0, services: [] });
     mockedComparisonSeries.mockResolvedValue({ buckets: [], series: [], unit: 'requests' });
     mockedHandlers.mockResolvedValue({ total_requests: 0, handlers: [] });
+  });
+
+  it('labels request-rate points with the date on multi-day ranges', async () => {
+    const userEvent = (await import('@testing-library/user-event')).default;
+    const user = userEvent.setup();
+    const ts = Date.UTC(2026, 8, 24, 5, 0, 0) / 1000; // 2026-09-24 14:00 KST
+    mockedRequests.mockResolvedValue([{ timestamp: ts, value: 1.5 }]);
+
+    renderWithProviders(<ExternalMonitoring />);
+
+    await user.click(screen.getByRole('button', { name: '7d' }));
+
+    await waitFor(() => {
+      const points = JSON.parse(screen.getByTestId('line-chart').getAttribute('data-points') ?? '[]');
+      expect(points).toEqual([{ ts, rps: 1.5 }]);
+    });
+    const chart = screen.getByTestId('line-chart');
+    expect(within(chart).getByTestId('x-axis')).toHaveAttribute('data-key', 'ts');
+    expect(within(chart).getByTestId('x-axis')).toHaveAttribute('data-tick', '1/1 09h');
+    expect(within(chart).getByTestId('tooltip')).toHaveAttribute('data-label', '1/1 09:00');
+  });
+
+  it('keys volume bars on the epoch; calendar buckets name the period on hover', async () => {
+    const userEvent = (await import('@testing-library/user-event')).default;
+    const user = userEvent.setup();
+    const ts = Date.UTC(2026, 8, 24, 5, 0, 0) / 1000;
+    mockedRequestsTotal.mockResolvedValue([{ timestamp: ts, value: 41.6 }]);
+
+    renderWithProviders(<ExternalMonitoring />);
+
+    const volume = await screen.findByTestId('bar-chart');
+    expect(JSON.parse(volume.getAttribute('data-points') ?? '[]')).toEqual([{ ts, requests: 42 }]);
+    expect(within(volume).getByTestId('x-axis')).toHaveAttribute('data-key', 'ts');
+    expect(within(volume).getByTestId('x-axis')).toHaveAttribute('data-tick', '09:00');
+    expect(within(volume).getByTestId('tooltip')).toHaveAttribute('data-label', '1/1 09:00');
+
+    await user.click(screen.getByRole('button', { name: 'Daily' }));
+
+    // A day bar is a period: tick and tooltip both carry the bucket label.
+    await waitFor(() => {
+      const bars = screen.getByTestId('bar-chart');
+      expect(within(bars).getByTestId('x-axis')).toHaveAttribute('data-tick', '1/1');
+      expect(within(bars).getByTestId('tooltip')).toHaveAttribute('data-label', '1/1');
+    });
+  });
+
+  it('keeps null latency points as gaps without bridging them', async () => {
+    const ts = Date.UTC(2026, 8, 24, 5, 0, 0) / 1000;
+    mockedLatency.mockResolvedValue({
+      p50: [{ timestamp: ts, value: null }, { timestamp: ts + 60, value: 8 }],
+      p95: [{ timestamp: ts, value: null }, { timestamp: ts + 60, value: 20 }],
+      p99: [{ timestamp: ts, value: null }, { timestamp: ts + 60, value: null }],
+    });
+
+    renderWithProviders(<ExternalMonitoring />);
+
+    await waitFor(() => {
+      const points = JSON.parse(screen.getByTestId('line-chart').getAttribute('data-points') ?? '[]');
+      expect(points).toEqual([
+        { ts, p50: null, p95: null, p99: null },
+        { ts: ts + 60, p50: 8, p95: 20, p99: null },
+      ]);
+    });
+    const chart = screen.getByTestId('line-chart');
+    for (const key of ['p50', 'p95', 'p99']) {
+      const line = within(chart).getByTestId(`line-${key}`);
+      expect(line).toHaveAttribute('data-connect-nulls', 'false');
+      expect(line).toHaveAttribute('data-dot', 'function');
+    }
+    expect(within(chart).getByTestId('tooltip')).toHaveAttribute('data-label', '1/1 09:00');
+  });
+
+  it('shows the no-latency-data state when every quantile point is null', async () => {
+    const ts = Date.UTC(2026, 8, 24, 5, 0, 0) / 1000;
+    mockedLatency.mockResolvedValue({
+      p50: [{ timestamp: ts, value: null }],
+      p95: [{ timestamp: ts, value: null }],
+      p99: [{ timestamp: ts, value: null }],
+    });
+
+    renderWithProviders(<ExternalMonitoring />);
+
+    expect(await screen.findByText('No latency data available')).toBeInTheDocument();
+    expect(screen.queryByTestId('line-chart')).not.toBeInTheDocument();
   });
 
   it('renders loading state', () => {

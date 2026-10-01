@@ -30,8 +30,8 @@ import './GatewayMonitoring.css';
 import TimeRangeSelector from '../components/TimeRangeSelector';
 import BucketSelector from '../components/BucketSelector';
 import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket, bucketTooCoarse, GRAFANA_BUCKET_INTERVAL } from '../utils/timeRange';
-import { formatChartTime, formatChartTimestamp, formatBucketLabel } from '../utils/time';
-import { errorRateColor } from '../utils/monitoring';
+import { formatChartTimestamp, formatBucketLabel } from '../utils/time';
+import { errorRateColor, hasLatencyValues, latencyLineDots, timeKeyedAxis, toLatencyChartRows } from '../utils/monitoring';
 import GrafanaLink from '../components/GrafanaLink';
 
 function BarCell({ value, max, suffix = '' }: { value: number; max: number; suffix?: string }) {
@@ -69,6 +69,11 @@ function GatewayMonitoring() {
   const routeDetailRef = useRef<HTMLDivElement | null>(null);
   const volumeLabel = (ts: number) =>
     bucket === 'auto' ? formatChartTimestamp(ts, span) : formatBucketLabel(ts, bucket);
+  // Time-series charts key on each row's epoch (see timeKeyedAxis): trend and
+  // latency lines tick span-aware and name the point time on hover; volume
+  // bars tick as before and, on calendar buckets, name the bucket period.
+  const pointAxis = timeKeyedAxis((ts) => formatChartTimestamp(ts, span));
+  const volumeAxis = timeKeyedAxis(volumeLabel, bucket === 'auto' ? undefined : volumeLabel);
 
   const toggleSort = (column: RouteSortColumn) => setSort((prev) => toggleSortState(prev, column));
   const toggleConsumerSort = (column: ConsumerSortColumn) =>
@@ -189,6 +194,10 @@ function GatewayMonitoring() {
   }, [consumersComparisonQuery.data]);
 
   const routeLabel = (r: RouteComparisonRow) => r.name || r.route;
+  // Under prefer_name the label is already the route name, so hover reveals
+  // the route id instead — only when it adds something beyond the label.
+  const routeIdHint = (r: RouteComparisonRow) =>
+    r.route_id && r.route_id !== routeLabel(r) ? r.route_id : undefined;
 
   const sortedRoutes = useMemo<RouteComparisonRow[]>(() => {
     const rows = routesComparisonQuery.data?.routes ?? [];
@@ -259,21 +268,20 @@ function GatewayMonitoring() {
     enabled: !!selectedRoute,
   });
 
-  const summary = summaryQuery.data;
-  const requestsData = (requestsQuery.data ?? []).map((p) => ({
-    time: formatChartTime(p.timestamp),
-    rps: p.value,
-  }));
+  const routeLatencyQuery = useQuery({
+    queryKey: ['metrics-latency', selKey, selectedRoute, selectedConsumer],
+    queryFn: () => getMetricsLatency(selection, selectedRoute!, selectedConsumer || undefined),
+    refetchInterval,
+    enabled: !!selectedRoute,
+  });
 
-  const latencyData = latencyQuery.data;
-  // Missing percentile points stay null so the lines show gaps instead of
-  // misleading dips to zero.
-  const latencyChartData = (latencyData?.p50 ?? []).map((p, i) => ({
-    time: formatChartTime(p.timestamp),
-    p50: p.value,
-    p95: latencyData?.p95?.[i]?.value ?? null,
-    p99: latencyData?.p99?.[i]?.value ?? null,
-  }));
+  const summary = summaryQuery.data;
+  const requestsData = (requestsQuery.data ?? []).map((p) => ({ ts: p.timestamp, rps: p.value }));
+
+  const latencyChartData = toLatencyChartRows(latencyQuery.data);
+  const latencyDots = latencyLineDots(latencyChartData);
+  const routeLatencyChartData = toLatencyChartRows(routeLatencyQuery.data);
+  const routeLatencyDots = latencyLineDots(routeLatencyChartData);
 
   const isLoading = summaryQuery.isLoading;
   const isError = summaryQuery.isError;
@@ -285,7 +293,8 @@ function GatewayMonitoring() {
   const routeDetailHasError = routeSummaryQuery.isError
     || routeRequestsQuery.isError
     || routeStatusQuery.isError
-    || routeVolumQuery.isError;
+    || routeVolumQuery.isError
+    || routeLatencyQuery.isError;
 
   function toggleSelectedRoute(route: string) {
     setSelectedRoute((current) => (current === route ? null : route));
@@ -373,9 +382,10 @@ function GatewayMonitoring() {
             <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <LineChart data={requestsData}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
+                <XAxis {...pointAxis.xAxis} stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
+                  {...pointAxis.tooltip}
                   contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
                   labelStyle={{ color: chartColors.axis }}
                   itemStyle={{ color: chartColors.textSecondary }}
@@ -399,11 +409,12 @@ function GatewayMonitoring() {
         {(requestsTotalQuery.data ?? []).length > 0 ? (
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%" minWidth={0}>
-              <BarChart data={(requestsTotalQuery.data ?? []).map((p) => ({ time: volumeLabel(p.timestamp), requests: Math.round(p.value) }))}>
+              <BarChart data={(requestsTotalQuery.data ?? []).map((p) => ({ ts: p.timestamp, requests: Math.round(p.value) }))}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
+                <XAxis {...volumeAxis.xAxis} stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
+                  {...volumeAxis.tooltip}
                   contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
                   labelStyle={{ color: chartColors.axis }}
                   itemStyle={{ color: chartColors.textSecondary }}
@@ -457,22 +468,23 @@ function GatewayMonitoring() {
       {/* Latency */}
       <div className="chart-panel">
         <div className="chart-panel__title">{t('gatewayMonitoring.latency')}</div>
-        {latencyChartData.length > 0 ? (
+        {hasLatencyValues(latencyChartData) ? (
           <div className="chart-container">
             <ResponsiveContainer width="100%" height="100%" minWidth={0}>
               <LineChart data={latencyChartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
+                <XAxis {...pointAxis.xAxis} stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
+                  {...pointAxis.tooltip}
                   contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
                   labelStyle={{ color: chartColors.axis }}
                   itemStyle={{ color: chartColors.textSecondary }}
                 />
                 <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
-                <Line type="monotone" dataKey="p50" stroke={chartColors.green} strokeWidth={2} dot={false} name="P50" />
-                <Line type="monotone" dataKey="p95" stroke={chartColors.yellow} strokeWidth={2} dot={false} name="P95" />
-                <Line type="monotone" dataKey="p99" stroke={chartColors.red} strokeWidth={2} dot={false} name="P99" />
+                <Line type="monotone" dataKey="p50" stroke={chartColors.green} strokeWidth={2} dot={latencyDots.p50} name="P50" />
+                <Line type="monotone" dataKey="p95" stroke={chartColors.yellow} strokeWidth={2} dot={latencyDots.p95} name="P95" />
+                <Line type="monotone" dataKey="p99" stroke={chartColors.red} strokeWidth={2} dot={latencyDots.p99} name="P99" />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -485,11 +497,19 @@ function GatewayMonitoring() {
         )}
       </div>
 
-      {/* Route Comparison */}
+      {/* Route Comparison — lists every route with traffic; past ~10 rows the
+          table scrolls inside the panel under a pinned header. */}
       <div className="chart-panel">
-        <div className="chart-panel__title">{t('gatewayMonitoring.routeComparison', { range: rangeLabel })}</div>
-        {(routesComparisonQuery.data?.routes ?? []).length > 0 ? (
-          <div className="table-container" style={{ border: 'none' }}>
+        <div className="chart-panel__title">
+          {t('gatewayMonitoring.routeComparison', { range: rangeLabel })}
+          {sortedRoutes.length > 0 && (
+            <span className="chart-panel__count">
+              {t('gatewayMonitoring.routeCount', { count: sortedRoutes.length })}
+            </span>
+          )}
+        </div>
+        {sortedRoutes.length > 0 ? (
+          <div className="table-container comparison-scroll" style={{ border: 'none' }}>
             <table className="data-table comparison-table">
               <thead>
                 <tr>
@@ -513,7 +533,7 @@ function GatewayMonitoring() {
                     aria-pressed={selectedRoute === r.route}
                     aria-label={t('gatewayMonitoring.openRouteDetail', { route: routeLabel(r) })}
                   >
-                    <td className="cell-alias" title={r.name ? r.route : undefined}>{routeLabel(r)}</td>
+                    <td className="cell-alias" title={routeIdHint(r)}>{routeLabel(r)}</td>
                     <td className="cell-metric"><BarCell value={r.requests} max={maxRequests} /></td>
                     <td className="cell-metric"><BarCell value={r.share} max={100} suffix="%" /></td>
                     <td className={`cell-metric ${errorRateClass(r.error_rate)}`}>{r.error_rate.toFixed(2)}%</td>
@@ -585,11 +605,12 @@ function GatewayMonitoring() {
                 {(routeRequestsQuery.data ?? []).length > 0 ? (
                   <div className="chart-container">
                     <ResponsiveContainer width="100%" height="100%" minWidth={0}>
-                      <LineChart data={(routeRequestsQuery.data ?? []).map((p) => ({ time: formatChartTime(p.timestamp), rps: p.value }))}>
+                      <LineChart data={(routeRequestsQuery.data ?? []).map((p) => ({ ts: p.timestamp, rps: p.value }))}>
                         <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
+                        <XAxis {...pointAxis.xAxis} stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <Tooltip
+                          {...pointAxis.tooltip}
                           contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
                           labelStyle={{ color: chartColors.axis }}
                           itemStyle={{ color: chartColors.textSecondary }}
@@ -613,11 +634,12 @@ function GatewayMonitoring() {
                 {(routeVolumQuery.data ?? []).length > 0 ? (
                   <div className="chart-container">
                     <ResponsiveContainer width="100%" height="100%" minWidth={0}>
-                      <BarChart data={(routeVolumQuery.data ?? []).map((p) => ({ time: volumeLabel(p.timestamp), requests: Math.round(p.value) }))}>
+                      <BarChart data={(routeVolumQuery.data ?? []).map((p) => ({ ts: p.timestamp, requests: Math.round(p.value) }))}>
                         <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
-                        <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
+                        <XAxis {...volumeAxis.xAxis} stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                         <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                         <Tooltip
+                          {...volumeAxis.tooltip}
                           contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
                           labelStyle={{ color: chartColors.axis }}
                           itemStyle={{ color: chartColors.textSecondary }}
@@ -664,6 +686,38 @@ function GatewayMonitoring() {
                     loading={routeStatusQuery.isLoading}
                     error={routeStatusQuery.isError}
                     emptyText={t('gatewayMonitoring.noStatusData')}
+                  />
+                )}
+              </div>
+
+              {/* Route Latency */}
+              <div className="chart-panel chart-panel--nested">
+                <div className="chart-panel__title">{t('gatewayMonitoring.latency')}</div>
+                {hasLatencyValues(routeLatencyChartData) ? (
+                  <div className="chart-container">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+                      <LineChart data={routeLatencyChartData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
+                        <XAxis {...pointAxis.xAxis} stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
+                        <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
+                        <Tooltip
+                          {...pointAxis.tooltip}
+                          contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
+                          labelStyle={{ color: chartColors.axis }}
+                          itemStyle={{ color: chartColors.textSecondary }}
+                        />
+                        <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
+                        <Line type="monotone" dataKey="p50" stroke={chartColors.green} strokeWidth={2} dot={routeLatencyDots.p50} name="P50" />
+                        <Line type="monotone" dataKey="p95" stroke={chartColors.yellow} strokeWidth={2} dot={routeLatencyDots.p95} name="P95" />
+                        <Line type="monotone" dataKey="p99" stroke={chartColors.red} strokeWidth={2} dot={routeLatencyDots.p99} name="P99" />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <PanelStatus
+                    loading={routeLatencyQuery.isLoading}
+                    error={routeLatencyQuery.isError}
+                    emptyText={t('gatewayMonitoring.noLatencyData')}
                   />
                 )}
               </div>

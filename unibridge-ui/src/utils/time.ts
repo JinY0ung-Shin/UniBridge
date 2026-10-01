@@ -85,6 +85,15 @@ export function formatChartTimestamp(epochSeconds: number, spanSeconds: number):
   return `${p.hour}:${p.minute}`;
 }
 
+/**
+ * epoch seconds → "M/D HH:mm" in KST: one chart point's full time, for
+ * tooltips (span-aware axis labels drop the time past a week).
+ */
+export function formatChartPointTime(epochSeconds: number): string {
+  const p = kstParts(epochSeconds);
+  return `${Number(p.month)}/${Number(p.day)} ${p.hour}:${p.minute}`;
+}
+
 /** epoch seconds (bucket start) → KST label for a calendar bucket bar. */
 export function formatBucketLabel(
   epochSeconds: number,
