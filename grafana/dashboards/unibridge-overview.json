@@ -801,7 +801,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(apisix_http_latency_sum{route!~\"llm-proxy|llm-messages|llm-responses\"}[$__range])) / sum(increase(apisix_http_latency_count{route!~\"llm-proxy|llm-messages|llm-responses\"}[$__range]))",
+          "expr": "sum(increase(apisix_http_latency_sum{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses\"}[$__range])) / sum(increase(apisix_http_latency_count{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses\"}[$__range]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -861,7 +861,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\"}[5m]))",
+          "expr": "sum(rate(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\"}[$__rate_interval]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"

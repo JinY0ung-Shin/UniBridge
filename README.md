@@ -514,7 +514,10 @@ Thursday-start weeks (epoch-aligned) instead of the UI's Monday-start, the
 Dashboard page's live per-database connection grid has no Prometheus equivalent,
 "over time" panels plot every series (no top-12 + "(others)" grouping) and
 their `auto` step follows Grafana's interval rather than the UI's fixed
-per-range windows, and the Servers disk panels ignore the
+per-range windows, the rate-based trend panels (request rate, latency
+percentiles) use `$__rate_interval` — about 1m at short ranges — where the UI
+keeps a 5-minute minimum window, so short-range curves look less smoothed, and
+the Servers disk panels ignore the
 `NODE_EXPORTER_DISK_MOUNTPOINTS` whitelist (they always show every real
 filesystem).
 

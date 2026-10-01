@@ -302,7 +302,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[5m])) or sum(rate(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[5m]))",
+          "expr": "sum(rate(http_requests_total{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__rate_interval])) or sum(rate(http_request_duration_seconds_count{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__rate_interval]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -492,7 +492,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.5, sum(rate(http_request_duration_seconds_bucket{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[5m])) by (le)) * 1000",
+          "expr": "histogram_quantile(0.5, sum(rate(http_request_duration_seconds_bucket{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__rate_interval])) by (le)) * 1000",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -501,7 +501,7 @@
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[5m])) by (le)) * 1000",
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__rate_interval])) by (le)) * 1000",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -510,7 +510,7 @@
         },
         {
           "refId": "C",
-          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[5m])) by (le)) * 1000",
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=\"external-services\",service=~\"$service\",handler=~\"$endpoint\"}[$__rate_interval])) by (le)) * 1000",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"

@@ -279,7 +279,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(apisix_http_latency_sum{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])) / sum(increase(apisix_http_latency_count{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range]))",
+          "expr": "sum(increase(apisix_http_latency_sum{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])) / sum(increase(apisix_http_latency_count{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -339,7 +339,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[5m]))",
+          "expr": "sum(rate(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__rate_interval]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -530,7 +530,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.5, sum(rate(apisix_http_latency_bucket{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.5, sum(rate(apisix_http_latency_bucket{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__rate_interval])) by (le))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -539,7 +539,7 @@
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95, sum(rate(apisix_http_latency_bucket{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(apisix_http_latency_bucket{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__rate_interval])) by (le))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -548,7 +548,7 @@
         },
         {
           "refId": "C",
-          "expr": "histogram_quantile(0.99, sum(rate(apisix_http_latency_bucket{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(apisix_http_latency_bucket{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__rate_interval])) by (le))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -560,7 +560,7 @@
     {
       "id": 23,
       "type": "table",
-      "title": "Route Comparison (top 10 by requests)",
+      "title": "Route Comparison (by requests)",
       "gridPos": {
         "h": 10,
         "w": 24,
@@ -700,7 +700,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "topk(10, sum by (route) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))",
+          "expr": "sum by (route) (increase(apisix_http_status{route!=\"\",route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])) > 0",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -711,7 +711,7 @@
         },
         {
           "refId": "B",
-          "expr": "(sum by (route) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\",code=~\"5..\"}[$__range])) or (sum by (route) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range]))) * 0) and on (route) topk(10, sum by (route) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))",
+          "expr": "(sum by (route) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\",code=~\"5..\"}[$__range])) or (sum by (route) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range]))) * 0) and on (route) (sum by (route) (increase(apisix_http_status{route!=\"\",route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])) > 0)",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -722,7 +722,7 @@
         },
         {
           "refId": "C",
-          "expr": "(histogram_quantile(0.5, sum by (route, le) (rate(apisix_http_latency_bucket{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))) and on (route) topk(10, sum by (route) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))",
+          "expr": "(histogram_quantile(0.5, sum by (route, le) (rate(apisix_http_latency_bucket{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))) and on (route) (sum by (route) (increase(apisix_http_status{route!=\"\",route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])) > 0)",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -733,7 +733,7 @@
         },
         {
           "refId": "D",
-          "expr": "(histogram_quantile(0.95, sum by (route, le) (rate(apisix_http_latency_bucket{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))) and on (route) topk(10, sum by (route) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))",
+          "expr": "(histogram_quantile(0.95, sum by (route, le) (rate(apisix_http_latency_bucket{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))) and on (route) (sum by (route) (increase(apisix_http_status{route!=\"\",route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])) > 0)",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -744,7 +744,7 @@
         },
         {
           "refId": "E",
-          "expr": "(100 * sum by (route) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])) / scalar(sum(increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",consumer=~\"$consumer\"}[$__range])))) and on (route) topk(10, sum by (route) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))",
+          "expr": "(100 * sum by (route) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])) / scalar(sum(increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",consumer=~\"$consumer\"}[$__range])))) and on (route) (sum by (route) (increase(apisix_http_status{route!=\"\",route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])) > 0)",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -980,7 +980,7 @@
         },
         {
           "refId": "C",
-          "expr": "(histogram_quantile(0.5, sum by (consumer, le) (rate(apisix_http_latency_bucket{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))) and on (consumer) topk(10, sum by (consumer) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))",
+          "expr": "(histogram_quantile(0.5, sum by (consumer, le) (rate(apisix_http_latency_bucket{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))) and on (consumer) topk(10, sum by (consumer) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -991,7 +991,7 @@
         },
         {
           "refId": "D",
-          "expr": "(histogram_quantile(0.95, sum by (consumer, le) (rate(apisix_http_latency_bucket{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))) and on (consumer) topk(10, sum by (consumer) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))",
+          "expr": "(histogram_quantile(0.95, sum by (consumer, le) (rate(apisix_http_latency_bucket{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))) and on (consumer) topk(10, sum by (consumer) (increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",route=~\"$route\",consumer=~\"$consumer\"}[$__range])))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
