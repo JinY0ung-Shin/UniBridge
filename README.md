@@ -680,6 +680,184 @@ This is deliberate data collection, so know what it keeps and where:
   (`docker compose restart litellm`, or restart it in the infra project on a
   blue-green host). Existing files remain on the volume until removed manually.
 
+### Bifrost side-by-side test (`/api/llm-bi`)
+
+An opt-in way to evaluate [Bifrost](https://github.com/maximhq/bifrost) as a
+LiteLLM replacement on real clients without touching `/api/llm`, which keeps
+running on LiteLLM exactly as before:
+
+```
+/api/llm/*                         → unchanged (LiteLLM / llm-converter)
+/api/llm-bi/v1/messages          ┐
+/api/llm-bi/v1/responses         ├→ llm-converter-bi → Bifrost /v1/chat/completions
+/api/llm-bi/v1/models            ┘
+/api/llm-bi/v1/chat/completions  ┐
+/api/llm-bi/v1/completions       ├→ Bifrost /v1/…
+/api/llm-bi/v1/embeddings        ┘
+```
+
+`llm-converter-bi` is the same converter image with only its upstream changed,
+so Claude Code and Codex get the same translation on both paths. Only those six
+exact paths are routed. Nothing else of Bifrost is reachable through the
+gateway: not its UI at `/` (also served as a 200 fallback for unknown paths),
+not its management API under `/api/*`, not MCP under `/v1/mcp/*`, not
+`/metrics`. Off the gateway, Bifrost answers inference only with the virtual
+key APISIX injects — just as LiteLLM answers only the master key APISIX
+injects.
+
+1. **Secrets** — set these in `.env`; the container refuses to start without
+   them ([`bifrost/entrypoint.sh`](./bifrost/entrypoint.sh)):
+   - `BIFROST_ENCRYPTION_KEY` (≥ 16 chars) encrypts provider keys. It cannot be
+     changed once data exists.
+   - `BIFROST_ADMIN_PASSWORD` is the single admin login, enforced from the first
+     boot ([`bifrost/config.json`](./bifrost/config.json)).
+   - `BIFROST_TEST_VK` is the gateway virtual key:
+     `python3 -c "import secrets; print('sk-bf-' + secrets.token_urlsafe(32))"`.
+     It must start with `sk-bf-`, because Bifrost silently replaces a value
+     without the prefix. `config.json` declares it with `allow_all_providers`,
+     so providers added later need no change, and `enforce_auth_on_inference`
+     makes it mandatory. To rotate it, change the value, recreate the container
+     with the start command in step 2 (`docker compose restart` keeps the old
+     environment, so every request would get a 401), then re-run
+     `scripts/bifrost-test.sh up`.
+2. **Start** — the services sit behind the `bifrost-test` compose profile, so a
+   plain `up` and the blue-green deploy never start or health-check them. **Do
+   not put `COMPOSE_PROFILES` in `.env`**: every deploy would then wait on
+   Bifrost.
+
+   On a host where the June 2026 Bifrost cutover ran, check
+   `docker ps -a --filter name=bifrost` before the first start. Remove any
+   leftover `bifrost-tls` nginx or old `bifrost` container with `docker rm -f`.
+   The June `bifrost-tls` published `${BIFROST_PORT:-${LITELLM_PORT}}:443` →
+   `bifrost:8080`, so it would front the new container. Compose's "Found orphan
+   containers" warning on the infra project is the signal.
+
+   ```bash
+   # blue-green host (shared infra project)
+   docker compose -p unibridge-infra -f docker-compose.infra.yml --profile bifrost-test \
+     up -d --build --wait bifrost llm-converter-bi
+   # single stack
+   docker compose --profile bifrost-test up -d --build --wait bifrost llm-converter-bi
+   ```
+
+   Booting needs no internet: `config.json` loads the (intentionally empty)
+   pricing and model-parameter datasheets in `bifrost/` over `file://`, since
+   self-hosted models have no list price. On an air-gapped host, first import
+   `maximhq/bifrost:v2.2.4` with `docker save`/`docker load`.
+   `llm-converter-bi` builds from `./llm-converter` with the same mirror
+   settings as `llm-converter`.
+3. **Register providers** — in the Bifrost UI over an SSH tunnel
+   (`ssh -L 18080:127.0.0.1:18080 <host>`, then `http://localhost:18080`; the
+   port is bound to loopback only, `BIFROST_TEST_ADMIN_PORT`) or through the
+   management API. Register one OpenAI-compatible custom provider per
+   vLLM/SGLang server. For a fair comparison with LiteLLM, match its settings
+   ([LiteLLM request timeout and retries](#litellm-request-timeout-and-retries)).
+   `curl -u admin` prompts for the password, which keeps it out of the process
+   list:
+
+   ```bash
+   curl -u admin http://127.0.0.1:18080/api/providers \
+     -H 'Content-Type: application/json' -d '{
+       "provider": "vllm-qwen",
+       "network_config": {
+         "base_url": "http://10.0.0.11:8000",
+         "allow_private_network": true,
+         "default_request_timeout_in_seconds": 600,
+         "stream_idle_timeout_in_seconds": 600,
+         "max_retries": 2, "retry_backoff_initial": "500ms", "retry_backoff_max": "5s"
+       },
+       "custom_provider_config": {
+         "base_provider_type": "openai",
+         "allowed_requests": {
+           "chat_completion": true, "chat_completion_stream": true, "list_models": true,
+           "text_completion": true, "text_completion_stream": true, "embedding": true}
+       }}'
+   curl -u admin http://127.0.0.1:18080/api/providers/vllm-qwen/keys \
+     -H 'Content-Type: application/json' -d '{
+       "name": "default", "value": "<the server'\''s --api-key, or any placeholder>", "weight": 1,
+       "models": ["qwen3.5-32b"], "aliases": {"qwen3.5-32b": "Qwen/Qwen3.5-32B"}}'
+   ```
+
+   - `allow_private_network` defaults to false, which blocks every RFC 1918
+     address, Docker's 172.x included.
+   - `base_url` has no `/v1`; Bifrost appends `/v1/chat/completions`.
+   - Bifrost's defaults are a 300s request timeout, a 120s stream-idle cut and no
+     retries. With retries on, it retries connection errors and upstream
+     5xx/429 but never its own request timeout — the same effect as LiteLLM's
+     `TimeoutErrorRetries: 0`.
+   - List the LiteLLM model name in `models` and map it in `aliases` to the id
+     the server serves. Clients can then use the **same model names on both
+     paths**. `/v1/models` lists them as `provider/name`, and both forms work.
+4. **Routes** — once both containers are healthy, run `scripts/bifrost-test.sh up`.
+   It installs the `bifrost` and `llm-converter-bi` upstreams and four key-auth
+   routes, all deny-all by default: `llm-bi-proxy`, `llm-bi-messages`,
+   `llm-bi-responses` and `llm-bi-models`. Each route injects `BIFROST_TEST_VK`
+   as `x-bf-vk`.
+   - **Master keys** (`*`) are whitelisted on all four automatically by the
+     consumer-restriction reconciler.
+   - **Every other test key** needs all four granted on the **API Keys** page.
+     An `llm-proxy` grant does not imply them.
+   - `up` is idempotent and keeps those grants; `status` shows what is installed.
+   - Don't edit these routes in the Gateway UI: its strip-prefix toggle rewrites
+     their path regex. Change the script and re-run `up` instead.
+   - The alert checker probes every APISIX upstream. From here on, a crashed
+     Bifrost or converter mails `upstream_health` alerts to the admins.
+5. **Try it** — the live E2E suite runs unchanged against the new prefix:
+
+   ```bash
+   cd e2e
+   LLM_BASE_URL=https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/llm-bi \
+     LLM_API_KEY=<test key> LLM_MODEL=qwen3.5-32b pytest -q
+   ```
+
+   Claude Code takes `ANTHROPIC_BASE_URL=https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/llm-bi`,
+   and Codex takes `base_url = ".../api/llm-bi/v1"`, as in
+   [Codex through UniBridge](#codex-through-unibridge).
+6. **Tear down** — order matters: run `down` first, then stop the containers.
+   `scripts/bifrost-test.sh down` removes exactly those four routes and two
+   upstreams. Only then stop the services
+   (`docker compose … --profile bifrost-test rm -sf bifrost llm-converter-bi`).
+   Stopping them while the upstreams are still installed mails
+   `upstream_health` alerts. If the data is no longer wanted, also remove the
+   `unibridge_bifrost-test-data` and `unibridge_llm-converter-bi-state` volumes.
+   If etcd still holds the orphaned `bifrost` upstream from the June 2026
+   cutover, `up` replaces it (and says so) and `down` deletes it.
+
+Differences and limits to keep in mind while comparing:
+
+- **Outside UniBridge's LLM views.** `/api/llm-bi` traffic does not appear on
+  the LLM monitoring or usage pages, and is not written to
+  [LLM conversation capture](#llm-conversation-capture); those read LiteLLM's
+  metrics and callbacks. The gateway metrics for the `llm-bi-*` routes do
+  appear, under their route names.
+- **Bifrost's own observability.** Bifrost serves Prometheus metrics at
+  `bifrost:8080/metrics`. They are unauthenticated inside the Docker network and
+  not scraped by default. APISIX stamps every request with
+  `x-bf-dim-consumer` and `x-bf-lh-consumer` set to `$consumer_name`, so the
+  `consumer` metrics label and the log metadata attribute traffic per API key.
+  Request logs, bodies included, are kept in `logs.db` on the `bifrost-test`
+  volume for 14 days. Set `client.disable_content_logging: true` in
+  `config.json` to keep bodies out.
+- **Client headers.** APISIX strips `Authorization`, `x-api-key`, `api-key` and
+  `x-goog-api-key`, which Bifrost reads as virtual-key selectors. It also strips
+  `x-bf-api-key` and `x-bf-api-key-id`, which pin a stored provider key. It
+  overwrites `x-bf-vk` and the consumer headers. Key-auth runs before that
+  rewrite, so it still reads the caller's own `apikey`.
+- **Request rewriting.** Bifrost forwards `max_tokens` as
+  `max_completion_tokens`, and was seen raising values below 16 to 16. Check
+  that your backends honour `max_completion_tokens`.
+- **Extra parameters.** Non-OpenAI fields such as `chat_template_kwargs` pass
+  through on `llm-bi-proxy` only (`x-bf-passthrough-extra-params`). On the
+  converter routes Bifrost drops the LiteLLM-only `allowed_openai_params`, and
+  the converter has already clamped `reasoning_effort`.
+- **Admin access.** Bifrost OSS has a single admin login and no SSO. Treat that
+  login as gateway-admin level: switching `enforce_auth_on_inference` off in the
+  Bifrost UI sticks across restarts until `config.json` itself changes.
+- **`allowed_requests` is an allowlist.** A provider registered with it serves
+  only the operations set to `true`, so leave out `text_completion*` or
+  `embedding` and `/api/llm-bi/v1/completions` or `/v1/embeddings` is refused
+  for that provider.
+
 ### DB query monitoring
 
 **Query Monitoring** (data section of the sidebar) shows query count, error rate

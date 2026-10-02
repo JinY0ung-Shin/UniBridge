@@ -22,6 +22,8 @@ PROMETHEUS_RULES_DIR = REPO_ROOT / "prometheus" / "rules"
 NGINX_CONFIG_FILE = REPO_ROOT / "unibridge-ui" / "nginx.conf"
 EDGE_TEMPLATE_FILE = REPO_ROOT / "deploy" / "edge" / "default.conf.template"
 DEPLOY_SCRIPT_FILE = REPO_ROOT / "scripts" / "deploy-bluegreen.sh"
+BIFROST_DIR = REPO_ROOT / "bifrost"
+BIFROST_TEST_SCRIPT_FILE = REPO_ROOT / "scripts" / "bifrost-test.sh"
 UI_ENTRYPOINT_FILE = REPO_ROOT / "unibridge-ui" / "entrypoint.sh"
 UI_DOCKERIGNORE_FILE = REPO_ROOT / "unibridge-ui" / ".dockerignore"
 BACKUP_SCRIPT_FILE = REPO_ROOT / "backup" / "backup.sh"
@@ -84,6 +86,9 @@ REQUIRED_BLANK_ENV_SECRETS = {
     "KEYCLOAK_SERVICE_CLIENT_SECRET",
     "LITELLM_DB_PASSWORD",
     "LITELLM_MASTER_KEY",
+    "BIFROST_ENCRYPTION_KEY",
+    "BIFROST_ADMIN_PASSWORD",
+    "BIFROST_TEST_VK",
 }
 
 BLUEGREEN_SHARED_ENV_SERVICES = ("unibridge-service", "llm-converter", "unibridge-ui")
@@ -1068,3 +1073,197 @@ def test_ui_entrypoint_fails_loudly_on_bad_template() -> None:
     # Guards against leftover placeholders and invalid config before exec'ing nginx.
     assert "__UNIBRIDGE_SERVICE_UPSTREAM__" in entrypoint
     assert "nginx -t" in entrypoint
+
+
+BIFROST_TEST_PROFILE = "bifrost-test"
+BIFROST_TEST_SERVICES = {"bifrost", "llm-converter-bi"}
+BIFROST_TEST_ROUTE_IDS = {"llm-bi-proxy", "llm-bi-messages", "llm-bi-responses", "llm-bi-models"}
+BIFROST_TEST_SECRETS = ("BIFROST_ENCRYPTION_KEY", "BIFROST_ADMIN_PASSWORD", "BIFROST_TEST_VK")
+# The exact gateway surface: Bifrost answers any other extension-less path with
+# its UI's index.html (HTTP 200) and serves MCP under /v1/mcp/*.
+BIFROST_TEST_EXPOSED_PATHS = {
+    "/api/llm-bi/v1/chat/completions",
+    "/api/llm-bi/v1/completions",
+    "/api/llm-bi/v1/embeddings",
+    "/api/llm-bi/v1/messages",
+    "/api/llm-bi/v1/responses",
+    "/api/llm-bi/v1/models",
+}
+
+
+def test_bifrost_test_services_are_opt_in_and_identical_in_both_layouts() -> None:
+    single = _load_yaml(COMPOSE_FILE)
+    infra = _load_yaml(BLUEGREEN_INFRA_COMPOSE_FILE)
+
+    for compose in (single, infra):
+        services = compose["services"]
+        # A profile hides a service from `config --services`, which the
+        # blue/green infra health gate iterates: exactly what keeps a stopped
+        # Bifrost from blocking deploys, and a silent hole for anything else.
+        assert {
+            name for name, service in services.items() if service.get("profiles")
+        } == BIFROST_TEST_SERVICES
+        for name in BIFROST_TEST_SERVICES:
+            service = services[name]
+            assert service["profiles"] == [BIFROST_TEST_PROFILE], name
+            for port in service.get("ports", []):
+                assert str(port).startswith("127.0.0.1:"), (name, port)
+            # `${VAR:?}` would fail interpolation of the whole file for every
+            # deploy, opted in or not; bifrost/entrypoint.sh fails closed instead.
+            for entry in service.get("environment", []):
+                assert ":?" not in entry, (name, entry)
+
+    # The split layout is what production runs; it must not drift from the
+    # single-stack definition.
+    for name in BIFROST_TEST_SERVICES:
+        assert single["services"][name] == infra["services"][name], name
+
+    bifrost_env = _service_environment(infra, "bifrost")
+    for secret in BIFROST_TEST_SECRETS:
+        assert bifrost_env[secret] == f"${{{secret}:-}}", secret
+
+    assert infra["volumes"]["bifrost-test-data"]["name"] == (
+        "${BIFROST_TEST_DATA_VOLUME:-unibridge_bifrost-test-data}"
+    )
+    assert infra["volumes"]["llm-converter-bi-state"]["name"] == (
+        "${LLM_CONVERTER_BI_STATE_VOLUME:-unibridge_llm-converter-bi-state}"
+    )
+    converter_bi = infra["services"]["llm-converter-bi"]
+    # Its own response store: an id minted on one path must not resolve on the other.
+    assert "llm-converter-bi-state:/var/lib/llm-converter" in converter_bi["volumes"]
+    assert _service_environment(infra, "llm-converter-bi")["LITELLM_URL"] == "http://bifrost:8080"
+
+
+def test_bifrost_test_secrets_are_listed_blank_in_env_example() -> None:
+    # Present, not just "not set to a value": the blank-secret check above
+    # passes vacuously for a key .env.example forgot to list at all.
+    assignments = _parse_env_assignments(ENV_EXAMPLE_FILE)
+    for secret in BIFROST_TEST_SECRETS:
+        assert secret in assignments, secret
+        assert assignments[secret] == "", secret
+
+
+def test_bifrost_config_authenticates_admin_api_and_inference_and_boots_offline() -> None:
+    config = json.loads((BIFROST_DIR / "config.json").read_text(encoding="utf-8"))
+
+    # Bifrost leaves its management API (/api/*) open until an admin login is
+    # configured, so it must be on from the very first boot.
+    governance = config["governance"]
+    assert governance["auth_config"] == {
+        "admin_username": "env.BIFROST_ADMIN_USERNAME",
+        "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+        "is_enabled": True,
+    }
+    assert config["encryption_key"] == "env.BIFROST_ENCRYPTION_KEY"
+    assert config["client"]["allow_direct_keys"] is False
+
+    # Inference answers only the virtual key APISIX injects (the LiteLLM
+    # master-key pattern), so nothing reaching bifrost:8080 or the loopback
+    # admin port off the gateway gets served. allow_all_providers keeps the
+    # key valid for providers registered later.
+    assert config["client"]["enforce_auth_on_inference"] is True
+    (gateway_vk,) = governance["virtual_keys"]
+    assert gateway_vk["value"] == "env.BIFROST_TEST_VK"
+    assert gateway_vk["is_active"] is True
+    assert gateway_vk["allow_all_providers"] is True
+    assert "provider_configs" not in gateway_vk
+    assert "mcp_configs" not in gateway_vk
+
+    # An empty config store cannot boot without its datasheets, and getbifrost.ai
+    # is unreachable air-gapped: both load from files mounted from bifrost/.
+    pricing = config["framework"]["pricing"]
+    for key, filename in (
+        ("pricing_url", "pricing.json"),
+        ("model_parameters_url", "model-parameters.json"),
+    ):
+        assert pricing[key] == f"file:///app/bundle/{filename}"
+        json.loads((BIFROST_DIR / filename).read_text(encoding="utf-8"))
+    assert pricing["mcp_library_sync_interval"] == 0
+
+    service = _load_yaml(COMPOSE_FILE)["services"]["bifrost"]
+    assert "./bifrost/config.json:/app/data/config.json:ro" in service["volumes"]
+    assert "./bifrost:/app/bundle:ro" in service["volumes"]
+    assert service["entrypoint"] == ["/bin/sh", "/app/bundle/entrypoint.sh"]
+
+
+def test_bifrost_entrypoint_fails_closed_without_secrets() -> None:
+    base_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    valid = {
+        "BIFROST_ENCRYPTION_KEY": "k" * 32,
+        "BIFROST_ADMIN_USERNAME": "admin",
+        "BIFROST_ADMIN_PASSWORD": "secret",
+        "BIFROST_TEST_VK": "sk-bf-" + "v" * 32,
+    }
+    cases = (
+        ({}, "BIFROST_ENCRYPTION_KEY"),
+        ({**valid, "BIFROST_ADMIN_PASSWORD": ""}, "BIFROST_ADMIN_PASSWORD"),
+        ({**valid, "BIFROST_TEST_VK": ""}, "BIFROST_TEST_VK"),
+        ({**valid, "BIFROST_ENCRYPTION_KEY": "short"}, "at least 16 characters"),
+        # Bifrost swaps a prefix-less config.json key for a random one.
+        ({**valid, "BIFROST_TEST_VK": "v" * 40}, "sk-bf-"),
+        ({**valid, "BIFROST_TEST_VK": "sk-bf-short"}, "sk-bf-"),
+    )
+    for env, expected in cases:
+        result = subprocess.run(
+            ["sh", str(BIFROST_DIR / "entrypoint.sh")],
+            env={**base_env, **env},
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 1, (sorted(env), result.stderr)
+        assert expected in result.stderr
+
+
+def test_bifrost_test_routes_expose_only_inference_paths() -> None:
+    import ast
+
+    from app.routers.gateway import (
+        _SYSTEM_ROUTE_URIS,
+        _TIMEOUT_OVERRIDE_LABEL,
+        _shadowed_system_uri,
+    )
+    from app.services.consumer_restrictions import DENY_ALL_CONSUMER, IMPLIED_ROUTES
+
+    script = BIFROST_TEST_SCRIPT_FILE.read_text(encoding="utf-8")
+    program = script.split("<<'PY'\n", 1)[1].rsplit("\nPY\n", 1)[0]
+    assigned = {
+        node.targets[0].id: node.value
+        for node in ast.parse(program).body
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+    }
+
+    routes = ast.literal_eval(assigned["ROUTES"])
+    assert {route[0] for route in routes} == BIFROST_TEST_ROUTE_IDS
+    exposed = [uri for route in routes for uri in route[1]]
+    # Exact paths only — no wildcard, so neither Bifrost's UI fallback nor its
+    # management API or MCP endpoints are reachable through the gateway.
+    assert sorted(exposed) == sorted(BIFROST_TEST_EXPOSED_PATHS)
+    for uri in exposed:
+        assert "*" not in uri, uri
+        assert _shadowed_system_uri(uri, list(_SYSTEM_ROUTE_URIS)) is None, uri
+    assert '"regex_uri": ["^/api/llm-bi(.*)", "$1"]' in program
+    # Credentials / key selectors a client could aim at Bifrost; key-auth reads
+    # the caller's apikey before proxy-rewrite strips these.
+    assert ast.literal_eval(assigned["REMOVED_HEADERS"]) == [
+        "Authorization",
+        "x-api-key",
+        "api-key",
+        "x-goog-api-key",
+        "x-bf-api-key",
+        "x-bf-api-key-id",
+    ]
+    assert '"x-bf-vk": GATEWAY_VK' in program
+    assert '"x-bf-lh-consumer": "$consumer_name"' in program
+    # Admin calls never go through an HTTP(S)_PROXY from .env.
+    assert "urllib.request.ProxyHandler({})" in program
+    assert "urllib.request.urlopen(" not in program
+
+    # Values the script mirrors from the app, so they cannot drift apart.
+    assert ast.literal_eval(assigned["TIMEOUT_LABEL"]) == _TIMEOUT_OVERRIDE_LABEL
+    assert ast.literal_eval(assigned["DENY_ALL"]) == DENY_ALL_CONSUMER
+    # Test access stays an explicit grant for regular keys: no existing grant
+    # implies these routes. (Master keys, `*`, are whitelisted on every key-auth
+    # route by the consumer-restriction reconciler, these included.)
+    assert not BIFROST_TEST_ROUTE_IDS & set().union(*IMPLIED_ROUTES.values())
+    assert not BIFROST_TEST_ROUTE_IDS & set(IMPLIED_ROUTES)

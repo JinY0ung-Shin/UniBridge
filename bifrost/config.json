@@ -1,0 +1,68 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "version": 2,
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "client": {
+    "drop_excess_requests": false,
+    "enable_logging": true,
+    "disable_content_logging": false,
+    "log_retention_days": 14,
+    "prometheus_labels": [
+      "consumer"
+    ],
+    "whitelisted_routes": [
+      "/metrics"
+    ],
+    "enforce_auth_on_inference": true,
+    "allow_direct_keys": false,
+    "compat": {
+      "convert_text_to_chat": false,
+      "convert_chat_to_responses": false,
+      "should_drop_params": true,
+      "should_convert_params": false,
+      "azure_deepseek": false
+    }
+  },
+  "governance": {
+    "auth_config": {
+      "admin_username": "env.BIFROST_ADMIN_USERNAME",
+      "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+      "is_enabled": true
+    },
+    "virtual_keys": [
+      {
+        "id": "unibridge-gateway",
+        "name": "unibridge-gateway",
+        "description": "Injected by APISIX on the /api/llm-bi routes (scripts/bifrost-test.sh); every other caller is refused",
+        "value": "env.BIFROST_TEST_VK",
+        "is_active": true,
+        "allow_all_providers": true
+      }
+    ]
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "/app/data/config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "/app/data/logs.db"
+    },
+    "writer": {
+      "max_batch_bytes": 33554432,
+      "write_queue_capacity": 500
+    }
+  },
+  "framework": {
+    "pricing": {
+      "pricing_url": "file:///app/bundle/pricing.json",
+      "model_parameters_url": "file:///app/bundle/model-parameters.json",
+      "mcp_library_sync_interval": 0
+    }
+  }
+}

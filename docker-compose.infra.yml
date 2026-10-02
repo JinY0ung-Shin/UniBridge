@@ -524,6 +524,130 @@ services:
     networks:
       - apihub-net
 
+  # ── Bifrost side-by-side test (/api/llm-bi) ──
+  # Opt-in only. The bifrost-test profile keeps both services out of a plain
+  # `up` and out of `config --services`, which the blue/green deploy's infra
+  # health gate iterates, so a stopped or crash-looping Bifrost can never block
+  # a deploy. Start them explicitly with `--profile bifrost-test`, and never put
+  # COMPOSE_PROFILES in .env. /api/llm stays on LiteLLM; the /api/llm-bi routes
+  # are added and removed by scripts/bifrost-test.sh. These two services are
+  # identical in docker-compose.yml and docker-compose.infra.yml (tested).
+  bifrost:
+    image: maximhq/bifrost:v2.2.4
+    profiles: ["bifrost-test"]
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 1g
+    cpus: "1.00"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.00"
+    # bifrost/entrypoint.sh refuses to boot without the secrets config.json
+    # references, then hands off to the image's own entrypoint.
+    entrypoint: ["/bin/sh", "/app/bundle/entrypoint.sh"]
+    command: ["/app/main"]
+    environment:
+      - BIFROST_ENCRYPTION_KEY=${BIFROST_ENCRYPTION_KEY:-}
+      - BIFROST_ADMIN_USERNAME=${BIFROST_ADMIN_USERNAME:-admin}
+      - BIFROST_ADMIN_PASSWORD=${BIFROST_ADMIN_PASSWORD:-}
+      # The one virtual key Bifrost accepts on inference (config.json
+      # enforce_auth_on_inference); APISIX injects it on the /api/llm-bi routes,
+      # so nothing that bypasses the gateway gets an answer.
+      - BIFROST_TEST_VK=${BIFROST_TEST_VK:-}
+      - LOG_LEVEL=${BIFROST_LOG_LEVEL:-info}
+      - LOG_STYLE=json
+      # Go soft memory limit at ~90% of mem_limit, so GC tightens before the
+      # cgroup OOM-kills the process (request-body logging is the big consumer).
+      - GOMEMLIMIT=900MiB
+    ports:
+      # Loopback only: the Bifrost UI / management API for operators, via an
+      # SSH tunnel. The gateway forwards only the /api/llm-bi inference paths,
+      # and inference here needs the gateway's virtual key.
+      - "127.0.0.1:${BIFROST_TEST_ADMIN_PORT:-18080}:8080"
+    volumes:
+      - bifrost-test-data:/app/data
+      - ./bifrost/config.json:/app/data/config.json:ro
+      # entrypoint.sh plus the empty pricing / model-parameters datasheets that
+      # config.json loads over file:// — Bifrost cannot boot offline without
+      # them, and self-hosted models have no list price anyway.
+      - ./bifrost:/app/bundle:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - apihub-net
+
+  # Second converter in front of Bifrost, so /api/llm-bi/v1/messages and
+  # /v1/responses get exactly the translation /api/llm gets; only the upstream
+  # differs. Same build context as llm-converter.
+  llm-converter-bi:
+    image: llm-converter:bifrost-test
+    build:
+      context: ./llm-converter
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+    profiles: ["bifrost-test"]
+    restart: unless-stopped
+    init: true
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: "0.50"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.50"
+    environment:
+      # Bifrost serves plain HTTP on the internal network (it has no TLS
+      # listener), so there is no CA to pin.
+      - LITELLM_URL=http://bifrost:8080
+      - CONVERTER_TLS_CA=
+      - CONVERTER_TLS_VERIFY=false
+      # Everything below mirrors llm-converter, so both paths run on the same knobs.
+      - CONVERTER_REQUEST_TIMEOUT=${CONVERTER_REQUEST_TIMEOUT:-0}
+      - CONVERTER_CONNECT_TIMEOUT=${CONVERTER_CONNECT_TIMEOUT:-10}
+      - CONVERTER_WRITE_TIMEOUT=${CONVERTER_WRITE_TIMEOUT:-120}
+      - CONVERTER_POOL_TIMEOUT=${CONVERTER_POOL_TIMEOUT:-10}
+      - CONVERTER_SSE_HEARTBEAT_SECONDS=${CONVERTER_SSE_HEARTBEAT_SECONDS:-15}
+      - CONVERTER_RESPONSE_STORE_PATH=${CONVERTER_RESPONSE_STORE_PATH:-/var/lib/llm-converter/responses.sqlite3}
+      - CONVERTER_RESPONSE_STORE_TTL=${CONVERTER_RESPONSE_STORE_TTL:-3600}
+      - CONVERTER_RESPONSE_STORE_MAX=${CONVERTER_RESPONSE_STORE_MAX:-10000}
+      - CONVERTER_RESPONSE_STORE_MAX_BYTES=${CONVERTER_RESPONSE_STORE_MAX_BYTES:-67108864}
+      - CONVERTER_RESPONSE_STORE_MAX_ENTRY_BYTES=${CONVERTER_RESPONSE_STORE_MAX_ENTRY_BYTES:-16777216}
+      - CONVERTER_EMIT_REASONING=${CONVERTER_EMIT_REASONING:-true}
+      - CONVERTER_LENGTH_AS_COMPLETED=${CONVERTER_LENGTH_AS_COMPLETED:-auto}
+      - CONVERTER_FLATTEN_NAMESPACE_TOOLS=${CONVERTER_FLATTEN_NAMESPACE_TOOLS:-true}
+      - CONVERTER_REASONING_EFFORT_LEVELS=${CONVERTER_REASONING_EFFORT_LEVELS:-low,medium,high}
+      - CONVERTER_TRACE=${CONVERTER_TRACE:-false}
+      - CONVERTER_MID_SYSTEM_POLICY=${CONVERTER_MID_SYSTEM_POLICY:-user}
+      - CONVERTER_MID_SYSTEM_MODEL_PATTERN=${CONVERTER_MID_SYSTEM_MODEL_PATTERN:-}
+    expose:
+      - "4001"
+    volumes:
+      # Its own previous_response_id store: a response id minted on one path
+      # must not resolve on the other.
+      - llm-converter-bi-state:/var/lib/llm-converter
+    depends_on:
+      bifrost:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - apihub-net
+
 networks:
   apihub-net:
     name: ${UNIBRIDGE_NETWORK_NAME:-unibridge-net}
@@ -550,3 +674,9 @@ volumes:
     name: ${LITELLM_DATASET_VOLUME:-unibridge_litellm-dataset}
   unibridge-db-data:
     name: ${UNIBRIDGE_DB_DATA_VOLUME:-unibridge_unibridge-db-data}
+  # bifrost-test profile only (see the bifrost service). Same names as the
+  # single-stack defaults, so test data carries across layouts.
+  bifrost-test-data:
+    name: ${BIFROST_TEST_DATA_VOLUME:-unibridge_bifrost-test-data}
+  llm-converter-bi-state:
+    name: ${LLM_CONVERTER_BI_STATE_VOLUME:-unibridge_llm-converter-bi-state}
