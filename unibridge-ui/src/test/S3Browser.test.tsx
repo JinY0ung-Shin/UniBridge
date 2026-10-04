@@ -17,11 +17,13 @@ vi.mock('react-router-dom', async () => {
 
 import { screen, waitFor, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { AxiosError, type AxiosResponse } from 'axios';
 import {
   getS3Buckets,
   getS3Objects,
   getS3ObjectMetadata,
   downloadS3Object,
+  type S3ListObjectsResponse,
 } from '../api/client';
 import S3Browser from '../pages/S3Browser';
 import { renderWithProviders } from './helpers';
@@ -213,7 +215,184 @@ describe('S3Browser page', () => {
     expect(mockObjects).toHaveBeenLastCalledWith(
       's3-main',
       expect.objectContaining({ continuation_token: 'tok-1' }),
+      expect.any(AbortSignal),
     );
+  });
+
+  it('loads the whole remaining listing with Load All', async () => {
+    mockBuckets.mockResolvedValue([{ name: 'bk-1', creation_date: null }]);
+    mockObjects
+      .mockResolvedValueOnce({
+        folders: [],
+        objects: [{ key: 'a.txt', size: 1, last_modified: null }],
+        is_truncated: true,
+        next_continuation_token: 'tok-1',
+        key_count: 1,
+      })
+      .mockResolvedValueOnce({
+        folders: [{ prefix: 'zz/' }],
+        objects: [
+          { key: 'b.txt', size: 1, last_modified: null },
+          { key: 'c.txt', size: 1, last_modified: null },
+        ],
+        is_truncated: false,
+        next_continuation_token: null,
+        key_count: 3,
+      });
+    renderWithProviders(<S3Browser />);
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Load All|전체 불러오기/i }));
+
+    await waitFor(() => expect(screen.getByText('c.txt')).toBeInTheDocument());
+    expect(screen.getByText('a.txt')).toBeInTheDocument();
+    expect(screen.getByText('zz')).toBeInTheDocument();
+    expect(mockObjects).toHaveBeenLastCalledWith(
+      's3-main',
+      expect.objectContaining({ continuation_token: 'tok-1', all: true }),
+      expect.any(AbortSignal),
+    );
+    expect(screen.queryByRole('button', { name: /Load All|전체 불러오기/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Load More|더 불러오기/i })).not.toBeInTheDocument();
+  });
+
+  it('drops a full listing that finishes after switching folders', async () => {
+    mockBuckets.mockResolvedValue([{ name: 'bk-1', creation_date: null }]);
+    let finishLoadAll: (value: S3ListObjectsResponse) => void = () => {};
+    mockObjects
+      .mockResolvedValueOnce({
+        folders: [{ prefix: 'logs/' }],
+        objects: [{ key: 'a.txt', size: 1, last_modified: null }],
+        is_truncated: true,
+        next_continuation_token: 'tok-1',
+        key_count: 2,
+      })
+      .mockImplementationOnce(() => new Promise((resolve) => { finishLoadAll = resolve; }))
+      .mockResolvedValueOnce({
+        folders: [],
+        objects: [{ key: 'logs/inside.txt', size: 1, last_modified: null }],
+        is_truncated: false,
+        next_continuation_token: null,
+        key_count: 1,
+      });
+    renderWithProviders(<S3Browser />);
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Load All|전체 불러오기/i }));
+    const loadAllSignal = mockObjects.mock.calls[1][2];
+    fireEvent.click(screen.getByRole('button', { name: 'Open folder logs' }));
+    await waitFor(() => expect(screen.getByText('inside.txt')).toBeInTheDocument());
+    expect(loadAllSignal?.aborted).toBe(true);
+
+    finishLoadAll({
+      folders: [],
+      objects: [{ key: 'stale.txt', size: 1, last_modified: null }],
+      is_truncated: true,
+      next_continuation_token: 'tok-stale',
+      key_count: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.queryByText('stale.txt')).not.toBeInTheDocument();
+    expect(screen.getByText('inside.txt')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Load All|전체 불러오기/i })).not.toBeInTheDocument();
+  });
+
+  it('aborts an in-flight full listing when the page unmounts', async () => {
+    mockBuckets.mockResolvedValue([{ name: 'bk-1', creation_date: null }]);
+    mockObjects
+      .mockResolvedValueOnce({
+        folders: [],
+        objects: [{ key: 'a.txt', size: 1, last_modified: null }],
+        is_truncated: true,
+        next_continuation_token: 'tok-1',
+        key_count: 1,
+      })
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const { unmount } = renderWithProviders(<S3Browser />);
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Load All|전체 불러오기/i }));
+    const loadAllSignal = mockObjects.mock.calls[1][2];
+    expect(loadAllSignal?.aborted).toBe(false);
+
+    unmount();
+    expect(loadAllSignal?.aborted).toBe(true);
+  });
+
+  it('offers no load buttons when the listing is truncated without a token', async () => {
+    mockBuckets.mockResolvedValue([{ name: 'bk-1', creation_date: null }]);
+    mockObjects.mockResolvedValue({
+      folders: [],
+      objects: [{ key: 'a.txt', size: 1, last_modified: null }],
+      is_truncated: true,
+      next_continuation_token: null,
+      key_count: 1,
+    });
+    renderWithProviders(<S3Browser />);
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+
+    expect(screen.getByText(/1\+ items|항목 1개 이상/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Load More|더 불러오기/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Load All|전체 불러오기/i })).not.toBeInTheDocument();
+  });
+
+  it('shows a busy toast when the full listing is rejected with 429', async () => {
+    mockBuckets.mockResolvedValue([{ name: 'bk-1', creation_date: null }]);
+    mockObjects
+      .mockResolvedValueOnce({
+        folders: [],
+        objects: [{ key: 'a.txt', size: 1, last_modified: null }],
+        is_truncated: true,
+        next_continuation_token: 'tok-1',
+        key_count: 1,
+      })
+      .mockRejectedValueOnce(new AxiosError('busy', 'ERR_BAD_REQUEST', undefined, undefined, {
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: {},
+        config: {},
+        data: { detail: 'Too many full listings in progress; retry shortly' },
+      } as AxiosResponse));
+    renderWithProviders(<S3Browser />);
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Load All|전체 불러오기/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Too many full listings|전체 불러오기 요청이 많아/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText('a.txt')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Load All|전체 불러오기/i })).toBeEnabled();
+  });
+
+  it('caps rendered rows while the filter still searches every loaded entry', async () => {
+    mockBuckets.mockResolvedValue([{ name: 'bk-1', creation_date: null }]);
+    const objects = Array.from({ length: 2001 }, (_, i) => ({
+      key: `file-${String(i).padStart(4, '0')}.bin`,
+      size: 1,
+      last_modified: null,
+    }));
+    mockObjects.mockResolvedValue({
+      folders: [],
+      objects,
+      is_truncated: false,
+      next_continuation_token: null,
+      key_count: objects.length,
+    });
+    renderWithProviders(<S3Browser />);
+    await waitFor(() => expect(screen.getByText('file-0000.bin')).toBeInTheDocument());
+
+    expect(screen.getByText('file-1999.bin')).toBeInTheDocument();
+    expect(screen.queryByText('file-2000.bin')).not.toBeInTheDocument();
+    expect(screen.getByText(/first 2000 of 2001|2001개 중 처음 2000개/)).toBeInTheDocument();
+
+    fireEvent.change(
+      screen.getByRole('searchbox', { name: /Filter current folder|현재 폴더 필터/i }),
+      { target: { value: 'file-2000' } },
+    );
+    expect(screen.getByText('file-2000.bin')).toBeInTheDocument();
+    expect(screen.queryByText(/first 2000 of|개 중 처음/)).not.toBeInTheDocument();
   });
 
   it('shows toast on object listing failure', async () => {

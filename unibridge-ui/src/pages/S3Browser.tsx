@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useMemo, type KeyboardEvent } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type KeyboardEvent } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
+import { AxiosError } from 'axios';
 import {
   getS3Buckets,
   getS3Objects,
@@ -16,6 +17,11 @@ import { useToast } from '../components/useToast';
 import ResourceModal from '../components/ResourceModal';
 import { formatKST } from '../utils/time';
 import './S3Browser.css';
+
+// A full listing can hold up to S3_LIST_ALL_MAX_KEYS (default 100k) entries;
+// drawing that many rows would freeze the tab, so only this many are rendered —
+// the filter still searches every loaded entry.
+const MAX_RENDERED_ENTRIES = 2000;
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -38,6 +44,14 @@ function S3Browser() {
   const [continuationToken, setContinuationToken] = useState<string | null>(null);
   const [isTruncated, setIsTruncated] = useState(false);
   const [loadingObjects, setLoadingObjects] = useState(false);
+  const [loadingAll, setLoadingAll] = useState(false);
+  // A full listing can run for many seconds. Only the newest request may write
+  // the listing state, and a superseded or abandoned one is aborted so the
+  // server stops walking and frees its full-listing slot.
+  const listing = useRef<{ seq: number; controller: AbortController | null }>({
+    seq: 0,
+    controller: null,
+  });
   const [metadataModal, setMetadataModal] = useState<S3ObjectMetadata | null>(null);
   const [objectFilter, setObjectFilter] = useState('');
 
@@ -52,9 +66,23 @@ function S3Browser() {
     ? selectedBucketChoice
     : buckets[0]?.name ?? '';
 
-  const fetchObjects = useCallback(async (bucket: string, pfx: string, token?: string | null) => {
+  useEffect(() => {
+    const state = listing.current;
+    return () => {
+      state.seq += 1;
+      state.controller?.abort();
+    };
+  }, []);
+
+  const fetchObjects = useCallback(async (bucket: string, pfx: string, token?: string | null, all = false) => {
     if (!alias || !bucket) return;
+    const state = listing.current;
+    const seq = ++state.seq;
+    state.controller?.abort();
+    const controller = new AbortController();
+    state.controller = controller;
     setLoadingObjects(true);
+    setLoadingAll(all);
     if (!token) {
       setFolders([]);
       setObjects([]);
@@ -66,7 +94,9 @@ function S3Browser() {
         bucket,
         prefix: pfx,
         continuation_token: token || undefined,
-      });
+        all: all || undefined,
+      }, controller.signal);
+      if (seq !== state.seq) return;
       if (token) {
         setFolders((prev) => [...prev, ...resp.folders]);
         setObjects((prev) => [...prev, ...resp.objects]);
@@ -76,10 +106,16 @@ function S3Browser() {
       }
       setContinuationToken(resp.next_continuation_token ?? null);
       setIsTruncated(resp.is_truncated);
-    } catch {
-      addToast({ type: 'error', title: t('s3.loadFailed') });
+    } catch (err) {
+      if (seq !== state.seq) return;
+      const busy = err instanceof AxiosError && err.response?.status === 429;
+      addToast({ type: 'error', title: t(busy ? 's3.listAllBusy' : 's3.loadFailed') });
     } finally {
-      setLoadingObjects(false);
+      if (seq === state.seq) {
+        state.controller = null;
+        setLoadingObjects(false);
+        setLoadingAll(false);
+      }
     }
   }, [alias, addToast, t]);
 
@@ -159,6 +195,12 @@ function S3Browser() {
     }
   }
 
+  function loadAll() {
+    if (continuationToken && selectedBucket) {
+      fetchObjects(selectedBucket, prefix, continuationToken, true);
+    }
+  }
+
   // Build breadcrumb from prefix
   const breadcrumbs: { label: string; prefix: string }[] = [{ label: t('s3.root'), prefix: '' }];
   if (prefix) {
@@ -192,6 +234,9 @@ function S3Browser() {
   );
   const loadedEntryCount = folders.length + objectRows.length;
   const visibleEntryCount = visibleFolders.length + visibleObjects.length;
+  const renderedFolders = visibleFolders.slice(0, MAX_RENDERED_ENTRIES);
+  const renderedObjects = visibleObjects.slice(0, MAX_RENDERED_ENTRIES - renderedFolders.length);
+  const renderedEntryCount = renderedFolders.length + renderedObjects.length;
 
   return (
     <div className="s3-browser">
@@ -325,7 +370,7 @@ function S3Browser() {
                       <td></td>
                     </tr>
                   )}
-                  {visibleFolders.map((f) => {
+                  {renderedFolders.map((f) => {
                     const folderName = f.prefix.replace(prefix, '').replace(/\/$/, '');
                     return (
                       <tr
@@ -348,7 +393,7 @@ function S3Browser() {
                       </tr>
                     );
                   })}
-                  {visibleObjects.map((obj) => {
+                  {renderedObjects.map((obj) => {
                     const objectName = obj.key.replace(prefix, '');
                     const isDownloading = downloadingKeys.has(obj.key);
                     return (
@@ -399,19 +444,33 @@ function S3Browser() {
                   <p>{filteringObjects ? t('s3.noFilterResults') : t('s3.noObjects')}</p>
                 </div>
               )}
+              {renderedEntryCount < visibleEntryCount && (
+                <p className="s3-render-limit">
+                  {t('s3.renderLimit', { shown: renderedEntryCount, count: visibleEntryCount })}
+                </p>
+              )}
             </div>
           )}
 
-          {isTruncated && (
+          {isTruncated && continuationToken && (
             <div className="s3-load-more">
               <button
                 type="button"
                 className="btn btn-secondary"
                 onClick={loadMore}
                 disabled={loadingObjects}
-                aria-busy={loadingObjects}
+                aria-busy={loadingObjects && !loadingAll}
               >
-                {loadingObjects ? t('common.loading') : t('s3.loadMore')}
+                {loadingObjects && !loadingAll ? t('common.loading') : t('s3.loadMore')}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={loadAll}
+                disabled={loadingObjects}
+                aria-busy={loadingAll}
+              >
+                {loadingAll ? t('s3.loadingAll') : t('s3.loadAll')}
               </button>
             </div>
           )}

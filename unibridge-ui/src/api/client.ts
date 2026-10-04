@@ -1833,9 +1833,18 @@ export async function getS3Buckets(alias: string): Promise<S3Bucket[]> {
 
 export async function getS3Objects(
   alias: string,
-  params: { bucket: string; prefix?: string; delimiter?: string; max_keys?: number; continuation_token?: string },
+  params: {
+    bucket: string;
+    prefix?: string;
+    delimiter?: string;
+    max_keys?: number;
+    continuation_token?: string;
+    /** Server walks every page (bounded per response; resume while is_truncated). */
+    all?: boolean;
+  },
+  signal?: AbortSignal,
 ): Promise<S3ListObjectsResponse> {
-  const { data } = await client.get(`/s3/${alias}/objects`, { params });
+  const { data } = await client.get(`/s3/${alias}/objects`, { params, signal });
   return data;
 }
 
