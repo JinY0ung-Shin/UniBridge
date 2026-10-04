@@ -305,29 +305,39 @@ function QueryTemplates() {
       <div className="template-layout">
         <section className="template-list-panel">
           <div className="template-section-header">
-            <h2>{t('queryTemplates.savedTemplates')}</h2>
-            <div className="template-list-actions">
+            <h2>
+              {t('queryTemplates.savedTemplates')}
               {templates.length > 0 && (
-                <input
-                  className="template-search-input"
-                  type="search"
-                  value={templateSearch}
-                  onChange={(event) => setTemplateSearch(event.target.value)}
-                  placeholder={t('queryTemplates.searchPlaceholder')}
-                  aria-label={t('queryTemplates.searchPlaceholder')}
-                />
+                <>
+                  {' '}
+                  <span className="template-count">
+                    {filteredTemplates.length === templates.length
+                      ? templates.length
+                      : `${filteredTemplates.length} / ${templates.length}`}
+                  </span>
+                </>
               )}
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                aria-label={t('queryTemplates.refreshTemplates')}
-                title={t('queryTemplates.refreshTemplates')}
-                onClick={() => templatesQuery.refetch()}
-              >
-                {t('common.refresh')}
-              </button>
-            </div>
+            </h2>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              aria-label={t('queryTemplates.refreshTemplates')}
+              title={t('queryTemplates.refreshTemplates')}
+              onClick={() => templatesQuery.refetch()}
+            >
+              {t('common.refresh')}
+            </button>
           </div>
+          {templates.length > 0 && (
+            <input
+              className="template-search-input"
+              type="search"
+              value={templateSearch}
+              onChange={(event) => setTemplateSearch(event.target.value)}
+              placeholder={t('queryTemplates.searchPlaceholder')}
+              aria-label={t('queryTemplates.searchPlaceholder')}
+            />
+          )}
 
           {templates.length > 0 && filteredTemplates.length > 0 ? (
             <div className="template-list">

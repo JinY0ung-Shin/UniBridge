@@ -214,6 +214,22 @@ describe('QueryTemplates', () => {
     expect(within(listPanel).getByText('Orders report')).toBeInTheDocument();
   });
 
+  it('counts saved templates in the list header, including search matches', async () => {
+    const user = userEvent.setup();
+    mockedGetQueryTemplates.mockResolvedValue([
+      template,
+      { ...template, id: 2, path: 'reports/orders', name: 'Orders report', description: 'Order totals' },
+    ]);
+
+    renderWithProviders(<QueryTemplates />);
+
+    expect(await screen.findByRole('heading', { name: 'Saved Templates 2' })).toBeInTheDocument();
+
+    await user.type(screen.getByRole('searchbox', { name: 'Search templates...' }), 'orders');
+
+    expect(screen.getByRole('heading', { name: 'Saved Templates 1 / 2' })).toBeInTheDocument();
+  });
+
   it('creates a new query template', async () => {
     const user = userEvent.setup();
     mockedGetQueryTemplates.mockResolvedValue([]);

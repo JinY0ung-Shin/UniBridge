@@ -10,7 +10,7 @@
   display: grid;
   grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .template-list-panel,
@@ -24,6 +24,17 @@
 .template-list-panel,
 .template-form-panel {
   padding: 18px;
+}
+
+/* The list panel takes the form panel's height and scrolls its rows, so the
+   page no longer grows with every saved template (which also pushed the
+   detail/run panel further down). `contain: size` keeps the rows out of the
+   grid row's height; the form alone sizes it. */
+.template-list-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 320px;
+  contain: size;
 }
 
 .template-section-header,
@@ -42,18 +53,17 @@
   font-weight: 650;
 }
 
-.template-list-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
-  min-width: 0;
+.template-count {
+  margin-left: 4px;
+  color: var(--text-tertiary);
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 .template-search-input {
-  width: min(220px, 100%);
-  min-width: 150px;
+  width: 100%;
+  margin-bottom: 12px;
   padding: 6px 9px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
@@ -75,7 +85,14 @@
 .template-list {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Inset so the scroller does not clip the rows' 2px focus ring + offset. */
+  margin: -4px;
+  padding: 4px;
 }
 
 .template-row {
@@ -306,9 +323,21 @@
 }
 
 @media (max-width: 960px) {
+  /* minmax(0, …): a bare 1fr track cannot shrink below its content's
+     min-content width, which pushed both panels past a phone viewport. */
   .template-layout,
   .template-detail-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Stacked layout: no form beside the list to borrow a height from. */
+  .template-list-panel {
+    min-height: 0;
+    contain: none;
+  }
+
+  .template-list {
+    max-height: min(420px, 60vh);
   }
 }
 
@@ -322,10 +351,5 @@
   .template-detail-header {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .template-list-actions,
-  .template-search-input {
-    width: 100%;
   }
 }
