@@ -156,6 +156,10 @@ class Settings(BaseSettings):
     S3_LIST_ALL_TIME_BUDGET_SECONDS: float = Field(20.0, ge=0)
     # Process-wide; extra requests queue (FIFO) within the budget, then get 429.
     S3_LIST_ALL_MAX_CONCURRENT: int = Field(2, ge=1)
+    # A backend that truncates without a continuation token gets one larger page
+    # instead (works where it honours MaxKeys > 1000; <= 1000 disables). Parsing
+    # one page costs ~1.6 KB per object / ~0.5 KB per folder, all at once.
+    S3_LIST_ALL_TOKENLESS_MAX_KEYS: int = Field(30_000, ge=1)
 
     APP_VERSION: str = "unknown"
 

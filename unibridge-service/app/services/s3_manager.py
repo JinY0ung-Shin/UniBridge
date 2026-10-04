@@ -274,7 +274,8 @@ class S3ConnectionManager:
         S3_LIST_ALL_TIME_BUDGET_SECONDS (the proxy timeouts in front of the
         service), or when a page after the first fails. Each early stop still
         returns a valid page: ``is_truncated`` + ``next_continuation_token``
-        resume exactly where it stopped.
+        resume exactly where it stopped. A backend that truncates without a
+        token gets one larger page instead (``_larger_page_if_tokenless``).
 
         At most S3_LIST_ALL_MAX_CONCURRENT walks run at once. Later callers
         queue for a slot in FIFO order, and the wait counts against the same
@@ -313,7 +314,8 @@ class S3ConnectionManager:
         while True:
             # Trim the last page so the entry cap is exact and its token resumes
             # right after the final returned entry.
-            page_size = min(S3_MAX_PAGE_KEYS, max_entries - len(folders) - len(objects))
+            remaining = max_entries - len(folders) - len(objects)
+            page_size = min(S3_MAX_PAGE_KEYS, remaining)
             try:
                 page = await self.list_objects(alias, bucket, prefix, delimiter, page_size, token)
             except Exception as exc:
@@ -325,6 +327,10 @@ class S3ConnectionManager:
                 )
                 break
             pages += 1
+            if page["is_truncated"] and not page["next_continuation_token"]:
+                page = await self._larger_page_if_tokenless(
+                    alias, bucket, prefix, delimiter, token, page, page_size, remaining, deadline
+                )
             if page["is_truncated"] and token is not None and page["next_continuation_token"] == token:
                 # The backend did not honour the token: this page may repeat
                 # entries already returned, and resending the token would replay
@@ -355,6 +361,44 @@ class S3ConnectionManager:
             "next_continuation_token": token,
             "key_count": len(folders) + len(objects),
         }
+
+    async def _larger_page_if_tokenless(
+        self,
+        alias: str,
+        bucket: str,
+        prefix: str,
+        delimiter: str,
+        token: str | None,
+        page: dict[str, Any],
+        page_size: int,
+        remaining: int,
+        deadline: float,
+    ) -> dict[str, Any]:
+        """``page`` came back truncated without a continuation token, so the walk
+        cannot resume after it. Some S3-compatible backends do that yet honour a
+        MaxKeys above S3's 1000: ask once more for the same page (same token)
+        with as much as the bounds allow, and use it if it holds more entries
+        or proves the listing complete. Still truncated after that means the
+        listing ends there, unresumable."""
+        size = min(remaining, settings.S3_LIST_ALL_TOKENLESS_MAX_KEYS)
+        if size <= page_size or time.monotonic() >= deadline:
+            return page
+        try:
+            larger = await self.list_objects(alias, bucket, prefix, delimiter, size, token)
+        except Exception as exc:
+            logger.warning(
+                "S3 full listing for '%s': larger page for a token-less backend failed: %r",
+                alias,
+                exc,
+            )
+            return page
+        entries = len(page["folders"]) + len(page["objects"])
+        larger_entries = len(larger["folders"]) + len(larger["objects"])
+        # Take it if it holds more, or proves the listing complete at the same
+        # size (some backends flag every full page as truncated).
+        if larger_entries > entries or (not larger["is_truncated"] and larger_entries >= entries):
+            return larger
+        return page
 
     async def get_object_metadata(
         self, alias: str, bucket: str, key: str

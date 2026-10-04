@@ -353,14 +353,151 @@ async def test_list_all_objects_first_page_failure_raises(fresh_manager):
 
 @pytest.mark.asyncio
 async def test_list_all_objects_truncated_without_token_stops(fresh_manager):
-    fake = await _manager_with_pages(fresh_manager, "notoken", [
-        {"Contents": [{"Key": "a", "Size": 1}], "IsTruncated": True, "KeyCount": 1},
-    ])
+    tokenless = {"Contents": [{"Key": "a", "Size": 1}], "IsTruncated": True, "KeyCount": 1}
+    # The larger retry is ignored too: the backend hands back the same page.
+    fake = await _manager_with_pages(fresh_manager, "notoken", [tokenless, tokenless])
 
     res = await fresh_manager.list_all_objects("notoken", "b")
 
+    assert [o["key"] for o in res["objects"]] == ["a"]
     assert res["is_truncated"] is True
     assert res["next_continuation_token"] is None
+    assert fake.list_objects_v2.call_count == 2
+
+
+def _tokenless_backend(keys, ceiling=None):
+    """Backend that truncates without a continuation token but honours any
+    MaxKeys up to ``ceiling`` (unbounded when None)."""
+    def list_page(**kwargs):
+        start = keys.index(kwargs["ContinuationToken"]) + 1 if "ContinuationToken" in kwargs else 0
+        limit = kwargs["MaxKeys"] if ceiling is None else min(kwargs["MaxKeys"], ceiling)
+        chunk = keys[start:start + limit]
+        truncated = start + limit < len(keys)
+        return {
+            "Contents": [{"Key": k, "Size": 1} for k in chunk],
+            "IsTruncated": truncated,
+            "KeyCount": len(chunk),
+        }
+    return list_page
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_tokenless_backend_gets_one_larger_page(fresh_manager):
+    keys = [f"k{i:05d}" for i in range(2500)]
+    fake = await _manager_with_pages(fresh_manager, "big", _tokenless_backend(keys))
+
+    res = await fresh_manager.list_all_objects("big", "b")
+
+    assert [o["key"] for o in res["objects"]] == keys
+    assert res["is_truncated"] is False
+    assert res["next_continuation_token"] is None
+    calls = [c.kwargs for c in fake.list_objects_v2.call_args_list]
+    assert [c["MaxKeys"] for c in calls] == [S3_MAX_PAGE_KEYS, settings.S3_LIST_ALL_TOKENLESS_MAX_KEYS]
+    assert all("ContinuationToken" not in c for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_tokenless_larger_page_is_bounded(fresh_manager, monkeypatch):
+    monkeypatch.setattr(settings, "S3_LIST_ALL_TOKENLESS_MAX_KEYS", 1800)
+    keys = [f"k{i:05d}" for i in range(2500)]
+    fake = await _manager_with_pages(fresh_manager, "bounded", _tokenless_backend(keys))
+
+    res = await fresh_manager.list_all_objects("bounded", "b")
+
+    assert [o["key"] for o in res["objects"]] == keys[:1800]  # the larger page replaces the first
+    assert res["is_truncated"] is True
+    assert res["next_continuation_token"] is None
+    assert [c.kwargs["MaxKeys"] for c in fake.list_objects_v2.call_args_list] == [1000, 1800]
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_tokenless_backend_capped_at_1000_stays_unresumable(fresh_manager):
+    keys = [f"k{i:05d}" for i in range(2500)]
+    fake = await _manager_with_pages(fresh_manager, "capped", _tokenless_backend(keys, ceiling=1000))
+
+    res = await fresh_manager.list_all_objects("capped", "b")
+
+    assert [o["key"] for o in res["objects"]] == keys[:1000]
+    assert res["is_truncated"] is True
+    assert res["next_continuation_token"] is None
+    assert fake.list_objects_v2.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_tokenless_mid_walk_retries_from_last_token(fresh_manager, monkeypatch):
+    monkeypatch.setattr(settings, "S3_LIST_ALL_TOKENLESS_MAX_KEYS", 5000)
+    keys = [f"k{i:05d}" for i in range(3000)]
+    tokenless = _tokenless_backend(keys)
+
+    def backend(**kwargs):
+        if "ContinuationToken" not in kwargs:  # the first page still hands out a token
+            return {
+                "Contents": [{"Key": k, "Size": 1} for k in keys[:1000]],
+                "IsTruncated": True,
+                "NextContinuationToken": keys[999],
+                "KeyCount": 1000,
+            }
+        return tokenless(**kwargs)
+
+    fake = await _manager_with_pages(fresh_manager, "mid", backend)
+
+    res = await fresh_manager.list_all_objects("mid", "b")
+
+    assert [o["key"] for o in res["objects"]] == keys
+    assert res["is_truncated"] is False
+    calls = [(c.kwargs.get("ContinuationToken"), c.kwargs["MaxKeys"]) for c in fake.list_objects_v2.call_args_list]
+    assert calls == [(None, 1000), ("k00999", 1000), ("k00999", 5000)]
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_tokenless_complete_page_of_same_size_is_kept(fresh_manager):
+    keys = [f"k{i:05d}" for i in range(1000)]
+
+    def backend(**kwargs):  # flags any full page as truncated, never hands out a token
+        chunk = keys[:kwargs["MaxKeys"]]
+        return {
+            "Contents": [{"Key": k, "Size": 1} for k in chunk],
+            "IsTruncated": len(chunk) == kwargs["MaxKeys"],
+            "KeyCount": len(chunk),
+        }
+
+    await _manager_with_pages(fresh_manager, "full", backend)
+
+    res = await fresh_manager.list_all_objects("full", "b")
+
+    assert res["key_count"] == 1000
+    assert res["is_truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_tokenless_retry_failure_keeps_the_page(fresh_manager):
+    keys = [f"k{i:05d}" for i in range(2500)]
+    tokenless = _tokenless_backend(keys)
+
+    def backend(**kwargs):
+        if kwargs["MaxKeys"] > S3_MAX_PAGE_KEYS:
+            raise ClientError({"Error": {"Code": "InvalidArgument", "Message": "MaxKeys"}}, "ListObjectsV2")
+        return tokenless(**kwargs)
+
+    await _manager_with_pages(fresh_manager, "refused", backend)
+
+    res = await fresh_manager.list_all_objects("refused", "b")  # first page: must not raise
+
+    assert [o["key"] for o in res["objects"]] == keys[:1000]
+    assert res["is_truncated"] is True
+    assert res["next_continuation_token"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_tokenless_retry_skipped_past_deadline(fresh_manager, monkeypatch):
+    monkeypatch.setattr(settings, "S3_LIST_ALL_TIME_BUDGET_SECONDS", 0.0)
+    keys = [f"k{i:05d}" for i in range(2500)]
+    fake = await _manager_with_pages(fresh_manager, "late", _tokenless_backend(keys))
+
+    res = await fresh_manager.list_all_objects("late", "b")
+
+    assert res["key_count"] == 1000
+    assert res["is_truncated"] is True
     assert fake.list_objects_v2.call_count == 1
 
 
