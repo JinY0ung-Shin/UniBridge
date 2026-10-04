@@ -4,6 +4,7 @@ vi.mock('../api/client', () => ({
   deleteQueryTemplate: vi.fn(),
   executeQueryTemplate: vi.fn(),
   getDatabases: vi.fn(),
+  getQueryTemplateGuide: vi.fn(),
   getQueryTemplates: vi.fn(),
   updateQueryTemplate: vi.fn(),
 }));
@@ -16,16 +17,18 @@ import {
   deleteQueryTemplate,
   executeQueryTemplate,
   getDatabases,
+  getQueryTemplateGuide,
   getQueryTemplates,
   updateQueryTemplate,
 } from '../api/client';
 import QueryTemplates from '../pages/QueryTemplates';
-import { makeDatabase, renderWithProviders } from './helpers';
+import { ADMIN_PERMISSIONS, makeDatabase, renderWithProviders } from './helpers';
 
 const mockedCreateQueryTemplate = vi.mocked(createQueryTemplate);
 const mockedDeleteQueryTemplate = vi.mocked(deleteQueryTemplate);
 const mockedExecuteQueryTemplate = vi.mocked(executeQueryTemplate);
 const mockedGetDatabases = vi.mocked(getDatabases);
+const mockedGetQueryTemplateGuide = vi.mocked(getQueryTemplateGuide);
 const mockedGetQueryTemplates = vi.mocked(getQueryTemplates);
 const mockedUpdateQueryTemplate = vi.mocked(updateQueryTemplate);
 
@@ -228,6 +231,113 @@ describe('QueryTemplates', () => {
     await user.type(screen.getByRole('searchbox', { name: 'Search templates...' }), 'orders');
 
     expect(screen.getByRole('heading', { name: 'Saved Templates 1 / 2' })).toBeInTheDocument();
+  });
+
+  it('opens the agent API guide from the page header', async () => {
+    const user = userEvent.setup();
+    const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: clipboardWriteText },
+    });
+    mockedGetQueryTemplateGuide.mockResolvedValue(
+      '# Agent guide\n\n| Database | Placeholder |\n| --- | --- |\n| PostgreSQL | `:name` |\n',
+    );
+
+    renderWithProviders(<QueryTemplates />);
+
+    await user.click(screen.getByRole('button', { name: 'Agent API' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Agent API guide' });
+    const guideUrl = `${window.location.origin}/api/query/templates/guide`;
+    expect(within(dialog).getByText(new RegExp(guideUrl))).toBeInTheDocument();
+    expect(within(dialog).getAllByText('query-api').length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText('query-template-write-api').length).toBeGreaterThan(0);
+    expect(within(dialog).getByRole('row', { name: /PATCH \/api\/query\/templates\/\{path\}/ })).toHaveTextContent(
+      'query-template-write-api',
+    );
+    expect(within(dialog).getByRole('link', { name: 'API Key Management' })).toHaveAttribute('href', '/api-keys');
+    expect(within(dialog).queryByText(/Personal API keys cannot be granted/)).not.toBeInTheDocument();
+    expect(within(dialog).getByText(/Disabled templates are hidden from agents/)).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Copy agent hand-off text' }));
+
+    expect(clipboardWriteText).toHaveBeenCalledWith(expect.stringContaining(`curl -k -H 'apikey: <YOUR_API_KEY>' '${guideUrl}'`));
+    expect(within(dialog).getByRole('button', { name: 'Agent hand-off text copied' })).toHaveTextContent('Copied');
+
+    await user.click(within(dialog).getByRole('button', { name: 'Copy cURL command' }));
+
+    // Edits carry expected_updated_at in the JSON body; deletes need it in the query string.
+    const curlText = clipboardWriteText.mock.calls[1][0] as string;
+    const templatesUrl = `${window.location.origin}/api/query/templates`;
+    expect(curlText).toContain(`curl -k -X PATCH \\`);
+    expect(curlText).toContain(`"expected_updated_at": "<UPDATED_AT>"`);
+    expect(curlText).toContain(`curl -k -X DELETE -H 'apikey: <YOUR_API_KEY>' \\\n  '${templatesUrl}/reports/new-users?expected_updated_at=<UPDATED_AT>'`);
+    expect(within(dialog).getByRole('button', { name: 'cURL command copied' })).toHaveTextContent('Copied');
+
+    // The full guide is fetched only when it is expanded.
+    expect(mockedGetQueryTemplateGuide).not.toHaveBeenCalled();
+    const disclosure = within(dialog).getByRole('button', { name: 'Full guide (the text agents read)' });
+    await user.click(disclosure);
+
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    expect(await within(dialog).findByRole('heading', { name: 'Agent guide' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('region', { name: 'Scrollable guide table' })).toHaveAttribute('tabindex', '0');
+    expect(mockedGetQueryTemplateGuide).toHaveBeenCalledTimes(1);
+
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('explains why the full agent guide could not be loaded', async () => {
+    const user = userEvent.setup();
+    mockedGetQueryTemplateGuide.mockRejectedValue({
+      response: { data: { detail: 'Required permission: query.execute' } },
+    });
+
+    renderWithProviders(<QueryTemplates />, {
+      permissions: ['query.settings.read', 'apikeys.self'],
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Agent API' }));
+    const dialog = screen.getByRole('dialog', { name: 'Agent API guide' });
+    expect(within(dialog).getByRole('link', { name: 'My API Key' })).toHaveAttribute('href', '/my-api-key');
+    expect(within(dialog).getByText(/Personal API keys cannot be granted query-template-write-api/)).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Full guide (the text agents read)' }));
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'Failed to load the guide: Required permission: query.execute',
+    );
+  });
+
+  it('reports a failed copy instead of claiming it was copied', async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error('blocked')) },
+    });
+
+    renderWithProviders(<QueryTemplates />);
+
+    await user.click(screen.getByRole('button', { name: 'Agent API' }));
+    const dialog = screen.getByRole('dialog', { name: 'Agent API guide' });
+    await user.click(within(dialog).getByRole('button', { name: 'Copy agent hand-off text' }));
+
+    expect(await screen.findByText('Copy failed')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Copy agent hand-off text' })).toHaveTextContent('Copy');
+  });
+
+  it('omits the API key link for users who cannot manage keys', async () => {
+    const user = userEvent.setup();
+
+    renderWithProviders(<QueryTemplates />, {
+      permissions: ADMIN_PERMISSIONS.filter((permission) => permission !== 'apikeys.read'),
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Agent API' }));
+
+    expect(within(screen.getByRole('dialog')).queryByRole('link')).not.toBeInTheDocument();
   });
 
   it('creates a new query template', async () => {

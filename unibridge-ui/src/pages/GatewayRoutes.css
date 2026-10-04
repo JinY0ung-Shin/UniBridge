@@ -44,41 +44,6 @@
   flex-wrap: wrap;
 }
 
-.method-badge {
-  display: inline-block;
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
-}
-
-.method-badge--get {
-  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
-  color: var(--accent-blue);
-}
-
-.method-badge--post {
-  background: color-mix(in srgb, var(--accent-green) 10%, transparent);
-  color: var(--accent-green);
-}
-
-.method-badge--put {
-  background: color-mix(in srgb, var(--accent-yellow) 10%, transparent);
-  color: var(--accent-yellow);
-}
-
-.method-badge--delete {
-  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
-  color: var(--accent-red);
-}
-
-.method-badge--patch {
-  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
-  color: var(--text-secondary);
-}
-
 .cell-uri {
   font-family: var(--font-mono);
   font-size: 12px;

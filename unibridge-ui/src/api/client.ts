@@ -324,6 +324,17 @@ export async function executeQueryTemplate(path: string, req: QueryTemplateExecu
   return data;
 }
 
+/**
+ * The Markdown agent guide that API-key agents read at /api/query/templates/guide.
+ * Default response handling is deliberate: the Markdown is not JSON, so it comes
+ * back verbatim, while JSON error bodies are still parsed for their `detail`
+ * (`responseType: 'text'` would leave a 403's detail as an unparsed string).
+ */
+export async function getQueryTemplateGuide(): Promise<string> {
+  const { data } = await client.get<string>('/query/templates/guide');
+  return data;
+}
+
 /* ── Query: My history & saved queries ── */
 
 export async function getQueryHistory(params: QueryHistoryParams = {}): Promise<QueryHistoryResponse> {

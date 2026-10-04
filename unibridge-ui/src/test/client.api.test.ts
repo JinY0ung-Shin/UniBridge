@@ -202,6 +202,7 @@ describe('api client API helpers', () => {
     await mod.updateQueryTemplate('reports/users', { enabled: false });
     await mod.deleteQueryTemplate('reports/users');
     await mod.executeQueryTemplate('reports/users', { params: { active: true } });
+    await mod.getQueryTemplateGuide();
 
     expect(calls).toEqual([
       { method: 'get', url: '/admin/query/templates' },
@@ -209,7 +210,32 @@ describe('api client API helpers', () => {
       { method: 'put', url: '/admin/query/templates/reports/users' },
       { method: 'delete', url: '/admin/query/templates/reports/users' },
       { method: 'post', url: '/query/templates/reports/users' },
+      { method: 'get', url: '/query/templates/guide' },
     ]);
+  });
+
+  it('getQueryTemplateGuide keeps the Markdown verbatim and parses JSON error details', async () => {
+    const mod = await importClient(keycloak);
+    const markdown = '# Guide\n\n```json\n{"params": {"id": 1}}\n```\n';
+    mod.default.defaults.adapter = makeAdapter(() => markdown);
+
+    await expect(mod.getQueryTemplateGuide()).resolves.toBe(markdown);
+
+    mod.default.defaults.adapter = vi.fn(async (config) => Promise.reject({
+      config,
+      response: {
+        status: 403,
+        data: '{"detail": "Required permission: query.execute"}',
+        headers: {},
+        config,
+        statusText: 'Forbidden',
+      },
+      isAxiosError: true,
+    })) as unknown as AxiosAdapter;
+
+    await expect(mod.getQueryTemplateGuide()).rejects.toMatchObject({
+      response: { status: 403, data: { detail: 'Required permission: query.execute' } },
+    });
   });
 
   it('getToken POSTs auth token request', async () => {

@@ -14,6 +14,7 @@ import {
   type QueryTemplateUpdate,
 } from '../api/client';
 import { usePermissions } from '../components/usePermissions';
+import AgentApiModal from './queryTemplates/AgentApiModal';
 import './QueryTemplates.css';
 
 interface TemplateFormState {
@@ -160,6 +161,7 @@ function QueryTemplates() {
   const [result, setResult] = useState<QueryResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [templateSearch, setTemplateSearch] = useState('');
+  const [showAgentApi, setShowAgentApi] = useState(false);
 
   const templatesQuery = useQuery({
     queryKey: ['query-templates'],
@@ -294,9 +296,21 @@ function QueryTemplates() {
 
   return (
     <div className="query-templates">
-      <div className="page-header">
-        <h1>{t('queryTemplates.title')}</h1>
-        <p className="page-subtitle">{t('queryTemplates.subtitle')}</p>
+      <div className="page-header page-header--with-actions">
+        <div>
+          <h1>{t('queryTemplates.title')}</h1>
+          <p className="page-subtitle">{t('queryTemplates.subtitle')}</p>
+        </div>
+        <div className="page-header__actions">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            aria-haspopup="dialog"
+            onClick={() => setShowAgentApi(true)}
+          >
+            {t('queryTemplates.agentApiButton')}
+          </button>
+        </div>
       </div>
 
       {templatesQuery.isLoading && <div className="loading-message" role="status">{t('queryTemplates.loading')}</div>}
@@ -626,6 +640,8 @@ function QueryTemplates() {
           {result && <ResultTable result={result} />}
         </section>
       )}
+
+      {showAgentApi && <AgentApiModal onClose={() => setShowAgentApi(false)} />}
     </div>
   );
 }
