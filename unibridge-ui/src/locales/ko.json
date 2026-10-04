@@ -911,6 +911,7 @@
     "loadingAll": "전체 불러오는 중...",
     "listAllBusy": "전체 불러오기 요청이 많아 처리하지 못했습니다. 잠시 후 다시 시도하세요.",
     "renderLimit": "항목 {{count}}개 중 처음 {{shown}}개만 표시합니다. 필터로 범위를 좁혀 보세요.",
+    "cannotResume": "스토리지가 이어받기 토큰을 주지 않아 여기까지만 불러왔습니다. 일시적인 문제였다면 전체 불러오기를 다시 시도해 보세요.",
     "curlListPage": "오브젝트 목록 — 한 페이지 (max_keys 최대 1000, 기본 200; 다음 페이지: continuation_token=<next_continuation_token>)",
     "curlListAll": "오브젝트 전체 목록 — 한 번에 (all=true; is_truncated가 true면 continuation_token=<next_continuation_token>을 붙여 다시 호출)",
     "backToConnections": "← 연결 목록",

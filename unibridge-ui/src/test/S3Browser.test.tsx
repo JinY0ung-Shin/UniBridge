@@ -320,21 +320,88 @@ describe('S3Browser page', () => {
     expect(loadAllSignal?.aborted).toBe(true);
   });
 
-  it('offers no load buttons when the listing is truncated without a token', async () => {
+  it('restarts the listing with Load All when the page has no token', async () => {
     mockBuckets.mockResolvedValue([{ name: 'bk-1', creation_date: null }]);
-    mockObjects.mockResolvedValue({
-      folders: [],
-      objects: [{ key: 'a.txt', size: 1, last_modified: null }],
-      is_truncated: true,
-      next_continuation_token: null,
-      key_count: 1,
-    });
+    mockObjects
+      .mockResolvedValueOnce({
+        folders: [],
+        objects: [{ key: 'a.txt', size: 1, last_modified: null }],
+        is_truncated: true,
+        next_continuation_token: null,
+        key_count: 1,
+      })
+      .mockResolvedValueOnce({
+        folders: [],
+        objects: [
+          { key: 'a.txt', size: 1, last_modified: null },
+          { key: 'b.txt', size: 1, last_modified: null },
+        ],
+        is_truncated: false,
+        next_continuation_token: null,
+        key_count: 2,
+      });
     renderWithProviders(<S3Browser />);
     await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
 
     expect(screen.getByText(/1\+ items|항목 1개 이상/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Load More|더 불러오기/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Load All|전체 불러오기/i }));
+
+    await waitFor(() => expect(screen.getByText('b.txt')).toBeInTheDocument());
+    expect(screen.getAllByText('a.txt')).toHaveLength(1);  // replaced, not appended
+    expect(mockObjects).toHaveBeenLastCalledWith(
+      's3-main',
+      expect.objectContaining({ continuation_token: undefined, all: true }),
+      expect.any(AbortSignal),
+    );
     expect(screen.queryByRole('button', { name: /Load All|전체 불러오기/i })).not.toBeInTheDocument();
+  });
+
+  it('explains when a full listing still cannot resume', async () => {
+    mockBuckets.mockResolvedValue([{ name: 'bk-1', creation_date: null }]);
+    const page = {
+      folders: [],
+      objects: [{ key: 'a.txt', size: 1, last_modified: null }],
+      is_truncated: true,
+      next_continuation_token: null,
+      key_count: 1,
+    };
+    mockObjects.mockResolvedValueOnce(page).mockResolvedValueOnce(page);
+    renderWithProviders(<S3Browser />);
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+    expect(screen.queryByText(/no continuation token|이어받기 토큰을 주지 않아/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Load All|전체 불러오기/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/no continuation token|이어받기 토큰을 주지 않아/)).toBeInTheDocument();
+    });
+    // Still retryable: the larger page may have been skipped or failed this time.
+    expect(screen.getByRole('button', { name: /Load All|전체 불러오기/i })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: /Load More|더 불러오기/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/1\+ items|항목 1개 이상/)).toBeInTheDocument();
+  });
+
+  it('keeps the rows when a Load All restart fails', async () => {
+    mockBuckets.mockResolvedValue([{ name: 'bk-1', creation_date: null }]);
+    mockObjects
+      .mockResolvedValueOnce({
+        folders: [],
+        objects: [{ key: 'a.txt', size: 1, last_modified: null }],
+        is_truncated: true,
+        next_continuation_token: null,
+        key_count: 1,
+      })
+      .mockRejectedValueOnce(new Error('gateway timeout'));
+    renderWithProviders(<S3Browser />);
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Load All|전체 불러오기/i }));
+
+    await waitFor(() => expect(screen.getByText(/Failed to load|불러오지 못/i)).toBeInTheDocument());
+    expect(screen.getByText('a.txt')).toBeInTheDocument();
+    expect(screen.getByText(/1\+ items|항목 1개 이상/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Load All|전체 불러오기/i })).toBeEnabled();
   });
 
   it('shows a busy toast when the full listing is rejected with 429', async () => {

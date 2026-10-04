@@ -45,6 +45,9 @@ function S3Browser() {
   const [isTruncated, setIsTruncated] = useState(false);
   const [loadingObjects, setLoadingObjects] = useState(false);
   const [loadingAll, setLoadingAll] = useState(false);
+  // A full listing still came back truncated without a token: the storage did
+  // not let it go further (or the larger page could not be fetched this time).
+  const [listAllExhausted, setListAllExhausted] = useState(false);
   // A full listing can run for many seconds. Only the newest request may write
   // the listing state, and a superseded or abandoned one is aborted so the
   // server stops walking and frees its full-listing slot.
@@ -83,11 +86,14 @@ function S3Browser() {
     state.controller = controller;
     setLoadingObjects(true);
     setLoadingAll(all);
-    if (!token) {
+    // A Load All restart (all, no token) keeps the current rows until its
+    // response replaces them, so a failed restart loses nothing.
+    if (!token && !all) {
       setFolders([]);
       setObjects([]);
       setContinuationToken(null);
       setIsTruncated(false);
+      setListAllExhausted(false);
     }
     try {
       const resp = await getS3Objects(alias, {
@@ -106,6 +112,7 @@ function S3Browser() {
       }
       setContinuationToken(resp.next_continuation_token ?? null);
       setIsTruncated(resp.is_truncated);
+      if (all && resp.is_truncated && !resp.next_continuation_token) setListAllExhausted(true);
     } catch (err) {
       if (seq !== state.seq) return;
       const busy = err instanceof AxiosError && err.response?.status === 429;
@@ -196,9 +203,10 @@ function S3Browser() {
   }
 
   function loadAll() {
-    if (continuationToken && selectedBucket) {
-      fetchObjects(selectedBucket, prefix, continuationToken, true);
-    }
+    if (!selectedBucket) return;
+    // Without a token the page cannot be resumed, so start over: a full listing
+    // still gets further on backends that truncate without continuation tokens.
+    fetchObjects(selectedBucket, prefix, continuationToken, true);
   }
 
   // Build breadcrumb from prefix
@@ -340,7 +348,9 @@ function S3Browser() {
 
           {/* Object listing */}
           {loadingObjects && loadedEntryCount === 0 ? (
-            <div className="loading-message" role="status">{t('s3.loadingObjects')}</div>
+            <div className="loading-message" role="status">
+              {loadingAll ? t('s3.loadingAll') : t('s3.loadingObjects')}
+            </div>
           ) : (
             <div className="table-container">
               <table className="data-table">
@@ -445,24 +455,26 @@ function S3Browser() {
                 </div>
               )}
               {renderedEntryCount < visibleEntryCount && (
-                <p className="s3-render-limit">
+                <p className="s3-list-note">
                   {t('s3.renderLimit', { shown: renderedEntryCount, count: visibleEntryCount })}
                 </p>
               )}
             </div>
           )}
 
-          {isTruncated && continuationToken && (
+          {isTruncated && (
             <div className="s3-load-more">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={loadMore}
-                disabled={loadingObjects}
-                aria-busy={loadingObjects && !loadingAll}
-              >
-                {loadingObjects && !loadingAll ? t('common.loading') : t('s3.loadMore')}
-              </button>
+              {continuationToken && (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={loadMore}
+                  disabled={loadingObjects}
+                  aria-busy={loadingObjects && !loadingAll}
+                >
+                  {loadingObjects && !loadingAll ? t('common.loading') : t('s3.loadMore')}
+                </button>
+              )}
               <button
                 type="button"
                 className="btn btn-secondary"
@@ -473,6 +485,9 @@ function S3Browser() {
                 {loadingAll ? t('s3.loadingAll') : t('s3.loadAll')}
               </button>
             </div>
+          )}
+          {isTruncated && !continuationToken && listAllExhausted && (
+            <p className="s3-list-note">{t('s3.cannotResume')}</p>
           )}
         </>
       )}
