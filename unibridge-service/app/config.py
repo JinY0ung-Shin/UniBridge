@@ -1,6 +1,6 @@
 import logging
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -149,6 +149,13 @@ class Settings(BaseSettings):
     S3_OP_TIMEOUT_SECONDS: float = 30.0
     S3_CONNECT_TIMEOUT_SECONDS: float = 5.0
     S3_READ_TIMEOUT_SECONDS: float = 30.0
+    # ?all=true listing walks continuation tokens server-side. Each bound ends the
+    # walk early with a resumable page (is_truncated + next_continuation_token).
+    S3_LIST_ALL_MAX_KEYS: int = Field(100_000, ge=1)  # entries per response (~550 B each in memory)
+    # Includes queueing for a slot; + one in-flight page must fit the 60s proxy timeouts.
+    S3_LIST_ALL_TIME_BUDGET_SECONDS: float = Field(20.0, ge=0)
+    # Process-wide; extra requests queue (FIFO) within the budget, then get 429.
+    S3_LIST_ALL_MAX_CONCURRENT: int = Field(2, ge=1)
 
     APP_VERSION: str = "unknown"
 

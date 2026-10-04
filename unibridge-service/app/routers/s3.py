@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
 import json
 import logging
-from typing import Any, NoReturn
+from typing import Any, NoReturn, TypeVar
 from urllib.parse import quote
 
 from botocore.exceptions import BotoCoreError, ClientError
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,13 +19,15 @@ from app.models import S3Connection
 from app.schemas import S3ConnectionCreate, S3ConnectionResponse, S3ConnectionUpdate
 from app.services.audit import log_admin_action
 from app.services.connection_manager import decrypt_password, encrypt_password
-from app.services.s3_manager import s3_manager
+from app.services.s3_manager import S3_MAX_PAGE_KEYS, S3ListAllBusyError, s3_manager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["S3"])
 
 MASK_KEEP = 4
+
+_T = TypeVar("_T")
 
 
 def _mask_access_key(key: str) -> str:
@@ -335,6 +338,37 @@ def _handle_s3_error(alias: str, exc: Exception) -> NoReturn:
     raise HTTPException(status_code=502, detail="S3 operation failed")
 
 
+async def _wait_for_disconnect(request: Request) -> None:
+    """Return once the client has gone; wait forever if that can't be observed."""
+    try:
+        while (await request.receive())["type"] != "http.disconnect":
+            pass
+    except Exception:
+        logger.debug("Client disconnect watch unavailable", exc_info=True)
+        await asyncio.get_running_loop().create_future()
+
+
+async def _cancel_if_client_leaves(request: Request, work: Coroutine[Any, Any, _T]) -> _T:
+    """Await ``work``, cancelling it as soon as the client disconnects.
+
+    Starlette keeps running a handler whose client has gone, so an abandoned
+    full listing would hold its slot until the walk ended. ``is_disconnected()``
+    never fires behind the BaseHTTPMiddleware stack; a blocking ``receive()``
+    does."""
+    task = asyncio.ensure_future(work)
+    watcher = asyncio.ensure_future(_wait_for_disconnect(request))
+    try:
+        await asyncio.wait({task, watcher}, return_when=asyncio.FIRST_COMPLETED)
+        if not task.done():
+            # Nobody receives this (uvicorn drops sends after a disconnect and
+            # writes no access log); only the Prometheus instrumentator sees it.
+            raise HTTPException(status_code=499, detail="Client closed request")
+        return task.result()
+    finally:
+        watcher.cancel()
+        task.cancel()  # no-op once done; stops the walk if we bail out or are cancelled
+
+
 @router.get("/s3/{alias}/buckets")
 async def list_buckets(
     alias: str,
@@ -359,19 +393,42 @@ async def list_buckets(
 @router.get("/s3/{alias}/objects")
 async def list_objects(
     alias: str,
+    request: Request,
     bucket: str = Query(..., min_length=1),
     prefix: str = Query(""),
     delimiter: str = Query("/"),
-    max_keys: int = Query(200, ge=1, le=1000),
+    max_keys: int = Query(200, ge=1, le=S3_MAX_PAGE_KEYS),
     continuation_token: str | None = Query(None),
+    fetch_all: bool = Query(
+        False,
+        alias="all",
+        description=(
+            "Follow continuation tokens server-side and return the whole listing "
+            "(max_keys has no effect). Bounded per response; while is_truncated "
+            "is true, resume with continuation_token=next_continuation_token."
+        ),
+    ),
     _user: CurrentUser | ApiKeyUser = Depends(_require_s3_browse),
 ) -> dict[str, Any]:
     if not s3_manager.has_connection(alias):
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
     _require_bucket_allowed(alias, bucket)
     try:
+        if fetch_all:
+            return await _cancel_if_client_leaves(
+                request,
+                s3_manager.list_all_objects(alias, bucket, prefix, delimiter, continuation_token),
+            )
         return await s3_manager.list_objects(
             alias, bucket, prefix, delimiter, max_keys, continuation_token
+        )
+    except HTTPException:
+        raise
+    except S3ListAllBusyError:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many full listings in progress; retry shortly",
+            headers={"Retry-After": "5"},
         )
     except (BotoCoreError, ClientError) as exc:
         _handle_s3_error(alias, exc)

@@ -96,6 +96,9 @@ cp .env.example .env
 | `NAS_ALLOWED_ROOTS` | `NAS_CONTAINER_PATH` | Comma-separated container paths allowed as NAS connection `base_path` roots |
 | `NODE_EXPORTER_DISK_MOUNTPOINTS` | empty | Optional global comma-separated disk mountpoint default for server monitoring; per-server settings override it |
 | `S3_OP_TIMEOUT_SECONDS` | 30 | Per-operation timeout for S3-compatible storage calls |
+| `S3_LIST_ALL_MAX_KEYS` | 100000 | Max entries one `objects?all=true` response returns; the rest resumes via `next_continuation_token` (~550 B of service memory per entry while building the response) |
+| `S3_LIST_ALL_TIME_BUDGET_SECONDS` | 20 | `all=true` stops paging after this long (time spent queueing for a slot included) and returns a resumable page. Budget plus one in-flight page (≤ `S3_OP_TIMEOUT_SECONDS`) must stay under the 60s APISIX / UI-nginx proxy timeouts |
+| `S3_LIST_ALL_MAX_CONCURRENT` | 2 | Process-wide cap on concurrent `all=true` listings. Extra requests queue in FIFO order within the time budget and get `429` + `Retry-After` only if no slot frees up in time |
 | `ALERTMANAGER_WEBHOOK_TOKEN` | empty | Bearer token Alertmanager uses to POST fired Prometheus rules into the app's alert pipeline. **Empty means infra alerts send no mail** — the receiver answers 503. See [Infra alerting](#infra-alerting-prometheus--alertmanager) |
 | `ALERTMANAGER_SMTP_HOST`, `ALERTMANAGER_SMTP_TO` | empty | Set both to add a direct-SMTP mail path for the service-down alerts, so that mail does not depend on the app being up. Empty = off. Companions: `ALERTMANAGER_SMTP_PORT` (25), `_FROM`, `_USERNAME`, `_PASSWORD`, `_REQUIRE_TLS` (true) |
 
@@ -238,6 +241,21 @@ POST /api/nas/company-nas/download-zip
 The `q` parameter searches only the immediate `path` directory by case-insensitive file or folder name substring. It is not recursive.
 
 `download-zip` streams the requested files as a single ZIP archive (`{alias}-files.zip`, no compression). Limits: at most `NAS_MAX_BATCH_FILES` paths per request (default 100), combined size capped by the connection's `max_download_bytes` and the global `NAS_MAX_DOWNLOAD_BYTES` (413 when exceeded). Any invalid or missing path fails the whole request before streaming starts, naming the offending relative path.
+
+### S3 object listing
+
+S3 returns at most 1000 entries per `ListObjectsV2` call, so `GET /api/s3/{alias}/objects` is paged: `max_keys` (1–1000, default 200) sets the page size, and while `is_truncated` is `true` the next page comes from passing `next_continuation_token` back as `continuation_token`. With `all=true` the service follows the tokens itself and returns the whole listing in one response (`max_keys` has no effect then, though it is still validated as 1–1000):
+
+```http
+GET /api/s3/my-s3/objects?bucket=data&prefix=reports/&max_keys=1000
+GET /api/s3/my-s3/objects?bucket=data&prefix=reports/&continuation_token=<next_continuation_token>
+GET /api/s3/my-s3/objects?bucket=data&prefix=reports/&all=true
+GET /api/s3/my-s3/objects?bucket=data&prefix=reports/&delimiter=&all=true
+```
+
+`delimiter=` (empty) lists every key under the prefix recursively instead of rolling sub-folders up into `folders`. One `all=true` response is bounded by `S3_LIST_ALL_MAX_KEYS` entries and `S3_LIST_ALL_TIME_BUDGET_SECONDS`; a page failing after the first also ends it early. In every case the response is still a valid page, so a client that wants everything calls again with `continuation_token` together with `all=true` for as long as `is_truncated` is `true` **and** `next_continuation_token` is set. A truncated page without a token (a storage backend that cannot resume, or whose token stopped advancing) cannot be continued.
+
+At most `S3_LIST_ALL_MAX_CONCURRENT` full listings run at once. Further requests queue in FIFO order, the wait counting against the same time budget, and get `429` with `Retry-After` only if no slot frees up in time. A client that disconnects cancels its listing (or leaves the queue) right away, so an abandoned request does not hold a slot. The S3 browser's **Load All** button uses the same call and aborts it when you leave the folder.
 
 ### Self-service registration (approval-gated)
 

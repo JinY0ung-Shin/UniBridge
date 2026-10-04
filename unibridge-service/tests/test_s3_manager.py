@@ -1,15 +1,23 @@
 """Unit tests for S3ConnectionManager."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 from botocore.exceptions import ClientError
 
+from app.config import settings
 from app.models import S3Connection
 from app.services.connection_manager import encrypt_password
-from app.services.s3_manager import S3ConnectionManager, s3_manager
+from app.services.s3_manager import (
+    S3_MAX_PAGE_KEYS,
+    S3ConnectionManager,
+    S3ListAllBusyError,
+    s3_manager,
+)
 
 
 @pytest.fixture
@@ -225,6 +233,243 @@ async def test_list_objects_no_continuation(fresh_manager):
     assert res["is_truncated"] is False
     assert res["next_continuation_token"] is None
     assert "ContinuationToken" not in fake.list_objects_v2.call_args.kwargs
+
+
+# ── Full listing (?all=true) ────────────────────────────────────────────────
+
+
+def _page(keys, token=None, prefixes=()):
+    """ListObjectsV2 response holding ``keys``; truncated iff ``token`` is set."""
+    resp = {
+        "CommonPrefixes": [{"Prefix": p} for p in prefixes],
+        "Contents": [{"Key": k, "Size": 1} for k in keys],
+        "IsTruncated": token is not None,
+        "KeyCount": len(keys) + len(prefixes),
+    }
+    if token is not None:
+        resp["NextContinuationToken"] = token
+    return resp
+
+
+async def _manager_with_pages(manager, alias, pages):
+    fake = MagicMock()
+    fake.list_objects_v2.side_effect = pages
+    with patch("app.services.s3_manager.boto3.client", return_value=fake):
+        await manager.add_connection(_make_conn(alias))
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_follows_every_page(fresh_manager):
+    fake = await _manager_with_pages(fresh_manager, "all", [
+        _page(["a", "b"], token="t1", prefixes=["logs/"]),
+        _page(["c"], token="t2"),
+        _page(["d"]),
+    ])
+
+    res = await fresh_manager.list_all_objects("all", "b", "p/", "/")
+
+    assert res["folders"] == [{"prefix": "logs/"}]
+    assert [o["key"] for o in res["objects"]] == ["a", "b", "c", "d"]
+    assert res["is_truncated"] is False
+    assert res["next_continuation_token"] is None
+    assert res["key_count"] == 5
+    calls = [c.kwargs for c in fake.list_objects_v2.call_args_list]
+    assert [c.get("ContinuationToken") for c in calls] == [None, "t1", "t2"]
+    assert all(c["MaxKeys"] == S3_MAX_PAGE_KEYS for c in calls)
+    assert all(c["Prefix"] == "p/" and c["Delimiter"] == "/" for c in calls)
+    assert not fresh_manager._full_listing_slots().locked()
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_resumes_from_given_token(fresh_manager):
+    fake = await _manager_with_pages(fresh_manager, "resume", [_page(["z"])])
+
+    await fresh_manager.list_all_objects("resume", "b", continuation_token="tok")
+
+    assert fake.list_objects_v2.call_args.kwargs["ContinuationToken"] == "tok"
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_caps_entries_with_resume_token(fresh_manager, monkeypatch):
+    monkeypatch.setattr(settings, "S3_LIST_ALL_MAX_KEYS", 1500)
+    fake = await _manager_with_pages(fresh_manager, "cap", [
+        _page([f"k{i}" for i in range(1000)], token="t1"),
+        _page([f"k{i}" for i in range(1000, 1500)], token="t2"),
+    ])
+
+    res = await fresh_manager.list_all_objects("cap", "b")
+
+    assert res["key_count"] == 1500
+    assert res["is_truncated"] is True
+    assert res["next_continuation_token"] == "t2"
+    # The last page is trimmed so the cap is exact and "t2" resumes right
+    # after the final returned entry.
+    assert [c.kwargs["MaxKeys"] for c in fake.list_objects_v2.call_args_list] == [1000, 500]
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_stops_at_time_budget(fresh_manager, monkeypatch):
+    monkeypatch.setattr(settings, "S3_LIST_ALL_TIME_BUDGET_SECONDS", 0.0)
+    fake = await _manager_with_pages(fresh_manager, "budget", [
+        _page(["a"], token="t1"),
+        _page(["b"]),
+    ])
+
+    res = await fresh_manager.list_all_objects("budget", "b")
+
+    assert [o["key"] for o in res["objects"]] == ["a"]
+    assert res["is_truncated"] is True
+    assert res["next_continuation_token"] == "t1"
+    assert fake.list_objects_v2.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_later_page_failure_keeps_partial(fresh_manager):
+    await _manager_with_pages(fresh_manager, "partial", [
+        _page(["a"], token="t1"),
+        ClientError({"Error": {"Code": "SlowDown", "Message": "slow"}}, "ListObjectsV2"),
+    ])
+
+    res = await fresh_manager.list_all_objects("partial", "b")
+
+    assert [o["key"] for o in res["objects"]] == ["a"]
+    assert res["is_truncated"] is True
+    assert res["next_continuation_token"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_first_page_failure_raises(fresh_manager):
+    await _manager_with_pages(
+        fresh_manager,
+        "denied",
+        ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "ListObjectsV2"),
+    )
+
+    with pytest.raises(ClientError):
+        await fresh_manager.list_all_objects("denied", "b")
+    assert not fresh_manager._full_listing_slots().locked()
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_truncated_without_token_stops(fresh_manager):
+    fake = await _manager_with_pages(fresh_manager, "notoken", [
+        {"Contents": [{"Key": "a", "Size": 1}], "IsTruncated": True, "KeyCount": 1},
+    ])
+
+    res = await fresh_manager.list_all_objects("notoken", "b")
+
+    assert res["is_truncated"] is True
+    assert res["next_continuation_token"] is None
+    assert fake.list_objects_v2.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_stops_when_token_does_not_advance(fresh_manager):
+    fake = await _manager_with_pages(fresh_manager, "stuck", [
+        _page(["a"], token="t1"),
+        _page(["b"], token="t1"),
+        _page(["c"]),
+    ])
+
+    res = await fresh_manager.list_all_objects("stuck", "b")
+
+    # The page that echoed its token back is dropped: it may repeat "a".
+    assert [o["key"] for o in res["objects"]] == ["a"]
+    assert res["is_truncated"] is True
+    assert res["next_continuation_token"] is None
+    assert fake.list_objects_v2.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_resume_with_echoed_token_returns_nothing(fresh_manager):
+    fake = await _manager_with_pages(fresh_manager, "echo", [_page(["a"], token="t1")])
+
+    res = await fresh_manager.list_all_objects("echo", "b", continuation_token="t1")
+
+    assert res["key_count"] == 0
+    assert res["is_truncated"] is True
+    assert res["next_continuation_token"] is None
+    assert fake.list_objects_v2.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_slots_follow_a_size_change(fresh_manager, monkeypatch):
+    monkeypatch.setattr(settings, "S3_LIST_ALL_MAX_CONCURRENT", 1)
+    one = fresh_manager._full_listing_slots()
+    monkeypatch.setattr(settings, "S3_LIST_ALL_MAX_CONCURRENT", 2)
+    two = fresh_manager._full_listing_slots()
+
+    assert two is not one
+    assert fresh_manager._full_listing_slots() is two
+    await two.acquire()
+    assert not two.locked()  # a second slot is still free
+    two.release()
+
+
+def _gated_pages(gate):
+    def slow_page(**_kwargs):
+        gate.wait(5)
+        return _page(["a"])
+    return slow_page
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_queues_for_a_free_slot(fresh_manager, monkeypatch):
+    monkeypatch.setattr(settings, "S3_LIST_ALL_MAX_CONCURRENT", 1)
+    gate = threading.Event()
+    fake = await _manager_with_pages(fresh_manager, "queue", None)
+    fake.list_objects_v2.side_effect = _gated_pages(gate)
+
+    first = asyncio.create_task(fresh_manager.list_all_objects("queue", "b"))
+    second = asyncio.create_task(fresh_manager.list_all_objects("queue", "b"))
+    try:
+        await asyncio.sleep(0.05)
+        assert not second.done()  # waiting for the only slot, not rejected
+        assert fake.list_objects_v2.call_count == 1
+    finally:
+        gate.set()
+    assert (await first)["key_count"] == 1
+    assert (await second)["key_count"] == 1
+    assert not fresh_manager._full_listing_slots().locked()
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_busy_when_no_slot_frees_within_budget(fresh_manager, monkeypatch):
+    monkeypatch.setattr(settings, "S3_LIST_ALL_MAX_CONCURRENT", 1)
+    monkeypatch.setattr(settings, "S3_LIST_ALL_TIME_BUDGET_SECONDS", 0.05)
+    gate = threading.Event()
+    fake = await _manager_with_pages(fresh_manager, "busy", None)
+    fake.list_objects_v2.side_effect = _gated_pages(gate)
+
+    first = asyncio.create_task(fresh_manager.list_all_objects("busy", "b"))
+    try:
+        await asyncio.sleep(0)  # let the first walk take the only slot
+        with pytest.raises(S3ListAllBusyError):
+            await fresh_manager.list_all_objects("busy", "b")
+    finally:
+        gate.set()
+    await first
+    assert not fresh_manager._full_listing_slots().locked()
+
+
+@pytest.mark.asyncio
+async def test_list_all_objects_cancelled_walk_frees_its_slot(fresh_manager, monkeypatch):
+    monkeypatch.setattr(settings, "S3_LIST_ALL_MAX_CONCURRENT", 1)
+    gate = threading.Event()
+    fake = await _manager_with_pages(fresh_manager, "cancel", None)
+    fake.list_objects_v2.side_effect = _gated_pages(gate)
+
+    walk = asyncio.create_task(fresh_manager.list_all_objects("cancel", "b"))
+    try:
+        await asyncio.sleep(0)
+        assert fresh_manager._full_listing_slots().locked()
+        walk.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await walk
+        assert not fresh_manager._full_listing_slots().locked()
+    finally:
+        gate.set()
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import json
 import logging
+import time
 from typing import Any, TypeVar
 
 import boto3
@@ -25,6 +26,15 @@ _S3_EXECUTOR: ThreadPoolExecutor | None = ThreadPoolExecutor(
 )
 
 _T = TypeVar("_T")
+
+# ListObjectsV2 returns at most this many entries (keys + common prefixes) per
+# call, whatever MaxKeys asks for.
+S3_MAX_PAGE_KEYS = 1000
+
+
+class S3ListAllBusyError(RuntimeError):
+    """No full-listing slot (S3_LIST_ALL_MAX_CONCURRENT) freed up within the
+    time budget."""
 
 
 def _parse_allowed_buckets(conn: S3Connection) -> list[str] | None:
@@ -65,12 +75,16 @@ class S3ConnectionManager:
     _instance: S3ConnectionManager | None = None
     _clients: dict[str, BaseClient]
     _configs: dict[str, dict[str, Any]]
+    _list_all_slots: asyncio.Semaphore | None
+    _list_all_slots_key: tuple[asyncio.AbstractEventLoop, int] | None
 
     def __new__(cls) -> S3ConnectionManager:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._clients = {}
             cls._instance._configs = {}
+            cls._instance._list_all_slots = None
+            cls._instance._list_all_slots_key = None
         return cls._instance
 
     async def _run_blocking(
@@ -233,6 +247,113 @@ class S3ConnectionManager:
             "is_truncated": resp.get("IsTruncated", False),
             "next_continuation_token": resp.get("NextContinuationToken"),
             "key_count": resp.get("KeyCount", 0),
+        }
+
+    def _full_listing_slots(self) -> asyncio.Semaphore:
+        # asyncio primitives bind to the first loop that waits on them, so keep
+        # one per running loop (a single loop in production, one per test), and
+        # rebuild on a size change. Each walk releases the semaphore it acquired.
+        key = (asyncio.get_running_loop(), settings.S3_LIST_ALL_MAX_CONCURRENT)
+        if self._list_all_slots is None or self._list_all_slots_key != key:
+            self._list_all_slots = asyncio.Semaphore(settings.S3_LIST_ALL_MAX_CONCURRENT)
+            self._list_all_slots_key = key
+        return self._list_all_slots
+
+    async def list_all_objects(
+        self,
+        alias: str,
+        bucket: str,
+        prefix: str = "",
+        delimiter: str = "/",
+        continuation_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Follow continuation tokens server-side so one call returns the whole
+        listing, in the same shape as ``list_objects``.
+
+        The walk stops early at S3_LIST_ALL_MAX_KEYS entries (memory), at
+        S3_LIST_ALL_TIME_BUDGET_SECONDS (the proxy timeouts in front of the
+        service), or when a page after the first fails. Each early stop still
+        returns a valid page: ``is_truncated`` + ``next_continuation_token``
+        resume exactly where it stopped.
+
+        At most S3_LIST_ALL_MAX_CONCURRENT walks run at once. Later callers
+        queue for a slot in FIFO order, and the wait counts against the same
+        time budget; S3ListAllBusyError if no slot frees up within it.
+        """
+        deadline = time.monotonic() + settings.S3_LIST_ALL_TIME_BUDGET_SECONDS
+        slots = self._full_listing_slots()
+        if slots.locked():
+            try:
+                await asyncio.wait_for(slots.acquire(), timeout=deadline - time.monotonic())
+            except TimeoutError:
+                raise S3ListAllBusyError("No full S3 listing slot freed up in time") from None
+        else:
+            await slots.acquire()  # free slot: returns without suspending
+        try:
+            return await self._walk_listing(
+                alias, bucket, prefix, delimiter, continuation_token, deadline
+            )
+        finally:
+            slots.release()
+
+    async def _walk_listing(
+        self,
+        alias: str,
+        bucket: str,
+        prefix: str,
+        delimiter: str,
+        token: str | None,
+        deadline: float,
+    ) -> dict[str, Any]:
+        max_entries = settings.S3_LIST_ALL_MAX_KEYS
+        folders: list[dict[str, Any]] = []
+        objects: list[dict[str, Any]] = []
+        pages = 0
+        truncated = True
+        while True:
+            # Trim the last page so the entry cap is exact and its token resumes
+            # right after the final returned entry.
+            page_size = min(S3_MAX_PAGE_KEYS, max_entries - len(folders) - len(objects))
+            try:
+                page = await self.list_objects(alias, bucket, prefix, delimiter, page_size, token)
+            except Exception as exc:
+                if pages == 0:
+                    raise
+                # Keep what was collected; `token` still points at the failed page.
+                logger.warning(
+                    "S3 full listing for '%s' stopped after %d pages: %r", alias, pages, exc
+                )
+                break
+            pages += 1
+            if page["is_truncated"] and token is not None and page["next_continuation_token"] == token:
+                # The backend did not honour the token: this page may repeat
+                # entries already returned, and resending the token would replay
+                # it until the budget ran out. Drop it; the listing is unresumable.
+                logger.warning(
+                    "S3 full listing for '%s' stopped: continuation token did not advance", alias
+                )
+                token = None
+                break
+            folders.extend(page["folders"])
+            objects.extend(page["objects"])
+            if not page["is_truncated"]:
+                truncated = False
+                token = None
+                break
+            token = page["next_continuation_token"]
+            if (
+                not token  # truncated but unresumable: report it as list_objects would
+                or len(folders) + len(objects) >= max_entries
+                or time.monotonic() >= deadline
+            ):
+                break
+
+        return {
+            "folders": folders,
+            "objects": objects,
+            "is_truncated": truncated,
+            "next_continuation_token": token,
+            "key_count": len(folders) + len(objects),
         }
 
     async def get_object_metadata(

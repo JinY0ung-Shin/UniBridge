@@ -1,12 +1,17 @@
 """Tests for S3 connection admin CRUD and browse endpoints."""
 from __future__ import annotations
 
+import asyncio
 import socket
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from botocore.exceptions import ClientError
+from fastapi import HTTPException
+import pytest
+from starlette.requests import Request
 
+from app.routers import s3 as s3_router
+from app.services.s3_manager import S3ListAllBusyError
 from tests.conftest import auth_header
 
 
@@ -463,6 +468,119 @@ async def test_list_objects_success(client, admin_token):
     assert resp.status_code == 200
     assert resp.json() == payload
     mgr.list_objects.assert_awaited_once_with("x", "b", "p/", "/", 10, None)
+
+
+@pytest.mark.asyncio
+async def test_list_objects_all_uses_full_listing(client, admin_token):
+    payload = {
+        "folders": [],
+        "objects": [{"key": "x", "size": 1, "last_modified": None, "storage_class": None}],
+        "is_truncated": False,
+        "next_continuation_token": None,
+        "key_count": 1,
+    }
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
+        mgr.list_objects = AsyncMock()
+        mgr.list_all_objects = AsyncMock(return_value=payload)
+        resp = await client.get(
+            "/s3/x/objects?bucket=b&prefix=p/&max_keys=10&continuation_token=tok&all=true",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 200
+    assert resp.json() == payload
+    mgr.list_all_objects.assert_awaited_once_with("x", "b", "p/", "/", "tok")
+    mgr.list_objects.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_list_objects_all_busy_returns_429(client, admin_token):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = None
+        mgr.list_all_objects = AsyncMock(side_effect=S3ListAllBusyError("busy"))
+        resp = await client.get("/s3/x/objects?bucket=b&all=true", headers=auth_header(admin_token))
+    assert resp.status_code == 429
+    assert resp.headers["retry-after"] == "5"
+
+
+@pytest.mark.asyncio
+async def test_list_objects_all_bucket_not_allowed_403(client, admin_token):
+    with patch("app.routers.s3.s3_manager") as mgr:
+        mgr.has_connection.return_value = True
+        mgr.allowed_buckets.return_value = ["allowed"]
+        mgr.list_all_objects = AsyncMock()
+        resp = await client.get(
+            "/s3/x/objects?bucket=forbidden&all=true",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 403
+    mgr.list_all_objects.assert_not_awaited()
+
+
+def _request_with_receive(receive) -> Request:
+    return Request({"type": "http", "method": "GET", "path": "/", "headers": []}, receive)
+
+
+@pytest.mark.asyncio
+async def test_full_listing_cancelled_when_client_disconnects():
+    gone = asyncio.Event()
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def receive():
+        await gone.wait()
+        return {"type": "http.disconnect"}
+
+    async def walk():
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    call = asyncio.create_task(
+        s3_router._cancel_if_client_leaves(_request_with_receive(receive), walk())
+    )
+    await started.wait()
+    gone.set()
+    with pytest.raises(HTTPException) as exc_info:
+        await call
+    assert exc_info.value.status_code == 499
+    await asyncio.wait_for(cancelled.wait(), 1)
+
+
+@pytest.mark.asyncio
+async def test_full_listing_result_returned_while_client_connected():
+    messages = [{"type": "http.request", "body": b"", "more_body": False}]
+    disconnected = asyncio.Event()  # never set: the client stays connected
+
+    async def receive():
+        if messages:
+            return messages.pop(0)
+        await disconnected.wait()
+
+    async def walk():
+        await asyncio.sleep(0)
+        return {"key_count": 3}
+
+    result = await s3_router._cancel_if_client_leaves(_request_with_receive(receive), walk())
+    assert result == {"key_count": 3}
+
+
+@pytest.mark.asyncio
+async def test_full_listing_survives_unobservable_disconnect():
+    async def receive():
+        raise RuntimeError("receive channel unavailable")
+
+    async def walk():
+        await asyncio.sleep(0.01)
+        return {"key_count": 1}
+
+    result = await s3_router._cancel_if_client_leaves(_request_with_receive(receive), walk())
+    assert result == {"key_count": 1}
 
 
 @pytest.mark.asyncio
