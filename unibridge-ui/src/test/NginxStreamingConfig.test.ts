@@ -15,3 +15,13 @@ describe('nginx /api proxy config', () => {
     expect(apiLocation).toContain('proxy_buffering off;');
   });
 });
+
+describe('nginx gzip config', () => {
+  it('compresses JSON and leaves event streams alone', () => {
+    const gzipTypes = nginxConfig.match(/^\s*gzip_types ([^;]+);/m)?.[1].split(/\s+/) ?? [];
+
+    expect(nginxConfig).toMatch(/^\s*gzip on;/m);
+    expect(gzipTypes).toContain('application/json');
+    expect(gzipTypes).not.toContain('text/event-stream');
+  });
+});

@@ -55,7 +55,7 @@ PUBLIC_ROUTES = {
     # Prometheus scrape target, mounted by prometheus_fastapi_instrumentator
     # (app/main.py:770) rather than by a router. Reachable in-cluster only: the
     # UI nginx returns 404 for /_api/metrics and /_api/metrics/
-    # (unibridge-ui/nginx.conf:71-76), which is the whole of its access control.
+    # (unibridge-ui/nginx.conf:86-91), which is the whole of its access control.
     ("GET", "/metrics"),
     # Dev/testing token mint (app/main.py:829-858). Issuing a token is exactly
     # what cannot require a token; safe only because the route is not mounted at
