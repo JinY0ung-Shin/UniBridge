@@ -539,6 +539,16 @@ def test_edge_template_strips_consumer_identity_and_keeps_keepalive() -> None:
     assert 'proxy_set_header Connection "upgrade";' not in template
 
 
+def test_edge_template_streams_responses_unbuffered() -> None:
+    template = EDGE_TEMPLATE_FILE.read_text(encoding="utf-8")
+    proxy_location = template.split("location / {", 1)[1].split("\n    }", 1)[0]
+
+    # LLM event streams must reach the client as they are sent. nginx buffers
+    # proxied responses by default, and the UI nginx behind the edge does not
+    # pass X-Accel-Buffering on, so the edge has to switch buffering off itself.
+    assert "proxy_buffering off;" in proxy_location
+
+
 def test_backup_uses_current_metadata_store_instead_of_sqlite_only() -> None:
     backup_script = BACKUP_SCRIPT_FILE.read_text(encoding="utf-8")
     restore_script = RESTORE_SCRIPT_FILE.read_text(encoding="utf-8")

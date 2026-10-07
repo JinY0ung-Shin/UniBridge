@@ -44,6 +44,11 @@ server {
         # are not cut by this edge hop at nginx's 60s default.
         proxy_read_timeout 600s;
         proxy_send_timeout 600s;
+        # Hand responses to the client as they arrive. Buffered, LLM event
+        # streams (SSE) reach the client in bursts or all at the end. The UI
+        # nginx streams /api unbuffered, but it does not pass X-Accel-Buffering
+        # on, so this hop has to turn buffering off itself.
+        proxy_buffering off;
         # Internal-only hop: the active UI container presents the same in-cluster
         # self-signed cert as the edge, so verification/SNI are intentionally off.
         # All traffic stays on the host-managed docker network. Do NOT reuse this
