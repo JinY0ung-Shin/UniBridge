@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 from sqlalchemy import text
+from sqlalchemy.exc import StatementError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 try:  # pragma: no cover - exercised when neo4j is installed
@@ -252,6 +253,30 @@ def check_permission(
         return False
 
 
+def _postgres_row_capped_sql(sql: str, max_rows: int, *, materialized: bool) -> str:
+    """Wrap a SELECT so Postgres itself returns at most ``max_rows`` rows.
+
+    The query goes into a MATERIALIZED CTE rather than a subquery because
+    Postgres plans a CTE for full retrieval. A LIMIT on a subquery can switch
+    the planner to a fast-start plan, e.g. walking an ORDER BY index through a
+    filter that matches far fewer rows than estimated, which is many times
+    slower when the estimate is wrong. The CTE is still read lazily, so the
+    scan stops once the LIMIT is met. Pass ``materialized=False`` for
+    Postgres < 12: it rejects the keyword and always materializes CTEs anyway.
+    """
+    body = sql.rstrip()
+    # check_multi_statement() lets a single trailing semicolon through, but it
+    # is a syntax error inside the CTE.
+    if body.endswith(";"):
+        body = body[:-1].rstrip()
+    fence = "MATERIALIZED " if materialized else ""
+    # The newline before ")" keeps a trailing `--` comment from swallowing it.
+    return (
+        f"WITH unibridge_capped AS {fence}(\n{body}\n)\n"
+        f"SELECT * FROM unibridge_capped LIMIT {int(max_rows)}"
+    )
+
+
 async def _execute(
     engine: AsyncEngine,
     sql: str,
@@ -271,21 +296,49 @@ async def _execute(
 
     async with engine.connect() as conn:
         if is_select:
-            # Read through a server-side (streaming) cursor rather than
-            # buffering the whole result set: `conn.execute()` makes the driver
-            # materialise every row in memory at execute time, so `limit` would
-            # only trim the response after the damage was done. With
-            # `conn.stream()` rows are pulled in batches and we stop at
-            # limit + 1 — the extra row is what tells us the result was
-            # truncated — so peak memory is bounded by the limit, not by the
-            # size of the table.
-            async with conn.stream(stmt) as result:
+            if limit and statement_type == "select" and engine.dialect.name == "postgresql":
+                # Postgres never runs parallel workers for a query the client
+                # reads in batches (an Execute message with a row count, which
+                # is how the server-side cursor below is paged), so aggregates
+                # and scans over big tables were 2-3x slower through
+                # conn.stream(). Put the cap in the SQL instead: a plain
+                # execute runs to completion with parallel workers, and the
+                # LIMIT still bounds what the driver buffers to limit + 1 rows.
+                server_version = engine.dialect.server_version_info
+                capped = text(
+                    _postgres_row_capped_sql(
+                        sql,
+                        limit + 1,
+                        materialized=server_version is not None and server_version >= (12,),
+                    )
+                )
+                if params:
+                    capped = capped.bindparams(**params)
+                try:
+                    result = await conn.execute(capped)
+                except StatementError as exc:
+                    # Errors land in the audit log and query history; show the
+                    # caller's SQL there, not the wrapper around it.
+                    exc.statement = sql
+                    raise
                 columns = list(result.keys())
-                if limit:
-                    all_rows = await result.fetchmany(limit + 1)
-                else:
-                    # Defensive: execute_query() always passes a positive limit.
-                    all_rows = [row async for row in result]
+                all_rows = result.fetchall()
+            else:
+                # Read through a server-side (streaming) cursor rather than
+                # buffering the whole result set: `conn.execute()` makes the
+                # driver materialise every row in memory at execute time, so
+                # `limit` would only trim the response after the damage was
+                # done. With `conn.stream()` rows are pulled in batches and we
+                # stop at limit + 1 — the extra row is what tells us the result
+                # was truncated — so peak memory is bounded by the limit, not
+                # by the size of the table.
+                async with conn.stream(stmt) as result:
+                    columns = list(result.keys())
+                    if limit:
+                        all_rows = await result.fetchmany(limit + 1)
+                    else:
+                        # Defensive: execute_query() always passes a positive limit.
+                        all_rows = [row async for row in result]
 
             truncated = False
             if limit and len(all_rows) > limit:

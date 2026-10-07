@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import event, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import settings
@@ -57,6 +58,7 @@ async def test_select_reads_through_server_side_cursor_and_stops_at_limit():
     memory bounded by the limit instead of by the size of the table.
     """
     produced: list[int] = []
+    statements: list[str] = []
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
 
     @event.listens_for(engine.sync_engine, "connect")
@@ -66,6 +68,10 @@ async def test_select_reads_through_server_side_cursor_and_stops_at_limit():
             return value
 
         dbapi_conn.create_function("mark", 1, mark)
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def capture(_conn, _cursor, statement, _params, _context, _executemany):
+        statements.append(statement)
 
     try:
         await _create_items_table(engine)
@@ -78,6 +84,9 @@ async def test_select_reads_through_server_side_cursor_and_stops_at_limit():
             limit=5,
             db_type="sqlite",
         )
+
+        # The LIMIT-capped SQL is Postgres-only (MSSQL rejects LIMIT).
+        assert not any("unibridge_capped" in statement for statement in statements)
 
         assert response.columns == ["marked_id", "name"]
         assert response.rows[0] == [1, "item-000"]
@@ -92,6 +101,150 @@ async def test_select_reads_through_server_side_cursor_and_stops_at_limit():
         )
     finally:
         await engine.dispose()
+
+
+def _pose_as_postgres(engine, monkeypatch, statements: list[str]) -> None:
+    """Route a SQLite engine through the Postgres SELECT path.
+
+    The capped SQL is plain enough for SQLite to run, so the wrapping, the
+    limit + 1 cap and the bound parameters are exercised against a real engine.
+    SQLite's 3.x version number reads as Postgres < 12, so it gets the CTE
+    without MATERIALIZED, which SQLite reads lazily the way Postgres reads a
+    MATERIALIZED one (SQLite would fill a MATERIALIZED CTE up front). The point
+    of that path — Postgres keeping its parallel workers and its plan — needs a
+    real Postgres and is not covered here.
+    """
+    monkeypatch.setattr(engine.dialect, "name", "postgresql")
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def capture(_conn, _cursor, statement, _params, _context, _executemany):
+        statements.append(statement)
+
+
+@pytest.mark.asyncio
+async def test_postgres_select_caps_rows_in_sql_instead_of_streaming(monkeypatch):
+    produced: list[int] = []
+    statements: list[str] = []
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def register_marker(dbapi_conn, _connection_record):
+        def mark(value):
+            produced.append(value)
+            return value
+
+        dbapi_conn.create_function("mark", 1, mark)
+
+    try:
+        await _create_items_table(engine)
+        await _seed_items(engine, [f"item-{i:03d}" for i in range(500)])
+        _pose_as_postgres(engine, monkeypatch, statements)
+
+        produced.clear()
+        response = await execute_query(
+            engine,
+            "SELECT mark(id) AS marked_id, name FROM items ORDER BY items.id",
+            limit=5,
+            db_type="postgres",
+        )
+
+        assert response.columns == ["marked_id", "name"]
+        assert response.rows[0] == [1, "item-000"]
+        assert response.row_count == 5
+        assert response.truncated is True
+        assert statements[-1].endswith("SELECT * FROM unibridge_capped LIMIT 6")
+        # The LIMIT stops the database itself, so the buffered execute still
+        # holds limit + 1 rows, not the 500 in the table.
+        assert len(produced) <= 6
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_postgres_capped_select_keeps_params_and_tolerates_sql_tails(monkeypatch):
+    statements: list[str] = []
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    try:
+        await _create_items_table(engine)
+        await _seed_items(engine, ["alpha", "bravo", "charlie"])
+        _pose_as_postgres(engine, monkeypatch, statements)
+
+        # A trailing semicolon is a syntax error inside the CTE, and a
+        # trailing line comment would swallow its closing parenthesis.
+        for sql in (
+            "SELECT id, name FROM items WHERE id >= :min_id ORDER BY id;  \n",
+            "SELECT id, name FROM items WHERE id >= :min_id ORDER BY id -- newest last",
+        ):
+            response = await execute_query(
+                engine, sql, params={"min_id": 2}, limit=10, db_type="postgres"
+            )
+            assert response.rows == [[2, "bravo"], [3, "charlie"]]
+            assert response.truncated is False
+
+        assert all("unibridge_capped LIMIT 11" in statement for statement in statements[-2:])
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_postgres_explain_and_dml_are_not_capped(engine_sqlite, monkeypatch):
+    statements: list[str] = []
+    await _create_items_table(engine_sqlite)
+    await _seed_items(engine_sqlite, ["alpha"])
+    _pose_as_postgres(engine_sqlite, monkeypatch, statements)
+
+    await execute_query(
+        engine_sqlite, "EXPLAIN SELECT id FROM items", limit=10, db_type="postgres"
+    )
+    await execute_query(
+        engine_sqlite,
+        "UPDATE items SET name = :name WHERE id = 1",
+        params={"name": "updated"},
+        limit=10,
+        db_type="postgres",
+    )
+
+    assert statements
+    assert not any("unibridge_capped" in statement for statement in statements)
+
+
+@pytest.mark.parametrize(
+    ("server_version", "fence"),
+    [((16, 4), "AS MATERIALIZED ("), ((12, 0), "AS MATERIALIZED ("), ((11, 22), "AS (")],
+)
+@pytest.mark.asyncio
+async def test_postgres_cap_uses_materialized_cte_from_postgres_12(
+    engine_sqlite, monkeypatch, server_version, fence
+):
+    statements: list[str] = []
+    await _create_items_table(engine_sqlite)
+    await _seed_items(engine_sqlite, ["alpha", "bravo"])
+    _pose_as_postgres(engine_sqlite, monkeypatch, statements)
+    monkeypatch.setattr(engine_sqlite.dialect, "server_version_info", server_version)
+
+    response = await execute_query(
+        engine_sqlite, "SELECT id FROM items ORDER BY id", limit=1, db_type="postgres"
+    )
+
+    assert response.rows == [[1]]
+    assert response.truncated is True
+    assert statements[-1].startswith(f"WITH unibridge_capped {fence}\n")
+
+
+@pytest.mark.asyncio
+async def test_postgres_capped_select_error_reports_the_callers_sql(engine_sqlite, monkeypatch):
+    statements: list[str] = []
+    await _create_items_table(engine_sqlite)
+    _pose_as_postgres(engine_sqlite, monkeypatch, statements)
+
+    with pytest.raises(DBAPIError) as excinfo:
+        await execute_query(
+            engine_sqlite, "SELECT id FROM items WHERE", limit=10, db_type="postgres"
+        )
+
+    assert "unibridge_capped" in statements[-1]
+    assert "[SQL: SELECT id FROM items WHERE]" in str(excinfo.value)
+    assert "unibridge_capped" not in str(excinfo.value)
 
 
 @pytest.mark.asyncio
@@ -134,7 +287,7 @@ async def test_explain_uses_streaming_path(engine_sqlite):
 
     response = await execute_query(
         engine_sqlite,
-        "EXPLAIN QUERY PLAN SELECT id FROM items",
+        "EXPLAIN SELECT id FROM items",
         limit=10,
         db_type="sqlite",
     )
