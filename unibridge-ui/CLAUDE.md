@@ -15,7 +15,7 @@ See the repo-root `CLAUDE.md` for cross-service context. Served by nginx in prod
 - **Dev API proxy**: `vite.config.ts` proxies `/_api` → `http://localhost:8000`, so run
   unibridge-service locally on :8000 for `npm run dev`. The proxy strips `X-Consumer-*`
   headers (parity with `nginx.conf`) to prevent identity spoofing — don't remove that.
-- **Runtime config**: Keycloak settings and the LiteLLM admin URL come from
+- **Runtime config**: Keycloak settings and the LiteLLM/Bifrost admin URLs come from
   runtime-injected config, with Vite env only as a local-dev fallback. API base
   is the same-origin `/_api` path. Build output is static; the container fills
   config at start.

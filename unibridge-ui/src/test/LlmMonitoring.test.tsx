@@ -32,8 +32,8 @@ vi.mock('../components/usePermissions', () => ({
   usePermissions: () => ({ permissions: ['apikeys.read', 'gateway.monitoring.read'], loaded: true }),
 }));
 
-// Same stability trick for the auth role: the LiteLLM Admin link (and
-// GrafanaLink) render for admins only, so tests flip authState.appRole.
+// Same stability trick for the auth role: the LiteLLM and Bifrost Admin links
+// (and GrafanaLink) render for admins only, so tests flip authState.appRole.
 const authState = vi.hoisted(() => ({ appRole: 'admin' as string | null }));
 vi.mock('../components/useAuth', () => ({
   useAuth: () => ({
@@ -99,6 +99,7 @@ describe('LlmMonitoring', () => {
     window.__RUNTIME_CONFIG__ = {
       ...window.__RUNTIME_CONFIG__,
       LITELLM_ADMIN_URL: 'https://localhost:4000/ui',
+      BIFROST_ADMIN_URL: 'https://localhost:18443',
     };
     authState.appRole = 'admin';
   });
@@ -129,7 +130,18 @@ describe('LlmMonitoring', () => {
     );
   });
 
-  it('hides the LiteLLM Admin link for non-admins (SSO is admin-only)', async () => {
+  it('links Bifrost Admin to the bifrost-tls UI origin', async () => {
+    const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
+
+    renderWithProviders(<LlmMonitoring />);
+
+    const link = await screen.findByRole('link', { name: 'Bifrost Admin opens in new tab' });
+    expect(link).toHaveAttribute('href', 'https://localhost:18443');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('hides the LiteLLM and Bifrost Admin links for non-admins', async () => {
     authState.appRole = 'user';
     const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
 
@@ -139,6 +151,7 @@ describe('LlmMonitoring', () => {
       expect(screen.getByTestId('custom-toggle')).toBeInTheDocument();
     });
     expect(screen.queryByRole('link', { name: 'LiteLLM Admin opens in new tab' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Bifrost Admin opens in new tab' })).not.toBeInTheDocument();
   });
 
   it('renders request count in model usage table', async () => {

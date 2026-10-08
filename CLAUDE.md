@@ -12,7 +12,7 @@ S3/NAS — all behind Keycloak OIDC + RBAC + API keys. See `README.md` for deplo
 - `llm-converter/`     — FastAPI sidecar: translates Anthropic `/v1/messages` and
   OpenAI `/v1/responses` → chat/completions for LiteLLM. See its CLAUDE.md.
 - `e2e/`               — live end-to-end tests (skipped unless `LLM_API_KEY` set).
-- `apisix/ keycloak/ litellm/ prometheus/` — infra config. `docker-compose.yml` — full stack
+- `apisix/ bifrost/ keycloak/ litellm/ prometheus/` — infra config. `docker-compose.yml` — full stack
   (single-stack/dev). **Production runs the split blue-green layout instead**:
   `docker-compose.infra.yml` (project `unibridge-infra`; APISIX/Keycloak/LiteLLM/DBs) +
   `docker-compose.app.yml` (blue/green) + `docker-compose.edge.yml`, driven by
@@ -81,6 +81,11 @@ requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
   load-bearing, not hardening — without it logins 500 on Keycloak's userinfo issuer
   check. Free tier caps LiteLLM's user table at 5 rows and rejected non-admin logins
   still insert rows. See README "LiteLLM admin UI SSO".
+- **Bifrost runs side by side with LiteLLM on `/api/llm-bi`** (`bifrost`, `bifrost-tls`,
+  `llm-converter-bi`; identical in both compose layouts, tested). Its APISIX routes come
+  from `scripts/bifrost-test.sh`, not `main.py` provisioning. `bifrost/tls-proxy.conf`
+  (the LLM Monitoring page's Bifrost button) is an allowlist: UI + management API only,
+  never inference or `/metrics`.
 - **`unibridge_*` metrics are scraped by two jobs**: `unibridge-service` is a DNS alias both
   blue/green colors answer on (round-robin → counters alternate → `increase()` inflates);
   `unibridge-service-colors` is per-color. PromQL over them (backend or Grafana) must use

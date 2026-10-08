@@ -526,17 +526,14 @@ services:
     networks:
       - apihub-net
 
-  # ── Bifrost side-by-side test (/api/llm-bi) ──
-  # Opt-in only. The bifrost-test profile keeps both services out of a plain
-  # `up` and out of `config --services`, which the blue/green deploy's infra
-  # health gate iterates, so a stopped or crash-looping Bifrost can never block
-  # a deploy. Start them explicitly with `--profile bifrost-test`, and never put
-  # COMPOSE_PROFILES in .env. /api/llm stays on LiteLLM; the /api/llm-bi routes
-  # are added and removed by scripts/bifrost-test.sh. These two services are
-  # identical in docker-compose.yml and docker-compose.infra.yml (tested).
+  # ── Bifrost, side by side with LiteLLM (/api/llm-bi) ──
+  # Part of the default stack: a plain `up` starts it, and the blue/green
+  # deploy's infra health gate requires it healthy like any infra service.
+  # /api/llm stays on LiteLLM; the /api/llm-bi routes are added and removed by
+  # scripts/bifrost-test.sh. These three services are identical in
+  # docker-compose.yml and docker-compose.infra.yml (tested).
   bifrost:
     image: maximhq/bifrost:v2.2.4
-    profiles: ["bifrost-test"]
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 1g
@@ -546,27 +543,29 @@ services:
         limits:
           memory: 1g
           cpus: "1.00"
-    # bifrost/entrypoint.sh refuses to boot without the secrets config.json
-    # references, then hands off to the image's own entrypoint.
+    # Compose refuses to start without the secrets config.json references;
+    # bifrost/entrypoint.sh also checks their format, then hands off to the
+    # image's own entrypoint.
     entrypoint: ["/bin/sh", "/app/bundle/entrypoint.sh"]
     command: ["/app/main"]
     environment:
-      - BIFROST_ENCRYPTION_KEY=${BIFROST_ENCRYPTION_KEY:-}
+      - BIFROST_ENCRYPTION_KEY=${BIFROST_ENCRYPTION_KEY:?BIFROST_ENCRYPTION_KEY is required}
       - BIFROST_ADMIN_USERNAME=${BIFROST_ADMIN_USERNAME:-admin}
-      - BIFROST_ADMIN_PASSWORD=${BIFROST_ADMIN_PASSWORD:-}
+      - BIFROST_ADMIN_PASSWORD=${BIFROST_ADMIN_PASSWORD:?BIFROST_ADMIN_PASSWORD is required}
       # The one virtual key Bifrost accepts on inference (config.json
       # enforce_auth_on_inference); APISIX injects it on the /api/llm-bi routes,
       # so nothing that bypasses the gateway gets an answer.
-      - BIFROST_TEST_VK=${BIFROST_TEST_VK:-}
+      - BIFROST_TEST_VK=${BIFROST_TEST_VK:?BIFROST_TEST_VK is required}
       - LOG_LEVEL=${BIFROST_LOG_LEVEL:-info}
       - LOG_STYLE=json
       # Go soft memory limit at ~90% of mem_limit, so GC tightens before the
       # cgroup OOM-kills the process (request-body logging is the big consumer).
       - GOMEMLIMIT=900MiB
     ports:
-      # Loopback only: the Bifrost UI / management API for operators, via an
-      # SSH tunnel. The gateway forwards only the /api/llm-bi inference paths,
-      # and inference here needs the gateway's virtual key.
+      # Loopback only, plain HTTP: the management API for curl on the host.
+      # Browsers reach the UI through bifrost-tls below. The gateway forwards
+      # only the /api/llm-bi inference paths, and inference here needs the
+      # gateway's virtual key.
       - "127.0.0.1:${BIFROST_TEST_ADMIN_PORT:-18080}:8080"
     volumes:
       - bifrost-test-data:/app/data
@@ -584,6 +583,43 @@ services:
     networks:
       - apihub-net
 
+  # HTTPS front for the Bifrost UI, which the "Bifrost" button on the LLM
+  # Monitoring page opens at https://HOST_IP:BIFROST_UI_PORT (Bifrost itself
+  # serves plain HTTP only). bifrost/tls-proxy.conf forwards the UI pages, the
+  # management API (behind the Bifrost admin login) and the live-update socket,
+  # but not inference or /metrics: model traffic enters through the gateway's
+  # /api/llm-bi routes only.
+  bifrost-tls:
+    image: nginx:alpine
+    restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 128m
+    cpus: "0.25"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.25"
+    ports:
+      - "${BIFROST_UI_PORT:-18443}:443"
+    volumes:
+      - ./bifrost/tls-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/nginx/ssl/tls.crt:ro
+      - ${TLS_KEY_PATH:-./certs/tls.key}:/etc/nginx/ssl/tls.key:ro
+    depends_on:
+      # Not service_healthy: the proxy resolves bifrost per request, so it can
+      # start (and report healthy) while Bifrost is still booting.
+      bifrost:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O- https://127.0.0.1/healthz | grep -q '^ok$'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - apihub-net
+
   # Second converter in front of Bifrost, so /api/llm-bi/v1/messages and
   # /v1/responses get exactly the translation /api/llm gets; only the upstream
   # differs. Same build context as llm-converter.
@@ -597,7 +633,6 @@ services:
         NO_PROXY: ${NO_PROXY:-}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
         PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
-    profiles: ["bifrost-test"]
     restart: unless-stopped
     init: true
     logging: *default-logging
@@ -676,8 +711,8 @@ volumes:
     name: ${LITELLM_DATASET_VOLUME:-unibridge_litellm-dataset}
   unibridge-db-data:
     name: ${UNIBRIDGE_DB_DATA_VOLUME:-unibridge_unibridge-db-data}
-  # bifrost-test profile only (see the bifrost service). Same names as the
-  # single-stack defaults, so test data carries across layouts.
+  # Bifrost (see the bifrost service). Same names as the single-stack
+  # defaults, so its data carries across layouts.
   bifrost-test-data:
     name: ${BIFROST_TEST_DATA_VOLUME:-unibridge_bifrost-test-data}
   llm-converter-bi-state:

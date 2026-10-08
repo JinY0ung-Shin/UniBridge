@@ -20,6 +20,8 @@ Browser ──HTTPS──> unibridge-ui (nginx)
                                           ├── /api/llm/metrics → LiteLLM raw Prometheus /metrics
                                           ├── /api/llm/*       → LiteLLM (LLM proxy)
                                           ├── /api/llm-admin/* → LiteLLM Admin UI/API
+                                          ├── /api/llm-bi/v1/* → Bifrost, side by side with LiteLLM
+                                          │                    (exact paths; scripts/bifrost-test.sh)
                                           ├── /api/s3/*        → S3 connections
                                           ├── /api/nas/*       → Mounted NAS/local files
                                           ├── /api/prometheus/* → Prometheus HTTP API (PromQL, read-only)
@@ -28,6 +30,7 @@ Browser ──HTTPS──> unibridge-ui (nginx)
 Keycloak   ── OIDC auth
 Prometheus ── APISIX/LiteLLM/FastAPI metrics + DB TCP probes
 LiteLLM    ── Unified LLM proxy (+ Postgres)
+Bifrost    ── LLM gateway behind /api/llm-bi, side by side with LiteLLM (UI via bifrost-tls)
 ```
 
 **Services (11):** etcd, APISIX, Keycloak + Postgres, unibridge-service, Prometheus, Blackbox Exporter, Grafana, LiteLLM + Postgres, unibridge-ui
@@ -168,6 +171,7 @@ details.
 | Keycloak Admin | `https://<HOST_IP>:<KEYCLOAK_PORT>/admin` |
 | API Gateway | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/*` |
 | LiteLLM | `https://<HOST_IP>:<LITELLM_PORT>` (admin UI at `/ui` signs in via UniBridge SSO, admins only) |
+| Bifrost | `https://<HOST_IP>:<BIFROST_UI_PORT>` (UI and management API only, Bifrost's own admin login; see [Bifrost side-by-side test](#bifrost-side-by-side-test-apillm-bi)) |
 | Prometheus | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/prometheus/*` (API-key auth via gateway; direct `:9090` is localhost-only, `PROMETHEUS_BIND` overrides) |
 | Grafana | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana` (same-origin behind the UI) |
 
@@ -703,9 +707,9 @@ This is deliberate data collection, so know what it keeps and where:
 
 ### Bifrost side-by-side test (`/api/llm-bi`)
 
-An opt-in way to evaluate [Bifrost](https://github.com/maximhq/bifrost) as a
-LiteLLM replacement on real clients without touching `/api/llm`, which keeps
-running on LiteLLM exactly as before:
+[Bifrost](https://github.com/maximhq/bifrost) runs next to LiteLLM, so it can
+be evaluated as a LiteLLM replacement on real clients without touching
+`/api/llm`, which keeps running on LiteLLM exactly as before:
 
 ```
 /api/llm/*                         → unchanged (LiteLLM / llm-converter)
@@ -726,8 +730,18 @@ not its management API under `/api/*`, not MCP under `/v1/mcp/*`, not
 key APISIX injects — just as LiteLLM answers only the master key APISIX
 injects.
 
-1. **Secrets** — set these in `.env`; the container refuses to start without
-   them ([`bifrost/entrypoint.sh`](./bifrost/entrypoint.sh)):
+The Bifrost UI is served over HTTPS by the `bifrost-tls` nginx at
+`https://<HOST_IP>:<BIFROST_UI_PORT>` (default `18443`), because Bifrost itself
+speaks plain HTTP only. Admins open it with the **Bifrost Admin** button on the
+LLM Monitoring page. That port forwards only what the UI loads: its pages, the
+management API behind the Bifrost admin login, and the live-update socket
+([`bifrost/tls-proxy.conf`](./bifrost/tls-proxy.conf)). Inference, MCP and
+`/metrics` return 404 there, so the UI's prompt playground cannot run prompts
+through it.
+
+1. **Secrets** — set these in `.env`. Compose refuses to start the stack
+   without them, and [`bifrost/entrypoint.sh`](./bifrost/entrypoint.sh) checks
+   their format:
    - `BIFROST_ENCRYPTION_KEY` (≥ 16 chars) encrypts provider keys. It cannot be
      changed once data exists.
    - `BIFROST_ADMIN_PASSWORD` is the single admin login, enforced from the first
@@ -741,37 +755,46 @@ injects.
      with the start command in step 2 (`docker compose restart` keeps the old
      environment, so every request would get a 401), then re-run
      `scripts/bifrost-test.sh up`.
-2. **Start** — the services sit behind the `bifrost-test` compose profile, so a
-   plain `up` and the blue-green deploy never start or health-check them. **Do
-   not put `COMPOSE_PROFILES` in `.env`**: every deploy would then wait on
-   Bifrost.
-
-   On a host where the June 2026 Bifrost cutover ran, check
-   `docker ps -a --filter name=bifrost` before the first start. Remove any
-   leftover `bifrost-tls` nginx or old `bifrost` container with `docker rm -f`.
-   The June `bifrost-tls` published `${BIFROST_PORT:-${LITELLM_PORT}}:443` →
-   `bifrost:8080`, so it would front the new container. Compose's "Found orphan
-   containers" warning on the infra project is the signal.
+   - The admin login page is reachable from the network on `BIFROST_UI_PORT`,
+     so give `BIFROST_ADMIN_PASSWORD` a long random value.
+2. **Start** — `bifrost`, `bifrost-tls` and `llm-converter-bi` are part of the
+   default stack in both layouts. A plain `docker compose up -d` starts them,
+   and the blue-green infra health gate requires them to be healthy like any
+   other infra service, so a down Bifrost blocks app deploys until it is back.
+   A normal blue-green deploy never starts new infra services, so on a host
+   whose infra project is already running, start them once (or deploy once with
+   `RECONCILE_INFRA_ON_DEPLOY=true`):
 
    ```bash
    # blue-green host (shared infra project)
-   docker compose -p unibridge-infra -f docker-compose.infra.yml --profile bifrost-test \
-     up -d --build --wait bifrost llm-converter-bi
+   docker compose -p unibridge-infra -f docker-compose.infra.yml \
+     up -d --build --wait bifrost bifrost-tls llm-converter-bi
    # single stack
-   docker compose --profile bifrost-test up -d --build --wait bifrost llm-converter-bi
+   docker compose up -d --build --wait bifrost bifrost-tls llm-converter-bi
    ```
+
+   The **Bifrost Admin** button ships with the UI image, so it appears after
+   the next app deploy (single stack: `docker compose up -d --build
+   unibridge-ui`). Open `BIFROST_UI_PORT` in the host firewall the same way as
+   `LITELLM_PORT`.
+
+   On a host where the June 2026 Bifrost cutover ran, `up` recreates a leftover
+   `bifrost` or `bifrost-tls` container of the same Compose project with this
+   definition. Check `docker ps -a --filter name=bifrost` for leftovers from any
+   other project and remove them with `docker rm -f`.
 
    Booting needs no internet: `config.json` loads the (intentionally empty)
    pricing and model-parameter datasheets in `bifrost/` over `file://`, since
    self-hosted models have no list price. On an air-gapped host, first import
-   `maximhq/bifrost:v2.2.4` with `docker save`/`docker load`.
+   `maximhq/bifrost:v2.2.4` with `docker save`/`docker load`; `bifrost-tls`
+   runs `nginx:alpine`, which the edge and UI images already use.
    `llm-converter-bi` builds from `./llm-converter` with the same mirror
    settings as `llm-converter`.
-3. **Register providers** — in the Bifrost UI over an SSH tunnel
-   (`ssh -L 18080:127.0.0.1:18080 <host>`, then `http://localhost:18080`; the
-   port is bound to loopback only, `BIFROST_TEST_ADMIN_PORT`) or through the
-   management API. Register one OpenAI-compatible custom provider per
-   vLLM/SGLang server. For a fair comparison with LiteLLM, match its settings
+3. **Register providers** — in the Bifrost UI (the **Bifrost Admin** button) or
+   through the management API on the host's loopback-only plain-HTTP port
+   (`BIFROST_TEST_ADMIN_PORT`, default `18080`, used below). Register one
+   OpenAI-compatible custom provider per vLLM/SGLang server. For a fair
+   comparison with LiteLLM, match its settings
    ([LiteLLM request timeout and retries](#litellm-request-timeout-and-retries)).
    `curl -u admin` prompts for the password, which keeps it out of the process
    list:
@@ -837,10 +860,14 @@ injects.
 6. **Tear down** — order matters: run `down` first, then stop the containers.
    `scripts/bifrost-test.sh down` removes exactly those four routes and two
    upstreams. Only then stop the services
-   (`docker compose … --profile bifrost-test rm -sf bifrost llm-converter-bi`).
-   Stopping them while the upstreams are still installed mails
-   `upstream_health` alerts. If the data is no longer wanted, also remove the
-   `unibridge_bifrost-test-data` and `unibridge_llm-converter-bi-state` volumes.
+   (`docker compose … rm -sf bifrost-tls llm-converter-bi bifrost`), and delete
+   the three service definitions from both `docker-compose.yml` and
+   `docker-compose.infra.yml` (plus the Bifrost button). Otherwise the next `up`
+   starts them again, and the blue-green infra health gate refuses to deploy
+   while they are missing. Stopping them while the upstreams are
+   still installed mails `upstream_health` alerts. If the data is no longer
+   wanted, also remove the `unibridge_bifrost-test-data` and
+   `unibridge_llm-converter-bi-state` volumes.
    If etcd still holds the orphaned `bifrost` upstream from the June 2026
    cutover, `up` replaces it (and says so) and `down` deletes it.
 
@@ -850,7 +877,7 @@ Differences and limits to keep in mind while comparing:
   the LLM monitoring or usage pages, and is not written to
   [LLM conversation capture](#llm-conversation-capture); those read LiteLLM's
   metrics and callbacks. The gateway metrics for the `llm-bi-*` routes do
-  appear, under their route names.
+  appear, under their route names; for the rest, use Bifrost's own UI.
 - **Bifrost's own observability.** Bifrost serves Prometheus metrics at
   `bifrost:8080/metrics`. They are unauthenticated inside the Docker network and
   not scraped by default. APISIX stamps every request with

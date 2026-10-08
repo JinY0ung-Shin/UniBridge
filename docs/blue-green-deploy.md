@@ -33,13 +33,14 @@ Work through this before running `deploy-bluegreen.sh` on a real environment.
      `https://HOST_IP:UNIBRIDGE_EDGE_PORT`.
    - All host ports must be distinct: `UNIBRIDGE_EDGE_PORT`,
      `BLUEGREEN_BLUE_UI_PORT`, `BLUEGREEN_GREEN_UI_PORT`, `KEYCLOAK_PORT`,
-     `LITELLM_PORT`, `PROMETHEUS_PORT`, `APISIX_ADMIN_PORT`.
+     `LITELLM_PORT`, `BIFROST_UI_PORT`, `BIFROST_TEST_ADMIN_PORT`,
+     `PROMETHEUS_PORT`, `APISIX_ADMIN_PORT`.
    - If you changed the APISIX admin port, also set `APISIX_ADMIN_PORT` (or
      `APISIX_ADMIN_HOST_URL`) — promotion calls the admin API there.
 
 3. **Know what is and isn't zero-downtime.** Only UniBridge (the edge port) is
-   rotated blue/green. Keycloak, LiteLLM, APISIX and the databases live in the
-   **infra** stack as single instances: they stay up *during* an app deploy, but
+   rotated blue/green. Keycloak, LiteLLM, Bifrost, APISIX and the databases live
+   in the **infra** stack as single instances: they stay up *during* an app deploy, but
    updating/restarting them is a normal restart with downtime — blue/green does
    not cover them. After the first bootstrap, normal app deploys verify the
    existing infra without reconciling it. Set `RECONCILE_INFRA_ON_DEPLOY=true`
@@ -160,6 +161,8 @@ when this repo runs as project `unibridge`:
 - `unibridge_prometheus-data`
 - `unibridge_prometheus-file-sd`
 - `unibridge_llm-converter-state`
+- `unibridge_bifrost-test-data`
+- `unibridge_llm-converter-bi-state`
 
 If the old deployment used a different `COMPOSE_PROJECT_NAME`, set these in
 `.env` before running the split stack:
@@ -174,6 +177,8 @@ LITELLM_DATASET_VOLUME=<old-project>_litellm-dataset
 PROMETHEUS_DATA_VOLUME=<old-project>_prometheus-data
 PROMETHEUS_FILE_SD_VOLUME=<old-project>_prometheus-file-sd
 LLM_CONVERTER_STATE_VOLUME=<old-project>_llm-converter-state
+BIFROST_TEST_DATA_VOLUME=<old-project>_bifrost-test-data
+LLM_CONVERTER_BI_STATE_VOLUME=<old-project>_llm-converter-bi-state
 ```
 
 The deploy script creates the shared app-data and converter-state volumes if

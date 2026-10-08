@@ -1,6 +1,7 @@
 interface Window {
   __RUNTIME_CONFIG__?: {
     LITELLM_ADMIN_URL?: string;
+    BIFROST_ADMIN_URL?: string;
     GRAFANA_URL?: string;
     KEYCLOAK_URL?: string;
     KEYCLOAK_REALM?: string;

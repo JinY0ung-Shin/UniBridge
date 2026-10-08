@@ -36,6 +36,14 @@ type ModelSortColumn = 'model' | 'input_tokens' | 'output_tokens' | 'cached_toke
 type KeySortColumn = 'api_key' | 'input_tokens' | 'output_tokens' | 'cached_tokens' | 'tokens' | 'requests' | 'cost';
 
 const LITELLM_ADMIN_URL = window.__RUNTIME_CONFIG__?.LITELLM_ADMIN_URL || import.meta.env.VITE_LITELLM_ADMIN_URL || 'https://localhost:4000/ui';
+const BIFROST_ADMIN_URL = window.__RUNTIME_CONFIG__?.BIFROST_ADMIN_URL || import.meta.env.VITE_BIFROST_ADMIN_URL || 'https://localhost:18443';
+
+const externalLinkIcon = (
+  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ marginLeft: 4 }} aria-hidden="true">
+    <path d="M3.5 1.5H10.5V8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M10.5 1.5L1.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+  </svg>
+);
 
 function formatCost(value: number): string {
   return `$${value.toFixed(2)}`;
@@ -218,23 +226,36 @@ function LlmMonitoring() {
             }}
           />
           {appRole === 'admin' && (
-            // LiteLLM's admin UI signs in via UniBridge SSO restricted to
-            // admins (ui_access_mode admin_only), so mirror GrafanaLink and
-            // don't render a link that dead-ends at a rejected login.
-            <a
-              href={LITELLM_ADMIN_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="admin-link-btn"
-              title={t('llmMonitoring.adminSsoHint')}
-              aria-label={`${t('llmMonitoring.adminDashboard')} ${t('common.opensInNewTab')}`}
-            >
-              {t('llmMonitoring.adminDashboard')}
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ marginLeft: 4 }}>
-                <path d="M3.5 1.5H10.5V8.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M10.5 1.5L1.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-            </a>
+            <>
+              {/* LiteLLM's admin UI signs in via UniBridge SSO restricted to
+                  admins (ui_access_mode admin_only), so mirror GrafanaLink and
+                  don't render a link that dead-ends at a rejected login. */}
+              <a
+                href={LITELLM_ADMIN_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="admin-link-btn"
+                title={t('llmMonitoring.adminSsoHint')}
+                aria-label={`${t('llmMonitoring.adminDashboard')} ${t('common.opensInNewTab')}`}
+              >
+                {t('llmMonitoring.adminDashboard')}
+                {externalLinkIcon}
+              </a>
+              {/* Bifrost (the /api/llm-bi side-by-side gateway) has no SSO,
+                  only its own single admin login, which is gateway-admin
+                  level — so the link is admin-only as well. */}
+              <a
+                href={BIFROST_ADMIN_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="admin-link-btn"
+                title={t('llmMonitoring.bifrostAdminHint')}
+                aria-label={`${t('llmMonitoring.bifrostAdmin')} ${t('common.opensInNewTab')}`}
+              >
+                {t('llmMonitoring.bifrostAdmin')}
+                {externalLinkIcon}
+              </a>
+            </>
           )}
           {canReadApiKeys && (
             <label className="api-key-filter">

@@ -6,6 +6,8 @@ set -eu
 
 # Generate runtime config from environment variables
 LITELLM_ADMIN_URL="https://${HOST_IP:-localhost}:${LITELLM_PORT:-4000}/ui"
+# Bifrost has no TLS of its own; the bifrost-tls nginx publishes its UI.
+BIFROST_ADMIN_URL="https://${HOST_IP:-localhost}:${BIFROST_UI_PORT:-18443}"
 # Same-origin path proxied by this nginx (see nginx.conf /grafana/); override
 # with GRAFANA_EXTERNAL_URL when Grafana lives behind a different endpoint.
 GRAFANA_URL="${GRAFANA_EXTERNAL_URL:-/grafana}"
@@ -27,6 +29,7 @@ sed_escape() {
 cat > /usr/share/nginx/html/runtime-config.js <<EOF
 window.__RUNTIME_CONFIG__ = {
   LITELLM_ADMIN_URL: "$(json_escape "$LITELLM_ADMIN_URL")",
+  BIFROST_ADMIN_URL: "$(json_escape "$BIFROST_ADMIN_URL")",
   GRAFANA_URL: "$(json_escape "$GRAFANA_URL")",
   KEYCLOAK_URL: "$(json_escape "$KEYCLOAK_URL")",
   KEYCLOAK_REALM: "$(json_escape "$KEYCLOAK_REALM_VALUE")",

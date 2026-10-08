@@ -41,6 +41,9 @@ COMPOSE_SERVICE_LIMITS = {
     "litellm": {"memory": "2g", "cpus": "1.00"},
     "unibridge-ui": {"memory": "128m", "cpus": "0.25"},
     "blackbox-exporter": {"memory": "128m", "cpus": "0.25"},
+    "bifrost": {"memory": "1g", "cpus": "1.00"},
+    "bifrost-tls": {"memory": "128m", "cpus": "0.25"},
+    "llm-converter-bi": {"memory": "512m", "cpus": "0.50"},
 }
 
 DEFAULT_LOGGING = {
@@ -73,6 +76,9 @@ REQUIRED_COMPOSE_SECRET_INTERPOLATIONS = {
     "APISIX_INTERNAL_PROXY_SECRET=${APISIX_INTERNAL_PROXY_SECRET:?APISIX_INTERNAL_PROXY_SECRET"
     " is required — generate one with python3 -c 'import secrets;"
     " print(secrets.token_urlsafe(32))'}": 1,
+    "BIFROST_ENCRYPTION_KEY=${BIFROST_ENCRYPTION_KEY:?BIFROST_ENCRYPTION_KEY is required}": 1,
+    "BIFROST_ADMIN_PASSWORD=${BIFROST_ADMIN_PASSWORD:?BIFROST_ADMIN_PASSWORD is required}": 1,
+    "BIFROST_TEST_VK=${BIFROST_TEST_VK:?BIFROST_TEST_VK is required}": 1,
 }
 
 REQUIRED_BLANK_ENV_SECRETS = {
@@ -1085,8 +1091,7 @@ def test_ui_entrypoint_fails_loudly_on_bad_template() -> None:
     assert "nginx -t" in entrypoint
 
 
-BIFROST_TEST_PROFILE = "bifrost-test"
-BIFROST_TEST_SERVICES = {"bifrost", "llm-converter-bi"}
+BIFROST_SERVICES = {"bifrost", "bifrost-tls", "llm-converter-bi"}
 BIFROST_TEST_ROUTE_IDS = {"llm-bi-proxy", "llm-bi-messages", "llm-bi-responses", "llm-bi-models"}
 BIFROST_TEST_SECRETS = ("BIFROST_ENCRYPTION_KEY", "BIFROST_ADMIN_PASSWORD", "BIFROST_TEST_VK")
 # The exact gateway surface: Bifrost answers any other extension-less path with
@@ -1101,36 +1106,35 @@ BIFROST_TEST_EXPOSED_PATHS = {
 }
 
 
-def test_bifrost_test_services_are_opt_in_and_identical_in_both_layouts() -> None:
+def test_bifrost_services_run_by_default_and_are_identical_in_both_layouts() -> None:
     single = _load_yaml(COMPOSE_FILE)
     infra = _load_yaml(BLUEGREEN_INFRA_COMPOSE_FILE)
 
     for compose in (single, infra):
         services = compose["services"]
-        # A profile hides a service from `config --services`, which the
-        # blue/green infra health gate iterates: exactly what keeps a stopped
-        # Bifrost from blocking deploys, and a silent hole for anything else.
-        assert {
-            name for name, service in services.items() if service.get("profiles")
-        } == BIFROST_TEST_SERVICES
-        for name in BIFROST_TEST_SERVICES:
-            service = services[name]
-            assert service["profiles"] == [BIFROST_TEST_PROFILE], name
-            for port in service.get("ports", []):
-                assert str(port).startswith("127.0.0.1:"), (name, port)
-            # `${VAR:?}` would fail interpolation of the whole file for every
-            # deploy, opted in or not; bifrost/entrypoint.sh fails closed instead.
-            for entry in service.get("environment", []):
-                assert ":?" not in entry, (name, entry)
+        assert BIFROST_SERVICES <= set(services)
+        # Bifrost runs next to LiteLLM, so nothing may hide behind a profile: a
+        # profiled service is skipped by a plain `up` and by `config --services`,
+        # which the blue/green infra health gate iterates.
+        assert not [name for name, service in services.items() if service.get("profiles")]
+        # Only the TLS front is published beyond loopback. Bifrost's own
+        # plain-HTTP port stays on 127.0.0.1, and the converter has none.
+        assert services["bifrost"]["ports"] == [
+            "127.0.0.1:${BIFROST_TEST_ADMIN_PORT:-18080}:8080"
+        ]
+        assert "ports" not in services["llm-converter-bi"]
+        assert services["bifrost-tls"]["ports"] == ["${BIFROST_UI_PORT:-18443}:443"]
 
     # The split layout is what production runs; it must not drift from the
     # single-stack definition.
-    for name in BIFROST_TEST_SERVICES:
+    for name in BIFROST_SERVICES:
         assert single["services"][name] == infra["services"][name], name
 
+    # Required like the other runtime secrets: compose fails fast when one is
+    # missing (bifrost/entrypoint.sh still checks the format).
     bifrost_env = _service_environment(infra, "bifrost")
     for secret in BIFROST_TEST_SECRETS:
-        assert bifrost_env[secret] == f"${{{secret}:-}}", secret
+        assert bifrost_env[secret] == f"${{{secret}:?{secret} is required}}", secret
 
     assert infra["volumes"]["bifrost-test-data"]["name"] == (
         "${BIFROST_TEST_DATA_VOLUME:-unibridge_bifrost-test-data}"
@@ -1142,6 +1146,85 @@ def test_bifrost_test_services_are_opt_in_and_identical_in_both_layouts() -> Non
     # Its own response store: an id minted on one path must not resolve on the other.
     assert "llm-converter-bi-state:/var/lib/llm-converter" in converter_bi["volumes"]
     assert _service_environment(infra, "llm-converter-bi")["LITELLM_URL"] == "http://bifrost:8080"
+
+
+def _nginx_location_for(path: str, locations: list[tuple[str, str]]) -> str:
+    """Pick the location nginx would use for ``path`` (exact, ^~, regex, prefix)."""
+    exact = [spec for spec in (s for s, _ in locations) if spec == f"= {path}"]
+    if exact:
+        return exact[0]
+    prefixes = [
+        (spec, spec.split(None, 1)[1] if spec.startswith("^~ ") else spec)
+        for spec, _ in locations
+        if not spec.startswith(("=", "~"))
+    ]
+    matching = [(spec, prefix) for spec, prefix in prefixes if path.startswith(prefix)]
+    longest = max(matching, key=lambda item: len(item[1]), default=None)
+    if longest and longest[0].startswith("^~ "):
+        return longest[0]
+    for spec, _ in locations:
+        if spec.startswith("~ ") and re.search(spec[2:], path):
+            return spec
+    assert longest, path
+    return longest[0]
+
+
+def test_bifrost_tls_proxy_forwards_only_the_ui_and_management_api() -> None:
+    service = _load_yaml(COMPOSE_FILE)["services"]["bifrost-tls"]
+    assert "./bifrost/tls-proxy.conf:/etc/nginx/conf.d/default.conf:ro" in service["volumes"]
+
+    conf = (BIFROST_DIR / "tls-proxy.conf").read_text(encoding="utf-8")
+    locations = [
+        (spec.strip(), body)
+        for spec, body in re.findall(r"^\s*location\s+([^{]+?)\s*\{(.*?)^\s*\}", conf, re.S | re.M)
+    ]
+    proxied = {spec for spec, body in locations if "proxy_pass" in body}
+
+    # What the Bifrost UI itself loads: pages, static files, the management API
+    # (Bifrost's admin login guards it) and the live-update socket.
+    for path in (
+        "/",
+        "/login",
+        "/workspace",
+        "/workspace/logs",
+        "/oauth/callback",
+        "/assets/index-abc123.js",
+        "/static/fonts/Geist-Variable.woff2",
+        "/images/mcp.svg",
+        "/favicon.ico",
+        "/bifrost-logo-dark.webp",
+        "/api/session/login",
+        "/api/providers",
+        "/ws",
+    ):
+        assert _nginx_location_for(path, locations) in proxied, path
+
+    # Inference, MCP and the unauthenticated /metrics stay off this port: model
+    # traffic enters through the gateway's /api/llm-bi routes only.
+    blocked = {spec for spec, body in locations if "return 404" in body}
+    for path in (
+        *(uri.removeprefix("/api/llm-bi") for uri in BIFROST_TEST_EXPOSED_PATHS),
+        "/v1/mcp/tool/execute",
+        "/openai/v1/chat/completions",
+        "/anthropic/v1/messages",
+        "/genai/v1beta/models",
+        "/mcp",
+        "/metrics",
+        "/health",
+        "/workspacex",
+    ):
+        assert _nginx_location_for(path, locations) in blocked, path
+
+
+def test_ui_bifrost_link_targets_the_published_tls_port() -> None:
+    # The LLM Monitoring page's Bifrost button is https://HOST_IP:BIFROST_UI_PORT;
+    # a default that differs from bifrost-tls's published port is a dead link.
+    for path in (COMPOSE_FILE, BLUEGREEN_APP_COMPOSE_FILE):
+        env = _service_environment(_load_yaml(path), "unibridge-ui")
+        assert env["BIFROST_UI_PORT"] == "${BIFROST_UI_PORT:-18443}", path.name
+    entrypoint = UI_ENTRYPOINT_FILE.read_text(encoding="utf-8")
+    assert 'BIFROST_ADMIN_URL="https://${HOST_IP:-localhost}:${BIFROST_UI_PORT:-18443}"' in entrypoint
+    assert 'BIFROST_ADMIN_URL: "$(json_escape "$BIFROST_ADMIN_URL")"' in entrypoint
 
 
 def test_bifrost_test_secrets_are_listed_blank_in_env_example() -> None:

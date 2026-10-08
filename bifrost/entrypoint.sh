@@ -1,13 +1,13 @@
 #!/bin/sh
-# Fail-closed wrapper around the Bifrost image entrypoint (bifrost-test profile).
+# Fail-closed wrapper around the Bifrost image entrypoint.
 #
 # config.json reads the encryption key, the admin login and the gateway virtual
-# key from the environment. Compose cannot require them with ${VAR:?} — that
-# would break interpolation of the whole file for every deploy, opted in or not
-# — and Bifrost boots without them anyway, just broken: no encryption key
-# stores provider keys unencrypted, an empty admin login leaves the UI and
-# management API locked behind an unusable password, and an empty virtual key
-# means every gateway request is refused. Refuse to start instead.
+# key from the environment. Compose requires them (${VAR:?}), but a container
+# started some other way would boot without them anyway, just broken: no
+# encryption key stores provider keys unencrypted, an empty admin login leaves
+# the UI and management API locked behind an unusable password, and an empty
+# virtual key means every gateway request is refused. So check them here too,
+# along with their format, and refuse to start instead.
 set -eu
 
 missing=""

@@ -239,6 +239,9 @@ services:
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-apihub}
       - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
       - LITELLM_PORT=${LITELLM_PORT:-4000}
+      # Must match the bifrost-tls published port: the LLM Monitoring page's
+      # Bifrost button links to https://HOST_IP:BIFROST_UI_PORT.
+      - BIFROST_UI_PORT=${BIFROST_UI_PORT:-18443}
       - GRAFANA_EXTERNAL_URL=${GRAFANA_EXTERNAL_URL:-}
       - GRAFANA_UPSTREAM=${GRAFANA_UPSTREAM:-grafana}
       - UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service-${APP_COLOR}}
