@@ -62,6 +62,19 @@ requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
   (`query-api`, `llm-proxy`, `s3-api`, `llm-messages`, `llm-responses`, `nas-api`,
   `usages-api`, `prometheus-api`, `llm-metrics`, `llm-models`) via
   `main.py::_preserve_consumer_restriction` — don't clobber it.
+- **Per-node path prefixes run on a custom APISIX plugin**
+  (`apisix/plugins/unibridge-node-path-prefix.lua`, prefix in a node's `metadata.path_prefix`):
+  listed in `apisix/config.yaml`, mounted by both compose files that run APISIX, switched on
+  by a global rule the service reconciles at boot and before saving a prefixed upstream.
+  A changed mount or plugin file needs a new APISIX container (a single-file bind mount
+  keeps the old file) and normal deploys leave infra alone:
+  `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --force-recreate apisix`.
+  nginx fixes the path before the first attempt, so a retry onto a node with another prefix
+  ends in 502; upstreams that mix prefixes are therefore saved with TCP health checks with
+  explicit intervals (`node_path_prefix.MIXED_PREFIX_CHECKS`), plus `retries: 0` when no two
+  nodes share a prefix. Deleting the global rule is no off switch (the service puts it
+  back); drop the plugin from `config.yaml` instead. It reads APISIX internals: run
+  `scripts/test-apisix-node-path-prefix.sh` after changing it or upgrading APISIX.
 - **Request routing**: UI nginx → `/_api/*` = unibridge-service, `/api/*` = APISIX gateway.
 - **LiteLLM admin UI = Keycloak SSO, admins only** (`ui_access_mode: admin_only` +
   realm `admin` → `litellm:proxy_admin` composite). `GENERIC_CLIENT_USE_PKCE=true` is

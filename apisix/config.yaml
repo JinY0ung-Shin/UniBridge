@@ -37,3 +37,6 @@ plugins:
   - limit-count
   - proxy-rewrite
   - prometheus
+  # Custom: a base path per upstream node (apisix/plugins/, bind-mounted by both
+  # compose layouts). unibridge-service turns it on through a global rule.
+  - unibridge-node-path-prefix

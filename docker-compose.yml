@@ -101,6 +101,8 @@ services:
     volumes:
       - ./apisix/config.yaml:/opt/apisix-config/config.yaml:ro
       - ./apisix/docker-entrypoint.sh:/opt/apisix-config/docker-entrypoint.sh:ro
+      # Custom plugin listed in config.yaml; APISIX loads plugins from here.
+      - ./apisix/plugins/unibridge-node-path-prefix.lua:/usr/local/apisix/apisix/plugins/unibridge-node-path-prefix.lua:ro
     depends_on:
       etcd:
         condition: service_healthy

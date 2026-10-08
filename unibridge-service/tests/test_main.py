@@ -397,13 +397,15 @@ async def test_lifespan_can_skip_apisix_route_provisioning():
             pass
 
     # Route/upstream provisioning is skipped entirely when the flag is false —
-    # but the prometheus global rule is still reconciled on every boot (it is
-    # the only place prefer_name lives; see main.py), so exactly that one PUT
-    # goes out and it must pin prefer_name. The internal-proxy header reconcile
-    # also runs on every boot but has no secret configured here, so it touches
-    # nothing; test_internal_proxy_secret.py covers it with one set.
+    # but the global rules are still reconciled on every boot: prometheus (the
+    # only place prefer_name lives; see main.py), which must pin prefer_name,
+    # then the per-node path-prefix rule. Exactly those two PUTs go out. The
+    # internal-proxy header reconcile also runs on every boot but has no secret
+    # configured here, so it touches nothing; test_internal_proxy_secret.py
+    # covers it with one set.
     assert [call.args[:2] for call in put_resource.await_args_list] == [
-        ("global_rules", "prometheus")
+        ("global_rules", "prometheus"),
+        ("global_rules", "unibridge-node-path-prefix"),
     ]
     assert put_resource.await_args_list[0].args[2] == {
         "plugins": {"prometheus": {"prefer_name": True}}

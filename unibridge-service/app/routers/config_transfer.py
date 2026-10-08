@@ -76,7 +76,7 @@ from app.schemas import (
     S3ConnectionUpdate,
     SystemConfigUpdate,
 )
-from app.services import apisix_client, server_monitor
+from app.services import apisix_client, node_path_prefix, server_monitor
 from app.services.apisix_system_resources import (
     PROTECTED_ROUTE_IDS,
     PROTECTED_UPSTREAM_IDS,
@@ -698,18 +698,45 @@ def _prepare_route_body(
     return dropped
 
 
+# Same per-node path-prefix rules as save_upstream, for every upstream an import
+# writes (upstream items and inline route upstreams): an import goes straight to
+# APISIX, so it must not store a prefix the gateway would mishandle or ignore.
+def _check_node_path_prefixes(upstream: Any) -> None:
+    if not isinstance(upstream, dict):
+        return
+    try:
+        node_path_prefix.validate_upstream_node_prefixes(upstream)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+async def _enable_node_path_prefixes(upstream: Any) -> None:
+    if not isinstance(upstream, dict):
+        return
+    node_path_prefix.apply_mixed_prefix_defaults(upstream)
+    if not node_path_prefix.uses_node_path_prefixes(upstream):
+        return
+    try:
+        await node_path_prefix.ensure_global_rule()
+    except Exception as exc:
+        raise node_path_prefix.rule_failure_http_error(exc, retry="import again")
+
+
 async def _apply_upstream(
     ctx: _ImportContext, upstream_id: str, item: dict[str, Any]
 ) -> tuple[str, str | None]:
     if upstream_id in PROTECTED_UPSTREAM_IDS:
         return "skip", "builtin upstream (auto-provisioned)"
 
+    body = _apisix_body(item)
+    _check_node_path_prefixes(body)
+
     existing = await _get_apisix_resource("upstreams", upstream_id)
     action = "update" if existing else "create"
     if ctx.dry_run:
         return action, None
 
-    body = _apisix_body(item)
+    await _enable_node_path_prefixes(body)
     result = await apisix_client.put_resource("upstreams", upstream_id, body)
     await ctx.audit(
         action=action,
@@ -765,6 +792,9 @@ async def _apply_route(
     existing = await _get_apisix_resource("routes", route_id)
     action = "update" if existing else "create"
     body = _apisix_body(item)
+    # save_route refuses inline upstreams; an import still takes them, so it
+    # applies the upstream rules to them.
+    _check_node_path_prefixes(body.get("upstream"))
     dropped = _prepare_route_body(body, existing)
     reason = (
         "service key header value(s) not in export — re-enter in Gateway: "
@@ -775,6 +805,7 @@ async def _apply_route(
     if ctx.dry_run:
         return action, reason
 
+    await _enable_node_path_prefixes(body.get("upstream"))
     result = await apisix_client.put_resource("routes", route_id, body)
     # Like save_route: monitoring maps route labels to names/ids from a cached
     # listing, which would otherwise lag this write by up to its TTL.

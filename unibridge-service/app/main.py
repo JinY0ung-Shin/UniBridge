@@ -326,6 +326,51 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
                 raise
 
+    # Per-node path prefixes (app/services/node_path_prefix.py) act only through
+    # the plugin's global rule, so reconcile it on every boot as well. Best
+    # effort, unlike the rule above: an APISIX that predates the plugin answers
+    # "unknown plugin", and that must not keep the service down — a save that
+    # sets a prefix reports it to the admin instead.
+    from app.services import node_path_prefix
+
+    try:
+        await node_path_prefix.ensure_global_rule()
+        logger.info("Node path-prefix global rule reconciled")
+    except Exception as exc:
+        reason = node_path_prefix.describe_apisix_error(exc)
+        affected = (
+            await node_path_prefix.prefixed_resource_ids()
+            if node_path_prefix.is_unknown_plugin_error(exc)
+            else []
+        )
+        if affected:
+            # APISIX ignores what it cannot run, so these nodes are being sent
+            # requests without their base path right now.
+            logger.error(
+                "APISIX does not load the %s plugin (%s), yet %s set per-node path "
+                "prefixes: their prefixed nodes now get requests WITHOUT the prefix. "
+                "%s.",
+                node_path_prefix.PLUGIN_NAME,
+                reason,
+                ", ".join(affected),
+                node_path_prefix.RECREATE_APISIX_ADVICE,
+            )
+        elif node_path_prefix.is_unknown_plugin_error(exc):
+            logger.warning(
+                "Could not install the %s global rule (%s); per-node path prefixes "
+                "stay unavailable until APISIX loads the plugin. %s.",
+                node_path_prefix.PLUGIN_NAME,
+                reason,
+                node_path_prefix.RECREATE_APISIX_ADVICE,
+            )
+        else:
+            logger.warning(
+                "Could not install the %s global rule (%s); it is tried again on "
+                "the next boot and before any save of an upstream with a path prefix.",
+                node_path_prefix.PLUGIN_NAME,
+                reason,
+            )
+
     if getattr(settings, "APISIX_PROVISION_ON_START", True):
         logger.info("Provisioning APISIX query route...")
 

@@ -27,6 +27,7 @@ from app.database import get_db
 from app.models import ApiKeyAccess, QueryTemplate
 from app.routers.api_keys import apply_master_consumer_restriction, list_master_consumer_names
 from app.services import apisix_client
+from app.services import node_path_prefix
 from app.services import openapi_export
 from app.services.apisix_client import upstream_node_addresses
 from app.services import prometheus_client
@@ -1079,6 +1080,24 @@ async def save_upstream(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="System-managed upstream cannot be modified",
         )
+    try:
+        node_path_prefix.validate_upstream_node_prefixes(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    node_path_prefix.apply_mixed_prefix_defaults(body)
+    if node_path_prefix.uses_node_path_prefixes(body):
+        # A prefix only takes effect through the plugin's global rule. Install
+        # it before the upstream, so an APISIX without the plugin fails this
+        # save instead of storing a prefix that would be silently ignored.
+        try:
+            await node_path_prefix.ensure_global_rule()
+        except Exception as exc:
+            logger.warning(
+                "Node path-prefix global rule PUT failed for upstream %s: %s",
+                upstream_id,
+                node_path_prefix.describe_apisix_error(exc),
+            )
+            raise node_path_prefix.rule_failure_http_error(exc)
     existing_upstream: dict[str, Any] | None = None
     try:
         existing_upstream = await apisix_client.get_resource("upstreams", upstream_id)
