@@ -36,6 +36,12 @@
   color: var(--text-secondary);
 }
 
+/* Wider than the shared modal so the host field keeps room next to the path
+   prefix column; .modal's max-width still caps it on small screens. */
+.modal.modal--upstream {
+  width: 640px;
+}
+
 .nodes-list {
   display: flex;
   flex-direction: column;
@@ -68,6 +74,18 @@
   color: var(--text-tertiary);
 }
 
+/* After the focus rule so an invalid field stays red while it is being fixed. */
+.node-row input[aria-invalid='true'] {
+  border-color: var(--accent-red);
+}
+
+.node-error {
+  margin-top: -4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--accent-red);
+}
+
 .node-row--header {
   gap: 8px;
   padding: 0;
@@ -82,10 +100,15 @@
 }
 
 .node-host { flex: 1 1 0; min-width: 0; }
-.node-port { flex: 0 0 80px; min-width: 0; width: 80px; }
-.node-weight { flex: 0 0 80px; min-width: 0; width: 80px; }
+.node-port { flex: 0 0 76px; min-width: 0; width: 76px; }
+.node-prefix { flex: 0 0 110px; min-width: 0; width: 110px; }
+.node-weight { flex: 0 0 64px; min-width: 0; width: 64px; }
+
+/* Keeps the header labels over their columns while rows show a remove button. */
+.node-remove-spacer { flex: 0 0 26px; }
 
 .node-remove {
+  flex: 0 0 26px;
   background: none;
   border: none;
   color: var(--accent-red);
@@ -113,5 +136,22 @@
 @media (max-width: 720px) {
   .upstream-search-input {
     width: 100%;
+  }
+
+  /* Host takes its own line; port, prefix and weight share the next. The header
+     row wraps the same way, so each label lines up horizontally with its field. */
+  .node-row {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .node-host { flex-basis: 100%; }
+  .node-prefix { flex: 1 1 0; width: auto; }
+
+  /* Each node now spans two lines, so space the nodes further apart than the
+     lines inside one; a row's error stays tight under it. */
+  .node-row:not(.node-row--header) + .node-row,
+  .node-error + .node-row {
+    margin-top: 10px;
   }
 }

@@ -493,6 +493,16 @@ export interface GatewayRoute {
   system?: boolean;
 }
 
+// APISIX's list form of an upstream node. Only this form carries metadata, which is
+// where a node's path prefix lives (`metadata.path_prefix`).
+export interface GatewayUpstreamNode {
+  host: string;
+  port?: number;
+  weight: number;
+  priority?: number;
+  metadata?: Record<string, unknown>;
+}
+
 export interface GatewayUpstream {
   id: string;
   name?: string;
@@ -500,7 +510,8 @@ export interface GatewayUpstream {
   pass_host?: 'pass' | 'node' | 'rewrite';
   upstream_host?: string;
   type: string;
-  nodes: Record<string, number>;
+  // APISIX keeps whichever form was written: {"host:port": weight} or a node list.
+  nodes: Record<string, number> | GatewayUpstreamNode[];
   system?: boolean;
 }
 

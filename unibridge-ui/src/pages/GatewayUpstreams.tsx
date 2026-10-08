@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -6,6 +6,7 @@ import {
   saveGatewayUpstream,
   deleteGatewayUpstream,
   type GatewayUpstream,
+  type GatewayUpstreamNode,
 } from '../api/client';
 import { useCanWrite } from '../components/useCanWrite';
 import { useResourceMutation } from '../components/useResourceMutation';
@@ -15,11 +16,27 @@ import './GatewayUpstreams.css';
 
 const UPSTREAMS_KEY = ['gateway-upstreams'];
 
+// The gateway's node path prefix plugin reads a node's prefix from this metadata key.
+const PATH_PREFIX_KEY = 'path_prefix';
+// Same rule the backend enforces: one or more "/segment" parts of URL path
+// characters or %XX escapes, plus no "." or ".." segment (escaped or not) and
+// at most 256 characters.
+const PATH_PREFIX_PATTERN = /^(?:\/(?:[A-Za-z0-9\-._~!$&'()*+,;=:@]|%[0-9A-Fa-f]{2})+)+$/;
+const PATH_PREFIX_MAX_LENGTH = 256;
+const PATH_PREFIX_HINT_ID = 'gateway-upstream-path-prefix-hint';
+
 interface NodeEntry {
   host: string;
   port: string;
   weight: string;
+  pathPrefix: string;
+  // Carried over from a loaded list-form node. The form does not edit these, so a
+  // save sends them back unchanged.
+  priority?: number;
+  extraMetadata?: Record<string, unknown>;
 }
+
+type EditableNodeField = 'host' | 'port' | 'weight' | 'pathPrefix';
 
 type UpstreamScheme = 'http' | 'https';
 type PassHostMode = 'pass' | 'node' | 'rewrite';
@@ -33,7 +50,7 @@ function defaultPortForScheme(scheme: UpstreamScheme): string {
 }
 
 function emptyNodeForScheme(scheme: UpstreamScheme): NodeEntry {
-  return { host: '', port: defaultPortForScheme(scheme), weight: '1' };
+  return { host: '', port: defaultPortForScheme(scheme), weight: '1', pathPrefix: '' };
 }
 
 function normalizeScheme(value: unknown): UpstreamScheme {
@@ -44,21 +61,133 @@ function normalizePassHost(value: unknown, fallback: PassHostMode): PassHostMode
   return value === 'pass' || value === 'node' || value === 'rewrite' ? value : fallback;
 }
 
-function nodesToEntries(nodes: Record<string, number>, scheme: UpstreamScheme): NodeEntry[] {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// Dict-form addresses are host:port, with an IPv6 host in brackets ("[::1]:8080").
+// A bare IPv6 literal has more than one colon and no port to split off.
+function splitAddress(addr: string): { host: string; port: string } {
+  if (addr.startsWith('[')) {
+    const close = addr.indexOf(']');
+    if (close === -1) return { host: addr, port: '' };
+    const rest = addr.slice(close + 1);
+    return { host: addr.slice(0, close + 1), port: rest.startsWith(':') ? rest.slice(1) : '' };
+  }
+  const colon = addr.lastIndexOf(':');
+  if (colon === -1 || addr.indexOf(':') !== colon) return { host: addr, port: '' };
+  return { host: addr.slice(0, colon), port: addr.slice(colon + 1) };
+}
+
+// APISIX only takes an IPv6 host in brackets, in both node forms.
+function bracketHost(host: string): string {
+  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+}
+
+function formatAddress(host: string, port: string | number | undefined): string {
+  const bracketed = bracketHost(host);
+  return port === undefined || port === '' ? bracketed : `${bracketed}:${port}`;
+}
+
+// Weight 0 is valid (APISIX sends that node no traffic). Only a blank or
+// unparsable value falls back to the default of 1.
+function parseWeight(value: string): number {
+  const weight = Number(value);
+  return value.trim() === '' || Number.isNaN(weight) ? 1 : weight;
+}
+
+function normalizePathPrefix(value: string): string {
+  return value.trim().replace(/\/+$/, '');
+}
+
+function isValidPathPrefix(prefix: string): boolean {
+  if (prefix === '') return true;
+  return (
+    prefix.length <= PATH_PREFIX_MAX_LENGTH
+    && PATH_PREFIX_PATTERN.test(prefix)
+    && !prefix.split('/').some((segment) => {
+      // "%2e" counts as a dot: a backend that decodes it would see "." or "..".
+      const decoded = segment.replace(/%2e/gi, '.');
+      return decoded === '.' || decoded === '..';
+    })
+  );
+}
+
+function nodePathPrefix(node: GatewayUpstreamNode): string {
+  const prefix = isRecord(node.metadata) ? node.metadata[PATH_PREFIX_KEY] : undefined;
+  if (prefix === undefined || prefix === null) return '';
+  // Any other type is shown as JSON, which never passes validation, so the admin
+  // sees it flagged instead of a save quietly turning it into something else.
+  return typeof prefix === 'string' ? prefix : JSON.stringify(prefix);
+}
+
+function nodesToEntries(nodes: GatewayUpstream['nodes'], scheme: UpstreamScheme): NodeEntry[] {
+  if (Array.isArray(nodes)) {
+    return nodes.map((node) => {
+      const extraMetadata = isRecord(node.metadata) ? { ...node.metadata } : {};
+      delete extraMetadata[PATH_PREFIX_KEY];
+      return {
+        host: String(node.host ?? ''),
+        port: node.port == null ? defaultPortForScheme(scheme) : String(node.port),
+        weight: String(node.weight ?? 1),
+        pathPrefix: nodePathPrefix(node),
+        priority: typeof node.priority === 'number' ? node.priority : undefined,
+        extraMetadata: Object.keys(extraMetadata).length > 0 ? extraMetadata : undefined,
+      };
+    });
+  }
   return Object.entries(nodes).map(([addr, weight]) => {
-    const [host, port] = addr.split(':');
-    return { host, port: port || defaultPortForScheme(scheme), weight: String(weight) };
+    const { host, port } = splitAddress(addr);
+    return { host, port: port || defaultPortForScheme(scheme), weight: String(weight), pathPrefix: '' };
   });
 }
 
-function entriesToNodes(entries: NodeEntry[], scheme: UpstreamScheme): Record<string, number> {
-  const nodes: Record<string, number> = {};
-  for (const e of entries) {
-    if (e.host.trim()) {
-      nodes[`${e.host.trim()}:${e.port || defaultPortForScheme(scheme)}`] = Number(e.weight) || 1;
+// Only the list form can carry a prefix, a priority or other metadata. Without
+// any of them the dict form is written, as before path prefixes existed.
+function needsListForm(entry: NodeEntry): boolean {
+  return (
+    normalizePathPrefix(entry.pathPrefix) !== ''
+    || entry.priority !== undefined
+    || entry.extraMetadata !== undefined
+  );
+}
+
+function entriesToNodes(entries: NodeEntry[], scheme: UpstreamScheme): GatewayUpstream['nodes'] {
+  const filled = entries.filter((e) => e.host.trim());
+  if (!filled.some(needsListForm)) {
+    const nodes: Record<string, number> = {};
+    for (const e of filled) {
+      nodes[formatAddress(e.host.trim(), e.port || defaultPortForScheme(scheme))] = parseWeight(e.weight);
     }
+    return nodes;
   }
-  return nodes;
+  return filled.map((e) => {
+    const node: GatewayUpstreamNode = {
+      host: bracketHost(e.host.trim()),
+      port: Number(e.port || defaultPortForScheme(scheme)),
+      weight: parseWeight(e.weight),
+    };
+    if (e.priority !== undefined) node.priority = e.priority;
+    const prefix = normalizePathPrefix(e.pathPrefix);
+    const metadata = prefix ? { ...e.extraMetadata, [PATH_PREFIX_KEY]: prefix } : e.extraMetadata;
+    if (metadata) node.metadata = metadata;
+    return node;
+  });
+}
+
+function formatNodes(nodes: GatewayUpstream['nodes']): string {
+  if (Array.isArray(nodes)) {
+    return nodes
+      .map((node) => `${formatAddress(String(node.host ?? ''), node.port)}${nodePathPrefix(node)} (w:${node.weight})`)
+      .join(', ');
+  }
+  return Object.entries(nodes)
+    .map(([addr, w]) => `${addr} (w:${w})`)
+    .join(', ');
+}
+
+function pathPrefixInputId(index: number): string {
+  return `gateway-upstream-node-prefix-${index}`;
 }
 
 function GatewayUpstreams() {
@@ -147,6 +276,14 @@ function GatewayUpstreams() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    // Each invalid prefix already shows its error under the row; move focus there.
+    const invalidPrefixIndex = nodes.findIndex(
+      (node) => !isValidPathPrefix(normalizePathPrefix(node.pathPrefix)),
+    );
+    if (invalidPrefixIndex !== -1) {
+      document.getElementById(pathPrefixInputId(invalidPrefixIndex))?.focus();
+      return;
+    }
     const upstreamId = editingId || crypto.randomUUID();
     const body = {
       name: name.trim() || undefined,
@@ -167,7 +304,7 @@ function GatewayUpstreams() {
     }
   }
 
-  function updateNode(index: number, field: keyof NodeEntry, value: string) {
+  function updateNode(index: number, field: EditableNodeField, value: string) {
     setNodes((prev) => prev.map((n, i) => (i === index ? { ...n, [field]: value } : n)));
   }
 
@@ -191,12 +328,6 @@ function GatewayUpstreams() {
 
   function removeNode(index: number) {
     setNodes((prev) => prev.filter((_, i) => i !== index));
-  }
-
-  function formatNodes(nodesObj: Record<string, number>): string {
-    return Object.entries(nodesObj)
-      .map(([addr, w]) => `${addr} (w:${w})`)
-      .join(', ');
   }
 
   return (
@@ -302,6 +433,7 @@ function GatewayUpstreams() {
           title={editingId ? t('gatewayUpstreams.editTitle') : t('gatewayUpstreams.addTitle')}
           onClose={closeModal}
           closeLabel={t('common.close')}
+          className="modal--upstream"
         >
           <form onSubmit={handleSubmit}>
             <div className="form-grid">
@@ -388,6 +520,9 @@ function GatewayUpstreams() {
                 <span id="gateway-upstream-nodes-hint" className="field-hint">
                   {t('gatewayUpstreams.nodesHint')}
                 </span>
+                <span id={PATH_PREFIX_HINT_ID} className="field-hint">
+                  {t('gatewayUpstreams.pathPrefixHint')}
+                </span>
                 <div
                   className="nodes-list"
                   role="group"
@@ -397,49 +532,77 @@ function GatewayUpstreams() {
                   <div className="node-row node-row--header">
                     <span className="node-label node-host">{t('gatewayUpstreams.hostIp')}</span>
                     <span className="node-label node-port">{t('gatewayUpstreams.port')}</span>
+                    <span className="node-label node-prefix">{t('gatewayUpstreams.pathPrefix')}</span>
                     <span className="node-label node-weight">{t('gatewayUpstreams.weight')}</span>
+                    {nodes.length > 1 && <span className="node-remove-spacer" aria-hidden="true" />}
                   </div>
-                  {nodes.map((node, idx) => (
-                    <div key={idx} className="node-row">
-                      <input
-                        className="node-host"
-                        placeholder="e.g. 192.168.1.10 or api.example.com"
-                        value={node.host}
-                        onChange={(e) => updateNode(idx, 'host', e.target.value)}
-                        aria-label={t('gatewayUpstreams.nodeHost', { index: idx + 1 })}
-                        aria-describedby="gateway-upstream-nodes-hint"
-                        required
-                      />
-                      <input
-                        className="node-port"
-                        placeholder="8080"
-                        type="number"
-                        value={node.port}
-                        onChange={(e) => updateNode(idx, 'port', e.target.value)}
-                        aria-label={t('gatewayUpstreams.nodePort', { index: idx + 1 })}
-                        aria-describedby="gateway-upstream-nodes-hint"
-                      />
-                      <input
-                        className="node-weight"
-                        placeholder="1"
-                        type="number"
-                        value={node.weight}
-                        onChange={(e) => updateNode(idx, 'weight', e.target.value)}
-                        aria-label={t('gatewayUpstreams.nodeWeight', { index: idx + 1 })}
-                        aria-describedby="gateway-upstream-nodes-hint"
-                      />
-                      {nodes.length > 1 && (
-                        <button
-                          type="button"
-                          className="node-remove"
-                          aria-label={t('gatewayUpstreams.removeNode', { index: idx + 1 })}
-                          onClick={() => removeNode(idx)}
-                        >
-                          &times;
-                        </button>
-                      )}
-                    </div>
-                  ))}
+                  {nodes.map((node, idx) => {
+                    const prefixInvalid = !isValidPathPrefix(normalizePathPrefix(node.pathPrefix));
+                    const prefixErrorId = `gateway-upstream-node-prefix-error-${idx}`;
+                    return (
+                      <Fragment key={idx}>
+                        <div className="node-row">
+                          <input
+                            className="node-host"
+                            placeholder="e.g. 192.168.1.10 or api.example.com"
+                            value={node.host}
+                            onChange={(e) => updateNode(idx, 'host', e.target.value)}
+                            aria-label={t('gatewayUpstreams.nodeHost', { index: idx + 1 })}
+                            aria-describedby="gateway-upstream-nodes-hint"
+                            required
+                          />
+                          <input
+                            className="node-port"
+                            placeholder="8080"
+                            type="number"
+                            value={node.port}
+                            onChange={(e) => updateNode(idx, 'port', e.target.value)}
+                            aria-label={t('gatewayUpstreams.nodePort', { index: idx + 1 })}
+                            aria-describedby="gateway-upstream-nodes-hint"
+                          />
+                          <input
+                            id={pathPrefixInputId(idx)}
+                            className="node-prefix"
+                            placeholder={t('gatewayUpstreams.pathPrefixPlaceholder')}
+                            value={node.pathPrefix}
+                            onChange={(e) => updateNode(idx, 'pathPrefix', e.target.value)}
+                            aria-label={t('gatewayUpstreams.nodePathPrefix', { index: idx + 1 })}
+                            aria-describedby={
+                              prefixInvalid ? `${prefixErrorId} ${PATH_PREFIX_HINT_ID}` : PATH_PREFIX_HINT_ID
+                            }
+                            aria-invalid={prefixInvalid ? 'true' : undefined}
+                            autoCapitalize="off"
+                            autoCorrect="off"
+                            spellCheck={false}
+                          />
+                          <input
+                            className="node-weight"
+                            placeholder="1"
+                            type="number"
+                            value={node.weight}
+                            onChange={(e) => updateNode(idx, 'weight', e.target.value)}
+                            aria-label={t('gatewayUpstreams.nodeWeight', { index: idx + 1 })}
+                            aria-describedby="gateway-upstream-nodes-hint"
+                          />
+                          {nodes.length > 1 && (
+                            <button
+                              type="button"
+                              className="node-remove"
+                              aria-label={t('gatewayUpstreams.removeNode', { index: idx + 1 })}
+                              onClick={() => removeNode(idx)}
+                            >
+                              &times;
+                            </button>
+                          )}
+                        </div>
+                        {prefixInvalid && (
+                          <div id={prefixErrorId} className="node-error" role="alert">
+                            {t('gatewayUpstreams.pathPrefixInvalid', { index: idx + 1 })}
+                          </div>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                   <button
                     type="button"
                     className="btn btn-sm btn-secondary add-node-btn"
