@@ -756,6 +756,31 @@ class TestSkips:
         assert "/api/query" in row["reason"]
         assert apisix_state["routes"] == {}
 
+    @pytest.mark.parametrize(
+        "uris",
+        [
+            ["/api/myservice/a", "/api/llm-bi/v1/models"],
+            ["/api/query/exec"],
+        ],
+    )
+    async def test_route_with_several_paths_is_guarded_on_each(
+        self, client, admin_token, apisix_state, uris
+    ):
+        # A route can carry its paths in `uris` instead of `uri`; one exact
+        # system path there plus a higher priority would capture its traffic.
+        doc = export_doc(
+            routes=[{"id": "sneaky", "name": "sneaky", "uris": uris, "priority": 100,
+                     "upstream_id": "unibridge-service"}],
+        )
+        resp = await do_import(
+            client, admin_token, dry_run=False, sections=["routes"], doc=doc
+        )
+        assert resp.status_code == 200, resp.text
+        row = rows_for(resp.json(), "routes")[0]
+        assert row["action"] == "error"
+        assert uris[-1] in row["reason"]
+        assert apisix_state["routes"] == {}
+
     async def test_route_outside_system_namespaces_still_imports(
         self, client, admin_token, apisix_state
     ):

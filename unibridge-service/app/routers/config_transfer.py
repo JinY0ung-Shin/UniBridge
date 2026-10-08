@@ -776,8 +776,13 @@ async def _apply_route(
         _shadowed_system_uri,
     )
 
-    uri = item.get("uri")
-    if isinstance(uri, str):
+    # Every path counts: APISIX takes a route's paths from ``uris`` when it has
+    # several, and an exact path there can outrank a system route by priority.
+    raw_uris = item.get("uris")
+    paths = [item.get("uri"), *(raw_uris if isinstance(raw_uris, list) else [])]
+    for uri in paths:
+        if not isinstance(uri, str):
+            continue
         shadowed = _shadowed_system_uri(uri, sorted(_SYSTEM_ROUTE_URIS))
         if shadowed:
             raise HTTPException(
