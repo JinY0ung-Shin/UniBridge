@@ -259,7 +259,7 @@ describe('AdminAuditLogs', () => {
     // Every resource_type the backend passes to log_admin_action must be
     // selectable, or audit rows exist that the filter cannot reach.
     const AUDITED_RESOURCE_TYPES = [
-      'alert_channel', 'alert_mute', 'alert_settings', 'api_key', 'config_import',
+      'alert_channel', 'alert_mute', 'alert_settings', 'api_key', 'bifrost_session', 'config_import',
       'db_connection', 'monitored_host', 'monitored_service', 'nas_connection',
       'permission', 'query_template', 'resource_owner', 'role', 'route',
       's3_connection', 'system_settings', 'upstream', 'user', 'user_role',
@@ -273,6 +273,7 @@ describe('AdminAuditLogs', () => {
     expect(byValue.system_settings).toBe('System settings');
     expect(byValue.monitored_host).toBe('Server');
     expect(byValue.config_import).toBe('Config import');
+    expect(byValue.bifrost_session).toBe('Bifrost sign-in');
     // recipients are audited as resource_owner, so there is no alert_recipient type
     expect(byValue).not.toHaveProperty('alert_recipient');
   });

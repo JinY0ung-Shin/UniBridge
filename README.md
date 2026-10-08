@@ -752,6 +752,27 @@ keeps Bifrost's `token` cookie apart from the LiteLLM admin UI's cookie of the
 same name; on a shared IP the two overwrite each other, so signing in to one
 signs you out of the other.
 
+Under that name the button also signs the admin in, the way the LiteLLM admin UI
+uses UniBridge SSO. Bifrost OSS has no SSO, so unibridge-service signs in for
+the admin ([`app/routers/bifrost_sso.py`](./unibridge-service/app/routers/bifrost_sso.py)):
+a click gets a one-time code (60 s, admins only), the new tab redeems it at
+`https://<name>/_unibridge/sso`, and the service sets Bifrost's own session
+cookie on that host. The service reads `BIFROST_ADMIN_USERNAME` and
+`BIFROST_ADMIN_PASSWORD` for this; without the password the button opens
+Bifrost's login form as before. Every UniBridge admin then works as the one
+Bifrost admin account, and each sign-in is recorded in the admin audit log
+(resource type *Bifrost sign-in*). Bifrost's own login form stays available.
+
+Bifrost keeps a session for 30 days and has no setting to shorten it, which
+would let a session outlive the admin's UniBridge rights by weeks. The service
+therefore records every session it hands out (the token encrypted with
+`ENCRYPTION_KEY`) and logs it out at Bifrost `BIFROST_SSO_SESSION_HOURS` after
+the sign-in (default 8); the browser cookie expires at the same time. The
+active color checks every 5 minutes and retries a session Bifrost still
+accepts. To end every Bifrost session at once, for example after an admin
+leaves, change the Bifrost admin password and set the new value as
+`BIFROST_ADMIN_PASSWORD` for the service too.
+
 1. **Secrets** — set these in `.env`. Compose refuses to start the stack
    without them, and [`bifrost/entrypoint.sh`](./bifrost/entrypoint.sh) checks
    their format:
@@ -911,7 +932,8 @@ Differences and limits to keep in mind while comparing:
   through on `llm-bi-proxy` only (`x-bf-passthrough-extra-params`). On the
   converter routes Bifrost drops the LiteLLM-only `allowed_openai_params`, and
   the converter has already clamped `reasoning_effort`.
-- **Admin access.** Bifrost OSS has a single admin login and no SSO. Treat that
+- **Admin access.** Bifrost OSS has a single admin login and no SSO (UniBridge
+  signs admins in to it under `BIFROST_UI_HOSTNAME`, see above). Treat that
   login as gateway-admin level: switching `enforce_auth_on_inference` off in the
   Bifrost UI sticks across restarts until `config.json` itself changes.
 - **`allowed_requests` is an allowlist.** A provider registered with it serves

@@ -108,6 +108,16 @@ class Settings(BaseSettings):
     # considered, taking the most-full one per host.
     NODE_EXPORTER_DISK_MOUNTPOINTS: str = ""
     LITELLM_MASTER_KEY: str = ""
+    # Bifrost UI sign-in through UniBridge (app/routers/bifrost_sso.py). With
+    # BIFROST_UI_HOSTNAME (the name the UI nginx serves the Bifrost UI on) and
+    # the Bifrost admin password set, admins open that UI already signed in.
+    BIFROST_URL: str = "http://bifrost:8080"
+    BIFROST_UI_HOSTNAME: str = ""
+    BIFROST_ADMIN_USERNAME: str = "admin"
+    BIFROST_ADMIN_PASSWORD: str = ""
+    # Bifrost keeps its own sessions for 30 days; the service logs out each one
+    # it handed to a browser this many hours after the sign-in.
+    BIFROST_SSO_SESSION_HOURS: int = Field(8, ge=1, le=720)
 
     # CORS — comma-separated allowed origins (e.g. "http://localhost:3001,https://app.example.com")
     # Auto-derived from HOST_IP:UNIBRIDGE_UI_PORT if empty

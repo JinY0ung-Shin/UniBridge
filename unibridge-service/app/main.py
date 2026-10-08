@@ -26,6 +26,7 @@ from app.routers import (
     admin,
     alerts,
     api_keys,
+    bifrost_sso,
     config_transfer,
     external_metrics,
     gateway,
@@ -1024,6 +1025,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.api_key_expiry_task = asyncio.create_task(run_expiry_reconcile_loop())
 
+    # Bifrost keeps a session for 30 days; log out the ones the sign-in handoff
+    # (app/routers/bifrost_sso.py) handed to browsers once they are due.
+    from app.services.bifrost_sessions import run_revoke_loop
+
+    app.state.bifrost_session_task = asyncio.create_task(run_revoke_loop())
+
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────
@@ -1042,6 +1049,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except asyncio.CancelledError:
             pass
         logger.info("API key expiry reconcile stopped")
+
+    if hasattr(app.state, "bifrost_session_task"):
+        app.state.bifrost_session_task.cancel()
+        try:
+            await app.state.bifrost_session_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Bifrost session logout loop stopped")
 
     if hasattr(app.state, "meta_db_metrics_task"):
         app.state.meta_db_metrics_task.cancel()
@@ -1137,6 +1152,7 @@ app.include_router(query_history.router)
 app.include_router(admin.router)
 app.include_router(alerts.router)
 app.include_router(api_keys.router)
+app.include_router(bifrost_sso.router)
 app.include_router(config_transfer.router)
 app.include_router(gateway.router)
 app.include_router(external_metrics.router)

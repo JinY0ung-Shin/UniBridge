@@ -847,6 +847,20 @@ export async function getLlmRequestsTotal(
   return data;
 }
 
+/* ── Bifrost UI sign-in ── */
+
+export interface BifrostSsoHandoff {
+  /** One-time code, redeemed at https://<BIFROST_UI_HOSTNAME>/_unibridge/sso. */
+  code: string;
+  expires_in: number;
+}
+
+/** Admins only; the service signs in to Bifrost and hands over its session. */
+export async function createBifrostSsoHandoff(): Promise<BifrostSsoHandoff> {
+  const { data } = await client.post('/admin/bifrost/sso-handoff');
+  return data;
+}
+
 /* ── Bucketed per-dimension breakdowns ── */
 
 export interface BucketedSeries {

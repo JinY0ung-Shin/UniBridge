@@ -88,6 +88,10 @@ requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
   never inference or `/metrics`. With `BIFROST_UI_HOSTNAME` the UI nginx serves the same
   allowlist on the UniBridge port under that DNS name (`unibridge-ui/nginx-bifrost-ui.conf`,
   test-pinned to match). Bifrost's UI only works at the root of an origin: never a path.
+  Under that name admins are signed in by `app/routers/bifrost_sso.py` (one-time code →
+  Bifrost session cookie, set on that host only; OSS Bifrost has no SSO). Bifrost keeps
+  sessions 30 days, so `app/services/bifrost_sessions.py` logs each handed-out one out
+  after `BIFROST_SSO_SESSION_HOURS` (tokens encrypted in `bifrost_sso_sessions`).
 - **`unibridge_*` metrics are scraped by two jobs**: `unibridge-service` is a DNS alias both
   blue/green colors answer on (round-robin → counters alternate → `increase()` inflates);
   `unibridge-service-colors` is per-color. PromQL over them (backend or Grafana) must use

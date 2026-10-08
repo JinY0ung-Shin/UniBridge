@@ -1245,9 +1245,20 @@ def test_ui_bifrost_hostname_server_mirrors_the_tls_proxy_allowlist() -> None:
     tls_proxy = (BIFROST_DIR / "tls-proxy.conf").read_text(encoding="utf-8")
     server = UI_BIFROST_SERVER_FILE.read_text(encoding="utf-8")
     locations = _nginx_locations(server)
-    assert locations == [
+    assert [location for location in locations if location[0] != "= /_unibridge/sso"] == [
         location for location in _nginx_locations(tls_proxy) if location[0] != "= /healthz"
     ]
+    # The one addition: the UniBridge sign-in handoff, which only this server
+    # can do (the cookie must land on the Bifrost host name).
+    [(_, sso)] = [location for location in locations if location[0] == "= /_unibridge/sso"]
+    for directive in (
+        'set $unibridge_upstream "__UNIBRIDGE_SERVICE_UPSTREAM__";',
+        "proxy_pass http://$unibridge_upstream:8000/bifrost/sso$is_args$args;",
+        "proxy_set_header Host $host;",
+        'proxy_set_header X-Consumer-Username "";',
+        'proxy_set_header X-UniBridge-Internal-Proxy "";',
+    ):
+        assert directive in sso, directive
     # Parsed for real (two empty lists would compare equal): everything the
     # allowlist does not name ends in the catch-all 404.
     assert ("^~ /api/", "proxy_pass http://$bifrost_upstream;") in locations
@@ -1285,10 +1296,12 @@ def test_ui_renders_the_bifrost_server_only_when_a_hostname_is_set() -> None:
 
     entrypoint = UI_ENTRYPOINT_FILE.read_text(encoding="utf-8")
     guarded = re.findall(r'^if \[ -n "\$BIFROST_UI_HOSTNAME" \]; then\n(.*?)^fi$', entrypoint, re.S | re.M)
-    assert any(
-        "/etc/nginx/bifrost-ui.conf.template > /etc/nginx/conf.d/bifrost-ui.conf" in block
+    [render] = [
+        block
         for block in guarded
-    ), "the Bifrost server must be rendered behind BIFROST_UI_HOSTNAME"
+        if "/etc/nginx/bifrost-ui.conf.template > /etc/nginx/conf.d/bifrost-ui.conf" in block
+    ]
+    assert "s/__UNIBRIDGE_SERVICE_UPSTREAM__/" in render
     # The value is checked before anything is written (a DNS name, and not the
     # name UniBridge itself answers on), and a leftover placeholder fails the
     # start like the upstream ones.
@@ -1299,8 +1312,15 @@ def test_ui_renders_the_bifrost_server_only_when_a_hostname_is_set() -> None:
     assert 'BIFROST_UI_HOSTNAME: "$(json_escape "$BIFROST_UI_HOSTNAME")"' in entrypoint
 
     for path in (COMPOSE_FILE, BLUEGREEN_APP_COMPOSE_FILE):
-        env = _service_environment(_load_yaml(path), "unibridge-ui")
+        compose = _load_yaml(path)
+        env = _service_environment(compose, "unibridge-ui")
         assert env["BIFROST_UI_HOSTNAME"] == "${BIFROST_UI_HOSTNAME:-}", path.name
+        # The service's sign-in handoff (app/routers/bifrost_sso.py) needs the
+        # same name and the Bifrost admin login, both optional so a stack
+        # without them still starts (the button then shows Bifrost's login).
+        service_env = _service_environment(compose, "unibridge-service")
+        assert service_env["BIFROST_UI_HOSTNAME"] == "${BIFROST_UI_HOSTNAME:-}", path.name
+        assert service_env["BIFROST_ADMIN_PASSWORD"] == "${BIFROST_ADMIN_PASSWORD:-}", path.name
 
 
 def _shell_function(script: str, name: str) -> str:

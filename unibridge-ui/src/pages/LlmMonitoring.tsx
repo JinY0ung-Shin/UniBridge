@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, type MouseEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
@@ -16,6 +16,7 @@ import {
   getLlmStatusCodes,
   getLlmRequestsTotal,
   getApiKeys,
+  createBifrostSsoHandoff,
 } from '../api/client';
 import { useChartTheme, statusCodeColor } from '../components/useChartTheme';
 import { useAuth } from '../components/useAuth';
@@ -48,6 +49,27 @@ function bifrostAdminUrl(): string {
     return `https://${hostname}${port}/`;
   }
   return window.__RUNTIME_CONFIG__?.BIFROST_ADMIN_URL || import.meta.env.VITE_BIFROST_ADMIN_URL || 'https://localhost:18443';
+}
+
+// Under BIFROST_UI_HOSTNAME the button also signs the admin in: the service
+// trades the click for a one-time code, which the new tab redeems on the
+// Bifrost host (unibridge-service app/routers/bifrost_sso.py). The link itself
+// stays the fallback: a middle-click, a blocked pop-up or a failed sign-in
+// lands on Bifrost's own login form.
+async function openBifrostSignedIn(event: MouseEvent<HTMLAnchorElement>): Promise<void> {
+  if (!window.__RUNTIME_CONFIG__?.BIFROST_UI_HOSTNAME) return;
+  // Opened before the request, while the click still counts as a user gesture.
+  const tab = window.open('about:blank', '_blank');
+  if (!tab) return;
+  event.preventDefault();
+  tab.opener = null;
+  const base = bifrostAdminUrl();
+  try {
+    const { code } = await createBifrostSsoHandoff();
+    tab.location.href = `${base}_unibridge/sso?code=${encodeURIComponent(code)}`;
+  } catch {
+    tab.location.href = base;
+  }
 }
 
 const externalLinkIcon = (
@@ -253,13 +275,14 @@ function LlmMonitoring() {
                 {t('llmMonitoring.adminDashboard')}
                 {externalLinkIcon}
               </a>
-              {/* Bifrost (the /api/llm-bi side-by-side gateway) has no SSO,
-                  only its own single admin login, which is gateway-admin
-                  level — so the link is admin-only as well. */}
+              {/* Bifrost (the /api/llm-bi side-by-side gateway) has a single
+                  admin login, which is gateway-admin level — so the link is
+                  admin-only as well. */}
               <a
                 href={bifrostAdminUrl()}
                 target="_blank"
                 rel="noopener noreferrer"
+                onClick={(event) => { void openBifrostSignedIn(event); }}
                 className="admin-link-btn"
                 title={t('llmMonitoring.bifrostAdminHint')}
                 aria-label={`${t('llmMonitoring.bifrostAdmin')} ${t('common.opensInNewTab')}`}

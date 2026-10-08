@@ -230,6 +230,7 @@
     "resourceTypeUser": "User",
     "resourceTypeUserRole": "User role",
     "resourceTypeConfigImport": "Config import",
+    "resourceTypeBifrostSession": "Bifrost sign-in",
     "timestamp": "Timestamp",
     "resourceId": "Resource ID",
     "summary": "Summary",
@@ -786,7 +787,7 @@
     "adminDashboard": "LiteLLM Admin",
     "adminSsoHint": "Opens the LiteLLM admin UI in a new tab (admin accounts only, via UniBridge SSO)",
     "bifrostAdmin": "Bifrost Admin",
-    "bifrostAdminHint": "Opens the Bifrost admin UI in a new tab (Bifrost admin login). /api/llm-bi traffic is shown there, not on this page."
+    "bifrostAdminHint": "Opens the Bifrost admin UI in a new tab. /api/llm-bi traffic is shown there, not on this page."
   },
   "roles": {
     "title": "Roles",

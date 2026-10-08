@@ -76,6 +76,11 @@ HANDLER_AUTH_ROUTES = {
     # Depends() — the sender is a machine and the endpoint carries no user
     # identity. See app/routers/internal_alerts.py:105.
     ("POST", "/internal/alertmanager"): "_verify_token",
+    # Bifrost UI sign-in handoff (app/routers/bifrost_sso.py): the browser comes
+    # from the Bifrost host name and carries no UniBridge credential. The
+    # credential is the one-time code (single use, 60 s) that an admin's own
+    # authenticated POST /admin/bifrost/sso-handoff minted moments before.
+    ("GET", "/bifrost/sso"): "_redeem_code",
 }
 
 

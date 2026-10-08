@@ -23,6 +23,7 @@ vi.mock('../api/client', () => ({
   getLlmByModelSeries: vi.fn(),
   getLlmTopKeysSeries: vi.fn(),
   getApiKeys: vi.fn(),
+  createBifrostSsoHandoff: vi.fn(),
 }));
 
 // Stable across vi.resetModules() so the dynamically re-imported page sees a
@@ -46,7 +47,7 @@ vi.mock('../components/useAuth', () => ({
   }),
 }));
 
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -60,6 +61,7 @@ import {
   getLlmTopKeys,
   getLlmTopKeysSeries,
   getApiKeys,
+  createBifrostSsoHandoff,
 } from '../api/client';
 import { renderWithProviders } from './helpers';
 
@@ -73,6 +75,7 @@ const mockedGetLlmRequestsTotal = vi.mocked(getLlmRequestsTotal);
 const mockedGetLlmByModelSeries = vi.mocked(getLlmByModelSeries);
 const mockedGetLlmTopKeysSeries = vi.mocked(getLlmTopKeysSeries);
 const mockedGetApiKeys = vi.mocked(getApiKeys);
+const mockedCreateBifrostSsoHandoff = vi.mocked(createBifrostSsoHandoff);
 const emptyBucketedTokens = { buckets: [], series: [], unit: 'tokens' as const };
 
 describe('LlmMonitoring', () => {
@@ -152,6 +155,96 @@ describe('LlmMonitoring', () => {
     expect(window.location.port).toBe('3000');
     const link = await screen.findByRole('link', { name: 'Bifrost Admin opens in new tab' });
     expect(link).toHaveAttribute('href', 'https://llm-proxy.example.com:3000/');
+  });
+
+  describe('Bifrost sign-in through UniBridge', () => {
+    const BIFROST_HOST_CONFIG = { BIFROST_UI_HOSTNAME: 'llm-proxy.example.com' };
+
+    // A stand-in for the tab window.open returns.
+    function fakeTab() {
+      return { opener: window as Window | null, location: { href: 'about:blank' } };
+    }
+
+    // Clicks the link and reports whether its own navigation was cancelled,
+    // then cancels it anyway (jsdom cannot navigate).
+    function clickAndReportPrevented(link: HTMLElement): boolean {
+      let prevented = false;
+      const record = (event: Event) => {
+        prevented = event.defaultPrevented;
+        event.preventDefault();
+      };
+      window.addEventListener('click', record);
+      fireEvent.click(link);
+      window.removeEventListener('click', record);
+      return prevented;
+    }
+
+    async function renderBifrostLink() {
+      const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
+      renderWithProviders(<LlmMonitoring />);
+      return screen.findByRole('link', { name: 'Bifrost Admin opens in new tab' });
+    }
+
+    beforeEach(() => {
+      mockedCreateBifrostSsoHandoff.mockReset();
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('opens the Bifrost UI signed in through a one-time code', async () => {
+      window.__RUNTIME_CONFIG__ = { ...window.__RUNTIME_CONFIG__, ...BIFROST_HOST_CONFIG };
+      const tab = fakeTab();
+      const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
+      mockedCreateBifrostSsoHandoff.mockResolvedValue({ code: 'one-time/code', expires_in: 60 });
+
+      const link = await renderBifrostLink();
+
+      expect(clickAndReportPrevented(link)).toBe(true);
+      // The tab opens on the click itself, before the request, so pop-up
+      // blockers still count it as the user's.
+      expect(open).toHaveBeenCalledWith('about:blank', '_blank');
+      expect(tab.opener).toBeNull();
+      await waitFor(() => {
+        expect(tab.location.href).toBe('https://llm-proxy.example.com:3000/_unibridge/sso?code=one-time%2Fcode');
+      });
+      expect(mockedCreateBifrostSsoHandoff).toHaveBeenCalledTimes(1);
+    });
+
+    it("falls back to Bifrost's login form when the sign-in fails", async () => {
+      window.__RUNTIME_CONFIG__ = { ...window.__RUNTIME_CONFIG__, ...BIFROST_HOST_CONFIG };
+      const tab = fakeTab();
+      vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
+      mockedCreateBifrostSsoHandoff.mockRejectedValue(new Error('Request failed with status code 502'));
+
+      const link = await renderBifrostLink();
+      clickAndReportPrevented(link);
+
+      await waitFor(() => {
+        expect(tab.location.href).toBe('https://llm-proxy.example.com:3000/');
+      });
+    });
+
+    it('leaves the plain link to a blocked pop-up', async () => {
+      window.__RUNTIME_CONFIG__ = { ...window.__RUNTIME_CONFIG__, ...BIFROST_HOST_CONFIG };
+      vi.spyOn(window, 'open').mockReturnValue(null);
+
+      const link = await renderBifrostLink();
+
+      expect(clickAndReportPrevented(link)).toBe(false);
+      expect(mockedCreateBifrostSsoHandoff).not.toHaveBeenCalled();
+    });
+
+    it('is a plain link without BIFROST_UI_HOSTNAME (bifrost-tls port)', async () => {
+      const open = vi.spyOn(window, 'open');
+
+      const link = await renderBifrostLink();
+
+      expect(clickAndReportPrevented(link)).toBe(false);
+      expect(open).not.toHaveBeenCalled();
+      expect(mockedCreateBifrostSsoHandoff).not.toHaveBeenCalled();
+    });
   });
 
   it('hides the LiteLLM and Bifrost Admin links for non-admins', async () => {

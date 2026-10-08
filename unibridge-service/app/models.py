@@ -493,3 +493,23 @@ class MonitoredService(Base):
         kwargs.setdefault("metrics_path", "/metrics")
         kwargs.setdefault("scheme", "http")
         super().__init__(**kwargs)
+
+
+class BifrostSsoSession(Base):
+    """A Bifrost admin session UniBridge handed to an admin's browser.
+
+    Bifrost OSS keeps a session for 30 days and has no setting to shorten it,
+    so app/routers/bifrost_sso.py records every session it obtains and
+    app/services/bifrost_sessions.py logs it out at Bifrost once ``expires_at``
+    (BIFROST_SSO_SESSION_HOURS after sign-in) has passed. The token is a
+    Bifrost admin credential, so it is stored encrypted with ENCRYPTION_KEY,
+    like database passwords.
+    """
+
+    __tablename__ = "bifrost_sso_sessions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    actor = Column(String(255), nullable=False)
+    token_encrypted = Column(Text, nullable=False)
+    expires_at = Column(UtcDateTime, nullable=False, index=True)
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)

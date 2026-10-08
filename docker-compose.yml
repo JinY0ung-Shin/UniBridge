@@ -276,6 +276,14 @@ services:
       - EXTERNAL_SERVICES_JOB=${EXTERNAL_SERVICES_JOB:-external-services}
       - PROMETHEUS_SERVICES_FILE_SD_PATH=${PROMETHEUS_SERVICES_FILE_SD_PATH:-/etc/prometheus/file_sd/services.json}
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
+      # Bifrost UI sign-in through UniBridge (app/routers/bifrost_sso.py): with
+      # BIFROST_UI_HOSTNAME set, admins open that UI signed in to the Bifrost
+      # admin account. Without the password the button shows Bifrost's login.
+      # Each such session is logged out BIFROST_SSO_SESSION_HOURS later.
+      - BIFROST_UI_HOSTNAME=${BIFROST_UI_HOSTNAME:-}
+      - BIFROST_ADMIN_USERNAME=${BIFROST_ADMIN_USERNAME:-admin}
+      - BIFROST_ADMIN_PASSWORD=${BIFROST_ADMIN_PASSWORD:-}
+      - BIFROST_SSO_SESSION_HOURS=${BIFROST_SSO_SESSION_HOURS:-8}
       # Bearer token verifying the internal Alertmanager webhook receiver.
       # Empty = receiver disabled (503); set it to enable infra-alert email.
       - ALERTMANAGER_WEBHOOK_TOKEN=${ALERTMANAGER_WEBHOOK_TOKEN:-}

@@ -230,6 +230,7 @@
     "resourceTypeUser": "사용자",
     "resourceTypeUserRole": "사용자 역할",
     "resourceTypeConfigImport": "설정 가져오기",
+    "resourceTypeBifrostSession": "Bifrost 로그인",
     "timestamp": "시간",
     "resourceId": "리소스 ID",
     "summary": "요약",
@@ -786,7 +787,7 @@
     "adminDashboard": "LiteLLM 관리",
     "adminSsoHint": "LiteLLM 관리 UI를 새 탭에서 엽니다 (admin 계정만 UniBridge SSO 로그인 가능)",
     "bifrostAdmin": "Bifrost 관리",
-    "bifrostAdminHint": "Bifrost 관리 UI를 새 탭에서 엽니다 (Bifrost 관리자 계정으로 로그인). /api/llm-bi 트래픽은 이 페이지가 아니라 그쪽에 표시됩니다."
+    "bifrostAdminHint": "Bifrost 관리 UI를 새 탭에서 엽니다. /api/llm-bi 트래픽은 이 페이지가 아니라 그쪽에 표시됩니다."
   },
   "roles": {
     "title": "역할",

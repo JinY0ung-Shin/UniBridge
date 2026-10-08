@@ -80,7 +80,9 @@ sed -i \
 # The template sits outside conf.d, so the Bifrost server exists only when
 # BIFROST_UI_HOSTNAME is set (validated above, so it is safe in sed and nginx).
 if [ -n "$BIFROST_UI_HOSTNAME" ]; then
-  sed "s/__BIFROST_UI_HOSTNAME__/$BIFROST_UI_HOSTNAME/g" \
+  sed \
+    -e "s/__BIFROST_UI_HOSTNAME__/$BIFROST_UI_HOSTNAME/g" \
+    -e "s/__UNIBRIDGE_SERVICE_UPSTREAM__/$(sed_escape "$UNIBRIDGE_SERVICE_UPSTREAM")/g" \
     /etc/nginx/bifrost-ui.conf.template > /etc/nginx/conf.d/bifrost-ui.conf
 fi
 
