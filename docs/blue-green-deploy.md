@@ -299,7 +299,17 @@ checks pass. Before each deploy, the script verifies the built-in APISIX route
 shape, including the separately granted `query-template-write-api` lifecycle route
 and the LLM routes. If those routes are missing or stale, for example
 `llm-proxy` still points at an older gateway upstream, it forces
-re-provisioning on the new color instead of promoting broken routing.
+re-provisioning on the new color instead of promoting broken routing. The
+`/api/llm-bi` routes are held to `BIFROST_GATEWAY_ROUTES` from `.env`: present
+and injecting the current `BIFROST_TEST_VK` while it is on, absent once it is
+off, with `llm-bi-not-found` in place either way (a key the service cannot use
+leaves the four routes unchecked, as the service leaves them alone). Flipping
+the switch or rotating the key therefore takes effect on the next deploy,
+through the same forced re-provisioning. (Should APISIX ever refuse
+`llm-bi-not-found`, which the service logs and boots past, every deploy
+re-provisions until that is fixed.) The deploy also warns, without stopping,
+when the infra `bifrost` container still runs with another `BIFROST_TEST_VK`
+than `.env`: it needs a recreate before it accepts the new key.
 
 Stored API-key route restrictions are replayed from the database on **every**
 boot regardless of `APISIX_PROVISION_ON_START`, so the database stays the source

@@ -529,9 +529,9 @@ services:
   # ── Bifrost, side by side with LiteLLM (/api/llm-bi) ──
   # Part of the default stack: a plain `up` starts it, and the blue/green
   # deploy's infra health gate requires it healthy like any infra service.
-  # /api/llm stays on LiteLLM; the /api/llm-bi routes are added and removed by
-  # scripts/bifrost-test.sh. These three services are identical in
-  # docker-compose.yml and docker-compose.infra.yml (tested).
+  # /api/llm stays on LiteLLM; unibridge-service installs the /api/llm-bi
+  # routes while BIFROST_GATEWAY_ROUTES is on. These three services are
+  # identical in docker-compose.yml and docker-compose.infra.yml (tested).
   bifrost:
     image: maximhq/bifrost:v2.2.4
     restart: unless-stopped

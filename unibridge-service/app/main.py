@@ -43,7 +43,13 @@ from app.routers import (
 )
 from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
 from app.services.apisix_client import upstream_node_addresses
-from app.services.apisix_system_resources import QUERY_TEMPLATE_WRITE_ROUTE_ID
+from app.services import bifrost_routes
+from app.services.apisix_system_resources import (
+    BIFROST_NOT_FOUND_ROUTE_ID,
+    BIFROST_ROUTE_IDS,
+    BIFROST_UPSTREAM_IDS,
+    QUERY_TEMPLATE_WRITE_ROUTE_ID,
+)
 from app.services.connection_manager import connection_manager
 from app.services.s3_manager import s3_manager
 from app.services.nas_manager import nas_manager
@@ -165,6 +171,7 @@ async def _preserve_consumer_restriction(
         "prometheus-api",
         "llm-metrics",
         "llm-models",
+        *BIFROST_ROUTE_IDS,
     }:
         return body
 
@@ -229,6 +236,103 @@ async def _put_upstream_if_unclaimed(upstream_id: str, body: dict[str, object]) 
 
     await apisix_client.put_resource("upstreams", upstream_id, body)
     return True
+
+
+async def _delete_if_present(resource: str, resource_id: str) -> None:
+    from app.services import apisix_client
+
+    try:
+        await apisix_client.delete_resource(resource, resource_id)
+    except Exception as exc:
+        if not _is_missing_route_error(exc):
+            raise
+
+
+async def _put_bifrost_not_found_route(state: str) -> None:
+    """Install llm-bi-not-found; APISIX refusing it must not keep the service down.
+
+    It only explains a 404, so a 4xx (say, an APISIX release that no longer takes
+    its consumer-restriction config) is logged and boot goes on. Otherwise not
+    even BIFROST_GATEWAY_ROUTES=false, which installs it too, could get a stack
+    past it. Transport errors and 5xx still reach the provisioning retry loop.
+    """
+    from app.services import apisix_client
+
+    try:
+        await apisix_client.put_resource(
+            "routes", BIFROST_NOT_FOUND_ROUTE_ID, bifrost_routes.not_found_route(state)
+        )
+    except HTTPStatusError as exc:
+        if not 400 <= exc.response.status_code < 500:
+            raise
+        logger.warning(
+            "APISIX refused the %s route, so /api/llm-bi answers its bare 404: %s",
+            BIFROST_NOT_FOUND_ROUTE_ID,
+            exc.response.text,
+        )
+
+
+async def _provision_bifrost_routes() -> None:
+    """Install or remove the /api/llm-bi routes to match BIFROST_GATEWAY_ROUTES.
+
+    Part of boot provisioning, so a blue/green host applies the switch on the
+    deploy that finds the routes out of step with it
+    (scripts/deploy-bluegreen.sh ``apisix_has_core_routes``), the first deploy
+    after upgrading included. The upstreams are colorless shared infra, like
+    ``litellm``, so they are written directly instead of through the claim gate.
+    """
+    from app.services import apisix_client
+
+    if not getattr(settings, "BIFROST_GATEWAY_ROUTES", True):
+        # The explanation goes in first, so the paths answer it as they go.
+        await _put_bifrost_not_found_route("off")
+        # Routes before upstreams: APISIX refuses to delete an upstream a route uses.
+        for route_id in BIFROST_ROUTE_IDS:
+            await _delete_if_present("routes", route_id)
+        for upstream_id in BIFROST_UPSTREAM_IDS:
+            try:
+                await _delete_if_present("upstreams", upstream_id)
+            except HTTPStatusError as exc:
+                if exc.response.status_code != 400:
+                    raise
+                # A route this service does not manage still points at it.
+                logger.warning(
+                    "Kept APISIX upstream %s, which another route still uses: %s",
+                    upstream_id,
+                    exc.response.text,
+                )
+        logger.info("APISIX Bifrost routes removed (BIFROST_GATEWAY_ROUTES=false)")
+        return
+
+    virtual_key = getattr(settings, "BIFROST_TEST_VK", "")
+    if not bifrost_routes.usable_virtual_key(virtual_key):
+        logger.error(
+            "BIFROST_GATEWAY_ROUTES is on but BIFROST_TEST_VK is %s, so the "
+            "/api/llm-bi routes are left as they are. Set it to the value the "
+            "bifrost container runs with, or BIFROST_GATEWAY_ROUTES=false on a "
+            "stack without Bifrost.",
+            "not set" if not virtual_key else f"not {bifrost_routes.VIRTUAL_KEY_RULE}",
+        )
+        await _put_bifrost_not_found_route("no-key")
+        return
+
+    await apisix_client.put_resource(
+        "upstreams", "bifrost", bifrost_routes.UPSTREAMS["bifrost"]
+    )
+    await apisix_client.put_resource(
+        "upstreams", "llm-converter-bi", bifrost_routes.UPSTREAMS["llm-converter-bi"]
+    )
+    # Deny-all when new; the restriction replay below grants them.
+    for route_id in BIFROST_ROUTE_IDS:
+        await apisix_client.put_resource(
+            "routes",
+            route_id,
+            await _preserve_consumer_restriction(
+                route_id, bifrost_routes.route(route_id, virtual_key)
+            ),
+        )
+    await _put_bifrost_not_found_route("on")
+    logger.info("APISIX Bifrost routes provisioned successfully")
 
 
 @asynccontextmanager
@@ -842,6 +946,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     logger.info(
                         "LITELLM_MASTER_KEY not set — skipping LiteLLM route provisioning"
                     )
+
+                # ── Bifrost (/api/llm-bi), side by side with LiteLLM ──
+                await _provision_bifrost_routes()
 
                 break
             except Exception as exc:

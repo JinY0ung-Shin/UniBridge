@@ -82,10 +82,15 @@ requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
   check. Free tier caps LiteLLM's user table at 5 rows and rejected non-admin logins
   still insert rows. See README "LiteLLM admin UI SSO".
 - **Bifrost runs side by side with LiteLLM on `/api/llm-bi`** (`bifrost`, `bifrost-tls`,
-  `llm-converter-bi`; identical in both compose layouts, tested). Its APISIX routes come
-  from `scripts/bifrost-test.sh`, not `main.py` provisioning. `bifrost/tls-proxy.conf`
-  (the LLM Monitoring page's Bifrost button) is an allowlist: UI + management API only,
-  never inference or `/metrics`. With `BIFROST_UI_HOSTNAME` the UI nginx serves the same
+  `llm-converter-bi`; identical in both compose layouts, tested). Its routes are system
+  routes provisioned by `main.py::_provision_bifrost_routes` from
+  `app/services/bifrost_routes.py` while `BIFROST_GATEWAY_ROUTES` is on (false removes
+  them; `llm-bi-not-found` explains the 404 in every state). The deploy script's
+  `apisix_has_core_routes` holds them to that switch and `BIFROST_TEST_VK`, so a flip or
+  key rotation re-provisions on the next deploy; it string-matches the key in route JSON,
+  hence the URL-safe-only key rule shared by `usable_virtual_key` and `bifrost_routes_state`.
+  `bifrost/tls-proxy.conf` (the LLM Monitoring page's Bifrost button) is an allowlist:
+  UI + management API only, never inference or `/metrics`. With `BIFROST_UI_HOSTNAME` the UI nginx serves the same
   allowlist on the UniBridge port under that DNS name (`unibridge-ui/nginx-bifrost-ui.conf`,
   test-pinned to match). Bifrost's UI only works at the root of an origin: never a path.
   Under that name admins are signed in by `app/routers/bifrost_sso.py` (one-time code →

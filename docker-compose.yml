@@ -284,6 +284,11 @@ services:
       - BIFROST_ADMIN_USERNAME=${BIFROST_ADMIN_USERNAME:-admin}
       - BIFROST_ADMIN_PASSWORD=${BIFROST_ADMIN_PASSWORD:-}
       - BIFROST_SSO_SESSION_HOURS=${BIFROST_SSO_SESSION_HOURS:-8}
+      # The /api/llm-bi routes in front of Bifrost (app/services/bifrost_routes.py):
+      # installed at provisioning boots, injecting the virtual key the bifrost
+      # container runs with; false removes them again.
+      - BIFROST_GATEWAY_ROUTES=${BIFROST_GATEWAY_ROUTES:-true}
+      - BIFROST_TEST_VK=${BIFROST_TEST_VK:-}
       # Bearer token verifying the internal Alertmanager webhook receiver.
       # Empty = receiver disabled (503); set it to enable infra-alert email.
       - ALERTMANAGER_WEBHOOK_TOKEN=${ALERTMANAGER_WEBHOOK_TOKEN:-}
@@ -744,9 +749,9 @@ services:
   # ── Bifrost, side by side with LiteLLM (/api/llm-bi) ──
   # Part of the default stack: a plain `up` starts it, and the blue/green
   # deploy's infra health gate requires it healthy like any infra service.
-  # /api/llm stays on LiteLLM; the /api/llm-bi routes are added and removed by
-  # scripts/bifrost-test.sh. These three services are identical in
-  # docker-compose.yml and docker-compose.infra.yml (tested).
+  # /api/llm stays on LiteLLM; unibridge-service installs the /api/llm-bi
+  # routes while BIFROST_GATEWAY_ROUTES is on. These three services are
+  # identical in docker-compose.yml and docker-compose.infra.yml (tested).
   bifrost:
     image: maximhq/bifrost:v2.2.4
     restart: unless-stopped

@@ -224,11 +224,21 @@ def _host_header_for_upstream(upstream: dict[str, Any], node_addr: str) -> str:
 # HTTP header names are case-insensitive and ``authorization`` must not slip past
 # a check for ``Authorization``. The internal-proxy marker is what
 # ``auth.py`` authenticates gateway-proxied requests with (dropping it 401s every
-# call on that route until the next boot reconciles it); the other two carry the
-# LiteLLM master key and the end-user attribution on the LLM routes. See
-# app/main.py ``_internal_proxy_headers`` and the LiteLLM route provisioning.
+# call on that route until the next boot reconciles it); ``authorization`` and
+# ``x-litellm-end-user-id`` carry the LiteLLM master key and the end-user
+# attribution on the LLM routes, and the ``x-bf-*`` ones the Bifrost virtual key,
+# the per-key attribution and the extra-params switch on the /api/llm-bi routes.
+# See app/main.py ``_internal_proxy_headers`` and the LLM route provisioning.
 _SYSTEM_INJECTED_HEADERS = frozenset(
-    {APISIX_INTERNAL_PROXY_HEADER, "authorization", "x-litellm-end-user-id"}
+    {
+        APISIX_INTERNAL_PROXY_HEADER,
+        "authorization",
+        "x-litellm-end-user-id",
+        "x-bf-vk",
+        "x-bf-dim-consumer",
+        "x-bf-lh-consumer",
+        "x-bf-passthrough-extra-params",
+    }
 )
 
 
@@ -512,6 +522,9 @@ _SYSTEM_ROUTE_URIS = (
     "/api/llm-admin/*",
     "/api/llm/v1/messages",
     "/api/llm/v1/responses",
+    # The whole prefix: llm-bi-not-found answers every path the llm-bi-* routes
+    # do not take (app/services/bifrost_routes.py).
+    "/api/llm-bi/*",
 )
 
 
@@ -976,7 +989,9 @@ async def route_curl(
             detail=f"Failed to connect to APISIX: {exc}",
         )
 
-    uri = route.get("uri", "/")
+    # A route with several paths (``uris``, e.g. llm-bi-proxy) gets its first.
+    uris = route.get("uris") or []
+    uri = route.get("uri") or (uris[0] if uris else "/")
     path = uri.rstrip("*").rstrip("/") or "/"
 
     methods = route.get("methods", ["GET"])

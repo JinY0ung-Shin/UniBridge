@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 from app.services.apisix_system_resources import (
+    BIFROST_NOT_FOUND_ROUTE_ID,
     PROTECTED_ROUTE_IDS,
     QUERY_TEMPLATE_WRITE_ROUTE_ID,
 )
@@ -374,7 +375,8 @@ def build_openapi_spec(
     paths: dict[str, dict[str, Any]] = {}
 
     for route in routes:
-        if not isinstance(route, dict):
+        # The /api/llm-bi not-found route only explains a 404; it is no endpoint.
+        if not isinstance(route, dict) or route.get("id") == BIFROST_NOT_FOUND_ROUTE_ID:
             continue
         methods = _route_methods(route)
         for uri in _route_uris(route):

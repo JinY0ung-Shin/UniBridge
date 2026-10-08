@@ -7,6 +7,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -1445,55 +1446,327 @@ def test_bifrost_entrypoint_fails_closed_without_secrets() -> None:
         assert expected in result.stderr
 
 
-def test_bifrost_test_routes_expose_only_inference_paths() -> None:
+def test_bifrost_exposed_paths_match_the_provisioned_routes() -> None:
+    # The tls-proxy test above blocks these paths; they must be the ones the
+    # gateway really forwards, so the two cannot drift apart.
+    from app.services.apisix_system_resources import BIFROST_ROUTE_IDS
+    from app.services.bifrost_routes import served_endpoints
+
+    assert set(BIFROST_ROUTE_IDS) == BIFROST_TEST_ROUTE_IDS
+    assert {endpoint.split(" ", 1)[1] for endpoint in served_endpoints()} == BIFROST_TEST_EXPOSED_PATHS
+
+
+def test_service_gets_the_bifrost_route_switch_and_virtual_key() -> None:
+    for path in (COMPOSE_FILE, BLUEGREEN_APP_COMPOSE_FILE):
+        env = _service_environment(_load_yaml(path), "unibridge-service")
+        # On by default, like the Bifrost containers. Both optional: without a
+        # usable key the service leaves /api/llm-bi alone and logs why.
+        assert env["BIFROST_GATEWAY_ROUTES"] == "${BIFROST_GATEWAY_ROUTES:-true}", path.name
+        assert env["BIFROST_TEST_VK"] == "${BIFROST_TEST_VK:-}", path.name
+
+
+def _bifrost_test_program() -> str:
+    script = BIFROST_TEST_SCRIPT_FILE.read_text(encoding="utf-8")
+    return script.split("<<'PY'\n", 1)[1].rsplit("\nPY\n", 1)[0]
+
+
+def test_bifrost_test_script_only_reads_what_the_service_provisions() -> None:
     import ast
 
-    from app.routers.gateway import (
-        _SYSTEM_ROUTE_URIS,
-        _TIMEOUT_OVERRIDE_LABEL,
-        _shadowed_system_uri,
+    from app.services.apisix_system_resources import (
+        BIFROST_NOT_FOUND_ROUTE_ID,
+        BIFROST_ROUTE_IDS,
+        BIFROST_UPSTREAM_IDS,
     )
-    from app.services.consumer_restrictions import DENY_ALL_CONSUMER, IMPLIED_ROUTES
+    from app.services.consumer_restrictions import DENY_ALL_CONSUMER
 
-    script = BIFROST_TEST_SCRIPT_FILE.read_text(encoding="utf-8")
-    program = script.split("<<'PY'\n", 1)[1].rsplit("\nPY\n", 1)[0]
+    program = _bifrost_test_program()
     assigned = {
         node.targets[0].id: node.value
         for node in ast.parse(program).body
         if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
     }
-
-    routes = ast.literal_eval(assigned["ROUTES"])
-    assert {route[0] for route in routes} == BIFROST_TEST_ROUTE_IDS
-    exposed = [uri for route in routes for uri in route[1]]
-    # Exact paths only — no wildcard, so neither Bifrost's UI fallback nor its
-    # management API or MCP endpoints are reachable through the gateway.
-    assert sorted(exposed) == sorted(BIFROST_TEST_EXPOSED_PATHS)
-    for uri in exposed:
-        assert "*" not in uri, uri
-        assert _shadowed_system_uri(uri, list(_SYSTEM_ROUTE_URIS)) is None, uri
-    assert '"regex_uri": ["^/api/llm-bi(.*)", "$1"]' in program
-    # Credentials / key selectors a client could aim at Bifrost; key-auth reads
-    # the caller's apikey before proxy-rewrite strips these.
-    assert ast.literal_eval(assigned["REMOVED_HEADERS"]) == [
-        "Authorization",
-        "x-api-key",
-        "api-key",
-        "x-goog-api-key",
-        "x-bf-api-key",
-        "x-bf-api-key-id",
-    ]
-    assert '"x-bf-vk": GATEWAY_VK' in program
-    assert '"x-bf-lh-consumer": "$consumer_name"' in program
+    # unibridge-service is the one writer of these routes: the script sends
+    # GETs only (no body, no method override).
+    assert "method=" not in program and "data=" not in program
+    assert ast.literal_eval(assigned["ROUTE_IDS"]) == BIFROST_ROUTE_IDS
+    assert ast.literal_eval(assigned["UPSTREAM_IDS"]) == BIFROST_UPSTREAM_IDS
+    assert ast.literal_eval(assigned["NOT_FOUND_ROUTE_ID"]) == BIFROST_NOT_FOUND_ROUTE_ID
+    assert ast.literal_eval(assigned["DENY_ALL"]) == DENY_ALL_CONSUMER
     # Admin calls never go through an HTTP(S)_PROXY from .env.
     assert "urllib.request.ProxyHandler({})" in program
     assert "urllib.request.urlopen(" not in program
 
-    # Values the script mirrors from the app, so they cannot drift apart.
-    assert ast.literal_eval(assigned["TIMEOUT_LABEL"]) == _TIMEOUT_OVERRIDE_LABEL
-    assert ast.literal_eval(assigned["DENY_ALL"]) == DENY_ALL_CONSUMER
-    # Test access stays an explicit grant for regular keys: no existing grant
-    # implies these routes. (Master keys, `*`, are whitelisted on every key-auth
-    # route by the consumer-restriction reconciler, these included.)
-    assert not BIFROST_TEST_ROUTE_IDS & set().union(*IMPLIED_ROUTES.values())
-    assert not BIFROST_TEST_ROUTE_IDS & set(IMPLIED_ROUTES)
+    # The old write commands point at the switch instead of doing anything.
+    for command, value in (("up", "true"), ("down", "false")):
+        result = subprocess.run(
+            ["bash", str(BIFROST_TEST_SCRIPT_FILE), command],
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 2, command
+        assert f"BIFROST_GATEWAY_ROUTES={value}" in result.stderr
+
+
+def _bifrost_status(routes: dict[str, dict], **env: str) -> str:
+    """Run ``bifrost-test.sh status`` against a canned admin API; return its verdict."""
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server API
+            assert self.headers["X-API-KEY"] == "admin-key"
+            body = routes.get(self.path.removeprefix("/apisix/admin/"))
+            payload = json.dumps({"value": body} if body is not None else {"message": "Key not found"})
+            self.send_response(200 if body is not None else 404)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(payload.encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = subprocess.run(
+            ["bash", str(BIFROST_TEST_SCRIPT_FILE), "status"],
+            env={
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "ENV_FILE": "/nonexistent",
+                "APISIX_ADMIN_HOST_URL": f"http://127.0.0.1:{server.server_port}",
+                "APISIX_ADMIN_KEY": "admin-key",
+                **env,
+            },
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip().splitlines()[-1]
+
+
+BIFROST_VK = "sk-bf-" + "v" * 32
+
+
+def _bifrost_installed(vk: str = BIFROST_VK) -> dict[str, dict]:
+    from app.services import bifrost_routes
+    from app.services.apisix_system_resources import BIFROST_NOT_FOUND_ROUTE_ID, BIFROST_ROUTE_IDS
+
+    routes = {f"upstreams/{upstream_id}": body for upstream_id, body in bifrost_routes.UPSTREAMS.items()}
+    for route_id in BIFROST_ROUTE_IDS:
+        routes[f"routes/{route_id}"] = bifrost_routes.route(route_id, vk)
+    routes[f"routes/{BIFROST_NOT_FOUND_ROUTE_ID}"] = bifrost_routes.not_found_route("on")
+    return routes
+
+
+def test_bifrost_test_status_says_whether_the_routes_match_the_switch() -> None:
+    installed = _bifrost_installed()
+    only_explanation = {"routes/llm-bi-not-found": installed["routes/llm-bi-not-found"]}
+
+    assert _bifrost_status(installed, BIFROST_TEST_VK=BIFROST_VK).startswith("In step with")
+    assert "routes are missing" in _bifrost_status({}, BIFROST_TEST_VK=BIFROST_VK)
+    assert "inject a virtual key other than" in _bifrost_status(
+        _bifrost_installed("sk-bf-" + "o" * 32), BIFROST_TEST_VK=BIFROST_VK
+    )
+    assert "still installed" in _bifrost_status(
+        installed, BIFROST_GATEWAY_ROUTES="false", BIFROST_TEST_VK=BIFROST_VK
+    )
+    assert _bifrost_status(only_explanation, BIFROST_GATEWAY_ROUTES="off").startswith("In step with")
+    assert "llm-bi-not-found says why" in _bifrost_status(installed, BIFROST_TEST_VK="")
+    assert "installs llm-bi-not-found to say why" in _bifrost_status({}, BIFROST_TEST_VK="")
+    assert "leaves the routes as they are" in _bifrost_status(
+        installed, BIFROST_TEST_VK="sk-bf-" + "x" * 20 + "+y"
+    )
+    repointed = dict(installed)
+    repointed["routes/llm-bi-models"] = {**installed["routes/llm-bi-models"], "upstream_id": "bifrost"}
+    assert "point at another upstream" in _bifrost_status(repointed, BIFROST_TEST_VK=BIFROST_VK)
+
+
+_DEPLOY_CORE_ROUTES = {
+    "routes/query-api": {
+        "uri": "/api/query/*",
+        "plugins": {"proxy-rewrite": {"headers": {"set": {"X-UniBridge-Internal-Proxy": "s"}}}},
+    },
+    "routes/query-template-write-api": {
+        "uri": "/api/query/templates/*",
+        "methods": ["PUT", "PATCH", "DELETE"],
+        "upstream_id": "unibridge-service",
+        "plugins": {"proxy-rewrite": {"headers": {"set": {"X-UniBridge-Internal-Proxy": "s"}}}},
+    },
+    **{
+        f"routes/{route_id}": {
+            "plugins": {"proxy-rewrite": {"headers": {"set": {"X-UniBridge-Internal-Proxy": "s"}}}}
+        }
+        for route_id in ("s3-api", "nas-api", "usages-api")
+    },
+    "routes/prometheus-api": {"uri": "/api/prometheus/*", "upstream_id": "prometheus"},
+    "routes/llm-proxy": {"uri": "/api/llm/*", "upstream_id": "litellm"},
+    "routes/llm-admin": {"uri": "/api/llm-admin/*", "upstream_id": "litellm"},
+    "routes/llm-metrics": {"uri": "/api/llm/metrics", "upstream_id": "litellm"},
+    "routes/llm-messages": {"uri": "/api/llm/v1/messages", "upstream_id": "llm-converter"},
+    "routes/llm-responses": {"uri": "/api/llm/v1/responses", "upstream_id": "llm-converter"},
+    "routes/llm-models": {"uri": "/api/llm/v1/models", "upstream_id": "llm-converter"},
+    "upstreams/litellm": {"scheme": "https", "nodes": {"litellm:4000": 1}},
+}
+
+
+def _deploy_has_core_routes(tmp_path: Path, resources: dict[str, dict], **env: str) -> bool:
+    """``apisix_has_core_routes`` against canned admin responses (curl stubbed)."""
+    root = tmp_path / "apisix"
+    for path, body in {**_DEPLOY_CORE_ROUTES, **resources}.items():
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({"value": body}, indent=2), encoding="utf-8")
+    shell = f"""
+source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}
+curl() {{
+  local url="${{@: -1}}" code_only="" arg
+  for arg in "$@"; do [[ "$arg" == "%{{http_code}}" ]] && code_only=1; done
+  local file={shlex.quote(str(root))}/"${{url#*/apisix/admin/}}"
+  if [[ -f "$file" ]]; then
+    if [[ -n "$code_only" ]]; then printf '200'; else cat "$file"; fi
+    return 0
+  fi
+  if [[ -n "$code_only" ]]; then printf '404'; return 0; fi
+  return 22
+}}
+if apisix_has_core_routes; then echo yes; else echo no; fi
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        env={
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "ENV_FILE": "/nonexistent",
+            "APISIX_ADMIN_KEY": "admin-key",
+            **env,
+        },
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip() == "yes"
+
+
+def test_deploy_holds_the_bifrost_routes_to_the_switch_and_key(tmp_path: Path) -> None:
+    installed = _bifrost_installed()
+    not_found = {"routes/llm-bi-not-found": installed["routes/llm-bi-not-found"]}
+    on = {"BIFROST_TEST_VK": BIFROST_VK}
+    off = {"BIFROST_GATEWAY_ROUTES": "false", "BIFROST_TEST_VK": BIFROST_VK}
+
+    def check(resources: dict[str, dict], env: dict[str, str], case: str) -> bool:
+        return _deploy_has_core_routes(tmp_path / case, resources, **env)
+
+    assert check(installed, on, "on")
+    # Upgrading from scripts/bifrost-test.sh: nothing, or the four routes
+    # without the not-found route.
+    assert not check({}, on, "on-none")
+    assert not check(
+        {path: body for path, body in installed.items() if path not in not_found}, on, "script-era"
+    )
+    # A rotated BIFROST_TEST_VK, and a route re-pointed elsewhere.
+    assert not check(_bifrost_installed("sk-bf-" + "o" * 32), on, "rotated")
+    repointed = dict(installed)
+    repointed["routes/llm-bi-proxy"] = {**installed["routes/llm-bi-proxy"], "upstream_id": "litellm"}
+    assert not check(repointed, on, "repointed")
+
+    assert check(not_found, off, "off")
+    assert not check(installed, off, "off-installed")
+    assert not check({}, off, "off-none")
+
+    # No usable key: the service leaves the four routes alone and only puts up
+    # the explanation, so that is all there is to hold.
+    assert check(not_found, {"BIFROST_TEST_VK": ""}, "skip")
+    assert check(installed, {"BIFROST_TEST_VK": "sk-bf-short"}, "skip-installed")
+    assert not check({}, {"BIFROST_TEST_VK": ""}, "skip-none")
+
+
+def _deploy_bifrost_state(**env: str) -> str:
+    shell = f"source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}; bifrost_routes_state"
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "ENV_FILE": "/nonexistent", **env},
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_deploy_takes_the_same_virtual_keys_as_the_service() -> None:
+    from tests.test_bifrost_routes import VIRTUAL_KEY_CASES
+
+    for value, usable in VIRTUAL_KEY_CASES:
+        # A UTF-8 locale must not widen the script's A-Z ranges.
+        state = _deploy_bifrost_state(BIFROST_TEST_VK=value, LANG="C.UTF-8", LC_ALL="C.UTF-8")
+        assert state == ("on" if usable else "skip"), repr(value)
+
+
+def _run_vk_drift_warning(container_env: str | None, **env: str) -> str:
+    """``warn_bifrost_vk_drift`` with compose/docker stubbed; returns its stderr."""
+    container = "" if container_env is None else "cid-bifrost"
+    shell = f"""
+source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}
+compose_infra() {{ [[ "$*" == "ps -q bifrost" ]] && printf '%s\n' {shlex.quote(container)}; }}
+docker() {{ [[ "$1" == inspect ]] && printf '%s\n' {shlex.quote(container_env or "")}; }}
+warn_bifrost_vk_drift
+echo "exit=$?"
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "ENV_FILE": "/nonexistent", **env},
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert result.stdout.strip() == "exit=0", (result.stdout, result.stderr)
+    return result.stderr
+
+
+def test_deploy_warns_when_bifrost_runs_with_another_virtual_key(tmp_path: Path) -> None:
+    current = f"PATH=/usr/bin\nBIFROST_TEST_VK={BIFROST_VK}\nLOG_LEVEL=info"
+    stale = "BIFROST_TEST_VK=sk-bf-" + "o" * 32
+    on = {"BIFROST_TEST_VK": BIFROST_VK}
+
+    assert _run_vk_drift_warning(current, **on) == ""
+    warning = _run_vk_drift_warning(stale, **on)
+    assert "runs with another BIFROST_TEST_VK" in warning
+    # A command that works from any directory, with the env file the deploy used.
+    assert f'-f "{REPO_ROOT}/docker-compose.infra.yml" up -d --wait bifrost' in warning
+    assert "--env-file" not in warning
+    env_file = tmp_path / "deploy.env"
+    env_file.write_text(f"BIFROST_TEST_VK={BIFROST_VK}\n", encoding="utf-8")
+    assert f'--env-file "{env_file}"' in _run_vk_drift_warning(stale, ENV_FILE=str(env_file))
+    # Never echoes either key.
+    assert BIFROST_VK not in warning and "o" * 32 not in warning
+    # Nothing to compare: no container, routes switched off, or no usable key.
+    assert _run_vk_drift_warning(None, **on) == ""
+    assert _run_vk_drift_warning(stale, BIFROST_GATEWAY_ROUTES="false", **on) == ""
+    assert _run_vk_drift_warning(stale, BIFROST_TEST_VK="") == ""
+
+
+def test_deploy_checks_for_vk_drift_before_choosing_whether_to_provision() -> None:
+    script = DEPLOY_SCRIPT_FILE.read_text(encoding="utf-8")
+    deploy = _shell_function(script, "deploy_color")
+    assert deploy.index("warn_bifrost_vk_drift") < deploy.index("apisix_has_core_routes")
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["true", "false", "False", "FALSE", "0", "1", "no", "yes", "off", "on", "f", "t", "n", "y"],
+)
+def test_deploy_reads_the_switch_like_the_service(value: str) -> None:
+    from app.config import Settings
+
+    state = _deploy_bifrost_state(BIFROST_GATEWAY_ROUTES=value, BIFROST_TEST_VK=BIFROST_VK)
+    enabled = Settings(BIFROST_GATEWAY_ROUTES=value).BIFROST_GATEWAY_ROUTES
+    assert state == ("on" if enabled else "off")

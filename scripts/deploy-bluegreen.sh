@@ -263,6 +263,91 @@ route_has_internal_proxy_header() {
   [[ "$compact" == *"\"$APISIX_INTERNAL_PROXY_HEADER_NAME\":"* ]]
 }
 
+# True only when APISIX answers 404 for $path: an admin API that fails any
+# other way proves nothing about absence.
+apisix_absent() {
+  local path="$1"
+  local base_url status
+  base_url="$(admin_url)"
+  status="$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "X-API-KEY: $APISIX_ADMIN_KEY" \
+    "$base_url/apisix/admin/$path" 2>/dev/null)" || return 1
+  [[ "$status" == "404" ]]
+}
+
+# What boot provisioning makes of /api/llm-bi (unibridge-service app/main.py
+# _provision_bifrost_routes; the same parsing, and the key rule of
+# app/services/bifrost_routes.py usable_virtual_key): "off" when
+# BIFROST_GATEWAY_ROUTES is false, "on" with a usable BIFROST_TEST_VK, otherwise
+# "skip" — the service then leaves the four routes as they are.
+bifrost_routes_state() {
+  # ASCII ranges whatever the operator's locale.
+  local LC_ALL=C
+  local enabled="${BIFROST_GATEWAY_ROUTES:-true}"
+  case "${enabled,,}" in
+    0|f|false|n|no|off) printf 'off' ;;
+    *)
+      if [[ "${BIFROST_TEST_VK:-}" =~ ^sk-bf-[A-Za-z0-9_-]{16,}$ ]]; then
+        printf 'on'
+      else
+        printf 'skip'
+      fi
+      ;;
+  esac
+}
+
+# The /api/llm-bi routes follow the switch: installed and injecting the current
+# virtual key while it is on, gone once it is off, with llm-bi-not-found there
+# in every state. So the first deploy after upgrading from
+# scripts/bifrost-test.sh, a flipped switch and a rotated BIFROST_TEST_VK all
+# re-provision.
+apisix_bifrost_routes_match() {
+  local state not_found_route route route_id upstream_id
+  state="$(bifrost_routes_state)"
+  not_found_route="$(apisix_get "routes/llm-bi-not-found")" || return 1
+  json_contains_pair "$not_found_route" "uri" "/api/llm-bi/*" || return 1
+  [[ "$state" != "skip" ]] || return 0
+  for route_id in llm-bi-proxy llm-bi-messages llm-bi-responses llm-bi-models; do
+    if [[ "$state" == "off" ]]; then
+      apisix_absent "routes/$route_id" || return 1
+      continue
+    fi
+    case "$route_id" in
+      llm-bi-proxy) upstream_id="bifrost" ;;
+      *) upstream_id="llm-converter-bi" ;;
+    esac
+    route="$(apisix_get "routes/$route_id")" || return 1
+    json_contains_pair "$route" "upstream_id" "$upstream_id" || return 1
+    json_contains_pair "$route" "x-bf-vk" "$BIFROST_TEST_VK" || return 1
+  done
+}
+
+# A rotated BIFROST_TEST_VK reaches the /api/llm-bi routes through the deploy,
+# but the bifrost container keeps the value it was created with until it is
+# recreated, and refuses every request carrying another (401). Say so; the
+# side-by-side test is no reason to hold up an app deploy. Compared in-shell so
+# the key never lands on a command line.
+warn_bifrost_vk_drift() {
+  [[ "$(bifrost_routes_state)" == "on" ]] || return 0
+  local container_id container_env line env_flag=""
+  container_id="$(compose_infra ps -q bifrost 2>/dev/null | head -n1)" || return 0
+  [[ -n "$container_id" ]] || return 0
+  container_env="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
+    "$container_id" 2>/dev/null)" || return 0
+  while IFS= read -r line; do
+    if [[ "$line" == "BIFROST_TEST_VK=$BIFROST_TEST_VK" ]]; then
+      return 0
+    fi
+  done <<<"$container_env"
+  if [[ -f "$ENV_FILE" ]]; then
+    env_flag=" --env-file \"$ENV_FILE\""
+  fi
+  echo "WARNING: the bifrost container runs with another BIFROST_TEST_VK than $ENV_FILE." >&2
+  echo "         The /api/llm-bi routes inject the $ENV_FILE value, which Bifrost refuses" >&2
+  echo "         (401) until the container is recreated:" >&2
+  echo "           docker compose$env_flag -p \"$INFRA_PROJECT\" -f \"$ROOT_DIR/docker-compose.infra.yml\" up -d --wait bifrost" >&2
+}
+
 route_allows_method() {
   local json="$1"
   local method="$2"
@@ -314,10 +399,10 @@ wait_apisix_admin() {
 }
 
 # True only when the core routes already exist in etcd and still match the
-# built-in auth/header shape plus LiteLLM topology. A 404 or stale route shape
-# (for example, missing the internal proxy trust header, or llm-proxy still
-# pointing at an older gateway upstream) returns non-zero so the caller can force
-# re-provisioning.
+# built-in auth/header shape plus LiteLLM topology, and the /api/llm-bi routes
+# match BIFROST_GATEWAY_ROUTES. A 404 or stale route shape (for example, missing
+# the internal proxy trust header, or llm-proxy still pointing at an older
+# gateway upstream) returns non-zero so the caller can force re-provisioning.
 apisix_has_core_routes() {
   local query_route query_template_write_route s3_route nas_route usages_route prometheus_route llm_proxy_route llm_admin_route llm_metrics_route messages_route responses_route models_route litellm_upstream
   query_route="$(apisix_get "routes/query-api")" || return 1
@@ -371,6 +456,8 @@ apisix_has_core_routes() {
   litellm_upstream="$(apisix_get "upstreams/litellm")" || return 1
   json_contains_pair "$litellm_upstream" "scheme" "https" || return 1
   [[ "${litellm_upstream//[[:space:]]/}" == *"\"litellm:4000\""* ]] || return 1
+
+  apisix_bifrost_routes_match || return 1
 }
 
 # Switch both APISIX upstreams (unibridge-service + llm-converter) to $color as a
@@ -681,6 +768,7 @@ deploy_color() {
     echo "Verifying existing infra stack without recreating it..."
     require_existing_infra_healthy
   fi
+  warn_bifrost_vk_drift
   ensure_shared_app_volumes
 
   # Decide whether the new color should provision APISIX routes at boot.
@@ -692,7 +780,9 @@ deploy_color() {
   if [[ -z "$old" ]]; then
     provision_on_start="true"
   elif [[ -n "${APISIX_ADMIN_KEY:-}" ]] && wait_apisix_admin && ! apisix_has_core_routes; then
-    echo "WARNING: APISIX is reachable but core routes are missing (etcd reset?)." >&2
+    echo "WARNING: APISIX is reachable but core routes are missing or out of date" >&2
+    echo "         (etcd reset, a release with new routes, or a changed" >&2
+    echo "         BIFROST_GATEWAY_ROUTES / BIFROST_TEST_VK)." >&2
     echo "         Forcing route re-provisioning on $target." >&2
     provision_on_start="true"
   fi
