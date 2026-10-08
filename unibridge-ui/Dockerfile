@@ -24,6 +24,8 @@ RUN npm run build
 FROM nginx:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Outside conf.d: entrypoint.sh renders it there only when BIFROST_UI_HOSTNAME is set.
+COPY nginx-bifrost-ui.conf /etc/nginx/bifrost-ui.conf.template
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 EXPOSE 443

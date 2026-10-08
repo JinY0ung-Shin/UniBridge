@@ -171,7 +171,7 @@ details.
 | Keycloak Admin | `https://<HOST_IP>:<KEYCLOAK_PORT>/admin` |
 | API Gateway | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/*` |
 | LiteLLM | `https://<HOST_IP>:<LITELLM_PORT>` (admin UI at `/ui` signs in via UniBridge SSO, admins only) |
-| Bifrost | `https://<HOST_IP>:<BIFROST_UI_PORT>` (UI and management API only, Bifrost's own admin login; see [Bifrost side-by-side test](#bifrost-side-by-side-test-apillm-bi)) |
+| Bifrost | `https://<HOST_IP>:<BIFROST_UI_PORT>`, or `https://<BIFROST_UI_HOSTNAME>` on the UniBridge port when that is set (UI and management API only, Bifrost's own admin login; see [Bifrost side-by-side test](#bifrost-side-by-side-test-apillm-bi)) |
 | Prometheus | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/prometheus/*` (API-key auth via gateway; direct `:9090` is localhost-only, `PROMETHEUS_BIND` overrides) |
 | Grafana | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana` (same-origin behind the UI) |
 
@@ -739,6 +739,19 @@ management API behind the Bifrost admin login, and the live-update socket
 `/metrics` return 404 there, so the UI's prompt playground cannot run prompts
 through it.
 
+To serve the UI on the UniBridge port instead, give it a DNS name of its own:
+point the name at the host, add it to the TLS certificate's SAN (see
+[TLS certificates](#3-tls-certificates)) and set `BIFROST_UI_HOSTNAME` to it.
+The UI nginx then answers that name with the same allowlist
+([`unibridge-ui/nginx-bifrost-ui.conf`](./unibridge-ui/nginx-bifrost-ui.conf)),
+in both layouts since the blue-green edge passes the Host header through, and
+the button opens `https://<name>` on the port UniBridge was opened on. A path
+such as `/bifrost` is not possible: Bifrost's UI builds every URL from the root
+of its origin, where UniBridge's own `/api` and `/assets` live. The name also
+keeps Bifrost's `token` cookie apart from the LiteLLM admin UI's cookie of the
+same name; on a shared IP the two overwrite each other, so signing in to one
+signs you out of the other.
+
 1. **Secrets** — set these in `.env`. Compose refuses to start the stack
    without them, and [`bifrost/entrypoint.sh`](./bifrost/entrypoint.sh) checks
    their format:
@@ -776,7 +789,7 @@ through it.
    The **Bifrost Admin** button ships with the UI image, so it appears after
    the next app deploy (single stack: `docker compose up -d --build
    unibridge-ui`). Open `BIFROST_UI_PORT` in the host firewall the same way as
-   `LITELLM_PORT`.
+   `LITELLM_PORT`, unless the UI is served under `BIFROST_UI_HOSTNAME` (above).
 
    On a host where the June 2026 Bifrost cutover ran, `up` recreates a leftover
    `bifrost` or `bifrost-tls` container of the same Compose project with this

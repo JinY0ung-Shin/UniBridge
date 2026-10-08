@@ -36,7 +36,19 @@ type ModelSortColumn = 'model' | 'input_tokens' | 'output_tokens' | 'cached_toke
 type KeySortColumn = 'api_key' | 'input_tokens' | 'output_tokens' | 'cached_tokens' | 'tokens' | 'requests' | 'cost';
 
 const LITELLM_ADMIN_URL = window.__RUNTIME_CONFIG__?.LITELLM_ADMIN_URL || import.meta.env.VITE_LITELLM_ADMIN_URL || 'https://localhost:4000/ui';
-const BIFROST_ADMIN_URL = window.__RUNTIME_CONFIG__?.BIFROST_ADMIN_URL || import.meta.env.VITE_BIFROST_ADMIN_URL || 'https://localhost:18443';
+
+// With BIFROST_UI_HOSTNAME set, the UI nginx also serves the Bifrost UI on that
+// host name, on the port UniBridge itself was opened on (Bifrost's UI needs the
+// root of an origin, so it cannot be a path here). Otherwise bifrost-tls serves
+// it on a port of its own.
+function bifrostAdminUrl(): string {
+  const hostname = window.__RUNTIME_CONFIG__?.BIFROST_UI_HOSTNAME;
+  if (hostname) {
+    const port = window.location.port ? `:${window.location.port}` : '';
+    return `https://${hostname}${port}/`;
+  }
+  return window.__RUNTIME_CONFIG__?.BIFROST_ADMIN_URL || import.meta.env.VITE_BIFROST_ADMIN_URL || 'https://localhost:18443';
+}
 
 const externalLinkIcon = (
   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ marginLeft: 4 }} aria-hidden="true">
@@ -245,7 +257,7 @@ function LlmMonitoring() {
                   only its own single admin login, which is gateway-admin
                   level — so the link is admin-only as well. */}
               <a
-                href={BIFROST_ADMIN_URL}
+                href={bifrostAdminUrl()}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="admin-link-btn"

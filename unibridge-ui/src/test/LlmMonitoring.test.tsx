@@ -141,6 +141,19 @@ describe('LlmMonitoring', () => {
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
 
+  it('links Bifrost Admin to BIFROST_UI_HOSTNAME on the port this page was opened on', async () => {
+    window.__RUNTIME_CONFIG__ = { ...window.__RUNTIME_CONFIG__, BIFROST_UI_HOSTNAME: 'llm-proxy.example.com' };
+    const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
+
+    renderWithProviders(<LlmMonitoring />);
+
+    // jsdom serves the page from http://localhost:3000/: the name keeps that
+    // port (the UI nginx answers it there) and always uses https.
+    expect(window.location.port).toBe('3000');
+    const link = await screen.findByRole('link', { name: 'Bifrost Admin opens in new tab' });
+    expect(link).toHaveAttribute('href', 'https://llm-proxy.example.com:3000/');
+  });
+
   it('hides the LiteLLM and Bifrost Admin links for non-admins', async () => {
     authState.appRole = 'user';
     const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');

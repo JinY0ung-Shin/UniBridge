@@ -26,6 +26,8 @@ BIFROST_DIR = REPO_ROOT / "bifrost"
 BIFROST_TEST_SCRIPT_FILE = REPO_ROOT / "scripts" / "bifrost-test.sh"
 UI_ENTRYPOINT_FILE = REPO_ROOT / "unibridge-ui" / "entrypoint.sh"
 UI_DOCKERIGNORE_FILE = REPO_ROOT / "unibridge-ui" / ".dockerignore"
+UI_DOCKERFILE = REPO_ROOT / "unibridge-ui" / "Dockerfile"
+UI_BIFROST_SERVER_FILE = REPO_ROOT / "unibridge-ui" / "nginx-bifrost-ui.conf"
 BACKUP_SCRIPT_FILE = REPO_ROOT / "backup" / "backup.sh"
 RESTORE_SCRIPT_FILE = REPO_ROOT / "backup" / "restore.sh"
 BACKUP_META_LIB_FILE = REPO_ROOT / "backup" / "lib" / "meta.sh"
@@ -1225,6 +1227,121 @@ def test_ui_bifrost_link_targets_the_published_tls_port() -> None:
     entrypoint = UI_ENTRYPOINT_FILE.read_text(encoding="utf-8")
     assert 'BIFROST_ADMIN_URL="https://${HOST_IP:-localhost}:${BIFROST_UI_PORT:-18443}"' in entrypoint
     assert 'BIFROST_ADMIN_URL: "$(json_escape "$BIFROST_ADMIN_URL")"' in entrypoint
+
+
+def _nginx_locations(conf: str) -> list[tuple[str, str]]:
+    """(match spec, whitespace-normalized body) of every location block, in order."""
+    return [
+        (spec.strip(), " ".join(body.split()))
+        for spec, body in re.findall(
+            r"^\s*location\s+([^{]+?)\s*\{(.*?)^\s*\}", conf, re.S | re.M
+        )
+    ]
+
+
+def test_ui_bifrost_hostname_server_mirrors_the_tls_proxy_allowlist() -> None:
+    # BIFROST_UI_HOSTNAME serves the Bifrost UI from the UI nginx on the
+    # UniBridge port: it must expose exactly what bifrost-tls exposes, no more.
+    tls_proxy = (BIFROST_DIR / "tls-proxy.conf").read_text(encoding="utf-8")
+    server = UI_BIFROST_SERVER_FILE.read_text(encoding="utf-8")
+    locations = _nginx_locations(server)
+    assert locations == [
+        location for location in _nginx_locations(tls_proxy) if location[0] != "= /healthz"
+    ]
+    # Parsed for real (two empty lists would compare equal): everything the
+    # allowlist does not name ends in the catch-all 404.
+    assert ("^~ /api/", "proxy_pass http://$bifrost_upstream;") in locations
+    assert locations[-1] == ("/", "return 404;")
+    for directive in (
+        'set $bifrost_upstream "bifrost:8080";',
+        "proxy_set_header Upgrade $http_upgrade;",
+        "proxy_set_header Connection $connection_upgrade;",
+        "proxy_set_header X-Forwarded-Proto https;",
+        "proxy_buffering off;",
+        "error_page 497 =301 https://$http_host$request_uri;",
+    ):
+        assert directive in server, directive
+        assert directive in tls_proxy, directive
+    # Bifrost sends its own security headers; a second copy would conflict.
+    assert not re.search(r"^\s*add_header\b", server, re.M)
+    # At nginx's default 64-byte buckets a server_name over 46 characters stops
+    # nginx from starting; the setting must sit at http level, before the server.
+    bucket = re.search(r"^server_names_hash_bucket_size (\d+);$", server, re.M)
+    assert bucket and int(bucket.group(1)) >= 512
+    assert bucket.start() < server.index("server {")
+
+    # Only that name reaches it: UniBridge's own server stays the default for
+    # every other Host, IP addresses included.
+    assert re.search(r"^\s*server_name __BIFROST_UI_HOSTNAME__;$", server, re.M)
+    assert not re.search(r"^\s*listen\b.*default_server", server, re.M)
+    nginx_config = NGINX_CONFIG_FILE.read_text(encoding="utf-8")
+    assert re.search(r"^\s*listen 443 ssl default_server;$", nginx_config, re.M)
+
+
+def test_ui_renders_the_bifrost_server_only_when_a_hostname_is_set() -> None:
+    # Baked outside conf.d, so nginx loads it only once entrypoint.sh renders it.
+    dockerfile = UI_DOCKERFILE.read_text(encoding="utf-8")
+    assert "COPY nginx-bifrost-ui.conf /etc/nginx/bifrost-ui.conf.template" in dockerfile
+
+    entrypoint = UI_ENTRYPOINT_FILE.read_text(encoding="utf-8")
+    guarded = re.findall(r'^if \[ -n "\$BIFROST_UI_HOSTNAME" \]; then\n(.*?)^fi$', entrypoint, re.S | re.M)
+    assert any(
+        "/etc/nginx/bifrost-ui.conf.template > /etc/nginx/conf.d/bifrost-ui.conf" in block
+        for block in guarded
+    ), "the Bifrost server must be rendered behind BIFROST_UI_HOSTNAME"
+    # The value is checked before anything is written (a DNS name, and not the
+    # name UniBridge itself answers on), and a leftover placeholder fails the
+    # start like the upstream ones.
+    checks = entrypoint.index("! valid_hostname")
+    assert checks < entrypoint.index("runtime-config.js")
+    assert '"$(lowercase "${HOST_IP:-localhost}")"' in entrypoint[checks:entrypoint.index("runtime-config.js")]
+    assert "__BIFROST_UI_HOSTNAME__" in entrypoint.split("Catch both a failed substitution")[1]
+    assert 'BIFROST_UI_HOSTNAME: "$(json_escape "$BIFROST_UI_HOSTNAME")"' in entrypoint
+
+    for path in (COMPOSE_FILE, BLUEGREEN_APP_COMPOSE_FILE):
+        env = _service_environment(_load_yaml(path), "unibridge-ui")
+        assert env["BIFROST_UI_HOSTNAME"] == "${BIFROST_UI_HOSTNAME:-}", path.name
+
+
+def _shell_function(script: str, name: str) -> str:
+    match = re.search(rf"^{name}\(\) {{\n.*?^}}\n", script, re.S | re.M)
+    assert match, name
+    return match.group(0)
+
+
+def test_ui_entrypoint_accepts_only_dns_names_for_the_bifrost_hostname() -> None:
+    # The value becomes an nginx server_name: anything else could inject
+    # config, and an IP address would take the requests UniBridge itself gets.
+    valid_hostname = _shell_function(UI_ENTRYPOINT_FILE.read_text(encoding="utf-8"), "valid_hostname")
+    cases = {
+        "llm-proxy.example.com": True,
+        "llm-proxy": True,
+        "Bifrost-1.Corp.internal": True,
+        "a" * 63 + ".example.com": True,
+        "a" * 64 + ".example.com": False,
+        ("a" * 50 + ".") * 5 + "com": False,
+        "10.0.0.5": False,
+        "llm-proxy.example.com:8443": False,
+        "https://llm-proxy.example.com": False,
+        "llm-proxy.example.com/x": False,
+        "llm-proxy.example.com;": False,
+        "llm proxy.example.com": False,
+        "llm-proxy.example.com\nother.example.com": False,
+        "*.example.com": False,
+        "-llm.example.com": False,
+        "llm-.example.com": False,
+        "llm..example.com": False,
+        "llm-proxy.example.com.": False,
+        ".example.com": False,
+        "": False,
+    }
+    for hostname, accepted in cases.items():
+        result = subprocess.run(
+            ["sh", "-c", valid_hostname + 'valid_hostname "$1"', "sh", hostname],
+            capture_output=True,
+            check=False,
+        )
+        assert (result.returncode == 0) is accepted, repr(hostname)
 
 
 def test_bifrost_test_secrets_are_listed_blank_in_env_example() -> None:

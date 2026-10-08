@@ -85,7 +85,9 @@ requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
   `llm-converter-bi`; identical in both compose layouts, tested). Its APISIX routes come
   from `scripts/bifrost-test.sh`, not `main.py` provisioning. `bifrost/tls-proxy.conf`
   (the LLM Monitoring page's Bifrost button) is an allowlist: UI + management API only,
-  never inference or `/metrics`.
+  never inference or `/metrics`. With `BIFROST_UI_HOSTNAME` the UI nginx serves the same
+  allowlist on the UniBridge port under that DNS name (`unibridge-ui/nginx-bifrost-ui.conf`,
+  test-pinned to match). Bifrost's UI only works at the root of an origin: never a path.
 - **`unibridge_*` metrics are scraped by two jobs**: `unibridge-service` is a DNS alias both
   blue/green colors answer on (round-robin → counters alternate → `increase()` inflates);
   `unibridge-service-colors` is per-color. PromQL over them (backend or Grafana) must use

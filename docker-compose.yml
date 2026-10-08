@@ -924,8 +924,13 @@ services:
       - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
       - LITELLM_PORT=${LITELLM_PORT:-4000}
       # Must match the bifrost-tls published port: the LLM Monitoring page's
-      # Bifrost button links to https://HOST_IP:BIFROST_UI_PORT.
+      # Bifrost button links to https://HOST_IP:BIFROST_UI_PORT, unless
+      # BIFROST_UI_HOSTNAME is set.
       - BIFROST_UI_PORT=${BIFROST_UI_PORT:-18443}
+      # Optional DNS name on which this UI's nginx also serves the Bifrost UI
+      # (nginx-bifrost-ui.conf); the button then opens https://NAME on the port
+      # UniBridge was opened on.
+      - BIFROST_UI_HOSTNAME=${BIFROST_UI_HOSTNAME:-}
       - GRAFANA_EXTERNAL_URL=${GRAFANA_EXTERNAL_URL:-}
       - GRAFANA_UPSTREAM=${GRAFANA_UPSTREAM:-grafana}
       - UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service}
