@@ -220,6 +220,44 @@ describe('ApiKeys', () => {
     expect(within(routeOption!).getByText('/api/users/very/long/path/*')).toHaveClass('tag');
   });
 
+  it('offers every path of a multi-path route and leaves out routes a grant cannot apply to', async () => {
+    mockedGetGatewayRoutes.mockResolvedValue({
+      items: [
+        makeGatewayRoute({
+          id: 'llm-bi-proxy',
+          name: 'llm-bi-proxy',
+          uri: undefined,
+          uris: ['/api/llm-bi/v1/chat/completions', '/api/llm-bi/v1/embeddings'],
+          system: true,
+          require_auth: true,
+        }),
+        // A system route without key-auth answers every request itself.
+        makeGatewayRoute({
+          id: 'llm-bi-not-found',
+          name: 'llm-bi-not-found',
+          uri: '/api/llm-bi/*',
+          system: true,
+          require_auth: false,
+        }),
+        // A custom route without key-auth stays grantable, as before.
+        makeGatewayRoute({ id: 'route-1', name: 'Open API', uri: '/api/open/*', require_auth: false }),
+      ],
+      total: 3,
+    });
+
+    renderWithProviders(<ApiKeys />);
+    await waitFor(() => {
+      expect(screen.getByText('No API keys')).toBeInTheDocument();
+    });
+    await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
+
+    const routeOption = screen.getByRole('checkbox', { name: /llm-bi-proxy/i }).closest('label');
+    expect(within(routeOption!).getByText('/api/llm-bi/v1/chat/completions, /api/llm-bi/v1/embeddings'))
+      .toHaveClass('tag');
+    expect(screen.getByRole('checkbox', { name: /open api/i })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /llm-bi-not-found/i })).not.toBeInTheDocument();
+  });
+
   it('renders structured checkbox rows in edit modal', async () => {
     mockedGetApiKeys.mockResolvedValue([
       makeApiKey({

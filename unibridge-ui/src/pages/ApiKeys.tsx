@@ -16,6 +16,7 @@ import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
 import { usePermissions } from '../components/usePermissions';
 import ResourceModal from '../components/ResourceModal';
+import { isGrantableRoute, routeUriLabel } from '../utils/gatewayRoutes';
 import { formatKST } from '../utils/time';
 import './ApiKeys.css';
 
@@ -118,7 +119,7 @@ function ApiKeys() {
 
   const keys = keysQuery.data ?? [];
   const databases = dbsQuery.data ?? [];
-  const routes = routesQuery.data?.items ?? [];
+  const routes = (routesQuery.data?.items ?? []).filter(isGrantableRoute);
   const s3Connections = s3ConnectionsQuery.data ?? [];
   const nasConnections = canReadNasConnections ? nasConnectionsQuery.data ?? [] : [];
   const normalizedKeySearch = keySearch.trim().toLowerCase();
@@ -538,7 +539,7 @@ function ApiKeys() {
                           onChange={() => toggleRoute(r.id)}
                         />
                         <span className="checkbox-list-label">{r.name || r.id}</span>
-                        <span className="tag">{r.uri}</span>
+                        <span className="tag">{routeUriLabel(r)}</span>
                       </label>
                     ))}
                   </div>

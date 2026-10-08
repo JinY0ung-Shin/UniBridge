@@ -13,6 +13,7 @@ import {
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
 import ResourceModal from '../components/ResourceModal';
+import { routeUriLabel } from '../utils/gatewayRoutes';
 import './GatewayRoutes.css';
 
 const METHOD_COLORS: Record<string, string> = {
@@ -64,7 +65,7 @@ function GatewayRoutes() {
         const serviceKeyHeaders = routeServiceKeys(route).map((sk) => sk.header_name);
         return [
           route.name,
-          route.uri,
+          routeUriLabel(route),
           route.upstream_id,
           route.status === 1 ? 'active' : 'disabled',
           ...(route.methods || ['ALL']),
@@ -78,7 +79,7 @@ function GatewayRoutes() {
     : routes;
 
   function handleDelete(route: GatewayRoute) {
-    const name = route.name || route.uri;
+    const name = route.name || routeUriLabel(route);
     if (window.confirm(t('gatewayRoutes.deleteConfirm', { name }))) {
       deleteMutation.mutate(route.id);
     }
@@ -248,7 +249,7 @@ function GatewayRoutes() {
                     {route.name || '—'}
                     {route.system && <span className="badge badge-system">System</span>}
                   </td>
-                  <td className="cell-uri">{route.uri}</td>
+                  <td className="cell-uri">{routeUriLabel(route)}</td>
                   <td>
                     <div className="method-badges">
                       {(route.methods || ['ALL']).map((m) => (
@@ -285,15 +286,19 @@ function GatewayRoutes() {
                   </td>
                   <td>
                     <div className="action-buttons">
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-outline"
-                        aria-label={t('gatewayRoutes.testRoute', { name: route.name || route.uri })}
-                        onClick={() => handleTest(route.id, route.name || route.uri)}
-                        disabled={testingIds.has(route.id)}
-                      >
-                        {t('gatewayRoutes.test')}
-                      </button>
+                      {/* The test probes the upstream; a route without one (the
+                          /api/llm-bi not-found route) has nothing to probe. */}
+                      {route.upstream_id && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline"
+                          aria-label={t('gatewayRoutes.testRoute', { name: route.name || route.uri })}
+                          onClick={() => handleTest(route.id, route.name || route.uri)}
+                          disabled={testingIds.has(route.id)}
+                        >
+                          {t('gatewayRoutes.test')}
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="btn btn-sm btn-outline"
