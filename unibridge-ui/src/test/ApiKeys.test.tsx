@@ -48,10 +48,10 @@ async function typeKeyName(name: string) {
   await userEvent.type(screen.getByRole('textbox', { name: 'Name' }), name);
 }
 
-// Body columns in order; "Requests" heads the 7 days / 30 days pair above them.
+// Body columns in order, for a role that can read gateway monitoring.
 const COLUMNS = [
   'Name', 'Description', 'API Key', 'Allowed Data Sources', 'Allowed Routes',
-  '7 days', '30 days', 'Expires', 'Actions',
+  'Requests (7d)', 'Expires', 'Actions',
 ];
 
 function cellInColumn(row: HTMLElement, column: string) {
@@ -764,32 +764,30 @@ describe('ApiKeys', () => {
     renderWithProviders(<ApiKeys />, { permissions: ['apikeys.read', 'apikeys.write'] });
 
     const row = (await screen.findByText('my-app')).closest('tr')!;
-    expect(screen.queryByRole('columnheader', { name: 'Requests' })).not.toBeInTheDocument();
-    expect(within(row).getAllByRole('cell')).toHaveLength(COLUMNS.length - 2);
+    expect(screen.queryByRole('columnheader', { name: 'Requests (7d)' })).not.toBeInTheDocument();
+    expect(within(row).getAllByRole('cell')).toHaveLength(COLUMNS.length - 1);
     expect(screen.queryByText(/LLM calls included/)).not.toBeInTheDocument();
     expect(mockedGetApiKeyUsage).not.toHaveBeenCalled();
   });
 
-  it('shows each key\'s request counts for the last 7 and 30 days', async () => {
+  it('shows each key\'s request count for the last 7 days', async () => {
     mockedGetScopedApiKeys.mockResolvedValue([
       makeApiKey({ name: 'busy-app' }),
       makeApiKey({ name: 'new-app' }),
     ]);
     mockedGetApiKeyUsage.mockResolvedValue({
-      keys: { 'busy-app': { requests_7d: 1234, requests_30d: 56789 } },
+      keys: { 'busy-app': { requests_7d: 1234 } },
     });
 
     renderWithProviders(<ApiKeys />);
 
     const busyRow = (await screen.findByText('busy-app')).closest('tr')!;
     await waitFor(() => {
-      expect(cellInColumn(busyRow, '7 days')).toHaveTextContent('1,234');
+      expect(cellInColumn(busyRow, 'Requests (7d)')).toHaveTextContent('1,234');
     });
-    expect(cellInColumn(busyRow, '30 days')).toHaveTextContent('56,789');
-    expect(screen.getByRole('columnheader', { name: 'Requests' })).toHaveAttribute('colspan', '2');
     // A key created after the counts were fetched has none yet.
     const newRow = screen.getByText('new-app').closest('tr')!;
-    expect(cellInColumn(newRow, '7 days')).toHaveTextContent('\u2014');
+    expect(cellInColumn(newRow, 'Requests (7d)')).toHaveTextContent('\u2014');
     expect(screen.getByText(/LLM calls included/)).toBeInTheDocument();
   });
 
@@ -801,8 +799,7 @@ describe('ApiKeys', () => {
 
     expect(await screen.findByText('Failed to load request counts.')).toBeInTheDocument();
     const row = screen.getByText('my-app').closest('tr')!;
-    expect(cellInColumn(row, '7 days')).toHaveTextContent('\u2014');
-    expect(cellInColumn(row, '30 days')).toHaveTextContent('\u2014');
+    expect(cellInColumn(row, 'Requests (7d)')).toHaveTextContent('\u2014');
   });
 
   it('refetches request counts after creating a key', async () => {

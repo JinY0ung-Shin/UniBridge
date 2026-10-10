@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import secrets
-import time
 from datetime import timedelta
 from typing import Any, Literal
 
@@ -413,14 +411,15 @@ async def get_api_key_usage(
     _admin: CurrentUser = Depends(require_permission("apikeys.read")),
     db: AsyncSession = Depends(get_db),
 ) -> ApiKeyUsageResponse:
-    """Gateway requests made with each API key over the last 7 and 30 days.
+    """Gateway requests made with each API key over the last 7 days.
 
     Every route a key reached through APISIX counts, LLM routes included —
     unlike the gateway monitoring page, which shows LLM traffic separately — so
     a key used only for LLM calls never reads as unused. The counts are
-    Prometheus estimates over ``apisix_http_status`` (kept 60d); see
-    :func:`_usage_query`. Keys without traffic report 0. Per-key traffic is
-    gateway monitoring data, so this also needs ``gateway.monitoring.read``.
+    Prometheus estimates over ``apisix_http_status``; see :func:`_usage_query`.
+    Only 7 days: the 30-day query, two 30-day range scans, timed out on busy
+    gateways. Keys without traffic report 0. Per-key traffic is gateway
+    monitoring data, so this also needs ``gateway.monitoring.read``.
     """
     if "gateway.monitoring.read" not in await get_role_permissions(db, _admin.role):
         raise HTTPException(
@@ -428,26 +427,15 @@ async def get_api_key_usage(
             detail="Required permission: gateway.monitoring.read",
         )
     names = (await db.execute(select(ApiKeyAccess.consumer_name))).scalars().all()
-    now = time.time()
     try:
-        rows_7d, rows_30d = await asyncio.gather(
-            prometheus_client.instant_query(_usage_query("7d"), eval_time=now),
-            prometheus_client.instant_query(_usage_query("30d"), eval_time=now),
-        )
+        rows = await prometheus_client.instant_query(_usage_query("7d"))
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
         )
-    counts_7d = _requests_by_consumer(rows_7d)
-    counts_30d = _requests_by_consumer(rows_30d)
+    counts = _requests_by_consumer(rows)
     return ApiKeyUsageResponse(keys={
-        name: ApiKeyUsage(
-            requests_7d=counts_7d.get(name, 0),
-            # The two windows extrapolate their edges separately, so rounding can
-            # leave the 30-day estimate a request short of the 7-day one it contains.
-            requests_30d=max(counts_30d.get(name, 0), counts_7d.get(name, 0)),
-        )
-        for name in names
+        name: ApiKeyUsage(requests_7d=counts.get(name, 0)) for name in names
     })
 
 

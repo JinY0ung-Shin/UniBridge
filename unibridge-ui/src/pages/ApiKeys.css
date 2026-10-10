@@ -88,15 +88,6 @@
   transition: opacity 0.15s ease;
 }
 
-.api-keys .data-table th.api-key-usage-group {
-  text-align: center;
-  padding-bottom: 6px;
-}
-
-.api-keys .data-table .api-key-usage-windows th {
-  padding-top: 6px;
-}
-
 .api-keys .data-table .api-key-usage-cell {
   text-align: right;
   font-variant-numeric: tabular-nums;

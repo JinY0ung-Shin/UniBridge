@@ -13,7 +13,6 @@ import {
   getNasConnections,
   type ApiKey,
   type ApiKeyScope,
-  type ApiKeyUsage,
 } from '../api/client';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
@@ -318,9 +317,9 @@ function ApiKeys() {
     return t('apiKeys.issuerUnknown');
   }
 
-  function renderUsage(name: string, field: keyof ApiKeyUsage) {
+  function renderUsage(name: string) {
     if (usageQuery.isPending) return '\u2026';
-    const count = usageQuery.data?.keys[name]?.[field];
+    const count = usageQuery.data?.keys[name]?.requests_7d;
     return count == null ? '\u2014' : count.toLocaleString();
   }
 
@@ -337,7 +336,6 @@ function ApiKeys() {
     );
   }
 
-  const headerRows = canSeeUsage ? 2 : 1;
   const isSaving = createMut.isPending || updateMut.isPending;
   const accessItemClass = form.isMaster
     ? 'checkbox-list-item is-disabled'
@@ -391,27 +389,19 @@ function ApiKeys() {
             aria-busy={switchingScope}
           >
             <table className="data-table">
-              {/* One "Requests" heading over narrow 7d/30d columns: two full
-                  headings would push the action buttons off a 1440px screen. */}
               <thead>
                 <tr>
-                  <th scope="col" rowSpan={headerRows}>{t('apiKeys.keyName')}</th>
-                  <th scope="col" rowSpan={headerRows}>{t('apiKeys.description')}</th>
-                  <th scope="col" rowSpan={headerRows}>{t('apiKeys.apiKey')}</th>
-                  <th scope="col" rowSpan={headerRows}>{t('apiKeys.allowedDatabases')}</th>
-                  <th scope="col" rowSpan={headerRows}>{t('apiKeys.allowedRoutes')}</th>
+                  <th scope="col">{t('apiKeys.keyName')}</th>
+                  <th scope="col">{t('apiKeys.description')}</th>
+                  <th scope="col">{t('apiKeys.apiKey')}</th>
+                  <th scope="col">{t('apiKeys.allowedDatabases')}</th>
+                  <th scope="col">{t('apiKeys.allowedRoutes')}</th>
                   {canSeeUsage && (
-                    <th scope="col" colSpan={2} className="api-key-usage-group">{t('apiKeys.requests')}</th>
+                    <th scope="col" className="api-key-usage-cell">{t('apiKeys.requests7d')}</th>
                   )}
-                  <th scope="col" rowSpan={headerRows}>{t('apiKeys.expiresAt')}</th>
-                  <th scope="col" rowSpan={headerRows}>{t('common.actions')}</th>
+                  <th scope="col">{t('apiKeys.expiresAt')}</th>
+                  <th scope="col">{t('common.actions')}</th>
                 </tr>
-                {canSeeUsage && (
-                  <tr className="api-key-usage-windows">
-                    <th scope="col" className="api-key-usage-cell">{t('apiKeys.last7Days')}</th>
-                    <th scope="col" className="api-key-usage-cell">{t('apiKeys.last30Days')}</th>
-                  </tr>
-                )}
               </thead>
               <tbody>
                 {filteredKeys.map((k) => {
@@ -426,12 +416,7 @@ function ApiKeys() {
                       <td className="cell-key">{k.api_key || '\u2014'}</td>
                       <td><div className="cell-tags">{renderTags(k.allowed_databases)}</div></td>
                       <td><div className="cell-tags">{renderTags(k.allowed_routes)}</div></td>
-                      {canSeeUsage && (
-                        <>
-                          <td className="api-key-usage-cell">{renderUsage(k.name, 'requests_7d')}</td>
-                          <td className="api-key-usage-cell">{renderUsage(k.name, 'requests_30d')}</td>
-                        </>
-                      )}
+                      {canSeeUsage && <td className="api-key-usage-cell">{renderUsage(k.name)}</td>}
                       <td>{k.expires_at ? formatKST(k.expires_at) : '—'}</td>
                       <td>
                         {canWrite && (

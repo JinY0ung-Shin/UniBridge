@@ -1,5 +1,5 @@
 """Tests for the API key page's issuer scoping (``?scope=mine``), the boot-time
-issuer backfill, and the per-key 7/30-day usage counts (``/admin/api-keys/usage``)."""
+issuer backfill, and the per-key 7-day usage counts (``/admin/api-keys/usage``)."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
@@ -165,59 +165,34 @@ async def test_list_rejects_an_unknown_scope(client, admin_token):
 
 
 @pytest.mark.asyncio
-async def test_usage_counts_each_keys_requests_over_7_and_30_days(client, admin_token):
+async def test_usage_counts_each_keys_requests_over_the_last_7_days(client, admin_token):
     await _create_key(client, admin_token, "busy-app")
     await _create_key(client, admin_token, "idle-app")
 
-    async def instant_query(query, eval_time=None):
-        if "[7d]" in query:
-            return [
-                {"metric": {"consumer": "busy-app"}, "value": [eval_time, "41.6"]},
-                # Traffic of a key that no longer exists stays out of the response.
-                {"metric": {"consumer": "deleted-app"}, "value": [eval_time, "9"]},
-            ]
-        assert "[30d]" in query
-        return [{"metric": {"consumer": "busy-app"}, "value": [eval_time, "120.2"]}]
-
-    mock = AsyncMock(side_effect=instant_query)
+    mock = AsyncMock(return_value=[
+        {"metric": {"consumer": "busy-app"}, "value": [0, "41.6"]},
+        # Traffic of a key that no longer exists stays out of the response.
+        {"metric": {"consumer": "deleted-app"}, "value": [0, "9"]},
+    ])
     with patch("app.routers.api_keys.prometheus_client.instant_query", mock):
         resp = await client.get("/admin/api-keys/usage", headers=auth_header(admin_token))
 
     assert resp.status_code == 200, resp.text
     assert resp.json() == {
         "keys": {
-            "busy-app": {"requests_7d": 42, "requests_30d": 120},
-            "idle-app": {"requests_7d": 0, "requests_30d": 0},
+            "busy-app": {"requests_7d": 42},
+            "idle-app": {"requests_7d": 0},
         }
     }
-    queries = [call.args[0] for call in mock.call_args_list]
-    assert len(queries) == 2
+    # One 7-day query: the 30-day one timed out on busy gateways.
+    mock.assert_awaited_once()
+    query = mock.await_args.args[0]
+    assert "[7d]" in query and "30d" not in query
     # Every route counts, LLM ones included: nothing narrows the selector by route.
-    assert all("route" not in query for query in queries)
-    assert all('consumer!=""' in query for query in queries)
+    assert "route" not in query
+    assert 'consumer!=""' in query
     # The first request of each series counts too (increase() alone drops it).
-    assert any("min_over_time" in q and "offset 7d" in q for q in queries)
-    assert any("min_over_time" in q and "offset 30d" in q for q in queries)
-    # Both windows end at the same instant.
-    assert len({call.kwargs["eval_time"] for call in mock.call_args_list}) == 1
-
-
-@pytest.mark.asyncio
-async def test_usage_30d_never_reads_below_7d(client, admin_token):
-    await _create_key(client, admin_token, "edge-app")
-
-    async def instant_query(query, eval_time=None):
-        value = "10" if "[7d]" in query else "9.4"
-        return [{"metric": {"consumer": "edge-app"}, "value": [eval_time, value]}]
-
-    with patch(
-        "app.routers.api_keys.prometheus_client.instant_query",
-        AsyncMock(side_effect=instant_query),
-    ):
-        resp = await client.get("/admin/api-keys/usage", headers=auth_header(admin_token))
-
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["keys"]["edge-app"] == {"requests_7d": 10, "requests_30d": 10}
+    assert "min_over_time" in query and "offset 7d" in query
 
 
 @pytest.mark.asyncio

@@ -522,12 +522,11 @@ class ApiKeyResponse(BaseModel):
 
 class ApiKeyUsage(BaseModel):
     requests_7d: int = 0
-    requests_30d: int = 0
 
 
 class ApiKeyUsageResponse(BaseModel):
     keys: dict[str, ApiKeyUsage] = Field(
-        default_factory=dict, description="Gateway requests per API key name, over rolling windows"
+        default_factory=dict, description="Gateway requests per API key name over the last 7 days"
     )
 
 

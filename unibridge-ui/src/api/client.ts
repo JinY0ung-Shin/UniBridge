@@ -986,11 +986,10 @@ export async function getScopedApiKeys(scope: ApiKeyScope): Promise<ApiKey[]> {
 
 export interface ApiKeyUsage {
   requests_7d: number;
-  requests_30d: number;
 }
 
 export interface ApiKeyUsageResponse {
-  /** Gateway requests per key name (LLM routes included), Prometheus estimates. */
+  /** Last-7-day gateway requests per key name (LLM routes included), Prometheus estimates. */
   keys: Record<string, ApiKeyUsage>;
 }
 
