@@ -97,6 +97,13 @@ requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
   Bifrost session cookie, set on that host only; OSS Bifrost has no SSO). Bifrost keeps
   sessions 30 days, so `app/services/bifrost_sessions.py` logs each handed-out one out
   after `BIFROST_SSO_SESSION_HOURS` (tokens encrypted in `bifrost_sso_sessions`).
+- **`LLM_GATEWAY=litellm|bifrost` picks the gateway behind `/api/llm`** (service, per-color
+  converter and deploy gate read the same `.env` value; default litellm). Route ids stay the
+  same so grants carry over (`app/services/llm_routes.py`). The converter routes carry BOTH
+  gateways' credentials and the converter forwards only its own: a deploy rewrites routes at
+  the new color's boot but moves the converter upstream only at promotion. On Bifrost,
+  `llm-proxy` is exact paths + `llm-not-found` 404s the rest (Bifrost's UI/management API
+  must never be reachable). README "Switching /api/llm to Bifrost".
 - **`unibridge_*` metrics are scraped by two jobs**: `unibridge-service` is a DNS alias both
   blue/green colors answer on (round-robin → counters alternate → `increase()` inflates);
   `unibridge-service-colors` is per-color. PromQL over them (backend or Grafana) must use

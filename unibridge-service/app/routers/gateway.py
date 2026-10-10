@@ -194,9 +194,13 @@ async def sync_default_route_timeout(seconds: int) -> int:
 
 
 def _health_path_for_route(route: dict[str, Any]) -> str:
-    route_id = route.get("id")
+    # LiteLLM answers on /health/liveliness. llm-proxy may run on Bifrost
+    # (LLM_GATEWAY), which answers on /health, so its upstream decides; the
+    # route ids only cover a legacy route without an upstream id.
     upstream_id = route.get("upstream_id")
-    if route_id in {"llm-proxy", "llm-admin"} or upstream_id == "litellm":
+    if upstream_id == "litellm" or (
+        upstream_id is None and route.get("id") in {"llm-proxy", "llm-admin"}
+    ):
         return "/health/liveliness"
     return "/health"
 

@@ -289,6 +289,9 @@ services:
       # container runs with; false removes them again.
       - BIFROST_GATEWAY_ROUTES=${BIFROST_GATEWAY_ROUTES:-true}
       - BIFROST_TEST_VK=${BIFROST_TEST_VK:-}
+      # Which gateway serves /api/llm: litellm or bifrost (README "Switching
+      # /api/llm to Bifrost"). llm-converter reads the same value.
+      - LLM_GATEWAY=${LLM_GATEWAY:-litellm}
       # Bearer token verifying the internal Alertmanager webhook receiver.
       # Empty = receiver disabled (503); set it to enable infra-alert email.
       - ALERTMANAGER_WEBHOOK_TOKEN=${ALERTMANAGER_WEBHOOK_TOKEN:-}
@@ -681,6 +684,9 @@ services:
           memory: 512m
           cpus: "0.50"
     environment:
+      # The gateway to forward to, the same switch unibridge-service reads:
+      # litellm → LITELLM_URL below, bifrost → http://bifrost:8080.
+      - LLM_GATEWAY=${LLM_GATEWAY:-litellm}
       - LITELLM_URL=${LITELLM_CONVERTER_UPSTREAM:-https://litellm:4000}
       # Pin the LiteLLM self-signed cert as a CA (chain validated, hostname
       # check off since the cert is bound to HOST_IP). Set CONVERTER_TLS_CA="" in
@@ -753,7 +759,7 @@ services:
   # routes while BIFROST_GATEWAY_ROUTES is on. These three services are
   # identical in docker-compose.yml and docker-compose.infra.yml (tested).
   bifrost:
-    image: maximhq/bifrost:v2.2.4
+    image: maximhq/bifrost:v2.2.6
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 1g

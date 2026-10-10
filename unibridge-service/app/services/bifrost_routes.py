@@ -1,7 +1,8 @@
-"""The /api/llm-bi gateway routes: Bifrost, side by side with LiteLLM.
+"""The /api/llm-bi gateway routes: Bifrost, side by side with /api/llm.
 
-``/api/llm`` stays on LiteLLM. These routes send six exact inference paths to
-Bifrost instead, three of them through a second converter (``llm-converter-bi``)
+``/api/llm`` runs on whichever gateway LLM_GATEWAY names (app/services/llm_routes.py,
+which reuses the helpers here). These routes always send six exact inference
+paths to Bifrost, three of them through a second converter (``llm-converter-bi``)
 so Claude Code and Codex get the same translation on both prefixes.
 
 Boot provisioning installs them while BIFROST_GATEWAY_ROUTES is on (the
@@ -45,9 +46,9 @@ UPSTREAMS: dict[str, dict[str, Any]] = {
 # unknown extension-less path, /v1/* included), its management API under
 # /api/*, and MCP under /v1/mcp/*; none of it may be reachable through the
 # gateway. x-bf-passthrough-extra-params lets non-OpenAI fields such as
-# chat_template_kwargs through to the backend on the raw proxy only: the
-# converter routes send none, and enabling it there would forward the
-# LiteLLM-only allowed_openai_params the converter attaches.
+# chat_template_kwargs through to a custom OpenAI-compatible provider on the raw
+# proxy only: the converter routes send none (the converter attaches the
+# LiteLLM-only allowed_openai_params on LiteLLM alone).
 _ROUTES: dict[str, tuple[tuple[str, ...], tuple[str, ...], str, bool]] = {
     "llm-bi-proxy": (
         (
@@ -97,10 +98,9 @@ def usable_virtual_key(value: str) -> bool:
     return bool(_VIRTUAL_KEY_RE.fullmatch(value or ""))
 
 
-def route(route_id: str, virtual_key: str) -> dict[str, Any]:
-    """Body of one of the routes, deny-all until the restriction replay grants it."""
-    paths, methods, upstream_id, passthrough = _ROUTES[route_id]
-    headers_set = {
+def virtual_key_headers(virtual_key: str) -> dict[str, str]:
+    """What every route in front of Bifrost sets, /api/llm ones included."""
+    return {
         # The only credential Bifrost accepts on inference
         # (enforce_auth_on_inference); `set` also overwrites any client copy.
         "x-bf-vk": virtual_key,
@@ -110,6 +110,12 @@ def route(route_id: str, virtual_key: str) -> dict[str, Any]:
         "x-bf-dim-consumer": "$consumer_name",
         "x-bf-lh-consumer": "$consumer_name",
     }
+
+
+def route(route_id: str, virtual_key: str) -> dict[str, Any]:
+    """Body of one of the routes, deny-all until the restriction replay grants it."""
+    paths, methods, upstream_id, passthrough = _ROUTES[route_id]
+    headers_set = virtual_key_headers(virtual_key)
     if passthrough:
         headers_set["x-bf-passthrough-extra-params"] = "true"
     body: dict[str, Any] = {
@@ -123,7 +129,10 @@ def route(route_id: str, virtual_key: str) -> dict[str, Any]:
             "consumer-restriction": {"whitelist": [DENY_ALL_CONSUMER]},
             "proxy-rewrite": {
                 "regex_uri": [f"^{PATH_PREFIX}(.*)", "$1"],
-                "use_real_request_uri_unsafe": True,
+                # The raw path only for the converter: a route to Bifrost itself
+                # rewrites the normalized one, or a dot-segment such as
+                # %2e%2e would reach Bifrost unresolved (llm_routes.py).
+                "use_real_request_uri_unsafe": upstream_id != "bifrost",
                 "headers": {"set": headers_set, "remove": list(REMOVED_HEADERS)},
             },
         },
@@ -173,28 +182,41 @@ def not_found_route(state: str) -> dict[str, Any]:
         ),
         "off": (
             f"{PATH_PREFIX} (Bifrost) is switched off on this UniBridge "
-            "(BIFROST_GATEWAY_ROUTES=false); /api/llm serves the same endpoints "
-            "through LiteLLM."
+            "(BIFROST_GATEWAY_ROUTES=false); /api/llm serves the same endpoints."
         ),
         "no-key": (
             f"No {PATH_PREFIX} endpoint takes this method and path: this UniBridge "
             "cannot set up its Bifrost routes, because BIFROST_TEST_VK is not set or "
-            f"is not {VIRTUAL_KEY_RULE}. /api/llm serves the same endpoints through "
-            "LiteLLM."
+            f"is not {VIRTUAL_KEY_RULE}. /api/llm serves the same endpoints."
         ),
     }
-    message = messages[state]
-    return {
-        "name": BIFROST_NOT_FOUND_ROUTE_ID,
-        "desc": f"Explains a 404 under {PATH_PREFIX}",
-        "uri": f"{PATH_PREFIX}/*",
+    return explaining_404_route(BIFROST_NOT_FOUND_ROUTE_ID, PATH_PREFIX, messages[state])
+
+
+def explaining_404_route(
+    route_id: str, prefix: str, message: str, *, priority: int | None = None
+) -> dict[str, Any]:
+    """A route that answers every request under ``prefix`` with a 404 and ``message``.
+
+    consumer-restriction keyed on the route id, with this route's own id
+    blacklisted, rejects in the access phase before anything is proxied, so the
+    route needs no upstream and no key-auth (which would also put it under the
+    consumer-restriction reconciler).
+    """
+    body: dict[str, Any] = {
+        "name": route_id,
+        "desc": f"Explains a 404 under {prefix}",
+        "uri": f"{prefix}/*",
         "plugins": {
             "consumer-restriction": {
                 "type": "route_id",
-                "blacklist": [BIFROST_NOT_FOUND_ROUTE_ID],
+                "blacklist": [route_id],
                 "rejected_code": 404,
                 "rejected_msg": message,
             },
         },
         "status": 1,
     }
+    if priority is not None:
+        body["priority"] = priority
+    return body

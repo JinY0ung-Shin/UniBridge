@@ -43,11 +43,12 @@ from app.routers import (
 )
 from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
 from app.services.apisix_client import upstream_node_addresses
-from app.services import bifrost_routes
+from app.services import bifrost_routes, llm_routes
 from app.services.apisix_system_resources import (
     BIFROST_NOT_FOUND_ROUTE_ID,
     BIFROST_ROUTE_IDS,
     BIFROST_UPSTREAM_IDS,
+    LLM_NOT_FOUND_ROUTE_ID,
     QUERY_TEMPLATE_WRITE_ROUTE_ID,
 )
 from app.services.connection_manager import connection_manager
@@ -248,6 +249,19 @@ async def _delete_if_present(resource: str, resource_id: str) -> None:
             raise
 
 
+async def _delete_route_if_installed(route_id: str) -> None:
+    """Delete a route only once a read shows it there: most boots have none to delete."""
+    from app.services import apisix_client
+
+    try:
+        await apisix_client.get_resource("routes", route_id)
+    except Exception as exc:
+        if _is_missing_route_error(exc):
+            return
+        raise
+    await _delete_if_present("routes", route_id)
+
+
 async def _put_bifrost_not_found_route(state: str) -> None:
     """Install llm-bi-not-found; APISIX refusing it must not keep the service down.
 
@@ -284,12 +298,18 @@ async def _provision_bifrost_routes() -> None:
     from app.services import apisix_client
 
     if not getattr(settings, "BIFROST_GATEWAY_ROUTES", True):
+        llm_on_bifrost = (
+            str(getattr(settings, "LLM_GATEWAY", "litellm")).strip().lower() == "bifrost"
+        )
         # The explanation goes in first, so the paths answer it as they go.
         await _put_bifrost_not_found_route("off")
         # Routes before upstreams: APISIX refuses to delete an upstream a route uses.
         for route_id in BIFROST_ROUTE_IDS:
             await _delete_if_present("routes", route_id)
         for upstream_id in BIFROST_UPSTREAM_IDS:
+            if upstream_id == "bifrost" and llm_on_bifrost:
+                # /api/llm runs on it (LLM_GATEWAY=bifrost).
+                continue
             try:
                 await _delete_if_present("upstreams", upstream_id)
             except HTTPStatusError as exc:
@@ -333,6 +353,114 @@ async def _provision_bifrost_routes() -> None:
         )
     await _put_bifrost_not_found_route("on")
     logger.info("APISIX Bifrost routes provisioned successfully")
+
+
+async def _put_llm_not_found_route() -> None:
+    """Install llm-not-found; APISIX refusing it must not keep the service down.
+
+    Same reasoning as ``_put_bifrost_not_found_route``: it only explains a 404.
+    """
+    from app.services import apisix_client
+
+    try:
+        await apisix_client.put_resource(
+            "routes", LLM_NOT_FOUND_ROUTE_ID, llm_routes.not_found_route()
+        )
+    except HTTPStatusError as exc:
+        if not 400 <= exc.response.status_code < 500:
+            raise
+        logger.warning(
+            "APISIX refused the %s route, so /api/llm answers its bare 404: %s",
+            LLM_NOT_FOUND_ROUTE_ID,
+            exc.response.text,
+        )
+
+
+async def _provision_llm_routes() -> None:
+    """Point the /api/llm routes at LLM_GATEWAY: LiteLLM (default) or Bifrost.
+
+    The route ids are the same on both, so key grants survive a switch either
+    way (app/services/llm_routes.py). A blue/green host applies a flipped switch
+    on the deploy that finds the routes out of step with it
+    (scripts/deploy-bluegreen.sh ``apisix_has_core_routes``). Bifrost without a
+    usable BIFROST_TEST_VK leaves every route as it is: injecting no key would
+    turn each request into a 401.
+    """
+    from app.services import apisix_client
+
+    master_key = getattr(settings, "LITELLM_MASTER_KEY", "") or ""
+    virtual_key = getattr(settings, "BIFROST_TEST_VK", "") or ""
+    state = llm_routes.gateway_state(getattr(settings, "LLM_GATEWAY", "litellm"), virtual_key)
+    if state == "skip":
+        logger.error(
+            "LLM_GATEWAY=bifrost but BIFROST_TEST_VK is %s, so the /api/llm routes "
+            "are left as they are. Set it to the value the bifrost container runs "
+            "with, or LLM_GATEWAY=litellm.",
+            "not set" if not virtual_key else f"not {bifrost_routes.VIRTUAL_KEY_RULE}",
+        )
+        return
+    if state == "litellm" and not master_key:
+        logger.info("LITELLM_MASTER_KEY not set — skipping LiteLLM route provisioning")
+        return
+
+    if master_key:
+        await apisix_client.put_resource("upstreams", "litellm", llm_routes.LITELLM_UPSTREAM)
+        # LiteLLM's admin UI stays reachable on Bifrost too, while LiteLLM runs.
+        await apisix_client.put_resource("routes", "llm-admin", llm_routes.llm_admin_route())
+    if state == "bifrost":
+        await apisix_client.put_resource(
+            "upstreams", "bifrost", bifrost_routes.UPSTREAMS["bifrost"]
+        )
+
+    # The converter translates Anthropic Messages and OpenAI Responses into the
+    # chat-completions shape that sglang/vLLM-backed models serve reliably, then
+    # forwards to the gateway LLM_GATEWAY names. It speaks plain HTTP on the
+    # internal network.
+    await _put_upstream_if_unclaimed(
+        "llm-converter",
+        {
+            "name": "llm-converter",
+            "type": "roundrobin",
+            "scheme": "http",
+            "nodes": {
+                getattr(settings, "APISIX_LLM_CONVERTER_NODE", "llm-converter:4001"): 1
+            },
+        },
+    )
+    for route_id in llm_routes.CONVERTER_ROUTE_IDS:
+        await apisix_client.put_resource(
+            "routes",
+            route_id,
+            await _preserve_consumer_restriction(
+                route_id,
+                llm_routes.converter_route(
+                    route_id,
+                    master_key=master_key,
+                    virtual_key=virtual_key,
+                    on_bifrost=state == "bifrost",
+                ),
+            ),
+        )
+
+    if state == "bifrost":
+        proxy_route = llm_routes.bifrost_proxy_route(virtual_key)
+        metrics_route = llm_routes.bifrost_metrics_route()
+    else:
+        # llm-proxy takes the whole prefix again below, so its 404 goes first.
+        await _delete_route_if_installed(LLM_NOT_FOUND_ROUTE_ID)
+        proxy_route = llm_routes.litellm_proxy_route(master_key)
+        metrics_route = llm_routes.litellm_metrics_route(master_key)
+    await apisix_client.put_resource(
+        "routes", "llm-proxy", await _preserve_consumer_restriction("llm-proxy", proxy_route)
+    )
+    await apisix_client.put_resource(
+        "routes",
+        "llm-metrics",
+        await _preserve_consumer_restriction("llm-metrics", metrics_route),
+    )
+    if state == "bifrost":
+        await _put_llm_not_found_route()
+    logger.info("APISIX /api/llm routes provisioned on %s", state)
 
 
 @asynccontextmanager
@@ -726,242 +854,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
                 logger.info("APISIX Prometheus route provisioned successfully")
 
-                # ── LiteLLM upstream and routes ──
-                if settings.LITELLM_MASTER_KEY:
-                    await apisix_client.put_resource(
-                        "upstreams",
-                        "litellm",
-                        {
-                            "name": "litellm",
-                            "type": "roundrobin",
-                            "scheme": "https",
-                            "nodes": {"litellm:4000": 1},
-                        },
-                    )
-
-                    # /api/llm/* → LiteLLM proxy (APISIX injects LiteLLM key automatically)
-                    await apisix_client.put_resource(
-                        "routes",
-                        "llm-proxy",
-                        await _preserve_consumer_restriction(
-                            "llm-proxy",
-                            {
-                                "name": "llm-proxy",
-                                "uri": "/api/llm/*",
-                                "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
-                                "upstream_id": "litellm",
-                                # LLM responses can stay silent past APISIX's
-                                # default 60s read timeout (long TTFT, reasoning,
-                                # large non-stream completions); allow long reads
-                                # so the gateway doesn't drop the socket.
-                                "timeout": {"connect": 60, "send": 600, "read": 600},
-                                "plugins": {
-                                    "key-auth": {},
-                                    "proxy-rewrite": {
-                                        "regex_uri": ["^/api/llm(.*)", "$1"],
-                                        "use_real_request_uri_unsafe": True,
-                                        "headers": {
-                                            "set": {
-                                                "Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}",
-                                                "x-litellm-end-user-id": "$consumer_name",
-                                            },
-                                        },
-                                    },
-                                },
-                                "status": 1,
-                            },
-                        ),
-                    )
-
-                    # /api/llm-admin/* → LiteLLM Admin UI/API (same-origin via gateway)
-                    await apisix_client.put_resource(
-                        "routes",
-                        "llm-admin",
-                        {
-                            "name": "llm-admin",
-                            "uri": "/api/llm-admin/*",
-                            "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
-                            "upstream_id": "litellm",
-                            "plugins": {
-                                "key-auth": {},
-                                "proxy-rewrite": {
-                                    "regex_uri": ["^/api/llm-admin(.*)", "$1"],
-                                    "use_real_request_uri_unsafe": True,
-                                },
-                            },
-                            "status": 1,
-                        },
-                    )
-
-                    logger.info("APISIX LiteLLM routes provisioned successfully")
-
-                    # /api/llm/metrics → LiteLLM's own Prometheus exposition.
-                    # Higher priority than the /api/llm/* catch-all so this exact
-                    # path wins, which is the point: it carves the metrics
-                    # endpoint out of the llm-proxy grant (same mechanism as the
-                    # converter routes below), so a scraper can be granted
-                    # monitoring access without any LLM invocation rights. The
-                    # master key is injected even though current LiteLLM serves
-                    # /metrics unauthenticated — newer releases gate it behind
-                    # bearer auth, and sending it now means an upgrade doesn't
-                    # silently turn every scrape into a 401. No
-                    # x-litellm-end-user-id: a scrape has no consumer semantics.
-                    # Ships deny-all like the routes above so it is never
-                    # callable by an arbitrary key between this PUT and the
-                    # consumer-restriction replay.
-                    await apisix_client.put_resource(
-                        "routes",
-                        "llm-metrics",
-                        await _preserve_consumer_restriction(
-                            "llm-metrics",
-                            {
-                                "name": "llm-metrics",
-                                "desc": "LiteLLM's own Prometheus /metrics exposition via the gateway",
-                                "uri": "/api/llm/metrics",
-                                "methods": ["GET"],
-                                "priority": 10,
-                                "upstream_id": "litellm",
-                                "plugins": {
-                                    "key-auth": {},
-                                    "consumer-restriction": {
-                                        "whitelist": [api_keys.DENY_ALL_CONSUMER]
-                                    },
-                                    "proxy-rewrite": {
-                                        "regex_uri": ["^/api/llm(.*)", "$1"],
-                                        "use_real_request_uri_unsafe": True,
-                                        "headers": {
-                                            "set": {
-                                                "Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}",
-                                            },
-                                        },
-                                    },
-                                },
-                                "status": 1,
-                            },
-                        ),
-                    )
-                    logger.info("APISIX LiteLLM metrics route provisioned successfully")
-
-                    # ── LLM endpoint converter ──
-                    # Translates Anthropic Messages and OpenAI Responses into the
-                    # OpenAI chat-completions shape that sglang/vLLM-backed models
-                    # serve reliably, then forwards to LiteLLM. The converter speaks
-                    # plain HTTP on the internal network (it forwards to LiteLLM over
-                    # HTTPS itself).
-                    await _put_upstream_if_unclaimed(
-                        "llm-converter",
-                        {
-                            "name": "llm-converter",
-                            "type": "roundrobin",
-                            "scheme": "http",
-                            "nodes": {
-                                getattr(
-                                    settings,
-                                    "APISIX_LLM_CONVERTER_NODE",
-                                    "llm-converter:4001",
-                                ): 1
-                            },
-                        },
-                    )
-
-                    # Specific converter routes. Higher priority than the llm-proxy
-                    # /api/llm/* catch-all so these exact paths win; the same key-auth
-                    # / master-key injection as llm-proxy applies. Each ships deny-all
-                    # by default so that between this PUT and the consumer-restriction
-                    # replay below the route is never callable by an arbitrary key;
-                    # the replay (sync_all_consumer_route_restrictions) installs the
-                    # real whitelist, and on later boots _preserve_consumer_restriction
-                    # keeps it.
-                    for _conv_route_id, _conv_uri in (
-                        ("llm-messages", "/api/llm/v1/messages"),
-                        ("llm-responses", "/api/llm/v1/responses"),
-                    ):
-                        await apisix_client.put_resource(
-                            "routes",
-                            _conv_route_id,
-                            await _preserve_consumer_restriction(
-                                _conv_route_id,
-                                {
-                                    "name": _conv_route_id,
-                                    "uri": _conv_uri,
-                                    "methods": ["POST", "OPTIONS"],
-                                    "priority": 10,
-                                    "upstream_id": "llm-converter",
-                                    # Match llm-proxy: don't let APISIX's default
-                                    # 60s read timeout cut long/idle LLM streams.
-                                    "timeout": {"connect": 60, "send": 600, "read": 600},
-                                    "plugins": {
-                                        "key-auth": {},
-                                        "consumer-restriction": {
-                                            "whitelist": [api_keys.DENY_ALL_CONSUMER]
-                                        },
-                                        "proxy-rewrite": {
-                                            "regex_uri": ["^/api/llm(.*)", "$1"],
-                                            "use_real_request_uri_unsafe": True,
-                                            "headers": {
-                                                "set": {
-                                                    "Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}",
-                                                    "x-litellm-end-user-id": "$consumer_name",
-                                                },
-                                            },
-                                        },
-                                    },
-                                    "status": 1,
-                                },
-                            ),
-                        )
-
-                    logger.info("APISIX LLM converter routes provisioned successfully")
-
-                    # /api/llm/v1/models → the converter's model listing, which
-                    # advertises every LiteLLM model a second time under a
-                    # claude/ prefix so Claude Code can auto-detect one (it
-                    # filters the listing by vendor). No timeout override: a
-                    # listing returns immediately, unlike a completion.
-                    #
-                    # Like llm-messages/llm-responses, this carves an exact path
-                    # out of the /api/llm/* catch-all, so api_keys.py implies it
-                    # from an llm-proxy grant — existing keys keep listing models
-                    # without a re-grant, while an llm-models-only key can still
-                    # discover without invoking. Ships deny-all for the window
-                    # before the consumer-restriction replay, same as above.
-                    await apisix_client.put_resource(
-                        "routes",
-                        "llm-models",
-                        await _preserve_consumer_restriction(
-                            "llm-models",
-                            {
-                                "name": "llm-models",
-                                "desc": "Model listing with claude/-prefixed aliases via the converter",
-                                "uri": "/api/llm/v1/models",
-                                "methods": ["GET"],
-                                "priority": 10,
-                                "upstream_id": "llm-converter",
-                                "plugins": {
-                                    "key-auth": {},
-                                    "consumer-restriction": {
-                                        "whitelist": [api_keys.DENY_ALL_CONSUMER]
-                                    },
-                                    "proxy-rewrite": {
-                                        "regex_uri": ["^/api/llm(.*)", "$1"],
-                                        "use_real_request_uri_unsafe": True,
-                                        "headers": {
-                                            "set": {
-                                                "Authorization": f"Bearer {settings.LITELLM_MASTER_KEY}",
-                                                "x-litellm-end-user-id": "$consumer_name",
-                                            },
-                                        },
-                                    },
-                                },
-                                "status": 1,
-                            },
-                        ),
-                    )
-                    logger.info("APISIX LLM models route provisioned successfully")
-                else:
-                    logger.info(
-                        "LITELLM_MASTER_KEY not set — skipping LiteLLM route provisioning"
-                    )
+                # ── /api/llm on LiteLLM or Bifrost (LLM_GATEWAY) ──
+                await _provision_llm_routes()
 
                 # ── Bifrost (/api/llm-bi), side by side with LiteLLM ──
                 await _provision_bifrost_routes()

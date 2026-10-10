@@ -1,6 +1,7 @@
 import logging
+from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,13 @@ class Settings(BaseSettings):
     # The virtual key those routes inject as x-bf-vk: the one credential Bifrost
     # accepts on inference, so it must be the value the bifrost container runs with.
     BIFROST_TEST_VK: str = ""
+    # Which gateway serves /api/llm: "litellm" or "bifrost". Boot provisioning
+    # points the llm-* routes at it under the same route ids, so API-key grants
+    # carry over (app/main.py _provision_llm_routes); the per-color llm-converter
+    # reads the same switch for its upstream, and scripts/deploy-bluegreen.sh
+    # re-provisions when the routes are out of step with it. Bifrost also needs a
+    # usable BIFROST_TEST_VK; without one the routes are left as they are.
+    LLM_GATEWAY: Literal["litellm", "bifrost"] = "litellm"
 
     # CORS — comma-separated allowed origins (e.g. "http://localhost:3001,https://app.example.com")
     # Auto-derived from HOST_IP:UNIBRIDGE_UI_PORT if empty
@@ -182,6 +190,12 @@ class Settings(BaseSettings):
     APP_VERSION: str = "unknown"
 
     model_config = {"env_file": ".env"}
+
+    @field_validator("LLM_GATEWAY", mode="before")
+    @classmethod
+    def _normalize_llm_gateway(cls, value: object) -> object:
+        # "Bifrost " in .env means bifrost; anything else still fails the boot.
+        return value.strip().lower() if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def _derive_urls(self) -> "Settings":

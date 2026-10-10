@@ -97,7 +97,10 @@ def test_routes_expose_only_the_inference_paths() -> None:
         assert plugins["consumer-restriction"] == {"whitelist": [DENY_ALL_CONSUMER]}
         rewrite = plugins["proxy-rewrite"]
         assert rewrite["regex_uri"] == ["^/api/llm-bi(.*)", "$1"]
-        assert rewrite["use_real_request_uri_unsafe"] is True
+        # Bifrost itself gets the normalized path: APISIX matches the route on
+        # it, and the raw one would carry a %2e%2e past the route to Bifrost.
+        # The converter routes keep the raw path, as every other route does.
+        assert rewrite["use_real_request_uri_unsafe"] is (body["upstream_id"] != "bifrost")
         # Credentials and key selectors a client could aim at Bifrost; key-auth
         # reads the caller's apikey before proxy-rewrite strips these.
         assert rewrite["headers"]["remove"] == [

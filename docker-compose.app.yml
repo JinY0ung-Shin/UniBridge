@@ -83,6 +83,9 @@ services:
       # container runs with; false removes them again.
       - BIFROST_GATEWAY_ROUTES=${BIFROST_GATEWAY_ROUTES:-true}
       - BIFROST_TEST_VK=${BIFROST_TEST_VK:-}
+      # Which gateway serves /api/llm: litellm or bifrost (README "Switching
+      # /api/llm to Bifrost"). llm-converter reads the same value.
+      - LLM_GATEWAY=${LLM_GATEWAY:-litellm}
       # Bearer token verifying the internal Alertmanager webhook receiver.
       # Empty = receiver disabled (503); set it to enable infra-alert email.
       - ALERTMANAGER_WEBHOOK_TOKEN=${ALERTMANAGER_WEBHOOK_TOKEN:-}
@@ -162,6 +165,9 @@ services:
           memory: 512m
           cpus: "0.50"
     environment:
+      # The gateway to forward to, the same switch unibridge-service reads:
+      # litellm → LITELLM_URL below, bifrost → http://bifrost:8080.
+      - LLM_GATEWAY=${LLM_GATEWAY:-litellm}
       - LITELLM_URL=${LITELLM_CONVERTER_UPSTREAM:-https://litellm:4000}
       - CONVERTER_TLS_CA=${CONVERTER_TLS_CA-/etc/ssl/litellm-ca.crt}
       - CONVERTER_TLS_VERIFY=${CONVERTER_TLS_VERIFY:-false}

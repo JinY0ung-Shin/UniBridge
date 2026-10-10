@@ -827,8 +827,9 @@ leaves, change the Bifrost admin password and set the new value as
    Booting needs no internet: `config.json` loads the (intentionally empty)
    pricing and model-parameter datasheets in `bifrost/` over `file://`, since
    self-hosted models have no list price. On an air-gapped host, first import
-   `maximhq/bifrost:v2.2.4` with `docker save`/`docker load`; `bifrost-tls`
-   runs `nginx:alpine`, which the edge and UI images already use.
+   the `maximhq/bifrost` tag pinned in `docker-compose.infra.yml` with
+   `docker save`/`docker load`; `bifrost-tls` runs `nginx:alpine`, which the
+   edge and UI images already use.
    `llm-converter-bi` builds from `./llm-converter` with the same mirror
    settings as `llm-converter`.
 3. **Register providers** — in the Bifrost UI (the **Bifrost Admin** button) or
@@ -950,14 +951,22 @@ Differences and limits to keep in mind while comparing:
   `x-goog-api-key`, which Bifrost reads as virtual-key selectors. It also strips
   `x-bf-api-key` and `x-bf-api-key-id`, which pin a stored provider key. It
   overwrites `x-bf-vk` and the consumer headers. Key-auth runs before that
-  rewrite, so it still reads the caller's own `apikey`.
+  rewrite, so it still reads the caller's own `apikey`. Bifrost forwards a
+  client header sent as `x-bf-eh-<name>` to the backend as `<name>`;
+  `client.header_filter_config` in `config.json` denies all of them. On the
+  converter routes the converter also drops every other client `x-bf-*` header
+  and Bifrost's `x-bifrost-*` response headers. The raw `llm-proxy` /
+  `llm-bi-proxy` responses keep those headers (provider, model and key names):
+  APISIX loads no plugin that could strip them.
 - **Request rewriting.** Bifrost forwards `max_tokens` as
   `max_completion_tokens`, and was seen raising values below 16 to 16. Check
   that your backends honour `max_completion_tokens`.
 - **Extra parameters.** Non-OpenAI fields such as `chat_template_kwargs` pass
-  through on `llm-bi-proxy` only (`x-bf-passthrough-extra-params`). On the
-  converter routes Bifrost drops the LiteLLM-only `allowed_openai_params`, and
-  the converter has already clamped `reasoning_effort`.
+  through on the raw proxy (`x-bf-passthrough-extra-params`). A provider
+  registered with Bifrost's built-in `vllm` or `sgl` type passes them through on
+  every route; a custom OpenAI-compatible one only with that header. The
+  converter sends the LiteLLM-only `allowed_openai_params` to LiteLLM alone, and
+  clamps `reasoning_effort` for both gateways.
 - **Admin access.** Bifrost OSS has a single admin login and no SSO (UniBridge
   signs admins in to it under `BIFROST_UI_HOSTNAME`, see above). Treat that
   login as gateway-admin level: switching `enforce_auth_on_inference` off in the
@@ -966,6 +975,116 @@ Differences and limits to keep in mind while comparing:
   only the operations set to `true`, so leave out `text_completion*` or
   `embedding` and `/api/llm-bi/v1/completions` or `/v1/embeddings` is refused
   for that provider.
+
+### Switching /api/llm to Bifrost
+
+`LLM_GATEWAY` in `.env` (default `litellm`) picks the gateway behind `/api/llm`
+itself. With `bifrost`, the same routes (`llm-proxy`, `llm-messages`,
+`llm-responses`, `llm-models`, `llm-metrics`) point at Bifrost, so client base
+URLs and API-key grants stay as they are
+([`llm_routes.py`](./unibridge-service/app/services/llm_routes.py)). LiteLLM
+keeps running; setting the switch back is the rollback.
+
+What clients see on Bifrost:
+
+- `llm-proxy` serves only `POST /api/llm/v1/chat/completions`, `/v1/completions`
+  and `/v1/embeddings`, because Bifrost answers other paths with its UI and keeps
+  its management API under `/api/`. `llm-not-found` answers the rest of
+  `/api/llm/` with a 404 that lists what is served. LiteLLM-only paths are gone:
+  its key, model and spend API, its `/health`, audio, rerank and
+  `/v1/models/{id}`.
+- `/v1/messages`, `/v1/messages/count_tokens`, `/v1/responses` and `/v1/models`
+  keep going through the per-color llm-converter, which reads the same switch for
+  its upstream. Bifrost has no `count_tokens` for self-hosted models, so the
+  converter answers it with its own estimate (on LiteLLM, LiteLLM still does). It
+  lists Bifrost's models under the bare names clients call (without Bifrost's
+  `provider/` prefix), cached for 30 s.
+- `/api/llm/metrics` serves Bifrost's exposition, whose metric names differ from
+  LiteLLM's.
+- `/api/llm-admin` keeps reaching LiteLLM's admin UI while LiteLLM runs.
+
+The LLM monitoring page and the Grafana LLM dashboard add LiteLLM's and
+Bifrost's counters, so `/api/llm-bi` traffic counts as LLM traffic and the
+history carries across the switch. Model rows use the name the client asked
+for. Bifrost shortens a model id that no alias renamed (it drops suffixes such as
+`-v3`, `-preview` and dates), so register public names as key `aliases`.
+Bifrost's request count is one per request (the primary attempt), leaves out
+model listings and includes requests its virtual-key policy refused. Its cost
+and cached-token counters appear only once a value is non-zero, so cost stays 0
+with the bundled empty price list.
+
+Before switching:
+
+1. Register every model clients use in Bifrost under the same name (key `models`
+   plus `aliases`, step 3 of the side-by-side test), and run the E2E suite
+   against `/api/llm-bi`. List each model on one key only: Bifrost retries a
+   failing key on the same key and never fails over to another one, so put
+   replicas of a model behind one router (such as smg) instead.
+2. Run Bifrost v2.2.5 or later ([Upgrading Bifrost](#upgrading-bifrost)).
+3. Let Prometheus scrape Bifrost (the `bifrost` job in
+   `prometheus/prometheus.yml`, with the `BifrostDown` alert), so the LLM pages
+   keep counting traffic. Prometheus reads that file through a single-file bind
+   mount and has no reload API enabled, so recreate it once after pulling (its
+   data volume stays):
+   `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --force-recreate prometheus`.
+
+Switch with `LLM_GATEWAY=bifrost` in `.env`, then deploy. A blue-green deploy
+finds `/api/llm` out of step with the switch and re-provisions on the new
+color, and the converter upstream moves at promotion. The converter routes carry
+both gateways' credentials and each converter forwards only its own, so neither
+the switch nor a rollback has a window of 401s. On a single stack, run
+`docker compose up -d unibridge-service llm-converter`. Check it with the E2E
+suite against `/api/llm`. To roll back, set `LLM_GATEWAY=litellm` and deploy
+again.
+
+### Upgrading Bifrost
+
+The image tag is pinned in both `docker-compose.infra.yml` and
+`docker-compose.yml`; change it in both. Stay on v2.2.5 or later: v2.2.5 fixed
+an authentication bypass in which a percent-encoded path such as `..%2F`
+reached protected `/api` endpoints without credentials, and both `bifrost-tls`
+and the `BIFROST_UI_HOSTNAME` server forward `/api`. A deployment test fails on
+an older tag.
+
+Bifrost migrates its config and log stores on boot. It is a single infra
+instance that a normal blue-green deploy never recreates, so a new tag takes
+effect only when you recreate the container, and `/api/llm-bi` is down for the
+few seconds that takes. `backup/backup.sh` does not cover the Bifrost volume, so
+copy it while the container is stopped (any image with `tar` works;
+`nginx:alpine` is already on the host for `bifrost-tls`):
+
+```bash
+docker compose -p unibridge-infra -f docker-compose.infra.yml pull bifrost   # air-gapped: docker load it instead
+docker compose -p unibridge-infra -f docker-compose.infra.yml stop bifrost
+docker run --rm --entrypoint tar -v unibridge_bifrost-test-data:/data:ro -v "$PWD":/backup \
+  nginx:alpine czf "/backup/bifrost-data-$(date +%Y%m%d%H%M).tgz" -C /data .
+docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait bifrost
+```
+
+On a single stack, drop `-p unibridge-infra -f docker-compose.infra.yml`. If you
+set `BIFROST_TEST_DATA_VOLUME`, copy that volume instead.
+
+To roll back, put the previous tag back and run the same `up -d --wait`. In the
+v2.2.4 → v2.2.6 rehearsal (offline, with this repo's `bifrost/config.json`),
+v2.2.6 added v2.2.5's two nullable pricing columns and kept the registered
+provider and key, the gateway virtual key, the request logs and the open admin
+sessions, so the UniBridge sign-in hand-off and its forced logout carried on.
+v2.2.4 then booted on the migrated data with nothing pending and served
+traffic, so a rollback only needs the tag.
+
+Notes for v2.2.4 → v2.2.6:
+
+- v2.2.6 locks the management API behind a setup token while no admin login is
+  active. `config.json` turns the admin login on from the first boot, so the
+  lock never applies here (`/api/session/is-auth-enabled` reports
+  `setup_required: false`).
+- v2.2.6 turns `enforce_auth_on_inference` on by default and rejects
+  private-network datasheet URLs. `config.json` already sets the former, and it
+  loads the datasheets over `file://`.
+
+A change to `bifrost/config.json`, such as the `x-bf-eh-*` header filter, also
+takes this recreate. Bifrost then syncs its whole client section from the file,
+so client settings changed in its UI since go back to the file's values.
 
 ### DB query monitoring
 

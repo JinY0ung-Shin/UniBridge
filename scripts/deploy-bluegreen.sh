@@ -263,6 +263,14 @@ route_has_internal_proxy_header() {
   [[ "$compact" == *"\"$APISIX_INTERNAL_PROXY_HEADER_NAME\":"* ]]
 }
 
+# A route to Bifrost itself must rewrite the normalized path
+# (app/services/llm_routes.py): with the raw one, a dot-segment such as %2e%2e
+# matches a route on the normalized path but reaches Bifrost unresolved.
+route_rewrites_normalized_path() {
+  local compact="${1//[[:space:]]/}"
+  [[ "$compact" == *'"use_real_request_uri_unsafe":false'* ]]
+}
+
 # True only when APISIX answers 404 for $path: an admin API that fails any
 # other way proves nothing about absence.
 apisix_absent() {
@@ -296,6 +304,24 @@ bifrost_routes_state() {
   esac
 }
 
+# What boot provisioning makes of LLM_GATEWAY (unibridge-service app/main.py
+# _provision_llm_routes; the same rule as app/services/llm_routes.py
+# gateway_state): "bifrost" with a usable BIFROST_TEST_VK, "skip" without one —
+# the service then leaves the /api/llm routes as they are — and "litellm"
+# otherwise. The service refuses to boot on any value but litellm/bifrost.
+llm_gateway_state() {
+  local LC_ALL=C
+  local gateway="${LLM_GATEWAY:-litellm}"
+  gateway="${gateway//[[:space:]]/}"
+  if [[ "${gateway,,}" != "bifrost" ]]; then
+    printf 'litellm'
+  elif [[ "${BIFROST_TEST_VK:-}" =~ ^sk-bf-[A-Za-z0-9_-]{16,}$ ]]; then
+    printf 'bifrost'
+  else
+    printf 'skip'
+  fi
+}
+
 # The /api/llm-bi routes follow the switch: installed and injecting the current
 # virtual key while it is on, gone once it is off, with llm-bi-not-found there
 # in every state. So the first deploy after upgrading from
@@ -319,6 +345,9 @@ apisix_bifrost_routes_match() {
     route="$(apisix_get "routes/$route_id")" || return 1
     json_contains_pair "$route" "upstream_id" "$upstream_id" || return 1
     json_contains_pair "$route" "x-bf-vk" "$BIFROST_TEST_VK" || return 1
+    if [[ "$upstream_id" == "bifrost" ]]; then
+      route_rewrites_normalized_path "$route" || return 1
+    fi
   done
 }
 
@@ -328,7 +357,7 @@ apisix_bifrost_routes_match() {
 # side-by-side test is no reason to hold up an app deploy. Compared in-shell so
 # the key never lands on a command line.
 warn_bifrost_vk_drift() {
-  [[ "$(bifrost_routes_state)" == "on" ]] || return 0
+  [[ "$(bifrost_routes_state)" == "on" || "$(llm_gateway_state)" == "bifrost" ]] || return 0
   local container_id container_env line env_flag=""
   container_id="$(compose_infra ps -q bifrost 2>/dev/null | head -n1)" || return 0
   [[ -n "$container_id" ]] || return 0
@@ -343,7 +372,7 @@ warn_bifrost_vk_drift() {
     env_flag=" --env-file \"$ENV_FILE\""
   fi
   echo "WARNING: the bifrost container runs with another BIFROST_TEST_VK than $ENV_FILE." >&2
-  echo "         The /api/llm-bi routes inject the $ENV_FILE value, which Bifrost refuses" >&2
+  echo "         The Bifrost routes inject the $ENV_FILE value, which Bifrost refuses" >&2
   echo "         (401) until the container is recreated:" >&2
   echo "           docker compose$env_flag -p \"$INFRA_PROJECT\" -f \"$ROOT_DIR/docker-compose.infra.yml\" up -d --wait bifrost" >&2
 }
@@ -399,12 +428,12 @@ wait_apisix_admin() {
 }
 
 # True only when the core routes already exist in etcd and still match the
-# built-in auth/header shape plus LiteLLM topology, and the /api/llm-bi routes
-# match BIFROST_GATEWAY_ROUTES. A 404 or stale route shape (for example, missing
+# built-in auth/header shape, the /api/llm routes match LLM_GATEWAY and the
+# /api/llm-bi routes match BIFROST_GATEWAY_ROUTES. A 404 or stale route shape (for example, missing
 # the internal proxy trust header, or llm-proxy still pointing at an older
 # gateway upstream) returns non-zero so the caller can force re-provisioning.
 apisix_has_core_routes() {
-  local query_route query_template_write_route s3_route nas_route usages_route prometheus_route llm_proxy_route llm_admin_route llm_metrics_route messages_route responses_route models_route litellm_upstream
+  local query_route query_template_write_route s3_route nas_route usages_route prometheus_route
   query_route="$(apisix_get "routes/query-api")" || return 1
   [[ -n "$query_route" ]] || return 1
   route_has_internal_proxy_header "$query_route" || return 1
@@ -433,31 +462,67 @@ apisix_has_core_routes() {
   json_contains_pair "$prometheus_route" "uri" "/api/prometheus/*" || return 1
   json_contains_pair "$prometheus_route" "upstream_id" "prometheus" || return 1
 
-  llm_proxy_route="$(apisix_get "routes/llm-proxy")" || return 1
-  json_contains_pair "$llm_proxy_route" "upstream_id" "litellm" || return 1
+  apisix_llm_routes_match || return 1
 
-  llm_admin_route="$(apisix_get "routes/llm-admin")" || return 1
-  json_contains_pair "$llm_admin_route" "upstream_id" "litellm" || return 1
+  apisix_bifrost_routes_match || return 1
+}
 
-  llm_metrics_route="$(apisix_get "routes/llm-metrics")" || return 1
-  json_contains_pair "$llm_metrics_route" "uri" "/api/llm/metrics" || return 1
-  json_contains_pair "$llm_metrics_route" "upstream_id" "litellm" || return 1
+# The /api/llm routes follow LLM_GATEWAY under the same route ids: on LiteLLM,
+# llm-proxy takes the whole prefix and llm-not-found is gone; on Bifrost,
+# llm-proxy and llm-metrics point at Bifrost, every route to Bifrost or the
+# converter injects the current BIFROST_TEST_VK, and llm-not-found answers the
+# rest of the prefix. The converter routes go to llm-converter either way. So a
+# flipped switch and a rotated key on Bifrost each re-provision.
+apisix_llm_routes_match() {
+  local state route route_id bifrost_upstream litellm_upstream
+  state="$(llm_gateway_state)"
+  [[ "$state" != "skip" ]] || return 0
 
-  messages_route="$(apisix_get "routes/llm-messages")" || return 1
-  json_contains_pair "$messages_route" "upstream_id" "llm-converter" || return 1
+  for route_id in llm-messages llm-responses llm-models; do
+    route="$(apisix_get "routes/$route_id")" || return 1
+    json_contains_pair "$route" "upstream_id" "llm-converter" || return 1
+    if [[ "$state" == "bifrost" ]]; then
+      json_contains_pair "$route" "x-bf-vk" "$BIFROST_TEST_VK" || return 1
+    fi
+  done
+  route="$(apisix_get "routes/llm-models")" || return 1
+  json_contains_pair "$route" "uri" "/api/llm/v1/models" || return 1
 
-  responses_route="$(apisix_get "routes/llm-responses")" || return 1
-  json_contains_pair "$responses_route" "upstream_id" "llm-converter" || return 1
+  if [[ "$state" == "bifrost" ]]; then
+    route="$(apisix_get "routes/llm-proxy")" || return 1
+    json_contains_pair "$route" "upstream_id" "bifrost" || return 1
+    json_contains_pair "$route" "x-bf-vk" "$BIFROST_TEST_VK" || return 1
+    route_rewrites_normalized_path "$route" || return 1
 
-  models_route="$(apisix_get "routes/llm-models")" || return 1
-  json_contains_pair "$models_route" "uri" "/api/llm/v1/models" || return 1
-  json_contains_pair "$models_route" "upstream_id" "llm-converter" || return 1
+    route="$(apisix_get "routes/llm-metrics")" || return 1
+    json_contains_pair "$route" "uri" "/api/llm/metrics" || return 1
+    json_contains_pair "$route" "upstream_id" "bifrost" || return 1
+    route_rewrites_normalized_path "$route" || return 1
+
+    route="$(apisix_get "routes/llm-not-found")" || return 1
+    json_contains_pair "$route" "uri" "/api/llm/*" || return 1
+
+    bifrost_upstream="$(apisix_get "upstreams/bifrost")" || return 1
+    [[ "${bifrost_upstream//[[:space:]]/}" == *"\"bifrost:8080\""* ]] || return 1
+    return 0
+  fi
+
+  route="$(apisix_get "routes/llm-proxy")" || return 1
+  json_contains_pair "$route" "uri" "/api/llm/*" || return 1
+  json_contains_pair "$route" "upstream_id" "litellm" || return 1
+
+  route="$(apisix_get "routes/llm-admin")" || return 1
+  json_contains_pair "$route" "upstream_id" "litellm" || return 1
+
+  route="$(apisix_get "routes/llm-metrics")" || return 1
+  json_contains_pair "$route" "uri" "/api/llm/metrics" || return 1
+  json_contains_pair "$route" "upstream_id" "litellm" || return 1
+
+  apisix_absent "routes/llm-not-found" || return 1
 
   litellm_upstream="$(apisix_get "upstreams/litellm")" || return 1
   json_contains_pair "$litellm_upstream" "scheme" "https" || return 1
   [[ "${litellm_upstream//[[:space:]]/}" == *"\"litellm:4000\""* ]] || return 1
-
-  apisix_bifrost_routes_match || return 1
 }
 
 # Switch both APISIX upstreams (unibridge-service + llm-converter) to $color as a

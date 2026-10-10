@@ -9,6 +9,9 @@ BIFROST_ROUTE_IDS = ("llm-bi-proxy", "llm-bi-messages", "llm-bi-responses", "llm
 # says why. It proxies nothing, so it publishes no API and takes no key grants.
 BIFROST_NOT_FOUND_ROUTE_ID = "llm-bi-not-found"
 BIFROST_UPSTREAM_IDS = ("bifrost", "llm-converter-bi")
+# The same kind of route for /api/llm while LLM_GATEWAY=bifrost, where llm-proxy
+# serves exact paths instead of the whole prefix (app/services/llm_routes.py).
+LLM_NOT_FOUND_ROUTE_ID = "llm-not-found"
 
 PROTECTED_ROUTE_IDS = {
     QUERY_API_ROUTE_ID,
@@ -25,6 +28,7 @@ PROTECTED_ROUTE_IDS = {
     "llm-models",
     *BIFROST_ROUTE_IDS,
     BIFROST_NOT_FOUND_ROUTE_ID,
+    LLM_NOT_FOUND_ROUTE_ID,
 }
 PROTECTED_UPSTREAM_IDS = {
     "unibridge-service",

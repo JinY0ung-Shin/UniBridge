@@ -657,19 +657,25 @@ def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
     # These routes proxy to something other than this app, so they carry no
     # internal-proxy header and are checked by topology instead — without them,
     # deploys that boot with provisioning off would never create the route.
-    for route_id, route_var, uri, upstream_id in (
-        ("prometheus-api", "prometheus_route", "/api/prometheus/*", "prometheus"),
-        ("llm-metrics", "llm_metrics_route", "/api/llm/metrics", "litellm"),
-        ("llm-models", "models_route", "/api/llm/v1/models", "llm-converter"),
+    assert 'apisix_get "routes/prometheus-api"' in script
+    assert 'json_contains_pair "$prometheus_route" "uri" "/api/prometheus/*" || return 1' in script
+    assert (
+        'json_contains_pair "$prometheus_route" "upstream_id" "prometheus" || return 1' in script
+    )
+    # The /api/llm routes follow LLM_GATEWAY (apisix_llm_routes_match; behaviour
+    # pinned in test_deploy_holds_the_llm_routes_to_the_gateway_switch).
+    llm_check = _shell_function(script, "apisix_llm_routes_match")
+    assert "apisix_llm_routes_match || return 1" in _shell_function(script, "apisix_has_core_routes")
+    for route_id in ("llm-proxy", "llm-metrics", "llm-models", "llm-messages", "llm-responses"):
+        assert f"routes/{route_id}" in llm_check or route_id in llm_check
+    for pair in (
+        '"uri" "/api/llm/metrics"',
+        '"uri" "/api/llm/v1/models"',
+        '"upstream_id" "llm-converter"',
+        '"upstream_id" "litellm"',
+        '"upstream_id" "bifrost"',
     ):
-        assert f'apisix_get "routes/{route_id}"' in script
-        assert (
-            f'json_contains_pair "${route_var}" "uri" "{uri}" || return 1' in script
-        )
-        assert (
-            f'json_contains_pair "${route_var}" "upstream_id" "{upstream_id}" '
-            "|| return 1" in script
-        )
+        assert f'json_contains_pair "$route" {pair} || return 1' in llm_check
     for method in ("PUT", "PATCH", "DELETE"):
         assert (
             f'route_allows_method "$query_template_write_route" "{method}" || return 1'
@@ -1158,6 +1164,20 @@ def test_bifrost_services_run_by_default_and_are_identical_in_both_layouts() -> 
     assert _service_environment(infra, "llm-converter-bi")["LITELLM_URL"] == "http://bifrost:8080"
 
 
+def test_bifrost_image_includes_the_management_auth_bypass_fix() -> None:
+    # v2.2.5 fixed an authentication bypass: a percent-encoded path such as
+    # `..%2F` reached protected /api endpoints without credentials. bifrost-tls
+    # and the BIFROST_UI_HOSTNAME server both forward /api, so an older tag
+    # (say, from the June 2026 v1.5 branch) must not come back.
+    for compose_file in (COMPOSE_FILE, BLUEGREEN_INFRA_COMPOSE_FILE):
+        image = _load_yaml(compose_file)["services"]["bifrost"]["image"]
+        repo, _, tag = image.partition(":")
+        assert repo == "maximhq/bifrost", image
+        release = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag)
+        assert release, f"{compose_file.name}: pin an exact release tag, not {tag!r}"
+        assert tuple(int(part) for part in release.groups()) >= (2, 2, 5), image
+
+
 def _nginx_location_for(path: str, locations: list[tuple[str, str]]) -> str:
     """Pick the location nginx would use for ``path`` (exact, ^~, regex, prefix)."""
     exact = [spec for spec in (s for s, _ in locations) if spec == f"= {path}"]
@@ -1394,6 +1414,9 @@ def test_bifrost_config_authenticates_admin_api_and_inference_and_boots_offline(
     }
     assert config["encryption_key"] == "env.BIFROST_ENCRYPTION_KEY"
     assert config["client"]["allow_direct_keys"] is False
+    # Bifrost would otherwise forward any client header sent as x-bf-eh-<name>
+    # to the model backends; every one of them is dropped.
+    assert config["client"]["header_filter_config"] == {"denylist": ["*"]}
 
     # Inference answers only the virtual key APISIX injects (the LiteLLM
     # master-key pattern), so nothing reaching bifrost:8080 or the loopback
@@ -1684,6 +1707,9 @@ def test_deploy_holds_the_bifrost_routes_to_the_switch_and_key(tmp_path: Path) -
     repointed = dict(installed)
     repointed["routes/llm-bi-proxy"] = {**installed["routes/llm-bi-proxy"], "upstream_id": "litellm"}
     assert not check(repointed, on, "repointed")
+    # llm-bi-proxy as installed before it rewrote the normalized path: once more.
+    raw = {**installed, "routes/llm-bi-proxy": _raw_path_rewrite(installed["routes/llm-bi-proxy"])}
+    assert not check(raw, on, "raw-path")
 
     assert check(not_found, off, "off")
     assert not check(installed, off, "off-installed")
@@ -1777,3 +1803,137 @@ def test_deploy_reads_the_switch_like_the_service(value: str) -> None:
     state = _deploy_bifrost_state(BIFROST_GATEWAY_ROUTES=value, BIFROST_TEST_VK=BIFROST_VK)
     enabled = Settings(BIFROST_GATEWAY_ROUTES=value).BIFROST_GATEWAY_ROUTES
     assert state == ("on" if enabled else "off")
+
+
+# ---------------------------------------------------------------------------
+# /api/llm on LiteLLM or Bifrost (LLM_GATEWAY)
+# ---------------------------------------------------------------------------
+
+
+def _llm_on_bifrost(vk: str = BIFROST_VK, master_key: str = "sk-master") -> dict[str, dict]:
+    """What boot provisioning leaves in APISIX for /api/llm with LLM_GATEWAY=bifrost."""
+    from app.services import bifrost_routes, llm_routes
+    from app.services.apisix_system_resources import LLM_NOT_FOUND_ROUTE_ID
+
+    resources = {
+        "upstreams/bifrost": bifrost_routes.UPSTREAMS["bifrost"],
+        "upstreams/litellm": llm_routes.LITELLM_UPSTREAM,
+        "routes/llm-admin": llm_routes.llm_admin_route(),
+        "routes/llm-proxy": llm_routes.bifrost_proxy_route(vk),
+        "routes/llm-metrics": llm_routes.bifrost_metrics_route(),
+        f"routes/{LLM_NOT_FOUND_ROUTE_ID}": llm_routes.not_found_route(),
+    }
+    for route_id in llm_routes.CONVERTER_ROUTE_IDS:
+        resources[f"routes/{route_id}"] = llm_routes.converter_route(
+            route_id, master_key=master_key, virtual_key=vk, on_bifrost=True
+        )
+    return resources
+
+
+def _llm_on_litellm(vk: str = BIFROST_VK, master_key: str = "sk-master") -> dict[str, dict]:
+    from app.services import llm_routes
+
+    resources = {
+        "upstreams/litellm": llm_routes.LITELLM_UPSTREAM,
+        "routes/llm-admin": llm_routes.llm_admin_route(),
+        "routes/llm-proxy": llm_routes.litellm_proxy_route(master_key),
+        "routes/llm-metrics": llm_routes.litellm_metrics_route(master_key),
+    }
+    for route_id in llm_routes.CONVERTER_ROUTE_IDS:
+        resources[f"routes/{route_id}"] = llm_routes.converter_route(
+            route_id, master_key=master_key, virtual_key=vk, on_bifrost=False
+        )
+    return resources
+
+
+def _raw_path_rewrite(route: dict) -> dict:
+    """``route`` as provisioned before routes to Bifrost rewrote the normalized path."""
+    plugins = {**route["plugins"]}
+    plugins["proxy-rewrite"] = {**plugins["proxy-rewrite"], "use_real_request_uri_unsafe": True}
+    return {**route, "plugins": plugins}
+
+
+def test_deploy_holds_the_llm_routes_to_the_gateway_switch(tmp_path: Path) -> None:
+    bifrost = {"LLM_GATEWAY": "bifrost", "BIFROST_TEST_VK": BIFROST_VK}
+    litellm = {"LLM_GATEWAY": "litellm", "BIFROST_TEST_VK": BIFROST_VK}
+
+    def check(resources: dict[str, dict], env: dict[str, str], case: str) -> bool:
+        # The /api/llm-bi routes stay out of the picture: they hold to their own switch.
+        llm_bi = _bifrost_installed()
+        return _deploy_has_core_routes(tmp_path / case, {**llm_bi, **resources}, **env)
+
+    on_bifrost = _llm_on_bifrost()
+    on_litellm = _llm_on_litellm()
+    assert check(on_bifrost, bifrost, "bifrost")
+    assert check(on_litellm, litellm, "litellm")
+    # The unset switch is LiteLLM.
+    assert check(on_litellm, {"BIFROST_TEST_VK": BIFROST_VK}, "default")
+
+    # A flipped switch re-provisions, both ways.
+    assert not check(on_litellm, bifrost, "to-bifrost")
+    assert not check(on_bifrost, litellm, "to-litellm")
+    # Back on LiteLLM, the Bifrost-era 404 route would shadow the catch-all.
+    with_not_found = {**on_litellm, "routes/llm-not-found": on_bifrost["routes/llm-not-found"]}
+    assert not check(with_not_found, litellm, "litellm-with-not-found")
+    # On Bifrost: a rotated key, a missing 404 route, a route left on LiteLLM.
+    assert not check(_llm_on_bifrost("sk-bf-" + "o" * 32), bifrost, "rotated")
+    missing = {k: v for k, v in on_bifrost.items() if k != "routes/llm-not-found"}
+    assert not check(missing, bifrost, "no-not-found")
+    stale_metrics = {**on_bifrost, "routes/llm-metrics": on_litellm["routes/llm-metrics"]}
+    assert not check(stale_metrics, bifrost, "stale-metrics")
+    # A route to Bifrost forwarding the raw path lets %2e%2e reach Bifrost.
+    for route_id in ("llm-proxy", "llm-metrics"):
+        raw = {**on_bifrost, f"routes/{route_id}": _raw_path_rewrite(on_bifrost[f"routes/{route_id}"])}
+        assert not check(raw, bifrost, f"raw-{route_id}")
+
+    # Bifrost without a usable key: the service leaves /api/llm as it is.
+    skip = {"LLM_GATEWAY": "bifrost", "BIFROST_TEST_VK": "sk-bf-short"}
+    assert check(on_litellm, skip, "skip-litellm")
+    assert check(on_bifrost, skip, "skip-bifrost")
+
+
+def _deploy_llm_gateway_state(**env: str) -> str:
+    shell = f"source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}; llm_gateway_state"
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "ENV_FILE": "/nonexistent", **env},
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+@pytest.mark.parametrize("value", ["", "litellm", "LiteLLM", "bifrost", "Bifrost", " bifrost "])
+@pytest.mark.parametrize("vk", [BIFROST_VK, "", "sk-bf-short"])
+def test_deploy_reads_the_gateway_switch_like_the_service(value: str, vk: str) -> None:
+    from app.config import Settings
+    from app.services import llm_routes
+
+    env = {"BIFROST_TEST_VK": vk}
+    if value:
+        env["LLM_GATEWAY"] = value
+    gateway = Settings(**({"LLM_GATEWAY": value} if value else {})).LLM_GATEWAY
+    assert _deploy_llm_gateway_state(**env) == llm_routes.gateway_state(gateway, vk)
+
+
+def test_deploy_warns_about_vk_drift_while_llm_runs_on_bifrost() -> None:
+    stale = "BIFROST_TEST_VK=sk-bf-" + "o" * 32
+    on_bifrost = {"LLM_GATEWAY": "bifrost", "BIFROST_TEST_VK": BIFROST_VK}
+    # Even with the /api/llm-bi routes switched off.
+    warning = _run_vk_drift_warning(stale, BIFROST_GATEWAY_ROUTES="false", **on_bifrost)
+    assert "runs with another BIFROST_TEST_VK" in warning
+    assert _run_vk_drift_warning(stale, BIFROST_GATEWAY_ROUTES="false", BIFROST_TEST_VK=BIFROST_VK) == ""
+
+
+def test_both_layouts_hand_the_gateway_switch_to_the_service_and_its_converter() -> None:
+    for compose_file in (COMPOSE_FILE, BLUEGREEN_APP_COMPOSE_FILE):
+        compose = _load_yaml(compose_file)
+        for service in ("unibridge-service", "llm-converter"):
+            env = _service_environment(compose, service)
+            assert env["LLM_GATEWAY"] == "${LLM_GATEWAY:-litellm}", (compose_file.name, service)
+    # The second converter sits in front of Bifrost whatever /api/llm runs on.
+    for compose_file in (COMPOSE_FILE, BLUEGREEN_INFRA_COMPOSE_FILE):
+        env = _service_environment(_load_yaml(compose_file), "llm-converter-bi")
+        assert env["LLM_GATEWAY"] == "bifrost", compose_file.name

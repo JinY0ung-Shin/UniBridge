@@ -533,7 +533,7 @@ services:
   # routes while BIFROST_GATEWAY_ROUTES is on. These three services are
   # identical in docker-compose.yml and docker-compose.infra.yml (tested).
   bifrost:
-    image: maximhq/bifrost:v2.2.4
+    image: maximhq/bifrost:v2.2.6
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 1g
