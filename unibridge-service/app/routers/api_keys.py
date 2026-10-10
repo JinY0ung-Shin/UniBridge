@@ -1,22 +1,32 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
+import time
 from datetime import timedelta
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from httpx import HTTPStatusError
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
-from app.auth import CurrentUser, require_permission
+from app.auth import CurrentUser, get_role_permissions, require_permission
 from app.database import get_db
 from app.db_types import utcnow
-from app.models import ApiKeyAccess
-from app.schemas import ApiKeyCreate, ApiKeyResponse, ApiKeyUpdate
-from app.services import apisix_client
+from app.models import AdminAuditLog, ApiKeyAccess
+from app.schemas import (
+    ApiKeyCreate,
+    ApiKeyResponse,
+    ApiKeyUpdate,
+    ApiKeyUsage,
+    ApiKeyUsageResponse,
+)
+from app.services import apisix_client, prometheus_client
 from app.services.audit import log_admin_action
 from app.services.consumer_restrictions import (
     DENY_ALL_CONSUMER,
@@ -169,6 +179,7 @@ def _to_response(
         allow_delete=bool(access.allow_delete),
         allowed_tables=json.loads(access.allowed_tables) if access.allowed_tables else None,
         owner=access.owner,
+        created_by=access.created_by,
         expires_at=access.expires_at,
         created_at=access.created_at,
     )
@@ -258,6 +269,54 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
             )
 
 
+async def backfill_api_key_issuers(db: AsyncSession) -> int:
+    """Record the issuer of admin keys that have none, from the admin audit log.
+
+    The issuer is the actor of the key name's latest successful ``create`` — unless
+    a successful ``delete`` followed it: then the current row was re-created by
+    someone whose audit write failed (audit writes are best-effort), and naming the
+    earlier creator would list the key as theirs. Keys older than the audit log
+    stay unknown. Runs at every boot rather than once in migration 0027: during a
+    blue-green deploy the old color keeps creating keys without an issuer while
+    the new one boots, and so does a rolled-back release. Only admin keys with no
+    issuer are touched (self-service keys are matched by ``owner``), so repeating
+    it is harmless. Returns the number of keys filled in.
+    """
+    create = aliased(AdminAuditLog)
+    later_delete = aliased(AdminAuditLog)
+    issuer = (
+        select(create.actor)
+        .where(
+            create.resource_type == "api_key",
+            create.action == "create",
+            create.status == "success",
+            create.resource_id == ApiKeyAccess.consumer_name,
+            ~exists().where(
+                later_delete.resource_type == "api_key",
+                later_delete.action == "delete",
+                later_delete.status == "success",
+                later_delete.resource_id == create.resource_id,
+                later_delete.id > create.id,
+            ),
+        )
+        .order_by(create.id.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+    result = await db.execute(
+        update(ApiKeyAccess)
+        .where(
+            ApiKeyAccess.created_by.is_(None),
+            ApiKeyAccess.owner.is_(None),
+            issuer.is_not(None),
+        )
+        .values(created_by=issuer)
+        .execution_options(synchronize_session=False)
+    )
+    await db.commit()
+    return result.rowcount
+
+
 async def sync_all_consumer_route_restrictions(db: AsyncSession) -> None:
     """Boot replay: rebuild every key-auth route whitelist from the database.
 
@@ -280,10 +339,19 @@ async def sync_all_consumer_route_restrictions(db: AsyncSession) -> None:
 
 @router.get("", response_model=list[ApiKeyResponse])
 async def list_api_keys(
+    scope: Literal["all", "mine"] = Query(
+        "all",
+        description="'mine' lists only the keys the caller issued, plus their own self-service key",
+    ),
     _admin: CurrentUser = Depends(require_permission("apikeys.read")),
     db: AsyncSession = Depends(get_db),
 ) -> list[ApiKeyResponse]:
-    result = await db.execute(select(ApiKeyAccess).order_by(ApiKeyAccess.created_at.desc()))
+    stmt = select(ApiKeyAccess).order_by(ApiKeyAccess.created_at.desc())
+    if scope == "mine":
+        stmt = stmt.where(
+            or_(ApiKeyAccess.created_by == _admin.username, ApiKeyAccess.owner == _admin.sub)
+        )
+    result = await db.execute(stmt)
     keys = result.scalars().all()
 
     responses = []
@@ -296,6 +364,91 @@ async def list_api_keys(
             pass
         responses.append(_to_response(access, api_key=masked_key))
     return responses
+
+
+_KEYED_REQUESTS = 'apisix_http_status{consumer!=""}'
+
+
+def _usage_query(window: str) -> str:
+    """Requests per consumer over ``window``, first requests included.
+
+    APISIX creates a (consumer, route, code, …) series on its first request, so a
+    new series' first sample is already ≥ 1 and ``increase()``, which counts only
+    growth between samples, drops it: a key used once — or a few times inside one
+    scrape — would read 0, like an unused key. The second term adds the first
+    sample (``min_over_time`` of a counter) of every series born inside the window,
+    i.e. absent the hour before it; ``label_replace`` keeps the two terms' series
+    apart so ``or`` unions them and each range is scanned once.
+
+    A series also reads as new when Prometheus has no samples of it for that hour
+    (a scrape outage then, or a TSDB younger than the window): its whole count
+    since APISIX last restarted is added, inflating every key, idle ones too, for
+    as long as the gap sits at the window's start. Smaller misses remain: after an
+    APISIX restart within that hour, or a reset of a series born inside the
+    window, that series' first requests can go uncounted.
+    """
+    return (
+        f"sum by (consumer) ("
+        f"increase({_KEYED_REQUESTS}[{window}])"
+        f" or label_replace("
+        f"min_over_time({_KEYED_REQUESTS}[{window}])"
+        f" unless last_over_time({_KEYED_REQUESTS}[1h] offset {window}),"
+        f' "usage_part", "first_sample", "", ""))'
+    )
+
+
+def _requests_by_consumer(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        consumer = row.get("metric", {}).get("consumer")
+        try:
+            counts[consumer] = round(float(row["value"][1]))
+        except (KeyError, IndexError, TypeError, ValueError, OverflowError):
+            continue
+    return counts
+
+
+@router.get("/usage", response_model=ApiKeyUsageResponse)
+async def get_api_key_usage(
+    _admin: CurrentUser = Depends(require_permission("apikeys.read")),
+    db: AsyncSession = Depends(get_db),
+) -> ApiKeyUsageResponse:
+    """Gateway requests made with each API key over the last 7 and 30 days.
+
+    Every route a key reached through APISIX counts, LLM routes included —
+    unlike the gateway monitoring page, which shows LLM traffic separately — so
+    a key used only for LLM calls never reads as unused. The counts are
+    Prometheus estimates over ``apisix_http_status`` (kept 60d); see
+    :func:`_usage_query`. Keys without traffic report 0. Per-key traffic is
+    gateway monitoring data, so this also needs ``gateway.monitoring.read``.
+    """
+    if "gateway.monitoring.read" not in await get_role_permissions(db, _admin.role):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Required permission: gateway.monitoring.read",
+        )
+    names = (await db.execute(select(ApiKeyAccess.consumer_name))).scalars().all()
+    now = time.time()
+    try:
+        rows_7d, rows_30d = await asyncio.gather(
+            prometheus_client.instant_query(_usage_query("7d"), eval_time=now),
+            prometheus_client.instant_query(_usage_query("30d"), eval_time=now),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
+        )
+    counts_7d = _requests_by_consumer(rows_7d)
+    counts_30d = _requests_by_consumer(rows_30d)
+    return ApiKeyUsageResponse(keys={
+        name: ApiKeyUsage(
+            requests_7d=counts_7d.get(name, 0),
+            # The two windows extrapolate their edges separately, so rounding can
+            # leave the 30-day estimate a request short of the 7-day one it contains.
+            requests_30d=max(counts_30d.get(name, 0), counts_7d.get(name, 0)),
+        )
+        for name in names
+    })
 
 
 @router.post("", response_model=ApiKeyResponse, status_code=status.HTTP_201_CREATED)
@@ -369,6 +522,7 @@ async def create_api_key(
     access = ApiKeyAccess(
         consumer_name=body.name,
         description=body.description,
+        created_by=_admin.username,
         allowed_databases=json.dumps(allowed_databases) if allowed_databases else None,
         allowed_routes=json.dumps(allowed_routes) if allowed_routes else None,
         rate_limit_per_minute=body.rate_limit_per_minute,
@@ -437,6 +591,7 @@ async def create_my_api_key(
         consumer_name=consumer_name,
         description=f"Self-service key for {user.username}",
         owner=user.sub,
+        created_by=user.username,
         allowed_databases=json.dumps(SELF_ALLOWED_DATABASES),
         allowed_routes=json.dumps(SELF_ALLOWED_ROUTES),
         rate_limit_per_minute=SELF_RATE_LIMIT,

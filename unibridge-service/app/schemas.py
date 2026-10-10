@@ -513,10 +513,22 @@ class ApiKeyResponse(BaseModel):
     allow_delete: bool = False
     allowed_tables: list[str] | None = None
     owner: str | None = None
+    created_by: str | None = None
     expires_at: datetime | None = None
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class ApiKeyUsage(BaseModel):
+    requests_7d: int = 0
+    requests_30d: int = 0
+
+
+class ApiKeyUsageResponse(BaseModel):
+    keys: dict[str, ApiKeyUsage] = Field(
+        default_factory=dict, description="Gateway requests per API key name, over rolling windows"
+    )
 
 
 # ── Users (Keycloak) ────────────────────────────────────────────────────────

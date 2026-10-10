@@ -376,6 +376,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await server_monitor.sync_service_targets_from_db(db)
         break
 
+    # Every boot, not just migration 0027: an old blue-green color (or a rolled-back
+    # release) keeps creating keys without an issuer. Best-effort — a key left
+    # without one is still listed under "all keys".
+    try:
+        async for db in get_db():
+            filled = await api_keys.backfill_api_key_issuers(db)
+            if filled:
+                logger.info("Recorded the issuer of %d API key(s) from the audit log", filled)
+            break
+    except Exception as exc:
+        logger.warning(
+            "Could not record API key issuers from the audit log (%s); "
+            "it is tried again on the next boot",
+            exc,
+        )
+
     logger.info("Loading system settings...")
     async for db in get_db():
         await settings_manager.load_from_db(db)

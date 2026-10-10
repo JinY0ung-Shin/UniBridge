@@ -24,7 +24,11 @@ class _FakeDb:
     async def execute(self, _query):
         return SimpleNamespace(
             scalars=lambda: SimpleNamespace(all=lambda: []),
+            rowcount=0,  # the API key issuer backfill's UPDATE
         )
+
+    async def commit(self):
+        return None
 
 
 async def _fake_get_db():
@@ -920,6 +924,9 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
                 scalars=lambda: SimpleNamespace(all=lambda: []),
             )
 
+    class _IssuerBackfillDb:
+        pass
+
     class _SettingsDb:
         pass
 
@@ -942,12 +949,14 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     replay_route_restrictions = AsyncMock(
         side_effect=lambda db: events.append(("replay", db.__class__.__name__))
     )
+    backfill_issuers = AsyncMock(return_value=0)
     db_iter = iter(
         [
             _ConnectionsDb(),
             _S3Db(),
             _NasDb(),
             _ServersDb(),
+            _IssuerBackfillDb(),
             _SettingsDb(),
             _ReplayDb(),
             _AlertStateDb(),
@@ -969,6 +978,7 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
             "app.main.api_keys.sync_all_consumer_route_restrictions",
             replay_route_restrictions,
         ),
+        patch("app.main.api_keys.backfill_api_key_issuers", backfill_issuers),
         patch(
             "app.services.alert_checker.start_checker",
             new=AsyncMock(return_value=_DummyTask()),
@@ -982,6 +992,8 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     assert replay_route_restrictions.await_count == 1
     db_arg = replay_route_restrictions.await_args.args[0]
     assert isinstance(db_arg, _ReplayDb)
+    backfill_issuers.assert_awaited_once()
+    assert isinstance(backfill_issuers.await_args.args[0], _IssuerBackfillDb)
     assert events[-1] == ("replay", "_ReplayDb")
     assert events.index(("routes", "query-api")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "query-template-write-api")) < events.index(
