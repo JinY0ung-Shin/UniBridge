@@ -824,6 +824,65 @@ async def test_llm_metrics_summary_cache_hit_rate_zero_prompt(client, admin_toke
 
 
 @pytest.mark.asyncio
+async def test_llm_metrics_summary_adds_litellm_and_bifrost(client, admin_token):
+    """Every summary figure is LiteLLM's counter plus Bifrost's, each term
+    tagged with its own ``src`` so the union keeps both."""
+    mock = AsyncMock(return_value=[{"value": [0, "1"]}])
+    with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+        resp = await client.get(
+            "/admin/gateway/metrics/llm/summary?range=1h",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 200
+    (
+        tokens, prompt, completion, spend, requests, latency_sum, latency_count, cached,
+    ) = [call.args[0] for call in mock.call_args_list]
+    # Bifrost has no total-tokens counter: input + output stand in for it.
+    assert "litellm_total_tokens_metric_total[" in tokens
+    assert 'bifrost_input_tokens_total{job="bifrost"}' in tokens
+    assert 'bifrost_output_tokens_total{job="bifrost"}' in tokens
+    assert tokens.count('"src"') == 3
+    for query, litellm, bifrost in (
+        (prompt, "litellm_input_tokens_metric_total", "bifrost_input_tokens_total"),
+        (completion, "litellm_output_tokens_metric_total", "bifrost_output_tokens_total"),
+        (spend, "litellm_spend_metric_total", "bifrost_cost_total"),
+        (cached, "litellm_input_cached_tokens_metric_total", "bifrost_cache_read_input_tokens_total"),
+    ):
+        assert litellm in query
+        assert f'{bifrost}{{job="bifrost"}}' in query
+        assert query.count('"src"') == 2
+    # Bifrost counts each attempt, and model listings too; only the primary
+    # attempt of an LLM call is the client's request.
+    for query, bifrost in (
+        (requests, "bifrost_upstream_requests_total"),
+        (latency_sum, "bifrost_upstream_latency_seconds_sum"),
+        (latency_count, "bifrost_upstream_latency_seconds_count"),
+    ):
+        assert f'{bifrost}{{job="bifrost",fallback_index="0",method!="list_models"}}' in query
+    assert "litellm_proxy_total_requests_metric_total[" in requests
+    assert "litellm_request_total_latency_metric_sum[" in latency_sum
+    assert "litellm_request_total_latency_metric_count[" in latency_count
+
+
+@pytest.mark.asyncio
+async def test_llm_metrics_api_key_scopes_both_gateways(client, admin_token):
+    mock = AsyncMock(return_value=[])
+    with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+        resp = await client.get(
+            "/admin/gateway/metrics/llm/summary?range=1h&api_key=svc.prod-1",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 200
+    for call in mock.call_args_list:
+        query = call.args[0]
+        assert 'end_user="svc.prod-1"' in query
+        assert 'consumer="svc.prod-1"' in query
+        assert query.count('end_user="svc.prod-1"') + query.count('consumer="svc.prod-1"') == (
+            query.count("increase(")
+        )
+
+
+@pytest.mark.asyncio
 async def test_llm_metrics_tokens(client, admin_token):
     series = [{"values": [[1.0, "100"]]}]
     with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,
@@ -852,72 +911,32 @@ async def test_llm_metrics_tokens_prom_error(client, admin_token):
 
 @pytest.mark.asyncio
 async def test_llm_metrics_by_model(client, admin_token):
+    # The union query hands back one ``model`` label: the requested model name
+    # (LiteLLM requested_model / Bifrost alias) or, without one, the model.
     tokens = [
-        {
-            "metric": {
-                "requested_model": "GaussO3.2-260402-vllm",
-                "model": "GaussO3.2-260402",
-            },
-            "value": [0, "5000"],
-        },
+        {"metric": {"model": "GaussO3.2-260402-vllm"}, "value": [0, "5000"]},
         {"metric": {"model": "claude"}, "value": [0, "0"]},
         {"metric": {"model": "bad"}, "value": [0, "bogus"]},
     ]
     cost = [
-        {
-            "metric": {
-                "requested_model": "GaussO3.2-260402-vllm",
-                "model": "GaussO3.2-260402",
-            },
-            "value": [0, "12.345"],
-        },
+        {"metric": {"model": "GaussO3.2-260402-vllm"}, "value": [0, "12.345"]},
         {"metric": {"model": "missing-cost"}, "value": [0, "bad"]},
     ]
     input_tokens = [
-        {
-            "metric": {
-                "requested_model": "GaussO3.2-260402-vllm",
-                "model": "GaussO3.2-260402",
-            },
-            "value": [0, "3000"],
-        },
-        {
-            "metric": {"requested_model": "split-only"},
-            "value": [0, "7"],
-        },
+        {"metric": {"model": "GaussO3.2-260402-vllm"}, "value": [0, "3000"]},
+        {"metric": {"model": "split-only"}, "value": [0, "7"]},
     ]
     output_tokens = [
-        {
-            "metric": {
-                "requested_model": "GaussO3.2-260402-vllm",
-                "model": "GaussO3.2-260402",
-            },
-            "value": [0, "2000"],
-        },
-        {
-            "metric": {"requested_model": "split-only"},
-            "value": [0, "5"],
-        },
+        {"metric": {"model": "GaussO3.2-260402-vllm"}, "value": [0, "2000"]},
+        {"metric": {"model": "split-only"}, "value": [0, "5"]},
     ]
     requests = [
-        {
-            "metric": {
-                "requested_model": "GaussO3.2-260402-vllm",
-                "model": "GaussO3.2-260402",
-            },
-            "value": [0, "25"],
-        },
-        {"metric": {"requested_model": "request-only"}, "value": [0, "3"]},
-        {"metric": {"requested_model": "bad"}, "value": [0, "bogus"]},
+        {"metric": {"model": "GaussO3.2-260402-vllm"}, "value": [0, "25"]},
+        {"metric": {"model": "request-only"}, "value": [0, "3"]},
+        {"metric": {"model": "bad"}, "value": [0, "bogus"]},
     ]
     cached = [
-        {
-            "metric": {
-                "requested_model": "GaussO3.2-260402-vllm",
-                "model": "GaussO3.2-260402",
-            },
-            "value": [0, "1500"],
-        },
+        {"metric": {"model": "GaussO3.2-260402-vllm"}, "value": [0, "1500"]},
     ]
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
                side_effect=[tokens, input_tokens, output_tokens, cost, requests, cached]) as prom_query:
@@ -953,7 +972,47 @@ async def test_llm_metrics_by_model(client, admin_token):
         "requests": 3,
         "cached_tokens": 0,
     }
-    assert all("sum by (requested_model, model)" in call.args[0] for call in prom_query.call_args_list)
+    queries = [call.args[0] for call in prom_query.call_args_list]
+    assert all(q.startswith("sum by (model) (") for q in queries)
+    # Requested name first on both gateways, decided per series.
+    assert all('requested_model!=""' in q and 'requested_model=""' in q for q in queries)
+    assert all('alias!=""' in q and 'alias=""' in q for q in queries)
+
+
+@pytest.mark.asyncio
+async def test_llm_metrics_by_model_adds_rows_that_share_a_model(client, admin_token):
+    """Two series under one model (say, one per gateway) add up instead of the
+    last one overwriting the first, so the table agrees with /by-model-series."""
+    tokens = [
+        {"metric": {"model": "qwen3.5-32b"}, "value": [0, "100"]},
+        {"metric": {"model": "qwen3.5-32b"}, "value": [0, "50"]},
+    ]
+    requests = [
+        {"metric": {"model": "qwen3.5-32b"}, "value": [0, "4"]},
+        {"metric": {"model": "qwen3.5-32b"}, "value": [0, "2"]},
+    ]
+    cost = [
+        {"metric": {"model": "qwen3.5-32b"}, "value": [0, "0.00004"]},
+        {"metric": {"model": "qwen3.5-32b"}, "value": [0, "0.00004"]},
+    ]
+    with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
+               side_effect=[tokens, [], [], cost, requests, []]):
+        resp = await client.get(
+            "/admin/gateway/metrics/llm/by-model?range=1h",
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {
+            "model": "qwen3.5-32b",
+            "tokens": 150,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost": 0.0001,
+            "requests": 6,
+            "cached_tokens": 0,
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -969,29 +1028,31 @@ async def test_llm_metrics_by_model_prom_error(client, admin_token):
 
 @pytest.mark.asyncio
 async def test_llm_metrics_top_keys(client, admin_token):
+    # The union query hands back the key as ``consumer`` (LiteLLM's end_user
+    # relabelled, Bifrost's own consumer label).
     tokens = [
-        {"metric": {"end_user": "customer-portal"}, "value": [0, "1000"]},
-        {"metric": {"end_user": "internal-batch"}, "value": [0, "0"]},
-        {"metric": {"end_user": "bad-key"}, "value": [0, "bogus"]},
+        {"metric": {"consumer": "customer-portal"}, "value": [0, "1000"]},
+        {"metric": {"consumer": "internal-batch"}, "value": [0, "0"]},
+        {"metric": {"consumer": "bad-key"}, "value": [0, "bogus"]},
     ]
     input_tokens = [
-        {"metric": {"end_user": "customer-portal"}, "value": [0, "650"]},
-        {"metric": {"end_user": "bad-key"}, "value": [0, "bogus"]},
+        {"metric": {"consumer": "customer-portal"}, "value": [0, "650"]},
+        {"metric": {"consumer": "bad-key"}, "value": [0, "bogus"]},
     ]
     output_tokens = [
-        {"metric": {"end_user": "customer-portal"}, "value": [0, "350"]},
+        {"metric": {"consumer": "customer-portal"}, "value": [0, "350"]},
     ]
     requests = [
-        {"metric": {"end_user": "customer-portal"}, "value": [0, "50"]},
-        {"metric": {"end_user": "internal-batch"}, "value": [0, "bad"]},
+        {"metric": {"consumer": "customer-portal"}, "value": [0, "50"]},
+        {"metric": {"consumer": "internal-batch"}, "value": [0, "bad"]},
     ]
     cached = [
-        {"metric": {"end_user": "customer-portal"}, "value": [0, "200"]},
-        {"metric": {"end_user": "bad-key"}, "value": [0, "bogus"]},
+        {"metric": {"consumer": "customer-portal"}, "value": [0, "200"]},
+        {"metric": {"consumer": "bad-key"}, "value": [0, "bogus"]},
     ]
     cost = [
-        {"metric": {"end_user": "customer-portal"}, "value": [0, "1.2345"]},
-        {"metric": {"end_user": "bad-key"}, "value": [0, "bogus"]},
+        {"metric": {"consumer": "customer-portal"}, "value": [0, "1.2345"]},
+        {"metric": {"consumer": "bad-key"}, "value": [0, "bogus"]},
     ]
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
                side_effect=[tokens, input_tokens, output_tokens, requests, cached, cost]) as prom_query:
@@ -1011,7 +1072,13 @@ async def test_llm_metrics_top_keys(client, admin_token):
         "requests": 50,
         "cost": 1.2345,
     }
-    assert all("sum by (end_user)" in call.args[0] for call in prom_query.call_args_list)
+    queries = [call.args[0] for call in prom_query.call_args_list]
+    assert queries[0].startswith("topk(10, sum by (consumer) (")
+    assert all(q.startswith("sum by (consumer) (") for q in queries[1:])
+    assert all(
+        "label_replace(sum by (end_user) (" in q and '"consumer", "$1", "end_user"' in q
+        for q in queries
+    )
 
 
 @pytest.mark.asyncio

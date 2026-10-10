@@ -1991,6 +1991,8 @@ class TestMetricsUsages:
             )
         assert resp.status_code == 200
         assert 'route!="llm-proxy"' in mock.call_args.args[0]
+        # /api/llm-bi is LLM traffic too.
+        assert 'route!="llm-bi-proxy"' in mock.call_args.args[0]
 
     async def test_include_llm_drops_route_exclusion(self, client, admin_token):
         mock = AsyncMock(return_value=[])
@@ -2782,9 +2784,13 @@ class TestPermissions:
         )
         assert resp.status_code == 403
 
-    @pytest.mark.parametrize("llm_route", ["llm-messages", "llm-responses"])
+    @pytest.mark.parametrize(
+        "llm_route",
+        ["llm-messages", "llm-responses", "llm-bi-proxy", "llm-bi-messages", "llm-bi-responses"],
+    )
     async def test_user_cannot_read_llm_converter_routes(self, client, user_token, llm_route):
-        # The converter routes are admin-scope only, same as llm-proxy.
+        # The converter routes and the /api/llm-bi routes are admin-scope only,
+        # same as llm-proxy.
         resp = await client.get(
             f"/admin/gateway/metrics/summary?range=1h&route={llm_route}",
             headers=auth_header(user_token),
@@ -3094,13 +3100,13 @@ class TestLlmByModelSeries:
         mon_6_01 = int(datetime(2026, 6, 1, 0, 0, tzinfo=kst).timestamp())  # aligned start
         mon_6_22 = int(datetime(2026, 6, 22, 0, 0, tzinfo=kst).timestamp()) # current bucket
         completed = [{
-            "metric": {"requested_model": "model-a"},
+            "metric": {"model": "model-a"},
             "values": [
                 [mon_6_01, "999"],            # covers 5/25 week → before range, dropped
                 [mon_6_01 + 2 * week, "700"], # sample at 6/15 → bucket 6/8
             ],
         }]
-        partial = [{"metric": {"requested_model": "model-b"}, "value": [end, "40"]}]
+        partial = [{"metric": {"model": "model-b"}, "value": [end, "40"]}]
         range_mock = AsyncMock(return_value=completed)
         instant_mock = AsyncMock(return_value=partial)
 
@@ -3129,28 +3135,32 @@ class TestLlmByModelSeries:
         assert instant_mock.call_args.kwargs["eval_time"] == float(end)
 
 
+# The default exclusion: every LLM route, /api/llm and /api/llm-bi alike.
+_LLM_EXCLUDED = (
+    'route!="llm-proxy",route!="llm-messages",route!="llm-responses",'
+    'route!="llm-bi-proxy",route!="llm-bi-messages",route!="llm-bi-responses"'
+)
+
+
 class TestLabelsHelper:
     """_labels() builds PromQL label selectors with llm-proxy exclusion default."""
 
     def test_no_args_excludes_llm_proxy(self):
-        assert _labels(None, None) == \
-            '{route!="llm-proxy",route!="llm-messages",route!="llm-responses"}'
+        assert _labels(None, None) == '{' + _LLM_EXCLUDED + '}'
 
     def test_route_replaces_llm_proxy_exclusion(self):
         # Explicit route filter should not include the LLM exclusions
         assert _labels("query-api", None) == '{route="query-api"}'
 
     def test_consumer_adds_label(self):
-        assert _labels(None, "alice") == \
-            '{route!="llm-proxy",route!="llm-messages",route!="llm-responses",consumer="alice"}'
+        assert _labels(None, "alice") == '{' + _LLM_EXCLUDED + ',consumer="alice"}'
 
     def test_route_and_consumer(self):
         assert _labels("query-api", "alice") == '{route="query-api",consumer="alice"}'
 
     def test_extra_labels_prepended(self):
         # Existing usage: _labels(route, None, 'code=~"5.."')
-        assert _labels(None, None, 'code=~"5.."') == \
-            '{code=~"5..",route!="llm-proxy",route!="llm-messages",route!="llm-responses"}'
+        assert _labels(None, None, 'code=~"5.."') == '{code=~"5..",' + _LLM_EXCLUDED + '}'
         assert _labels("query-api", "alice", 'code=~"5.."') == \
             '{code=~"5..",route="query-api",consumer="alice"}'
 

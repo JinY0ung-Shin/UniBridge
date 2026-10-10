@@ -177,14 +177,10 @@ class TestByModelSeries:
         assert by_key["gpt-4"]["total"] == pytest.approx(307)  # 100 + 200 + 7
         assert by_key["claude"]["total"] == pytest.approx(50)
 
-    async def test_groups_by_requested_model_then_model(self, client, admin_token):
-        # _metric_label prefers requested_model over model.
-        results = [
-            {
-                "metric": {"requested_model": "gpt-4o", "model": "azure/gpt-4o"},
-                "values": [(1000, "12")],
-            }
-        ]
+    async def test_groups_by_the_requested_model(self, client, admin_token):
+        # The query keys each series on the name the client asked for (LiteLLM
+        # requested_model, Bifrost alias) and only falls back to the model.
+        results = [{"metric": {"model": "gpt-4o"}, "values": [(1000, "12")]}]
         mock = AsyncMock(return_value=results)
         with patch("app.routers.gateway.prometheus_client.range_query", mock):
             resp = await client.get(
@@ -194,6 +190,11 @@ class TestByModelSeries:
         assert resp.status_code == 200
         keys = [s["key"] for s in resp.json()["series"]]
         assert keys == ["gpt-4o"]
+        query = mock.call_args.args[0]
+        assert query.startswith("sum by (model) (")
+        assert '"model", "$1", "requested_model"' in query
+        assert '"model", "$1", "alias"' in query
+        assert 'bifrost_input_tokens_total{job="bifrost",alias=""}' in query
 
     async def test_requires_admin_permission(self, client, user_token):
         resp = await client.get(

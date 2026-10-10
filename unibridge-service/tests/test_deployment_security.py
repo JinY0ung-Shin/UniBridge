@@ -60,6 +60,7 @@ REQUIRED_PROMETHEUS_ALERTS = {
     "UniBridgeMetaDbDown",
     "KeycloakDbDown",
     "LiteLLMDbDown",
+    "BifrostDown",
     "UniBridgeAuditWritesMissing",
 }
 
@@ -452,6 +453,11 @@ def test_prometheus_scrapes_service_and_loads_alert_rules() -> None:
     ]
     assert scrape_jobs["infra-db-tcp"]["metrics_path"] == "/probe"
     assert scrape_jobs["infra-db-tcp"]["params"] == {"module": ["tcp_connect"]}
+    # The LLM monitoring page and Grafana add Bifrost's counters to LiteLLM's,
+    # picking them out by this job name; bifrost/config.json whitelists /metrics.
+    assert scrape_jobs["bifrost"]["metrics_path"] == "/metrics"
+    assert scrape_jobs["bifrost"]["static_configs"] == [{"targets": ["bifrost:8080"]}]
+    assert "scheme" not in scrape_jobs["bifrost"]  # plain HTTP inside the network
 
 
 def test_prometheus_alert_rules_cover_gateway_service_database_and_audit() -> None:
@@ -469,6 +475,7 @@ def test_prometheus_alert_rules_cover_gateway_service_database_and_audit() -> No
     assert "apisix_http_status" in alerts["APISIXHigh5xxRate"]["expr"]
     assert "unibridge_query_duration_seconds_count" in alerts["UniBridgeAuditWritesMissing"]["expr"]
     assert "unibridge_audit_log_write_total" in alerts["UniBridgeAuditWritesMissing"]["expr"]
+    assert alerts["BifrostDown"]["expr"] == 'up{job="bifrost"} == 0'
 
 
 def test_docker_compose_does_not_contain_insecure_password_fallbacks() -> None:

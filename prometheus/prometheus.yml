@@ -52,6 +52,16 @@ scrape_configs:
     metrics_path: '/metrics'
     scrape_interval: 15s
 
+  # Bifrost, the LLM gateway behind /api/llm-bi (and /api/llm once it is
+  # switched over). Plain HTTP on the internal network; /metrics stays open with
+  # the admin login on because bifrost/config.json whitelists it. The LLM
+  # monitoring page and the Grafana LLM dashboard add these bifrost_* counters
+  # to LiteLLM's, always pinned to this job name.
+  - job_name: 'bifrost'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['bifrost:8080']
+
   # Monitored servers (hosts) running node_exporter. Targets are written by
   # unibridge-service from the MonitoredHost registry into this file_sd file
   # (shared volume); no Prometheus reload is needed when hosts are added/removed.

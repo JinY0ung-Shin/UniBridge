@@ -221,7 +221,7 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "LiteLLM",
+      "title": "LLM gateways",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -289,15 +289,17 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "up{job=\"litellm\"}",
+          "expr": "up{job=~\"litellm|bifrost\"}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
           "instant": true,
-          "range": false
+          "range": false,
+          "legendFormat": "{{job}}"
         }
-      ]
+      ],
+      "description": "LiteLLM and Bifrost (scrape jobs litellm / bifrost)."
     },
     {
       "id": 4,
@@ -677,7 +679,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\"}[$__range]))",
+          "expr": "sum(increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\"}[$__range]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -739,7 +741,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\",code=~\"5..\"}[$__range])) / sum(increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\"}[$__range])) * 100",
+          "expr": "sum(increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\",code=~\"5..\"}[$__range])) / sum(increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\"}[$__range])) * 100",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -801,7 +803,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(apisix_http_latency_sum{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses\"}[$__range])) / sum(increase(apisix_http_latency_count{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses\"}[$__range]))",
+          "expr": "sum(increase(apisix_http_latency_sum{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\"}[$__range])) / sum(increase(apisix_http_latency_count{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\"}[$__range]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -861,7 +863,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses\"}[$__rate_interval]))",
+          "expr": "sum(rate(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\"}[$__rate_interval]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -921,7 +923,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(litellm_total_tokens_metric_total[$__range]))",
+          "expr": "sum (label_replace(sum (increase(litellm_total_tokens_metric_total[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_input_tokens_total{job=\"bifrost\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum (increase(bifrost_output_tokens_total{job=\"bifrost\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -983,7 +985,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(litellm_spend_metric_total[$__range]))",
+          "expr": "sum (label_replace(sum (increase(litellm_spend_metric_total[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_cost_total{job=\"bifrost\"}[$__range])), \"src\", \"bifrost_cost_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1044,7 +1046,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(litellm_proxy_total_requests_metric_total[$__range]))",
+          "expr": "sum (label_replace(sum (increase(litellm_proxy_total_requests_metric_total[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_upstream_requests_total{job=\"bifrost\",fallback_index=\"0\",method!=\"list_models\"}[$__range])), \"src\", \"bifrost_upstream_requests_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1104,7 +1106,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(litellm_input_tokens_metric_total[$__interval]))",
+          "expr": "sum (label_replace(sum (increase(litellm_input_tokens_metric_total[$__interval])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_input_tokens_total{job=\"bifrost\"}[$__interval])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1114,7 +1116,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum(increase(litellm_output_tokens_metric_total[$__interval]))",
+          "expr": "sum (label_replace(sum (increase(litellm_output_tokens_metric_total[$__interval])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_output_tokens_total{job=\"bifrost\"}[$__interval])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1124,7 +1126,7 @@
         },
         {
           "refId": "C",
-          "expr": "sum(increase(litellm_input_cached_tokens_metric_total[$__interval]))",
+          "expr": "sum (label_replace(sum (increase(litellm_input_cached_tokens_metric_total[$__interval])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_cache_read_input_tokens_total{job=\"bifrost\"}[$__interval])), \"src\", \"bifrost_cache_read_input_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"

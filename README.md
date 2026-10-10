@@ -934,14 +934,13 @@ leaves, change the Bifrost admin password and set the new value as
 
 Differences and limits to keep in mind while comparing:
 
-- **Outside UniBridge's LLM views.** `/api/llm-bi` traffic does not appear on
-  the LLM monitoring or usage pages, and is not written to
-  [LLM conversation capture](#llm-conversation-capture); those read LiteLLM's
-  metrics and callbacks. The gateway metrics for the `llm-bi-*` routes do
-  appear, under their route names; for the rest, use Bifrost's own UI.
+- **Conversation capture.** Bifrost traffic is not written to
+  [LLM conversation capture](#llm-conversation-capture), which is a LiteLLM
+  callback. The LLM monitoring page and the Grafana LLM dashboard count both
+  gateways once Prometheus scrapes Bifrost (the `bifrost` job).
 - **Bifrost's own observability.** Bifrost serves Prometheus metrics at
-  `bifrost:8080/metrics`. They are unauthenticated inside the Docker network and
-  not scraped by default. APISIX stamps every request with
+  `bifrost:8080/metrics`. They are unauthenticated inside the Docker network.
+  APISIX stamps every request with
   `x-bf-dim-consumer` and `x-bf-lh-consumer` set to `$consumer_name`, so the
   `consumer` metrics label and the log metadata attribute traffic per API key.
   Request logs, bodies included, are kept in `logs.db` on the `bifrost-test`

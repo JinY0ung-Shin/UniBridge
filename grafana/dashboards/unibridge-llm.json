@@ -25,7 +25,7 @@
           "uid": "prometheus"
         },
         "query": {
-          "query": "label_values(litellm_total_tokens_metric_total, end_user)",
+          "query": "query_result(sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_total_tokens_metric_total[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_input_tokens_total{job=\"bifrost\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_output_tokens_total{job=\"bifrost\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\")))",
           "refId": "var-api_key"
         },
         "refresh": 2,
@@ -38,7 +38,9 @@
           "value": "$__all"
         },
         "options": [],
-        "sort": 1
+        "sort": 1,
+        "regex": "/consumer=\"([^\"]+)\"/",
+        "definition": "query_result(sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_total_tokens_metric_total[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_input_tokens_total{job=\"bifrost\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_output_tokens_total{job=\"bifrost\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\")))"
       },
       {
         "name": "bucket",
@@ -131,7 +133,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))",
+          "expr": "sum (label_replace(sum (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -192,7 +194,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))",
+          "expr": "sum (label_replace(sum (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -253,7 +255,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))",
+          "expr": "sum (label_replace(sum (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -314,7 +316,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(litellm_input_cached_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))",
+          "expr": "sum (label_replace(sum (increase(litellm_input_cached_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_cache_read_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_cache_read_input_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -376,7 +378,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(litellm_spend_metric_total{end_user=~\"$api_key\"}[$__range]))",
+          "expr": "sum (label_replace(sum (increase(litellm_spend_metric_total{end_user=~\"$api_key\"}[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_cost_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_cost_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -437,7 +439,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\"}[$__range]))",
+          "expr": "sum (label_replace(sum (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\"}[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_upstream_requests_total{job=\"bifrost\",fallback_index=\"0\",method!=\"list_models\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_upstream_requests_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -499,7 +501,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(litellm_request_total_latency_metric_sum{end_user=~\"$api_key\"}[$__range])) / sum(increase(litellm_request_total_latency_metric_count{end_user=~\"$api_key\"}[$__range])) * 1000",
+          "expr": "(sum (label_replace(sum (increase(litellm_request_total_latency_metric_sum{end_user=~\"$api_key\"}[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_upstream_latency_seconds_sum{job=\"bifrost\",fallback_index=\"0\",method!=\"list_models\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_upstream_latency_seconds_sum\", \"\", \"\"))) / (sum (label_replace(sum (increase(litellm_request_total_latency_metric_count{end_user=~\"$api_key\"}[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_upstream_latency_seconds_count{job=\"bifrost\",fallback_index=\"0\",method!=\"list_models\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_upstream_latency_seconds_count\", \"\", \"\"))) * 1000",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -561,7 +563,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "clamp_max(sum(increase(litellm_input_cached_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) / sum(increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), 1)",
+          "expr": "clamp_max((sum (label_replace(sum (increase(litellm_input_cached_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_cache_read_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_cache_read_input_tokens_total\", \"\", \"\"))) / (sum (label_replace(sum (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\"))), 1)",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -621,7 +623,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__interval]))",
+          "expr": "sum (label_replace(sum (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__interval])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__interval])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -631,7 +633,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum(increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__interval]))",
+          "expr": "sum (label_replace(sum (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__interval])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__interval])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -641,7 +643,7 @@
         },
         {
           "refId": "C",
-          "expr": "sum(increase(litellm_input_cached_tokens_metric_total{end_user=~\"$api_key\"}[$__interval]))",
+          "expr": "sum (label_replace(sum (increase(litellm_input_cached_tokens_metric_total{end_user=~\"$api_key\"}[$__interval])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_cache_read_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__interval])), \"src\", \"bifrost_cache_read_input_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -701,7 +703,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\"}[$__interval]))",
+          "expr": "sum (label_replace(sum (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\"}[$__interval])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_upstream_requests_total{job=\"bifrost\",fallback_index=\"0\",method!=\"list_models\",consumer=~\"$api_key\"}[$__interval])), \"src\", \"bifrost_upstream_requests_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -794,7 +796,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((sum by (requested_model, model) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) > 0) or (sum by (requested_model, model) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) + sum by (requested_model, model) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))) or sum by (requested_model, model) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) or sum by (requested_model, model) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) or (sum by (requested_model, model) (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\"}[$__range])) * 0))",
+          "expr": "((sum by (model) (label_replace(label_replace(sum by (requested_model) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\",requested_model!=\"\"}[$__range])), \"model\", \"$1\", \"requested_model\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (model) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\",requested_model=\"\"}[$__range])), \"src\", \"litellm-model\", \"\", \"\") or label_replace(label_replace(sum by (alias) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias!=\"\"}[$__range])), \"model\", \"$1\", \"alias\", \"(.*)\"), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (model) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias=\"\"}[$__range])), \"src\", \"bifrost_input_tokens_total-model\", \"\", \"\") or label_replace(label_replace(sum by (alias) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias!=\"\"}[$__range])), \"model\", \"$1\", \"alias\", \"(.*)\"), \"src\", \"bifrost_output_tokens_total\", \"\", \"\") or label_replace(sum by (model) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias=\"\"}[$__range])), \"src\", \"bifrost_output_tokens_total-model\", \"\", \"\"))) > 0) or ((sum by (model) (label_replace(label_replace(sum by (requested_model) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\",requested_model!=\"\"}[$__range])), \"model\", \"$1\", \"requested_model\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (model) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\",requested_model=\"\"}[$__range])), \"src\", \"litellm-model\", \"\", \"\") or label_replace(label_replace(sum by (alias) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias!=\"\"}[$__range])), \"model\", \"$1\", \"alias\", \"(.*)\"), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (model) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias=\"\"}[$__range])), \"src\", \"bifrost_input_tokens_total-model\", \"\", \"\"))) + (sum by (model) (label_replace(label_replace(sum by (requested_model) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\",requested_model!=\"\"}[$__range])), \"model\", \"$1\", \"requested_model\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (model) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\",requested_model=\"\"}[$__range])), \"src\", \"litellm-model\", \"\", \"\") or label_replace(label_replace(sum by (alias) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias!=\"\"}[$__range])), \"model\", \"$1\", \"alias\", \"(.*)\"), \"src\", \"bifrost_output_tokens_total\", \"\", \"\") or label_replace(sum by (model) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias=\"\"}[$__range])), \"src\", \"bifrost_output_tokens_total-model\", \"\", \"\")))) or (sum by (model) (label_replace(label_replace(sum by (requested_model) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\",requested_model!=\"\"}[$__range])), \"model\", \"$1\", \"requested_model\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (model) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\",requested_model=\"\"}[$__range])), \"src\", \"litellm-model\", \"\", \"\") or label_replace(label_replace(sum by (alias) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias!=\"\"}[$__range])), \"model\", \"$1\", \"alias\", \"(.*)\"), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (model) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias=\"\"}[$__range])), \"src\", \"bifrost_input_tokens_total-model\", \"\", \"\"))) or (sum by (model) (label_replace(label_replace(sum by (requested_model) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\",requested_model!=\"\"}[$__range])), \"model\", \"$1\", \"requested_model\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (model) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\",requested_model=\"\"}[$__range])), \"src\", \"litellm-model\", \"\", \"\") or label_replace(label_replace(sum by (alias) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias!=\"\"}[$__range])), \"model\", \"$1\", \"alias\", \"(.*)\"), \"src\", \"bifrost_output_tokens_total\", \"\", \"\") or label_replace(sum by (model) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias=\"\"}[$__range])), \"src\", \"bifrost_output_tokens_total-model\", \"\", \"\"))) or ((sum by (model) (label_replace(label_replace(sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\",requested_model!=\"\"}[$__range])), \"model\", \"$1\", \"requested_model\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (model) (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\",requested_model=\"\"}[$__range])), \"src\", \"litellm-model\", \"\", \"\") or label_replace(label_replace(sum by (alias) (increase(bifrost_upstream_requests_total{job=\"bifrost\",fallback_index=\"0\",method!=\"list_models\",consumer=~\"$api_key\",alias!=\"\"}[$__range])), \"model\", \"$1\", \"alias\", \"(.*)\"), \"src\", \"bifrost_upstream_requests_total\", \"\", \"\") or label_replace(sum by (model) (increase(bifrost_upstream_requests_total{job=\"bifrost\",fallback_index=\"0\",method!=\"list_models\",consumer=~\"$api_key\",alias=\"\"}[$__range])), \"src\", \"bifrost_upstream_requests_total-model\", \"\", \"\"))) * 0)",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -805,7 +807,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum by (requested_model, model) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))",
+          "expr": "sum by (model) (label_replace(label_replace(sum by (requested_model) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\",requested_model!=\"\"}[$__range])), \"model\", \"$1\", \"requested_model\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (model) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\",requested_model=\"\"}[$__range])), \"src\", \"litellm-model\", \"\", \"\") or label_replace(label_replace(sum by (alias) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias!=\"\"}[$__range])), \"model\", \"$1\", \"alias\", \"(.*)\"), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (model) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias=\"\"}[$__range])), \"src\", \"bifrost_input_tokens_total-model\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -816,7 +818,7 @@
         },
         {
           "refId": "C",
-          "expr": "sum by (requested_model, model) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))",
+          "expr": "sum by (model) (label_replace(label_replace(sum by (requested_model) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\",requested_model!=\"\"}[$__range])), \"model\", \"$1\", \"requested_model\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (model) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\",requested_model=\"\"}[$__range])), \"src\", \"litellm-model\", \"\", \"\") or label_replace(label_replace(sum by (alias) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias!=\"\"}[$__range])), \"model\", \"$1\", \"alias\", \"(.*)\"), \"src\", \"bifrost_output_tokens_total\", \"\", \"\") or label_replace(sum by (model) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias=\"\"}[$__range])), \"src\", \"bifrost_output_tokens_total-model\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -827,7 +829,7 @@
         },
         {
           "refId": "D",
-          "expr": "sum by (requested_model, model) (increase(litellm_input_cached_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))",
+          "expr": "sum by (model) (label_replace(label_replace(sum by (requested_model) (increase(litellm_input_cached_tokens_metric_total{end_user=~\"$api_key\",requested_model!=\"\"}[$__range])), \"model\", \"$1\", \"requested_model\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (model) (increase(litellm_input_cached_tokens_metric_total{end_user=~\"$api_key\",requested_model=\"\"}[$__range])), \"src\", \"litellm-model\", \"\", \"\") or label_replace(label_replace(sum by (alias) (increase(bifrost_cache_read_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias!=\"\"}[$__range])), \"model\", \"$1\", \"alias\", \"(.*)\"), \"src\", \"bifrost_cache_read_input_tokens_total\", \"\", \"\") or label_replace(sum by (model) (increase(bifrost_cache_read_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias=\"\"}[$__range])), \"src\", \"bifrost_cache_read_input_tokens_total-model\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -838,7 +840,7 @@
         },
         {
           "refId": "E",
-          "expr": "sum by (requested_model, model) (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\"}[$__range]))",
+          "expr": "sum by (model) (label_replace(label_replace(sum by (requested_model) (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\",requested_model!=\"\"}[$__range])), \"model\", \"$1\", \"requested_model\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (model) (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\",requested_model=\"\"}[$__range])), \"src\", \"litellm-model\", \"\", \"\") or label_replace(label_replace(sum by (alias) (increase(bifrost_upstream_requests_total{job=\"bifrost\",fallback_index=\"0\",method!=\"list_models\",consumer=~\"$api_key\",alias!=\"\"}[$__range])), \"model\", \"$1\", \"alias\", \"(.*)\"), \"src\", \"bifrost_upstream_requests_total\", \"\", \"\") or label_replace(sum by (model) (increase(bifrost_upstream_requests_total{job=\"bifrost\",fallback_index=\"0\",method!=\"list_models\",consumer=~\"$api_key\",alias=\"\"}[$__range])), \"src\", \"bifrost_upstream_requests_total-model\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -849,7 +851,7 @@
         },
         {
           "refId": "F",
-          "expr": "sum by (requested_model, model) (increase(litellm_spend_metric_total{end_user=~\"$api_key\"}[$__range]))",
+          "expr": "sum by (model) (label_replace(label_replace(sum by (requested_model) (increase(litellm_spend_metric_total{end_user=~\"$api_key\",requested_model!=\"\"}[$__range])), \"model\", \"$1\", \"requested_model\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (model) (increase(litellm_spend_metric_total{end_user=~\"$api_key\",requested_model=\"\"}[$__range])), \"src\", \"litellm-model\", \"\", \"\") or label_replace(label_replace(sum by (alias) (increase(bifrost_cost_total{job=\"bifrost\",consumer=~\"$api_key\",alias!=\"\"}[$__range])), \"model\", \"$1\", \"alias\", \"(.*)\"), \"src\", \"bifrost_cost_total\", \"\", \"\") or label_replace(sum by (model) (increase(bifrost_cost_total{job=\"bifrost\",consumer=~\"$api_key\",alias=\"\"}[$__range])), \"src\", \"bifrost_cost_total-model\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -910,7 +912,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (model) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__interval]))",
+          "expr": "sum by (model) (label_replace(label_replace(sum by (requested_model) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\",requested_model!=\"\"}[$__interval])), \"model\", \"$1\", \"requested_model\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (model) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\",requested_model=\"\"}[$__interval])), \"src\", \"litellm-model\", \"\", \"\") or label_replace(label_replace(sum by (alias) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias!=\"\"}[$__interval])), \"model\", \"$1\", \"alias\", \"(.*)\"), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (model) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias=\"\"}[$__interval])), \"src\", \"bifrost_input_tokens_total-model\", \"\", \"\") or label_replace(label_replace(sum by (alias) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias!=\"\"}[$__interval])), \"model\", \"$1\", \"alias\", \"(.*)\"), \"src\", \"bifrost_output_tokens_total\", \"\", \"\") or label_replace(sum by (model) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\",alias=\"\"}[$__interval])), \"src\", \"bifrost_output_tokens_total-model\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1003,7 +1005,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "((sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) > 0) or (sum by (end_user) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) + sum by (end_user) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))) or sum by (end_user) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) or sum by (end_user) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range])) or (sum by (end_user) (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\"}[$__range])) * 0)) and on (end_user) topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])))",
+          "expr": "(((sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\"))) > 0) or ((sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\"))) + (sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\")))) or (sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\"))) or (sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\"))) or ((sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_upstream_requests_total{job=\"bifrost\",fallback_index=\"0\",method!=\"list_models\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_upstream_requests_total\", \"\", \"\"))) * 0)) and on (consumer) topk(10, sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\")))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1014,7 +1016,7 @@
         },
         {
           "refId": "B",
-          "expr": "(sum by (end_user) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))) and on (end_user) topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])))",
+          "expr": "(sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_input_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\"))) and on (consumer) topk(10, sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\")))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1025,7 +1027,7 @@
         },
         {
           "refId": "C",
-          "expr": "(sum by (end_user) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))) and on (end_user) topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])))",
+          "expr": "(sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_output_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\"))) and on (consumer) topk(10, sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\")))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1036,7 +1038,7 @@
         },
         {
           "refId": "D",
-          "expr": "(sum by (end_user) (increase(litellm_input_cached_tokens_metric_total{end_user=~\"$api_key\"}[$__range]))) and on (end_user) topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])))",
+          "expr": "(sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_input_cached_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_cache_read_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_cache_read_input_tokens_total\", \"\", \"\"))) and on (consumer) topk(10, sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\")))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1047,7 +1049,7 @@
         },
         {
           "refId": "E",
-          "expr": "(sum by (end_user) (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\"}[$__range]))) and on (end_user) topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])))",
+          "expr": "(sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_proxy_total_requests_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_upstream_requests_total{job=\"bifrost\",fallback_index=\"0\",method!=\"list_models\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_upstream_requests_total\", \"\", \"\"))) and on (consumer) topk(10, sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\")))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1058,7 +1060,7 @@
         },
         {
           "refId": "F",
-          "expr": "(sum by (end_user) (increase(litellm_spend_metric_total{end_user=~\"$api_key\"}[$__range]))) and on (end_user) topk(10, sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])))",
+          "expr": "(sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_spend_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_cost_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_cost_total\", \"\", \"\"))) and on (consumer) topk(10, sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__range])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\")))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1119,12 +1121,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__interval]))",
+          "expr": "sum by (consumer) (label_replace(label_replace(sum by (end_user) (increase(litellm_total_tokens_metric_total{end_user=~\"$api_key\"}[$__interval])), \"consumer\", \"$1\", \"end_user\", \"(.*)\"), \"src\", \"litellm\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_input_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__interval])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum by (consumer) (increase(bifrost_output_tokens_total{job=\"bifrost\",consumer=~\"$api_key\"}[$__interval])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "legendFormat": "{{end_user}}",
+          "legendFormat": "{{consumer}}",
           "interval": "$bucket"
         }
       ]
@@ -1190,7 +1192,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (code) (increase(apisix_http_status{route=~\"llm-proxy|llm-messages|llm-responses\",consumer=~\"$api_key\"}[$__range]))",
+          "expr": "sum by (code) (increase(apisix_http_status{route=~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\",consumer=~\"$api_key\"}[$__range]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1282,7 +1284,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(apisix_http_status{route=~\"llm-proxy|llm-messages|llm-responses\",consumer=~\"$api_key\",code=~\"2..|3..\"}[$__interval]))",
+          "expr": "sum(increase(apisix_http_status{route=~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\",consumer=~\"$api_key\",code=~\"2..|3..\"}[$__interval]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1292,7 +1294,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum(increase(apisix_http_status{route=~\"llm-proxy|llm-messages|llm-responses\",consumer=~\"$api_key\",code!~\"2..|3..\"}[$__interval]))",
+          "expr": "sum(increase(apisix_http_status{route=~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\",consumer=~\"$api_key\",code!~\"2..|3..\"}[$__interval]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
