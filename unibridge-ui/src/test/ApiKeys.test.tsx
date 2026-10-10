@@ -1,6 +1,7 @@
 vi.mock('../api/client', () => ({
   default: { interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } } },
-  getApiKeys: vi.fn(),
+  getScopedApiKeys: vi.fn(),
+  getApiKeyUsage: vi.fn(),
   createApiKey: vi.fn(),
   updateApiKey: vi.fn(),
   deleteApiKey: vi.fn(),
@@ -14,7 +15,8 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
-  getApiKeys,
+  getScopedApiKeys,
+  getApiKeyUsage,
   getAdminDatabases,
   getGatewayRoutes,
   getS3Connections,
@@ -32,7 +34,8 @@ import {
   makeNasConnection,
 } from './helpers';
 
-const mockedGetApiKeys = vi.mocked(getApiKeys);
+const mockedGetScopedApiKeys = vi.mocked(getScopedApiKeys);
+const mockedGetApiKeyUsage = vi.mocked(getApiKeyUsage);
 const mockedGetAdminDatabases = vi.mocked(getAdminDatabases);
 const mockedGetGatewayRoutes = vi.mocked(getGatewayRoutes);
 const mockedGetS3Connections = vi.mocked(getS3Connections);
@@ -45,6 +48,16 @@ async function typeKeyName(name: string) {
   await userEvent.type(screen.getByRole('textbox', { name: 'Name' }), name);
 }
 
+// Body columns in order; "Requests" heads the 7 days / 30 days pair above them.
+const COLUMNS = [
+  'Name', 'Description', 'API Key', 'Allowed Data Sources', 'Allowed Routes',
+  '7 days', '30 days', 'Expires', 'Actions',
+];
+
+function cellInColumn(row: HTMLElement, column: string) {
+  return within(row).getAllByRole('cell')[COLUMNS.indexOf(column)];
+}
+
 describe('ApiKeys', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -53,7 +66,8 @@ describe('ApiKeys', () => {
       value: { writeText: clipboardWriteText },
     });
     clipboardWriteText.mockResolvedValue(undefined);
-    mockedGetApiKeys.mockResolvedValue([]);
+    mockedGetScopedApiKeys.mockResolvedValue([]);
+    mockedGetApiKeyUsage.mockResolvedValue({ keys: {} });
     mockedGetAdminDatabases.mockResolvedValue([]);
     mockedGetGatewayRoutes.mockResolvedValue({ items: [], total: 0 });
     mockedGetS3Connections.mockResolvedValue([]);
@@ -61,14 +75,14 @@ describe('ApiKeys', () => {
   });
 
   it('renders loading state', () => {
-    mockedGetApiKeys.mockReturnValue(new Promise(() => {}));
+    mockedGetScopedApiKeys.mockReturnValue(new Promise(() => {}));
     renderWithProviders(<ApiKeys />);
     expect(screen.getByText('Loading API keys...')).toBeInTheDocument();
   });
 
   it('renders API keys table', async () => {
     const key = makeApiKey();
-    mockedGetApiKeys.mockResolvedValue([key]);
+    mockedGetScopedApiKeys.mockResolvedValue([key]);
 
     renderWithProviders(<ApiKeys />);
 
@@ -80,7 +94,7 @@ describe('ApiKeys', () => {
   });
 
   it('renders master keys as all access in the table', async () => {
-    mockedGetApiKeys.mockResolvedValue([
+    mockedGetScopedApiKeys.mockResolvedValue([
       makeApiKey({
         is_master: true,
         allowed_databases: ['*'],
@@ -98,7 +112,7 @@ describe('ApiKeys', () => {
   });
 
   it('filters API keys by search text', async () => {
-    mockedGetApiKeys.mockResolvedValue([
+    mockedGetScopedApiKeys.mockResolvedValue([
       makeApiKey({ name: 'orders-client', description: 'Order service', allowed_databases: ['orders-db'] }),
       makeApiKey({ name: 'billing-client', description: 'Billing service', allowed_databases: ['billing-db'] }),
     ]);
@@ -125,7 +139,7 @@ describe('ApiKeys', () => {
 
   it('hides write actions for users with read-only API key permission', async () => {
     const key = makeApiKey();
-    mockedGetApiKeys.mockResolvedValue([key]);
+    mockedGetScopedApiKeys.mockResolvedValue([key]);
 
     renderWithProviders(<ApiKeys />, {
       permissions: ['apikeys.read'],
@@ -141,20 +155,20 @@ describe('ApiKeys', () => {
   });
 
   it('renders empty state when no keys', async () => {
-    mockedGetApiKeys.mockResolvedValue([]);
+    mockedGetScopedApiKeys.mockResolvedValue([]);
 
     renderWithProviders(<ApiKeys />);
 
-    await waitFor(() => {
-      expect(screen.getByText('No API keys')).toBeInTheDocument();
-    });
+    expect(await screen.findByText("You haven't issued any API keys")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('switch', { name: 'Show all keys' }));
+    expect(await screen.findByText('No API keys')).toBeInTheDocument();
   });
 
   it('opens create modal on add button click', async () => {
     renderWithProviders(<ApiKeys />);
 
     await waitFor(() => {
-      expect(screen.getByText('No API keys')).toBeInTheDocument();
+      expect(screen.getByText("You haven't issued any API keys")).toBeInTheDocument();
     });
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
@@ -176,7 +190,7 @@ describe('ApiKeys', () => {
 
   it('opens edit modal on edit button click', async () => {
     const key = makeApiKey();
-    mockedGetApiKeys.mockResolvedValue([key]);
+    mockedGetScopedApiKeys.mockResolvedValue([key]);
 
     renderWithProviders(<ApiKeys />);
 
@@ -203,7 +217,7 @@ describe('ApiKeys', () => {
     renderWithProviders(<ApiKeys />);
 
     await waitFor(() => {
-      expect(screen.getByText('No API keys')).toBeInTheDocument();
+      expect(screen.getByText("You haven't issued any API keys")).toBeInTheDocument();
     });
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
@@ -247,7 +261,7 @@ describe('ApiKeys', () => {
 
     renderWithProviders(<ApiKeys />);
     await waitFor(() => {
-      expect(screen.getByText('No API keys')).toBeInTheDocument();
+      expect(screen.getByText("You haven't issued any API keys")).toBeInTheDocument();
     });
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
 
@@ -259,7 +273,7 @@ describe('ApiKeys', () => {
   });
 
   it('renders structured checkbox rows in edit modal', async () => {
-    mockedGetApiKeys.mockResolvedValue([
+    mockedGetScopedApiKeys.mockResolvedValue([
       makeApiKey({
         allowed_databases: ['analytics-db'],
         allowed_routes: ['route-1'],
@@ -317,7 +331,7 @@ describe('ApiKeys', () => {
     renderWithProviders(<ApiKeys />);
 
     await waitFor(() => {
-      expect(screen.getByText('No API keys')).toBeInTheDocument();
+      expect(screen.getByText("You haven't issued any API keys")).toBeInTheDocument();
     });
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
@@ -358,7 +372,7 @@ describe('ApiKeys', () => {
     renderWithProviders(<ApiKeys />);
 
     await waitFor(() => {
-      expect(screen.getByText('No API keys')).toBeInTheDocument();
+      expect(screen.getByText("You haven't issued any API keys")).toBeInTheDocument();
     });
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
@@ -402,7 +416,7 @@ describe('ApiKeys', () => {
     renderWithProviders(<ApiKeys />);
 
     await waitFor(() => {
-      expect(screen.getByText('No API keys')).toBeInTheDocument();
+      expect(screen.getByText("You haven't issued any API keys")).toBeInTheDocument();
     });
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
@@ -440,7 +454,7 @@ describe('ApiKeys', () => {
     renderWithProviders(<ApiKeys />);
 
     await waitFor(() => {
-      expect(screen.getByText('No API keys')).toBeInTheDocument();
+      expect(screen.getByText("You haven't issued any API keys")).toBeInTheDocument();
     });
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
@@ -482,7 +496,7 @@ describe('ApiKeys', () => {
     renderWithProviders(<ApiKeys />);
 
     await waitFor(() => {
-      expect(screen.getByText('No API keys')).toBeInTheDocument();
+      expect(screen.getByText("You haven't issued any API keys")).toBeInTheDocument();
     });
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
@@ -504,7 +518,7 @@ describe('ApiKeys', () => {
 
   it('calls deleteApiKey after confirmation', async () => {
     const key = makeApiKey();
-    mockedGetApiKeys.mockResolvedValue([key]);
+    mockedGetScopedApiKeys.mockResolvedValue([key]);
     mockedDeleteApiKey.mockResolvedValue(undefined);
 
     vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -526,7 +540,7 @@ describe('ApiKeys', () => {
   });
 
   it('shows pending feedback only on the active delete row', async () => {
-    mockedGetApiKeys.mockResolvedValue([
+    mockedGetScopedApiKeys.mockResolvedValue([
       makeApiKey({ name: 'orders-client' }),
       makeApiKey({ name: 'billing-client' }),
     ]);
@@ -552,7 +566,7 @@ describe('ApiKeys', () => {
   });
 
   it('renders expiry column: dash for admin keys, date for expiring keys', async () => {
-    mockedGetApiKeys.mockResolvedValue([
+    mockedGetScopedApiKeys.mockResolvedValue([
       makeApiKey(),
       makeApiKey({ name: 'self-key', expires_at: '2026-07-10T00:00:00Z' }),
     ]);
@@ -566,7 +580,7 @@ describe('ApiKeys', () => {
     expect(screen.getByRole('columnheader', { name: 'Expires' })).toBeInTheDocument();
 
     const adminRow = screen.getByText('my-app').closest('tr');
-    expect(within(adminRow!).getByText('\u2014')).toBeInTheDocument();
+    expect(cellInColumn(adminRow!, 'Expires')).toHaveTextContent('\u2014');
 
     const selfRow = screen.getByText('self-key').closest('tr');
     // 2026-07-10T00:00:00Z formatted as KST (2026-07-10 09:00:00)
@@ -581,7 +595,7 @@ describe('ApiKeys', () => {
     renderWithProviders(<ApiKeys />);
 
     await waitFor(() => {
-      expect(screen.getByText('No API keys')).toBeInTheDocument();
+      expect(screen.getByText("You haven't issued any API keys")).toBeInTheDocument();
     });
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
@@ -636,7 +650,7 @@ describe('ApiKeys', () => {
     renderWithProviders(<ApiKeys />);
 
     await waitFor(() => {
-      expect(screen.getByText('No API keys')).toBeInTheDocument();
+      expect(screen.getByText("You haven't issued any API keys")).toBeInTheDocument();
     });
 
     await userEvent.click(screen.getByRole('button', { name: '+ Add API Key' }));
@@ -657,7 +671,7 @@ describe('ApiKeys', () => {
   });
 
   it('prefills write flags and allowed tables in edit modal', async () => {
-    mockedGetApiKeys.mockResolvedValue([
+    mockedGetScopedApiKeys.mockResolvedValue([
       makeApiKey({
         allow_insert: true,
         allow_update: false,
@@ -682,5 +696,126 @@ describe('ApiKeys', () => {
     expect(screen.getByRole('checkbox', { name: 'Allow UPDATE' })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Allow DELETE' })).toBeChecked();
     expect(screen.getByRole('textbox', { name: 'Allowed Tables' })).toHaveValue('orders, users');
+  });
+
+  it('lists only your own keys until the switch shows every key', async () => {
+    mockedGetScopedApiKeys.mockImplementation(async (scope) => (
+      scope === 'mine'
+        ? [makeApiKey({ name: 'mine-app', created_by: 'testadmin' })]
+        : [
+            makeApiKey({ name: 'mine-app', created_by: 'testadmin' }),
+            makeApiKey({ name: 'their-app', created_by: 'otheradmin' }),
+            makeApiKey({ name: 'self_abc', owner: 'abc-sub' }),
+            makeApiKey({ name: 'legacy-app' }),
+          ]
+    ));
+
+    renderWithProviders(<ApiKeys />);
+
+    expect(await screen.findByText('mine-app')).toBeInTheDocument();
+    expect(mockedGetScopedApiKeys).toHaveBeenLastCalledWith('mine');
+    expect(screen.queryByText('their-app')).not.toBeInTheDocument();
+    // Every listed key is yours, so no row names its issuer.
+    expect(screen.queryByText('Issued by testadmin')).not.toBeInTheDocument();
+
+    const toggle = screen.getByRole('switch', { name: 'Show all keys' });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await userEvent.click(toggle);
+
+    expect(await screen.findByText('their-app')).toBeInTheDocument();
+    expect(mockedGetScopedApiKeys).toHaveBeenLastCalledWith('all');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    const rowOf = (name: string) => screen.getByText(name).closest('tr')!;
+    expect(within(rowOf('mine-app')).getByText('Issued by testadmin')).toBeInTheDocument();
+    expect(within(rowOf('their-app')).getByText('Issued by otheradmin')).toBeInTheDocument();
+    // Keys from before issuers were recorded: a self-service key still has its owner.
+    expect(within(rowOf('self_abc')).getByText('Self-service key')).toBeInTheDocument();
+    expect(within(rowOf('legacy-app')).getByText('Issuer unknown')).toBeInTheDocument();
+  });
+
+  it('offers every key when you have issued none', async () => {
+    mockedGetScopedApiKeys.mockImplementation(async (scope) => (
+      scope === 'mine' ? [] : [makeApiKey({ name: 'their-app', created_by: 'otheradmin' })]
+    ));
+
+    renderWithProviders(<ApiKeys />);
+
+    expect(await screen.findByText("You haven't issued any API keys")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Show all keys' }));
+
+    expect(await screen.findByText('their-app')).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Show all keys' })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('starts read-only viewers on every key', async () => {
+    mockedGetScopedApiKeys.mockResolvedValue([makeApiKey()]);
+
+    renderWithProviders(<ApiKeys />, { permissions: ['apikeys.read'] });
+
+    expect(await screen.findByText('my-app')).toBeInTheDocument();
+    expect(mockedGetScopedApiKeys).toHaveBeenCalledWith('all');
+    expect(mockedGetScopedApiKeys).not.toHaveBeenCalledWith('mine');
+    expect(screen.getByRole('switch', { name: 'Show all keys' })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('leaves request counts to roles that can read gateway monitoring', async () => {
+    mockedGetScopedApiKeys.mockResolvedValue([makeApiKey()]);
+
+    renderWithProviders(<ApiKeys />, { permissions: ['apikeys.read', 'apikeys.write'] });
+
+    const row = (await screen.findByText('my-app')).closest('tr')!;
+    expect(screen.queryByRole('columnheader', { name: 'Requests' })).not.toBeInTheDocument();
+    expect(within(row).getAllByRole('cell')).toHaveLength(COLUMNS.length - 2);
+    expect(screen.queryByText(/LLM calls included/)).not.toBeInTheDocument();
+    expect(mockedGetApiKeyUsage).not.toHaveBeenCalled();
+  });
+
+  it('shows each key\'s request counts for the last 7 and 30 days', async () => {
+    mockedGetScopedApiKeys.mockResolvedValue([
+      makeApiKey({ name: 'busy-app' }),
+      makeApiKey({ name: 'new-app' }),
+    ]);
+    mockedGetApiKeyUsage.mockResolvedValue({
+      keys: { 'busy-app': { requests_7d: 1234, requests_30d: 56789 } },
+    });
+
+    renderWithProviders(<ApiKeys />);
+
+    const busyRow = (await screen.findByText('busy-app')).closest('tr')!;
+    await waitFor(() => {
+      expect(cellInColumn(busyRow, '7 days')).toHaveTextContent('1,234');
+    });
+    expect(cellInColumn(busyRow, '30 days')).toHaveTextContent('56,789');
+    expect(screen.getByRole('columnheader', { name: 'Requests' })).toHaveAttribute('colspan', '2');
+    // A key created after the counts were fetched has none yet.
+    const newRow = screen.getByText('new-app').closest('tr')!;
+    expect(cellInColumn(newRow, '7 days')).toHaveTextContent('\u2014');
+    expect(screen.getByText(/LLM calls included/)).toBeInTheDocument();
+  });
+
+  it('keeps listing keys when request counts fail to load', async () => {
+    mockedGetScopedApiKeys.mockResolvedValue([makeApiKey()]);
+    mockedGetApiKeyUsage.mockRejectedValue(new Error('Prometheus down'));
+
+    renderWithProviders(<ApiKeys />);
+
+    expect(await screen.findByText('Failed to load request counts.')).toBeInTheDocument();
+    const row = screen.getByText('my-app').closest('tr')!;
+    expect(cellInColumn(row, '7 days')).toHaveTextContent('\u2014');
+    expect(cellInColumn(row, '30 days')).toHaveTextContent('\u2014');
+  });
+
+  it('refetches request counts after creating a key', async () => {
+    mockedCreateApiKey.mockResolvedValue(
+      makeApiKey({ name: 'fresh-app', api_key: 'key-fresh-1', key_created: true }),
+    );
+
+    renderWithProviders(<ApiKeys />);
+
+    await userEvent.click(await screen.findByRole('button', { name: '+ Add API Key' }));
+    await typeKeyName('fresh-app');
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(mockedGetApiKeyUsage).toHaveBeenCalledTimes(2));
   });
 });

@@ -936,6 +936,8 @@ export interface ApiKey {
   allow_delete?: boolean;
   allowed_tables?: string[] | null;
   owner: string | null;
+  /** Username that issued the key; null when it predates issuer tracking. */
+  created_by?: string | null;
   expires_at?: string | null;
   created_at: string | null;
 }
@@ -971,6 +973,29 @@ export interface ApiKeyUpdate {
 
 export async function getApiKeys(): Promise<ApiKey[]> {
   const { data } = await client.get('/admin/api-keys');
+  return data;
+}
+
+/** 'mine' = the keys the caller issued, plus their own self-service key. */
+export type ApiKeyScope = 'all' | 'mine';
+
+export async function getScopedApiKeys(scope: ApiKeyScope): Promise<ApiKey[]> {
+  const { data } = await client.get('/admin/api-keys', { params: { scope } });
+  return data;
+}
+
+export interface ApiKeyUsage {
+  requests_7d: number;
+  requests_30d: number;
+}
+
+export interface ApiKeyUsageResponse {
+  /** Gateway requests per key name (LLM routes included), Prometheus estimates. */
+  keys: Record<string, ApiKeyUsage>;
+}
+
+export async function getApiKeyUsage(): Promise<ApiKeyUsageResponse> {
+  const { data } = await client.get('/admin/api-keys/usage');
   return data;
 }
 

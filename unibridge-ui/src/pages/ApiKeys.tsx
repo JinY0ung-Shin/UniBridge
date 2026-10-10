@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
-  getApiKeys,
+  getScopedApiKeys,
+  getApiKeyUsage,
   createApiKey,
   updateApiKey,
   deleteApiKey,
@@ -11,6 +12,8 @@ import {
   getS3Connections,
   getNasConnections,
   type ApiKey,
+  type ApiKeyScope,
+  type ApiKeyUsage,
 } from '../api/client';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
@@ -66,6 +69,8 @@ function ApiKeys() {
   const canWrite = useCanWrite('apikeys.write');
   const { permissions } = usePermissions();
   const canReadNasConnections = permissions.includes('nas.connections.read');
+  // Per-key traffic is gateway monitoring data, gated like the monitoring pages.
+  const canSeeUsage = permissions.includes('gateway.monitoring.read');
 
   const [showModal, setShowModal] = useState(false);
   const [editingName, setEditingName] = useState<string | null>(null);
@@ -73,9 +78,25 @@ function ApiKeys() {
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [keySearch, setKeySearch] = useState('');
+  // Your own keys by default; the switch widens the list to everyone's. Viewers
+  // who cannot issue keys have none of their own, so they start on every key.
+  const [showAll, setShowAll] = useState(() => !canWrite);
   const copyTimeoutRef = useRef<number | null>(null);
 
-  const keysQuery = useQuery({ queryKey: ['api-keys'], queryFn: getApiKeys });
+  const scope: ApiKeyScope = showAll ? 'all' : 'mine';
+  const keysQuery = useQuery({
+    queryKey: ['api-keys', 'list', scope],
+    queryFn: () => getScopedApiKeys(scope),
+    placeholderData: keepPreviousData,
+  });
+  // Outside the ['api-keys'] prefix so saving a key doesn't re-run the 30-day
+  // Prometheus queries behind these counts; only a new key needs a refetch.
+  const usageQuery = useQuery({
+    queryKey: ['api-key-usage'],
+    queryFn: getApiKeyUsage,
+    staleTime: 5 * 60_000,
+    enabled: canSeeUsage,
+  });
   const dbsQuery = useQuery({ queryKey: ['admin-databases'], queryFn: getAdminDatabases });
   const routesQuery = useQuery({ queryKey: ['gateway-routes'], queryFn: getGatewayRoutes });
   const s3ConnectionsQuery = useQuery({ queryKey: ['s3-connections'], queryFn: getS3Connections });
@@ -89,6 +110,7 @@ function ApiKeys() {
     mutationFn: createApiKey,
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['api-keys'] });
+      queryClient.invalidateQueries({ queryKey: ['api-key-usage'] });
       if (result.key_created && result.api_key) {
         setCreatedKey(result.api_key);
       } else {
@@ -118,6 +140,10 @@ function ApiKeys() {
   });
 
   const keys = keysQuery.data ?? [];
+  // While the other scope loads, the previous list stays on screen (dimmed), so
+  // an empty or no-match state must not be judged from it.
+  const switchingScope = keysQuery.isPlaceholderData;
+  const listSettled = !keysQuery.isPending && !switchingScope && !keysQuery.isError;
   const databases = dbsQuery.data ?? [];
   const routes = (routesQuery.data?.items ?? []).filter(isGrantableRoute);
   const s3Connections = s3ConnectionsQuery.data ?? [];
@@ -129,6 +155,7 @@ function ApiKeys() {
         key.description,
         key.api_key,
         key.owner,
+        key.created_by,
         key.is_master ? t('apiKeys.allAccess') : '',
         ...key.allowed_databases,
         ...key.allowed_routes,
@@ -284,6 +311,19 @@ function ApiKeys() {
     }));
   }
 
+  function renderIssuer(k: ApiKey) {
+    if (k.created_by) return t('apiKeys.issuedBy', { name: k.created_by });
+    // Self-service keys from before issuers were recorded still carry their owner.
+    if (k.owner) return t('apiKeys.selfService');
+    return t('apiKeys.issuerUnknown');
+  }
+
+  function renderUsage(name: string, field: keyof ApiKeyUsage) {
+    if (usageQuery.isPending) return '\u2026';
+    const count = usageQuery.data?.keys[name]?.[field];
+    return count == null ? '\u2014' : count.toLocaleString();
+  }
+
   function renderTags(items: string[], max = 3) {
     if (items.includes('*')) return <span className="tag tag-master">{t('apiKeys.allAccess')}</span>;
     if (items.length === 0) return <span className="tag tag-more">{t('apiKeys.noneSelected')}</span>;
@@ -297,6 +337,7 @@ function ApiKeys() {
     );
   }
 
+  const headerRows = canSeeUsage ? 2 : 1;
   const isSaving = createMut.isPending || updateMut.isPending;
   const accessItemClass = form.isMaster
     ? 'checkbox-list-item is-disabled'
@@ -309,86 +350,128 @@ function ApiKeys() {
           <h1>{t('apiKeys.title')}</h1>
           <p className="page-subtitle">{t('apiKeys.subtitle')}</p>
         </div>
-        {(keys.length > 0 || canWrite) && (
-          <div className="page-header__actions api-keys-header-actions">
-            {keys.length > 0 && (
-              <input
-                className="api-key-search-input"
-                type="search"
-                value={keySearch}
-                onChange={(event) => setKeySearch(event.target.value)}
-                placeholder={t('apiKeys.searchPlaceholder')}
-                aria-label={t('apiKeys.searchPlaceholder')}
-              />
-            )}
-            {canWrite && (
-              <button type="button" className="btn btn-primary" onClick={openCreate}>{t('apiKeys.addKey')}</button>
-            )}
-          </div>
-        )}
+        <div className="page-header__actions api-keys-header-actions">
+          {keys.length > 0 && (
+            <input
+              className="api-key-search-input"
+              type="search"
+              value={keySearch}
+              onChange={(event) => setKeySearch(event.target.value)}
+              placeholder={t('apiKeys.searchPlaceholder')}
+              aria-label={t('apiKeys.searchPlaceholder')}
+            />
+          )}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={showAll}
+            className={`api-keys-scope-switch${showAll ? ' api-keys-scope-switch--on' : ''}`}
+            onClick={() => setShowAll((prev) => !prev)}
+          >
+            <span className="api-keys-scope-switch-track" aria-hidden="true">
+              <span className="api-keys-scope-switch-thumb" />
+            </span>
+            <span className="api-keys-scope-switch-text">{t('apiKeys.showAllKeys')}</span>
+          </button>
+          {canWrite && (
+            <button type="button" className="btn btn-primary" onClick={openCreate}>{t('apiKeys.addKey')}</button>
+          )}
+        </div>
       </div>
 
-      {keysQuery.isLoading && <div className="loading-message" role="status">{t('apiKeys.loadingKeys')}</div>}
+      {(keysQuery.isPending || (switchingScope && keys.length === 0)) && (
+        <div className="loading-message" role="status">{t('apiKeys.loadingKeys')}</div>
+      )}
       {keysQuery.isError && <div className="error-banner" role="alert">{t('apiKeys.loadFailed')}</div>}
 
       {keys.length > 0 && filteredKeys.length > 0 && (
-        <div className="table-container">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th scope="col">{t('apiKeys.keyName')}</th>
-                <th scope="col">{t('apiKeys.description')}</th>
-                <th scope="col">{t('apiKeys.apiKey')}</th>
-                <th scope="col">{t('apiKeys.allowedDatabases')}</th>
-                <th scope="col">{t('apiKeys.allowedRoutes')}</th>
-                <th scope="col">{t('apiKeys.expiresAt')}</th>
-                <th scope="col">{t('common.actions')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredKeys.map((k) => {
-                const isDeleting = deleteMut.isPending && deleteMut.variables === k.name;
-                return (
-                  <tr key={k.name}>
-                    <td className="cell-alias">{k.name}</td>
-                    <td>{k.description || '\u2014'}</td>
-                    <td className="cell-key">{k.api_key || '\u2014'}</td>
-                    <td><div className="cell-tags">{renderTags(k.allowed_databases)}</div></td>
-                    <td><div className="cell-tags">{renderTags(k.allowed_routes)}</div></td>
-                    <td>{k.expires_at ? formatKST(k.expires_at) : '—'}</td>
-                    <td>
-                      {canWrite && (
-                        <div className="action-buttons">
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-secondary"
-                            aria-label={t('apiKeys.editKey', { name: k.name })}
-                            onClick={() => openEdit(k)}
-                          >
-                            {t('common.edit')}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-danger"
-                            aria-label={t('apiKeys.deleteKey', { name: k.name })}
-                            onClick={() => handleDelete(k)}
-                            disabled={deleteMut.isPending}
-                            aria-busy={isDeleting}
-                          >
-                            {isDeleting ? t('common.deleting') : t('common.delete')}
-                          </button>
-                        </div>
-                      )}
-                    </td>
+        <>
+          <div
+            className={`table-container${switchingScope ? ' api-keys-table--switching' : ''}`}
+            aria-busy={switchingScope}
+          >
+            <table className="data-table">
+              {/* One "Requests" heading over narrow 7d/30d columns: two full
+                  headings would push the action buttons off a 1440px screen. */}
+              <thead>
+                <tr>
+                  <th scope="col" rowSpan={headerRows}>{t('apiKeys.keyName')}</th>
+                  <th scope="col" rowSpan={headerRows}>{t('apiKeys.description')}</th>
+                  <th scope="col" rowSpan={headerRows}>{t('apiKeys.apiKey')}</th>
+                  <th scope="col" rowSpan={headerRows}>{t('apiKeys.allowedDatabases')}</th>
+                  <th scope="col" rowSpan={headerRows}>{t('apiKeys.allowedRoutes')}</th>
+                  {canSeeUsage && (
+                    <th scope="col" colSpan={2} className="api-key-usage-group">{t('apiKeys.requests')}</th>
+                  )}
+                  <th scope="col" rowSpan={headerRows}>{t('apiKeys.expiresAt')}</th>
+                  <th scope="col" rowSpan={headerRows}>{t('common.actions')}</th>
+                </tr>
+                {canSeeUsage && (
+                  <tr className="api-key-usage-windows">
+                    <th scope="col" className="api-key-usage-cell">{t('apiKeys.last7Days')}</th>
+                    <th scope="col" className="api-key-usage-cell">{t('apiKeys.last30Days')}</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                )}
+              </thead>
+              <tbody>
+                {filteredKeys.map((k) => {
+                  const isDeleting = deleteMut.isPending && deleteMut.variables === k.name;
+                  return (
+                    <tr key={k.name}>
+                      <td className="cell-alias">
+                        {k.name}
+                        {showAll && <div className="api-key-issuer">{renderIssuer(k)}</div>}
+                      </td>
+                      <td>{k.description || '\u2014'}</td>
+                      <td className="cell-key">{k.api_key || '\u2014'}</td>
+                      <td><div className="cell-tags">{renderTags(k.allowed_databases)}</div></td>
+                      <td><div className="cell-tags">{renderTags(k.allowed_routes)}</div></td>
+                      {canSeeUsage && (
+                        <>
+                          <td className="api-key-usage-cell">{renderUsage(k.name, 'requests_7d')}</td>
+                          <td className="api-key-usage-cell">{renderUsage(k.name, 'requests_30d')}</td>
+                        </>
+                      )}
+                      <td>{k.expires_at ? formatKST(k.expires_at) : '—'}</td>
+                      <td>
+                        {canWrite && (
+                          <div className="action-buttons">
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-secondary"
+                              aria-label={t('apiKeys.editKey', { name: k.name })}
+                              onClick={() => openEdit(k)}
+                            >
+                              {t('common.edit')}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-danger"
+                              aria-label={t('apiKeys.deleteKey', { name: k.name })}
+                              onClick={() => handleDelete(k)}
+                              disabled={deleteMut.isPending}
+                              aria-busy={isDeleting}
+                            >
+                              {isDeleting ? t('common.deleting') : t('common.delete')}
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {canSeeUsage && (
+            <p className={`api-keys-usage-note${usageQuery.isError ? ' api-keys-usage-note--error' : ''}`}>
+              {usageQuery.isError ? t('apiKeys.usageLoadFailed') : t('apiKeys.usageNote')}
+            </p>
+          )}
+        </>
       )}
 
-      {!keysQuery.isLoading && keys.length > 0 && filteredKeys.length === 0 && !keysQuery.isError && (
+      {listSettled && keys.length > 0 && filteredKeys.length === 0 && (
         <div className="empty-state">
           <h3>{t('apiKeys.noSearchResults')}</h3>
           <p>{t('apiKeys.noSearchResultsDesc')}</p>
@@ -398,12 +481,20 @@ function ApiKeys() {
         </div>
       )}
 
-      {!keysQuery.isLoading && keys.length === 0 && !keysQuery.isError && (
+      {listSettled && keys.length === 0 && (showAll ? (
         <div className="empty-state">
           <h3>{t('apiKeys.noKeys')}</h3>
           <p>{t('apiKeys.noKeysDesc')}</p>
         </div>
-      )}
+      ) : (
+        <div className="empty-state">
+          <h3>{t('apiKeys.noMyKeys')}</h3>
+          <p>{t('apiKeys.noMyKeysDesc')}</p>
+          <button type="button" className="btn btn-secondary empty-state-action" onClick={() => setShowAll(true)}>
+            {t('apiKeys.showAllKeys')}
+          </button>
+        </div>
+      ))}
 
       {canWrite && showModal && (
         <ResourceModal
