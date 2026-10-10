@@ -167,3 +167,84 @@ def test_length_as_completed_env_modes(monkeypatch, raw, expected):
         monkeypatch.setenv("CONVERTER_LENGTH_AS_COMPLETED", raw)
 
     assert config.settings.length_as_completed == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, "litellm"),  # unset keeps LiteLLM
+        ("", "litellm"),
+        ("litellm", "litellm"),
+        (" Bifrost ", "bifrost"),
+        ("BIFROST", "bifrost"),
+        ("openrouter", "litellm"),  # unrecognized falls back rather than failing requests
+    ],
+)
+def test_llm_gateway_env_modes(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("LLM_GATEWAY", raising=False)
+    else:
+        monkeypatch.setenv("LLM_GATEWAY", raw)
+
+    assert config.settings.gateway == expected
+
+
+def test_upstream_url_follows_the_gateway(monkeypatch):
+    monkeypatch.setenv("LITELLM_URL", "https://litellm:4000/")
+
+    monkeypatch.setenv("LLM_GATEWAY", "litellm")
+    assert config.settings.upstream_url == "https://litellm:4000"
+
+    monkeypatch.setenv("LLM_GATEWAY", "bifrost")
+    assert config.settings.upstream_url == "http://bifrost:8080"
+
+    monkeypatch.setenv("CONVERTER_BIFROST_URL", "  http://bifrost.test:9000// ")
+    assert config.settings.upstream_url == "http://bifrost.test:9000"
+
+
+def test_bifrost_mode_does_not_need_litellm_url(monkeypatch):
+    monkeypatch.delenv("LITELLM_URL", raising=False)
+    monkeypatch.setenv("LLM_GATEWAY", "bifrost")
+    assert config.settings.upstream_url == "http://bifrost:8080"
+
+    monkeypatch.setenv("LLM_GATEWAY", "litellm")
+    with pytest.raises(RuntimeError, match="LITELLM_URL is required"):
+        config.settings.upstream_url  # noqa: B018 - the property access is the assertion
+
+
+def test_model_listing_cache_knobs(monkeypatch):
+    assert config.settings.models_cache_ttl == 30.0
+    assert config.settings.models_stale_max == 600.0
+
+    monkeypatch.setenv("CONVERTER_MODELS_CACHE_TTL", "0")
+    monkeypatch.setenv("CONVERTER_MODELS_STALE_MAX", "not-a-number")
+    assert config.settings.models_cache_ttl == 0.0
+    assert config.settings.models_stale_max == 600.0  # unparseable falls back
+
+
+@pytest.mark.parametrize(
+    ("gateway", "raw", "expected"),
+    [
+        # Unset: LiteLLM keeps the pre-cache 30s wait; Bifrost answers inside
+        # Claude Code's ~3s discovery budget.
+        ("litellm", None, 30.0),
+        ("bifrost", None, 2.0),
+        ("litellm", "  ", 30.0),
+        ("bifrost", "", 2.0),
+        # An explicit value applies whatever the gateway.
+        ("litellm", "1.5", 1.5),
+        ("bifrost", "1.5", 1.5),
+        ("bifrost", "0", 0.0),
+        # Unparseable falls back to the gateway's default.
+        ("litellm", "soon", 30.0),
+        ("bifrost", "soon", 2.0),
+    ],
+)
+def test_model_listing_timeout_defaults_per_gateway(monkeypatch, gateway, raw, expected):
+    monkeypatch.setenv("LLM_GATEWAY", gateway)
+    if raw is None:
+        monkeypatch.delenv("CONVERTER_MODELS_TIMEOUT", raising=False)
+    else:
+        monkeypatch.setenv("CONVERTER_MODELS_TIMEOUT", raw)
+
+    assert config.settings.models_timeout == expected

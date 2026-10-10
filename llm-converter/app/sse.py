@@ -89,13 +89,37 @@ _HOP_BY_HOP = frozenset(
     }
 )
 
-# Stripped from the request before forwarding to LiteLLM:
+# Stripped from the request before forwarding upstream, whatever the gateway:
 # - ``accept-encoding``: httpx negotiates and auto-decompresses internally; if
 #   we forwarded the client's value, upstream would compress and we'd decode
 #   anyway — wasted upstream CPU.
-# NOTE: ``authorization`` is intentionally NOT dropped — APISIX injects the
-# LiteLLM master key there via proxy-rewrite, and we must pass it through.
+# The gateway credentials are filtered per mode in ``forward_request_headers``.
 DROP_FROM_REQUEST = _HOP_BY_HOP | frozenset({"accept-encoding"})
+
+# Gateway credentials. APISIX sets BOTH gateways' on the converter routes — the
+# LiteLLM master key (``Authorization``) and ``x-litellm-end-user-id``, plus the
+# Bifrost virtual key (``x-bf-vk``) and the ``x-bf-dim-consumer`` /
+# ``x-bf-lh-consumer`` attribution — because a deploy re-points the routes
+# before the color promotion flips this converter's upstream. Each mode passes
+# on only its own gateway's:
+# - litellm: ``Authorization`` and ``x-litellm-*`` as APISIX set them; every
+#   ``x-bf-*`` is dropped, so the Bifrost virtual key never reaches LiteLLM.
+# - bifrost: the three ``x-bf-*`` headers APISIX sets, nothing else under that
+#   prefix — a client-sent one could switch on raw request capture, extra-param
+#   passthrough, cache or MCP behavior, or name a stored provider key — and no
+#   ``Authorization``, ``x-litellm-*`` or other header Bifrost reads as a
+#   virtual key.
+BIFROST_REQUEST_HEADER_PREFIX = "x-bf-"
+BIFROST_GATEWAY_HEADERS = frozenset({"x-bf-vk", "x-bf-dim-consumer", "x-bf-lh-consumer"})
+LITELLM_REQUEST_HEADER_PREFIX = "x-litellm-"
+_BIFROST_DROPPED_CREDENTIALS = frozenset(
+    {"authorization", "x-api-key", "api-key", "x-goog-api-key"}
+)
+
+# Bifrost's routed-identity response headers (provider, resolved model, the
+# provider key's name, fallback details) describe the deployment behind the
+# gateway; clients get the model they asked for and nothing about the rest.
+BIFROST_RESPONSE_HEADER_PREFIX = "x-bifrost-"
 
 # Stripped from the upstream response before returning to the client:
 # - ``content-encoding``: httpx returns decoded bytes from ``.content``/
@@ -116,6 +140,35 @@ DROP_FROM_RESPONSE = _HOP_BY_HOP | frozenset(
 
 def filter_headers(items, drop: frozenset) -> Dict[str, str]:
     return {k: v for k, v in items if k.lower() not in drop}
+
+
+def forward_request_headers(items, gateway: str) -> Dict[str, str]:
+    """The client request headers to send to ``gateway`` (see the notes above)."""
+    out: Dict[str, str] = {}
+    for key, value in items:
+        lowered = key.lower()
+        if lowered in DROP_FROM_REQUEST:
+            continue
+        if lowered.startswith(BIFROST_REQUEST_HEADER_PREFIX):
+            if gateway != "bifrost" or lowered not in BIFROST_GATEWAY_HEADERS:
+                continue
+        elif gateway == "bifrost" and (
+            lowered in _BIFROST_DROPPED_CREDENTIALS
+            or lowered.startswith(LITELLM_REQUEST_HEADER_PREFIX)
+        ):
+            continue
+        out[key] = value
+    return out
+
+
+def forward_response_headers(items) -> Dict[str, str]:
+    """The upstream response headers to return to the client."""
+    return {
+        key: value
+        for key, value in items
+        if key.lower() not in DROP_FROM_RESPONSE
+        and not key.lower().startswith(BIFROST_RESPONSE_HEADER_PREFIX)
+    }
 
 
 def format_sse(evt: Dict[str, Any]) -> bytes:

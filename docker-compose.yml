@@ -864,8 +864,10 @@ services:
           memory: 512m
           cpus: "0.50"
     environment:
+      # Always in front of Bifrost, whatever LLM_GATEWAY says for /api/llm.
       # Bifrost serves plain HTTP on the internal network (it has no TLS
       # listener), so there is no CA to pin.
+      - LLM_GATEWAY=bifrost
       - LITELLM_URL=http://bifrost:8080
       - CONVERTER_TLS_CA=
       - CONVERTER_TLS_VERIFY=false

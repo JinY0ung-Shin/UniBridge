@@ -388,6 +388,8 @@ def responses_request_to_chat_body(
         # silently drops it under ``drop_params: true`` and 400s without it.
         # ``allowed_openai_params`` is LiteLLM's per-request escape hatch: it
         # marks the param supported and forwards it verbatim to the backend.
+        # Bifrost needs no hatch, and its built-in vllm/sgl provider types would
+        # pass the unknown field through to the backend, so it is LiteLLM-only.
         # Because it now arrives verbatim, the value is first clamped to the
         # backend's vocabulary — Codex's ladder reaches ``xhigh``/``max``, which
         # vLLM/SGLang reject outright.
@@ -395,7 +397,8 @@ def responses_request_to_chat_body(
         effort = clamp_reasoning_effort(reasoning.get("effort"), settings.reasoning_effort_levels)
         if effort is not None:
             out["reasoning_effort"] = effort
-            out["allowed_openai_params"] = ["reasoning_effort"]
+            if settings.gateway == "litellm":
+                out["allowed_openai_params"] = ["reasoning_effort"]
 
     user = body.get("user") or body.get("safety_identifier")
     if user:

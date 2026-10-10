@@ -1,9 +1,12 @@
 """Runtime configuration for the LLM endpoint converter.
 
-The converter sits behind APISIX (which already performed key-auth and injected
-the LiteLLM master key + ``x-litellm-end-user-id`` header) and forwards the
-translated request to the upstream LiteLLM proxy's ``/v1/chat/completions``
-route. All settings are read from the environment so they can be overridden in
+The converter sits behind APISIX, which has already performed key-auth and
+injected the upstream gateway's credential, and forwards the translated request
+to that gateway's ``/v1/chat/completions`` route. ``LLM_GATEWAY`` picks the
+gateway: LiteLLM (APISIX injects the master key and ``x-litellm-end-user-id``)
+or Bifrost (APISIX injects the gateway virtual key as ``x-bf-vk`` plus the
+``x-bf-dim-consumer`` / ``x-bf-lh-consumer`` attribution headers). All settings
+are read from the environment so they can be overridden in
 ``docker-compose.yml`` without rebuilding the image.
 """
 
@@ -15,16 +18,44 @@ import ssl
 
 import httpx
 
+_GATEWAYS = frozenset({"litellm", "bifrost"})
+_DEFAULT_GATEWAY = "litellm"
+_DEFAULT_BIFROST_URL = "http://bifrost:8080"
+
+
+def _get_gateway() -> str:
+    """Which LLM gateway the converter forwards to (``LLM_GATEWAY``).
+
+    ``litellm`` (the default) or ``bifrost``, trimmed and case-insensitive. The
+    same variable switches the APISIX routes in unibridge-service, so the two
+    always move together. An unrecognized value falls back to the default
+    silently, matching ``_int_env``/``_bool_env``.
+    """
+    raw = os.getenv("LLM_GATEWAY", "").strip().lower()
+    return raw if raw in _GATEWAYS else _DEFAULT_GATEWAY
+
 
 def _get_litellm_url() -> str:
     """Base URL of the upstream LiteLLM proxy (no trailing slash).
 
-    Required. The converter targets ``{LITELLM_URL}/v1/chat/completions``.
+    Required while ``LLM_GATEWAY`` is ``litellm``. The converter targets
+    ``{LITELLM_URL}/v1/chat/completions``.
     """
     raw = os.getenv("LITELLM_URL", "").strip()
     if not raw:
         raise RuntimeError("LITELLM_URL is required")
     return raw.rstrip("/")
+
+
+def _get_bifrost_url() -> str:
+    """Base URL of Bifrost (``CONVERTER_BIFROST_URL``, no trailing slash).
+
+    Used while ``LLM_GATEWAY`` is ``bifrost``; defaults to the in-network
+    ``http://bifrost:8080``. Bifrost has no TLS listener, so the TLS settings
+    below do not come into play on this hop.
+    """
+    raw = os.getenv("CONVERTER_BIFROST_URL", "").strip()
+    return (raw or _DEFAULT_BIFROST_URL).rstrip("/")
 
 
 def _get_tls_verify() -> bool | str | ssl.SSLContext:
@@ -66,6 +97,13 @@ def _get_tls_verify() -> bool | str | ssl.SSLContext:
 def _int_env(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
     except ValueError:
         return default
 
@@ -122,8 +160,65 @@ class _Settings:
     """Lazy env-backed settings; properties re-read so tests can monkeypatch."""
 
     @property
+    def gateway(self) -> str:
+        """``litellm`` or ``bifrost`` — see :func:`_get_gateway`."""
+        return _get_gateway()
+
+    @property
     def LITELLM_URL(self) -> str:
         return _get_litellm_url()
+
+    @property
+    def bifrost_url(self) -> str:
+        return _get_bifrost_url()
+
+    @property
+    def upstream_url(self) -> str:
+        """Base URL of the gateway this converter forwards to (no trailing slash):
+        ``CONVERTER_BIFROST_URL`` in ``bifrost`` mode, ``LITELLM_URL`` otherwise."""
+        if self.gateway == "bifrost":
+            return self.bifrost_url
+        return self.LITELLM_URL
+
+    @property
+    def models_cache_ttl(self) -> float:
+        """Seconds a fetched ``GET /v1/models`` listing is served without asking
+        upstream again (``CONVERTER_MODELS_CACHE_TTL``, default 30). <= 0 asks
+        upstream on every call; the last good listing is still kept for
+        :attr:`models_stale_max`."""
+        return _float_env("CONVERTER_MODELS_CACHE_TTL", 30.0)
+
+    @property
+    def models_timeout(self) -> float:
+        """How long a ``GET /v1/models`` caller waits for upstream
+        (``CONVERTER_MODELS_TIMEOUT``). The default depends on the gateway:
+
+        * ``bifrost`` — 2s. Bifrost asks every provider key live on each listing
+          with no deadline of its own, and Claude Code's discovery gives up after
+          ~3s, so a caller is answered from the last good listing (or a 504) by
+          then.
+        * ``litellm`` — 30s, what the listing always waited before the cache
+          existed: LiteLLM answers from its own model table in one hop.
+
+        Either way the fetch carries on in the background, up to a fixed 30s
+        ceiling, and fills the cache for the next caller. A value set in the
+        environment applies in both modes; <= 0 waits up to that ceiling."""
+        default = 2.0 if self.gateway == "bifrost" else 30.0
+        raw = os.getenv("CONVERTER_MODELS_TIMEOUT", "").strip()
+        if not raw:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            return default
+
+    @property
+    def models_stale_max(self) -> float:
+        """Oldest a listing may be and still answer for an upstream that timed
+        out, could not be reached or failed with a 5xx
+        (``CONVERTER_MODELS_STALE_MAX``, default 600s). <= 0 never serves a
+        stale listing."""
+        return _float_env("CONVERTER_MODELS_STALE_MAX", 600.0)
 
     @property
     def tls_verify(self) -> bool | str | ssl.SSLContext:
@@ -277,13 +372,16 @@ class _Settings:
         (``CONVERTER_REASONING_EFFORT_LEVELS``, default ``low,medium,high``).
 
         Both bridges forward the client's effort as chat/completions
-        ``reasoning_effort`` alongside ``allowed_openai_params``, so LiteLLM
-        hands it to the backend verbatim — and vLLM/SGLang answer 400 on
-        anything outside ``low|medium|high``, while Codex's ladder reaches
+        ``reasoning_effort`` — alongside ``allowed_openai_params`` on LiteLLM,
+        which then hands it to the backend verbatim; Bifrost forwards the field
+        without being asked. vLLM/SGLang answer 400 on anything outside
+        ``low|medium|high``, while Codex's ladder reaches
         ``xhigh``/``max``/``ultra`` and Claude Code's ``output_config.effort``
         reaches ``max``. Values outside this set are clamped to the nearest
         listed level (unknown names are dropped) so a too-ambitious effort
-        degrades instead of failing the request.
+        degrades instead of failing the request. Bifrost only normalizes the
+        effort for its built-in vllm/sgl provider types, so the clamp stays on
+        in both modes.
 
         Comma-separated, case-insensitive; unset or blank keeps the default. The
         literal ``*`` returns ``None``, which restores verbatim forwarding for a

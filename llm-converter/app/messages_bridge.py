@@ -302,8 +302,8 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
     reasoning *depth* via its chat template, not via a request flag. Fields
     with a 1:1 analogue (``max_tokens``, ``temperature``, ``top_p``, ``stop``)
     are forwarded as-is. Fields that need a reshape map across:
-    ``output_config.effort`` → ``reasoning_effort`` (also listed in
-    ``allowed_openai_params`` so LiteLLM forwards it for models outside its
+    ``output_config.effort`` → ``reasoning_effort`` (on LiteLLM also listed in
+    ``allowed_openai_params`` so it forwards the field for models outside its
     gpt-5/o-series name map),
     ``output_config.format`` → ``response_format``,
     ``metadata.user_id`` → ``user``, and ``tool_choice``'s
@@ -338,15 +338,19 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
             # else silently drops it under ``drop_params: true`` and 400s
             # without it. ``allowed_openai_params`` is LiteLLM's per-request
             # escape hatch: it marks the param supported and forwards it
-            # verbatim to the backend. Verbatim is also why the value is
-            # clamped first: Claude Code's effort ladder reaches ``max``, which
-            # a vLLM/SGLang backend rejects outright.
+            # verbatim to the backend. Bifrost forwards ``reasoning_effort``
+            # on its own, and its built-in vllm/sgl provider types pass unknown
+            # fields through to the backend, so the LiteLLM-only field is not
+            # sent there. Verbatim is also why the value is clamped first:
+            # Claude Code's effort ladder reaches ``max``, which a vLLM/SGLang
+            # backend rejects outright.
             effort = clamp_reasoning_effort(
                 output_config.get("effort"), settings.reasoning_effort_levels
             )
             if effort is not None:
                 out["reasoning_effort"] = effort
-                out["allowed_openai_params"] = ["reasoning_effort"]
+                if settings.gateway == "litellm":
+                    out["allowed_openai_params"] = ["reasoning_effort"]
         rf = _output_format_to_response_format(output_config.get("format"))
         if rf is not None:
             out["response_format"] = rf
