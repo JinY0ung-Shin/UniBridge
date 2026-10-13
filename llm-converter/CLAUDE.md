@@ -1,6 +1,6 @@
 # llm-converter (FastAPI sidecar)
 
-See the repo-root `CLAUDE.md` for cross-service context. Tiny stateless service that sits
+See the repo-root `CLAUDE.md` for cross-service context. Tiny service that sits
 between APISIX and the LLM gateway — LiteLLM or Bifrost, picked by `LLM_GATEWAY` — and
 translates two API shapes into chat/completions.
 Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
@@ -8,14 +8,16 @@ Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
 ## What it does
 - `POST /v1/messages`  — Anthropic Messages API ↔ chat/completions (`messages_bridge.py`).
 - `POST /v1/responses` — OpenAI Responses API ↔ chat/completions (`responses_bridge.py`),
-  with `previous_response_id` chaining via `responses_state.py` (in-memory state — not durable).
+  with `previous_response_id` chaining via `responses_state.py`: SQLite at
+  `CONVERTER_RESPONSE_STORE_PATH` on the shared `llm-converter-state` volume in compose (survives
+  restarts and color swaps), in-memory when unset (tests). A successful follow-up deletes the id
+  it chained off, so branching twice from one `previous_response_id` 404s.
 - `GET /v1/models`   — the gateway's listing, each model advertised a second time as
   `claude/<id>`: Claude Code's discovery keeps only ids containing `claude`/`anthropic`
   (substring since v2.1.223, prefix-only before), so no bare deployment name survives its
   filter. Every entry carries both the OpenAI (`object`/`created`/`owned_by`) and Anthropic
   (`type`/`display_name`/`created_at`) field sets; `id` + `display_name` are the two the
-  client actually requires. Both bridges strip the prefix back off inbound, so an aliased id
-  is callable. The listing is rebuilt from upstream `data` alone: Bifrost's `key_statuses`
+  client actually requires. The listing is rebuilt from upstream `data` alone: Bifrost's `key_statuses`
   (key ids, failing backends' raw errors with internal host names) and `extra_fields` never
   reach the client, and Bifrost's `<provider>/<id>` ids lose the provider segment (deduped)
   so clients see the bare names they call. Cached process-wide — APISIX injects one shared

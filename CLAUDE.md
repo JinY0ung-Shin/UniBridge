@@ -1,20 +1,21 @@
 # UniBridge (API Hub)
 
 Internal API/DB gateway platform: register databases (Postgres/MSSQL/ClickHouse/Neo4j),
-run SQL through one endpoint, manage APISIX routes, proxy LLMs via LiteLLM, browse
+run SQL through one endpoint, manage APISIX routes, proxy LLMs via LiteLLM or Bifrost, browse
 S3/NAS — all behind Keycloak OIDC + RBAC + API keys. See `README.md` for deployment.
 
 ## Repo layout (monorepo, 3 code services + infra config)
 - `unibridge-service/` — FastAPI backend (Python 3.12). `app/{routers,services,middleware}`,
-  SQLAlchemy async + Alembic. Meta store = SQLite (`data/meta.db`) by default. See its CLAUDE.md.
+  SQLAlchemy async + Alembic. Meta store = Postgres `unibridge-db` in every compose layout
+  (blue/green needs a networked DB); SQLite `data/meta.db` is only the bare-code default. See its CLAUDE.md.
 - `unibridge-ui/`      — React 19 + TS + Vite, served by nginx. TanStack Query,
   react-router 7, keycloak-js, i18next, recharts. See its CLAUDE.md.
 - `llm-converter/`     — FastAPI sidecar: translates Anthropic `/v1/messages` and
-  OpenAI `/v1/responses` → chat/completions for LiteLLM. See its CLAUDE.md.
+  OpenAI `/v1/responses` → chat/completions for LiteLLM or Bifrost. See its CLAUDE.md.
 - `e2e/`               — live end-to-end tests (skipped unless `LLM_API_KEY` set).
 - `apisix/ bifrost/ keycloak/ litellm/ prometheus/` — infra config. `docker-compose.yml` — full stack
   (single-stack/dev). **Production runs the split blue-green layout instead**:
-  `docker-compose.infra.yml` (project `unibridge-infra`; APISIX/Keycloak/LiteLLM/DBs) +
+  `docker-compose.infra.yml` (project `unibridge-infra`; APISIX/etcd, Keycloak, LiteLLM, Bifrost, monitoring, DBs) +
   `docker-compose.app.yml` (blue/green) + `docker-compose.edge.yml`, driven by
   `scripts/deploy-bluegreen.sh` (see `docs/blue-green-deploy.md`). Any compose change —
   volumes, mounts, env, images — must be applied to BOTH `docker-compose.yml` and the
@@ -23,45 +24,57 @@ S3/NAS — all behind Keycloak OIDC + RBAC + API keys. See `README.md` for deplo
 ## Commands
 Backend (`cd unibridge-service`):
 ```bash
-ruff check app/                              # lint (CI gate; scope is app/ only)
+ruff check app/                              # lint (release gate; scope is app/ only)
 pytest tests/ -v --tb=short                  # tests (in-memory SQLite)
 alembic -c alembic.ini upgrade head          # apply migrations
-alembic -c alembic.ini check                 # CI fails if models drifted from migrations
+alembic -c alembic.ini check                 # release gate fails if models drifted from migrations
 uvicorn app.main:app --reload                # run locally (listens on :8000 — UI dev proxy expects this)
 ```
 Frontend (`cd unibridge-ui`):
 ```bash
 npm ci                                       # install from package-lock
 npm run dev                                  # dev server
-npm run lint                                 # eslint . -- CI treats warnings as failures
+npm run lint                                 # eslint . -- passes on warnings; the gate runs --max-warnings=0
 npm run test                                 # vitest run
 npm run build                                # tsc -b && vite build
 ```
-Converter (`cd llm-converter`): `pytest`
+Converter (`cd llm-converter`): `pytest`; `ruff check app tests` (the gate lints tests here)
+LiteLLM config/callbacks (repo root): `python3 -m pytest litellm/tests/`
 E2E (`cd e2e`): `pytest -v`   (needs `LLM_API_KEY`; see e2e/README.md)
 Full stack: `docker compose up -d`
+Deploy/infra: `unibridge-service/tests/test_deployment_security.py` (~10s alone) pins both
+compose layouts (env parity, Bifrost, the LiteLLM gate), `scripts/deploy-bluegreen.sh`,
+`backup/` and the nginx confs. Script tests `source` the script under `bash -c` with
+`compose_infra`/`docker`/`curl` redefined as shell functions; one runs a real
+`docker compose config --services` (skipped without the CLI).
+Prometheus rules: tests only parse the YAML, so check PromQL with the compose-pinned image:
+`docker run --rm -v "$PWD/prometheus":/w:ro -w /w --entrypoint promtool prom/prometheus:v3.11.1 check rules rules/unibridge-alerts.yml`
+(`test rules <file>` for rule unit tests; mount a dir holding the rules and the test file).
 
-Release gate: use the Codex `$unibridge-release` skill. It runs local frontend
-lint/test/build, backend ruff + alembic upgrade/check + pytest, converter pytest,
-shell syntax checks, and e2e skip-health before tagging/publishing. Live E2E
-requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
+Release gate — the only gate, there is no CI: the `unibridge-release` skill (canonical copy
+`.claude/skills/unibridge-release/`; Codex: `$unibridge-release`); its
+`scripts/run-local-release-checks.sh` is the step list. E2E runs live whenever `LLM_API_KEY`
+is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loads, so
+`RUN_LIVE_E2E` only relabels that step; check skip health with `LLM_API_KEY= pytest`.
 
 ## Gotchas
 - **Migrations auto-apply at boot**: `app.main` lifespan → `init_db()` → `alembic upgrade head`.
   Adding/changing a model REQUIRES a new `alembic/versions/NNNN_*.py`, or `alembic check`
-  (CI) fails and real DBs miss the column. Tests skip this (in-memory SQLite → `create_all`
+  (release gate) fails and real DBs miss the column. Tests skip this (in-memory SQLite → `create_all`
   + stamp head), so a missing migration passes tests but breaks deploys.
 - **Test env is set in `tests/conftest.py` before app import** (in-memory SQLite, dev JWT,
   `ENABLE_DEV_TOKEN_ENDPOINT=true`). Don't rely on a real `.env` in tests.
-- **Fail-fast secrets**: ENCRYPTION_KEY, APISIX_ADMIN_KEY, KC_*, LITELLM_* are required at
-  boot (compose `:?` + `validate_settings()`). Keycloak/CORS URLs auto-derive from `HOST_IP`;
-  Keycloak URLs derive only when `KEYCLOAK_JWT_AUDIENCE` is set (empty = dev HS256 mode).
+- **Fail-fast secrets**: compose `${VAR:?}` refuses to start without its secrets (APISIX,
+  Keycloak, LiteLLM, Bifrost, Grafana and DB secrets); `validate_settings()` separately rejects a
+  missing/placeholder ENCRYPTION_KEY (must yield a Fernet key), APISIX_ADMIN_KEY,
+  APISIX_INTERNAL_PROXY_SECRET, and JWT_SECRET in dev HS256 mode. Keycloak/CORS URLs
+  auto-derive from `HOST_IP`; Keycloak URLs derive only when `KEYCLOAK_JWT_AUDIENCE` is set
+  (empty = dev HS256 mode).
 - **RBAC**: flat string permissions in `app/auth.py::ALL_PERMISSIONS`; roles→permissions with
   a 60s in-process cache (`invalidate_permission_cache()` after changes).
-- **APISIX consumer-restriction is preserved** on route updates for fixed route IDs
-  (`query-api`, `llm-proxy`, `s3-api`, `llm-messages`, `llm-responses`, `nas-api`,
-  `usages-api`, `prometheus-api`, `llm-metrics`, `llm-models`) via
-  `main.py::_preserve_consumer_restriction` — don't clobber it.
+- **APISIX consumer-restriction is preserved** on route updates for the fixed system routes
+  in `main.py::_preserve_consumer_restriction`'s id set (constants in
+  `app/services/apisix_system_resources.py`) — don't clobber it; a new fixed route joins that set.
 - **Per-node path prefixes run on a custom APISIX plugin**
   (`apisix/plugins/unibridge-node-path-prefix.lua`, prefix in a node's `metadata.path_prefix`):
   listed in `apisix/config.yaml`, mounted by both compose files that run APISIX, switched on
@@ -107,7 +120,10 @@ requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
   LiteLLM and `litellm-db` run only on `litellm`: both `extends` the `litellm/compose-gate.yml`
   entry named by the raw value (bifrost = never-enabled profile; any other spelling breaks
   every compose command, and the deploy refuses it and bifrost without a usable VK), so the
-  infra health gate drops them. The deploy stops them only once no running color's converter
+  infra health gate drops them. A `depends_on` on either needs `required: false` (Compose
+  2.20+), or under bifrost every compose command fails ("depends on undefined service");
+  with `service_healthy` it still waits, and an unhealthy one only warns. The deploy stops
+  them only once no running color's converter
   forwards to LiteLLM (asked via `docker exec`, since a recreated standby keeps its old image)
   and APISIX has no `litellm` upstream; provisioning on Bifrost deletes `llm-admin` + that
   upstream, the UI hides the LiteLLM button, and `LiteLLMDbDown`, Grafana's gateway/DB panels
@@ -116,6 +132,16 @@ requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
   blue/green colors answer on (round-robin → counters alternate → `increase()` inflates);
   `unibridge-service-colors` is per-color. PromQL over them (backend or Grafana) must use
   the gated form in `app/routers/query_metrics.py::_gated` — never sum the two jobs.
-- **TZ=UTC everywhere**; timestamps stored UTC (see `scripts/backfill_utc_timestamps.py`).
+  A gauge that reports a color's setting (`unibridge_llm_gateway{gateway}`) counts only from
+  the active color (`and on(job, instance) unibridge_active_instance == 1`: a standby or
+  demoted color reports stale values); a rule that goes quiet on it uses
+  `unless on() (max(...) == 1)`, so an image without the gauge still alerts (`LiteLLMDbDown`).
+- **Prometheus does not pick up a pulled change under `prometheus/` by itself**:
+  `prometheus.yml` is a single-file bind mount (the container keeps the old file), there is
+  no reload API (no `--web.enable-lifecycle`), and deploys never touch infra. Ship such a
+  change with a README step, ahead of any deploy that relies on it:
+  `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --force-recreate prometheus`
+  (data volume stays). Grafana polls `grafana/dashboards/` every 30s and needs nothing.
+- **TZ=UTC everywhere**; timestamps stored UTC (legacy SQLite rows: `unibridge-service/scripts/backfill_utc_timestamps.py`).
 - `.omc/`, `docs/superpowers/`, `certs/`, `unibridge-service/data/` are gitignored — tooling
   artifacts / local state, not app code.

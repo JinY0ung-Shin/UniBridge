@@ -1,7 +1,7 @@
 # unibridge-ui (React 19 + TS + Vite)
 
 See the repo-root `CLAUDE.md` for cross-service context. Served by nginx in prod
-(`nginx.conf`); `entrypoint.sh` injects runtime config. Commands: `npm run dev|lint|test|build`.
+(`nginx.conf`); `entrypoint.sh` injects runtime config.
 
 ## Layout (`src/`)
 - `main.tsx` / `App.tsx`     — entry + router (react-router 7).
@@ -24,9 +24,9 @@ See the repo-root `CLAUDE.md` for cross-service context. Served by nginx in prod
   `entrypoint.sh` renders into conf.d only when `BIFROST_UI_HOSTNAME` is set (a validated
   DNS name); `nginx.conf`'s server stays `default_server` for every other host name.
   Its `/_unibridge/sso` goes to unibridge-service: the Bifrost button's sign-in handoff.
-- `build` runs `tsc -b` first — a type error fails the build (and CI). Manual chunking for
+- `build` runs `tsc -b` first — a type error fails the build (and the release gate). Manual chunking for
   recharts/keycloak/tanstack/i18n/react is configured in `vite.config.ts`.
-- Tests: vitest + Testing Library + jsdom, in `src/test/*.test.tsx`.
+- Tests: vitest + Testing Library + jsdom, in `src/test/*.test.ts(x)`.
 - `src/content/api-metrics-convention.md` is a committed mirror of the canonical
   `docs/api-metrics-convention.md` (repo root is outside this package's docker build
   context, so it can't be imported directly). `MetricsGuide.test.tsx` fails when they
