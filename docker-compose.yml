@@ -334,6 +334,8 @@ services:
         condition: service_healthy
       litellm:
         condition: service_started
+        # Not part of the stack under LLM_GATEWAY=bifrost (litellm/compose-gate.yml).
+        required: false
       apisix:
         condition: service_started
     volumes:
@@ -585,6 +587,11 @@ services:
       - apihub-net
 
   litellm:
+    # Runs only while /api/llm is on LiteLLM: litellm/compose-gate.yml leaves
+    # it out of the stack under LLM_GATEWAY=bifrost.
+    extends:
+      file: ./litellm/compose-gate.yml
+      service: ${LLM_GATEWAY:-litellm}
     image: ghcr.io/berriai/litellm:v1.102.1
     restart: unless-stopped
     logging: *default-logging
@@ -741,12 +748,14 @@ services:
       - llm-converter-state:/var/lib/llm-converter
       - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/ssl/litellm-ca.crt:ro
     depends_on:
+      # It forwards to one of these two (LLM_GATEWAY), so wait until each is
+      # healthy: started alone, the converter could come up before the
+      # gateway's name resolved (#95). Neither is required: LiteLLM is not part
+      # of the stack under bifrost, and a broken Bifrost must not keep the
+      # converter down on litellm.
       litellm:
-        condition: service_started
-      # It forwards to Bifrost under LLM_GATEWAY=bifrost, so wait until Bifrost
-      # is healthy: started alone, the converter could come up before the
-      # bifrost name resolved (#95). Not required, so a broken Bifrost does not
-      # keep the converter down on litellm.
+        condition: service_healthy
+        required: false
       bifrost:
         condition: service_healthy
         required: false
@@ -961,6 +970,9 @@ services:
       # (nginx-bifrost-ui.conf); the button then opens https://NAME on the port
       # UniBridge was opened on.
       - BIFROST_UI_HOSTNAME=${BIFROST_UI_HOSTNAME:-}
+      # The LLM Monitoring page shows the LiteLLM Admin button only on litellm:
+      # LiteLLM does not run under bifrost.
+      - LLM_GATEWAY=${LLM_GATEWAY:-litellm}
       - GRAFANA_EXTERNAL_URL=${GRAFANA_EXTERNAL_URL:-}
       - GRAFANA_UPSTREAM=${GRAFANA_UPSTREAM:-grafana}
       - UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service}

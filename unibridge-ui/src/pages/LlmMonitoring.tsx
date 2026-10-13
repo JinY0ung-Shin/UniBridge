@@ -38,6 +38,13 @@ type KeySortColumn = 'api_key' | 'input_tokens' | 'output_tokens' | 'cached_toke
 
 const LITELLM_ADMIN_URL = window.__RUNTIME_CONFIG__?.LITELLM_ADMIN_URL || import.meta.env.VITE_LITELLM_ADMIN_URL || 'https://localhost:4000/ui';
 
+// LiteLLM runs only while it serves /api/llm: with LLM_GATEWAY=bifrost the
+// deploy stops it (litellm/compose-gate.yml), so its link would dead-end.
+function liteLlmRuns(): boolean {
+  const gateway = window.__RUNTIME_CONFIG__?.LLM_GATEWAY || import.meta.env.VITE_LLM_GATEWAY || 'litellm';
+  return gateway.trim().toLowerCase() !== 'bifrost';
+}
+
 // With BIFROST_UI_HOSTNAME set, the UI nginx also serves the Bifrost UI on that
 // host name, on the port UniBridge itself was opened on (Bifrost's UI needs the
 // root of an origin, so it cannot be a path here). Otherwise bifrost-tls serves
@@ -263,18 +270,21 @@ function LlmMonitoring() {
             <>
               {/* LiteLLM's admin UI signs in via UniBridge SSO restricted to
                   admins (ui_access_mode admin_only), so mirror GrafanaLink and
-                  don't render a link that dead-ends at a rejected login. */}
-              <a
-                href={LITELLM_ADMIN_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="admin-link-btn"
-                title={t('llmMonitoring.adminSsoHint')}
-                aria-label={`${t('llmMonitoring.adminDashboard')} ${t('common.opensInNewTab')}`}
-              >
-                {t('llmMonitoring.adminDashboard')}
-                {externalLinkIcon}
-              </a>
+                  don't render a link that dead-ends at a rejected login — nor
+                  one to a LiteLLM that is not running. */}
+              {liteLlmRuns() && (
+                <a
+                  href={LITELLM_ADMIN_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="admin-link-btn"
+                  title={t('llmMonitoring.adminSsoHint')}
+                  aria-label={`${t('llmMonitoring.adminDashboard')} ${t('common.opensInNewTab')}`}
+                >
+                  {t('llmMonitoring.adminDashboard')}
+                  {externalLinkIcon}
+                </a>
+              )}
               {/* Bifrost (the /api/llm-bi side-by-side gateway) has a single
                   admin login, which is gateway-admin level — so the link is
                   admin-only as well. */}

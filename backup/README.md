@@ -93,7 +93,7 @@ Restore is **per-component and destructive**. Each `restore.sh` invocation:
 - Verifies the backup dir has a `manifest.json` and the needed file before doing anything.
 - Prints a plan of what will change.
 - Requires a typed confirmation phrase (`RESTORE ETCD`, `RESTORE PG`, `RESTORE META`).
-- Stops the consumer service (Keycloak / LiteLLM / unibridge-service / apisix) before touching its backing store, then restarts it — under blue-green, in every color that was running it. The plan it prints names those colors.
+- Stops the consumer service (Keycloak / LiteLLM / unibridge-service / apisix) before touching its backing store, then restarts it — under blue-green, in every color that was running it. A Postgres consumer that was not running stays stopped (LiteLLM does not run while `LLM_GATEWAY=bifrost`). The plan it prints names those colors.
 
 ```
 ./backup/restore.sh etcd           ./snapshots/2026-04-19_030000Z

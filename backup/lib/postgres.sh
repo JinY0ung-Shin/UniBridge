@@ -36,6 +36,7 @@ restore_postgres() {
   local per_color=0
   local stopped_colors=""
   local consumer_where=""
+  local consumer_running=0
   if [[ -n "$consumer" ]] && is_app_tier_service "$consumer" && stack_is_bluegreen; then
     per_color=1
     stopped_colors="$(app_service_colors_running "$consumer")"
@@ -43,6 +44,14 @@ restore_postgres() {
       consumer_where=" in color(s) $(format_color_list "$stopped_colors")"
     else
       consumer_where=" (not running in any color)"
+    fi
+  elif [[ -n "$consumer" ]]; then
+    # Put back only what this restore takes down: LiteLLM, for one, stays
+    # stopped on purpose while /api/llm runs on Bifrost (litellm/compose-gate.yml).
+    if [[ -n "$(infra_compose ps -q "$consumer" 2>/dev/null)" ]]; then
+      consumer_running=1
+    else
+      consumer_where=" (not running: skipped)"
     fi
   fi
 
@@ -68,9 +77,11 @@ EOF
       else
         log "postgres[$service]: consumer $consumer is not running in any color, nothing to stop"
       fi
-    else
+    elif [[ "$consumer_running" -eq 1 ]]; then
       log "postgres[$service]: stopping consumer $consumer"
       infra_compose stop "$consumer"
+    else
+      log "postgres[$service]: consumer $consumer is not running, nothing to stop"
     fi
   fi
 
@@ -90,9 +101,11 @@ EOF
         # color re-provision APISIX routes at itself.
         color_compose "$color" up -d --no-recreate --wait "$consumer"
       done <<< "$stopped_colors"
-    else
+    elif [[ "$consumer_running" -eq 1 ]]; then
       log "postgres[$service]: starting consumer $consumer"
       infra_compose up -d --wait "$consumer"
+    else
+      log "postgres[$service]: leaving consumer $consumer stopped, as it was"
     fi
   fi
   log "postgres[$service]: restore complete"

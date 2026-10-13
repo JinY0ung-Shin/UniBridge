@@ -983,7 +983,7 @@ itself. With `bifrost`, the same routes (`llm-proxy`, `llm-messages`,
 `llm-responses`, `llm-models`, `llm-metrics`) point at Bifrost, so client base
 URLs and API-key grants stay as they are
 ([`llm_routes.py`](./unibridge-service/app/services/llm_routes.py)). LiteLLM
-keeps running; setting the switch back is the rollback.
+stops running (see below); setting the switch back is the rollback.
 
 What clients see on Bifrost:
 
@@ -1001,7 +1001,10 @@ What clients see on Bifrost:
   `provider/` prefix), cached for 30 s.
 - `/api/llm/metrics` serves Bifrost's exposition, whose metric names differ from
   LiteLLM's.
-- `/api/llm-admin` keeps reaching LiteLLM's admin UI while LiteLLM runs.
+- LiteLLM's admin UI is gone with LiteLLM: the LLM Monitoring page shows only
+  the Bifrost Admin button, and provisioning removes `/api/llm-admin` and the
+  `litellm` upstream (an upstream that a route of your own still uses stays).
+  `litellm-db` keeps running, with LiteLLM's models and keys for a switch back.
 
 The LLM monitoring page and the Grafana LLM dashboard add LiteLLM's and
 Bifrost's counters, so `/api/llm-bi` traffic counts as LLM traffic and the
@@ -1027,15 +1030,40 @@ Before switching:
    mount and has no reload API enabled, so recreate it once after pulling (its
    data volume stays):
    `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --force-recreate prometheus`.
+4. Check that the host's Docker Compose leaves LiteLLM out under `bifrost`
+   (it needs Compose 2.20 or later). This must print `bifrost` and nothing else:
+   `LLM_GATEWAY=bifrost docker compose -p unibridge-infra -f docker-compose.infra.yml config --services | grep -xE 'litellm|bifrost'`
 
-Switch with `LLM_GATEWAY=bifrost` in `.env`, then deploy. A blue-green deploy
-finds `/api/llm` out of step with the switch and re-provisions on the new
-color, and the converter upstream moves at promotion. The converter routes carry
-both gateways' credentials and each converter forwards only its own, so neither
-the switch nor a rollback has a window of 401s. On a single stack, run
-`docker compose up -d unibridge-service llm-converter`. Check it with the E2E
-suite against `/api/llm`. To roll back, set `LLM_GATEWAY=litellm` and deploy
-again.
+Switch with `LLM_GATEWAY=bifrost` in `.env`, then deploy. Write the value in
+lowercase: compose reads it verbatim to leave LiteLLM out of the stack
+([`litellm/compose-gate.yml`](./litellm/compose-gate.yml)) and refuses every
+command on any other spelling. A blue-green deploy finds `/api/llm` out of step
+with the switch and re-provisions on the new color, and the converter upstream
+moves at promotion. The converter routes carry both gateways' credentials and
+each converter forwards only its own, so neither the switch nor a rollback has a
+window of 401s. On a single stack, run
+`docker compose up -d unibridge-service llm-converter unibridge-ui`. Check it
+with the E2E suite against `/api/llm`.
+
+From then on a plain `up` neither starts nor recreates LiteLLM, and the
+blue-green infra health gate no longer requires it. A LiteLLM that is still
+running is stopped once nothing needs it:
+
+- Blue-green: the deploy stops it as soon as no running color forwards to it and
+  APISIX has no `litellm` upstream left. The standby from before the switch
+  still forwards `/v1/messages` and `/v1/responses` to LiteLLM, and it is the
+  rollback target, so LiteLLM stays up until the next deploy replaces that color
+  or `scripts/deploy-bluegreen.sh stop <color>` stops it. With
+  `STOP_OLD_AFTER_PROMOTE=true` the switching deploy stops it right away. The
+  deploy refuses `bifrost` without a usable `BIFROST_TEST_VK`.
+- Single stack: `docker compose stop litellm`. A later `docker compose down`
+  leaves a LiteLLM that is still running alone (and then cannot remove the
+  network), so stop it first or run `docker compose --profile litellm down`.
+
+To roll back, set `LLM_GATEWAY=litellm` and deploy again. The blue-green deploy
+starts LiteLLM, on the current `.env` and image, before the infra check and
+before the new color points `/api/llm` back at it; on a single stack,
+`docker compose up -d` brings it back.
 
 ### Upgrading Bifrost
 

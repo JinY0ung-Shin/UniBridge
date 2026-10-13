@@ -446,6 +446,11 @@ services:
       - apihub-net
 
   litellm:
+    # Runs only while /api/llm is on LiteLLM: litellm/compose-gate.yml leaves
+    # it out of the stack under LLM_GATEWAY=bifrost.
+    extends:
+      file: ./litellm/compose-gate.yml
+      service: ${LLM_GATEWAY:-litellm}
     image: ghcr.io/berriai/litellm:v1.102.1
     restart: unless-stopped
     logging: *default-logging

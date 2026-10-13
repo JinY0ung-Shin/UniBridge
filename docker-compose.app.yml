@@ -266,6 +266,9 @@ services:
       # (nginx-bifrost-ui.conf); the button then opens https://NAME on the port
       # UniBridge was opened on.
       - BIFROST_UI_HOSTNAME=${BIFROST_UI_HOSTNAME:-}
+      # The LLM Monitoring page shows the LiteLLM Admin button only on litellm:
+      # LiteLLM does not run under bifrost.
+      - LLM_GATEWAY=${LLM_GATEWAY:-litellm}
       - GRAFANA_EXTERNAL_URL=${GRAFANA_EXTERNAL_URL:-}
       - GRAFANA_UPSTREAM=${GRAFANA_UPSTREAM:-grafana}
       - UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service-${APP_COLOR}}

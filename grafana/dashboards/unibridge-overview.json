@@ -289,7 +289,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "up{job=~\"litellm|bifrost\"}",
+          "expr": "up{job=\"bifrost\"} or (up{job=\"litellm\"} unless on() (max(unibridge_llm_gateway{gateway=\"bifrost\"} and on(job, instance) unibridge_active_instance == 1) == 1))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -299,7 +299,7 @@
           "legendFormat": "{{job}}"
         }
       ],
-      "description": "LiteLLM and Bifrost (scrape jobs litellm / bifrost)."
+      "description": "LiteLLM and Bifrost (scrape jobs litellm / bifrost). LiteLLM drops out while /api/llm runs on Bifrost (LLM_GATEWAY=bifrost), where it does not run."
     },
     {
       "id": 4,

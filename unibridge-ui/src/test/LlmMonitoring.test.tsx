@@ -247,6 +247,42 @@ describe('LlmMonitoring', () => {
     });
   });
 
+  describe('LiteLLM Admin follows LLM_GATEWAY', () => {
+    async function renderAdminLinks() {
+      const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');
+      renderWithProviders(<LlmMonitoring />);
+      // The Bifrost link renders in every mode, so it marks the links as drawn.
+      return screen.findByRole('link', { name: 'Bifrost Admin opens in new tab' });
+    }
+
+    it('shows both links without a gateway in the runtime config (litellm)', async () => {
+      const bifrost = await renderAdminLinks();
+
+      expect(bifrost).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'LiteLLM Admin opens in new tab' })).toBeInTheDocument();
+    });
+
+    it('shows LiteLLM Admin while LiteLLM serves /api/llm', async () => {
+      window.__RUNTIME_CONFIG__ = { ...window.__RUNTIME_CONFIG__, LLM_GATEWAY: 'litellm' };
+
+      await renderAdminLinks();
+
+      expect(screen.getByRole('link', { name: 'LiteLLM Admin opens in new tab' })).toHaveAttribute(
+        'href',
+        'https://localhost:4000/ui',
+      );
+    });
+
+    it('drops LiteLLM Admin on Bifrost, where LiteLLM does not run', async () => {
+      window.__RUNTIME_CONFIG__ = { ...window.__RUNTIME_CONFIG__, LLM_GATEWAY: 'bifrost' };
+
+      const bifrost = await renderAdminLinks();
+
+      expect(bifrost).toHaveAttribute('href', 'https://localhost:18443');
+      expect(screen.queryByRole('link', { name: 'LiteLLM Admin opens in new tab' })).not.toBeInTheDocument();
+    });
+  });
+
   it('hides the LiteLLM and Bifrost Admin links for non-admins', async () => {
     authState.appRole = 'user';
     const { default: LlmMonitoring } = await import('../pages/LlmMonitoring');

@@ -376,6 +376,27 @@ async def _put_llm_not_found_route() -> None:
         )
 
 
+async def _remove_litellm_routing() -> None:
+    """Take LiteLLM out of APISIX while /api/llm runs on Bifrost.
+
+    LiteLLM does not run then (litellm/compose-gate.yml; the blue/green deploy
+    stops it once nothing forwards to it), so its admin route would only 502
+    and the alert checker would report its upstream down. The route goes first:
+    APISIX refuses to delete an upstream a route still uses, and a route this
+    service does not manage keeps it, with a warning.
+    """
+    await _delete_route_if_installed("llm-admin")
+    try:
+        await _delete_if_present("upstreams", "litellm")
+    except HTTPStatusError as exc:
+        if exc.response.status_code != 400:
+            raise
+        logger.warning(
+            "Kept APISIX upstream litellm, which another route still uses: %s",
+            exc.response.text,
+        )
+
+
 async def _provision_llm_routes() -> None:
     """Point the /api/llm routes at LLM_GATEWAY: LiteLLM (default) or Bifrost.
 
@@ -384,7 +405,8 @@ async def _provision_llm_routes() -> None:
     on the deploy that finds the routes out of step with it
     (scripts/deploy-bluegreen.sh ``apisix_has_core_routes``). Bifrost without a
     usable BIFROST_TEST_VK leaves every route as it is: injecting no key would
-    turn each request into a 401.
+    turn each request into a 401. On Bifrost, LiteLLM's admin route and upstream
+    go as well (``_remove_litellm_routing``), and switching back puts them back.
     """
     from app.services import apisix_client
 
@@ -403,11 +425,10 @@ async def _provision_llm_routes() -> None:
         logger.info("LITELLM_MASTER_KEY not set — skipping LiteLLM route provisioning")
         return
 
-    if master_key:
+    if state == "litellm":
         await apisix_client.put_resource("upstreams", "litellm", llm_routes.LITELLM_UPSTREAM)
-        # LiteLLM's admin UI stays reachable on Bifrost too, while LiteLLM runs.
         await apisix_client.put_resource("routes", "llm-admin", llm_routes.llm_admin_route())
-    if state == "bifrost":
+    else:
         await apisix_client.put_resource(
             "upstreams", "bifrost", bifrost_routes.UPSTREAMS["bifrost"]
         )
@@ -460,6 +481,8 @@ async def _provision_llm_routes() -> None:
     )
     if state == "bifrost":
         await _put_llm_not_found_route()
+        # Only now that llm-proxy and llm-metrics have left the upstream.
+        await _remove_litellm_routing()
     logger.info("APISIX /api/llm routes provisioned on %s", state)
 
 
@@ -468,6 +491,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown logic."""
     # ── Startup ──────────────────────────────────────────────────────────
     validate_settings()
+    metrics.set_llm_gateway(getattr(settings, "LLM_GATEWAY", "litellm"))
     logger.info("Initializing meta database...")
     await init_db()
 

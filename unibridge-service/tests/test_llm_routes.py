@@ -9,8 +9,9 @@ Pinned here:
    gateway's credential, because a deploy rewrites the routes before it moves
    the converter upstream to the color that reads the new switch.
 3. Boot provisioning follows LLM_GATEWAY, keeps API-key grants across a switch
-   in both directions, and leaves everything alone on Bifrost without a usable
-   virtual key.
+   in both directions, takes LiteLLM's admin route and upstream out on Bifrost
+   (LiteLLM does not run there), and leaves everything alone on Bifrost without
+   a usable virtual key.
 """
 
 from __future__ import annotations
@@ -302,14 +303,14 @@ async def test_bifrost_installs_the_exact_paths_then_the_404_route() -> None:
     await _provision(fake, LLM_GATEWAY="bifrost")
 
     assert fake.writes == [
-        ("PUT", "upstreams", "litellm"),
-        ("PUT", "routes", "llm-admin"),
         ("PUT", "upstreams", "bifrost"),
         ("PUT", "upstreams", "llm-converter"),
         *_converter_writes(),
         ("PUT", "routes", "llm-proxy"),
         ("PUT", "routes", "llm-metrics"),
         ("PUT", "routes", LLM_NOT_FOUND_ROUTE_ID),
+        # LiteLLM does not run on Bifrost; nothing may still route to it.
+        ("DELETE", "upstreams", "litellm"),
     ]
     for route_id, body in _on_bifrost().items():
         assert fake.bodies[("routes", route_id)] == body, route_id
@@ -328,6 +329,58 @@ async def test_bifrost_without_litellm_leaves_out_its_credential_and_admin_route
         headers = _headers(fake.bodies[("routes", route_id)])
         assert "Authorization" not in headers["set"]
         assert headers["set"]["x-bf-vk"] == VK
+
+
+def _litellm_routing() -> dict:
+    """LiteLLM's own APISIX resources as a boot on LiteLLM leaves them."""
+    return {
+        ("upstreams", "litellm"): {"id": "litellm", **llm_routes.LITELLM_UPSTREAM},
+        ("routes", "llm-admin"): {"id": "llm-admin", **llm_routes.llm_admin_route()},
+    }
+
+
+async def test_switching_to_bifrost_removes_litellm_once_nothing_routes_to_it() -> None:
+    fake = _FakeApisix(_litellm_routing())
+
+    await _provision(fake, LLM_GATEWAY="bifrost")
+
+    route_deleted = fake.writes.index(("DELETE", "routes", "llm-admin"))
+    upstream_deleted = fake.writes.index(("DELETE", "upstreams", "litellm"))
+    # APISIX refuses to delete an upstream a route still uses.
+    assert fake.writes.index(("PUT", "routes", "llm-proxy")) < upstream_deleted
+    assert fake.writes.index(("PUT", "routes", "llm-metrics")) < upstream_deleted
+    assert route_deleted < upstream_deleted
+
+
+async def test_switching_back_to_litellm_reinstalls_its_admin_route_and_upstream() -> None:
+    fake = _FakeApisix()
+
+    await _provision(fake, LLM_GATEWAY="litellm")
+
+    assert fake.bodies[("upstreams", "litellm")] == llm_routes.LITELLM_UPSTREAM
+    assert fake.bodies[("routes", "llm-admin")] == llm_routes.llm_admin_route()
+
+
+async def test_bifrost_keeps_the_litellm_upstream_another_route_still_uses(caplog) -> None:
+    fake = _FakeApisix(
+        _litellm_routing(),
+        delete_errors={("upstreams", "litellm"): _status_error(400, "still referenced")},
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        await _provision(fake, LLM_GATEWAY="bifrost")
+
+    assert ("DELETE", "routes", "llm-admin") in fake.writes
+    assert "Kept APISIX upstream litellm" in caplog.text
+
+
+async def test_an_outage_removing_the_litellm_upstream_reaches_the_retry_loop() -> None:
+    fake = _FakeApisix(
+        _litellm_routing(), delete_errors={("upstreams", "litellm"): _status_error(503)}
+    )
+
+    with pytest.raises(Exception):
+        await _provision(fake, LLM_GATEWAY="bifrost")
 
 
 @pytest.mark.parametrize("target", ["bifrost", "litellm"])
