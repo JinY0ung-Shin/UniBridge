@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -2247,6 +2248,24 @@ def test_deploy_warns_when_the_litellm_kept_for_rollback_is_unhealthy(tmp_path: 
     assert result.returncode == 0, result.stderr
     assert calls == ["ps -q litellm", "ps -q litellm-db"]
     assert "LiteLLM, kept for the reason above, is not healthy (unhealthy)" in result.stderr
+    # LiteLLMDbDown is quiet on Bifrost, so the database is checked here too.
+    assert "litellm-db, kept for the reason above, is not healthy (unhealthy)" in result.stderr
+
+
+def test_deploy_warns_when_the_database_kept_for_rollback_is_down(tmp_path: Path) -> None:
+    result, calls = _run_litellm_step(
+        tmp_path,
+        "stop_litellm_when_unused",
+        litellm_running=True,
+        litellm_db_running=False,
+        converters={"green": "litellm"},
+        **BIFROST_GATEWAY_ENV,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls == ["ps -q litellm", "ps -q litellm-db"]
+    assert "litellm-db, kept for the reason above, is not healthy (not running)" in result.stderr
+    assert "LiteLLM, kept" not in result.stderr
 
 
 def test_deploy_keeps_litellm_where_compose_does_not_apply_the_gate(tmp_path: Path) -> None:
@@ -2522,28 +2541,152 @@ restore_postgres litellm-db litellm litellm {shlex.quote(str(dump))} litellm <<<
     ],
 )
 def test_backup_skips_litellm_db_only_while_it_is_off_on_bifrost(
-    gateway: str, running: bool, dumped: bool
+    tmp_path: Path, gateway: str, running: bool, dumped: bool
 ) -> None:
+    dest = tmp_path / "snapshots" / "2026-10-13_030000Z"
+    dest.mkdir(parents=True)
+    out = dest / "litellm-db.sql.gz"
+    result = _run_litellm_db_backup(tmp_path, out, gateway=gateway, running=running)
+
+    assert result.returncode == 0, result.stderr
+    assert (f"DUMP litellm-db litellm litellm {out}" in result.stdout) is dumped
+    if not dumped:
+        # No earlier dump to carry forward.
+        assert "skipped" in result.stdout
+        assert not out.exists()
+    assert "backup_litellm_db" in BACKUP_SCRIPT_FILE.read_text(encoding="utf-8")
+
+
+def _run_litellm_db_backup(
+    tmp_path: Path, out: Path, *, gateway: str, running: bool
+) -> subprocess.CompletedProcess:
     ps_output = "printf 'cid-litellm-db\\n'" if running else ":"
     shell = f"""
 source {shlex.quote(str(BACKUP_POSTGRES_LIB_FILE))}
 infra_compose() {{ [[ "$1" == "ps" ]] && {ps_output}; }}
 backup_postgres() {{ printf 'DUMP %s\\n' "$*"; }}
-backup_litellm_db /tmp/out.sql.gz
+backup_litellm_db {shlex.quote(str(out))}
+"""
+    return subprocess.run(
+        ["bash", "-c", shell],
+        env={
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "BACKUP_STACK": "bluegreen",
+            "LLM_GATEWAY": gateway,
+            "SNAPSHOTS_ROOT": str(tmp_path / "snapshots"),
+        },
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+
+def _write_snapshot(snapshot: Path, files: dict[str, bytes], *, manifest: dict[str, str] | None) -> None:
+    """A snapshot dir as backup.sh leaves it; ``manifest`` maps names to the sha256 it records."""
+    snapshot.mkdir(parents=True)
+    for name, content in files.items():
+        (snapshot / name).write_bytes(content)
+    if manifest is not None:
+        entries = [{"name": name, "size": 0, "sha256": sha} for name, sha in manifest.items()]
+        (snapshot / "manifest.json").write_text(json.dumps({"files": entries}), encoding="utf-8")
+
+
+def test_backup_carries_the_last_verified_litellm_dump_forward_while_litellm_db_is_off(tmp_path: Path) -> None:
+    # Rotation would otherwise drop the last dump RETENTION_DAYS after the switch.
+    snapshots = tmp_path / "snapshots"
+    dump = gzip.compress(b"-- the dump taken before the switch\n")
+    sha = hashlib.sha256(dump).hexdigest()
+    _write_snapshot(snapshots / "2026-09-01_030000Z", {"litellm-db.sql.gz": dump}, manifest={"litellm-db.sql.gz": sha})
+    # An earlier carry of it: the newest good source, which names the original.
+    _write_snapshot(
+        snapshots / "2026-10-01_030000Z",
+        {"litellm-db.sql.gz": dump, "litellm-db.carried-from": b"2026-09-01_030000Z\n"},
+        manifest={"litellm-db.sql.gz": sha},
+    )
+    # Newer, but not to be trusted: a checksum the manifest does not vouch for,
+    # a failed run (no manifest) that left a dump cut off midway, and a directory
+    # that is not a snapshot at all.
+    _write_snapshot(
+        snapshots / "2026-10-05_030000Z", {"litellm-db.sql.gz": dump}, manifest={"litellm-db.sql.gz": "0" * 64}
+    )
+    _write_snapshot(snapshots / "2026-10-10_030000Z", {"litellm-db.sql.gz": dump[: len(dump) // 2]}, manifest=None)
+    # A manifest that vouches for a dump which was already cut off: gzip -t.
+    cut = dump[: len(dump) // 2]
+    _write_snapshot(
+        snapshots / "2026-10-11_030000Z",
+        {"litellm-db.sql.gz": cut},
+        manifest={"litellm-db.sql.gz": hashlib.sha256(cut).hexdigest()},
+    )
+    _write_snapshot(
+        snapshots / "keep-litellm",
+        {"litellm-db.sql.gz": gzip.compress(b"-- kept by hand\n")},
+        manifest={"litellm-db.sql.gz": hashlib.sha256(gzip.compress(b"-- kept by hand\n")).hexdigest()},
+    )
+    dest = snapshots / "2026-10-13_030000Z"
+    dest.mkdir()
+    out = dest / "litellm-db.sql.gz"
+
+    result = _run_litellm_db_backup(tmp_path, out, gateway="bifrost", running=False)
+
+    assert result.returncode == 0, result.stderr
+    assert "DUMP" not in result.stdout
+    assert out.read_bytes() == dump
+    # Linked rather than copied: snapshot files are never rewritten.
+    assert os.path.samefile(out, snapshots / "2026-10-01_030000Z" / "litellm-db.sql.gz")
+    assert (dest / "litellm-db.carried-from").read_text(encoding="utf-8") == "2026-09-01_030000Z\n"
+    assert "carried the dump taken in 2026-09-01_030000Z forward (from 2026-10-01_030000Z)" in result.stdout
+
+
+def test_backup_carries_nothing_it_cannot_verify(tmp_path: Path) -> None:
+    snapshots = tmp_path / "snapshots"
+    _write_snapshot(snapshots / "2026-10-10_030000Z", {"litellm-db.sql.gz": b"not a gzip"}, manifest=None)
+    dest = snapshots / "2026-10-13_030000Z"
+    dest.mkdir()
+    out = dest / "litellm-db.sql.gz"
+
+    result = _run_litellm_db_backup(tmp_path, out, gateway="bifrost", running=False)
+
+    assert result.returncode == 0, result.stderr
+    assert not out.exists()
+    assert "no verified earlier dump to carry forward, skipped" in result.stdout
+
+
+def test_backup_says_so_when_it_cannot_verify_earlier_dumps(tmp_path: Path) -> None:
+    # Without jq or python3 nothing ever verifies; that must not read as "no dump".
+    snapshots = tmp_path / "snapshots"
+    dump = gzip.compress(b"-- dump\n")
+    _write_snapshot(
+        snapshots / "2026-10-01_030000Z",
+        {"litellm-db.sql.gz": dump},
+        manifest={"litellm-db.sql.gz": hashlib.sha256(dump).hexdigest()},
+    )
+    dest = snapshots / "2026-10-13_030000Z"
+    dest.mkdir()
+    shell = f"""
+source {shlex.quote(str(BACKUP_POSTGRES_LIB_FILE))}
+infra_compose() {{ :; }}
+command() {{
+  if [[ "$1" == "-v" && ( "$2" == "jq" || "$2" == "python3" ) ]]; then return 1; fi
+  builtin command "$@"
+}}
+backup_litellm_db {shlex.quote(str(dest / "litellm-db.sql.gz"))}
 """
     result = subprocess.run(
         ["bash", "-c", shell],
-        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "BACKUP_STACK": "bluegreen", "LLM_GATEWAY": gateway},
+        env={
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "BACKUP_STACK": "bluegreen",
+            "LLM_GATEWAY": "bifrost",
+            "SNAPSHOTS_ROOT": str(snapshots),
+        },
         check=False,
         text=True,
         capture_output=True,
     )
 
     assert result.returncode == 0, result.stderr
-    assert ("DUMP litellm-db litellm litellm /tmp/out.sql.gz" in result.stdout) is dumped
-    if not dumped:
-        assert "skipped" in result.stdout
-    assert "backup_litellm_db" in BACKUP_SCRIPT_FILE.read_text(encoding="utf-8")
+    assert not (dest / "litellm-db.sql.gz").exists()
+    assert "cannot be verified without jq or python3" in result.stderr
 
 
 def test_litellm_db_alert_is_quiet_while_api_llm_runs_on_bifrost() -> None:

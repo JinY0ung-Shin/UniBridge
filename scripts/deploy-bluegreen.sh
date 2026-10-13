@@ -408,6 +408,18 @@ litellm_still_needed() {
   return 1
 }
 
+# Warn about a container kept for a rollback that could not serve one.
+warn_unless_healthy() {
+  local name="$1" container_id="$2" status="not running"
+  if [[ -n "$container_id" ]]; then
+    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+      "$container_id" 2>/dev/null)" || status="unknown"
+  fi
+  if [[ "$status" != "healthy" ]]; then
+    echo "WARNING: $name, kept for the reason above, is not healthy (${status:-unknown})." >&2
+  fi
+}
+
 # On Bifrost LiteLLM and litellm-db are no part of the stack, so stop what still
 # runs of them once nothing needs LiteLLM. Not in the "skip" state, where the
 # /api/llm routes were left as they were. Never fails the caller: by then the
@@ -419,15 +431,10 @@ stop_litellm_when_unused() {
   db_id="$(compose_infra ps -q litellm-db 2>/dev/null | head -n1)" || return 0
   [[ -n "$litellm_id" || -n "$db_id" ]] || return 0
   if litellm_still_needed; then
-    # Out of the infra check while it is kept: say when it could not serve.
-    status="not running"
-    if [[ -n "$litellm_id" ]]; then
-      status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
-        "$litellm_id" 2>/dev/null)" || status="unknown"
-    fi
-    if [[ "$status" != "healthy" ]]; then
-      echo "WARNING: LiteLLM, kept for the reason above, is not healthy (${status:-unknown})." >&2
-    fi
+    # Out of the infra check and LiteLLMDbDown while they are kept: say when
+    # they could not carry a rollback.
+    warn_unless_healthy LiteLLM "$litellm_id"
+    warn_unless_healthy litellm-db "$db_id"
     return 0
   fi
   # A Compose that does not apply the gate still lists them here, and the infra

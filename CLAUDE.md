@@ -111,7 +111,7 @@ requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
   forwards to LiteLLM (asked via `docker exec`, since a recreated standby keeps its old image)
   and APISIX has no `litellm` upstream; provisioning on Bifrost deletes `llm-admin` + that
   upstream, the UI hides the LiteLLM button, and `LiteLLMDbDown`, Grafana's gateway/DB panels
-  (via `unibridge_llm_gateway`) and `backup.sh` leave them out.
+  (via `unibridge_llm_gateway`) leave them out; `backup.sh` carries the last dump forward.
 - **`unibridge_*` metrics are scraped by two jobs**: `unibridge-service` is a DNS alias both
   blue/green colors answer on (round-robin → counters alternate → `increase()` inflates);
   `unibridge-service-colors` is per-color. PromQL over them (backend or Grafana) must use

@@ -13,7 +13,7 @@ Every stateful volume in the stack is listed here, backed up or not, so nothing 
 | etcd | volume `etcd-data` (mounted at `/bitnami/etcd`) | **Yes** | `etcd.snap` | APISIX routes, consumers, plugin configs |
 | unibridge-service metadata | Postgres service `unibridge-db` by default, or legacy SQLite `unibridge-data` (`meta.db`) when `META_DB_URL=sqlite...` | **Yes** | `unibridge-meta.sql.gz` (Postgres) or `unibridge-meta.db.gz` (SQLite) | API keys, encrypted credentials, user settings |
 | Keycloak Postgres | volume `keycloak-db-data` | **Yes** | `keycloak-db.sql.gz` | users, realms, clients |
-| LiteLLM Postgres | volume `litellm-db-data` | **Yes** (skipped while `LLM_GATEWAY=bifrost` stops it) | `litellm-db.sql.gz` | LLM keys, budgets, usage history |
+| LiteLLM Postgres | volume `litellm-db-data` | **Yes** (while `LLM_GATEWAY=bifrost` stops it, each snapshot carries the newest dump that its manifest verifies forward; `litellm-db.carried-from` names the snapshot it was taken in) | `litellm-db.sql.gz` | LLM keys, budgets, usage history |
 | LiteLLM conversation dataset | volume `litellm-dataset` | **No** | bounded by `LITELLM_DATASET_RETENTION_DAYS` / `LITELLM_DATASET_MAX_TOTAL_BYTES` | Fine-tuning capture (full prompts/responses); regenerable and can grow large — see README "LLM conversation capture" |
 | Grafana | volume `grafana-data` | **No** | — | Grafana's own SQLite (sessions, ad-hoc UI edits). Dashboards, datasources, and provisioning live in `grafana/` in the repo, so nothing critical is here |
 | Prometheus | volume `prometheus-data` | **No** | in-container retention | Time-series, regeneratable over time |
@@ -122,6 +122,10 @@ Correct order:
    ./backup/restore.sh litellm-db     ./snapshots/<stamp>
    ./backup/restore.sh etcd           ./snapshots/<stamp>
    ```
+   Under `LLM_GATEWAY=bifrost`, a snapshot from a stack that never ran LiteLLM
+   has no `litellm-db.sql.gz`: skip that restore. The deploy stops a
+   `litellm-db` that step 1 started; on a single stack, `docker compose stop
+   litellm-db`.
 3. **Bring up the rest** with restored data:
    ```
    docker compose up -d --wait

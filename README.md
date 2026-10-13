@@ -1005,9 +1005,9 @@ What clients see on Bifrost:
   the Bifrost Admin button, and provisioning removes `/api/llm-admin` and the
   `litellm` upstream (an upstream that a route of your own still uses stays).
 - `litellm-db` stops with LiteLLM. Its volume keeps LiteLLM's models and keys
-  for a switch back, `backup.sh` skips it while it is stopped (snapshots from
-  before the switch hold its dump; keep one past `RETENTION_DAYS` if you may
-  switch back), and `LiteLLMDbDown` and the Grafana overview's DB panel leave it
+  for a switch back. While it is stopped, `backup.sh` carries the last verified
+  dump into each new snapshot (`litellm-db.carried-from` names the snapshot it
+  was taken in), so rotation never drops it. `LiteLLMDbDown` and the Grafana overview's DB panel leave it
   out while the active unibridge-service reports `bifrost`.
 
 The LLM monitoring page and the Grafana LLM dashboard add LiteLLM's and
@@ -1065,6 +1065,11 @@ them is stopped once nothing needs LiteLLM:
   `docker compose down` leaves containers that are still running alone (and then
   cannot remove the network), so stop them first or run
   `docker compose --profile litellm down`.
+
+A stack that is already on Bifrost when it pulls this release: recreate
+Prometheus (step 3 above) before its next deploy. That deploy stops
+`litellm-db`, and Prometheus reads its rules only at start, so the old
+`LiteLLMDbDown` would fire.
 
 To roll back, set `LLM_GATEWAY=litellm` and deploy again. The blue-green deploy
 starts `litellm-db` and LiteLLM, on the current `.env` and image, before the

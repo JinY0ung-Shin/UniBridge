@@ -327,7 +327,8 @@ gateway its code uses rather than reading the container env, because a standby
 recreated with the current `.env` keeps its older image. So the standby from
 before the switch, the rollback target, keeps both up until the next deploy
 replaces it or `scripts/deploy-bluegreen.sh stop <color>` stops it, and while
-LiteLLM is kept the deploy warns if it is not healthy. A `litellm` upstream that
+they are kept the deploy warns if either is not healthy (`LiteLLMDbDown` is quiet
+on Bifrost). A `litellm` upstream that
 a route of your own still uses keeps them up as well; once no route uses it, the
 deploy re-provisions and the service removes it. The stop gives requests already
 inside LiteLLM `DRAIN_SECONDS` to finish, then stops `litellm-db` (its volume
