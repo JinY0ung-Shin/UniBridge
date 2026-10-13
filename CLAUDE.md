@@ -106,6 +106,12 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   UI + management API only, never inference or `/metrics`. With `BIFROST_UI_HOSTNAME` the UI nginx serves the same
   allowlist on the UniBridge port under that DNS name (`unibridge-ui/nginx-bifrost-ui.conf`,
   test-pinned to match). Bifrost's UI only works at the root of an origin: never a path.
+  The name may have its own certificate (`TLS_BIFROST_CERT_PATH`/`_KEY_PATH`, both or
+  neither; compose falls back to the UniBridge pair). Whatever ends TLS presents it, so on
+  blue-green the deploy appends a server for the name to the edge config
+  (`deploy/edge/bifrost-ui.conf.template`, same hop as the default server but without its
+  `add_header`s) while `BIFROST_UI_HOSTNAME` is set. `check_bifrost_ui_host` refuses a bad
+  pair on `deploy`; `promote`/`rollback` refuse only what the edge cannot start with.
   Under that name admins are signed in by `app/routers/bifrost_sso.py` (one-time code →
   Bifrost session cookie, set on that host only; OSS Bifrost has no SSO). Bifrost keeps
   sessions 30 days, so `app/services/bifrost_sessions.py` logs each handed-out one out

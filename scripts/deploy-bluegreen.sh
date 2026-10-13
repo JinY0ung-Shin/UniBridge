@@ -25,6 +25,7 @@ STATE_DIR="${BLUEGREEN_STATE_DIR:-$ROOT_DIR/.deploy}"
 STATE_FILE="${BLUEGREEN_STATE_FILE:-$STATE_DIR/bluegreen-active}"
 LOCK_FILE="${BLUEGREEN_LOCK_FILE:-$STATE_DIR/bluegreen.lock}"
 EDGE_TEMPLATE="$ROOT_DIR/deploy/edge/default.conf.template"
+EDGE_BIFROST_TEMPLATE="$ROOT_DIR/deploy/edge/bifrost-ui.conf.template"
 EDGE_CONFIG="$ROOT_DIR/deploy/edge/generated/default.conf"
 EDGE_CANDIDATE_CONFIG="$ROOT_DIR/deploy/edge/generated/candidate.conf"
 EDGE_PREVIOUS_CONFIG="$ROOT_DIR/deploy/edge/generated/previous.conf"
@@ -222,12 +223,177 @@ render_edge_config() {
     exit 1
   fi
 
+  # deploy refuses a name that is no usable server_name up front; promote and
+  # rollback warn about it, and the edge then has no server for it.
+  local bifrost_host
+  bifrost_host="$(bifrost_ui_hostname 2>/dev/null)" || bifrost_host=""
+
   local temporary="${destination}.tmp.$$"
-  if ! sed "s/__ACTIVE_COLOR__/$color/g" "$EDGE_TEMPLATE" > "$temporary"; then
+  if ! edge_config_text "$color" "$bifrost_host" > "$temporary"; then
     rm -f "$temporary"
     return 1
   fi
   mv "$temporary" "$destination"
+}
+
+# The edge config for $color: the UniBridge server, and the BIFROST_UI_HOSTNAME
+# server when a name is given.
+edge_config_text() {
+  local color="$1"
+  local bifrost_host="$2"
+  sed "s/__ACTIVE_COLOR__/$color/g" "$EDGE_TEMPLATE" || return 1
+  [[ -n "$bifrost_host" ]] || return 0
+  printf '\n'
+  sed \
+    -e "s/__ACTIVE_COLOR__/$color/g" \
+    -e "s/__BIFROST_UI_HOSTNAME__/$bifrost_host/g" \
+    "$EDGE_BIFROST_TEMPLATE"
+}
+
+# BIFROST_UI_HOSTNAME as the edge's server_name, in lowercase; nothing when it is
+# unset. On a name that is no usable server_name it says why and fails. The
+# check is unibridge-ui/entrypoint.sh's (a DNS host name, and not the name
+# UniBridge itself answers on), which also keeps the value safe in sed.
+bifrost_ui_hostname() {
+  local LC_ALL=C
+  local name="${BIFROST_UI_HOSTNAME:-}"
+  [[ -n "$name" ]] || return 0
+  local pattern='^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$'
+  if (( ${#name} > 253 )) || [[ ! "$name" =~ $pattern ]]; then
+    echo "BIFROST_UI_HOSTNAME must be a DNS host name (no IP address, port or scheme): $name" >&2
+    return 1
+  fi
+  local host_ip="${HOST_IP:-localhost}"
+  if [[ "${name,,}" == "${host_ip,,}" ]]; then
+    echo "BIFROST_UI_HOSTNAME must differ from HOST_IP, the name UniBridge itself answers on: $name" >&2
+    return 1
+  fi
+  printf '%s' "${name,,}"
+}
+
+# Whether this user can tell that $1, which -f did not find, names no file. A
+# directory it may not search hides the answer (certbot keeps live/ and
+# archive/ at 0700), and so does a symlink it cannot follow; Docker's daemon
+# and nginx run as root and may still find the file.
+known_not_a_file() {
+  local path="$1"
+  [[ -e "$path" ]] && return 0
+  [[ -L "$path" ]] && return 1
+  while [[ "$path" == */* ]]; do
+    path="${path%/*}"
+    [[ -n "$path" ]] || path="/"
+    if [[ -e "$path" ]]; then
+      [[ -d "$path" && ! -x "$path" ]] && return 1
+      return 0
+    fi
+    [[ -L "$path" ]] && return 1
+  done
+  return 0
+}
+
+# A message under its level, any further lines lined up with the first.
+report_problem() {
+  local level="$1"
+  shift
+  printf '%s: %s\n' "$level" "$1" >&2
+  shift
+  local line
+  for line in "$@"; do
+    printf '%*s%s\n' "$(( ${#level} + 2 ))" '' "$line" >&2
+  done
+}
+
+# BIFROST_UI_HOSTNAME and the pair the edge and the UI nginx present for it:
+# TLS_BIFROST_CERT_PATH + TLS_BIFROST_KEY_PATH, or the UniBridge pair while both
+# are unset (compose falls back to TLS_CERT_PATH/TLS_KEY_PATH). `deploy`
+# refuses every problem before anything starts. `switch` (promote, rollback)
+# only moves traffic, so it refuses just what the edge cannot start with at
+# all, and only warns about the rest: a value compose takes for a volume name
+# (it then refuses every command on the edge and app projects), or a path that
+# names no file while the name is served (nginx cannot load it, and Docker
+# leaves an empty directory in its place on the host). A path this user cannot
+# look into is only a warning in either mode; prepare_edge's nginx -t decides.
+check_bifrost_ui_host() {
+  local mode="$1"
+  local level="ERROR"
+  [[ "$mode" == deploy ]] || level="WARNING"
+  local fatal=0 problems=0
+
+  local name
+  if ! name="$(bifrost_ui_hostname 2>&1)"; then
+    if [[ "$mode" == deploy ]]; then
+      report_problem "$level" "$name"
+    else
+      report_problem "$level" "$name" "The edge gets no server for it."
+    fi
+    problems=1
+    name=""
+  fi
+
+  local cert="${TLS_BIFROST_CERT_PATH:-}"
+  local key="${TLS_BIFROST_KEY_PATH:-}"
+  if [[ -z "$cert" && -z "$key" ]]; then
+    # Files at the documented place that nothing names: the name would quietly
+    # get the UniBridge certificate.
+    if [[ -n "$name" ]] \
+      && [[ -e "$ROOT_DIR/certs/tls-bifrost.crt" || -e "$ROOT_DIR/certs/tls-bifrost.key" ]]; then
+      report_problem "$level" \
+        "certs/tls-bifrost.crt or .key exists, but TLS_BIFROST_CERT_PATH and TLS_BIFROST_KEY_PATH" \
+        "are unset, so $name gets the UniBridge certificate. To use the files, add to $ENV_FILE:" \
+        "  TLS_BIFROST_CERT_PATH=./certs/tls-bifrost.crt" \
+        "  TLS_BIFROST_KEY_PATH=./certs/tls-bifrost.key" \
+        "To keep the UniBridge certificate for that name, remove the files."
+      problems=1
+    fi
+  else
+    if [[ -z "$cert" || -z "$key" ]]; then
+      report_problem "$level" "Set TLS_BIFROST_CERT_PATH and TLS_BIFROST_KEY_PATH together, or neither for the UniBridge pair."
+      problems=1
+    fi
+    # compose takes a value starting with ., / or ~ for a host path, relative to
+    # the project directory (this checkout), and anything else for a volume name.
+    local path source message
+    for path in "$cert" "$key"; do
+      message=""
+      case "$path" in
+        "") continue ;;
+        "~" | "~/"*)
+          # Without HOME compose leaves the ~ as it is, under the project.
+          source="$path"
+          [[ -z "${HOME:-}" ]] || source="$HOME${path:1}"
+          ;;
+        "~"*)
+          message="Write $path (TLS_BIFROST_CERT_PATH/TLS_BIFROST_KEY_PATH) with ./, / or ~/: compose versions resolve ~user differently."
+          ;;
+        .* | /*) source="$path" ;;
+        *)
+          report_problem ERROR "compose takes $path (TLS_BIFROST_CERT_PATH/TLS_BIFROST_KEY_PATH) for a volume name: start a path with ./ or /."
+          fatal=1
+          continue
+          ;;
+      esac
+      if [[ -z "$message" ]]; then
+        [[ "$source" == /* ]] || source="$ROOT_DIR/$source"
+        [[ -f "$source" ]] && continue
+        if ! known_not_a_file "$source"; then
+          report_problem WARNING "Cannot check $source (TLS_BIFROST_CERT_PATH/TLS_BIFROST_KEY_PATH) as $(id -un); nginx -t decides."
+          continue
+        fi
+        message="$source (TLS_BIFROST_CERT_PATH/TLS_BIFROST_KEY_PATH) is not a file; Docker would mount an empty directory in its place."
+      fi
+      if [[ -n "$name" ]]; then
+        report_problem ERROR "$message"
+        fatal=1
+      else
+        report_problem "$level" "$message"
+        problems=1
+      fi
+    done
+  fi
+
+  if (( fatal )) || [[ "$mode" == deploy && "$problems" == 1 ]]; then
+    exit 1
+  fi
 }
 
 admin_url() {
@@ -1000,6 +1166,7 @@ deploy_color() {
   validate_color "$target"
   require_shared_db_safe
   require_usable_llm_gateway
+  check_bifrost_ui_host deploy
 
   local port
   port="$(color_port "$target")"
@@ -1118,6 +1285,7 @@ deploy_color() {
 promote_color() {
   local target="$1"
   validate_color "$target"
+  check_bifrost_ui_host switch
 
   local old
   old="$(active_color || true)"

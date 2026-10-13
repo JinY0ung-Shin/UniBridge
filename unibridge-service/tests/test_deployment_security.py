@@ -25,6 +25,7 @@ PROMETHEUS_CONFIG_FILE = REPO_ROOT / "prometheus" / "prometheus.yml"
 PROMETHEUS_RULES_DIR = REPO_ROOT / "prometheus" / "rules"
 NGINX_CONFIG_FILE = REPO_ROOT / "unibridge-ui" / "nginx.conf"
 EDGE_TEMPLATE_FILE = REPO_ROOT / "deploy" / "edge" / "default.conf.template"
+EDGE_BIFROST_TEMPLATE_FILE = REPO_ROOT / "deploy" / "edge" / "bifrost-ui.conf.template"
 DEPLOY_SCRIPT_FILE = REPO_ROOT / "scripts" / "deploy-bluegreen.sh"
 BIFROST_DIR = REPO_ROOT / "bifrost"
 BIFROST_TEST_SCRIPT_FILE = REPO_ROOT / "scripts" / "bifrost-test.sh"
@@ -569,6 +570,92 @@ def test_edge_template_streams_responses_unbuffered() -> None:
     assert "proxy_buffering off;" in proxy_location
 
 
+def _edge_proxy_directives(template: str) -> list[str]:
+    """The directives of a template's ``location /`` block, comments left out."""
+    body = template.split("\n    location / {\n", 1)[1].split("\n    }\n", 1)[0]
+    return [
+        line.strip()
+        for line in body.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+def _seconds(directive: str, block: str) -> int:
+    match = re.search(rf"\b{directive} (\d+)s;", block)
+    assert match, directive
+    return int(match.group(1))
+
+
+def test_edge_bifrost_server_differs_from_the_default_one_in_its_certificate() -> None:
+    default = EDGE_TEMPLATE_FILE.read_text(encoding="utf-8")
+    bifrost = EDGE_BIFROST_TEMPLATE_FILE.read_text(encoding="utf-8")
+
+    # Past the TLS handshake it is the same hop: the trust boundary, the active
+    # color, and the Host header the UI nginx picks its Bifrost server by.
+    timeouts = ("proxy_read_timeout ", "proxy_send_timeout ")
+    assert [
+        line for line in _edge_proxy_directives(bifrost) if not line.startswith(timeouts)
+    ] == [line for line in _edge_proxy_directives(default) if not line.startswith(timeouts)]
+    for directive in (
+        "listen 443 ssl",
+        "client_max_body_size 100m;",
+        "ssl_protocols TLSv1.2 TLSv1.3;",
+        "ssl_prefer_server_ciphers on;",
+        "server_tokens off;",
+        "resolver 127.0.0.11 valid=5s ipv6=off;",
+    ):
+        assert directive in default and directive in bifrost, directive
+    # Not the hop that cuts the live update socket the UI nginx keeps open.
+    [(_, ui_socket)] = [
+        location
+        for location in _nginx_locations(UI_BIFROST_SERVER_FILE.read_text(encoding="utf-8"))
+        if location[0] == "= /ws"
+    ]
+    bifrost_location = " ".join(_edge_proxy_directives(bifrost))
+    for directive in ("proxy_read_timeout", "proxy_send_timeout"):
+        assert _seconds(directive, bifrost_location) >= _seconds(directive, ui_socket), directive
+
+    # Bifrost sends its own security headers, as the UI nginx's server for the
+    # name expects; a second copy with another value would conflict.
+    assert not re.search(r"^\s*add_header\b", bifrost, re.M)
+    assert re.search(r"^\s*add_header Strict-Transport-Security\b", default, re.M)
+
+    # A certificate of its own, for that name only: every other name and IP
+    # addresses stay on the default server.
+    assert "ssl_certificate /etc/nginx/ssl/tls-bifrost.crt;" in bifrost
+    assert "ssl_certificate_key /etc/nginx/ssl/tls-bifrost.key;" in bifrost
+    assert "ssl_certificate /etc/nginx/ssl/tls.crt;" in default
+    assert re.search(r"^\s*server_name __BIFROST_UI_HOSTNAME__;$", bifrost, re.M)
+    assert not re.search(r"^\s*listen\b.*default_server", bifrost, re.M)
+    assert re.search(r"^\s*listen 443 ssl default_server;$", default, re.M)
+    # A name over 46 characters must not stop nginx. Both files end up in one
+    # http block, where nginx refuses the setting twice.
+    bucket = re.search(r"^server_names_hash_bucket_size (\d+);$", bifrost, re.M)
+    assert bucket and int(bucket.group(1)) >= 512
+    assert "server_names_hash_bucket_size" not in default
+
+
+def test_bifrost_ui_certificate_falls_back_to_the_unibridge_pair() -> None:
+    # Whatever ends TLS for BIFROST_UI_HOSTNAME presents the pair: the edge on
+    # blue-green, the UI nginx on a single stack (and in each color). With
+    # neither variable set the name keeps the certificate UniBridge has.
+    cert = "${TLS_BIFROST_CERT_PATH:-${TLS_CERT_PATH:-./certs/tls.crt}}:/etc/nginx/ssl/tls-bifrost.crt:ro"
+    key = "${TLS_BIFROST_KEY_PATH:-${TLS_KEY_PATH:-./certs/tls.key}}:/etc/nginx/ssl/tls-bifrost.key:ro"
+    for path, service in (
+        (BLUEGREEN_EDGE_COMPOSE_FILE, "edge"),
+        (COMPOSE_FILE, "unibridge-ui"),
+        (BLUEGREEN_APP_COMPOSE_FILE, "unibridge-ui"),
+    ):
+        volumes = _load_yaml(path)["services"][service]["volumes"]
+        assert cert in volumes and key in volumes, path.name
+        assert "${TLS_CERT_PATH:-./certs/tls.crt}:/etc/nginx/ssl/tls.crt:ro" in volumes, path.name
+        assert "${TLS_KEY_PATH:-./certs/tls.key}:/etc/nginx/ssl/tls.key:ro" in volumes, path.name
+
+    server = UI_BIFROST_SERVER_FILE.read_text(encoding="utf-8")
+    assert "ssl_certificate /etc/nginx/ssl/tls-bifrost.crt;" in server
+    assert "ssl_certificate_key /etc/nginx/ssl/tls-bifrost.key;" in server
+
+
 def test_backup_uses_current_metadata_store_instead_of_sqlite_only() -> None:
     backup_script = BACKUP_SCRIPT_FILE.read_text(encoding="utf-8")
     restore_script = RESTORE_SCRIPT_FILE.read_text(encoding="utf-8")
@@ -870,6 +957,8 @@ deploy_color blue
     env["STOP_OLD_AFTER_PROMOTE"] = "false"
     env.pop("APISIX_ADMIN_KEY", None)
     env.pop("LLM_GATEWAY", None)
+    for name in ("BIFROST_UI_HOSTNAME", "TLS_BIFROST_CERT_PATH", "TLS_BIFROST_KEY_PATH"):
+        env.pop(name, None)
     return subprocess.run(
         ["bash", "-c", shell],
         check=False,
@@ -1373,39 +1462,398 @@ def _shell_function(script: str, name: str) -> str:
     return match.group(0)
 
 
+# BIFROST_UI_HOSTNAME values and whether they are a usable server_name: anything
+# else could inject nginx config, and an IP address would take the requests
+# UniBridge itself gets. unibridge-ui/entrypoint.sh and the deploy check alike.
+BIFROST_UI_HOSTNAME_CASES = {
+    "llm-proxy.example.com": True,
+    "llm-proxy": True,
+    "Bifrost-1.Corp.internal": True,
+    "a" * 63 + ".example.com": True,
+    "a" * 64 + ".example.com": False,
+    ("a" * 50 + ".") * 5 + "com": False,
+    "10.0.0.5": False,
+    "llm-proxy.example.com:8443": False,
+    "https://llm-proxy.example.com": False,
+    "llm-proxy.example.com/x": False,
+    "llm-proxy.example.com;": False,
+    "llm proxy.example.com": False,
+    "llm-proxy.example.com\nother.example.com": False,
+    "*.example.com": False,
+    "-llm.example.com": False,
+    "llm-.example.com": False,
+    "llm..example.com": False,
+    "llm-proxy.example.com.": False,
+    ".example.com": False,
+    "": False,
+}
+
+
 def test_ui_entrypoint_accepts_only_dns_names_for_the_bifrost_hostname() -> None:
-    # The value becomes an nginx server_name: anything else could inject
-    # config, and an IP address would take the requests UniBridge itself gets.
     valid_hostname = _shell_function(UI_ENTRYPOINT_FILE.read_text(encoding="utf-8"), "valid_hostname")
-    cases = {
-        "llm-proxy.example.com": True,
-        "llm-proxy": True,
-        "Bifrost-1.Corp.internal": True,
-        "a" * 63 + ".example.com": True,
-        "a" * 64 + ".example.com": False,
-        ("a" * 50 + ".") * 5 + "com": False,
-        "10.0.0.5": False,
-        "llm-proxy.example.com:8443": False,
-        "https://llm-proxy.example.com": False,
-        "llm-proxy.example.com/x": False,
-        "llm-proxy.example.com;": False,
-        "llm proxy.example.com": False,
-        "llm-proxy.example.com\nother.example.com": False,
-        "*.example.com": False,
-        "-llm.example.com": False,
-        "llm-.example.com": False,
-        "llm..example.com": False,
-        "llm-proxy.example.com.": False,
-        ".example.com": False,
-        "": False,
-    }
-    for hostname, accepted in cases.items():
+    for hostname, accepted in BIFROST_UI_HOSTNAME_CASES.items():
         result = subprocess.run(
             ["sh", "-c", valid_hostname + 'valid_hostname "$1"', "sh", hostname],
             capture_output=True,
             check=False,
         )
         assert (result.returncode == 0) is accepted, repr(hostname)
+
+
+def _run_deploy_script(shell: str, **env: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f"source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}\n{shell}"],
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "ENV_FILE": "/nonexistent", **env},
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+
+def test_deploy_takes_the_same_bifrost_hostnames_as_the_ui() -> None:
+    for hostname, accepted in BIFROST_UI_HOSTNAME_CASES.items():
+        if not hostname:
+            continue
+        # Under a UTF-8 locale too. The script pins LC_ALL=C for its A-Z ranges,
+        # which C.UTF-8 (by code point) would not widen anyway; other locales may.
+        result = _run_deploy_script(
+            "bifrost_ui_hostname", BIFROST_UI_HOSTNAME=hostname, LANG="C.UTF-8", LC_ALL="C.UTF-8"
+        )
+        assert (result.returncode == 0) is accepted, repr(hostname)
+        if accepted:
+            # nginx compares server names in lowercase.
+            assert result.stdout == hostname.lower()
+        else:
+            assert "must be a DNS host name" in result.stderr, repr(hostname)
+    accented = _run_deploy_script(
+        "bifrost_ui_hostname", BIFROST_UI_HOSTNAME="llm-próxy.example.com", LANG="C.UTF-8", LC_ALL="C.UTF-8"
+    )
+    assert accented.returncode != 0
+
+    unset = _run_deploy_script("bifrost_ui_hostname")
+    assert (unset.returncode, unset.stdout) == (0, "")
+    # The name UniBridge itself answers on, in any case (localhost by default).
+    for env in (
+        {"BIFROST_UI_HOSTNAME": "UniBridge.Example.com", "HOST_IP": "unibridge.example.COM"},
+        {"BIFROST_UI_HOSTNAME": "localhost"},
+    ):
+        same = _run_deploy_script("bifrost_ui_hostname", **env)
+        assert same.returncode != 0 and "must differ from HOST_IP" in same.stderr, env
+
+
+def test_edge_config_has_the_bifrost_server_only_with_a_hostname(tmp_path: Path) -> None:
+    destination = tmp_path / "generated" / "default.conf"
+    render = f"render_edge_config green {shlex.quote(str(destination))}"
+
+    plain = _run_deploy_script(render)
+    assert plain.returncode == 0, plain.stderr
+    assert destination.read_text(encoding="utf-8") == EDGE_TEMPLATE_FILE.read_text(
+        encoding="utf-8"
+    ).replace("__ACTIVE_COLOR__", "green")
+
+    named = _run_deploy_script(render, BIFROST_UI_HOSTNAME="LLM-Proxy.Example.Internal", HOST_IP="10.0.0.5")
+    assert named.returncode == 0, named.stderr
+    config = destination.read_text(encoding="utf-8")
+    assert config.startswith(EDGE_TEMPLATE_FILE.read_text(encoding="utf-8").replace("__ACTIVE_COLOR__", "green"))
+    assert config.count("\nserver {\n") == 2
+    assert "server_name llm-proxy.example.internal;" in config
+    assert config.count('set $unibridge_ui "unibridge-ui-green";') == 2
+    assert not re.search(r"__[A-Z_]+__", config)
+
+    # A name that is no usable server_name never reaches nginx or sed: deploy
+    # refuses it up front, and promote and rollback switch without its server.
+    for unusable in ("10.0.0.5", "llm-proxy.example.com;", "localhost"):
+        left_out = _run_deploy_script(render, BIFROST_UI_HOSTNAME=unusable)
+        assert left_out.returncode == 0, left_out.stderr
+        assert destination.read_text(encoding="utf-8") == EDGE_TEMPLATE_FILE.read_text(
+            encoding="utf-8"
+        ).replace("__ACTIVE_COLOR__", "green"), unusable
+    assert sorted(path.name for path in destination.parent.iterdir()) == ["default.conf"]
+
+
+def _check_bifrost_ui_host(root: Path, mode: str, **env: str) -> subprocess.CompletedProcess:
+    return _run_deploy_script(
+        f"ROOT_DIR={shlex.quote(str(root))}\ncheck_bifrost_ui_host {mode}",
+        **{"HOME": str(root / "home"), **env},
+    )
+
+
+BIFROST_UI_HOST = {"BIFROST_UI_HOSTNAME": "llm-proxy.example.internal", "HOST_IP": "10.0.0.5"}
+BIFROST_UI_PAIR = {
+    "TLS_BIFROST_CERT_PATH": "./certs/tls-bifrost.crt",
+    "TLS_BIFROST_KEY_PATH": "./certs/tls-bifrost.key",
+}
+
+
+def test_deploy_refuses_and_a_switch_warns_about_the_bifrost_certificate(tmp_path: Path) -> None:
+    host, named = BIFROST_UI_HOST, BIFROST_UI_PAIR
+    missing_key = {**named, "TLS_BIFROST_KEY_PATH": "./certs/absent.key"}
+    in_home = {
+        "TLS_BIFROST_CERT_PATH": "~/pki/tls-bifrost.crt",
+        "TLS_BIFROST_KEY_PATH": "~/pki/tls-bifrost.key",
+    }
+
+    # Neither set and no pair of its own anywhere: the UniBridge pair.
+    (tmp_path / "certs").mkdir()
+    for mode in ("deploy", "switch"):
+        for env in ({}, host):
+            result = _check_bifrost_ui_host(tmp_path, mode, **env)
+            assert (result.returncode, result.stderr) == (0, ""), (mode, env)
+
+    # In the checkout, in HOME, and under a directory named ~ in the checkout,
+    # where compose puts ~/ when HOME is not set.
+    for directory in (tmp_path / "certs", tmp_path / "home" / "pki", tmp_path / "~" / "pki"):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "tls-bifrost.crt").write_text("certificate\n", encoding="utf-8")
+        (directory / "tls-bifrost.key").write_text("key\n", encoding="utf-8")
+    # (env, what deploy does, what promote and rollback do, part of the message):
+    # deploy refuses every problem; a switch refuses only what the edge cannot
+    # start with at all and warns about the rest.
+    cases = [
+        ({}, "ok", "ok", ""),
+        # The pair at the documented place, but nothing names it: the name
+        # would quietly get the UniBridge certificate.
+        (host, "refuse", "warn", "TLS_BIFROST_CERT_PATH=./certs/tls-bifrost.crt"),
+        # Named relative to the checkout, as compose resolves it, absolute, or ~/.
+        ({**host, **named}, "ok", "ok", ""),
+        ({**host, **{name: str(tmp_path / value) for name, value in named.items()}}, "ok", "ok", ""),
+        ({**host, **in_home}, "ok", "ok", ""),
+        ({**host, **in_home, "HOME": ""}, "ok", "ok", ""),
+        # Half a pair; on a switch nginx -t has the last word.
+        ({**host, "TLS_BIFROST_CERT_PATH": named["TLS_BIFROST_CERT_PATH"]}, "refuse", "warn", "together"),
+        # No file where the name is served: nginx cannot load it, and Docker
+        # would leave an empty directory behind. Not served, the edge starts.
+        ({**host, **missing_key}, "refuse", "refuse", "is not a file"),
+        ({**host, **named, "TLS_BIFROST_CERT_PATH": "./certs"}, "refuse", "refuse", "is not a file"),
+        (missing_key, "refuse", "warn", "is not a file"),
+        # ~user, which compose versions resolve differently: like a missing file.
+        ({**host, **named, "TLS_BIFROST_KEY_PATH": "~other/tls-bifrost.key"}, "refuse", "refuse", "~/"),
+        ({**named, "TLS_BIFROST_KEY_PATH": "~other/tls-bifrost.key"}, "refuse", "warn", "~/"),
+        # A volume name to compose, which then refuses every command.
+        ({**named, "TLS_BIFROST_CERT_PATH": "certs/tls-bifrost.crt"}, "refuse", "refuse", "volume name"),
+        # A name that is no usable server_name: a switch leaves its server out.
+        ({"BIFROST_UI_HOSTNAME": "10.0.0.5"}, "refuse", "warn", "must be a DNS host name"),
+    ]
+    for env, on_deploy, on_switch, message in cases:
+        for mode, expected in (("deploy", on_deploy), ("switch", on_switch)):
+            result = _check_bifrost_ui_host(tmp_path, mode, **env)
+            label = (mode, env, result.stderr)
+            if expected == "ok":
+                assert (result.returncode, result.stderr) == (0, ""), label
+            elif expected == "warn":
+                assert result.returncode == 0, label
+                assert result.stderr.startswith("WARNING: ") and message in result.stderr, label
+            else:
+                assert result.returncode != 0, label
+                assert result.stderr.startswith("ERROR: ") and message in result.stderr, label
+
+    script = DEPLOY_SCRIPT_FILE.read_text(encoding="utf-8")
+    # deploy checks before anything starts: the new color's UI mounts the pair too.
+    deploy = _shell_function(script, "deploy_color")
+    assert deploy.index("check_bifrost_ui_host deploy") < deploy.index("up_infra")
+    assert deploy.index("check_bifrost_ui_host deploy") < deploy.index("compose_app")
+    # promote, and rollback through it, before the edge is rendered or started.
+    promote = _shell_function(script, "promote_color")
+    assert promote.index("check_bifrost_ui_host switch") < promote.index("prepare_edge")
+    assert "promote_color" in _shell_function(script, "rollback")
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root may search every directory")
+def test_bifrost_certificate_check_leaves_what_it_cannot_see_to_nginx(tmp_path: Path) -> None:
+    # certbot keeps live/ and archive/ at 0700: the deploy user cannot look in,
+    # but Docker's daemon and nginx run as root and read the pair. In either
+    # mode that is a warning, and prepare_edge's nginx -t decides; a symlink
+    # into such a directory is no different.
+    (tmp_path / "certs").mkdir()
+    (tmp_path / "certs" / "tls-bifrost.key").write_text("key\n", encoding="utf-8")
+    hidden = tmp_path / "live"
+    hidden.mkdir()
+    for name in ("tls-bifrost.crt", "tls-bifrost.key"):
+        (hidden / name).write_text("x\n", encoding="utf-8")
+    (tmp_path / "certs" / "linked.crt").symlink_to(hidden / "tls-bifrost.crt")
+    hidden.chmod(0)
+    try:
+        for env in (
+            {
+                **BIFROST_UI_HOST,
+                "TLS_BIFROST_CERT_PATH": str(hidden / "tls-bifrost.crt"),
+                "TLS_BIFROST_KEY_PATH": str(hidden / "tls-bifrost.key"),
+            },
+            {**BIFROST_UI_HOST, **BIFROST_UI_PAIR, "TLS_BIFROST_CERT_PATH": "./certs/linked.crt"},
+        ):
+            for mode in ("deploy", "switch"):
+                result = _check_bifrost_ui_host(tmp_path, mode, **env)
+                assert result.returncode == 0, (mode, env, result.stderr)
+                assert result.stderr.startswith("WARNING: Cannot check "), (mode, env, result.stderr)
+                assert "nginx -t decides" in result.stderr
+    finally:
+        hidden.chmod(0o755)
+
+
+def test_ui_entrypoint_keeps_the_unibridge_pair_unless_nginx_loads_the_bifrost_one(tmp_path: Path) -> None:
+    # On a single stack the UI nginx ends TLS. A pair nginx cannot load (a path
+    # that names no file is an empty directory by the time it is mounted, a
+    # compose file older than the image mounts nothing, the two may come from
+    # different pairs) must not stop nginx and take the whole UI down.
+    entrypoint = UI_ENTRYPOINT_FILE.read_text(encoding="utf-8")
+    functions = _shell_function(entrypoint, "nginx_loads_pair") + _shell_function(entrypoint, "bifrost_tls_pair")
+    # `nginx -t -q -c <config>` that keeps the config it was given and answers
+    # as told; the real one is asked in a test below.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "nginx").write_text('#!/bin/sh\ncat "$4" > "$NGINX_SEEN"\n[ "$NGINX_LOADS" = yes ]\n', encoding="utf-8")
+    (bin_dir / "nginx").chmod(0o755)
+    seen = tmp_path / "seen.conf"
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+
+    def pair(*files: str, directory: str = "", loads: str = "yes") -> tuple[subprocess.CompletedProcess, Path]:
+        ssl = tmp_path / f"ssl-{len(list(tmp_path.iterdir()))}"
+        ssl.mkdir()
+        for name in files:
+            (ssl / name).write_text("x\n", encoding="utf-8")
+        if directory:
+            (ssl / directory).mkdir()
+        result = subprocess.run(
+            ["sh", "-c", functions + 'bifrost_tls_pair "$1"', "sh", str(ssl)],
+            env={
+                "PATH": f"{bin_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+                "BIFROST_UI_HOSTNAME": "llm-proxy.example.com",
+                "NGINX_LOADS": loads,
+                "NGINX_SEEN": str(seen),
+                "TMPDIR": str(scratch),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # The throwaway config is gone again.
+        assert list(scratch.iterdir()) == []
+        return result, ssl
+
+    own, ssl = pair("tls-bifrost.crt", "tls-bifrost.key")
+    assert (own.returncode, own.stdout, own.stderr) == (0, "tls-bifrost\n", "")
+    # nginx was asked about that pair, and only on a config of its own.
+    asked = seen.read_text(encoding="utf-8")
+    assert f"ssl_certificate {ssl}/tls-bifrost.crt;" in asked
+    assert f"ssl_certificate_key {ssl}/tls-bifrost.key;" in asked
+    for fallback, _ in (
+        # Both files, but nginx cannot load them: half of two pairs, garbage.
+        pair("tls-bifrost.crt", "tls-bifrost.key", loads="no"),
+        pair(),
+        pair("tls-bifrost.crt"),
+        pair("tls-bifrost.key", directory="tls-bifrost.crt"),
+    ):
+        assert (fallback.returncode, fallback.stdout) == (0, "tls\n")
+        assert "WARNING" in fallback.stderr and "llm-proxy.example.com" in fallback.stderr
+
+    guarded = re.findall(r'^if \[ -n "\$BIFROST_UI_HOSTNAME" \]; then\n(.*?)^fi$', entrypoint, re.S | re.M)
+    [render] = [block for block in guarded if "bifrost-ui.conf.template" in block]
+    assert 'BIFROST_TLS_PAIR="$(bifrost_tls_pair /etc/nginx/ssl)"' in render
+    assert '-e "s#/etc/nginx/ssl/tls-bifrost\\.#/etc/nginx/ssl/$BIFROST_TLS_PAIR.#g"' in render
+    # The substitution reaches both lines and nothing else.
+    server = UI_BIFROST_SERVER_FILE.read_text(encoding="utf-8")
+    assert server.count("/etc/nginx/ssl/tls-bifrost.") == 2
+
+
+def _docker(*arguments: str, timeout: float) -> subprocess.CompletedProcess | None:
+    """``docker <arguments>``, or None when the daemon does not answer in time."""
+    try:
+        return subprocess.run(
+            ["docker", *arguments], capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def _has_docker_image(image: str) -> bool:
+    if shutil.which("docker") is None:
+        return False
+    inspected = _docker("image", "inspect", image, timeout=10)
+    return inspected is not None and inspected.returncode == 0
+
+
+NEEDS_NGINX_IMAGE = pytest.mark.skipif(
+    shutil.which("openssl") is None or not _has_docker_image("nginx:alpine"),
+    reason="needs openssl and a local nginx:alpine image",
+)
+
+
+def _self_signed_pair(directory: Path, name: str) -> tuple[Path, Path]:
+    cert, key = directory / f"{name}.crt", directory / f"{name}.key"
+    subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+            "-subj", f"/CN={name}", "-keyout", str(key), "-out", str(cert),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    # Readable by the container's root also where the daemon remaps users.
+    key.chmod(0o644)
+    return cert, key
+
+
+@NEEDS_NGINX_IMAGE
+def test_edge_config_passes_nginx_t_with_and_without_the_bifrost_server(tmp_path: Path) -> None:
+    # The templates are otherwise only read as text: nginx itself has to accept
+    # them concatenated in one http block, with the longest DNS name (253
+    # characters, far past the default server_names hash buckets).
+    certs = tmp_path / "certs"
+    certs.mkdir()
+    cert, key = _self_signed_pair(certs, "tls")
+    longest_name = ".".join(["a" * 63] * 3 + ["b" * 61])
+    assert len(longest_name) == 253
+    for hostname in ("", longest_name):
+        config = tmp_path / ("bifrost.conf" if hostname else "plain.conf")
+        render = _run_deploy_script(
+            f"render_edge_config blue {shlex.quote(str(config))}", BIFROST_UI_HOSTNAME=hostname
+        )
+        assert render.returncode == 0, render.stderr
+        mounts = {
+            config: "/etc/nginx/conf.d/default.conf",
+            cert: "/etc/nginx/ssl/tls.crt",
+            key: "/etc/nginx/ssl/tls.key",
+        }
+        volumes = [f"{source}:{target}:ro" for source, target in mounts.items()]
+        # The UniBridge pair, as compose mounts it while TLS_BIFROST_* are unset.
+        volumes += [f"{cert}:/etc/nginx/ssl/tls-bifrost.crt:ro", f"{key}:/etc/nginx/ssl/tls-bifrost.key:ro"]
+        nginx_t = _docker(
+            "run", "--rm", "--network", "none",
+            *[argument for volume in volumes for argument in ("-v", volume)],
+            "nginx:alpine", "nginx", "-t",
+            timeout=120,
+        )
+        if nginx_t is None:
+            pytest.skip("docker did not answer")
+        assert nginx_t.returncode == 0, (hostname, nginx_t.stderr)
+
+
+@NEEDS_NGINX_IMAGE
+def test_ui_entrypoint_asks_nginx_itself_whether_the_bifrost_pair_loads(tmp_path: Path) -> None:
+    one, other, mixed = tmp_path / "one", tmp_path / "other", tmp_path / "mixed"
+    for directory in (one, other, mixed):
+        directory.mkdir()
+    cert, _ = _self_signed_pair(one, "tls-bifrost")
+    _, other_key = _self_signed_pair(other, "tls-bifrost")
+    # A certificate with another pair's key: both files, but no pair.
+    shutil.copy(cert, mixed / "tls-bifrost.crt")
+    shutil.copy(other_key, mixed / "tls-bifrost.key")
+    functions = _shell_function(UI_ENTRYPOINT_FILE.read_text(encoding="utf-8"), "nginx_loads_pair")
+    ask = functions + (
+        'for pair in /one/tls-bifrost /mixed/tls-bifrost /absent/tls-bifrost; do\n'
+        '  if nginx_loads_pair "$pair"; then echo loads; else echo refused; fi\n'
+        'done\n'
+    )
+    result = _docker(
+        "run", "--rm", "--network", "none", "-v", f"{one}:/one:ro", "-v", f"{mixed}:/mixed:ro",
+        "nginx:alpine", "sh", "-c", ask,
+        timeout=120,
+    )
+    if result is None:
+        pytest.skip("docker did not answer")
+    assert (result.returncode, result.stdout.split()) == (0, ["loads", "refused", "refused"]), result.stderr
 
 
 def test_bifrost_test_secrets_are_listed_blank_in_env_example() -> None:

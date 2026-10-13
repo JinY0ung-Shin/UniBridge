@@ -50,6 +50,36 @@ lowercase() {
   printf '%s' "$1" | tr 'A-Z' 'a-z'
 }
 
+# Whether nginx can load the pair $1.crt and $1.key, tested on a config with
+# nothing else in it.
+nginx_loads_pair() {
+  pair_conf="$(mktemp)"
+  printf 'events {}\nhttp { server { listen 443 ssl; ssl_certificate %s.crt; ssl_certificate_key %s.key; } }\n' \
+    "$1" "$1" > "$pair_conf"
+  if nginx -t -q -c "$pair_conf" > /dev/null 2>&1; then
+    rm -f "$pair_conf"
+    return 0
+  fi
+  rm -f "$pair_conf"
+  return 1
+}
+
+# The pair nginx-bifrost-ui.conf presents, as $1/<pair>.crt and .key:
+# tls-bifrost, which compose mounts from TLS_BIFROST_CERT_PATH and
+# TLS_BIFROST_KEY_PATH (the UniBridge pair while both are unset). When nginx
+# cannot load it (a path that names no file arrives as an empty directory, a
+# compose file older than this image mounts nothing, the two may come from
+# different pairs) the name keeps the UniBridge pair, rather than nginx
+# refusing to start and taking the whole UI down.
+bifrost_tls_pair() {
+  if [ -f "$1/tls-bifrost.crt" ] && [ -f "$1/tls-bifrost.key" ] && nginx_loads_pair "$1/tls-bifrost"; then
+    echo tls-bifrost
+  else
+    echo "entrypoint: WARNING: nginx cannot load $1/tls-bifrost.crt with $1/tls-bifrost.key (TLS_BIFROST_CERT_PATH, TLS_BIFROST_KEY_PATH: both or neither, of one pair); $BIFROST_UI_HOSTNAME gets the UniBridge certificate" >&2
+    echo tls
+  fi
+}
+
 # Case and spaces do not matter, as for the service; anything but bifrost is
 # the default, litellm.
 LLM_GATEWAY="$(lowercase "$LLM_GATEWAY" | tr -d '[:space:]')"
@@ -92,9 +122,11 @@ sed -i \
 # The template sits outside conf.d, so the Bifrost server exists only when
 # BIFROST_UI_HOSTNAME is set (validated above, so it is safe in sed and nginx).
 if [ -n "$BIFROST_UI_HOSTNAME" ]; then
+  BIFROST_TLS_PAIR="$(bifrost_tls_pair /etc/nginx/ssl)"
   sed \
     -e "s/__BIFROST_UI_HOSTNAME__/$BIFROST_UI_HOSTNAME/g" \
     -e "s/__UNIBRIDGE_SERVICE_UPSTREAM__/$(sed_escape "$UNIBRIDGE_SERVICE_UPSTREAM")/g" \
+    -e "s#/etc/nginx/ssl/tls-bifrost\.#/etc/nginx/ssl/$BIFROST_TLS_PAIR.#g" \
     /etc/nginx/bifrost-ui.conf.template > /etc/nginx/conf.d/bifrost-ui.conf
 fi
 

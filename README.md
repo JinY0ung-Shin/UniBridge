@@ -742,7 +742,8 @@ through it.
 
 To serve the UI on the UniBridge port instead, give it a DNS name of its own:
 point the name at the host, add it to the TLS certificate's SAN (see
-[TLS certificates](#3-tls-certificates)) and set `BIFROST_UI_HOSTNAME` to it.
+[TLS certificates](#3-tls-certificates)) or give it a certificate of its own
+(below), and set `BIFROST_UI_HOSTNAME` to it.
 The UI nginx then answers that name with the same allowlist
 ([`unibridge-ui/nginx-bifrost-ui.conf`](./unibridge-ui/nginx-bifrost-ui.conf)),
 in both layouts since the blue-green edge passes the Host header through, and
@@ -752,6 +753,28 @@ of its origin, where UniBridge's own `/api` and `/assets` live. The name also
 keeps Bifrost's `token` cookie apart from the LiteLLM admin UI's cookie of the
 same name; on a shared IP the two overwrite each other, so signing in to one
 signs you out of the other.
+
+A certificate of its own for the name goes in `TLS_BIFROST_CERT_PATH` and
+`TLS_BIFROST_KEY_PATH`, for example `./certs/tls-bifrost.crt` and
+`./certs/tls-bifrost.key`: set both, or neither to keep the UniBridge
+certificate for the name. nginx picks the certificate by the name the client
+asks for, so whatever ends TLS for the name presents it: the UI nginx on a
+single stack, and on a blue-green host the edge, whose config gets a server for
+the name ([`deploy/edge/bifrost-ui.conf.template`](./deploy/edge/bifrost-ui.conf.template))
+while `BIFROST_UI_HOSTNAME` is set. `deploy` refuses to start when only one of
+the two is set, when one names no file (Docker would mount an empty directory in
+its place), or when `certs/tls-bifrost.crt` or `.key` is there but neither is
+set. `promote` and `rollback` only warn about these, unless the edge could not
+start that way at all, and a path they cannot look into (a directory such as
+certbot's `live/` that the deploy user may not search) is only a warning: nginx
+checks it when the edge config is validated. On a single stack the UI nginx
+keeps the name on the UniBridge certificate, with a warning in its log, while
+it cannot load the two as one pair. The first switch after updating to this (`deploy`, `promote` or
+`rollback`) recreates the edge container once for the new mounts, and so does
+setting the variables later (see
+[`docs/blue-green-deploy.md`](docs/blue-green-deploy.md#normal-updates)): on a
+host with those files in place, add the two lines to `.env` first and make that
+switch a planned `deploy`.
 
 Under that name the button also signs the admin in, the way the LiteLLM admin UI
 uses UniBridge SSO. Bifrost OSS has no SSO, so unibridge-service signs in for

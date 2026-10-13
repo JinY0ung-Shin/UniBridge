@@ -232,6 +232,19 @@ The script chooses the inactive color, builds it, verifies health, updates
 APISIX upstreams, reloads edge nginx, and records the active color in
 `.deploy/bluegreen-active`.
 
+The edge keeps running across deploys and only reloads its config, unless its
+definition changed: `docker-compose.edge.yml` itself, a `.env` value it reads
+(`UNIBRIDGE_EDGE_PORT`, `TLS_CERT_PATH`/`TLS_KEY_PATH`,
+`TLS_BIFROST_CERT_PATH`/`TLS_BIFROST_KEY_PATH`), or a newer local
+`nginx:alpine` image. Then the switch recreates the container, on `promote` and
+`rollback` too: nginx stops listening at once, so the public port stays closed
+while it drains open requests (up to Docker's 10 s stop grace period) and the
+new container starts, and requests still open at the end of the grace period,
+LLM streams for example, are cut. The certificate mounts for
+`BIFROST_UI_HOSTNAME` (README "Bifrost side-by-side test") were such a change.
+The edge config itself is rendered from `deploy/edge/` on every switch, with a
+server for `BIFROST_UI_HOSTNAME` while it is set.
+
 Normal updates do not run `compose up` on the shared infra stack. If an infra
 service is missing or unhealthy, deployment aborts before building or changing
 traffic. To intentionally apply infra image/config changes, review their
@@ -262,8 +275,9 @@ STOP_OLD_AFTER_PROMOTE=true DRAIN_SECONDS=30 scripts/deploy-bluegreen.sh deploy
 ```
 
 `rollback` re-promotes the previous color only when all three of its containers
-are already running and healthy. It intentionally does not run `compose up` or
-reconcile infra: after a forward database migration, recreating an old service
+are already running and healthy. It intentionally does not run `compose up` on
+the app colors or reconcile infra (the edge's own `compose up` can recreate the
+edge, see [Normal Updates](#normal-updates)): after a forward database migration, recreating an old service
 image can fail because its Alembic tree does not know the database's newer
 revision. If the inactive color was stopped (for example by
 `STOP_OLD_AFTER_PROMOTE=true`) or is unhealthy, rollback aborts without changing
@@ -284,8 +298,9 @@ scripts/deploy-bluegreen.sh promote green
 ```
 
 This does not rebuild containers or reconcile infra. It only verifies the
-target color, updates APISIX upstreams, reloads the edge proxy, and updates the
-active state file.
+target color, updates APISIX upstreams, reloads the edge proxy (recreating it
+when its definition changed, see [Normal Updates](#normal-updates)), and updates
+the active state file.
 
 ## Important Limits
 

@@ -1,0 +1,60 @@
+# The Bifrost UI host name (BIFROST_UI_HOSTNAME) with a certificate of its own.
+# render_edge_config appends this file to the edge config only when that
+# variable is set. nginx picks the certificate by the name the client asks for
+# (SNI), so the name needs a server here: without one it lands on the default
+# server and gets UniBridge's certificate. Past the TLS handshake nothing
+# differs: the request goes to the active UI color with its Host header, and the
+# UI nginx answers that name with the Bifrost allowlist
+# (unibridge-ui/nginx-bifrost-ui.conf).
+#
+# tls-bifrost.crt/.key are TLS_BIFROST_CERT_PATH and TLS_BIFROST_KEY_PATH, or the
+# UniBridge pair while both are unset (docker-compose.edge.yml).
+
+# With the default 64-byte buckets nginx refuses any server_name longer than 46
+# characters and does not start, taking the public port down with it. 512 fits
+# the longest DNS name (253). Being in this file, it is set only when the
+# Bifrost server exists.
+server_names_hash_bucket_size 512;
+
+server {
+    listen 443 ssl;
+    server_name __BIFROST_UI_HOSTNAME__;
+    client_max_body_size 100m;
+
+    ssl_certificate /etc/nginx/ssl/tls-bifrost.crt;
+    ssl_certificate_key /etc/nginx/ssl/tls-bifrost.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+
+    server_tokens off;
+    # No add_header: Bifrost already sends HSTS, X-Frame-Options,
+    # X-Content-Type-Options and Referrer-Policy, and a second copy with a
+    # different value would conflict. The UI nginx adds none for this name either.
+
+    resolver 127.0.0.11 valid=5s ipv6=off;
+
+    location / {
+        # The same trust boundary as the default server.
+        proxy_set_header X-Consumer-Username "";
+        proxy_set_header X-Consumer-Custom-Id "";
+        proxy_set_header X-UniBridge-Internal-Proxy "";
+
+        set $unibridge_ui "unibridge-ui-__ACTIVE_COLOR__";
+        proxy_pass https://$unibridge_ui:443;
+        # The UI nginx sets the limits for this name (an hour on the /ws live
+        # update socket, nginx's 60s elsewhere); this hop must not cut first.
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+        # Internal-only hop, as in the default server.
+        proxy_ssl_server_name off;
+        proxy_ssl_verify off;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+    }
+}
