@@ -823,6 +823,13 @@ def test_require_existing_infra_healthy_rejects_crashed_or_failed_services() -> 
     assert failed_bootstrap.returncode == 1
     assert "infra service is not ready: etcd-init" in failed_bootstrap.stderr
 
+    # A color's llm-converter forwards to Bifrost under LLM_GATEWAY=bifrost but
+    # lives in another compose project, so no depends_on can hold it back: this
+    # check is what refuses an app deploy until Bifrost is healthy (#95).
+    booting = _run_require_existing_infra_healthy({"bifrost": "running|starting|unless-stopped|0"})
+    assert booting.returncode == 1
+    assert "infra service is not ready: bifrost" in booting.stderr
+
 
 def _run_deploy_color_with_standby_env(
     tmp_path: Path, docker_inspect_body: str, standby: str = "green"
@@ -1937,3 +1944,20 @@ def test_both_layouts_hand_the_gateway_switch_to_the_service_and_its_converter()
     for compose_file in (COMPOSE_FILE, BLUEGREEN_INFRA_COMPOSE_FILE):
         env = _service_environment(_load_yaml(compose_file), "llm-converter-bi")
         assert env["LLM_GATEWAY"] == "bifrost", compose_file.name
+
+
+def test_converter_bi_waits_for_a_healthy_bifrost() -> None:
+    # service_started let it come up before the bifrost name resolved (#95).
+    for compose_file in (COMPOSE_FILE, BLUEGREEN_INFRA_COMPOSE_FILE):
+        services = _load_yaml(compose_file)["services"]
+        assert services["llm-converter-bi"]["depends_on"] == {
+            "bifrost": {"condition": "service_healthy"}
+        }, compose_file.name
+        assert services["bifrost"]["healthcheck"]["test"], compose_file.name
+
+
+def test_single_stack_converter_waits_for_a_healthy_bifrost() -> None:
+    # It forwards to Bifrost under LLM_GATEWAY=bifrost (#95); optional, so a
+    # broken Bifrost does not hold the LiteLLM path down.
+    depends_on = _load_yaml(COMPOSE_FILE)["services"]["llm-converter"]["depends_on"]
+    assert depends_on["bifrost"] == {"condition": "service_healthy", "required": False}

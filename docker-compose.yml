@@ -743,6 +743,13 @@ services:
     depends_on:
       litellm:
         condition: service_started
+      # It forwards to Bifrost under LLM_GATEWAY=bifrost, so wait until Bifrost
+      # is healthy: started alone, the converter could come up before the
+      # bifrost name resolved (#95). Not required, so a broken Bifrost does not
+      # keep the converter down on litellm.
+      bifrost:
+        condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4001/health')"]
       interval: 10s
@@ -902,8 +909,10 @@ services:
       # must not resolve on the other.
       - llm-converter-bi-state:/var/lib/llm-converter
     depends_on:
+      # Healthy, not just started: otherwise the converter could come up before
+      # the bifrost name resolved and fail its requests (#95).
       bifrost:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4001/health')"]
       interval: 10s

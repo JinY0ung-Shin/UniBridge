@@ -676,8 +676,10 @@ services:
       # must not resolve on the other.
       - llm-converter-bi-state:/var/lib/llm-converter
     depends_on:
+      # Healthy, not just started: otherwise the converter could come up before
+      # the bifrost name resolved and fail its requests (#95).
       bifrost:
-        condition: service_started
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4001/health')"]
       interval: 10s
