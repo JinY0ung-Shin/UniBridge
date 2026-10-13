@@ -49,7 +49,7 @@ COMPOSE_SERVICE_LIMITS = {
     "litellm": {"memory": "2g", "cpus": "1.00"},
     "unibridge-ui": {"memory": "128m", "cpus": "0.25"},
     "blackbox-exporter": {"memory": "128m", "cpus": "0.25"},
-    "bifrost": {"memory": "1g", "cpus": "1.00"},
+    "bifrost": {"memory": "2g", "cpus": "1.00"},
     "bifrost-tls": {"memory": "128m", "cpus": "0.25"},
     "llm-converter-bi": {"memory": "512m", "cpus": "0.50"},
 }
@@ -1250,6 +1250,15 @@ def test_bifrost_services_run_by_default_and_are_identical_in_both_layouts() -> 
     # single-stack definition.
     for name in BIFROST_SERVICES:
         assert single["services"][name] == infra["services"][name], name
+
+    # GOMEMLIMIT follows the memory limit (~90%) so the Go GC tightens before
+    # the cgroup OOM-kills Bifrost; a limit raised alone would leave GC at the old one.
+    bifrost = infra["services"]["bifrost"]
+    assert bifrost["deploy"]["resources"]["limits"]["memory"] == bifrost["mem_limit"]
+    limit_mib = int(bifrost["mem_limit"][:-1]) * {"g": 1024, "m": 1}[bifrost["mem_limit"][-1]]
+    [gomemlimit] = [entry.split("=", 1)[1] for entry in bifrost["environment"] if entry.startswith("GOMEMLIMIT=")]
+    assert gomemlimit.endswith("MiB")
+    assert 0.85 <= int(gomemlimit[: -len("MiB")]) / limit_mib <= 0.92
 
     # Required like the other runtime secrets: compose fails fast when one is
     # missing (bifrost/entrypoint.sh still checks the format).
