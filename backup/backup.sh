@@ -27,7 +27,7 @@ main() {
 
   backup_etcd "$dest/etcd.snap"
   backup_postgres keycloak-db keycloak "${KC_DB_USER:-keycloak}"   "$dest/keycloak-db.sql.gz"
-  backup_postgres litellm-db  litellm  litellm                     "$dest/litellm-db.sql.gz"
+  backup_litellm_db "$dest/litellm-db.sql.gz"
   backup_unibridge_meta "$dest"
 
   # Not backed up on purpose: the litellm-dataset volume (LLM conversation

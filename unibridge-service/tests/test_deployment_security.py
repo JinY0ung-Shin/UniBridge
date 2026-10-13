@@ -2024,9 +2024,13 @@ def test_litellm_runs_only_on_litellm() -> None:
             "file": "./litellm/compose-gate.yml",
             "service": "${LLM_GATEWAY:-litellm}",
         }, compose_file.name
-        # Nothing else is gated. litellm-db stays up: it keeps LiteLLM's models
-        # and keys for a switch back, and its backup and alert keep working.
-        assert [name for name, service in services.items() if "extends" in service] == ["litellm"]
+        # LiteLLM's database goes with it (its volume keeps the data); nothing
+        # else is gated.
+        assert services["litellm-db"]["extends"] == services["litellm"]["extends"], compose_file.name
+        assert [name for name, service in services.items() if "extends" in service] == [
+            "litellm-db",
+            "litellm",
+        ], compose_file.name
     # Switching the gate's profile on for every command would run LiteLLM on Bifrost too.
     assert "COMPOSE_PROFILES" not in ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
 
@@ -2063,8 +2067,9 @@ def test_compose_leaves_litellm_out_only_under_bifrost() -> None:
             assert result.returncode == 0, (compose_file.name, env, result.stderr)
             services = set(result.stdout.split())
             assert ("litellm" in services) is runs, (compose_file.name, env)
+            assert ("litellm-db" in services) is runs, (compose_file.name, env)
             # The rest stays, the single stack's dependents of LiteLLM included.
-            assert {"litellm-db", "bifrost", "llm-converter-bi"} <= services, (compose_file.name, env)
+            assert {"bifrost", "llm-converter-bi"} <= services, (compose_file.name, env)
             if compose_file == COMPOSE_FILE:
                 assert {"unibridge-service", "llm-converter"} <= services, env
         rejected = _compose_services(compose_file, LLM_GATEWAY="Bifrost")
@@ -2109,7 +2114,7 @@ def _run_litellm_step(
     litellm_running: bool,
     litellm_db_running: bool = True,
     litellm_health: str = "healthy",
-    listed_services: tuple[str, ...] = ("litellm-db", "bifrost"),
+    listed_services: tuple[str, ...] = ("keycloak-db", "bifrost"),
     config_fails: bool = False,
     network: bool = True,
     upstream_absent: bool = True,
@@ -2193,8 +2198,15 @@ def test_deploy_stops_litellm_once_nothing_forwards_to_it(tmp_path: Path) -> Non
     )
 
     assert result.returncode == 0, result.stderr
-    # Requests already inside LiteLLM get DRAIN_SECONDS (15) before the kill.
-    assert calls == ["ps -q litellm", "config --services", "stop -t 15 litellm"]
+    # Requests already inside LiteLLM get DRAIN_SECONDS (15) before the kill,
+    # and its database goes after it.
+    assert calls == [
+        "ps -q litellm",
+        "ps -q litellm-db",
+        "config --services",
+        "stop -t 15 litellm",
+        "stop litellm-db",
+    ]
     assert "Stopping LiteLLM" in result.stdout
 
 
@@ -2206,7 +2218,7 @@ def test_deploy_stops_litellm_once_nothing_forwards_to_it(tmp_path: Path) -> Non
         # An image from before LLM_GATEWAY forwards to LiteLLM whatever its env says.
         ({"converters": {"green": None}}, "llm-converter-green still forwards"),
         # A route this service does not manage still uses the upstream.
-        ({"upstream_absent": False}, "APISIX still has its upstream"),
+        ({"upstream_absent": False}, "APISIX still has the litellm upstream"),
     ],
 )
 def test_deploy_keeps_litellm_while_something_still_needs_it(tmp_path: Path, kwargs, reason) -> None:
@@ -2215,7 +2227,8 @@ def test_deploy_keeps_litellm_while_something_still_needs_it(tmp_path: Path, kwa
     )
 
     assert result.returncode == 0, result.stderr
-    assert calls == ["ps -q litellm"]
+    # LiteLLM keeps its database.
+    assert calls == ["ps -q litellm", "ps -q litellm-db"]
     assert reason in result.stdout
     assert result.stderr == ""
 
@@ -2232,8 +2245,8 @@ def test_deploy_warns_when_the_litellm_kept_for_rollback_is_unhealthy(tmp_path: 
     )
 
     assert result.returncode == 0, result.stderr
-    assert calls == ["ps -q litellm"]
-    assert "LiteLLM, kept running for the reason above, is not healthy (unhealthy)" in result.stderr
+    assert calls == ["ps -q litellm", "ps -q litellm-db"]
+    assert "LiteLLM, kept for the reason above, is not healthy (unhealthy)" in result.stderr
 
 
 def test_deploy_keeps_litellm_where_compose_does_not_apply_the_gate(tmp_path: Path) -> None:
@@ -2242,12 +2255,12 @@ def test_deploy_keeps_litellm_where_compose_does_not_apply_the_gate(tmp_path: Pa
         tmp_path,
         "stop_litellm_when_unused",
         litellm_running=True,
-        listed_services=("litellm-db", "litellm", "bifrost"),
+        listed_services=("keycloak-db", "litellm-db", "bifrost"),
         **BIFROST_GATEWAY_ENV,
     )
 
     assert result.returncode == 0, result.stderr
-    assert calls == ["ps -q litellm", "config --services"]
+    assert calls == ["ps -q litellm", "ps -q litellm-db", "config --services"]
     assert "does not apply litellm/compose-gate.yml" in result.stderr
 
 
@@ -2257,7 +2270,7 @@ def test_deploy_keeps_litellm_when_it_cannot_read_the_infra_compose_file(tmp_pat
     )
 
     assert result.returncode == 0, result.stderr
-    assert calls == ["ps -q litellm", "config --services"]
+    assert calls == ["ps -q litellm", "ps -q litellm-db", "config --services"]
     assert "could not evaluate the infra compose file" in result.stdout
 
 
@@ -2277,13 +2290,26 @@ def test_deploy_stops_litellm_only_on_bifrost(tmp_path: Path, env: dict[str, str
     assert calls == []
 
 
-def test_deploy_has_no_litellm_to_stop_when_it_is_down(tmp_path: Path) -> None:
+def test_deploy_has_nothing_to_stop_when_litellm_and_its_database_are_down(tmp_path: Path) -> None:
+    result, calls = _run_litellm_step(
+        tmp_path,
+        "stop_litellm_when_unused",
+        litellm_running=False,
+        litellm_db_running=False,
+        **BIFROST_GATEWAY_ENV,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls == ["ps -q litellm", "ps -q litellm-db"]
+
+
+def test_deploy_stops_a_litellm_db_left_running_on_its_own(tmp_path: Path) -> None:
     result, calls = _run_litellm_step(
         tmp_path, "stop_litellm_when_unused", litellm_running=False, **BIFROST_GATEWAY_ENV
     )
 
     assert result.returncode == 0, result.stderr
-    assert calls == ["ps -q litellm"]
+    assert calls == ["ps -q litellm", "ps -q litellm-db", "config --services", "stop litellm-db"]
 
 
 def test_a_failed_litellm_stop_does_not_fail_the_deploy(tmp_path: Path) -> None:
@@ -2293,6 +2319,8 @@ def test_a_failed_litellm_stop_does_not_fail_the_deploy(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert "stop -t 15 litellm" in calls
+    # Its database is left to it.
+    assert "stop litellm-db" not in calls
     assert "could not stop LiteLLM" in result.stderr
 
 
@@ -2303,9 +2331,10 @@ def test_deploy_back_on_litellm_starts_it(tmp_path: Path, env: dict[str, str]) -
     )
 
     assert result.returncode == 0, result.stderr
-    # Recreated on the current .env and image if they changed while it was
-    # stopped; litellm-db, up all along, is left as it is.
-    assert calls == ["ps -q litellm", "ps -q litellm-db", "up -d --wait --no-deps litellm"]
+    # Both named: a Compose that does not start a gated dependency on its own
+    # still brings litellm-db up. Recreated on the current .env and image if
+    # they changed while stopped.
+    assert calls == ["ps -q litellm", "up -d --wait litellm-db litellm"]
 
 
 def test_deploy_leaves_a_running_litellm_as_it_is(tmp_path: Path) -> None:
@@ -2334,21 +2363,6 @@ def test_deploy_without_the_network_leaves_litellm_to_the_infra_check(tmp_path: 
 
     assert result.returncode == 0, result.stderr
     assert calls == []
-
-
-def test_deploy_without_litellm_db_leaves_litellm_to_the_infra_check(tmp_path: Path) -> None:
-    # Started against a dead database, LiteLLM would only time out on its health
-    # check; the infra check names what is down instead.
-    result, calls = _run_litellm_step(
-        tmp_path,
-        "start_litellm_if_stopped",
-        litellm_running=False,
-        litellm_db_running=False,
-        LLM_GATEWAY="litellm",
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert calls == ["ps -q litellm", "ps -q litellm-db"]
 
 
 def test_promotion_warns_when_the_target_needs_a_stopped_litellm(tmp_path: Path) -> None:
@@ -2444,7 +2458,12 @@ source {shlex.quote(str(BACKUP_POSTGRES_LIB_FILE))}
 infra_compose() {{
   printf '%s\\n' "$*" >> {shlex.quote(str(log))}
   case "$1" in
-    ps) {ps_output} ;;
+    ps)
+      case "${{@: -1}}" in
+        litellm) {ps_output} ;;
+        litellm-db) printf 'cid-litellm-db\\n' ;;
+      esac
+      ;;
     exec) cat >/dev/null ;;
   esac
 }}
@@ -2462,7 +2481,83 @@ restore_postgres litellm-db litellm litellm {shlex.quote(str(dump))} litellm <<<
     calls = log.read_text(encoding="utf-8").splitlines()
     restore = "exec -T litellm-db psql -U litellm -d litellm -v ON_ERROR_STOP=1 --quiet"
     if running:
-        assert calls == ["ps -q litellm", "stop litellm", restore, "up -d --wait litellm"]
+        assert calls == ["ps -q litellm-db", "ps -q litellm", "stop litellm", restore, "up -d --wait litellm"]
     else:
-        assert calls == ["ps -q litellm", restore]
+        assert calls == ["ps -q litellm-db", "ps -q litellm", restore]
         assert "leaving consumer litellm stopped" in result.stdout
+
+
+def test_postgres_restore_refuses_a_database_that_is_not_running(tmp_path: Path) -> None:
+    # litellm-db stays stopped under LLM_GATEWAY=bifrost; say so before the prompt.
+    dump = tmp_path / "litellm-db.sql.gz"
+    with gzip.open(dump, "wt", encoding="utf-8") as handle:
+        handle.write("SELECT 1;\n")
+    shell = f"""
+source {shlex.quote(str(BACKUP_POSTGRES_LIB_FILE))}
+infra_compose() {{ [[ "$1" != "exec" ]] || exit 30; }}
+restore_postgres litellm-db litellm litellm {shlex.quote(str(dump))} litellm <<< 'RESTORE PG'
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "BACKUP_STACK": "bluegreen"},
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert "litellm-db is not running; start it first" in result.stderr
+    assert "This will:" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "gateway, running, dumped",
+    [
+        ("bifrost", False, False),
+        # Kept for a rollback, so it still changes and is backed up.
+        ("bifrost", True, True),
+        # Down on LiteLLM is an outage: the dump runs and fails the backup.
+        ("litellm", False, True),
+        ("litellm", True, True),
+    ],
+)
+def test_backup_skips_litellm_db_only_while_it_is_off_on_bifrost(
+    gateway: str, running: bool, dumped: bool
+) -> None:
+    ps_output = "printf 'cid-litellm-db\\n'" if running else ":"
+    shell = f"""
+source {shlex.quote(str(BACKUP_POSTGRES_LIB_FILE))}
+infra_compose() {{ [[ "$1" == "ps" ]] && {ps_output}; }}
+backup_postgres() {{ printf 'DUMP %s\\n' "$*"; }}
+backup_litellm_db /tmp/out.sql.gz
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "BACKUP_STACK": "bluegreen", "LLM_GATEWAY": gateway},
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert ("DUMP litellm-db litellm litellm /tmp/out.sql.gz" in result.stdout) is dumped
+    if not dumped:
+        assert "skipped" in result.stdout
+    assert "backup_litellm_db" in BACKUP_SCRIPT_FILE.read_text(encoding="utf-8")
+
+
+def test_litellm_db_alert_is_quiet_while_api_llm_runs_on_bifrost() -> None:
+    rules = _load_yaml(PROMETHEUS_RULES_DIR / "unibridge-alerts.yml")
+    [alert] = [
+        rule
+        for group in rules["groups"]
+        for rule in group["rules"]
+        if rule.get("alert") == "LiteLLMDbDown"
+    ]
+    expr = " ".join(alert["expr"].split())
+    assert expr.startswith('probe_success{job="infra-db-tcp",db="litellm-db"} == 0 ')
+    # The active instance's switch, not any instance's: a standby can lag behind.
+    assert expr.endswith(
+        'unless on() (max(unibridge_llm_gateway{gateway="bifrost"} and on(job, instance) '
+        "unibridge_active_instance == 1) == 1)"
+    )

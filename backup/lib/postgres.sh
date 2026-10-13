@@ -16,6 +16,19 @@ backup_postgres() {
   log "postgres[$service]: $(size_of "$out") bytes"
 }
 
+# litellm-db does not run while /api/llm is on Bifrost (LLM_GATEWAY=bifrost,
+# litellm/compose-gate.yml), so a backup then skips it: its volume keeps the
+# data, and the snapshots from before the switch hold the dump. A litellm-db
+# that is down on LiteLLM still fails the backup.
+backup_litellm_db() {
+  local out="$1"
+  if [[ "${LLM_GATEWAY:-litellm}" == "bifrost" && -z "$(infra_compose ps -q litellm-db 2>/dev/null)" ]]; then
+    log "postgres[litellm-db]: not running under LLM_GATEWAY=bifrost, skipped (its volume keeps the data)"
+    return 0
+  fi
+  backup_postgres litellm-db litellm litellm "$out"
+}
+
 # restore_postgres <service> <db> <user> <in.sql.gz> [consumer-service]
 # The consumer service (e.g. keycloak, litellm) holds a connection pool to the
 # DB. It must be stopped before restoring or DROP TABLE in the dump will
@@ -32,6 +45,9 @@ restore_postgres() {
   local consumer="${5:-}"
 
   [[ -f "$src" ]] || die "dump not found: $src"
+  # litellm-db, for one, stays stopped while LLM_GATEWAY=bifrost.
+  [[ -n "$(infra_compose ps -q "$service" 2>/dev/null)" ]] || \
+    die "$service is not running; start it first (\`up -d --wait $service\` on its compose project)"
 
   local per_color=0
   local stopped_colors=""

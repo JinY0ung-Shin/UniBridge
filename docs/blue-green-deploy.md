@@ -317,29 +317,29 @@ re-provisions until that is fixed.) The deploy also warns, without stopping,
 when the infra `bifrost` container still runs with another `BIFROST_TEST_VK`
 than `.env`: it needs a recreate before it accepts the new key.
 
-LiteLLM itself runs only while `LLM_GATEWAY` is `litellm`:
-`litellm/compose-gate.yml` leaves it out of a plain `up` and out of
-`config --services` on `bifrost`, so the infra health gate stops requiring it.
-After a deploy on Bifrost the script stops a LiteLLM that is still running, but
-only once nothing needs it: APISIX has no `litellm` upstream left, and no running
-color's converter forwards to it. It asks each converter which gateway its code
-uses rather than reading the container env, because a standby recreated with the
-current `.env` keeps its older image. So the standby from before the switch, the
-rollback target, keeps LiteLLM up until the next deploy replaces it or
-`scripts/deploy-bluegreen.sh stop <color>` stops it, and while it is kept the
-deploy warns if it is not healthy. A `litellm` upstream that a route of your own
-still uses keeps LiteLLM up as well; once no route uses it, the deploy
-re-provisions and the service removes it. The stop gives requests already inside
-LiteLLM `DRAIN_SECONDS` to finish, and it is skipped (with a warning) on a
-Compose that still lists `litellm` under `bifrost`, which would fail the infra
-check of every later deploy. A normal deploy back on LiteLLM starts it
-(`up -d --wait --no-deps litellm`, recreating it if `.env` or the image changed
-meanwhile) before the infra check; a first deploy or
-`RECONCILE_INFRA_ON_DEPLOY=true` brings it up with the rest of the infra. The
-deploy refuses an `LLM_GATEWAY` other than the two lowercase values, which
-compose cannot read, and `bifrost` without a usable `BIFROST_TEST_VK`.
-`promote` and `rollback` stay routing-only; they warn when the target's
-converter forwards to a LiteLLM that is not running.
+LiteLLM and its database run only while `LLM_GATEWAY` is `litellm`:
+`litellm/compose-gate.yml` leaves `litellm` and `litellm-db` out of a plain `up`
+and out of `config --services` on `bifrost`, so the infra health gate stops
+requiring them. After a deploy on Bifrost the script stops what still runs of
+them, but only once nothing needs LiteLLM: APISIX has no `litellm` upstream left,
+and no running color's converter forwards to it. It asks each converter which
+gateway its code uses rather than reading the container env, because a standby
+recreated with the current `.env` keeps its older image. So the standby from
+before the switch, the rollback target, keeps both up until the next deploy
+replaces it or `scripts/deploy-bluegreen.sh stop <color>` stops it, and while
+LiteLLM is kept the deploy warns if it is not healthy. A `litellm` upstream that
+a route of your own still uses keeps them up as well; once no route uses it, the
+deploy re-provisions and the service removes it. The stop gives requests already
+inside LiteLLM `DRAIN_SECONDS` to finish, then stops `litellm-db` (its volume
+keeps the data), and it is skipped (with a warning) on a Compose that still lists
+them under `bifrost`, which would fail the infra check of every later deploy. A
+normal deploy back on LiteLLM starts both (`up -d --wait litellm-db litellm`,
+recreating them if `.env` or the image changed meanwhile) before the infra check;
+a first deploy or `RECONCILE_INFRA_ON_DEPLOY=true` brings them up with the rest
+of the infra. The deploy refuses an `LLM_GATEWAY` other than the two lowercase
+values, which compose cannot read, and `bifrost` without a usable
+`BIFROST_TEST_VK`. `promote` and `rollback` stay routing-only; they warn when the
+target's converter forwards to a LiteLLM that is not running.
 
 Stored API-key route restrictions are replayed from the database on **every**
 boot regardless of `APISIX_PROVISION_ON_START`, so the database stays the source

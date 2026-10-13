@@ -562,6 +562,11 @@ services:
       - apihub-net
 
   litellm-db:
+    # LiteLLM's own database, gated with it (litellm/compose-gate.yml): left
+    # out of the stack under LLM_GATEWAY=bifrost, its volume keeping the data.
+    extends:
+      file: ./litellm/compose-gate.yml
+      service: ${LLM_GATEWAY:-litellm}
     image: postgres:16-alpine
     restart: unless-stopped
     logging: *default-logging
@@ -588,7 +593,7 @@ services:
 
   litellm:
     # Runs only while /api/llm is on LiteLLM: litellm/compose-gate.yml leaves
-    # it out of the stack under LLM_GATEWAY=bifrost.
+    # it (and litellm-db) out of the stack under LLM_GATEWAY=bifrost.
     extends:
       file: ./litellm/compose-gate.yml
       service: ${LLM_GATEWAY:-litellm}

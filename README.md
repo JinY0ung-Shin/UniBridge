@@ -1004,7 +1004,11 @@ What clients see on Bifrost:
 - LiteLLM's admin UI is gone with LiteLLM: the LLM Monitoring page shows only
   the Bifrost Admin button, and provisioning removes `/api/llm-admin` and the
   `litellm` upstream (an upstream that a route of your own still uses stays).
-  `litellm-db` keeps running, with LiteLLM's models and keys for a switch back.
+- `litellm-db` stops with LiteLLM. Its volume keeps LiteLLM's models and keys
+  for a switch back, `backup.sh` skips it while it is stopped (snapshots from
+  before the switch hold its dump; keep one past `RETENTION_DAYS` if you may
+  switch back), and `LiteLLMDbDown` and the Grafana overview's DB panel leave it
+  out while the active unibridge-service reports `bifrost`.
 
 The LLM monitoring page and the Grafana LLM dashboard add LiteLLM's and
 Bifrost's counters, so `/api/llm-bi` traffic counts as LLM traffic and the
@@ -1028,7 +1032,8 @@ Before switching:
    `prometheus/prometheus.yml`, with the `BifrostDown` alert), so the LLM pages
    keep counting traffic. Prometheus reads that file through a single-file bind
    mount and has no reload API enabled, so recreate it once after pulling (its
-   data volume stays):
+   data volume stays); that also loads the `LiteLLMDbDown` rule that stays quiet
+   on Bifrost:
    `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --force-recreate prometheus`.
 4. Check that the host's Docker Compose leaves LiteLLM out under `bifrost`
    (it needs Compose 2.20 or later). This must print `bifrost` and nothing else:
@@ -1045,25 +1050,27 @@ window of 401s. On a single stack, run
 `docker compose up -d unibridge-service llm-converter unibridge-ui`. Check it
 with the E2E suite against `/api/llm`.
 
-From then on a plain `up` neither starts nor recreates LiteLLM, and the
-blue-green infra health gate no longer requires it. A LiteLLM that is still
-running is stopped once nothing needs it:
+From then on a plain `up` neither starts nor recreates LiteLLM or `litellm-db`,
+and the blue-green infra health gate no longer requires them. What still runs of
+them is stopped once nothing needs LiteLLM:
 
-- Blue-green: the deploy stops it as soon as no running color forwards to it and
-  APISIX has no `litellm` upstream left. The standby from before the switch
-  still forwards `/v1/messages` and `/v1/responses` to LiteLLM, and it is the
-  rollback target, so LiteLLM stays up until the next deploy replaces that color
+- Blue-green: the deploy stops them as soon as no running color forwards to
+  LiteLLM and APISIX has no `litellm` upstream left. The standby from before the
+  switch still forwards `/v1/messages` and `/v1/responses` to LiteLLM, and it is
+  the rollback target, so both stay up until the next deploy replaces that color
   or `scripts/deploy-bluegreen.sh stop <color>` stops it. With
-  `STOP_OLD_AFTER_PROMOTE=true` the switching deploy stops it right away. The
+  `STOP_OLD_AFTER_PROMOTE=true` the switching deploy stops them right away. The
   deploy refuses `bifrost` without a usable `BIFROST_TEST_VK`.
-- Single stack: `docker compose stop litellm`. A later `docker compose down`
-  leaves a LiteLLM that is still running alone (and then cannot remove the
-  network), so stop it first or run `docker compose --profile litellm down`.
+- Single stack: `docker compose stop litellm litellm-db`. A later
+  `docker compose down` leaves containers that are still running alone (and then
+  cannot remove the network), so stop them first or run
+  `docker compose --profile litellm down`.
 
 To roll back, set `LLM_GATEWAY=litellm` and deploy again. The blue-green deploy
-starts LiteLLM, on the current `.env` and image, before the infra check and
-before the new color points `/api/llm` back at it; on a single stack,
-`docker compose up -d` brings it back.
+starts `litellm-db` and LiteLLM, on the current `.env` and image, before the
+infra check and before the new color points `/api/llm` back at LiteLLM; on a
+single stack, `docker compose up -d` brings them back. On an air-gapped host,
+load the LiteLLM image first if its tag changed in the meantime.
 
 ### Upgrading Bifrost
 

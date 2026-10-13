@@ -104,14 +104,14 @@ requires `RUN_LIVE_E2E=1` plus `LLM_API_KEY`.
   the new color's boot but moves the converter upstream only at promotion. On Bifrost,
   `llm-proxy` is exact paths + `llm-not-found` 404s the rest (Bifrost's UI/management API
   must never be reachable). README "Switching /api/llm to Bifrost".
-  LiteLLM runs only on `litellm`: its service `extends` the `litellm/compose-gate.yml` entry
-  named by the raw value (bifrost = never-enabled profile; any other spelling breaks every
-  compose command, and the deploy refuses it and bifrost without a usable VK), so the infra
-  health gate drops it. The deploy stops it only once no running color's converter forwards
-  to it (asked via `docker exec`, since a recreated standby keeps its old image) and APISIX
-  has no `litellm` upstream; provisioning on Bifrost deletes `llm-admin` + that upstream, the
-  UI hides the LiteLLM button, Grafana's gateway panel drops it (`unibridge_llm_gateway`).
-  `litellm-db` stays.
+  LiteLLM and `litellm-db` run only on `litellm`: both `extends` the `litellm/compose-gate.yml`
+  entry named by the raw value (bifrost = never-enabled profile; any other spelling breaks
+  every compose command, and the deploy refuses it and bifrost without a usable VK), so the
+  infra health gate drops them. The deploy stops them only once no running color's converter
+  forwards to LiteLLM (asked via `docker exec`, since a recreated standby keeps its old image)
+  and APISIX has no `litellm` upstream; provisioning on Bifrost deletes `llm-admin` + that
+  upstream, the UI hides the LiteLLM button, and `LiteLLMDbDown`, Grafana's gateway/DB panels
+  (via `unibridge_llm_gateway`) and `backup.sh` leave them out.
 - **`unibridge_*` metrics are scraped by two jobs**: `unibridge-service` is a DNS alias both
   blue/green colors answer on (round-robin → counters alternate → `increase()` inflates);
   `unibridge-service-colors` is per-color. PromQL over them (backend or Grafana) must use

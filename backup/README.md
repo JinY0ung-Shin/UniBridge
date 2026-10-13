@@ -13,7 +13,7 @@ Every stateful volume in the stack is listed here, backed up or not, so nothing 
 | etcd | volume `etcd-data` (mounted at `/bitnami/etcd`) | **Yes** | `etcd.snap` | APISIX routes, consumers, plugin configs |
 | unibridge-service metadata | Postgres service `unibridge-db` by default, or legacy SQLite `unibridge-data` (`meta.db`) when `META_DB_URL=sqlite...` | **Yes** | `unibridge-meta.sql.gz` (Postgres) or `unibridge-meta.db.gz` (SQLite) | API keys, encrypted credentials, user settings |
 | Keycloak Postgres | volume `keycloak-db-data` | **Yes** | `keycloak-db.sql.gz` | users, realms, clients |
-| LiteLLM Postgres | volume `litellm-db-data` | **Yes** | `litellm-db.sql.gz` | LLM keys, budgets, usage history |
+| LiteLLM Postgres | volume `litellm-db-data` | **Yes** (skipped while `LLM_GATEWAY=bifrost` stops it) | `litellm-db.sql.gz` | LLM keys, budgets, usage history |
 | LiteLLM conversation dataset | volume `litellm-dataset` | **No** | bounded by `LITELLM_DATASET_RETENTION_DAYS` / `LITELLM_DATASET_MAX_TOTAL_BYTES` | Fine-tuning capture (full prompts/responses); regenerable and can grow large — see README "LLM conversation capture" |
 | Grafana | volume `grafana-data` | **No** | — | Grafana's own SQLite (sessions, ad-hoc UI edits). Dashboards, datasources, and provisioning live in `grafana/` in the repo, so nothing critical is here |
 | Prometheus | volume `prometheus-data` | **No** | in-container retention | Time-series, regeneratable over time |
@@ -93,7 +93,7 @@ Restore is **per-component and destructive**. Each `restore.sh` invocation:
 - Verifies the backup dir has a `manifest.json` and the needed file before doing anything.
 - Prints a plan of what will change.
 - Requires a typed confirmation phrase (`RESTORE ETCD`, `RESTORE PG`, `RESTORE META`).
-- Stops the consumer service (Keycloak / LiteLLM / unibridge-service / apisix) before touching its backing store, then restarts it — under blue-green, in every color that was running it. A Postgres consumer that was not running stays stopped (LiteLLM does not run while `LLM_GATEWAY=bifrost`). The plan it prints names those colors.
+- Stops the consumer service (Keycloak / LiteLLM / unibridge-service / apisix) before touching its backing store, then restarts it — under blue-green, in every color that was running it. A Postgres consumer that was not running stays stopped (LiteLLM does not run while `LLM_GATEWAY=bifrost`), and a database that is not running is refused before anything changes: under `bifrost`, start `litellm-db` first (`up -d --wait litellm-db`). The plan it prints names those colors.
 
 ```
 ./backup/restore.sh etcd           ./snapshots/2026-04-19_030000Z

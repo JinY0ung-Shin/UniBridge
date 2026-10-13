@@ -352,23 +352,20 @@ infra_compose_command() {
   printf 'docker compose%s -p "%s" -f "%s"' "$env_flag" "$INFRA_PROJECT" "$ROOT_DIR/docker-compose.infra.yml"
 }
 
-# LiteLLM runs only while LLM_GATEWAY is litellm: a plain `up` leaves it out
-# otherwise. So the deploy back on LiteLLM finds it stopped; start it before the
-# infra check, and before the new color points /api/llm at it again. It is not
-# serving anything, so the `up` may as well recreate it on the current .env and
-# image (a master key rotated meanwhile, say); --no-deps leaves litellm-db, which
-# runs all along, as it is. Without the network or litellm-db the infra check
-# says what is missing instead.
+# LiteLLM and litellm-db run only while LLM_GATEWAY is litellm: a plain `up`
+# leaves them out otherwise. So the deploy back on LiteLLM finds them stopped;
+# start them before the infra check, and before the new color points /api/llm at
+# LiteLLM again. Neither serves anything then, so the `up` may as well recreate
+# them on the current .env and image (a master key rotated meanwhile, say).
+# Without the network the infra check says what is missing instead.
 start_litellm_if_stopped() {
   [[ "$(llm_gateway_state)" == "litellm" ]] || return 0
   docker network inspect "$NETWORK_NAME" >/dev/null 2>&1 || return 0
-  local container_id db_id
+  local container_id
   container_id="$(compose_infra ps -q litellm 2>/dev/null | head -n1)" || container_id=""
   [[ -z "$container_id" ]] || return 0
-  db_id="$(compose_infra ps -q litellm-db 2>/dev/null | head -n1)" || db_id=""
-  [[ -n "$db_id" ]] || return 0
   echo "Starting LiteLLM: LLM_GATEWAY is litellm and it is not running..."
-  compose_infra up -d --wait --no-deps litellm
+  compose_infra up -d --wait litellm-db litellm
 }
 
 # The gateway llm-converter-$color forwards to, as its own code reads it. Asked
@@ -389,62 +386,79 @@ converter_gateway() {
 litellm_still_needed() {
   local names color gateway
   if ! apisix_absent "upstreams/litellm"; then
-    echo "LiteLLM keeps running: APISIX still has its upstream (a route outside /api/llm"
-    echo "  uses it, or the admin API did not answer). Once no route uses it, the next"
+    echo "LiteLLM and litellm-db stay: APISIX still has the litellm upstream (a route outside"
+    echo "  /api/llm uses it, or the admin API did not answer). Once no route uses it, the next"
     echo "  deploy removes it."
     return 0
   fi
   if ! names="$(docker ps --format '{{.Names}}' 2>/dev/null)"; then
-    echo "LiteLLM keeps running: could not list the running containers."
+    echo "LiteLLM and litellm-db stay: could not list the running containers."
     return 0
   fi
   for color in blue green; do
     grep -qxF "llm-converter-$color" <<<"$names" || continue
     gateway="$(converter_gateway "$color")" || gateway=""
     if [[ "$gateway" != "bifrost" ]]; then
-      echo "LiteLLM keeps running: llm-converter-$color still forwards to it (a color from before"
-      echo "  the switch, kept for rollback). It stops on the deploy that replaces $color, or once"
-      echo "  $color is stopped: scripts/deploy-bluegreen.sh stop $color"
+      echo "LiteLLM and litellm-db stay: llm-converter-$color still forwards to LiteLLM (a color"
+      echo "  from before the switch, kept for rollback). They stop on the deploy that replaces"
+      echo "  $color, or once $color is stopped: scripts/deploy-bluegreen.sh stop $color"
       return 0
     fi
   done
   return 1
 }
 
-# On Bifrost LiteLLM is no part of the stack, so stop the one still running once
-# nothing needs it. Not in the "skip" state, where the /api/llm routes were left
-# as they were. Never fails the caller: by then the promotion has happened.
+# On Bifrost LiteLLM and litellm-db are no part of the stack, so stop what still
+# runs of them once nothing needs LiteLLM. Not in the "skip" state, where the
+# /api/llm routes were left as they were. Never fails the caller: by then the
+# promotion has happened.
 stop_litellm_when_unused() {
   [[ "$(llm_gateway_state)" == "bifrost" ]] || return 0
-  local container_id services status
-  container_id="$(compose_infra ps -q litellm 2>/dev/null | head -n1)" || return 0
-  [[ -n "$container_id" ]] || return 0
+  local litellm_id db_id services status
+  litellm_id="$(compose_infra ps -q litellm 2>/dev/null | head -n1)" || return 0
+  db_id="$(compose_infra ps -q litellm-db 2>/dev/null | head -n1)" || return 0
+  [[ -n "$litellm_id" || -n "$db_id" ]] || return 0
   if litellm_still_needed; then
     # Out of the infra check while it is kept: say when it could not serve.
-    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
-      "$container_id" 2>/dev/null)" || status="unknown"
+    status="not running"
+    if [[ -n "$litellm_id" ]]; then
+      status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+        "$litellm_id" 2>/dev/null)" || status="unknown"
+    fi
     if [[ "$status" != "healthy" ]]; then
-      echo "WARNING: LiteLLM, kept running for the reason above, is not healthy (${status:-unknown})." >&2
+      echo "WARNING: LiteLLM, kept for the reason above, is not healthy (${status:-unknown})." >&2
     fi
     return 0
   fi
-  # A Compose that does not apply the gate still lists litellm here, and the
-  # infra check would then refuse every later deploy without it.
+  # A Compose that does not apply the gate still lists them here, and the infra
+  # check would then refuse every later deploy without them.
   if ! services="$(compose_infra config --services 2>/dev/null)"; then
-    echo "LiteLLM keeps running: could not evaluate the infra compose file."
+    echo "LiteLLM and litellm-db stay: could not evaluate the infra compose file."
     return 0
   fi
-  if grep -qxF litellm <<<"$services"; then
-    echo "WARNING: this Docker Compose keeps litellm in the stack under LLM_GATEWAY=bifrost, so it" >&2
+  if grep -qxE 'litellm|litellm-db' <<<"$services"; then
+    echo "WARNING: this Docker Compose keeps LiteLLM in the stack under LLM_GATEWAY=bifrost, so it" >&2
     echo "         does not apply litellm/compose-gate.yml (UniBridge needs Compose 2.20 or later)." >&2
-    echo "         LiteLLM keeps running: the infra check would refuse every deploy without it." >&2
+    echo "         LiteLLM and litellm-db keep running: the infra check would refuse every deploy" >&2
+    echo "         without them." >&2
     return 0
   fi
-  # Requests already inside LiteLLM get DRAIN_SECONDS to finish before the kill.
-  echo "Stopping LiteLLM: /api/llm runs on Bifrost and nothing forwards to LiteLLM any more..."
-  if ! compose_infra stop -t "$DRAIN_SECONDS" litellm; then
-    echo "WARNING: could not stop LiteLLM. Stop it by hand once it is safe:" >&2
-    echo "           $(infra_compose_command) stop litellm" >&2
+  if [[ -n "$litellm_id" ]]; then
+    # Requests already inside LiteLLM get DRAIN_SECONDS to finish before the kill.
+    echo "Stopping LiteLLM: /api/llm runs on Bifrost and nothing forwards to LiteLLM any more..."
+    if ! compose_infra stop -t "$DRAIN_SECONDS" litellm; then
+      echo "WARNING: could not stop LiteLLM, so litellm-db keeps running too. Stop both by hand" >&2
+      echo "         once it is safe:" >&2
+      echo "           $(infra_compose_command) stop litellm litellm-db" >&2
+      return 0
+    fi
+  fi
+  if [[ -n "$db_id" ]]; then
+    echo "Stopping litellm-db: its volume keeps LiteLLM's models and keys for a switch back..."
+    if ! compose_infra stop litellm-db; then
+      echo "WARNING: could not stop litellm-db. Stop it by hand:" >&2
+      echo "           $(infra_compose_command) stop litellm-db" >&2
+    fi
   fi
   return 0
 }
@@ -462,7 +476,7 @@ warn_if_target_needs_stopped_litellm() {
   [[ -z "$container_id" ]] || return 0
   echo "WARNING: llm-converter-$target forwards to LiteLLM, which is not running, so" >&2
   echo "         /api/llm/v1/messages and /v1/responses fail on $target until it is started:" >&2
-  echo "           $(infra_compose_command) up -d --wait litellm" >&2
+  echo "           $(infra_compose_command) up -d --wait litellm-db litellm" >&2
 }
 
 # The /api/llm-bi routes follow the switch: installed and injecting the current

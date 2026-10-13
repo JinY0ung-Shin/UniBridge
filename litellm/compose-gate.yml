@@ -1,20 +1,20 @@
-# Whether the litellm service runs, by LLM_GATEWAY. The litellm service in
-# docker-compose.yml and docker-compose.infra.yml extends the service below
-# that is named after the switch's value (unset or empty = litellm).
+# Whether LiteLLM and its database run, by LLM_GATEWAY. The litellm and
+# litellm-db services in docker-compose.yml and docker-compose.infra.yml extend
+# the service below that is named after the switch's value (unset or empty =
+# litellm).
 #
-# - litellm: no profile, so LiteLLM is part of every `up`.
+# - litellm: no profile, so both are part of every `up`.
 # - bifrost: a profile nothing enables, so a plain `up` neither starts nor
-#   recreates LiteLLM, and `config --services` (the blue/green deploy's infra
-#   health gate) leaves it out. Commands that name it still reach it
-#   (`up -d litellm`, `stop litellm`), and a LiteLLM that is already running
-#   is left alone: scripts/deploy-bluegreen.sh stops it once nothing forwards
-#   to it.
+#   recreates them, and `config --services` (the blue/green deploy's infra
+#   health gate) leaves them out. Commands that name them still reach them
+#   (`up -d litellm-db litellm`, `stop litellm`), and containers that are
+#   already running are left alone: scripts/deploy-bluegreen.sh stops them once
+#   nothing forwards to LiteLLM. litellm-db's volume keeps LiteLLM's models and
+#   keys for a switch back.
 #
 # Only these two lowercase values work. Any other (Bifrost, LITELLM, a typo)
 # fails every compose command with
 #   service "<value>" not found in ./litellm/compose-gate.yml
-# litellm-db stays up either way: it keeps LiteLLM's models and keys for a
-# switch back, and its backup and alert keep working.
 services:
   litellm: {}
   bifrost:

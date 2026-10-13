@@ -386,6 +386,7 @@
       "id": 5,
       "type": "stat",
       "title": "Infra DB (TCP probe)",
+      "description": "keycloak-db and litellm-db (blackbox TCP probe). litellm-db drops out while /api/llm runs on Bifrost (LLM_GATEWAY=bifrost), where it does not run.",
       "gridPos": {
         "h": 4,
         "w": 8,
@@ -453,7 +454,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "probe_success{job=\"infra-db-tcp\"}",
+          "expr": "probe_success{job=\"infra-db-tcp\",db!=\"litellm-db\"} or (probe_success{job=\"infra-db-tcp\",db=\"litellm-db\"} unless on() (max(unibridge_llm_gateway{gateway=\"bifrost\"} and on(job, instance) unibridge_active_instance == 1) == 1))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
