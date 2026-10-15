@@ -967,9 +967,14 @@ Differences and limits to keep in mind while comparing:
   APISIX stamps every request with
   `x-bf-dim-consumer` and `x-bf-lh-consumer` set to `$consumer_name`, so the
   `consumer` metrics label and the log metadata attribute traffic per API key.
-  Request logs, bodies included, are kept in `logs.db` on the `bifrost-test`
-  volume for 14 days. Set `client.disable_content_logging: true` in
-  `config.json` to keep bodies out.
+  Request logs are kept in `logs.db` on the `bifrost-test` volume for 14 days,
+  metadata only: `client.disable_content_logging` in `config.json` keeps
+  prompts, responses, parameters and raw bytes out, so Bifrost's log view shows
+  each request's model, status, tokens, latency and consumer but not its
+  content. `allow_per_request_content_storage_override` stays off, or a
+  client's `x-bf-disable-content-logging: false` header would store its content
+  anyway. To shrink a `logs.db` that grew while content was logged, see
+  [Upgrading Bifrost](#upgrading-bifrost).
 - **Client headers.** APISIX strips `Authorization`, `x-api-key`, `api-key` and
   `x-goog-api-key`, which Bifrost reads as virtual-key selectors. It also strips
   `x-bf-api-key` and `x-bf-api-key-id`, which pin a stored provider key. It
@@ -1145,9 +1150,28 @@ Notes for v2.2.4 → v2.2.6:
   private-network datasheet URLs. `config.json` already sets the former, and it
   loads the datasheets over `file://`.
 
-A change to `bifrost/config.json`, such as the `x-bf-eh-*` header filter, also
-takes this recreate. Bifrost then syncs its whole client section from the file,
-so client settings changed in its UI since go back to the file's values.
+A change to `bifrost/config.json`, such as the `x-bf-eh-*` header filter or
+content logging, also takes a new container, since `up` leaves an unchanged
+service running on the file it booted with:
+`docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --force-recreate --wait bifrost`
+(`/api/llm-bi`, and `/api/llm` under `LLM_GATEWAY=bifrost`, is down until it is
+healthy). Bifrost then syncs its whole client section from the file, so client
+settings changed in its UI since go back to the file's values.
+
+Rows logged while content logging was on keep their content until the 14-day
+retention deletes them. Bifrost never compacts `logs.db`, and SQLite reuses
+freed pages without giving them back to the disk, so once those rows are gone,
+compact the file while Bifrost is stopped. VACUUM needs free disk of up to
+twice the file's size. Any image with Python works, such as the service's own
+(`unibridge-service:blue` or `:green`); `--user 1000` is Bifrost's own user,
+which must keep owning the files:
+
+```bash
+docker compose -p unibridge-infra -f docker-compose.infra.yml stop bifrost
+docker run --rm --user 1000 --entrypoint python -v unibridge_bifrost-test-data:/data unibridge-service:blue \
+  -c "import sqlite3; c = sqlite3.connect('/data/logs.db'); c.execute('VACUUM'); c.close()"
+docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait bifrost
+```
 
 ### DB query monitoring
 

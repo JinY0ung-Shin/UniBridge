@@ -806,7 +806,7 @@ services:
       - LOG_LEVEL=${BIFROST_LOG_LEVEL:-info}
       - LOG_STYLE=json
       # Go soft memory limit at ~90% of mem_limit, so GC tightens before the
-      # cgroup OOM-kills the process (request-body logging is the big consumer).
+      # cgroup OOM-kills the process.
       - GOMEMLIMIT=1800MiB
     ports:
       # Loopback only, plain HTTP: the management API for curl on the host.

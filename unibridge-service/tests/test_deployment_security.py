@@ -1920,6 +1920,19 @@ def test_bifrost_config_authenticates_admin_api_and_inference_and_boots_offline(
     assert service["entrypoint"] == ["/bin/sh", "/app/bundle/entrypoint.sh"]
 
 
+def test_bifrost_request_logs_keep_metadata_but_no_content() -> None:
+    client = json.loads((BIFROST_DIR / "config.json").read_text(encoding="utf-8"))["client"]
+
+    # logs.db keeps model, status, tokens, latency and the consumer of every
+    # request, but no prompts, responses, parameters or raw bytes: with them it
+    # grew with every conversation.
+    assert client["enable_logging"] is True
+    assert client["disable_content_logging"] is True
+    # Otherwise a client's x-bf-disable-content-logging: false header (the raw
+    # proxy routes pass x-bf-* headers through) would store its content anyway.
+    assert client["allow_per_request_content_storage_override"] is False
+
+
 def test_bifrost_entrypoint_fails_closed_without_secrets() -> None:
     base_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     valid = {
