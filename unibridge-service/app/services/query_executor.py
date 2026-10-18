@@ -261,9 +261,10 @@ def check_permission(
 _VALUE_COST = 64
 # Postgres keeps its parallel workers only when the whole capped result is read
 # in one execute, which buffers limit + 1 rows in the driver before anything
-# can be measured. Requests up to the configured default row limit, or up to
-# this many rows, keep that fast path; larger ones are read in batches so the
-# byte budget can stop them early.
+# can be measured. Requests up to this many rows keep that fast path; larger
+# ones are read in batches so the byte budget can stop them early. Fixed rather
+# than tied to the admin's default row limit, which may be set as high as
+# MAX_ROW_LIMIT.
 _FAST_PATH_MAX_ROWS = 50_000
 _STREAM_BATCH_ROWS = 5_000
 
@@ -408,10 +409,9 @@ async def _execute(
     budget = settings.MAX_RESULT_BYTES
     async with engine.connect() as conn:
         if is_select:
-            fast_path_rows = max(settings_manager.default_row_limit, _FAST_PATH_MAX_ROWS)
             if (
                 limit
-                and limit <= fast_path_rows
+                and limit <= _FAST_PATH_MAX_ROWS
                 and statement_type == "select"
                 and engine.dialect.name == "postgresql"
             ):

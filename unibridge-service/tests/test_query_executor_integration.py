@@ -538,7 +538,11 @@ async def test_large_postgres_request_streams_instead_of_buffering(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_default_row_limit_keeps_the_postgres_fast_path(engine_sqlite, monkeypatch):
+async def test_a_raised_default_row_limit_does_not_widen_the_fast_path(
+    engine_sqlite, monkeypatch
+):
+    """An admin default of up to MAX_ROW_LIMIT must not put every query back on
+    the buffered path."""
     from app.services import query_executor
 
     statements: list[str] = []
@@ -548,11 +552,13 @@ async def test_default_row_limit_keeps_the_postgres_fast_path(engine_sqlite, mon
     monkeypatch.setattr(query_executor, "_FAST_PATH_MAX_ROWS", 10)
     monkeypatch.setattr(settings_manager, "default_row_limit", 100)
 
-    await execute_query(
-        engine_sqlite, "SELECT id FROM items ORDER BY id", limit=100, db_type="postgres"
-    )
+    await execute_query(engine_sqlite, "SELECT id FROM items ORDER BY id", db_type="postgres")
+    assert not any("unibridge_capped" in statement for statement in statements)
 
-    assert "unibridge_capped LIMIT 101" in statements[-1]
+    await execute_query(
+        engine_sqlite, "SELECT id FROM items ORDER BY id", limit=10, db_type="postgres"
+    )
+    assert "unibridge_capped LIMIT 11" in statements[-1]
 
 
 @pytest.mark.asyncio
