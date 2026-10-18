@@ -409,6 +409,7 @@ async def test_query_template_agent_guide_is_markdown(client, seeded_db):
     assert "u.id IN $ids" in resp.text
     assert "GraphDB" in resp.text
     assert "## Query result format" in resp.text
+    assert '- `render`: optional, `"service"` (default) or `"database"`' in resp.text
 
 
 async def test_agent_creates_and_deletes_template_with_write_route(

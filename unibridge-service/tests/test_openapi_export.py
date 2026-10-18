@@ -223,6 +223,8 @@ class TestTemplateMapping:
         assert op["requestBody"]["required"] is True
         assert "limit" in schema["properties"]
         assert "timeout" in schema["properties"]
+        assert schema["properties"]["render"]["enum"] == ["service", "database"]
+        assert schema["properties"]["render"]["default"] == "service"
 
     def test_template_without_params_has_optional_body(self):
         template = _template(sql="SELECT 1")

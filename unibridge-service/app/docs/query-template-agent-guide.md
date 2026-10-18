@@ -52,6 +52,12 @@ The execution envelope is:
 - `params`: optional JSON object or `null`.
 - `limit`: optional integer greater than or equal to `1`.
 - `timeout`: optional integer from `1` through `300`, in seconds.
+- `render`: optional, `"service"` (default) or `"database"`. With `"database"`
+  a ClickHouse template has ClickHouse write the result JSON, which is much
+  faster for large results. The response shape stays the same, but DateTime
+  values come in UTC ending in `Z`, DateTime64 keeps its full precision,
+  Float32 uses its shortest form, and very small Decimals avoid exponent
+  notation. Other databases, and ClickHouse before 25.11, ignore it.
 
 ## Parameter value formats
 

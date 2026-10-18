@@ -2,7 +2,7 @@ from datetime import datetime
 import json
 from pathlib import PurePosixPath
 import re
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_serializer, model_validator
@@ -11,6 +11,20 @@ from app.services.webhook_security import validate_webhook_url
 
 
 # ── Query ────────────────────────────────────────────────────────────────────
+
+QueryRender = Literal["service", "database"]
+
+QUERY_RENDER_DESCRIPTION = (
+    "Who writes the result JSON. 'service' (default): UniBridge converts every "
+    "value. 'database': ClickHouse writes the rows and UniBridge relays them, "
+    "which is many times faster for large results; the response shape is the "
+    "same, but some values are written differently: DateTime and DateTime64 "
+    "come in UTC ending in 'Z' (DateTime64 with its full precision), Float32 "
+    "in its shortest form, very small Decimals without exponent notation. "
+    "Applies to SELECT and EXPLAIN on ClickHouse 25.11 or later; every other "
+    "query ignores it."
+)
+
 
 class QueryRequest(BaseModel):
     database: str = Field(..., description="Database alias to run the query against")
@@ -27,6 +41,7 @@ class QueryRequest(BaseModel):
         ),
     )
     timeout: int | None = Field(None, ge=1, le=300, description="Query timeout in seconds")
+    render: QueryRender = Field("service", description=QUERY_RENDER_DESCRIPTION)
 
 
 class QueryResponse(BaseModel):
@@ -171,6 +186,7 @@ class QueryTemplateExecuteRequest(BaseModel):
     params: dict[str, Any] | None = Field(None, description="Named bind parameters for the stored query")
     limit: int | None = Field(None, ge=1, le=1_000_000, description="Override the template default row limit")
     timeout: int | None = Field(None, ge=1, le=300, description="Override the template default timeout")
+    render: QueryRender = Field("service", description=QUERY_RENDER_DESCRIPTION)
 
 
 # ── DB Connections ───────────────────────────────────────────────────────────

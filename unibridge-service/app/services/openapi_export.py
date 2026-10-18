@@ -10,8 +10,9 @@ used to build the spec.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, get_args
 
+from app.schemas import QUERY_RENDER_DESCRIPTION, QueryRender
 from app.services.apisix_system_resources import (
     BIFROST_NOT_FOUND_ROUTE_ID,
     PROTECTED_ROUTE_IDS,
@@ -163,6 +164,12 @@ def _template_request_body(template: Any) -> dict[str, Any]:
                 "maximum": 300,
                 "description": "Override the template default timeout in seconds"
                 + (f" (default: {template.timeout})." if template.timeout else "."),
+            },
+            "render": {
+                "type": "string",
+                "enum": list(get_args(QueryRender)),
+                "default": "service",
+                "description": QUERY_RENDER_DESCRIPTION,
             },
         },
     }

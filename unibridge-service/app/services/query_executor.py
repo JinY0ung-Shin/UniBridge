@@ -1,19 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+import itertools
 import json
 import logging
+import re
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Any
 
+from clickhouse_connect.driver.exceptions import DatabaseError as ClickHouseDatabaseError
 import httpx
 from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.exc import StatementError
 from sqlalchemy.ext.asyncio import AsyncEngine
+from urllib3.exceptions import ProtocolError
 
 try:  # pragma: no cover - exercised when neo4j is installed
     from neo4j import READ_ACCESS as NEO4J_READ_ACCESS
@@ -51,9 +56,12 @@ from app.services.sql_analysis import statement_type
 
 # Re-exported for callers that import from this module
 __all__ = [
+    "RenderedQueryResult",
     "check_multi_statement",
+    "clickhouse_can_render_json",
     "check_permission",
     "detect_statement_type",
+    "execute_clickhouse_json",
     "execute_clickhouse_query",
     "execute_graphdb_query",
     "execute_neo4j_query",
@@ -633,6 +641,260 @@ async def execute_clickhouse_query(
     except asyncio.TimeoutError:
         logger.warning("Query timed out after %ds", effective_timeout)
         raise
+
+
+# ── ClickHouse-rendered results (QueryRequest.render == "database") ──────────
+
+# ClickHouse writes the rows itself, one JSON array per line after a line of
+# column names, and the service only relays the bytes. These settings make
+# that JSON match the service's own for most types; QueryRequest.render lists
+# the values that still come out differently. The reply streams (no
+# wait_end_of_query), so closing it at the row limit or the byte budget stops
+# the query on the server rather than leaving it to buffer the whole result.
+_CLICKHOUSE_JSON_FORMAT = "JSONCompactEachRowWithNames"
+_CLICKHOUSE_JSON_SETTINGS: dict[str, Any] = {
+    "output_format_json_quote_64bit_integers": 0,
+    "output_format_json_quote_decimals": 1,
+    "output_format_decimal_trailing_zeros": 1,
+    "output_format_json_escape_forward_slashes": 0,
+    "output_format_json_validate_utf8": 1,
+    "date_time_output_format": "iso",
+    # Never write a failure into the format itself: in JSONCompactEachRow it
+    # would look like one more row of the result.
+    "http_write_exception_in_output_format": 0,
+}
+_RELAY_CHUNK_BYTES = 1 << 20
+# A failure after the rows have started arrives as a block appended to the
+# stream ("\r\n__exception__\r\n<tag>\r\n<message>..."), after which the
+# server drops the connection. JSON rows never hold a raw carriage return, so
+# the first one marks the block; this much of it is read for the error code.
+_EXCEPTION_BLOCK_MAX_BYTES = 64 * 1024
+_EXCEPTION_CODE_RE = re.compile(rb"Code: (\d+)\.")
+_CLICKHOUSE_TIMEOUT_CODE = 159
+# Before 25.11 such a failure is a plain text line with nothing to tell it
+# apart from the rows, so older servers keep the service path.
+_CLICKHOUSE_JSON_MIN_VERSION = "25.11"
+
+
+@dataclass(frozen=True)
+class RenderedQueryResult:
+    """A QueryResponse body written by ClickHouse, kept as the byte parts it
+    was read in so that it is sent without being joined or parsed."""
+
+    parts: list[bytes]
+    row_count: int
+    truncated: bool
+    elapsed_ms: int
+
+
+class ClickHouseStreamError(Exception):
+    """ClickHouse failed after it had started sending rows."""
+
+    def __init__(self, code: int | None, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _exception_block_error(data: bytes, chunks: Iterator[bytes]) -> ClickHouseStreamError:
+    """Read the rest of the exception block that starts at the first carriage
+    return in ``data`` and turn it into an error."""
+    block = data[data.find(b"\r"):]
+    try:
+        for chunk in chunks:
+            block += chunk
+            if len(block) >= _EXCEPTION_BLOCK_MAX_BYTES:
+                break
+    except ProtocolError:
+        pass  # The server ends the reply without its closing chunk.
+    block = block[:_EXCEPTION_BLOCK_MAX_BYTES]
+    match = _EXCEPTION_CODE_RE.search(block)
+    return ClickHouseStreamError(
+        int(match.group(1)) if match else None,
+        block.decode("utf-8", "replace").strip(),
+    )
+
+
+def clickhouse_can_render_json(client: Any) -> bool:
+    """Whether this ClickHouse marks a failure that happens mid-reply."""
+    return bool(client.min_version(_CLICKHOUSE_JSON_MIN_VERSION))
+
+
+def _is_clickhouse_timeout(exc: Exception) -> bool:
+    """Whether ClickHouse stopped the query at max_execution_time (code 159).
+    Before the rows start, clickhouse-connect's message opens with the code
+    from ClickHouse's exception header; text later in it is the query's own."""
+    if isinstance(exc, ClickHouseStreamError):
+        return exc.code == _CLICKHOUSE_TIMEOUT_CODE
+    return str(exc).startswith(
+        f"Received ClickHouse exception, code: {_CLICKHOUSE_TIMEOUT_CODE},"
+    )
+
+
+def _nth_newline(data: bytes, n: int) -> int:
+    """Index of the ``n``-th newline in ``data`` (1-based), or -1."""
+    pos = -1
+    for _ in range(n):
+        pos = data.find(b"\n", pos + 1)
+        if pos < 0:
+            break
+    return pos
+
+
+def _clickhouse_json_select(
+    client: Any,
+    sql: str,
+    params: dict[str, Any] | None,
+    ch_settings: dict[str, Any],
+    limit: int,
+    budget: int,
+) -> tuple[list[bytes], int, bool]:
+    """Read ClickHouse's JSON into QueryResponse's shape, up to the open rows
+    array. No value is parsed: each row is one line, so rows are counted by
+    newlines and joined by turning every newline into a comma.
+
+    Stops after ``limit`` rows or once the rows reach ``budget`` bytes, closing
+    the response early, which also stops the query on the server. As in
+    _RowCollector the first row is always kept, and ``truncated`` is set once a
+    row is left behind.
+    """
+    response = client.raw_stream(
+        sql, parameters=params or {}, settings=ch_settings, fmt=_CLICKHOUSE_JSON_FORMAT
+    )
+    try:
+        chunks = iter(response.stream(_RELAY_CHUNK_BYTES))
+        head = b""
+        for chunk in chunks:
+            head += chunk
+            if b"\n" in head:
+                break
+        names, newline, rest = head.partition(b"\n")
+        if b"\r" in names:
+            raise _exception_block_error(head, chunks)
+        if not newline:
+            raise RuntimeError("ClickHouse returned no column names")
+        parts = [b'{"columns":', names, b',"rows":[']
+        rows = used = 0
+        truncated = False
+        # Pieces of a row whose end has not arrived yet; none holds a newline.
+        pending: list[bytes] = []
+        pending_size = 0
+        for chunk in itertools.chain((rest,), chunks):
+            if not chunk:
+                continue
+            if limit and rows >= limit and (pending_size or not chunk.startswith(b"\r")):
+                # A row past the limit has started.
+                truncated = True
+                break
+            # A raw carriage return opens ClickHouse's exception block. Only the
+            # rows before it are real, and as on the service path only stopping
+            # short of it (row limit or budget) avoids the error.
+            cr = chunk.find(b"\r")
+            failure = chunk[cr:] if cr >= 0 else b""
+            if failure:
+                chunk = chunk[:cr]
+            end = chunk.rfind(b"\n") + 1
+            if end:
+                pending.append(chunk[:end])
+                block = b"".join(pending)
+                pending = [chunk[end:]]
+                pending_size = len(chunk) - end
+                if not block.startswith(b"[") or block.count(b"\n[") != block.count(b"\n") - 1:
+                    raise RuntimeError("ClickHouse sent a line that is not a row")
+                keep = len(block)
+                if limit and rows + block.count(b"\n") > limit:
+                    keep = _nth_newline(block, limit - rows) + 1
+                if used + keep > budget:
+                    keep = block.rfind(b"\n", 0, max(0, min(keep, budget - used))) + 1
+                    if not keep and not rows:
+                        # The first row is kept, however long it is.
+                        keep = block.find(b"\n") + 1
+                if keep:
+                    rows += block.count(b"\n", 0, keep)
+                    used += keep
+                    parts.append(block[:keep].replace(b"\n", b","))
+                if keep < len(block):
+                    truncated = True
+                    break
+            else:
+                pending.append(chunk)
+                pending_size += len(chunk)
+                if pending_size and rows and used + pending_size > budget:
+                    # The row being read can no longer fit.
+                    truncated = True
+                    break
+            if failure:
+                if pending_size and (
+                    (limit and rows >= limit) or (rows and used + pending_size > budget)
+                ):
+                    # A row had started that this result stops before anyway.
+                    truncated = True
+                    break
+                raise _exception_block_error(failure, chunks)
+        else:
+            if pending_size:
+                raise RuntimeError("ClickHouse response ended inside a row")
+        if rows:
+            parts[-1] = parts[-1][:-1]
+        return parts, rows, truncated
+    finally:
+        response.close()
+
+
+async def execute_clickhouse_json(
+    client: Any,
+    sql: str,
+    params: dict[str, Any] | None = None,
+    limit: int | None = None,
+    timeout: int | None = None,
+    lock: threading.Lock | None = None,
+) -> RenderedQueryResult:
+    """Run a ClickHouse SELECT/EXPLAIN with ClickHouse writing the result JSON.
+
+    Same limits as ``execute_clickhouse_query``, except that MAX_RESULT_BYTES
+    caps the JSON itself rather than an estimate of Python objects. The
+    timeout also goes to the server as ``max_execution_time``: a query that
+    has not written anything yet would not notice that the caller gave up.
+    """
+    effective_limit = min(limit or settings_manager.default_row_limit, settings.MAX_ROW_LIMIT)
+    effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
+
+    if check_multi_statement(sql):
+        raise ValueError(
+            "Multi-statement SQL is not allowed. Remove semicolons or contact an admin."
+        )
+    ch_settings = {**_CLICKHOUSE_JSON_SETTINGS, "max_execution_time": effective_timeout}
+    if effective_limit:
+        ch_settings["max_result_rows"] = effective_limit + 1
+        ch_settings["result_overflow_mode"] = "break"
+    # raw_stream appends the FORMAT clause to the SQL as given, so a trailing
+    # semicolon (check_multi_statement lets one through) would end it early.
+    statement = sql.rstrip().removesuffix(";")
+    select_args = (client, statement, params, ch_settings, effective_limit, settings.MAX_RESULT_BYTES)
+    start = time.monotonic()
+
+    def _run() -> tuple[list[bytes], int, bool]:
+        if lock is None:
+            return _clickhouse_json_select(*select_args)
+        return run_clickhouse_locked(lock, _clickhouse_json_select, *select_args)
+
+    try:
+        parts, row_count, truncated = await asyncio.wait_for(
+            asyncio.to_thread(_run), timeout=effective_timeout
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Query timed out after %ds", effective_timeout)
+        raise
+    except (ClickHouseDatabaseError, ClickHouseStreamError) as exc:
+        if not _is_clickhouse_timeout(exc):
+            raise
+        logger.warning("Query timed out after %ds", effective_timeout)
+        raise asyncio.TimeoutError from exc
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    parts.append(
+        b'],"row_count":%d,"truncated":%s,"elapsed_ms":%d,"graph":null}'
+        % (row_count, b"true" if truncated else b"false", elapsed_ms)
+    )
+    return RenderedQueryResult(parts, row_count, truncated, elapsed_ms)
 
 
 # ── Neo4j execution path ─────────────────────────────────────────────────────

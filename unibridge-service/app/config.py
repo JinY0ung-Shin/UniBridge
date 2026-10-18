@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     # tracks the measured peak of building and serializing the response).
     # A result that would exceed it is cut short and marked truncated. 128 MiB
     # only cuts results that would already push the container toward its
-    # memory limit.
+    # memory limit. A ClickHouse query sent with render="database" holds only
+    # the JSON ClickHouse wrote, so there it caps those bytes instead.
     MAX_RESULT_BYTES: int = 128 * 1024 * 1024
     RATE_LIMIT_PER_MINUTE: int = 60
     MAX_CONCURRENT_QUERIES: int = 5

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from datetime import datetime
 import json
 import logging
@@ -9,7 +10,7 @@ import re
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,8 +40,11 @@ from app.services.apisix_system_resources import (
 from app.services.audit import log_admin_action, log_query
 from app.services.connection_manager import connection_manager
 from app.services.query_executor import (
+    RenderedQueryResult,
     check_permission,
+    clickhouse_can_render_json,
     detect_statement_type,
+    execute_clickhouse_json,
     execute_clickhouse_query,
     execute_graphdb_query,
     execute_neo4j_query,
@@ -280,6 +284,21 @@ def _extra_blocked_keyword_error(sql: str, blocked_keywords: list[str]) -> str |
     return None
 
 
+def _rendered_response(result: RenderedQueryResult) -> StreamingResponse:
+    """Send a body ClickHouse wrote part by part: joining the parts first
+    would copy the whole result once more."""
+
+    async def body() -> AsyncIterator[bytes]:
+        for part in result.parts:
+            yield part
+
+    return StreamingResponse(
+        body(),
+        media_type="application/json",
+        headers={"Content-Length": str(sum(map(len, result.parts)))},
+    )
+
+
 async def _record_failed_query(
     db: AsyncSession,
     *,
@@ -320,7 +339,7 @@ async def execute(
     req: QueryRequest,
     user: CurrentUser | ApiKeyUser = Depends(get_current_user_or_apikey),
     db: AsyncSession = Depends(get_db),
-) -> QueryResponse:
+) -> QueryResponse | StreamingResponse:
     """Execute an SQL query against a registered database."""
 
     username = f"apikey:{user.consumer_name}" if isinstance(user, ApiKeyUser) else user.username
@@ -524,10 +543,20 @@ async def execute(
         if db_type == "clickhouse":
             ch_client = connection_manager.get_clickhouse_client(req.database)
             ch_lock = connection_manager.get_clickhouse_lock(req.database)
-            response = await execute_clickhouse_query(
-                client=ch_client, sql=req.sql, params=req.params,
-                limit=req.limit, timeout=req.timeout, lock=ch_lock,
-            )
+            if (
+                req.render == "database"
+                and statement_type in ("select", "explain")
+                and clickhouse_can_render_json(ch_client)
+            ):
+                response = await execute_clickhouse_json(
+                    client=ch_client, sql=req.sql, params=req.params,
+                    limit=req.limit, timeout=req.timeout, lock=ch_lock,
+                )
+            else:
+                response = await execute_clickhouse_query(
+                    client=ch_client, sql=req.sql, params=req.params,
+                    limit=req.limit, timeout=req.timeout, lock=ch_lock,
+                )
         elif db_type == "neo4j":
             neo4j_driver = connection_manager.get_neo4j_driver(req.database)
             response = await execute_neo4j_query(
@@ -640,6 +669,8 @@ async def execute(
     except Exception:
         logger.exception("Failed to write audit log for successful query")
 
+    if isinstance(response, RenderedQueryResult):
+        return _rendered_response(response)
     return response
 
 
@@ -781,7 +812,7 @@ async def execute_template(
     body: QueryTemplateExecuteRequest | None = None,
     user: CurrentUser | ApiKeyUser = Depends(get_current_user_or_apikey),
     db: AsyncSession = Depends(get_db),
-) -> QueryResponse:
+) -> QueryResponse | StreamingResponse:
     """Execute a saved read-only query template by stable path."""
     await _require_template_read_access(db, user)
     try:
@@ -818,6 +849,7 @@ async def execute_template(
         params=execute_body.params,
         limit=template_limit,
         timeout=execute_body.timeout if execute_body.timeout is not None else template.timeout,
+        render=execute_body.render,
     )
     return await execute(request, user=user, db=db)
 
