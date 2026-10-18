@@ -226,3 +226,18 @@ async def test_execute_neo4j_query_times_out():
             limit=1,
             timeout=0.001,
         )
+
+
+@pytest.mark.asyncio
+async def test_execute_neo4j_query_stops_at_the_byte_budget(monkeypatch):
+    from app.config import settings
+
+    # Each row is estimated at 64 (row) + 64 + 1000 bytes; 2500 keeps two.
+    monkeypatch.setattr(settings, "MAX_RESULT_BYTES", 2500)
+    result = FakeResult(["doc"], [FakeRecord(["x" * 1000]) for _ in range(10)])
+    response = await execute_neo4j_query(
+        FakeDriver(FakeSession(result)), "neo4j", "MATCH (n) RETURN n.doc AS doc", limit=10
+    )
+
+    assert response.row_count == 2
+    assert response.truncated is True

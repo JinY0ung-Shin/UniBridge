@@ -41,11 +41,12 @@ def _mock_query_response() -> QueryResponse:
 
 
 def _clickhouse_client() -> MagicMock:
+    stream = MagicMock()
+    stream.__enter__.return_value = stream
+    stream.source.column_names = ["id"]
+    stream.__iter__.return_value = iter([[(1,)]])
     client = MagicMock()
-    result = MagicMock()
-    result.column_names = ["id"]
-    result.result_rows = [(1,)]
-    client.query.return_value = result
+    client.query_row_block_stream.return_value = stream
     return client
 
 
@@ -54,7 +55,7 @@ async def test_clickhouse_caller_limit_is_clamped():
 
     await execute_clickhouse_query(client, "SELECT id FROM t", limit=ABOVE_MAX)
 
-    ch_settings = client.query.call_args.kwargs["settings"]
+    ch_settings = client.query_row_block_stream.call_args.kwargs["settings"]
     assert ch_settings["max_result_rows"] == settings.MAX_ROW_LIMIT + 1
 
 
@@ -64,7 +65,7 @@ async def test_clickhouse_default_row_limit_is_clamped(monkeypatch):
 
     await execute_clickhouse_query(client, "SELECT id FROM t")
 
-    ch_settings = client.query.call_args.kwargs["settings"]
+    ch_settings = client.query_row_block_stream.call_args.kwargs["settings"]
     assert ch_settings["max_result_rows"] == settings.MAX_ROW_LIMIT + 1
 
 

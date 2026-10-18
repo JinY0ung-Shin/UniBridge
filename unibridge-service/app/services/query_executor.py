@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Iterable
 from typing import Any
 
 import httpx
@@ -253,6 +254,116 @@ def check_permission(
         return False
 
 
+# Rough memory cost of one result value: a Python object plus the references
+# to it in the row lists, the response model and the serialized JSON. Measured
+# against FastAPI's full serialization path, the peak stays within about 0.8-1.2x
+# of this estimate for numeric, mixed, wide and text-heavy rows.
+_VALUE_COST = 64
+# Postgres keeps its parallel workers only when the whole capped result is read
+# in one execute, which buffers limit + 1 rows in the driver before anything
+# can be measured. Requests up to the configured default row limit, or up to
+# this many rows, keep that fast path; larger ones are read in batches so the
+# byte budget can stop them early.
+_FAST_PATH_MAX_ROWS = 50_000
+_STREAM_BATCH_ROWS = 5_000
+
+
+def _estimated_size(value: Any, depth: int = 0) -> int:
+    if value is None or isinstance(value, bool):
+        return 8
+    if isinstance(value, str | bytes | bytearray | memoryview):
+        return _VALUE_COST + len(value)
+    if depth < 4:
+        if isinstance(value, dict):
+            return _VALUE_COST + sum(
+                _estimated_size(key, depth + 1) + _estimated_size(item, depth + 1)
+                for key, item in value.items()
+            )
+        if isinstance(value, list | tuple | set):
+            return _VALUE_COST + sum(_estimated_size(item, depth + 1) for item in value)
+    return _VALUE_COST
+
+
+_SIZED_TYPES = (str, bytes)
+_CONTAINER_TYPES = (dict, list, tuple, set)
+
+
+def _row_size(values: list[Any]) -> int:
+    """``_estimated_size`` summed over a row, without a call per value: every
+    query's rows go through here, so the common scalar case stays cheap."""
+    size = _VALUE_COST * (len(values) + 1)
+    for value in values:
+        kind = type(value)
+        if kind in _SIZED_TYPES:
+            size += len(value)
+        elif value is None or kind is bool:
+            size -= _VALUE_COST - 8
+        elif kind in _CONTAINER_TYPES or isinstance(value, bytearray | memoryview):
+            size += _estimated_size(value) - _VALUE_COST
+    return size
+
+
+class _RowCollector:
+    """Turns driver rows into lists until ``limit`` rows or the byte budget.
+
+    The first row is always kept: it is already in memory, and an empty result
+    would hide why it was cut. ``truncated`` is set once a row is left behind.
+    """
+
+    __slots__ = ("limit", "budget", "used", "rows", "truncated")
+
+    def __init__(self, limit: int, budget: int) -> None:
+        self.limit = limit
+        self.budget = budget
+        self.used = 0
+        self.rows: list[list[Any]] = []
+        self.truncated = False
+
+    def add(self, row: Any) -> bool:
+        """Keep ``row`` if it fits; return False once the result is full."""
+        if self.limit and len(self.rows) >= self.limit:
+            self.truncated = True
+            return False
+        values = list(row)
+        size = _row_size(values)
+        if self.rows and self.used + size > self.budget:
+            self.truncated = True
+            return False
+        self.used += size
+        self.rows.append(values)
+        return True
+
+
+def _collect_rows(
+    source: Iterable[Any], limit: int, budget: int
+) -> tuple[list[list[Any]], bool]:
+    collector = _RowCollector(limit, budget)
+    for row in source:
+        if not collector.add(row):
+            break
+    return collector.rows, collector.truncated
+
+
+async def _collect_streamed_rows(
+    result: Any, limit: int, budget: int
+) -> tuple[list[list[Any]], bool]:
+    """Read a streaming result in batches, stopping at ``limit`` rows or the
+    byte budget, so memory stays bounded by whichever comes first."""
+    collector = _RowCollector(limit, budget)
+    while True:
+        # Never ask for more than one row past the limit: a small limit still
+        # reads only limit + 1 rows.
+        size = _STREAM_BATCH_ROWS
+        if limit:
+            size = min(size, limit - len(collector.rows) + 1)
+        batch = await result.fetchmany(size)
+        if not batch:
+            return collector.rows, collector.truncated
+        for row in batch:
+            if not collector.add(row):
+                return collector.rows, collector.truncated
+
+
 def _postgres_row_capped_sql(sql: str, max_rows: int, *, materialized: bool) -> str:
     """Wrap a SELECT so Postgres itself returns at most ``max_rows`` rows.
 
@@ -294,9 +405,16 @@ async def _execute(
     if params:
         stmt = stmt.bindparams(**params)
 
+    budget = settings.MAX_RESULT_BYTES
     async with engine.connect() as conn:
         if is_select:
-            if limit and statement_type == "select" and engine.dialect.name == "postgresql":
+            fast_path_rows = max(settings_manager.default_row_limit, _FAST_PATH_MAX_ROWS)
+            if (
+                limit
+                and limit <= fast_path_rows
+                and statement_type == "select"
+                and engine.dialect.name == "postgresql"
+            ):
                 # Postgres never runs parallel workers for a query the client
                 # reads in batches (an Execute message with a row count, which
                 # is how the server-side cursor below is paged), so aggregates
@@ -304,6 +422,9 @@ async def _execute(
                 # conn.stream(). Put the cap in the SQL instead: a plain
                 # execute runs to completion with parallel workers, and the
                 # LIMIT still bounds what the driver buffers to limit + 1 rows.
+                # Larger requests take the streaming path below: a buffered
+                # result of up to a million rows would fill the container
+                # before the byte budget could look at it.
                 server_version = engine.dialect.server_version_info
                 capped = text(
                     _postgres_row_capped_sql(
@@ -322,30 +443,19 @@ async def _execute(
                     exc.statement = sql
                     raise
                 columns = list(result.keys())
-                all_rows = result.fetchall()
+                rows, truncated = _collect_rows(result.fetchall(), limit, budget)
             else:
                 # Read through a server-side (streaming) cursor rather than
                 # buffering the whole result set: `conn.execute()` makes the
                 # driver materialise every row in memory at execute time, so
                 # `limit` would only trim the response after the damage was
                 # done. With `conn.stream()` rows are pulled in batches and we
-                # stop at limit + 1 — the extra row is what tells us the result
-                # was truncated — so peak memory is bounded by the limit, not
-                # by the size of the table.
+                # stop at the limit or the byte budget — one row more is what
+                # tells us the result was truncated — so peak memory is bounded
+                # by the smaller of the two, not by the size of the table.
                 async with conn.stream(stmt) as result:
                     columns = list(result.keys())
-                    if limit:
-                        all_rows = await result.fetchmany(limit + 1)
-                    else:
-                        # Defensive: execute_query() always passes a positive limit.
-                        all_rows = [row async for row in result]
-
-            truncated = False
-            if limit and len(all_rows) > limit:
-                all_rows = all_rows[:limit]
-                truncated = True
-
-            rows = [list(row) for row in all_rows]
+                    rows, truncated = await _collect_streamed_rows(result, limit, budget)
             row_count = len(rows)
         else:
             # DML / DDL - commit and return rowcount
@@ -355,11 +465,7 @@ async def _execute(
                 # Handle RETURNING clauses
                 columns = list(result.keys())
                 all_rows = result.fetchmany(limit + 1) if limit else result.fetchall()
-                truncated = False
-                if limit and len(all_rows) > limit:
-                    all_rows = all_rows[:limit]
-                    truncated = True
-                rows = [list(row) for row in all_rows]
+                rows, truncated = _collect_rows(all_rows, limit, budget)
                 row_count = len(rows)
             else:
                 columns = []
@@ -418,6 +524,29 @@ async def execute_query(
 # ── ClickHouse execution path ────────────────────────────────────────────────
 
 
+def _clickhouse_select(
+    client: Any,
+    sql: str,
+    params: dict[str, Any] | None,
+    ch_settings: dict[str, Any],
+    limit: int,
+    budget: int,
+) -> tuple[list[str], list[list[Any]], bool]:
+    """Read a ClickHouse result block by block until the row limit or the byte
+    budget. Leaving the stream early closes the HTTP response, which cancels
+    the read-only query on the server."""
+    with client.query_row_block_stream(
+        sql, parameters=params or {}, settings=ch_settings
+    ) as stream:
+        columns = list(stream.source.column_names)
+        collector = _RowCollector(limit, budget)
+        for block in stream:
+            for row in block:
+                if not collector.add(row):
+                    return columns, collector.rows, collector.truncated
+    return columns, collector.rows, collector.truncated
+
+
 async def _execute_clickhouse(
     client: Any,
     sql: str,
@@ -436,29 +565,13 @@ async def _execute_clickhouse(
         if limit:
             ch_settings["max_result_rows"] = limit + 1
             ch_settings["result_overflow_mode"] = "break"
+        select_args = (client, sql, params, ch_settings, limit, settings.MAX_RESULT_BYTES)
         if lock is None:
-            result = await asyncio.to_thread(
-                client.query, sql, parameters=params or {},
-                settings=ch_settings,
-            )
+            columns, rows, truncated = await asyncio.to_thread(_clickhouse_select, *select_args)
         else:
-            result = await asyncio.to_thread(
-                run_clickhouse_locked,
-                lock,
-                client.query,
-                sql,
-                parameters=params or {},
-                settings=ch_settings,
+            columns, rows, truncated = await asyncio.to_thread(
+                run_clickhouse_locked, lock, _clickhouse_select, *select_args
             )
-        columns = list(result.column_names)
-        all_rows = result.result_rows
-
-        truncated = False
-        if limit and len(all_rows) > limit:
-            all_rows = all_rows[:limit]
-            truncated = True
-
-        rows = [list(row) for row in all_rows]
         row_count = len(rows)
     else:
         if lock is None:
@@ -610,13 +723,11 @@ def _execute_neo4j_sync(
     with driver.session(database=database, default_access_mode=access_mode) as session:
         result = session.run(cypher, parameters=params or {})
         columns = list(result.keys())
-        rows: list[list[Any]] = []
-        truncated = False
-        for index, record in enumerate(result):
-            if index >= limit:
-                truncated = True
+        collector = _RowCollector(limit, settings.MAX_RESULT_BYTES)
+        for record in result:
+            if not collector.add(_convert_neo4j_value(value) for value in record.values()):
                 break
-            rows.append([_convert_neo4j_value(value) for value in record.values()])
+        rows, truncated = collector.rows, collector.truncated
 
     elapsed_ms = int((time.monotonic() - start) * 1000)
     return QueryResponse(

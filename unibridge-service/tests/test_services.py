@@ -713,20 +713,39 @@ class TestConnectionManagerClickHouse:
 from app.services.query_executor import execute_clickhouse_query
 
 
+class _FakeClickHouseStream:
+    """Stands in for clickhouse-connect's StreamContext: a context manager whose
+    ``source`` carries the column names and which yields row blocks."""
+
+    def __init__(self, column_names, rows, block_size=2):
+        self.source = SimpleNamespace(column_names=column_names)
+        self._blocks = [rows[i:i + block_size] for i in range(0, len(rows), block_size)]
+        self.blocks_read = 0
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.closed = True
+        return False
+
+    def __iter__(self):
+        for block in self._blocks:
+            self.blocks_read += 1
+            yield block
+
+
 class TestExecuteClickHouseQuery:
     """Tests for the ClickHouse query execution path."""
 
-    def _make_query_result(self, column_names, result_rows):
-        """Create a mock ClickHouse QueryResult."""
-        result = MagicMock()
-        result.column_names = column_names
-        result.result_rows = result_rows
-        return result
+    def _stream(self, column_names, rows, block_size=2):
+        return _FakeClickHouseStream(column_names, rows, block_size)
 
     @pytest.mark.asyncio
     async def test_select_query_returns_columns_and_rows(self):
         mock_client = MagicMock()
-        mock_client.query.return_value = self._make_query_result(
+        mock_client.query_row_block_stream.return_value = self._stream(
             ["id", "name"], [(1, "Alice"), (2, "Bob")],
         )
         resp = await execute_clickhouse_query(mock_client, "SELECT id, name FROM users")
@@ -739,10 +758,30 @@ class TestExecuteClickHouseQuery:
     async def test_select_query_truncation(self):
         mock_client = MagicMock()
         rows = [(i,) for i in range(12)]
-        mock_client.query.return_value = self._make_query_result(["id"], rows)
+        mock_client.query_row_block_stream.return_value = self._stream(["id"], rows)
         resp = await execute_clickhouse_query(mock_client, "SELECT id FROM t", limit=10)
         assert resp.row_count == 10
         assert resp.truncated is True
+        settings_sent = mock_client.query_row_block_stream.call_args[1]["settings"]
+        assert settings_sent == {"max_result_rows": 11, "result_overflow_mode": "break"}
+
+    @pytest.mark.asyncio
+    async def test_select_stops_at_byte_budget_and_closes_the_stream(self, monkeypatch):
+        from app.config import settings as app_settings
+
+        # Each row is estimated at 64 (row) + 64 + 1000 bytes; a 5000-byte
+        # budget keeps four of them.
+        monkeypatch.setattr(app_settings, "MAX_RESULT_BYTES", 5000)
+        stream = self._stream(["payload"], [("x" * 1000,) for _ in range(100)])
+        mock_client = MagicMock()
+        mock_client.query_row_block_stream.return_value = stream
+        resp = await execute_clickhouse_query(mock_client, "SELECT payload FROM t", limit=100)
+        assert resp.row_count == 4
+        assert resp.truncated is True
+        # Leaving early closes the response (which cancels the query server-side)
+        # instead of reading the remaining blocks.
+        assert stream.closed is True
+        assert stream.blocks_read == 3
 
     @pytest.mark.asyncio
     async def test_dml_command(self):
@@ -773,29 +812,29 @@ class TestExecuteClickHouseQuery:
     @pytest.mark.asyncio
     async def test_elapsed_ms_populated(self):
         mock_client = MagicMock()
-        mock_client.query.return_value = self._make_query_result(["x"], [(1,)])
+        mock_client.query_row_block_stream.return_value = self._stream(["x"], [(1,)])
         resp = await execute_clickhouse_query(mock_client, "SELECT 1")
         assert resp.elapsed_ms >= 0
 
     @pytest.mark.asyncio
     async def test_explain_treated_as_select(self):
         mock_client = MagicMock()
-        mock_client.query.return_value = self._make_query_result(
+        mock_client.query_row_block_stream.return_value = self._stream(
             ["explain"], [("ReadFromStorage",)],
         )
         resp = await execute_clickhouse_query(mock_client, "EXPLAIN SELECT 1")
         assert resp.columns == ["explain"]
         assert resp.rows == [["ReadFromStorage"]]
-        mock_client.query.assert_called_once()
+        mock_client.query_row_block_stream.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_params_forwarded(self):
         mock_client = MagicMock()
-        mock_client.query.return_value = self._make_query_result(["x"], [(1,)])
+        mock_client.query_row_block_stream.return_value = self._stream(["x"], [(1,)])
         params = {"id": 42}
         await execute_clickhouse_query(mock_client, "SELECT * FROM t WHERE id = {id:UInt64}", params=params)
-        call_args = mock_client.query.call_args
-        assert call_args[1]["parameters"] == params or call_args[0][1] == params
+        call_args = mock_client.query_row_block_stream.call_args
+        assert call_args[1]["parameters"] == params
 
     @pytest.mark.asyncio
     async def test_timeout_raises(self):
@@ -803,10 +842,10 @@ class TestExecuteClickHouseQuery:
         import time
 
         def slow_query(*args, **kwargs):
-            time.sleep(10)
+            time.sleep(2)
 
         mock_client = MagicMock()
-        mock_client.query = slow_query
+        mock_client.query_row_block_stream = slow_query
         with pytest.raises(_asyncio.TimeoutError):
             await execute_clickhouse_query(mock_client, "SELECT 1", timeout=1)
 
@@ -824,11 +863,11 @@ class TestExecuteClickHouseQuery:
             if sql == "SELECT slow":
                 first_started.set()
                 release_first.wait(timeout=2)
-                return self._make_query_result(["x"], [(1,)])
+                return self._stream(["x"], [(1,)])
             second_entered.set()
-            return self._make_query_result(["x"], [(2,)])
+            return self._stream(["x"], [(2,)])
 
-        mock_client.query.side_effect = query
+        mock_client.query_row_block_stream.side_effect = query
 
         first_task = _asyncio.create_task(
             execute_clickhouse_query(mock_client, "SELECT slow", timeout=0.1, lock=lock)

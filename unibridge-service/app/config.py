@@ -26,10 +26,17 @@ class Settings(BaseSettings):
     DEFAULT_ROW_LIMIT: int = 10000
     # Hard ceiling on the number of rows any single query may return, enforced
     # in query_executor regardless of the per-request or admin default limit.
-    # SELECT reads stream server-side and stop at limit+1, so this bounds the
-    # rows ever pulled into service memory (512m container) and stops a caller
-    # from OOMing the service with one large `SELECT *`.
+    # A row count alone cannot protect the 512m container (a million narrow
+    # rows already need more than that), so MAX_RESULT_BYTES below is what
+    # bounds memory.
     MAX_ROW_LIMIT: int = 1_000_000
+    # Budget for one result held in service memory, as estimated by
+    # query_executor (about 64 bytes per value plus string lengths, which
+    # tracks the measured peak of building and serializing the response).
+    # A result that would exceed it is cut short and marked truncated. 128 MiB
+    # only cuts results that would already push the container toward its
+    # memory limit.
+    MAX_RESULT_BYTES: int = 128 * 1024 * 1024
     RATE_LIMIT_PER_MINUTE: int = 60
     MAX_CONCURRENT_QUERIES: int = 5
     ENABLE_DEV_TOKEN_ENDPOINT: bool = False

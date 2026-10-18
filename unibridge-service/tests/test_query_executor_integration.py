@@ -441,3 +441,133 @@ async def test_timeout_cancels_query_and_engine_can_be_reused():
         assert response.rows == [[1]]
     finally:
         await engine.dispose()
+
+
+# ── Byte budget: a result is cut short before it can fill the container ─────
+
+
+def test_estimated_size_counts_strings_and_nested_values():
+    from app.services.query_executor import _estimated_size
+
+    assert _estimated_size(None) == 8
+    assert _estimated_size(True) == 8
+    assert _estimated_size(7) == 64
+    assert _estimated_size("abc") == 67
+    assert _estimated_size(b"ab") == 66
+    assert _estimated_size({"k": "vv"}) == 64 + 65 + 66
+    assert _estimated_size([1, "x"]) == 64 + 64 + 65
+
+
+@pytest.mark.asyncio
+async def test_streaming_select_stops_at_the_byte_budget(engine_sqlite, monkeypatch):
+    await _create_items_table(engine_sqlite)
+    await _seed_items(engine_sqlite, ["n" * 1000 for _ in range(20)])
+    # Each row: 64 (row) + 64 (id) + 64 + 1000 (name) = 1192; 5000 keeps four.
+    monkeypatch.setattr(settings, "MAX_RESULT_BYTES", 5000)
+
+    response = await execute_query(
+        engine_sqlite, "SELECT id, name FROM items ORDER BY id", limit=20, db_type="sqlite"
+    )
+
+    assert response.row_count == 4
+    assert [row[0] for row in response.rows] == [1, 2, 3, 4]
+    assert response.truncated is True
+
+
+@pytest.mark.asyncio
+async def test_postgres_fast_path_applies_the_byte_budget(engine_sqlite, monkeypatch):
+    statements: list[str] = []
+    await _create_items_table(engine_sqlite)
+    await _seed_items(engine_sqlite, ["n" * 1000 for _ in range(20)])
+    _pose_as_postgres(engine_sqlite, monkeypatch, statements)
+    monkeypatch.setattr(settings, "MAX_RESULT_BYTES", 5000)
+
+    response = await execute_query(
+        engine_sqlite, "SELECT id, name FROM items ORDER BY id", limit=20, db_type="postgres"
+    )
+
+    assert "unibridge_capped" in statements[-1]
+    assert response.row_count == 4
+    assert response.truncated is True
+
+
+@pytest.mark.asyncio
+async def test_large_postgres_request_streams_instead_of_buffering(monkeypatch):
+    """Above the fast-path size the capped execute would buffer up to a million
+    rows before the budget could see them, so those requests stream instead."""
+    from app.services import query_executor
+
+    produced: list[int] = []
+    statements: list[str] = []
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def register_marker(dbapi_conn, _connection_record):
+        def mark(value):
+            produced.append(value)
+            return value
+
+        dbapi_conn.create_function("mark", 1, mark)
+
+    try:
+        await _create_items_table(engine)
+        await _seed_items(engine, ["n" * 1000 for _ in range(500)])
+        _pose_as_postgres(engine, monkeypatch, statements)
+        monkeypatch.setattr(query_executor, "_FAST_PATH_MAX_ROWS", 10)
+        monkeypatch.setattr(query_executor, "_STREAM_BATCH_ROWS", 5)
+        monkeypatch.setattr(settings_manager, "default_row_limit", 10)
+        monkeypatch.setattr(settings, "MAX_RESULT_BYTES", 12_000)
+
+        produced.clear()
+        response = await execute_query(
+            engine,
+            "SELECT mark(id) AS marked_id, name FROM items ORDER BY items.id",
+            limit=400,
+            db_type="postgres",
+        )
+
+        assert not any("unibridge_capped" in statement for statement in statements)
+        # 12000 / 1192 bytes per row keeps ten rows. Rows are read a batch at a
+        # time, so the database stops within a batch of the cut instead of
+        # producing all 400.
+        assert response.row_count == 10
+        assert response.truncated is True
+        assert len(produced) <= 20
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_default_row_limit_keeps_the_postgres_fast_path(engine_sqlite, monkeypatch):
+    from app.services import query_executor
+
+    statements: list[str] = []
+    await _create_items_table(engine_sqlite)
+    await _seed_items(engine_sqlite, ["alpha", "bravo", "charlie"])
+    _pose_as_postgres(engine_sqlite, monkeypatch, statements)
+    monkeypatch.setattr(query_executor, "_FAST_PATH_MAX_ROWS", 10)
+    monkeypatch.setattr(settings_manager, "default_row_limit", 100)
+
+    await execute_query(
+        engine_sqlite, "SELECT id FROM items ORDER BY id", limit=100, db_type="postgres"
+    )
+
+    assert "unibridge_capped LIMIT 101" in statements[-1]
+
+
+@pytest.mark.asyncio
+async def test_returning_rows_respect_the_byte_budget(engine_sqlite, monkeypatch):
+    await _create_items_table(engine_sqlite)
+    monkeypatch.setattr(settings, "MAX_RESULT_BYTES", 2500)
+
+    response = await execute_query(
+        engine_sqlite,
+        "INSERT INTO items (name) VALUES "
+        + ", ".join(f"('{'n' * 1000}')" for _ in range(5))
+        + " RETURNING id, name",
+        limit=10,
+        db_type="sqlite",
+    )
+
+    assert response.row_count == 2
+    assert response.truncated is True
