@@ -460,7 +460,9 @@ describe('S3Browser page', () => {
     );
     expect(screen.getByText('file-2000.bin')).toBeInTheDocument();
     expect(screen.queryByText(/first 2000 of|개 중 처음/)).not.toBeInTheDocument();
-  });
+    // Rendering 2,000 rows takes ~2.5 s alone under coverage and crossed the
+    // default 5 s once the parallel suite loaded the machine.
+  }, 15_000);
 
   it('shows toast on object listing failure', async () => {
     mockBuckets.mockResolvedValue([{ name: 'bk-1', creation_date: null }]);
