@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     # — the header sits in plaintext in etcd route configs and rides every
     # proxied request, so reusing the admin key hands out gateway control.
     APISIX_INTERNAL_PROXY_SECRET: str = ""
+    # Rotation only: the secret being replaced, still accepted alongside the new
+    # one while the shared routes carry it. Set it for the deploy that rotates
+    # the secret and clear it on a later deploy (README, upgrading section).
+    APISIX_INTERNAL_PROXY_SECRET_PREVIOUS: str = ""
     APISIX_PROVISION_ON_START: bool = True
     # Blue/green: hard off-switch for the in-app background loops (alert
     # checker, retention cleanup). Normal deployments leave this true —

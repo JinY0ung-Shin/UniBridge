@@ -42,6 +42,7 @@ from app.routers import (
     users,
 )
 from app.middleware.rate_limiter import RateLimitMiddleware, rate_limiter
+from app.services.active_color import is_active_instance
 from app.services.apisix_client import upstream_node_addresses
 from app.services import bifrost_routes, llm_routes
 from app.services.apisix_system_resources import (
@@ -105,9 +106,11 @@ async def _reconcile_internal_proxy_header() -> None:
     APISIX_INTERNAL_PROXY_SECRET is rotated, etcd would keep injecting the old
     value while this app expects the new one and every proxied /api/query|s3|nas|
     usages request would 401. GET-mutate-PUT rewrites only the header value, so
-    consumer-restriction and every other field on the route survive. The header
-    carries no color, so both colors reconcile to the same value: running this on
-    a standby color is idempotent and is not a promotion.
+    consumer-restriction and every other field on the route survive. The routes
+    are shared by both colors, and after a rotation the colors hold different
+    values, so only the active color may run this (see lifespan and
+    _run_internal_proxy_reconcile_loop): a restarted standby or a rollback
+    target would otherwise write its older value under the active color.
     """
     secret = _internal_proxy_secret()
     if not secret:
@@ -155,6 +158,34 @@ async def _reconcile_internal_proxy_header() -> None:
             APISIX_INTERNAL_PROXY_HEADER,
             route_id,
         )
+
+
+INTERNAL_PROXY_RECONCILE_SECONDS = 15
+
+
+async def _run_internal_proxy_reconcile_loop(
+    interval_seconds: float = INTERNAL_PROXY_RECONCILE_SECONDS,
+) -> None:
+    """Keep the shared routes' internal-proxy header on the active color's value.
+
+    A promotion or rollback only re-points the APISIX upstream, so the color
+    that becomes active finds whatever value the other color wrote; checking
+    here brings the routes to its own value within one interval. A standby
+    never writes. Failures are logged and retried on the next interval.
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            if await is_active_instance():
+                await _reconcile_internal_proxy_header()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Internal-proxy header reconcile failed (%s); retrying in %ss",
+                exc,
+                interval_seconds,
+            )
 
 
 async def _preserve_consumer_restriction(
@@ -908,16 +939,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("Skipping APISIX route provisioning because APISIX_PROVISION_ON_START=false")
 
-    # Reconcile the internal-proxy header on EVERY boot, regardless of
-    # APISIX_PROVISION_ON_START: it is the only thing that carries a rotated
-    # APISIX_INTERNAL_PROXY_SECRET into etcd on a steady-state color, which boots
-    # with provisioning off (see _reconcile_internal_proxy_header). When
-    # provisioning did run just above, the routes already carry the current
-    # secret and every route here no-ops. Runs before the restriction replay so
-    # the replay's route snapshot already holds the new value. Retries like the
-    # global-rule PUT — the GET is what tells a rotation apart from a no-op, so a
-    # reconcile that never reached APISIX may be leaving auth broken.
-    _ip_max_retries = 10
+    # Reconcile the internal-proxy header at boot regardless of
+    # APISIX_PROVISION_ON_START, but only on the active color: it is what carries
+    # a rotated APISIX_INTERNAL_PROXY_SECRET into etcd on a color that boots with
+    # provisioning off, and a standby must not write its own (possibly older)
+    # value into the routes both colors share. A color promoted later takes over
+    # through _run_internal_proxy_reconcile_loop. When provisioning did run just
+    # above, the routes already carry the current secret and every route here
+    # no-ops. Runs before the restriction replay so the replay's route snapshot
+    # already holds the new value. Retries like the global-rule PUT — the GET is
+    # what tells a rotation apart from a no-op, so a reconcile that never
+    # reached APISIX may be leaving auth broken.
+    _ip_max_retries = 10 if await is_active_instance() else 0
+    if not _ip_max_retries:
+        logger.info(
+            "Standby color: leaving the internal-proxy header on the shared routes "
+            "to the active color"
+        )
     for _ip_attempt in range(1, _ip_max_retries + 1):
         try:
             await _reconcile_internal_proxy_header()
@@ -1066,6 +1104,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.api_key_expiry_task = asyncio.create_task(run_expiry_reconcile_loop())
 
+    app.state.internal_proxy_task = asyncio.create_task(_run_internal_proxy_reconcile_loop())
+
     # Bifrost keeps a session for 30 days; log out the ones the sign-in handoff
     # (app/routers/bifrost_sso.py) handed to browsers once they are due.
     from app.services.bifrost_sessions import run_revoke_loop
@@ -1090,6 +1130,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except asyncio.CancelledError:
             pass
         logger.info("API key expiry reconcile stopped")
+
+    if hasattr(app.state, "internal_proxy_task"):
+        app.state.internal_proxy_task.cancel()
+        try:
+            await app.state.internal_proxy_task
+        except asyncio.CancelledError:
+            pass
 
     if hasattr(app.state, "bifrost_session_task"):
         app.state.bifrost_session_task.cancel()

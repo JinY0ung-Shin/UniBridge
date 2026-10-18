@@ -8,6 +8,7 @@ APISIX_PROVISION_ON_START=false.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import ExitStack
 from types import SimpleNamespace
@@ -302,3 +303,113 @@ async def test_internal_proxy_route_ids_match_the_provisioned_routes():
         .get("set", {})
     }
     assert header_carrying == set(INTERNAL_PROXY_ROUTE_IDS)
+
+
+# ── Only the active color writes the shared header ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_boot_on_the_standby_color_leaves_the_header_alone():
+    """A restarted standby or rollback target may hold an older secret; writing
+    it would 401 the active color's API-key traffic."""
+    put_resource = AsyncMock()
+    get_resource = AsyncMock(
+        side_effect=lambda kind, rid: _system_route(rid, "old-secret")
+    )
+
+    with patch("app.main.is_active_instance", new=AsyncMock(return_value=False)):
+        await _run_lifespan(
+            _steady_state_settings("new-secret"), get_resource, put_resource
+        )
+
+    assert _route_puts(put_resource) == {}
+
+
+@pytest.mark.asyncio
+async def test_reconcile_loop_writes_only_while_active():
+    from app.main import _run_internal_proxy_reconcile_loop
+
+    sleeps = 0
+
+    async def fake_sleep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps > 3:
+            raise asyncio.CancelledError
+
+    reconcile = AsyncMock(side_effect=[RuntimeError("APISIX down"), None])
+    active = AsyncMock(side_effect=[False, True, True])
+    with (
+        patch("asyncio.sleep", fake_sleep),
+        patch("app.main.is_active_instance", active),
+        patch("app.main._reconcile_internal_proxy_header", reconcile),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await _run_internal_proxy_reconcile_loop(interval_seconds=0)
+
+    # standby cycle skipped; a failed cycle is retried on the next one
+    assert active.await_count == 3
+    assert reconcile.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_previous_secret_is_accepted_during_a_rotation(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from fastapi import HTTPException
+
+    from app.auth import get_current_user_or_apikey, settings
+
+    monkeypatch.setattr(settings, "ENABLE_DEV_TOKEN_ENDPOINT", False)
+    monkeypatch.setattr(settings, "APISIX_INTERNAL_PROXY_SECRET", "new-secret")
+    monkeypatch.setattr(settings, "APISIX_INTERNAL_PROXY_SECRET_PREVIOUS", "old-secret")
+
+    access = MagicMock(
+        consumer_name="my-app-key",
+        allowed_databases="[]",
+        allowed_routes="[]",
+        allow_insert=False,
+        allow_update=False,
+        allow_delete=False,
+        allowed_tables=None,
+        expires_at=None,
+    )
+    db = AsyncMock()
+    db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=access))
+
+    for presented in ("new-secret", "old-secret"):
+        request = MagicMock()
+        request.headers = {
+            "x-consumer-username": "my-app-key",
+            APISIX_INTERNAL_PROXY_HEADER.lower(): presented,
+        }
+        user = await get_current_user_or_apikey(request=request, credentials=None, db=db)
+        assert user.consumer_name == "my-app-key"
+
+    request = MagicMock()
+    request.headers = {
+        "x-consumer-username": "my-app-key",
+        APISIX_INTERNAL_PROXY_HEADER.lower(): "some-other-secret",
+    }
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user_or_apikey(request=request, credentials=None, db=db)
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_empty_previous_secret_accepts_nothing_extra(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from fastapi import HTTPException
+
+    from app.auth import get_current_user_or_apikey, settings
+
+    monkeypatch.setattr(settings, "ENABLE_DEV_TOKEN_ENDPOINT", False)
+    monkeypatch.setattr(settings, "APISIX_INTERNAL_PROXY_SECRET", "new-secret")
+    monkeypatch.setattr(settings, "APISIX_INTERNAL_PROXY_SECRET_PREVIOUS", "")
+
+    request = MagicMock()
+    request.headers = {"x-consumer-username": "my-app-key", APISIX_INTERNAL_PROXY_HEADER.lower(): ""}
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user_or_apikey(request=request, credentials=None, db=AsyncMock())
+    assert exc_info.value.status_code == 401

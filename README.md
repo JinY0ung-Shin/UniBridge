@@ -76,10 +76,16 @@ cp .env.example .env
 > rewrites the header value on its system routes at boot, so a rotated secret reaches APISIX even
 > on a color that boots with `APISIX_PROVISION_ON_START=false`.
 >
-> Because APISIX routes are shared between the blue and green colors, *changing* the value
-> interrupts gateway API-key traffic from the moment the new color boots until it is promoted (the
-> old color still expects the old value) — rotate in a maintenance window. Deploys that leave the
-> value alone are no-ops, and JWT/UI traffic is never affected.
+> APISIX routes are shared between the blue and green colors, so only the active color writes the
+> header: at boot, and every 15 seconds after, which is how a newly promoted color brings the
+> routes to its own value. To *change* the value without interrupting gateway API-key traffic, put
+> the current value in `APISIX_INTERNAL_PROXY_SECRET_PREVIOUS` and the new one in
+> `APISIX_INTERNAL_PROXY_SECRET`, then deploy: the new color accepts both until it has rewritten the
+> routes. Clear `APISIX_INTERNAL_PROXY_SECRET_PREVIOUS` on a later deploy. Without it, API-key
+> traffic is refused for up to 15 seconds after the promotion. A rollback to the color that still
+> holds the old value has the same short gap: that color refuses API-key traffic until it has
+> taken the routes back, within 15 seconds. Deploys that leave the value alone are no-ops, and
+> JWT/UI traffic is never affected.
 
 **Optional:**
 

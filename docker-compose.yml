@@ -257,6 +257,7 @@ services:
       # Must be its own secret, never a copy of APISIX_ADMIN_KEY — it is stored
       # in plaintext in the etcd route configs and sent on every proxied request.
       - APISIX_INTERNAL_PROXY_SECRET=${APISIX_INTERNAL_PROXY_SECRET:?APISIX_INTERNAL_PROXY_SECRET is required — generate one with python3 -c 'import secrets; print(secrets.token_urlsafe(32))'}
+      - APISIX_INTERNAL_PROXY_SECRET_PREVIOUS=${APISIX_INTERNAL_PROXY_SECRET_PREVIOUS:-}
       - APISIX_PROVISION_ON_START=${APISIX_PROVISION_ON_START:-true}
       - APISIX_QUERY_ROUTE_TIMEOUT=${APISIX_QUERY_ROUTE_TIMEOUT:-310}
       - APISIX_QUERY_ROUTE_CONNECT_TIMEOUT=${APISIX_QUERY_ROUTE_CONNECT_TIMEOUT:-10}

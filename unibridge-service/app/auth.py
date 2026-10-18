@@ -312,8 +312,14 @@ async def get_current_user_or_apikey(
     if consumer_name and credentials is None:
         if not settings.ENABLE_DEV_TOKEN_ENDPOINT:
             expected = settings.APISIX_INTERNAL_PROXY_SECRET
+            # During a rotation the shared routes may still carry the old value
+            # until the active color rewrites them (main.py).
+            previous = settings.APISIX_INTERNAL_PROXY_SECRET_PREVIOUS
             provided = request.headers.get(APISIX_INTERNAL_PROXY_HEADER, "")
-            if not expected or not _constant_time_header_equal(provided, expected):
+            if not expected or not (
+                _constant_time_header_equal(provided, expected)
+                or (previous and _constant_time_header_equal(provided, previous))
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Untrusted API key proxy headers",
