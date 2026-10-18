@@ -1236,6 +1236,15 @@ Keycloak/LiteLLM DB TCP probes, missing audit writes, and (blue-green only)
 `/_api/internal/alertmanager`; the app turns each one into mail for the global
 관리자 plus an entry in alert history (rule type `prometheus_alert`).
 
+Prometheus reads these rules only when it starts (no reload API is enabled), and
+a deploy never touches infra, so a pulled change to `prometheus/rules/` takes
+effect only once Prometheus is recreated. Its data volume stays:
+
+```bash
+docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --force-recreate prometheus
+# single stack: docker compose up -d --force-recreate prometheus
+```
+
 **Set `ALERTMANAGER_WEBHOOK_TOKEN` or this path sends nothing.** It is empty by
 default, and the receiver then rejects every delivery with 503: the alerts still
 appear in the Alertmanager UI, but no mail goes out. The app logs the reason once

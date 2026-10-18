@@ -305,6 +305,7 @@
       "id": 4,
       "type": "stat",
       "title": "Meta DB",
+      "description": "DOWN when any running color cannot reach the metadata DB. Reads the per-color scrape job, or the single-stack job when no color target is up, never both (CLAUDE.md, gated form).",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -372,7 +373,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "unibridge_meta_db_up",
+          "expr": "min(unibridge_meta_db_up{job=\"unibridge-service-colors\"} or (unibridge_meta_db_up{job=\"unibridge-service\"} unless on() (max(up{job=\"unibridge-service-colors\"}) == 1)))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"

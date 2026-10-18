@@ -1,3 +1,19 @@
+# unibridge_* metrics come from two scrape jobs (prometheus.yml).
+# `unibridge-service` targets a DNS alias that BOTH blue/green colors answer, so
+# on a blue/green host each scrape reaches either color: its series hop between
+# two processes' values, and every hop inflates rate()/increase() over them (a
+# hop down reads as a counter reset). `unibridge-service-colors` scrapes each
+# color on its own; on the single stack its targets are expectedly down. Like
+# app/routers/query_metrics.py::_gated, the rules over these metrics read the
+# colors job whenever any of its targets is up, and the alias job only otherwise:
+#
+#   <condition on job="unibridge-service-colors">
+#   or
+#   (<condition on job="unibridge-service"> unless on() (max(up{job="unibridge-service-colors"}) == 1))
+#
+# Only UniBridgeNoActiveInstance and LiteLLMDbDown read both jobs at once,
+# because a repeated series cannot change their sum() == 0 or max() == 1.
+# Unit tests: prometheus/tests/unibridge-alerts.test.yml (promtool test rules).
 groups:
   - name: unibridge-critical
     rules:
@@ -59,8 +75,19 @@ groups:
           summary: "No UniBridge instance reports itself active"
           description: "Every scraped unibridge-service instance reports unibridge_active_instance=0. The edge may be routing to a dead or demoted color, and in-app background alerting is silent while no instance is active."
 
+      # Every color probes the meta DB itself, the standby too
+      # (app.metrics.monitor_meta_db_health), so this alerts once per color: a
+      # standby that cannot reach the DB is no rollback target. The alias series
+      # only repeats one of them; ungated it was a third alert in a full outage
+      # and flapped when only one color failed.
       - alert: UniBridgeMetaDbDown
-        expr: unibridge_meta_db_up == 0
+        expr: |
+          unibridge_meta_db_up{job="unibridge-service-colors"} == 0
+          or
+          (
+            unibridge_meta_db_up{job="unibridge-service"} == 0
+            unless on() (max(up{job="unibridge-service-colors"}) == 1)
+          )
         for: 1m
         labels:
           severity: critical
@@ -104,11 +131,25 @@ groups:
           summary: "Bifrost LLM gateway is down"
           description: "Prometheus cannot scrape bifrost:8080/metrics."
 
+      # Summed over both jobs this could not fire while a standby was up: the
+      # alias series hopping between the standby's frozen audit counter and the
+      # active color's always read as audit writes.
       - alert: UniBridgeAuditWritesMissing
         expr: |
-          sum(rate(unibridge_query_duration_seconds_count{status="success"}[5m])) > 0
-          and
-          sum(rate(unibridge_audit_log_write_total{status="success"}[5m])) == 0
+          (
+            sum(rate(unibridge_query_duration_seconds_count{job="unibridge-service-colors",status="success"}[5m])) > 0
+            and
+            sum(rate(unibridge_audit_log_write_total{job="unibridge-service-colors",status="success"}[5m])) == 0
+          )
+          or
+          (
+            (
+              sum(rate(unibridge_query_duration_seconds_count{job="unibridge-service",status="success"}[5m])) > 0
+              and
+              sum(rate(unibridge_audit_log_write_total{job="unibridge-service",status="success"}[5m])) == 0
+            )
+            unless on() (max(up{job="unibridge-service-colors"}) == 1)
+          )
         for: 5m
         labels:
           severity: critical
@@ -133,9 +174,17 @@ groups:
       # failed — a send error or an unrenderable template. "No channel / no
       # recipients / alerts disabled" record status="skipped", so an unconfigured
       # deployment does not trip this. increase()>0 over 15m catches even a single
-      # failed send; the 5m `for` debounces a lone transient blip.
+      # failed send; the 5m `for` debounces a lone transient blip. Summed over
+      # both jobs, the alias series hopping between two colors' frozen failure
+      # counts read as new failures for as long as the counts differed.
       - alert: UniBridgeAlertDispatchFailing
-        expr: sum(increase(unibridge_alert_dispatch_total{status="failure"}[15m])) > 0
+        expr: |
+          sum(increase(unibridge_alert_dispatch_total{job="unibridge-service-colors",status="failure"}[15m])) > 0
+          or
+          (
+            sum(increase(unibridge_alert_dispatch_total{job="unibridge-service",status="failure"}[15m])) > 0
+            unless on() (max(up{job="unibridge-service-colors"}) == 1)
+          )
         for: 5m
         labels:
           severity: warning
@@ -150,12 +199,25 @@ groups:
       # queries, stays 1) is excluded, and — crucially — a demoted color whose
       # gauge is frozen at 0 from when it was active is excluded too, so it cannot
       # false-fire forever. No series at all (an image without the gauge) yields
-      # an empty vector and does not fire.
+      # an empty vector and does not fire. Gated like the rules above: whenever a
+      # scrape reaches the active color, the alias series repeats it as a second
+      # alert.
       - alert: UniBridgeAlertCheckerPrometheusDown
         expr: |
-          unibridge_alert_checker_prometheus_up == 0
-          and
-          unibridge_active_instance == 1
+          (
+            unibridge_alert_checker_prometheus_up{job="unibridge-service-colors"} == 0
+            and
+            unibridge_active_instance{job="unibridge-service-colors"} == 1
+          )
+          or
+          (
+            (
+              unibridge_alert_checker_prometheus_up{job="unibridge-service"} == 0
+              and
+              unibridge_active_instance{job="unibridge-service"} == 1
+            )
+            unless on() (max(up{job="unibridge-service-colors"}) == 1)
+          )
         for: 5m
         labels:
           severity: warning

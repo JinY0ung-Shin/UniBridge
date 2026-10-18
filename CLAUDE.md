@@ -47,9 +47,11 @@ compose layouts (env parity, Bifrost, the LiteLLM gate), `scripts/deploy-bluegre
 `backup/` and the nginx confs. Script tests `source` the script under `bash -c` with
 `compose_infra`/`docker`/`curl` redefined as shell functions; one runs a real
 `docker compose config --services` (skipped without the CLI).
-Prometheus rules: tests only parse the YAML, so check PromQL with the compose-pinned image:
+Prometheus rules: `test_deployment_security.py` runs `promtool check rules` and the rule unit
+tests in `prometheus/tests/unibridge-alerts.test.yml` (kept outside `rules/` so Prometheus does
+not load them) with the compose-pinned image, skipped without Docker or the image. By hand:
 `docker run --rm -v "$PWD/prometheus":/w:ro -w /w --entrypoint promtool prom/prometheus:v3.11.1 check rules rules/unibridge-alerts.yml`
-(`test rules <file>` for rule unit tests; mount a dir holding the rules and the test file).
+(`test rules tests/unibridge-alerts.test.yml` for the unit tests).
 
 Release gate — the only gate, there is no CI: the `unibridge-release` skill (canonical copy
 `.claude/skills/unibridge-release/`; Codex: `$unibridge-release`); its
@@ -136,8 +138,9 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   (via `unibridge_llm_gateway`) leave them out; `backup.sh` carries the last dump forward.
 - **`unibridge_*` metrics are scraped by two jobs**: `unibridge-service` is a DNS alias both
   blue/green colors answer on (round-robin → counters alternate → `increase()` inflates);
-  `unibridge-service-colors` is per-color. PromQL over them (backend or Grafana) must use
-  the gated form in `app/routers/query_metrics.py::_gated` — never sum the two jobs.
+  `unibridge-service-colors` is per-color. PromQL over them (backend, Grafana or alert
+  rules) must use the gated form in `app/routers/query_metrics.py::_gated` — never sum the
+  two jobs.
   A gauge that reports a color's setting (`unibridge_llm_gateway{gateway}`) counts only from
   the active color (`and on(job, instance) unibridge_active_instance == 1`: a standby or
   demoted color reports stale values); a rule that goes quiet on it uses

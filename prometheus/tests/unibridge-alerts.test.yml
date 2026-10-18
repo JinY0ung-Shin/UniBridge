@@ -1,0 +1,209 @@
+# promtool unit tests for rules/unibridge-alerts.yml. Run them from prometheus/
+# with the compose-pinned image (unibridge-service/tests/test_deployment_security.py
+# runs them too, and skips without docker or that image):
+#
+#   docker run --rm -v "$PWD":/w:ro -w /w --entrypoint promtool \
+#     prom/prometheus:v3.11.1 test rules tests/unibridge-alerts.test.yml
+#
+# unibridge_* metrics come from two jobs (see the top of the rules file).
+# `unibridge-service` scrapes a DNS alias that both blue/green colors answer;
+# unless a test says otherwise it reaches green on even minutes and blue on odd
+# ones. `unibridge-service-colors` scrapes each color, and on the single stack
+# its targets are down. Samples come every minute instead of every 15s to keep
+# the alternating series short; the rules' 5m and 15m windows still hold several.
+
+rule_files:
+  - ../rules/unibridge-alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # After a deploy: blue is the standby, its counters frozen where they stood
+  # when it was demoted, and green is active. Green stops writing audit rows at
+  # 15m while its queries go on. Summed over both jobs, the alias series hopping
+  # between blue's 900 and green's count read as audit writes, so the rule could
+  # not fire while a standby was up.
+  - name: blue/green, the active color stops writing audits
+    interval: 1m
+    input_series:
+      - series: 'up{job="unibridge-service", instance="unibridge-service:8000"}'
+        values: '1x25'
+      - series: 'up{job="unibridge-service-colors", instance="unibridge-service-blue:8000"}'
+        values: '1x25'
+      - series: 'up{job="unibridge-service-colors", instance="unibridge-service-green:8000"}'
+        values: '1x25'
+      - series: 'unibridge_query_duration_seconds_count{job="unibridge-service-colors", instance="unibridge-service-blue:8000", status="success"}'
+        values: '900x25'
+      - series: 'unibridge_query_duration_seconds_count{job="unibridge-service-colors", instance="unibridge-service-green:8000", status="success"}'
+        values: '0+10x25'
+      - series: 'unibridge_query_duration_seconds_count{job="unibridge-service", instance="unibridge-service:8000", status="success"}'
+        values: '0 900 20 900 40 900 60 900 80 900 100 900 120 900 140 900 160 900 180 900 200 900 220 900 240 900'
+      - series: 'unibridge_audit_log_write_total{job="unibridge-service-colors", instance="unibridge-service-blue:8000", status="success"}'
+        values: '900x25'
+      - series: 'unibridge_audit_log_write_total{job="unibridge-service-colors", instance="unibridge-service-green:8000", status="success"}'
+        values: '0+10x15 150x9'
+      - series: 'unibridge_audit_log_write_total{job="unibridge-service", instance="unibridge-service:8000", status="success"}'
+        values: '0 900 20 900 40 900 60 900 80 900 100 900 120 900 140 900 150 900 150 900 150 900 150 900 150 900'
+    alert_rule_test:
+      # Green still writes audits; the standby's zero rate alone fires nothing.
+      - eval_time: 14m
+        alertname: UniBridgeAuditWritesMissing
+        exp_alerts: []
+      # The 5m window holds no audit write from 19m on, and `for` is 5m.
+      - eval_time: 25m
+        alertname: UniBridgeAuditWritesMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations: &audit_annotations
+              summary: "Query traffic is not producing audit writes"
+              description: "Successful query execution is happening while successful audit write rate is zero."
+
+  # Blue was demoted with 3 failed sends on its counter and green holds 1.
+  # Summed over both jobs, the alias series hopping between 3 and 1 read as new
+  # failures for as long as the two counts differed. Green fails again at 21m.
+  - name: blue/green, frozen failure counts that differ, then a new failure
+    interval: 1m
+    input_series:
+      - series: 'up{job="unibridge-service", instance="unibridge-service:8000"}'
+        values: '1x30'
+      - series: 'up{job="unibridge-service-colors", instance="unibridge-service-blue:8000"}'
+        values: '1x30'
+      - series: 'up{job="unibridge-service-colors", instance="unibridge-service-green:8000"}'
+        values: '1x30'
+      - series: 'unibridge_alert_dispatch_total{job="unibridge-service-colors", instance="unibridge-service-blue:8000", rule_id="7", channel_type="email", status="failure"}'
+        values: '3x30'
+      - series: 'unibridge_alert_dispatch_total{job="unibridge-service-colors", instance="unibridge-service-green:8000", rule_id="7", channel_type="email", status="failure"}'
+        values: '1x20 2x9'
+      - series: 'unibridge_alert_dispatch_total{job="unibridge-service", instance="unibridge-service:8000", rule_id="7", channel_type="email", status="failure"}'
+        values: '1 3 1 3 1 3 1 3 1 3 1 3 1 3 1 3 1 3 1 3 1 3 2 3 2 3 2 3 2 3 2'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: UniBridgeAlertDispatchFailing
+        exp_alerts: []
+      - eval_time: 27m
+        alertname: UniBridgeAlertDispatchFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations: &dispatch_annotations
+              summary: "UniBridge alert delivery is failing"
+              description: "unibridge-service attempted to send one or more alerts through its configured channel and the send failed in the last 15 minutes. Alert notifications may not be reaching their recipients. NOTE: this alert rides the same mail pipeline it is reporting on — if mail is fully down, check the Alertmanager UI / SMTP fallback directly."
+
+  # Both colors lose the meta DB at 5m, which makes two alerts, one per color;
+  # the alias job, reading 0 from whichever color it reaches, used to add a
+  # third. Blue was demoted while its alert checker was failing, so that gauge
+  # stays frozen at 0; green's checker starts failing at 5m. Here the alias job
+  # keeps reaching green, as it can for any stretch, so it repeats green's values.
+  - name: blue/green, meta DB and alert checker alerts come once per color
+    interval: 1m
+    input_series:
+      - series: 'up{job="unibridge-service", instance="unibridge-service:8000"}'
+        values: '1x15'
+      - series: 'up{job="unibridge-service-colors", instance="unibridge-service-blue:8000"}'
+        values: '1x15'
+      - series: 'up{job="unibridge-service-colors", instance="unibridge-service-green:8000"}'
+        values: '1x15'
+      - series: 'unibridge_meta_db_up{job="unibridge-service-colors", instance="unibridge-service-blue:8000"}'
+        values: '1x4 0x10'
+      - series: 'unibridge_meta_db_up{job="unibridge-service-colors", instance="unibridge-service-green:8000"}'
+        values: '1x4 0x10'
+      - series: 'unibridge_meta_db_up{job="unibridge-service", instance="unibridge-service:8000"}'
+        values: '1x4 0x10'
+      - series: 'unibridge_active_instance{job="unibridge-service-colors", instance="unibridge-service-blue:8000"}'
+        values: '0x15'
+      - series: 'unibridge_active_instance{job="unibridge-service-colors", instance="unibridge-service-green:8000"}'
+        values: '1x15'
+      - series: 'unibridge_active_instance{job="unibridge-service", instance="unibridge-service:8000"}'
+        values: '1x15'
+      - series: 'unibridge_alert_checker_prometheus_up{job="unibridge-service-colors", instance="unibridge-service-blue:8000"}'
+        values: '0x15'
+      - series: 'unibridge_alert_checker_prometheus_up{job="unibridge-service-colors", instance="unibridge-service-green:8000"}'
+        values: '1x4 0x10'
+      - series: 'unibridge_alert_checker_prometheus_up{job="unibridge-service", instance="unibridge-service:8000"}'
+        values: '1x4 0x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: UniBridgeMetaDbDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: unibridge-service-colors
+              instance: unibridge-service-blue:8000
+            exp_annotations: &meta_db_annotations
+              summary: "UniBridge metadata database is unavailable"
+              description: "unibridge-service cannot run a health query against the metadata database."
+          - exp_labels:
+              severity: critical
+              job: unibridge-service-colors
+              instance: unibridge-service-green:8000
+            exp_annotations: *meta_db_annotations
+      - eval_time: 12m
+        alertname: UniBridgeAlertCheckerPrometheusDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: unibridge-service-colors
+              instance: unibridge-service-green:8000
+            exp_annotations: &checker_annotations
+              summary: "UniBridge alert checker cannot query Prometheus"
+              description: "The active unibridge-service instance's alert checker has been unable to query Prometheus for 5 minutes, so route-error-rate and any Prometheus-derived alerts are not being evaluated."
+
+  # Single stack (docker-compose.yml): the per-color names do not resolve, so
+  # those targets are down and the alias job, one process, is all there is.
+  - name: single stack, the gated rules read the alias job
+    interval: 1m
+    input_series:
+      - series: 'up{job="unibridge-service", instance="unibridge-service:8000"}'
+        values: '1x30'
+      - series: 'up{job="unibridge-service-colors", instance="unibridge-service-blue:8000"}'
+        values: '0x30'
+      - series: 'up{job="unibridge-service-colors", instance="unibridge-service-green:8000"}'
+        values: '0x30'
+      - series: 'unibridge_query_duration_seconds_count{job="unibridge-service", instance="unibridge-service:8000", status="success"}'
+        values: '0+10x30'
+      - series: 'unibridge_audit_log_write_total{job="unibridge-service", instance="unibridge-service:8000", status="success"}'
+        values: '0+10x15 150x14'
+      - series: 'unibridge_alert_dispatch_total{job="unibridge-service", instance="unibridge-service:8000", rule_id="7", channel_type="email", status="failure"}'
+        values: '1x20 2x9'
+      - series: 'unibridge_meta_db_up{job="unibridge-service", instance="unibridge-service:8000"}'
+        values: '1x4 0x25'
+      - series: 'unibridge_active_instance{job="unibridge-service", instance="unibridge-service:8000"}'
+        values: '1x30'
+      - series: 'unibridge_alert_checker_prometheus_up{job="unibridge-service", instance="unibridge-service:8000"}'
+        values: '1x4 0x25'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: UniBridgeAuditWritesMissing
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: UniBridgeAuditWritesMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations: *audit_annotations
+      - eval_time: 20m
+        alertname: UniBridgeAlertDispatchFailing
+        exp_alerts: []
+      - eval_time: 27m
+        alertname: UniBridgeAlertDispatchFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations: *dispatch_annotations
+      - eval_time: 7m
+        alertname: UniBridgeMetaDbDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: unibridge-service
+              instance: unibridge-service:8000
+            exp_annotations: *meta_db_annotations
+      - eval_time: 12m
+        alertname: UniBridgeAlertCheckerPrometheusDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: unibridge-service
+              instance: unibridge-service:8000
+            exp_annotations: *checker_annotations

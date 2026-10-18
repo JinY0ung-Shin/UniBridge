@@ -23,6 +23,7 @@ ENV_EXAMPLE_FILE = REPO_ROOT / ".env.example"
 REALM_EXPORT_FILE = REPO_ROOT / "keycloak" / "realm-export.json"
 PROMETHEUS_CONFIG_FILE = REPO_ROOT / "prometheus" / "prometheus.yml"
 PROMETHEUS_RULES_DIR = REPO_ROOT / "prometheus" / "rules"
+PROMETHEUS_RULE_TESTS_FILE = REPO_ROOT / "prometheus" / "tests" / "unibridge-alerts.test.yml"
 NGINX_CONFIG_FILE = REPO_ROOT / "unibridge-ui" / "nginx.conf"
 EDGE_TEMPLATE_FILE = REPO_ROOT / "deploy" / "edge" / "default.conf.template"
 EDGE_BIFROST_TEMPLATE_FILE = REPO_ROOT / "deploy" / "edge" / "bifrost-ui.conf.template"
@@ -3174,3 +3175,66 @@ def test_litellm_db_alert_is_quiet_while_api_llm_runs_on_bifrost() -> None:
         'unless on() (max(unibridge_llm_gateway{gateway="bifrost"} and on(job, instance) '
         "unibridge_active_instance == 1) == 1)"
     )
+
+
+# Rules that read unibridge_* metrics from both scrape jobs at once, as the top
+# of prometheus/rules/unibridge-alerts.yml explains; every other one is gated.
+ALERTS_READING_BOTH_UNIBRIDGE_JOBS = {"UniBridgeNoActiveInstance", "LiteLLMDbDown"}
+UNIBRIDGE_COLORS_GATE = 'unless on() (max(up{job="unibridge-service-colors"}) == 1)'
+
+
+def test_alert_rules_read_unibridge_metrics_through_the_colors_gate() -> None:
+    # The shape of app/routers/query_metrics.py::_gated, held even where the
+    # promtool test below is skipped: the condition once per job, the alias
+    # job's copy behind the colors gate, never the two jobs summed.
+    rules = _load_yaml(PROMETHEUS_RULES_DIR / "unibridge-alerts.yml")
+    gated = {
+        rule.get("alert"): " ".join(rule["expr"].split())
+        for group in rules["groups"]
+        for rule in group["rules"]
+        if "unibridge_" in rule["expr"]
+        and rule.get("alert") not in ALERTS_READING_BOTH_UNIBRIDGE_JOBS
+    }
+    assert {
+        "UniBridgeMetaDbDown",
+        "UniBridgeAuditWritesMissing",
+        "UniBridgeAlertDispatchFailing",
+        "UniBridgeAlertCheckerPrometheusDown",
+    } <= set(gated)
+    for alert, expr in gated.items():
+        metrics_by_job: dict[str, list[str]] = {}
+        for metric, matchers in re.findall(r"\b(unibridge_\w+)(\{[^}]*\})?", expr):
+            job = re.search(r'\bjob="([^"]+)"', matchers)
+            assert job is not None, (alert, metric)
+            metrics_by_job.setdefault(job.group(1), []).append(metric)
+        assert metrics_by_job.keys() == {"unibridge-service-colors", "unibridge-service"}, alert
+        assert metrics_by_job["unibridge-service"] == metrics_by_job["unibridge-service-colors"], alert
+        colors_side, alias_side = expr.split(" or ", 1)
+        assert 'job="unibridge-service"' not in colors_side, alert
+        assert UNIBRIDGE_COLORS_GATE in alias_side and expr.count(UNIBRIDGE_COLORS_GATE) == 1, alert
+
+
+PROMETHEUS_IMAGE = _load_yaml(BLUEGREEN_INFRA_COMPOSE_FILE)["services"]["prometheus"]["image"]
+
+
+@pytest.mark.skipif(
+    not _has_docker_image(PROMETHEUS_IMAGE), reason=f"needs a local {PROMETHEUS_IMAGE} image"
+)
+def test_alert_rules_pass_promtool_check_and_unit_tests() -> None:
+    # The tests above read the rules as YAML only. promtool parses their PromQL
+    # and replays the unit tests, which pin the gate on both layouts: blue/green
+    # with a frozen standby on the alias job, and the single stack, whose
+    # per-color targets are down.
+    prometheus_dir = PROMETHEUS_RULES_DIR.parent
+    for command in (
+        ("check", "rules", "rules/unibridge-alerts.yml"),
+        ("test", "rules", PROMETHEUS_RULE_TESTS_FILE.relative_to(prometheus_dir).as_posix()),
+    ):
+        result = _docker(
+            "run", "--rm", "--network", "none", "-v", f"{prometheus_dir}:/w:ro", "-w", "/w",
+            "--entrypoint", "promtool", PROMETHEUS_IMAGE, *command,
+            timeout=120,
+        )
+        if result is None:
+            pytest.skip("docker did not answer")
+        assert result.returncode == 0, (command, result.stdout + result.stderr)
