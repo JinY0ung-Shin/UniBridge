@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -14,6 +14,7 @@ from app.models import (
     AdminAuditLog,
     AlertChannel,
     AlertSettings,
+    ApiKeyAccess,
     DBConnection,
     MonitoredHost,
     MonitoredService,
@@ -27,6 +28,7 @@ from app.models import (
 )
 from app.routers.config_transfer import MAX_IMPORT_BYTES
 from app.services.connection_manager import decrypt_password, encrypt_password
+from app.services.consumer_restrictions import DENY_ALL_CONSUMER, MASTER_ACCESS
 from app.services.settings_manager import settings_manager
 from tests.conftest import auth_header
 
@@ -42,6 +44,9 @@ PLACEHOLDER = "<excluded>"
 
 # Runtime marker for the daily GPU report — never part of the portable config.
 GPU_REPORT_MARKER = datetime(2026, 8, 20, 23, 5, tzinfo=timezone.utc)
+
+# The consumer-restriction reconcile an applied routes section ends with.
+GRANT_SYNC = "app.routers.api_keys.sync_all_consumer_route_restrictions"
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -212,6 +217,27 @@ def seed_gateway(state: dict) -> None:
             },
         },
     }
+
+
+def api_key(name: str, routes: list[str], *, expired: bool = False) -> ApiKeyAccess:
+    """A stored API key; routes ``[MASTER_ACCESS]`` make it a master key."""
+    master = routes == [MASTER_ACCESS]
+    return ApiKeyAccess(
+        consumer_name=name,
+        allowed_databases=json.dumps([MASTER_ACCESS]) if master else None,
+        allowed_routes=json.dumps(routes),
+        expires_at=datetime.now(timezone.utc) - timedelta(days=1) if expired else None,
+    )
+
+
+async def seed_api_keys(engine, *keys: ApiKeyAccess) -> None:
+    async with factory_for(engine)() as db:
+        db.add_all(keys)
+        await db.commit()
+
+
+def restriction_of(state: dict, route_id: str) -> dict | None:
+    return state["routes"][route_id].get("plugins", {}).get("consumer-restriction")
 
 
 # ── Export ──────────────────────────────────────────────────────────────────
@@ -939,9 +965,46 @@ class TestRoutePlugins:
         stored = apisix_state["routes"]["svc-a"]
         assert stored["plugins"]["consumer-restriction"] == {"whitelist": ["consumer-1"]}
 
-    async def test_new_route_never_gets_a_consumer_restriction(
+    async def test_existing_whitelist_gains_master_and_granted_keys(
         self, client, admin_token, seeded_db, apisix_state
     ):
+        seed_gateway(apisix_state)
+        await seed_api_keys(
+            seeded_db, api_key("master-1", [MASTER_ACCESS]), api_key("key-2", ["svc-a"])
+        )
+        doc = export_doc(routes=[{
+            "id": "svc-a", "name": "service-a", "uri": "/api/svc-a/*", "upstream_id": "svc-a-up",
+            "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": ["attacker"]}},
+        }])
+        resp = await do_import(client, admin_token, dry_run=False, sections=["routes"], doc=doc)
+        assert resp.status_code == 200, resp.text
+        assert rows_for(resp.json(), "routes")[0]["action"] == "update"
+
+        # consumer-1 is no key this deployment stores, so it stays, as at boot.
+        assert restriction_of(apisix_state, "svc-a") == {
+            "whitelist": ["consumer-1", "key-2", "master-1"]
+        }
+
+    async def test_existing_key_auth_route_without_a_whitelist_is_closed(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        # E.g. one written by an import from before new routes got a whitelist.
+        route = {
+            "id": "svc-open", "name": "svc-open", "uri": "/api/svc-open/*",
+            "upstream_id": "svc-a-up", "plugins": {"key-auth": {}},
+        }
+        apisix_state["routes"]["svc-open"] = dict(route)
+        resp = await do_import(
+            client, admin_token, dry_run=False, sections=["routes"], doc=export_doc(routes=[route])
+        )
+        assert rows_for(resp.json(), "routes")[0]["action"] == "update"
+        assert restriction_of(apisix_state, "svc-open") == {"whitelist": [DENY_ALL_CONSUMER]}
+
+    async def test_new_route_gets_deny_all_not_the_files_whitelist(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        # APISIX lets every consumer through a key-auth route without a
+        # whitelist, so a new route must never be written without one.
         doc = export_doc(routes=[{
             "id": "svc-new", "name": "service-new", "uri": "/api/svc-new/*",
             "upstream_id": "svc-a-up",
@@ -949,7 +1012,61 @@ class TestRoutePlugins:
         }])
         resp = await do_import(client, admin_token, dry_run=False, sections=["routes"], doc=doc)
         assert rows_for(resp.json(), "routes")[0]["action"] == "create"
-        assert "consumer-restriction" not in apisix_state["routes"]["svc-new"]["plugins"]
+        assert restriction_of(apisix_state, "svc-new") == {"whitelist": [DENY_ALL_CONSUMER]}
+
+    async def test_new_route_is_written_for_live_master_keys_only(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        await seed_api_keys(
+            seeded_db,
+            api_key("master-1", [MASTER_ACCESS]),
+            api_key("master-lapsed", [MASTER_ACCESS], expired=True),
+            api_key("key-1", ["svc-new"]),
+        )
+        doc = export_doc(routes=[{
+            "id": "svc-new", "name": "service-new", "uri": "/api/svc-new/*",
+            "upstream_id": "svc-a-up",
+            "plugins": {"key-auth": {}, "consumer-restriction": {"whitelist": ["attacker"]}},
+        }])
+        # With the grant sync stubbed out, what is stored is the route's own write.
+        with patch(GRANT_SYNC, new=AsyncMock()):
+            resp = await do_import(
+                client, admin_token, dry_run=False, sections=["routes"], doc=doc
+            )
+        assert resp.status_code == 200, resp.text
+        assert restriction_of(apisix_state, "svc-new") == {"whitelist": ["master-1"]}
+
+    async def test_keys_granted_a_new_route_reach_it_without_waiting(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        await seed_api_keys(
+            seeded_db,
+            api_key("master-1", [MASTER_ACCESS]),
+            api_key("key-1", ["svc-new"]),
+            api_key("key-lapsed", ["svc-new"], expired=True),
+            api_key("key-other", ["svc-a"]),
+        )
+        doc = export_doc(routes=[{
+            "id": "svc-new", "name": "service-new", "uri": "/api/svc-new/*",
+            "upstream_id": "svc-a-up", "plugins": {"key-auth": {}},
+        }])
+        resp = await do_import(client, admin_token, dry_run=False, sections=["routes"], doc=doc)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["summary"]["error"] == 0
+        assert restriction_of(apisix_state, "svc-new") == {"whitelist": ["key-1", "master-1"]}
+
+    async def test_route_without_key_auth_gets_no_consumer_restriction(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        await seed_api_keys(seeded_db, api_key("master-1", [MASTER_ACCESS]))
+        doc = export_doc(routes=[{
+            "id": "svc-public", "name": "service-public", "uri": "/api/svc-public/*",
+            "upstream_id": "svc-a-up",
+            "plugins": {"consumer-restriction": {"whitelist": ["attacker"]}},
+        }])
+        resp = await do_import(client, admin_token, dry_run=False, sections=["routes"], doc=doc)
+        assert rows_for(resp.json(), "routes")[0]["action"] == "create"
+        assert restriction_of(apisix_state, "svc-public") is None
 
     async def test_service_key_placeholder_resolves_to_the_live_secret(
         self, client, admin_token, seeded_db, apisix_state
@@ -986,6 +1103,95 @@ class TestRoutePlugins:
         plugins = apisix_state["routes"]["svc-new"]["plugins"]
         assert "headers" not in plugins["proxy-rewrite"]
         assert PLACEHOLDER not in json.dumps(apisix_state["routes"]["svc-new"])
+
+
+class TestRouteGrantSync:
+    """The consumer-restriction reconcile that follows an applied routes section."""
+
+    @staticmethod
+    def routes_doc(*route_ids: str) -> dict:
+        return export_doc(routes=[
+            {"id": route_id, "name": route_id, "uri": f"/api/{route_id}/*",
+             "upstream_id": "svc-a-up", "plugins": {"key-auth": {}}}
+            for route_id in route_ids
+        ])
+
+    async def test_runs_once_after_the_routes_are_written(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        with patch(GRANT_SYNC, new=AsyncMock()) as sync:
+            resp = await do_import(
+                client, admin_token, dry_run=False, sections=["routes"],
+                doc=self.routes_doc("svc-1", "svc-2"),
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["summary"]["create"] == 2
+        sync.assert_awaited_once()
+
+    async def test_dry_run_does_not_run_it(self, client, admin_token, seeded_db, apisix_state):
+        with patch(GRANT_SYNC, new=AsyncMock()) as sync:
+            resp = await do_import(
+                client, admin_token, dry_run=True, sections=["routes"],
+                doc=self.routes_doc("svc-1"),
+            )
+        assert resp.status_code == 200, resp.text
+        assert rows_for(resp.json(), "routes")[0]["action"] == "create"
+        sync.assert_not_awaited()
+
+    async def test_not_run_when_no_route_was_written(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        doc = export_doc(routes=[{"id": "query-api", "name": "query-api",
+                                  "uri": "/api/query/*", "upstream_id": "unibridge-service"}])
+        with patch(GRANT_SYNC, new=AsyncMock()) as sync:
+            resp = await do_import(client, admin_token, dry_run=False, sections=["routes"], doc=doc)
+        assert rows_for(resp.json(), "routes")[0]["action"] == "skip"
+        sync.assert_not_awaited()
+
+    async def test_failure_is_reported_and_the_import_goes_on(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        doc = self.routes_doc("svc-1")
+        doc["sections"]["roles"] = [{"name": "analyst", "description": "d", "is_system": False,
+                                     "permissions": ["query.execute"]}]
+        with patch(GRANT_SYNC, new=AsyncMock(side_effect=RuntimeError("APISIX unreachable"))):
+            resp = await do_import(
+                client, admin_token, dry_run=False, sections=["routes", "roles"], doc=doc
+            )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["summary"] == {"create": 2, "update": 0, "skip": 0, "error": 1}
+
+        route_rows = rows_for(body, "routes")
+        assert [(row["name"], row["action"]) for row in route_rows] == [
+            ("svc-1", "create"), ("-", "error")
+        ]
+        assert "APISIX unreachable" in route_rows[1]["reason"]
+        assert rows_for(body, "roles")[0]["action"] == "create"
+        # The route stays written, and closed.
+        assert restriction_of(apisix_state, "svc-1") == {"whitelist": [DENY_ALL_CONSUMER]}
+        assert "new routes admit only master keys" in route_rows[1]["reason"]
+
+    async def test_partial_failure_names_the_routes_it_could_not_update(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        """A pass that reached every route but failed some PUTs (perhaps on
+        routes this import never touched) must not claim the new routes are
+        still master-only."""
+        from app.services.consumer_restrictions import ReconcileError, ReconcileResult
+
+        failure = ReconcileError(
+            "1 route PUT failed", ReconcileResult(failed_routes=["legacy-route"])
+        )
+        with patch(GRANT_SYNC, new=AsyncMock(side_effect=failure)):
+            resp = await do_import(
+                client, admin_token, dry_run=False, sections=["routes"],
+                doc=self.routes_doc("svc-1"),
+            )
+        assert resp.status_code == 200, resp.text
+        reason = rows_for(resp.json(), "routes")[-1]["reason"]
+        assert "routes legacy-route keep their previous whitelist" in reason
+        assert "new routes admit only master keys" not in reason
 
 
 # ── Import: alert channel webhook URLs ──────────────────────────────────────

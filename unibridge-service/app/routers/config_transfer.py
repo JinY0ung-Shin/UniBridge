@@ -12,8 +12,9 @@ Two rules shape the whole module:
   non-secret fields of an existing resource and leaves the stored secret alone.
 * **Boot-provisioned state is not transferable.** The fixed APISIX routes and
   upstreams (``PROTECTED_*_IDS``), the ``consumer-restriction`` plugin (rebuilt
-  from the API-key table on every boot) and the system roles (reseeded from
-  ``ALL_PERMISSIONS``) are excluded from the export and skipped on import.
+  from the API-key table on every boot, and by the import itself for the routes
+  it writes) and the system roles (reseeded from ``ALL_PERMISSIONS``) are
+  excluded from the export and skipped on import.
 
 An import is planned and applied by the same code path: ``dry_run`` computes
 every action and every validation error but returns before the first write.
@@ -54,6 +55,7 @@ from app.models import (
 )
 from app.routers import admin as admin_router
 from app.routers import alerts as alerts_router
+from app.routers import api_keys as api_keys_router
 from app.routers import nas as nas_router
 from app.routers import query as query_router
 from app.routers import s3 as s3_router
@@ -83,6 +85,7 @@ from app.services.apisix_system_resources import (
 )
 from app.services.audit import log_admin_action
 from app.services.connection_manager import connection_manager
+from app.services.consumer_restrictions import ReconcileError
 from app.services.nas_manager import nas_manager
 from app.services.s3_manager import s3_manager
 from app.services.settings_manager import settings_manager
@@ -179,7 +182,7 @@ EXPORT_NOTES = (
     "api keys / consumers are not exported",
     "built-in routes and upstreams are provisioned at boot and are not exported",
     "the consumer-restriction plugin is stripped from exported routes; "
-    "it is rebuilt from the API key table on every boot",
+    "it is rebuilt from the API key table on import and on every boot",
     f"excluded secret values are marked {SECRET_PLACEHOLDER!r} where the field is kept",
 )
 
@@ -678,7 +681,8 @@ def _prepare_route_body(
     ``consumer-restriction`` is never taken from the file and never removed from
     the target: whatever the live route carries is carried over unchanged, which
     is the same contract ``main.py::_preserve_consumer_restriction`` keeps for
-    the built-in routes.
+    the built-in routes. ``_apply_route`` adds the master keys to it before a
+    key-auth route is written.
     """
     plugins = body.get("plugins")
     plugins = plugins if isinstance(plugins, dict) else {}
@@ -810,6 +814,16 @@ async def _apply_route(
     if ctx.dry_run:
         return action, reason
 
+    # As in save_route: APISIX lets any consumer through a key-auth route that
+    # has no whitelist, expired keys included (expiry is enforced only through
+    # these whitelists). The master keys join whatever whitelist the route
+    # kept, so a new route admits them alone, or nobody, until
+    # _sync_route_grants adds the keys granted it.
+    plugins = body.get("plugins")
+    if isinstance(plugins, dict) and "key-auth" in plugins:
+        body = api_keys_router.apply_master_consumer_restriction(
+            body, await api_keys_router.list_master_consumer_names(ctx.db)
+        )
     await _enable_node_path_prefixes(body.get("upstream"))
     result = await apisix_client.put_resource("routes", route_id, body)
     # Like save_route: monitoring maps route labels to names/ids from a cached
@@ -833,6 +847,47 @@ async def _import_routes(ctx: _ImportContext, raw: Any) -> None:
             continue
         await _apply_item(
             ctx, SECTION_ROUTES, route_id, _apply_route(ctx, route_id, item)
+        )
+    if not ctx.dry_run and ctx.applied(SECTION_ROUTES):
+        await _sync_route_grants(ctx)
+
+
+async def _sync_route_grants(ctx: _ImportContext) -> None:
+    """Whitelist the API keys already granted the routes the import wrote.
+
+    Grants are stored by route id, so a key granted an id the import has just
+    created belongs on its whitelist now rather than at the next periodic
+    reconcile, up to five minutes later. It is that reconcile's pass over every
+    key-auth route (the boot replay's too), run once for the whole section.
+
+    A failure becomes an error row and the import goes on. The routes are
+    already written and fail closed, so the cost is those grants until the
+    periodic reconcile succeeds; aborting here would skip the remaining
+    sections and lose the result rows that say which routes were written.
+    """
+    try:
+        await api_keys_router.sync_all_consumer_route_restrictions(ctx.db)
+    except Exception as exc:  # noqa: BLE001 — the routes are written either way
+        logger.warning("Config import: API key grant sync failed", exc_info=True)
+        try:
+            await ctx.db.rollback()
+        except Exception:
+            logger.exception("Config import: rollback failed after the API key grant sync")
+        if isinstance(exc, ReconcileError) and exc.result.failed_routes:
+            # The pass reached every route and only these PUTs failed; they may
+            # not be routes this import wrote.
+            consequence = (
+                "routes " + ", ".join(exc.result.failed_routes) + " keep their "
+                "previous whitelist plus the master keys"
+            )
+        else:
+            consequence = "new routes admit only master keys"
+        ctx.record(
+            SECTION_ROUTES,
+            _SECTION_ROW,
+            "error",
+            f"API key grants not synced: {_error_text(exc)} — {consequence} until "
+            "the periodic sync (every 5 minutes) succeeds",
         )
 
 
