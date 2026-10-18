@@ -224,3 +224,38 @@ async def test_init_db_seeds_alert_settings_for_in_memory_sqlite():
 
     assert rows == [(1, 10.0, 60)]
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_init_db_leaves_a_database_migrated_by_a_newer_image_alone(tmp_path):
+    """The old blue/green color restarting after a release with a migration must
+    boot instead of crash-looping on the unknown revision, and must not rewrite
+    the system roles."""
+    from unittest.mock import patch
+
+    from app.database import init_db
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'meta.db'}")
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    with patch("app.database.engine", engine), patch("app.database.async_session", session_factory):
+        await init_db()
+        async with engine.begin() as conn:
+            await conn.execute(text("UPDATE alembic_version SET version_num = '9999_from_newer_image'"))
+            await conn.execute(text(
+                "DELETE FROM role_permissions WHERE role_id = (SELECT id FROM roles WHERE name = 'user')"
+            ))
+        # alembic's fileConfig replaces the root handlers, so check the logger itself.
+        with patch("app.database.logger") as logger:
+            await init_db()
+
+    async with engine.connect() as conn:
+        revision = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
+        user_perms = (await conn.execute(text(
+            "SELECT count(*) FROM role_permissions "
+            "WHERE role_id = (SELECT id FROM roles WHERE name = 'user')"
+        ))).scalar_one()
+    await engine.dispose()
+
+    assert revision == "9999_from_newer_image"
+    assert user_perms == 0
+    assert "newer than this image" in logger.warning.call_args.args[0]

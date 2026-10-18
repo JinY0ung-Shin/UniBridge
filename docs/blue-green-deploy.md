@@ -380,11 +380,15 @@ routes reference `upstream_id` rather than nodes and so carry no color.
 After a promotion the script also clears the flag on the standby it keeps alive,
 but only when that standby is actually armed: it inspects the
 `unibridge-service-<color>` container's environment and skips the recreate when
-`APISIX_PROVISION_ON_START=false` is already set. This matters because recreating
-the standby re-runs the *old* image's lifespan, including `alembic upgrade head`.
-If the release just promoted carried a migration, that old image does not know
-the new revision, so an unnecessary recreate would leave the rollback target in a
-boot-crash loop. The active color is never recreated here.
+`APISIX_PROVISION_ON_START=false` is already set. Recreating (or simply
+restarting, as a host reboot does) the standby re-runs the *old* image's
+lifespan against the shared database. An image that has this guard sees a
+database past its own Alembic head and boots without upgrading or rewriting the
+system roles; it also skips the roles when a newer image last wrote them
+(`ROLE_SEED_VERSION`). An image from before that guard instead crash-loops on
+the unknown revision after a release with a migration, and resets the roles to
+its own permissions otherwise, so the protection is complete once both colors
+run an image with it. The active color is never recreated here.
 
 One gap remains. If etcd is wiped **and** an armed container restarts, its
 upstream is genuinely absent, so it writes its own baked color, which may no

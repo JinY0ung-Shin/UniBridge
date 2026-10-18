@@ -31,6 +31,11 @@ Migrations are numbered `NNNN_*.py` in `alembic/versions/`.
 They must run on both dialects, but the release gate upgrades only SQLite, so a Postgres-only
 failure first shows at deploy (boot runs `upgrade head`). Column/constraint changes go through
 `op.batch_alter_table` for SQLite, as most existing migrations do.
+A boot that finds the database past its own head (the old blue/green color restarting) skips the
+upgrade and the role seed instead of crash-looping, so migrations must stay expand/contract.
+Changing the system roles (`ALL_PERMISSIONS` or `database._seed_role_definitions`) needs a
+`ROLE_SEED_VERSION` bump: an image with a lower number leaves newer roles alone, and
+`tests/test_seed_roles.py` pins the number to a digest of the definitions.
 
 ## Tests (`pytest tests/`)
 - `conftest.py` sets env (in-memory SQLite, dev JWT) **before** importing the app.

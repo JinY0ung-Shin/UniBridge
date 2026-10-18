@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -12,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.models import Base
+
+logger = logging.getLogger(__name__)
 
 ALEMBIC_BASELINE_REVISION = "0001_initial"
 _SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -111,7 +114,29 @@ async def _seed_alert_settings_singleton(target_engine: AsyncEngine) -> None:
         ))
 
 
-async def _run_alembic_upgrade(target_engine: AsyncEngine) -> None:
+async def _unknown_database_revisions(target_engine: AsyncEngine, config: Config) -> list[str]:
+    """Revisions the database is at that this image's migrations do not include,
+    i.e. a newer image already migrated it."""
+    from alembic.runtime.migration import MigrationContext
+
+    async with target_engine.connect() as conn:
+        current = await conn.run_sync(
+            lambda sync_conn: MigrationContext.configure(sync_conn).get_current_heads()
+        )
+    known = {script.revision for script in ScriptDirectory.from_config(config).walk_revisions()}
+    return [revision for revision in current if revision not in known]
+
+
+async def _run_alembic_upgrade(target_engine: AsyncEngine) -> bool:
+    """Bring the schema to this image's head.
+
+    Returns False, without touching anything, when the database is already past
+    that head. On blue/green that is the old color restarting (a host reboot, a
+    Docker restart) after a release with a migration: upgrading would fail on
+    the unknown revision and crash-loop the rollback target. Migrations are
+    expand/contract (docs/blue-green-deploy.md), so the old image can run on the
+    newer schema.
+    """
     _ensure_sqlite_foreign_key_listener(target_engine)
 
     if _is_in_memory_sqlite(target_engine):
@@ -119,7 +144,7 @@ async def _run_alembic_upgrade(target_engine: AsyncEngine) -> None:
             await conn.run_sync(Base.metadata.create_all)
         await _seed_alert_settings_singleton(target_engine)
         await _stamp_metadata_schema(target_engine, ALEMBIC_HEAD_REVISION)
-        return
+        return True
 
     tables = await _table_names(target_engine)
     has_existing_schema = bool(tables - {"alembic_version"})
@@ -127,11 +152,23 @@ async def _run_alembic_upgrade(target_engine: AsyncEngine) -> None:
     database_url = _engine_database_url(target_engine)
     config = _alembic_config(database_url)
 
+    if has_alembic_version:
+        unknown = await _unknown_database_revisions(target_engine, config)
+        if unknown:
+            logger.warning(
+                "The metadata database is at revision %s, newer than this image's "
+                "head %s; leaving the schema and the system roles to the newer image",
+                ", ".join(unknown),
+                ALEMBIC_HEAD_REVISION,
+            )
+            return False
+
     if has_existing_schema and not has_alembic_version:
         await ensure_db_connection_columns(target_engine)
         await asyncio.to_thread(command.stamp, config, ALEMBIC_BASELINE_REVISION)
 
     await asyncio.to_thread(command.upgrade, config, "head")
+    return True
 
 
 async def ensure_db_connection_columns(target_engine: AsyncEngine | None = None) -> None:
@@ -160,17 +197,27 @@ async def ensure_db_connection_columns(target_engine: AsyncEngine | None = None)
 
 
 async def init_db() -> None:
-    """Apply meta-DB migrations, then seed default roles."""
-    await _run_alembic_upgrade(engine)
+    """Apply meta-DB migrations, then seed default roles. Both are skipped when a
+    newer image already migrated the database (see _run_alembic_upgrade)."""
+    if not await _run_alembic_upgrade(engine):
+        return
     await _seed_roles()
 
 
-async def _seed_roles() -> None:
-    """Create default system roles if they don't exist."""
-    from app.auth import ALL_PERMISSIONS
-    from app.models import Role, RolePermission
+# Bump whenever _seed_role_definitions() changes. Every boot rewrites the system
+# roles to this image's definitions, and the meta DB is shared by both blue/green
+# colors, so the old color restarting after a release that added permissions
+# would delete them again. The number stored in system_config lets an image skip
+# roles last written by a newer one. tests/test_seed_roles.py pins it to a digest
+# of the definitions, so changing them without a bump fails the suite.
+ROLE_SEED_VERSION = 1
+ROLE_SEED_VERSION_KEY = "role_seed_version"
 
-    SEED_ROLES = {
+
+def _seed_role_definitions() -> dict[str, dict[str, Any]]:
+    from app.auth import ALL_PERMISSIONS
+
+    return {
         "admin": {
             "description": "Full access to all features",
             "permissions": ALL_PERMISSIONS,
@@ -184,8 +231,30 @@ async def _seed_roles() -> None:
         },
     }
 
+
+async def _seed_roles() -> None:
+    """Create the system roles and sync their permissions to this image's
+    definitions, unless a newer image wrote them (ROLE_SEED_VERSION)."""
+    from app.models import Role, RolePermission, SystemConfig
+
+    SEED_ROLES = _seed_role_definitions()
+
     async with async_session() as db:
         from sqlalchemy import delete as sa_delete, select as sa_select
+
+        stored = await db.get(SystemConfig, ROLE_SEED_VERSION_KEY)
+        try:
+            stored_version = int(stored.value) if stored is not None else 0
+        except ValueError:
+            stored_version = 0
+        if stored_version > ROLE_SEED_VERSION:
+            logger.warning(
+                "System roles were written by a newer image (role seed version %d, "
+                "this image %d); leaving them as they are",
+                stored_version,
+                ROLE_SEED_VERSION,
+            )
+            return
 
         # Prune obsolete system roles (e.g. developer/viewer) no longer seeded.
         # Cascades via FK ondelete=CASCADE: role_permissions.role_id AND
@@ -219,6 +288,12 @@ async def _seed_roles() -> None:
                 db.add(RolePermission(role_id=role.id, permission=perm))
 
             await db.commit()
+
+        if stored is None:
+            db.add(SystemConfig(key=ROLE_SEED_VERSION_KEY, value=str(ROLE_SEED_VERSION)))
+        else:
+            stored.value = str(ROLE_SEED_VERSION)
+        await db.commit()
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
