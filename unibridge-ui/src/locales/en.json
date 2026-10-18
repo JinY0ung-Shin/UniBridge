@@ -1052,6 +1052,7 @@
     "previewFailed": "Failed to load preview",
     "previewTooLarge": "File is too large to preview. Download it instead.",
     "previewTruncated": "File is large — showing a portion only. Download for the full content.",
+    "previewSvgSource": "This SVG could not be drawn, so its source is shown instead.",
     "entryCountMore": "{{count}}+ items",
     "truncatedNotice": "This directory has too many entries to list fully — showing a partial set. Narrow it with a search term.",
     "parentDirectory": "Go to parent directory",

@@ -390,6 +390,13 @@
   color: var(--text-tertiary);
 }
 
+.nas-preview-note {
+  align-self: stretch;
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
 .nas-preview-message {
   color: var(--text-secondary);
   font-size: 14px;

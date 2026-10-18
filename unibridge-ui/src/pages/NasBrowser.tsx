@@ -12,6 +12,7 @@ import {
 } from '../api/client';
 import { useToast } from '../components/useToast';
 import ResourceModal from '../components/ResourceModal';
+import { isSvg, looksLikeSvgMarkup, rasterizeSvg } from '../utils/svgPreview';
 import { formatKST } from '../utils/time';
 import './NasBrowser.css';
 
@@ -92,8 +93,12 @@ interface PreviewState {
   kind: PreviewKind;
   status: 'loading' | 'ready' | 'error' | 'toolarge';
   url?: string;
+  /** Set when `url` is a PNG drawn from an SVG: its device pixels per CSS pixel. */
+  density?: number;
   text?: string;
   truncated?: boolean;
+  /** The text is the source of an SVG that could not be drawn. */
+  svgSource?: boolean;
 }
 
 /* ── Icons ───────────────────────────────────────────────────────────────── */
@@ -390,21 +395,41 @@ function NasBrowser() {
     try {
       const { blob } = await downloadNasEntry(alias, entry.path);
       if (previewReqId.current !== reqId) return; // superseded
-      if (kind === 'image') {
+      const svg = kind === 'image' && isSvg(entry.name, blob.type);
+      if (kind === 'image' && !svg) {
         const url = URL.createObjectURL(blob);
         setPreview({ entry, kind, status: 'ready', url });
-      } else {
-        const raw = await blob.text();
-        if (previewReqId.current !== reqId) return;
-        const truncated = raw.length > TEXT_PREVIEW_MAX_CHARS;
-        setPreview({
-          entry,
-          kind,
-          status: 'ready',
-          text: truncated ? raw.slice(0, TEXT_PREVIEW_MAX_CHARS) : raw,
-          truncated,
-        });
+        return;
       }
+      if (svg) {
+        // A blob: URL would hand the SVG this app's origin, where its scripts
+        // run once it is opened in a tab of its own: show a PNG drawn from it.
+        const drawn = await rasterizeSvg(blob);
+        if (previewReqId.current !== reqId) return;
+        if (drawn) {
+          const url = URL.createObjectURL(drawn.png);
+          setPreview({ entry, kind, status: 'ready', url, density: drawn.density });
+          return;
+        }
+        // It could not be drawn: show its source instead (SVG is XML).
+      }
+      const raw = await blob.text();
+      if (previewReqId.current !== reqId) return;
+      if (svg && !looksLikeSvgMarkup(raw)) {
+        // Named or typed as an SVG but not markup (a mislabelled PNG, a gzipped
+        // .svgz): there is no source worth showing.
+        setPreview({ entry, kind, status: 'error' });
+        return;
+      }
+      const truncated = raw.length > TEXT_PREVIEW_MAX_CHARS;
+      setPreview({
+        entry,
+        kind: 'text',
+        status: 'ready',
+        text: truncated ? raw.slice(0, TEXT_PREVIEW_MAX_CHARS) : raw,
+        truncated,
+        svgSource: svg,
+      });
     } catch {
       if (previewReqId.current === reqId) {
         setPreview({ entry, kind, status: 'error' });
@@ -424,6 +449,14 @@ function NasBrowser() {
       if (url) URL.revokeObjectURL(url);
     };
   }, [preview?.url]);
+
+  // A preview still loading when the page goes away is dropped like a
+  // superseded one, so it never makes a URL that nothing would release.
+  useEffect(() => {
+    return () => {
+      previewReqId.current += 1;
+    };
+  }, []);
 
   function activateFile(entry: NasEntry) {
     if (getPreviewKind(entry.name)) {
@@ -784,12 +817,16 @@ function NasBrowser() {
               <img
                 className="nas-preview-image"
                 src={preview.url}
+                srcSet={preview.density ? `${preview.url} ${preview.density}x` : undefined}
                 alt={preview.entry.name}
                 onError={() => setPreview((p) => (p ? { ...p, status: 'error' } : p))}
               />
             )}
             {preview.status === 'ready' && preview.kind === 'text' && (
               <>
+                {preview.svgSource && (
+                  <p className="nas-preview-note">{t('nas.previewSvgSource')}</p>
+                )}
                 <pre className="nas-preview-text">{preview.text}</pre>
                 {preview.truncated && (
                   <p className="nas-preview-truncated">{t('nas.previewTruncated')}</p>

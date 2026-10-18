@@ -1052,6 +1052,7 @@
     "previewFailed": "미리보기를 불러오지 못했습니다",
     "previewTooLarge": "파일이 너무 커서 미리볼 수 없습니다. 다운로드해 주세요.",
     "previewTruncated": "파일이 너무 길어 일부만 표시합니다. 전체 내용은 다운로드해 주세요.",
+    "previewSvgSource": "SVG를 이미지로 그릴 수 없어 소스를 대신 표시합니다.",
     "entryCountMore": "항목 {{count}}개 이상",
     "truncatedNotice": "이 디렉터리에 항목이 너무 많아 일부만 표시됩니다. 검색어로 범위를 좁혀 보세요.",
     "parentDirectory": "상위 폴더로 이동",
