@@ -715,6 +715,7 @@ services:
       - CONVERTER_POOL_TIMEOUT=${CONVERTER_POOL_TIMEOUT:-10}
       # Idle SSE keepalive (seconds) so proxies don't drop silent streams; 0 disables.
       - CONVERTER_SSE_HEARTBEAT_SECONDS=${CONVERTER_SSE_HEARTBEAT_SECONDS:-15}
+      - CONVERTER_MAX_BODY_BYTES=${CONVERTER_MAX_BODY_BYTES:-33554432}
       # previous_response_id store (TTL seconds / max conversations /
       # total byte budget / per-entry byte budget; 0 disables byte budgets).
       - CONVERTER_RESPONSE_STORE_PATH=${CONVERTER_RESPONSE_STORE_PATH:-/var/lib/llm-converter/responses.sqlite3}
@@ -906,6 +907,7 @@ services:
       - CONVERTER_WRITE_TIMEOUT=${CONVERTER_WRITE_TIMEOUT:-120}
       - CONVERTER_POOL_TIMEOUT=${CONVERTER_POOL_TIMEOUT:-10}
       - CONVERTER_SSE_HEARTBEAT_SECONDS=${CONVERTER_SSE_HEARTBEAT_SECONDS:-15}
+      - CONVERTER_MAX_BODY_BYTES=${CONVERTER_MAX_BODY_BYTES:-33554432}
       - CONVERTER_RESPONSE_STORE_PATH=${CONVERTER_RESPONSE_STORE_PATH:-/var/lib/llm-converter/responses.sqlite3}
       - CONVERTER_RESPONSE_STORE_TTL=${CONVERTER_RESPONSE_STORE_TTL:-3600}
       - CONVERTER_RESPONSE_STORE_MAX=${CONVERTER_RESPONSE_STORE_MAX:-10000}

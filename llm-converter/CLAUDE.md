@@ -60,6 +60,11 @@ Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
   modes.
 - Reasoning models emit a `thinking` block before answer text — keep `max_tokens` generous
   when testing or the answer can be empty.
+- `CONVERTER_MAX_BODY_BYTES` (default 32 MiB, the Anthropic API's own limit; 0 = off) caps the
+  request body on all three POST routes: a declared Content-Length over it is refused before
+  reading, a chunked body as soon as it crosses it, with a 413 `request_too_large` (Anthropic
+  envelope on the Messages routes, OpenAI on Responses). Translation holds ~4x a body in memory,
+  so without it one request could exhaust the 512m container.
 - `CONVERTER_MID_SYSTEM_POLICY` (`user`|`hoist`|`asis`, default `user`) — strict chat templates
   (newer Qwen) 400 on any system message past index 0, and Claude Code sends mid-history
   `role:"system"` reminders. `system_norm.py` merges the leading run + role-swaps later ones;

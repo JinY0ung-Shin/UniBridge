@@ -370,6 +370,60 @@ def _bad_request(message: str) -> Response:
     )
 
 
+class _BodyTooLarge(Exception):
+    pass
+
+
+async def _read_body(request: Request) -> bytes:
+    """Read the request body, giving up past ``settings.max_body_bytes``.
+
+    A declared Content-Length over the cap is refused before anything is read,
+    and a chunked body is refused as soon as it crosses it, so an oversized
+    request never sits in memory whole.
+    """
+    limit = settings.max_body_bytes
+    if limit <= 0:
+        return await request.body()
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > limit:
+        raise _BodyTooLarge
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            raise _BodyTooLarge
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _too_large(request: Request, *, anthropic: bool) -> Response:
+    limit_mib = settings.max_body_bytes / (1024 * 1024)
+    message = f"request body is larger than this gateway accepts ({limit_mib:g} MiB)"
+    logger.warning(
+        "converter: refused %s with a body over %d bytes (content-length %s)",
+        request.url.path,
+        settings.max_body_bytes,
+        request.headers.get("content-length", "unknown"),
+    )
+    if anthropic:
+        body = {"type": "error", "error": {"type": "request_too_large", "message": message}}
+    else:
+        body = {
+            "error": {
+                "message": message,
+                "type": "invalid_request_error",
+                "param": None,
+                "code": "request_too_large",
+            }
+        }
+    return Response(
+        status_code=413,
+        content=json.dumps(body).encode("utf-8"),
+        media_type="application/json",
+    )
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -771,7 +825,10 @@ async def count_tokens(request: Request) -> Response:
     itself; ``messages`` must be present, and a value of the wrong type anywhere
     in it is a 400 like the Messages route's.
     """
-    raw = await request.body()
+    try:
+        raw = await _read_body(request)
+    except _BodyTooLarge:
+        return _too_large(request, anthropic=True)
     try:
         parsed = json.loads(raw) if raw else {}
     except json.JSONDecodeError:
@@ -793,7 +850,10 @@ async def count_tokens(request: Request) -> Response:
 @app.post("/v1/messages")
 async def messages(request: Request) -> Response:
     """Translate an Anthropic Messages request through the OpenAI chat route."""
-    raw = await request.body()
+    try:
+        raw = await _read_body(request)
+    except _BodyTooLarge:
+        return _too_large(request, anthropic=True)
     try:
         parsed = json.loads(raw) if raw else {}
     except json.JSONDecodeError:
@@ -1028,7 +1088,10 @@ async def responses(request: Request) -> Response:
     (when ``store`` is not false) persists the accumulated transcript under a
     freshly minted ``resp_<id>`` so the next turn can chain off it.
     """
-    raw = await request.body()
+    try:
+        raw = await _read_body(request)
+    except _BodyTooLarge:
+        return _too_large(request, anthropic=False)
     try:
         parsed = json.loads(raw) if raw else {}
     except json.JSONDecodeError:

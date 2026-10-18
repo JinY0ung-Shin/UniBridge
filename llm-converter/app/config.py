@@ -243,6 +243,16 @@ class _Settings:
         return None if raw <= 0 else float(raw)
 
     @property
+    def max_body_bytes(self) -> int:
+        """Largest request body the converter reads (0 disables the cap).
+        Parsing and translating a body holds several copies of it (a 50 MB
+        request measured about 4x on top of itself), so one oversized request
+        could take the 512m container down with every stream it carries.
+        Default 32 MiB, the Anthropic API's own request limit, which clients
+        built for that API already stay under."""
+        return _int_env("CONVERTER_MAX_BODY_BYTES", 32 * 1024 * 1024)
+
+    @property
     def response_store_ttl(self) -> float:
         """TTL (seconds) for the previous_response_id conversation store."""
         return float(_int_env("CONVERTER_RESPONSE_STORE_TTL", 3600))

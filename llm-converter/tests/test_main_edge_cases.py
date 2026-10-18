@@ -495,3 +495,69 @@ def test_messages_route_enables_both_trace_wrappers(monkeypatch, caplog):
     assert _parse_sse(response.text)[-1]["type"] == "message_stop"
     assert "upstream[trace-model] END" in caplog.text
     assert "downstream[trace-model]: message_delta" in caplog.text
+
+
+# ── Request body cap ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("path", "anthropic"),
+    [("/v1/messages", True), ("/v1/messages/count_tokens", True), ("/v1/responses", False)],
+)
+def test_body_over_the_cap_is_refused_before_upstream(monkeypatch, path, anthropic, caplog):
+    monkeypatch.setenv("CONVERTER_MAX_BODY_BYTES", "1024")
+    calls: list[httpx.Request] = []
+    _install_factory(monkeypatch, lambda request: calls.append(request) or httpx.Response(500))
+    body = {"model": "m", "messages": [{"role": "user", "content": "x" * 2000}], "input": "hi"}
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        response = TestClient(converter_main.app).post(path, json=body)
+
+    assert response.status_code == 413
+    payload = response.json()
+    if anthropic:
+        assert payload["type"] == "error"
+        assert payload["error"]["type"] == "request_too_large"
+    else:
+        assert payload["error"]["code"] == "request_too_large"
+        assert payload["error"]["type"] == "invalid_request_error"
+    assert "MiB" in payload["error"]["message"]
+    assert calls == []
+    assert any("refused" in record.message for record in caplog.records)
+
+
+def test_chunked_body_over_the_cap_is_refused(monkeypatch):
+    """No Content-Length: the reader stops as soon as the stream crosses the cap."""
+    monkeypatch.setenv("CONVERTER_MAX_BODY_BYTES", "1024")
+
+    def chunks():
+        yield b'{"model": "m", "messages": [{"role": "user", "content": "'
+        for _ in range(10):
+            yield b"x" * 512
+        yield b'"}]}'
+
+    response = TestClient(converter_main.app).post(
+        "/v1/messages/count_tokens", content=chunks(), headers={"content-type": "application/json"}
+    )
+
+    assert response.status_code == 413
+    assert response.json()["error"]["type"] == "request_too_large"
+
+
+def test_body_within_the_cap_is_read_normally(monkeypatch):
+    monkeypatch.setenv("CONVERTER_MAX_BODY_BYTES", "4096")
+    body = {"model": "m", "messages": [{"role": "user", "content": "hello"}]}
+
+    response = TestClient(converter_main.app).post("/v1/messages/count_tokens", json=body)
+
+    assert response.status_code == 200
+    assert response.json()["input_tokens"] > 0
+
+
+def test_zero_disables_the_body_cap(monkeypatch):
+    monkeypatch.setenv("CONVERTER_MAX_BODY_BYTES", "0")
+    body = {"model": "m", "messages": [{"role": "user", "content": "x" * 5000}]}
+
+    response = TestClient(converter_main.app).post("/v1/messages/count_tokens", json=body)
+
+    assert response.status_code == 200
