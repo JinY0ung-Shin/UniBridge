@@ -206,6 +206,45 @@ async def test_execute_rejects_blocked_sql_before_executor(client, admin_token):
     execute_query.assert_not_awaited()
 
 
+async def test_execute_rejects_outside_reaching_function_before_executor(client, admin_token):
+    execute_clickhouse = AsyncMock(return_value=_query_response())
+    with (
+        patch("app.routers.query.connection_manager.get_db_type", return_value="clickhouse"),
+        patch("app.routers.query.execute_clickhouse_query", execute_clickhouse),
+    ):
+        response = await client.post(
+            "/query/execute",
+            json={
+                "database": "analytics",
+                "sql": "SELECT * FROM s3('http://169.254.169.254/latest/meta-data', 'CSV')",
+            },
+            headers=auth_header(admin_token),
+        )
+
+    assert response.status_code == 403
+    assert "s3()" in response.json()["detail"]
+    execute_clickhouse.assert_not_awaited()
+
+
+async def test_execute_allows_a_column_named_like_a_blocked_function(client, admin_token):
+    execute_clickhouse = AsyncMock(return_value=_query_response())
+    with (
+        patch("app.routers.query.connection_manager.get_db_type", return_value="clickhouse"),
+        patch("app.routers.query.connection_manager.get_clickhouse_client", return_value=MagicMock()),
+        patch("app.routers.query.connection_manager.get_clickhouse_lock", return_value=MagicMock()),
+        patch("app.routers.query.execute_clickhouse_query", execute_clickhouse),
+        patch("app.routers.query.log_query", new_callable=AsyncMock),
+    ):
+        response = await client.post(
+            "/query/execute",
+            json={"database": "analytics", "sql": "SELECT url, file FROM pages"},
+            headers=auth_header(admin_token),
+        )
+
+    assert response.status_code == 200, response.text
+    execute_clickhouse.assert_awaited_once()
+
+
 async def test_execute_clickhouse_success(client, admin_token):
     ch_client = MagicMock()
     ch_lock = MagicMock()

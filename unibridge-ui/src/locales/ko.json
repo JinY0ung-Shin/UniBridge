@@ -881,7 +881,7 @@
     "gatewayRouteTimeoutHint": "별도 값을 지정하지 않은 등록 게이트웨이 라우트에 적용되는 기본 read/send 타임아웃입니다. 값을 바꾸면 개별 override가 없는 모든 라우트에 즉시 재적용됩니다. 라우트별 값은 각 라우트 편집 화면에서 설정합니다",
     "sqlBlacklist": "SQL 키워드 블랙리스트",
     "blockedKeywords": "추가 차단 키워드",
-    "blockedKeywordsHint": "차단할 SQL 키워드를 쉼표로 구분 (예: VACUUM, ANALYZE). 기본 차단: GRANT, REVOKE, SHUTDOWN, KILL 등",
+    "blockedKeywordsHint": "차단할 SQL 키워드를 쉼표로 구분 (예: VACUUM, ANALYZE). 문자열과 주석 밖에서 단어 단위로 찾으므로 url처럼 흔한 이름을 넣으면 같은 이름의 컬럼도 막힙니다. 기본 차단: GRANT, REVOKE, SHUTDOWN, KILL 등과 s3(), url(), remote(), pg_read_file(), dblink(), OPENQUERY()처럼 데이터베이스 밖에 접근하는 함수 호출",
     "retentionSection": "로그 보존",
     "auditLogRetention": "쿼리 감사 로그 보존 기간(일)",
     "auditLogRetentionHint": "쿼리 감사 로그를 보관하는 기간입니다. 0 = 무제한 보관",

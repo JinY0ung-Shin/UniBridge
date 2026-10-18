@@ -470,7 +470,11 @@ async def execute(
                 detail=blocked_error,
             )
     else:
-        blocked_error = validate_sql(req.sql, extra_blocked=settings_manager.blocked_sql_keywords)
+        blocked_error = validate_sql(
+            req.sql,
+            extra_blocked=settings_manager.blocked_sql_keywords,
+            db_type=db_type,
+        )
         if blocked_error:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
