@@ -1123,13 +1123,19 @@ an older tag.
 Bifrost migrates its config and log stores on boot. It is a single infra
 instance that a normal blue-green deploy never recreates, so a new tag takes
 effect only when you recreate the container, and `/api/llm-bi` is down for the
-few seconds that takes. `backup/backup.sh` does not cover the Bifrost volume, so
-copy it while the container is stopped (any image with `tar` works;
-`nginx:alpine` is already on the host for `bifrost-tls`):
+few seconds that takes. Run `./backup/backup.sh` first: it snapshots the config
+store (providers, provider keys, virtual keys) as `bifrost-config.db.gz`, which
+`./backup/restore.sh bifrost <snapshot>` puts back
+([`backup/README.md`](./backup/README.md)). The snapshot leaves out `logs.db`,
+the request logs; to keep those as well, also copy the whole volume while the
+container is stopped (any image with `tar` works; `nginx:alpine` is already on
+the host for `bifrost-tls`):
 
 ```bash
+./backup/backup.sh
 docker compose -p unibridge-infra -f docker-compose.infra.yml pull bifrost   # air-gapped: docker load it instead
 docker compose -p unibridge-infra -f docker-compose.infra.yml stop bifrost
+# optional, with the request logs:
 docker run --rm --entrypoint tar -v unibridge_bifrost-test-data:/data:ro -v "$PWD":/backup \
   nginx:alpine czf "/backup/bifrost-data-$(date +%Y%m%d%H%M).tgz" -C /data .
 docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait bifrost
@@ -1138,7 +1144,9 @@ docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait bifro
 On a single stack, drop `-p unibridge-infra -f docker-compose.infra.yml`. If you
 set `BIFROST_TEST_DATA_VOLUME`, copy that volume instead.
 
-To roll back, put the previous tag back and run the same `up -d --wait`. In the
+To roll back, put the previous tag back and run the same `up -d --wait`; if the
+older tag cannot read the migrated store, restore the snapshot taken before the
+upgrade with `./backup/restore.sh bifrost <snapshot>`. In the
 v2.2.4 → v2.2.6 rehearsal (offline, with this repo's `bifrost/config.json`),
 v2.2.6 added v2.2.5's two nullable pricing columns and kept the registered
 provider and key, the gateway virtual key, the request logs and the open admin
@@ -1264,7 +1272,7 @@ receiver are stripped from the rendered config entirely.
 
 ## Backups
 
-Stateful components (etcd, Keycloak DB, LiteLLM DB, unibridge-service meta DB) are backed up by scripts in [`backup/`](./backup/README.md). Snapshots land in `./snapshots/` (gitignored) with 14-day retention, and manifest SHA256s are verified before any destructive restore.
+Stateful components (etcd, Keycloak DB, LiteLLM DB, unibridge-service meta DB, Bifrost's config store) are backed up by scripts in [`backup/`](./backup/README.md). Snapshots land in `./snapshots/` (gitignored) with 14-day retention, and manifest SHA256s are verified before any destructive restore.
 
 ### Deploy-time setup
 

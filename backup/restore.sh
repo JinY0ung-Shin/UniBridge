@@ -10,6 +10,7 @@ source "$HERE/lib/etcd.sh"
 source "$HERE/lib/postgres.sh"
 source "$HERE/lib/sqlite.sh"
 source "$HERE/lib/meta.sh"
+source "$HERE/lib/bifrost.sh"
 
 usage() {
   cat <<EOF
@@ -21,6 +22,8 @@ components:
   litellm-db        restore LiteLLM Postgres from litellm-db.sql.gz
   unibridge-meta    restore unibridge-service metadata from unibridge-meta.sql.gz
                     (Postgres default) or legacy unibridge-meta.db.gz (SQLite)
+  bifrost           restore Bifrost's config store from bifrost-config.db.gz
+                    (needs the BIFROST_ENCRYPTION_KEY it was taken with)
 
 example:
   $0 etcd ./snapshots/2026-04-19_030000Z
@@ -121,6 +124,10 @@ main() {
       meta_file="$(unibridge_meta_backup_file "$dir")"
       verify_backup_dir "$dir" "$meta_file"
       restore_unibridge_meta_snapshot "$dir/$meta_file"
+      ;;
+    bifrost)
+      verify_backup_dir "$dir" "bifrost-config.db.gz"
+      restore_bifrost "$dir/bifrost-config.db.gz"
       ;;
     *)
       usage

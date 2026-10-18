@@ -7,7 +7,9 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -38,6 +40,7 @@ BACKUP_SCRIPT_FILE = REPO_ROOT / "backup" / "backup.sh"
 RESTORE_SCRIPT_FILE = REPO_ROOT / "backup" / "restore.sh"
 BACKUP_META_LIB_FILE = REPO_ROOT / "backup" / "lib" / "meta.sh"
 BACKUP_POSTGRES_LIB_FILE = REPO_ROOT / "backup" / "lib" / "postgres.sh"
+BACKUP_BIFROST_LIB_FILE = REPO_ROOT / "backup" / "lib" / "bifrost.sh"
 
 COMPOSE_SERVICE_LIMITS = {
     "etcd": {"memory": "256m", "cpus": "0.50"},
@@ -3158,6 +3161,275 @@ backup_litellm_db {shlex.quote(str(dest / "litellm-db.sql.gz"))}
     assert result.returncode == 0, result.stderr
     assert not (dest / "litellm-db.sql.gz").exists()
     assert "cannot be verified without jq or python3" in result.stderr
+
+
+def test_backup_and_restore_cover_the_bifrost_config_store() -> None:
+    backup_script = BACKUP_SCRIPT_FILE.read_text(encoding="utf-8")
+    restore_script = RESTORE_SCRIPT_FILE.read_text(encoding="utf-8")
+    lib = BACKUP_BIFROST_LIB_FILE.read_text(encoding="utf-8")
+
+    assert 'source "$HERE/lib/bifrost.sh"' in backup_script
+    assert 'source "$HERE/lib/bifrost.sh"' in restore_script
+    assert 'backup_bifrost "$dest/bifrost-config.db.gz"' in backup_script
+    assert 'restore_bifrost "$dir/bifrost-config.db.gz"' in restore_script
+    # What the lib assumes about the stack: the store's path, the volume's mount
+    # point, and an image with python3 that the same compose files build, so an
+    # air-gapped host has it without a pull.
+    config = json.loads((BIFROST_DIR / "config.json").read_text(encoding="utf-8"))
+    assert config["config_store"]["config"]["path"] == "/app/data/config.db"
+    assert 'BIFROST_MOUNT="/app/data"' in lib
+    assert 'BIFROST_CONFIG_DB="config.db"' in lib
+    for path in (COMPOSE_FILE, BLUEGREEN_INFRA_COMPOSE_FILE):
+        services = _load_yaml(path)["services"]
+        assert "bifrost-test-data:/app/data" in services["bifrost"]["volumes"], path.name
+        image = services["llm-converter-bi"]["image"]
+        assert f'BIFROST_BACKUP_IMAGE="${{BIFROST_BACKUP_IMAGE:-{image}}}"' in lib, path.name
+
+
+def _bifrost_store(path: Path, providers: list[str]) -> None:
+    """A WAL-mode SQLite store standing in for Bifrost's config.db."""
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE IF NOT EXISTS config_providers (name TEXT PRIMARY KEY)")
+    conn.executemany("INSERT INTO config_providers VALUES (?)", [(name,) for name in providers])
+    conn.commit()
+    conn.close()
+
+
+def _bifrost_providers(path: Path) -> list[str]:
+    conn = sqlite3.connect(path)
+    try:
+        return [row[0] for row in conn.execute("SELECT name FROM config_providers ORDER BY name")]
+    finally:
+        conn.close()
+
+
+def _run_bifrost_lib(
+    tmp_path: Path,
+    volume: Path,
+    call: str,
+    *,
+    containers: bool = True,
+    image_present: bool = True,
+    env: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess, list[str]]:
+    """Run ``call`` with backup/lib/bifrost.sh sourced and compose/docker stubbed.
+
+    The stubbed ``docker run`` stands in for the sibling container: it runs the
+    program on this interpreter with BIFROST_DB moved from the container's
+    /app/data into ``volume``, stdin and stdout passed through. Returns the
+    result and the compose/docker calls, the program text left out.
+    """
+    log = tmp_path / "calls.log"
+    ps_output = "printf 'cid-bifrost\\n'" if containers else ":"
+    image_rc = 0 if image_present else 1
+    shell = f"""
+source {shlex.quote(str(BACKUP_BIFROST_LIB_FILE))}
+infra_compose() {{
+  printf 'compose %s\\n' "$*" >> {shlex.quote(str(log))}
+  [[ "$1" != "ps" ]] || {ps_output}
+}}
+docker() {{
+  case "$1" in
+    inspect)
+      printf 'docker %s\\n' "$*" >> {shlex.quote(str(log))}
+      printf 'unibridge_bifrost-test-data\\n'
+      ;;
+    image)
+      printf 'docker %s\\n' "$*" >> {shlex.quote(str(log))}
+      return {image_rc}
+      ;;
+    run)
+      printf 'docker %s\\n' "${{*:1:$#-1}}" >> {shlex.quote(str(log))}
+      local arg db=""
+      for arg in "$@"; do
+        [[ "$arg" != BIFROST_DB=/app/data/* ]] || db={shlex.quote(str(volume))}/"${{arg#BIFROST_DB=/app/data/}}"
+      done
+      BIFROST_DB="$db" {shlex.quote(sys.executable)} -I -c "${{@: -1}}"
+      ;;
+  esac
+}}
+{call}
+"""
+    result = subprocess.run(
+        ["bash", "-c", shell],
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "BACKUP_STACK": "bluegreen", **(env or {})},
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return result, calls
+
+
+def test_backup_snapshots_only_the_bifrost_config_store_while_bifrost_runs(tmp_path: Path) -> None:
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    _bifrost_store(volume / "config.db", ["vllm-a"])
+    (volume / "logs.db").write_bytes(b"request logs")
+    # Bifrost holds the store open with a commit still in its -wal, as while it
+    # serves: the snapshot has to read through it.
+    live = sqlite3.connect(volume / "config.db")
+    live.execute("PRAGMA wal_autocheckpoint=0")
+    live.execute("INSERT INTO config_providers VALUES ('vllm-b')")
+    live.commit()
+    out = tmp_path / "bifrost-config.db.gz"
+    try:
+        result, calls = _run_bifrost_lib(tmp_path, volume, f"backup_bifrost {shlex.quote(str(out))}")
+        assert (volume / "config.db-wal").stat().st_size > 0
+    finally:
+        live.close()
+
+    assert result.returncode == 0, result.stderr
+    assert out.stat().st_mode & 0o777 == 0o600
+    snapshot = tmp_path / "snapshot.db"
+    snapshot.write_bytes(gzip.decompress(out.read_bytes()))
+    assert _bifrost_providers(snapshot) == ["vllm-a", "vllm-b"]
+    [run] = [call for call in calls if call.startswith("docker run ")]
+    assert run == (
+        "docker run --rm --pull never --network none --log-driver none --user 0:0"
+        " -v unibridge_bifrost-test-data:/app/data -e BIFROST_DB=/app/data/config.db"
+        " --entrypoint python3 llm-converter:bifrost-test -I -c"
+    )
+
+
+@pytest.mark.parametrize("gateway", [None, "litellm", "bifrost"])
+def test_backup_skips_bifrost_only_when_it_is_not_deployed(tmp_path: Path, gateway: str | None) -> None:
+    out = tmp_path / "bifrost-config.db.gz"
+    result, calls = _run_bifrost_lib(
+        tmp_path,
+        tmp_path,
+        f"backup_bifrost {shlex.quote(str(out))}",
+        containers=False,
+        env={"LLM_GATEWAY": gateway} if gateway else None,
+    )
+
+    assert calls == ["compose ps -aq bifrost"]
+    assert not out.exists()
+    if gateway == "bifrost":
+        # /api/llm runs on Bifrost then: no container is an outage.
+        assert result.returncode == 1
+        assert "LLM_GATEWAY=bifrost, but the stack has no bifrost container" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert "(Bifrost is not deployed), skipped" in result.stdout
+
+
+@pytest.mark.parametrize("broken", ["missing store", "not a database", "missing image"])
+def test_backup_fails_when_a_deployed_bifrost_cannot_be_snapshotted(tmp_path: Path, broken: str) -> None:
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    if broken == "not a database":
+        (volume / "config.db").write_bytes(b"not a database" * 100)
+    else:
+        _bifrost_store(volume / "config.db", ["vllm-a"])
+        if broken == "missing store":
+            (volume / "config.db").unlink()
+    out = tmp_path / "bifrost-config.db.gz"
+
+    result, calls = _run_bifrost_lib(
+        tmp_path, volume, f"backup_bifrost {shlex.quote(str(out))}", image_present=broken != "missing image"
+    )
+
+    assert result.returncode == 1
+    assert not out.exists()
+    if broken == "missing image":
+        assert "image llm-converter:bifrost-test not found on this host" in result.stderr
+        assert not any(call.startswith("docker run ") for call in calls)
+    else:
+        assert "bifrost: snapshot of config.db failed" in result.stderr
+
+
+def test_restore_puts_the_bifrost_config_store_back(tmp_path: Path) -> None:
+    snapshot = tmp_path / "snapshot.db"
+    _bifrost_store(snapshot, ["vllm-a"])
+    src = tmp_path / "bifrost-config.db.gz"
+    src.write_bytes(gzip.compress(snapshot.read_bytes()))
+    # Since the snapshot: a provider added, and leftovers of an unclean stop
+    # that SQLite would replay into the restored file.
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    _bifrost_store(volume / "config.db", ["vllm-a", "added-later"])
+    (volume / "config.db").chmod(0o600)
+    (volume / "config.db-wal").write_bytes(b"stale wal")
+    (volume / "config.db-shm").write_bytes(b"stale shm")
+    (volume / "logs.db").write_bytes(b"request logs")
+
+    result, calls = _run_bifrost_lib(tmp_path, volume, f"restore_bifrost {shlex.quote(str(src))} <<< 'RESTORE BIFROST'")
+
+    assert result.returncode == 0, result.stderr
+    assert "BIFROST_ENCRYPTION_KEY" in result.stderr
+    assert sorted(path.name for path in volume.iterdir()) == ["config.db", "logs.db"]
+    assert (volume / "logs.db").read_bytes() == b"request logs"
+    assert (volume / "config.db").stat().st_mode & 0o777 == 0o600
+    assert _bifrost_providers(volume / "config.db") == ["vllm-a"]
+    [run] = [call for call in calls if call.startswith("docker run ")]
+    assert run.startswith("docker run --rm -i --pull never ")
+    assert calls.index("compose stop bifrost") < calls.index(run) < calls.index("compose up -d --wait bifrost")
+
+
+def test_restore_bifrost_keeps_the_store_when_the_snapshot_is_not_a_database(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "bifrost-config.db.gz"
+    src.write_bytes(gzip.compress(b"this is not a SQLite file"))
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    _bifrost_store(volume / "config.db", ["vllm-a", "added-later"])
+    (volume / "config.db-wal").write_bytes(b"wal of the live store")
+    before = (volume / "config.db").read_bytes()
+
+    result, calls = _run_bifrost_lib(
+        tmp_path, volume, f"restore_bifrost {shlex.quote(str(src))} <<< 'RESTORE BIFROST'"
+    )
+
+    assert result.returncode == 1
+    # Bifrost was stopped for the swap; it comes back on the store it had.
+    [run] = [call for call in calls if call.startswith("docker run ")]
+    assert calls.index("compose stop bifrost") < calls.index(run) < calls.index("compose up -d --wait bifrost")
+    assert (volume / "config.db").read_bytes() == before
+    # Rejected before anything on the volume was touched, sidecars included.
+    assert (volume / "config.db-wal").read_bytes() == b"wal of the live store"
+    assert sorted(path.name for path in volume.iterdir()) == ["config.db", "config.db-wal"]
+
+
+def test_restore_bifrost_needs_the_tools_image_before_stopping_bifrost(tmp_path: Path) -> None:
+    snapshot = tmp_path / "snapshot.db"
+    _bifrost_store(snapshot, ["vllm-a"])
+    src = tmp_path / "bifrost-config.db.gz"
+    src.write_bytes(gzip.compress(snapshot.read_bytes()))
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    _bifrost_store(volume / "config.db", ["vllm-a", "added-later"])
+
+    result, calls = _run_bifrost_lib(
+        tmp_path,
+        volume,
+        f"restore_bifrost {shlex.quote(str(src))} <<< 'RESTORE BIFROST'",
+        image_present=False,
+    )
+
+    assert result.returncode == 1
+    assert "not found on this host" in result.stderr
+    assert not any(call.startswith(("compose stop", "docker run ")) for call in calls)
+    assert _bifrost_providers(volume / "config.db") == ["added-later", "vllm-a"]
+
+
+def test_restore_bifrost_changes_nothing_without_confirmation(tmp_path: Path) -> None:
+    snapshot = tmp_path / "snapshot.db"
+    _bifrost_store(snapshot, ["vllm-a"])
+    src = tmp_path / "bifrost-config.db.gz"
+    src.write_bytes(gzip.compress(snapshot.read_bytes()))
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    _bifrost_store(volume / "config.db", ["vllm-a", "added-later"])
+
+    result, calls = _run_bifrost_lib(tmp_path, volume, f"restore_bifrost {shlex.quote(str(src))} <<< 'yes'")
+
+    assert result.returncode == 1
+    assert "aborted" in result.stderr
+    assert not any(call.startswith(("compose stop", "docker run ")) for call in calls)
+    assert _bifrost_providers(volume / "config.db") == ["added-later", "vllm-a"]
 
 
 def test_litellm_db_alert_is_quiet_while_api_llm_runs_on_bifrost() -> None:

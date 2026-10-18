@@ -191,7 +191,7 @@ green never compete for Compose ownership of the same volume.
 flags. They detect blue/green from `.deploy/bluegreen-active` (or a running
 `unibridge-infra` project) and then address each service in the project that
 owns it: infra services (`etcd`, `apisix`, `keycloak(-db)`, `litellm(-db)`,
-`unibridge-db`, plus the one-shot `etcd-init` auth bootstrap, which exits 0 after
+`unibridge-db`, `bifrost`, plus the one-shot `etcd-init` auth bootstrap, which exits 0 after
 every `up` and is expected to show as `Exited (0)`) through `unibridge-infra`,
 app-tier services through the color projects. A restore that must stop `unibridge-service` stops it in every color
 currently running it and starts back exactly those colors.

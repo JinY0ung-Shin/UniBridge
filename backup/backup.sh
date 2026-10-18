@@ -10,6 +10,7 @@ source "$HERE/lib/etcd.sh"
 source "$HERE/lib/postgres.sh"
 source "$HERE/lib/sqlite.sh"
 source "$HERE/lib/meta.sh"
+source "$HERE/lib/bifrost.sh"
 
 main() {
   acquire_lock
@@ -29,6 +30,9 @@ main() {
   backup_postgres keycloak-db keycloak "${KC_DB_USER:-keycloak}"   "$dest/keycloak-db.sql.gz"
   backup_litellm_db "$dest/litellm-db.sql.gz"
   backup_unibridge_meta "$dest"
+  # Last: it needs a local tools image (lib/bifrost.sh), so if that is missing
+  # the dumps above are still on disk for a manual recovery.
+  backup_bifrost "$dest/bifrost-config.db.gz"
 
   # Not backed up on purpose: the litellm-dataset volume (LLM conversation
   # capture for fine-tuning) is regenerable training data that grows without
