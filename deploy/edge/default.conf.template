@@ -52,6 +52,14 @@ server {
         # nginx streams /api unbuffered, but it does not pass X-Accel-Buffering
         # on, so this hop has to turn buffering off itself.
         proxy_buffering off;
+        # Unbuffered, nginx passes on at most proxy_buffer_size per read and
+        # flushes each piece. At the 4k default a large response becomes
+        # thousands of small TLS writes that this 0.25-CPU container cannot
+        # keep up with (a 20 MB query result took 1.8s instead of 1.2s).
+        # Events still leave as soon as they arrive; the cost is 64k per open
+        # proxied connection. proxy_buffers only has to let nginx accept it.
+        proxy_buffer_size 64k;
+        proxy_buffers 8 64k;
         # Internal-only hop: the active UI container presents the same in-cluster
         # self-signed cert as the edge, so verification/SNI are intentionally off.
         # All traffic stays on the host-managed docker network. Do NOT reuse this

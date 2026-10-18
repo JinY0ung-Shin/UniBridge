@@ -572,6 +572,22 @@ def test_edge_template_streams_responses_unbuffered() -> None:
     # proxied responses by default, and the UI nginx behind the edge does not
     # pass X-Accel-Buffering on, so the edge has to switch buffering off itself.
     assert "proxy_buffering off;" in proxy_location
+    # Unbuffered, nginx relays proxy_buffer_size at a time; at the 4k default a
+    # large response is thousands of TLS writes for a 0.25-CPU container.
+    assert "proxy_buffer_size 64k;" in proxy_location
+    assert "proxy_buffers 8 64k;" in proxy_location
+
+
+def test_ui_nginx_relays_api_responses_unbuffered_in_large_pieces() -> None:
+    locations = dict(_nginx_locations(NGINX_CONFIG_FILE.read_text(encoding="utf-8")))
+    api = locations["/api/"]
+
+    # /api carries LLM event streams, so it stays unbuffered; the relay size
+    # keeps big responses (query results) from turning into 4k writes and
+    # 4k gzip flushes.
+    assert "proxy_buffering off;" in api
+    assert "proxy_buffer_size 64k;" in api
+    assert "proxy_buffers 8 64k;" in api
 
 
 def _edge_proxy_directives(template: str) -> list[str]:
