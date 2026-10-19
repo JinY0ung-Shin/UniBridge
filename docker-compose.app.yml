@@ -79,10 +79,8 @@ services:
       - BIFROST_ADMIN_USERNAME=${BIFROST_ADMIN_USERNAME:-admin}
       - BIFROST_ADMIN_PASSWORD=${BIFROST_ADMIN_PASSWORD:-}
       - BIFROST_SSO_SESSION_HOURS=${BIFROST_SSO_SESSION_HOURS:-8}
-      # The /api/llm-bi routes in front of Bifrost (app/services/bifrost_routes.py):
-      # installed at provisioning boots, injecting the virtual key the bifrost
-      # container runs with; false removes them again.
-      - BIFROST_GATEWAY_ROUTES=${BIFROST_GATEWAY_ROUTES:-true}
+      # The virtual key the /api/llm routes inject under LLM_GATEWAY=bifrost
+      # (app/services/llm_routes.py): the value the bifrost container runs with.
       - BIFROST_TEST_VK=${BIFROST_TEST_VK:-}
       # Which gateway serves /api/llm: litellm or bifrost (README "Switching
       # /api/llm to Bifrost"). llm-converter reads the same value.

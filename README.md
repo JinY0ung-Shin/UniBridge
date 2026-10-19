@@ -20,8 +20,6 @@ Browser ──HTTPS──> unibridge-ui (nginx)
                                           ├── /api/llm/metrics → LiteLLM raw Prometheus /metrics
                                           ├── /api/llm/*       → LiteLLM (LLM proxy)
                                           ├── /api/llm-admin/* → LiteLLM Admin UI/API
-                                          ├── /api/llm-bi/v1/* → Bifrost, side by side with LiteLLM
-                                          │                    (exact paths; BIFROST_GATEWAY_ROUTES)
                                           ├── /api/s3/*        → S3 connections
                                           ├── /api/nas/*       → Mounted NAS/local files
                                           ├── /api/prometheus/* → Prometheus HTTP API (PromQL, read-only)
@@ -30,7 +28,7 @@ Browser ──HTTPS──> unibridge-ui (nginx)
 Keycloak   ── OIDC auth
 Prometheus ── APISIX/LiteLLM/FastAPI metrics + DB TCP probes
 LiteLLM    ── Unified LLM proxy (+ Postgres)
-Bifrost    ── LLM gateway behind /api/llm-bi, side by side with LiteLLM (UI via bifrost-tls)
+Bifrost    ── LLM gateway behind /api/llm under LLM_GATEWAY=bifrost (UI via bifrost-tls)
 ```
 
 **Services (11):** etcd, APISIX, Keycloak + Postgres, unibridge-service, Prometheus, Blackbox Exporter, Grafana, LiteLLM + Postgres, unibridge-ui
@@ -177,7 +175,7 @@ details.
 | Keycloak Admin | `https://<HOST_IP>:<KEYCLOAK_PORT>/admin` |
 | API Gateway | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/*` |
 | LiteLLM | `https://<HOST_IP>:<LITELLM_PORT>` (admin UI at `/ui` signs in via UniBridge SSO, admins only) |
-| Bifrost | `https://<HOST_IP>:<BIFROST_UI_PORT>`, or `https://<BIFROST_UI_HOSTNAME>` on the UniBridge port when that is set (UI and management API only, Bifrost's own admin login; see [Bifrost side-by-side test](#bifrost-side-by-side-test-apillm-bi)) |
+| Bifrost | `https://<HOST_IP>:<BIFROST_UI_PORT>`, or `https://<BIFROST_UI_HOSTNAME>` on the UniBridge port when that is set (UI and management API only, Bifrost's own admin login; see [Bifrost](#bifrost)) |
 | Prometheus | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/prometheus/*` (API-key auth via gateway; direct `:9090` is localhost-only, `PROMETHEUS_BIND` overrides) |
 | Grafana | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana` (same-origin behind the UI) |
 
@@ -711,31 +709,34 @@ This is deliberate data collection, so know what it keeps and where:
   (`docker compose restart litellm`, or restart it in the infra project on a
   blue-green host). Existing files remain on the volume until removed manually.
 
-### Bifrost side-by-side test (`/api/llm-bi`)
+### Bifrost
 
-[Bifrost](https://github.com/maximhq/bifrost) runs next to LiteLLM, so it can
-be evaluated as a LiteLLM replacement on real clients without touching
-`/api/llm`, which keeps running on LiteLLM exactly as before:
+[Bifrost](https://github.com/maximhq/bifrost) is the LLM gateway behind
+`/api/llm` under `LLM_GATEWAY=bifrost`
+([Switching /api/llm to Bifrost](#switching-apillm-to-bifrost)). It runs in the
+default stack whichever gateway `/api/llm` uses, so its UI and providers can be
+set up before the switch. Through the gateway it gets only the inference paths
+`/api/llm` routes to it. Nothing else of Bifrost is reachable there: not its UI
+at `/` (also served as a 200 fallback for unknown paths), not its management API
+under `/api/*`, not MCP under `/v1/mcp/*`, not `/metrics`. Off the gateway,
+Bifrost answers inference only with the virtual key APISIX injects — just as
+LiteLLM answers only the master key APISIX injects.
 
-```
-/api/llm/*                         → unchanged (LiteLLM / llm-converter)
-/api/llm-bi/v1/messages          ┐
-/api/llm-bi/v1/responses         ├→ llm-converter-bi → Bifrost /v1/chat/completions
-/api/llm-bi/v1/models            ┘
-/api/llm-bi/v1/chat/completions  ┐
-/api/llm-bi/v1/completions       ├→ Bifrost /v1/…
-/api/llm-bi/v1/embeddings        ┘
-```
-
-`llm-converter-bi` is the same converter image with only its upstream changed,
-so Claude Code and Codex get the same translation on both paths. Only those six
-exact paths are routed. Nothing else of Bifrost is reachable through the
-gateway: not its UI at `/` (also served as a 200 fallback for unknown paths),
-not its management API under `/api/*`, not MCP under `/v1/mcp/*`, not
-`/metrics`. Any other request under `/api/llm-bi/`, a wrong method included,
-gets a 404 whose message lists the six. Off the gateway, Bifrost answers
-inference only with the virtual key APISIX injects — just as LiteLLM answers
-only the master key APISIX injects.
+**`/api/llm-bi` has been removed.** Earlier releases ran Bifrost side by side
+with LiteLLM on `/api/llm-bi` (the `llm-bi-*` routes, a second converter
+`llm-converter-bi`, the `BIFROST_GATEWAY_ROUTES` switch). Provisioning now
+deletes those routes and the `llm-converter-bi` upstream (on a blue-green host,
+the first deploy after updating does it), and `/api/llm-bi` answers a 404 that
+points to `/api/llm`, which serves the same endpoints. Point clients at
+`/api/llm`; grants for the `llm-bi-*` routes no longer do anything, and
+`BIFROST_GATEWAY_ROUTES` can go from `.env`. `llm-converter-bi` is no longer in
+either compose file, so on an existing host its container keeps running as an
+orphan. Remove it by name, not with `--remove-orphans`: find it with
+`docker ps -a --filter name=llm-converter-bi` and `docker rm -f` it, then
+`docker volume rm unibridge_llm-converter-bi-state` (or the
+`LLM_CONVERTER_BI_STATE_VOLUME` you set) if you do not want its stored
+responses ([`docs/blue-green-deploy.md`](docs/blue-green-deploy.md#upgrading-past-the-apillm-bi-removal)
+has the exact commands).
 
 The Bifrost UI is served over HTTPS by the `bifrost-tls` nginx at
 `https://<HOST_IP>:<BIFROST_UI_PORT>` (default `18443`), because Bifrost itself
@@ -810,37 +811,39 @@ leaves, change the Bifrost admin password and set the new value as
      changed once data exists.
    - `BIFROST_ADMIN_PASSWORD` is the single admin login, enforced from the first
      boot ([`bifrost/config.json`](./bifrost/config.json)).
-   - `BIFROST_TEST_VK` is the gateway virtual key:
+   - `BIFROST_TEST_VK` is the gateway virtual key (the name dates from the
+     side-by-side test):
      `python3 -c "import secrets; print('sk-bf-' + secrets.token_urlsafe(32))"`.
      It must start with `sk-bf-`, because Bifrost silently replaces a value
      without the prefix, followed by at least 16 URL-safe characters (A–Z,
      a–z, 0–9, `-`, `_`), which the command above produces. unibridge-service
-     reads it too, for the routes in step 4, and installs them with no other
-     kind of key. `config.json` declares it with `allow_all_providers`, so
-     providers added later need no change, and `enforce_auth_on_inference`
-     makes it mandatory. To rotate it, change the value and recreate the
-     container with the start command in step 2 (`docker compose restart`
-     keeps the old environment, so every request would get a 401). Then
-     deploy: a blue-green deploy finds the routes injecting the old key and
-     re-provisions them, and warns if the bifrost container still runs with
-     another key; on a single stack, `docker compose up -d unibridge-service`
-     recreates the service with the new value.
+     reads it too: under `LLM_GATEWAY=bifrost` the `/api/llm` routes inject it
+     as `x-bf-vk`, and the service installs them with no other kind of key.
+     `config.json` declares it with `allow_all_providers`, so providers added
+     later need no change, and `enforce_auth_on_inference` makes it mandatory.
+     To rotate it, change the value and recreate the container with the start
+     command in step 2 (`docker compose restart` keeps the old environment, so
+     every request would get a 401). Then deploy: under `LLM_GATEWAY=bifrost` a
+     blue-green deploy finds the routes injecting the old key and re-provisions
+     them, and warns if the bifrost container still runs with another key; on a
+     single stack, `docker compose up -d unibridge-service` recreates the
+     service with the new value.
    - The admin login page is reachable from the network on `BIFROST_UI_PORT`,
      so give `BIFROST_ADMIN_PASSWORD` a long random value.
-2. **Start** — `bifrost`, `bifrost-tls` and `llm-converter-bi` are part of the
-   default stack in both layouts. A plain `docker compose up -d` starts them,
-   and the blue-green infra health gate requires them to be healthy like any
-   other infra service, so a down Bifrost blocks app deploys until it is back.
-   A normal blue-green deploy never starts new infra services, so on a host
-   whose infra project is already running, start them once (or deploy once with
+2. **Start** — `bifrost` and `bifrost-tls` are part of the default stack in
+   both layouts. A plain `docker compose up -d` starts them, and the blue-green
+   infra health gate requires them to be healthy like any other infra service,
+   so a down Bifrost blocks app deploys until it is back. A normal blue-green
+   deploy never starts new infra services, so on a host whose infra project is
+   already running without them, start them once (or deploy once with
    `RECONCILE_INFRA_ON_DEPLOY=true`):
 
    ```bash
    # blue-green host (shared infra project)
    docker compose -p unibridge-infra -f docker-compose.infra.yml \
-     up -d --build --wait bifrost bifrost-tls llm-converter-bi
+     up -d --wait bifrost bifrost-tls
    # single stack
-   docker compose up -d --build --wait bifrost bifrost-tls llm-converter-bi
+   docker compose up -d --wait bifrost bifrost-tls
    ```
 
    The **Bifrost Admin** button ships with the UI image, so it appears after
@@ -859,13 +862,11 @@ leaves, change the Bifrost admin password and set the new value as
    the `maximhq/bifrost` tag pinned in `docker-compose.infra.yml` with
    `docker save`/`docker load`; `bifrost-tls` runs `nginx:alpine`, which the
    edge and UI images already use.
-   `llm-converter-bi` builds from `./llm-converter` with the same mirror
-   settings as `llm-converter`.
 3. **Register providers** — in the Bifrost UI (the **Bifrost Admin** button) or
    through the management API on the host's loopback-only plain-HTTP port
    (`BIFROST_TEST_ADMIN_PORT`, default `18080`, used below). Register one
-   OpenAI-compatible custom provider per vLLM/SGLang server. For a fair
-   comparison with LiteLLM, match its settings
+   OpenAI-compatible custom provider per vLLM/SGLang server, with the timeouts
+   and retries LiteLLM had
    ([LiteLLM request timeout and retries](#litellm-request-timeout-and-retries)).
    `curl -u admin` prompts for the password, which keeps it out of the process
    list:
@@ -901,68 +902,15 @@ leaves, change the Bifrost admin password and set the new value as
      5xx/429 but never its own request timeout — the same effect as LiteLLM's
      `TimeoutErrorRetries: 0`.
    - List the LiteLLM model name in `models` and map it in `aliases` to the id
-     the server serves. Clients can then use the **same model names on both
-     paths**. `/v1/models` lists them as `provider/name`, and both forms work.
-4. **Routes** — unibridge-service installs them like its other system routes
-   while `BIFROST_GATEWAY_ROUTES` is on, the default
-   ([`bifrost_routes.py`](./unibridge-service/app/services/bifrost_routes.py)):
-   the `bifrost` and `llm-converter-bi` upstreams and four key-auth routes, all
-   deny-all by default: `llm-bi-proxy`, `llm-bi-messages`, `llm-bi-responses`
-   and `llm-bi-models`. Each route injects `BIFROST_TEST_VK` as `x-bf-vk`. A
-   fifth, `llm-bi-not-found`, answers the rest of `/api/llm-bi/` with a 404
-   that says what is served.
-   - **When:** a single stack installs them every time unibridge-service starts.
-     A blue-green deploy leaves routes alone unless they are out of step with
-     `BIFROST_GATEWAY_ROUTES` or `BIFROST_TEST_VK`; then it re-provisions on the
-     new color. So the first deploy after upgrading installs them. Without a
-     usable `BIFROST_TEST_VK` the service leaves the four routes as they are
-     and logs an error, and `llm-bi-not-found` says why.
-   - **Master keys** (`*`) are whitelisted on all four automatically by the
-     consumer-restriction reconciler.
-   - **Every other test key** needs all four granted on the **API Keys** page.
-     An `llm-proxy` grant does not imply them. Grants survive re-provisioning,
-     and switching the routes off and on again.
-   - They are system routes: the Gateway UI refuses to delete or re-point them
-     or their upstreams. `scripts/bifrost-test.sh status` shows what is
-     installed and whether it matches the switch and the key.
-   - If APISIX ever refuses `llm-bi-not-found` (say, after an APISIX upgrade;
-     the service logs "APISIX refused the llm-bi-not-found route" and boots
-     anyway), `/api/llm-bi` falls back to APISIX's bare 404, and every
-     blue-green deploy re-provisions until that is fixed.
-   - The alert checker probes every APISIX upstream, so a crashed Bifrost or
-     converter mails `upstream_health` alerts to the admins.
-   - **Switching off:** set `BIFROST_GATEWAY_ROUTES=false` and deploy (single
-     stack: `docker compose up -d unibridge-service`). The four routes and both
-     upstreams are removed, and `/api/llm-bi` answers a 404 saying it is
-     switched off. The containers keep running. An upstream that a route of
-     your own still uses stays, with a warning in the service log; remove that
-     route, then provision again (single stack: restart the service; blue-green:
-     delete the upstream through the APISIX admin API, since the Gateway UI
-     protects it).
-5. **Try it** — the live E2E suite runs unchanged against the new prefix:
+     the server serves. Clients then keep the **model names they used on
+     LiteLLM**. `/v1/models` lists them as `provider/name`, and both forms work.
+4. **Routes** — nothing to set up: under `LLM_GATEWAY=bifrost` provisioning
+   points the `/api/llm` routes at the `bifrost` upstream
+   ([`llm_routes.py`](./unibridge-service/app/services/llm_routes.py)). The
+   alert checker probes it like every APISIX upstream, so a crashed Bifrost
+   mails `upstream_health` alerts to the admins.
 
-   ```bash
-   cd e2e
-   LLM_BASE_URL=https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/llm-bi \
-     LLM_API_KEY=<test key> LLM_MODEL=qwen3.5-32b pytest -q
-   ```
-
-   Claude Code takes `ANTHROPIC_BASE_URL=https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/llm-bi`,
-   and Codex takes `base_url = ".../api/llm-bi/v1"`, as in
-   [Codex through UniBridge](#codex-through-unibridge).
-6. **Tear down** — order matters: switch the routes off first (step 4), then
-   stop the containers. Stopping them while the upstreams are still installed
-   mails `upstream_health` alerts. Only then stop the services
-   (`docker compose … rm -sf bifrost-tls llm-converter-bi bifrost`), and delete
-   the three service definitions from both `docker-compose.yml` and
-   `docker-compose.infra.yml` (plus the Bifrost button). Otherwise the next `up`
-   starts them again, and the blue-green infra health gate refuses to deploy
-   while they are missing. If the data is no longer wanted, also remove the
-   `unibridge_bifrost-test-data` and `unibridge_llm-converter-bi-state`
-   volumes. If etcd still holds the orphaned `bifrost` upstream from the June
-   2026 cutover, provisioning replaces it and switching off deletes it.
-
-Differences and limits to keep in mind while comparing:
+Differences from LiteLLM and limits:
 
 - **Conversation capture.** Bifrost traffic is not written to
   [LLM conversation capture](#llm-conversation-capture), which is a LiteLLM
@@ -989,9 +937,9 @@ Differences and limits to keep in mind while comparing:
   client header sent as `x-bf-eh-<name>` to the backend as `<name>`;
   `client.header_filter_config` in `config.json` denies all of them. On the
   converter routes the converter also drops every other client `x-bf-*` header
-  and Bifrost's `x-bifrost-*` response headers. The raw `llm-proxy` /
-  `llm-bi-proxy` responses keep those headers (provider, model and key names):
-  APISIX loads no plugin that could strip them.
+  and Bifrost's `x-bifrost-*` response headers. The raw `llm-proxy` responses
+  keep those headers (provider, model and key names): APISIX loads no plugin
+  that could strip them.
 - **Request rewriting.** Bifrost forwards `max_tokens` as
   `max_completion_tokens`, and was seen raising values below 16 to 16. Check
   that your backends honour `max_completion_tokens`.
@@ -1007,7 +955,7 @@ Differences and limits to keep in mind while comparing:
   Bifrost UI sticks across restarts until `config.json` itself changes.
 - **`allowed_requests` is an allowlist.** A provider registered with it serves
   only the operations set to `true`, so leave out `text_completion*` or
-  `embedding` and `/api/llm-bi/v1/completions` or `/v1/embeddings` is refused
+  `embedding` and `/api/llm/v1/completions` or `/v1/embeddings` is refused
   for that provider.
 
 ### Switching /api/llm to Bifrost
@@ -1045,8 +993,7 @@ What clients see on Bifrost:
   out while the active unibridge-service reports `bifrost`.
 
 The LLM monitoring page and the Grafana LLM dashboard add LiteLLM's and
-Bifrost's counters, so `/api/llm-bi` traffic counts as LLM traffic and the
-history carries across the switch. Model rows use the name the client asked
+Bifrost's counters, so the history carries across the switch. Model rows use the name the client asked
 for. Bifrost shortens a model id that no alias renamed (it drops suffixes such as
 `-v3`, `-preview` and dates), so register public names as key `aliases`.
 Bifrost's request count is one per request (the primary attempt), leaves out
@@ -1057,8 +1004,8 @@ with the bundled empty price list.
 Before switching:
 
 1. Register every model clients use in Bifrost under the same name (key `models`
-   plus `aliases`, step 3 of the side-by-side test), and run the E2E suite
-   against `/api/llm-bi`. List each model on one key only: Bifrost retries a
+   plus `aliases`, step 3 of [Bifrost](#bifrost)). List each model on one key
+   only: Bifrost retries a
    failing key on the same key and never fails over to another one, so put
    replicas of a model behind one router (such as smg) instead.
 2. Run Bifrost v2.2.5 or later ([Upgrading Bifrost](#upgrading-bifrost)).
@@ -1122,8 +1069,8 @@ an older tag.
 
 Bifrost migrates its config and log stores on boot. It is a single infra
 instance that a normal blue-green deploy never recreates, so a new tag takes
-effect only when you recreate the container, and `/api/llm-bi` is down for the
-few seconds that takes. Run `./backup/backup.sh` first: it snapshots the config
+effect only when you recreate the container, and `/api/llm` under
+`LLM_GATEWAY=bifrost` is down for the few seconds that takes. Run `./backup/backup.sh` first: it snapshots the config
 store (providers, provider keys, virtual keys) as `bifrost-config.db.gz`, which
 `./backup/restore.sh bifrost <snapshot>` puts back
 ([`backup/README.md`](./backup/README.md)). The snapshot leaves out `logs.db`,
@@ -1168,8 +1115,7 @@ A change to `bifrost/config.json`, such as the `x-bf-eh-*` header filter or
 content logging, also takes a new container, since `up` leaves an unchanged
 service running on the file it booted with:
 `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --force-recreate --wait bifrost`
-(`/api/llm-bi`, and `/api/llm` under `LLM_GATEWAY=bifrost`, is down until it is
-healthy). Bifrost then syncs its whole client section from the file, so client
+(`/api/llm` under `LLM_GATEWAY=bifrost` is down until it is healthy). Bifrost then syncs its whole client section from the file, so client
 settings changed in its UI since go back to the file's values.
 
 Rows logged while content logging was on keep their content until the 14-day

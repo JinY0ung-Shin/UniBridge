@@ -39,7 +39,7 @@
       {
         "id": "unibridge-gateway",
         "name": "unibridge-gateway",
-        "description": "Injected by APISIX on the /api/llm-bi routes (scripts/bifrost-test.sh); every other caller is refused",
+        "description": "Injected by APISIX on the /api/llm routes under LLM_GATEWAY=bifrost; every other caller is refused",
         "value": "env.BIFROST_TEST_VK",
         "is_active": true,
         "allow_all_providers": true

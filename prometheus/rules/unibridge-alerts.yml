@@ -119,9 +119,10 @@ groups:
           summary: "LiteLLM database TCP probe failed"
           description: "blackbox-exporter cannot connect to litellm-db:5432."
 
-      # Bifrost serves /api/llm-bi, and /api/llm once it is switched over. The
-      # in-app upstream_health check reaches it through APISIX as well; this
-      # one still fires while unibridge-service itself is down.
+      # Bifrost serves /api/llm under LLM_GATEWAY=bifrost, and runs in the
+      # default stack either way. There the in-app upstream_health check
+      # reaches it through APISIX as well; this one still fires while
+      # unibridge-service itself is down.
       - alert: BifrostDown
         expr: up{job="bifrost"} == 0
         for: 1m

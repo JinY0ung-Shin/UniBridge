@@ -285,10 +285,8 @@ services:
       - BIFROST_ADMIN_USERNAME=${BIFROST_ADMIN_USERNAME:-admin}
       - BIFROST_ADMIN_PASSWORD=${BIFROST_ADMIN_PASSWORD:-}
       - BIFROST_SSO_SESSION_HOURS=${BIFROST_SSO_SESSION_HOURS:-8}
-      # The /api/llm-bi routes in front of Bifrost (app/services/bifrost_routes.py):
-      # installed at provisioning boots, injecting the virtual key the bifrost
-      # container runs with; false removes them again.
-      - BIFROST_GATEWAY_ROUTES=${BIFROST_GATEWAY_ROUTES:-true}
+      # The virtual key the /api/llm routes inject under LLM_GATEWAY=bifrost
+      # (app/services/llm_routes.py): the value the bifrost container runs with.
       - BIFROST_TEST_VK=${BIFROST_TEST_VK:-}
       # Which gateway serves /api/llm: litellm or bifrost (README "Switching
       # /api/llm to Bifrost"). llm-converter reads the same value.
@@ -777,12 +775,12 @@ services:
     networks:
       - apihub-net
 
-  # ── Bifrost, side by side with LiteLLM (/api/llm-bi) ──
+  # ── Bifrost: the gateway behind /api/llm under LLM_GATEWAY=bifrost ──
   # Part of the default stack: a plain `up` starts it, and the blue/green
   # deploy's infra health gate requires it healthy like any infra service.
-  # /api/llm stays on LiteLLM; unibridge-service installs the /api/llm-bi
-  # routes while BIFROST_GATEWAY_ROUTES is on. These three services are
-  # identical in docker-compose.yml and docker-compose.infra.yml (tested).
+  # unibridge-service points the /api/llm routes at it while LLM_GATEWAY=bifrost
+  # (README "Switching /api/llm to Bifrost"). These two services are identical
+  # in docker-compose.yml and docker-compose.infra.yml (tested).
   bifrost:
     image: maximhq/bifrost:v2.2.6
     restart: unless-stopped
@@ -804,8 +802,9 @@ services:
       - BIFROST_ADMIN_USERNAME=${BIFROST_ADMIN_USERNAME:-admin}
       - BIFROST_ADMIN_PASSWORD=${BIFROST_ADMIN_PASSWORD:?BIFROST_ADMIN_PASSWORD is required}
       # The one virtual key Bifrost accepts on inference (config.json
-      # enforce_auth_on_inference); APISIX injects it on the /api/llm-bi routes,
-      # so nothing that bypasses the gateway gets an answer.
+      # enforce_auth_on_inference); APISIX injects it on the /api/llm routes
+      # under LLM_GATEWAY=bifrost, so nothing that bypasses the gateway gets an
+      # answer.
       - BIFROST_TEST_VK=${BIFROST_TEST_VK:?BIFROST_TEST_VK is required}
       - LOG_LEVEL=${BIFROST_LOG_LEVEL:-info}
       - LOG_STYLE=json
@@ -815,8 +814,8 @@ services:
     ports:
       # Loopback only, plain HTTP: the management API for curl on the host.
       # Browsers reach the UI through bifrost-tls below. The gateway forwards
-      # only the /api/llm-bi inference paths, and inference here needs the
-      # gateway's virtual key.
+      # only the /api/llm inference paths (under LLM_GATEWAY=bifrost), and
+      # inference here needs the gateway's virtual key.
       - "127.0.0.1:${BIFROST_TEST_ADMIN_PORT:-18080}:8080"
     volumes:
       - bifrost-test-data:/app/data
@@ -839,7 +838,7 @@ services:
   # serves plain HTTP only). bifrost/tls-proxy.conf forwards the UI pages, the
   # management API (behind the Bifrost admin login) and the live-update socket,
   # but not inference or /metrics: model traffic enters through the gateway's
-  # /api/llm-bi routes only.
+  # /api/llm routes only.
   bifrost-tls:
     image: nginx:alpine
     restart: unless-stopped
@@ -868,76 +867,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
-    networks:
-      - apihub-net
-
-  # Second converter in front of Bifrost, so /api/llm-bi/v1/messages and
-  # /v1/responses get exactly the translation /api/llm gets; only the upstream
-  # differs. Same build context as llm-converter.
-  llm-converter-bi:
-    image: llm-converter:bifrost-test
-    build:
-      context: ./llm-converter
-      args:
-        HTTP_PROXY: ${HTTP_PROXY:-}
-        HTTPS_PROXY: ${HTTPS_PROXY:-}
-        NO_PROXY: ${NO_PROXY:-}
-        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
-        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
-    restart: unless-stopped
-    init: true
-    logging: *default-logging
-    mem_limit: 512m
-    cpus: "0.50"
-    deploy:
-      resources:
-        limits:
-          memory: 512m
-          cpus: "0.50"
-    environment:
-      # Always in front of Bifrost, whatever LLM_GATEWAY says for /api/llm.
-      # Bifrost serves plain HTTP on the internal network (it has no TLS
-      # listener), so there is no CA to pin.
-      - LLM_GATEWAY=bifrost
-      - LITELLM_URL=http://bifrost:8080
-      - CONVERTER_TLS_CA=
-      - CONVERTER_TLS_VERIFY=false
-      # Everything below mirrors llm-converter, so both paths run on the same knobs.
-      - CONVERTER_REQUEST_TIMEOUT=${CONVERTER_REQUEST_TIMEOUT:-0}
-      - CONVERTER_CONNECT_TIMEOUT=${CONVERTER_CONNECT_TIMEOUT:-10}
-      - CONVERTER_WRITE_TIMEOUT=${CONVERTER_WRITE_TIMEOUT:-120}
-      - CONVERTER_POOL_TIMEOUT=${CONVERTER_POOL_TIMEOUT:-10}
-      - CONVERTER_SSE_HEARTBEAT_SECONDS=${CONVERTER_SSE_HEARTBEAT_SECONDS:-15}
-      - CONVERTER_MAX_BODY_BYTES=${CONVERTER_MAX_BODY_BYTES:-33554432}
-      - CONVERTER_RESPONSE_STORE_PATH=${CONVERTER_RESPONSE_STORE_PATH:-/var/lib/llm-converter/responses.sqlite3}
-      - CONVERTER_RESPONSE_STORE_TTL=${CONVERTER_RESPONSE_STORE_TTL:-3600}
-      - CONVERTER_RESPONSE_STORE_MAX=${CONVERTER_RESPONSE_STORE_MAX:-10000}
-      - CONVERTER_RESPONSE_STORE_MAX_BYTES=${CONVERTER_RESPONSE_STORE_MAX_BYTES:-67108864}
-      - CONVERTER_RESPONSE_STORE_MAX_ENTRY_BYTES=${CONVERTER_RESPONSE_STORE_MAX_ENTRY_BYTES:-16777216}
-      - CONVERTER_EMIT_REASONING=${CONVERTER_EMIT_REASONING:-true}
-      - CONVERTER_LENGTH_AS_COMPLETED=${CONVERTER_LENGTH_AS_COMPLETED:-auto}
-      - CONVERTER_FLATTEN_NAMESPACE_TOOLS=${CONVERTER_FLATTEN_NAMESPACE_TOOLS:-true}
-      - CONVERTER_REASONING_EFFORT_LEVELS=${CONVERTER_REASONING_EFFORT_LEVELS:-low,medium,high}
-      - CONVERTER_TRACE=${CONVERTER_TRACE:-false}
-      - CONVERTER_MID_SYSTEM_POLICY=${CONVERTER_MID_SYSTEM_POLICY:-user}
-      - CONVERTER_MID_SYSTEM_MODEL_PATTERN=${CONVERTER_MID_SYSTEM_MODEL_PATTERN:-}
-    expose:
-      - "4001"
-    volumes:
-      # Its own previous_response_id store: a response id minted on one path
-      # must not resolve on the other.
-      - llm-converter-bi-state:/var/lib/llm-converter
-    depends_on:
-      # Healthy, not just started: otherwise the converter could come up before
-      # the bifrost name resolved and fail its requests (#95).
-      bifrost:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4001/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     networks:
       - apihub-net
 
@@ -1035,4 +964,3 @@ volumes:
   llm-converter-state:
   # Bifrost (see the bifrost service).
   bifrost-test-data:
-  llm-converter-bi-state:

@@ -162,7 +162,6 @@ when this repo runs as project `unibridge`:
 - `unibridge_prometheus-file-sd`
 - `unibridge_llm-converter-state`
 - `unibridge_bifrost-test-data`
-- `unibridge_llm-converter-bi-state`
 
 If the old deployment used a different `COMPOSE_PROJECT_NAME`, set these in
 `.env` before running the split stack:
@@ -178,7 +177,6 @@ PROMETHEUS_DATA_VOLUME=<old-project>_prometheus-data
 PROMETHEUS_FILE_SD_VOLUME=<old-project>_prometheus-file-sd
 LLM_CONVERTER_STATE_VOLUME=<old-project>_llm-converter-state
 BIFROST_TEST_DATA_VOLUME=<old-project>_bifrost-test-data
-LLM_CONVERTER_BI_STATE_VOLUME=<old-project>_llm-converter-bi-state
 ```
 
 The deploy script creates the shared app-data and converter-state volumes if
@@ -241,7 +239,7 @@ definition changed: `docker-compose.edge.yml` itself, a `.env` value it reads
 while it drains open requests (up to Docker's 10 s stop grace period) and the
 new container starts, and requests still open at the end of the grace period,
 LLM streams for example, are cut. The certificate mounts for
-`BIFROST_UI_HOSTNAME` (README "Bifrost side-by-side test") were such a change.
+`BIFROST_UI_HOSTNAME` (README, Bifrost UI) were such a change.
 The edge config itself is rendered from `deploy/edge/` on every switch, with a
 server for `BIFROST_UI_HOSTNAME` while it is set.
 
@@ -320,17 +318,55 @@ re-provisioning on the new color instead of promoting broken routing. The
 `llm-proxy` and `llm-metrics` point at Bifrost, every route to Bifrost or the
 converter injects the current `BIFROST_TEST_VK`, `llm-not-found` is there and
 LiteLLM's `llm-admin` is gone. So flipping `LLM_GATEWAY` takes effect on the
-next deploy, and flipping it back is the rollback. The
-`/api/llm-bi` routes are held to `BIFROST_GATEWAY_ROUTES` from `.env`: present
-and injecting the current `BIFROST_TEST_VK` while it is on, absent once it is
-off, with `llm-bi-not-found` in place either way (a key the service cannot use
-leaves the four routes unchecked, as the service leaves them alone). Flipping
-the switch or rotating the key therefore takes effect on the next deploy,
-through the same forced re-provisioning. (Should APISIX ever refuse
-`llm-bi-not-found`, which the service logs and boots past, every deploy
-re-provisions until that is fixed.) The deploy also warns, without stopping,
-when the infra `bifrost` container still runs with another `BIFROST_TEST_VK`
-than `.env`: it needs a recreate before it accepts the new key.
+next deploy, and flipping it back is the rollback; so does a rotated
+`BIFROST_TEST_VK`. On Bifrost the deploy also warns, without stopping, when the
+infra `bifrost` container still runs with another `BIFROST_TEST_VK` than
+`.env`: it needs a recreate before it accepts the new key.
+
+The old `/api/llm-bi` side-by-side routes are retired the same way: the deploy
+re-provisions while any of `llm-bi-proxy`, `llm-bi-messages`,
+`llm-bi-responses`, `llm-bi-models` or the `llm-converter-bi` upstream is still
+in APISIX, or `llm-bi-not-found` does not yet say that `/api/llm-bi` has been
+removed. Boot provisioning deletes them and leaves `llm-bi-not-found` behind, a
+404 pointing callers at `/api/llm`. (Should APISIX ever refuse
+`llm-bi-not-found`, which the service logs and boots past, or a route of your
+own still use the `llm-converter-bi` upstream, which the service then keeps with
+a warning, every deploy re-provisions until that is fixed.)
+
+### Upgrading past the `/api/llm-bi` removal
+
+The release that removed `/api/llm-bi` also dropped the `llm-converter-bi`
+service from `docker-compose.infra.yml`. Deploys never run `compose up` on the
+infra stack, so on a host that had it, its container keeps running as an
+orphan. After the first deploy of that release (which takes the routes and the
+upstream out of APISIX), remove it by name. Do not reach for `--remove-orphans`
+on the infra project, and never `down -v`: the volume names are fixed, so that
+would delete the shared data volumes.
+
+```bash
+# Expect unibridge-infra-llm-converter-bi-1
+docker ps -a --filter label=com.docker.compose.project=unibridge-infra \
+  --filter label=com.docker.compose.service=llm-converter-bi --format '{{.Names}}'
+docker stop unibridge-infra-llm-converter-bi-1
+docker rm unibridge-infra-llm-converter-bi-1
+# Optional: its previous_response_id store and its image
+docker volume rm unibridge_llm-converter-bi-state
+docker image rm llm-converter:bifrost-test
+```
+
+`backup/lib/bifrost.sh` used to borrow `llm-converter:bifrost-test` for its
+Python; it now takes the image of the app tier's `llm-converter` container
+(`BIFROST_BACKUP_IMAGE` still overrides it), so the image can go. Remove
+`BIFROST_GATEWAY_ROUTES` and `LLM_CONVERTER_BI_STATE_VOLUME` from `.env` if
+set; nothing reads them any more.
+
+Going back to a checkout from before the removal (a deploy, not an edge
+`rollback`) brings `llm-converter-bi` back into its infra compose: that deploy
+refuses to start while the service is not running (or recreates it with
+`RECONCILE_INFRA_ON_DEPLOY=true`), and its boot reinstalls the `/api/llm-bi`
+routes. Start it first:
+`docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --build llm-converter-bi`
+on that checkout.
 
 LiteLLM and its database run only while `LLM_GATEWAY` is `litellm`:
 `litellm/compose-gate.yml` leaves `litellm` and `litellm-db` out of a plain `up`

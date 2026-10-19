@@ -796,7 +796,7 @@
     "adminDashboard": "LiteLLM 관리",
     "adminSsoHint": "LiteLLM 관리 UI를 새 탭에서 엽니다 (admin 계정만 UniBridge SSO 로그인 가능)",
     "bifrostAdmin": "Bifrost 관리",
-    "bifrostAdminHint": "Bifrost 관리 UI를 새 탭에서 엽니다. /api/llm-bi 트래픽은 이 페이지가 아니라 그쪽에 표시됩니다."
+    "bifrostAdminHint": "Bifrost 관리 UI를 새 탭에서 엽니다 (프로바이더·가상 키·요청 로그, admin 계정만)"
   },
   "roles": {
     "title": "역할",

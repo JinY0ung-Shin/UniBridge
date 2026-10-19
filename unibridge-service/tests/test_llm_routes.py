@@ -17,26 +17,29 @@ Pinned here:
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
-from app.main import _provision_bifrost_routes, _provision_llm_routes
+from app.main import _provision_llm_routes
 from app.routers.gateway import (
     _SYSTEM_INJECTED_HEADERS,
     _SYSTEM_ROUTE_URIS,
     _health_path_for_route,
     _shadowed_system_uri,
 )
-from app.services import bifrost_routes, llm_routes
+from app.services import llm_routes
+from app.services.openapi_export import build_openapi_spec
 from app.services.apisix_system_resources import (
-    BIFROST_UPSTREAM_IDS,
     LLM_NOT_FOUND_ROUTE_ID,
     PROTECTED_ROUTE_IDS,
+    PROTECTED_UPSTREAM_IDS,
 )
 from app.services.consumer_restrictions import DENY_ALL_CONSUMER, IMPLIED_ROUTES
-from tests.test_bifrost_routes import _FakeApisix, _status_error
+from tests.conftest import auth_header
 
 VK = "sk-bf-" + "v" * 32
 MASTER = "sk-litellm-master"
@@ -71,6 +74,12 @@ def _on_bifrost(vk: str = VK, master_key: str = MASTER) -> dict[str, dict]:
 
 def _headers(body: dict) -> dict:
     return body["plugins"]["proxy-rewrite"].get("headers", {})
+
+
+def _status_error(status_code: int, text: str = "") -> httpx.HTTPStatusError:
+    request = httpx.Request("DELETE", "http://apisix:9180/apisix/admin/x")
+    response = httpx.Response(status_code, text=text, request=request)
+    return httpx.HTTPStatusError(f"{status_code}", request=request, response=response)
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +129,7 @@ def test_bifrost_exposes_only_the_served_paths() -> None:
     assert headers["set"]["x-bf-lh-consumer"] == "$consumer_name"
     # Non-OpenAI fields reach the backend on the raw proxy, as through LiteLLM.
     assert headers["set"]["x-bf-passthrough-extra-params"] == "true"
-    assert headers["remove"] == list(bifrost_routes.REMOVED_HEADERS)
+    assert headers["remove"] == list(llm_routes.REMOVED_HEADERS)
 
     metrics = bodies["llm-metrics"]
     assert metrics["upstream_id"] == "bifrost"
@@ -154,7 +163,7 @@ def test_converter_routes_carry_each_configured_credential() -> None:
         "x-bf-lh-consumer": "$consumer_name",
     }
     # The client's own credential headers never reach either gateway.
-    assert headers["remove"] == [h for h in bifrost_routes.REMOVED_HEADERS if h != "Authorization"]
+    assert headers["remove"] == [h for h in llm_routes.REMOVED_HEADERS if h != "Authorization"]
     assert _paths(both) == ["/api/llm/v1/messages", "/api/llm/v1/messages/count_tokens"]
     assert both["upstream_id"] == "llm-converter"
     # On LiteLLM, count_tokens stays on llm-proxy's catch-all: LiteLLM answers it.
@@ -245,9 +254,79 @@ def test_route_health_path_follows_the_upstream(route, path) -> None:
     assert _health_path_for_route(route) == path
 
 
+# Shared with test_deployment_security.py, which holds the deploy script's rule to it.
+VIRTUAL_KEY_CASES = [
+    (VK, True),
+    ("sk-bf-" + "x" * 16, True),
+    ("sk-bf-Az09_-" + "x" * 10, True),
+    ("sk-bf-" + "x" * 15, False),
+    ("v" * 40, False),
+    ("SK-BF-" + "x" * 32, False),
+    ("", False),
+    # Bifrost would take these, but the deploy script finds the key in
+    # whitespace-stripped, JSON-escaped route bodies, where they never match.
+    ("sk-bf-" + "x" * 16 + " y", False),
+    ("sk-bf-" + "x" * 16 + '"y', False),
+    ("sk-bf-" + "x" * 16 + "\\y", False),
+    ("sk-bf-" + "x" * 16 + "+y", False),
+    ("sk-bf-" + "x" * 16 + "é", False),
+]
+
+
+@pytest.mark.parametrize("value,usable", VIRTUAL_KEY_CASES)
+def test_usable_virtual_key_takes_only_url_safe_keys(value: str, usable: bool) -> None:
+    assert llm_routes.usable_virtual_key(value) is usable
+
+
+def test_bifrost_upstream_is_protected_and_plain_http() -> None:
+    # A protected upstream cannot be re-pointed to harvest the injected key.
+    assert "bifrost" in PROTECTED_UPSTREAM_IDS
+    assert llm_routes.BIFROST_UPSTREAM["nodes"] == {"bifrost:8080": 1}
+    assert llm_routes.BIFROST_UPSTREAM["scheme"] == "http"
+
+
 # ---------------------------------------------------------------------------
 # Provisioning
 # ---------------------------------------------------------------------------
+
+
+class _FakeApisix:
+    """Admin API stand-in recording every write in order.
+
+    ``existing`` maps ``(resource, id)`` to what a GET returns; a DELETE of
+    anything else is a 404. ``delete_errors`` / ``put_errors`` make one DELETE
+    or PUT raise instead.
+    """
+
+    def __init__(self, existing=None, delete_errors=None, put_errors=None):
+        self.existing = dict(existing or {})
+        self.delete_errors = dict(delete_errors or {})
+        self.put_errors = dict(put_errors or {})
+        self.writes: list[tuple[str, str, str]] = []
+        self.bodies: dict[tuple[str, str], dict] = {}
+
+    async def get_resource(self, resource, resource_id):
+        try:
+            return deepcopy(self.existing[(resource, resource_id)])
+        except KeyError:
+            raise _status_error(404) from None
+
+    async def put_resource(self, resource, resource_id, body):
+        self.writes.append(("PUT", resource, resource_id))
+        error = self.put_errors.get((resource, resource_id))
+        if error is not None:
+            raise error
+        self.bodies[(resource, resource_id)] = deepcopy(body)
+        return body
+
+    async def delete_resource(self, resource, resource_id):
+        self.writes.append(("DELETE", resource, resource_id))
+        error = self.delete_errors.get((resource, resource_id))
+        if error is not None:
+            raise error
+        if (resource, resource_id) not in self.existing:
+            raise _status_error(404)
+
 
 
 async def _provision(fake: _FakeApisix, **settings) -> None:
@@ -314,7 +393,7 @@ async def test_bifrost_installs_the_exact_paths_then_the_404_route() -> None:
     ]
     for route_id, body in _on_bifrost().items():
         assert fake.bodies[("routes", route_id)] == body, route_id
-    assert fake.bodies[("upstreams", "bifrost")] == bifrost_routes.UPSTREAMS["bifrost"]
+    assert fake.bodies[("upstreams", "bifrost")] == llm_routes.BIFROST_UPSTREAM
     assert fake.bodies[("routes", LLM_NOT_FOUND_ROUTE_ID)] == llm_routes.not_found_route()
 
 
@@ -447,16 +526,97 @@ async def test_a_404_route_outage_still_reaches_the_retry_loop() -> None:
         await _provision(fake, LLM_GATEWAY="bifrost")
 
 
-async def test_switching_llm_bi_off_keeps_the_upstream_api_llm_runs_on() -> None:
-    fake = _FakeApisix({("upstreams", upstream_id): {"id": upstream_id} for upstream_id in BIFROST_UPSTREAM_IDS})
-    config = SimpleNamespace(BIFROST_GATEWAY_ROUTES=False, BIFROST_TEST_VK=VK, LLM_GATEWAY="bifrost")
-    with (
-        patch("app.main.settings", config),
-        patch("app.services.apisix_client.get_resource", fake.get_resource),
-        patch("app.services.apisix_client.put_resource", fake.put_resource),
-        patch("app.services.apisix_client.delete_resource", fake.delete_resource),
-    ):
-        await _provision_bifrost_routes()
+# ---------------------------------------------------------------------------
+# The gateway router keeps the system headers on Bifrost
+# ---------------------------------------------------------------------------
 
-    assert ("DELETE", "upstreams", "bifrost") not in fake.writes
-    assert ("DELETE", "upstreams", "llm-converter-bi") in fake.writes
+
+def _provisioned_responses_route() -> dict:
+    return {
+        "id": "llm-responses",
+        **llm_routes.converter_route(
+            "llm-responses", master_key="", virtual_key=VK, on_bifrost=True
+        ),
+    }
+
+
+def _responses_body(**overrides) -> dict:
+    route = _provisioned_responses_route()
+    body = {
+        key: route[key] for key in ("name", "uri", "methods", "priority", "upstream_id", "status")
+    }
+    body.update(overrides)
+    return body
+
+
+def _save_mocks(existing: dict):
+    return (
+        patch(
+            "app.routers.gateway.apisix_client.list_resources",
+            new_callable=AsyncMock,
+            return_value={"items": [deepcopy(existing)], "total": 1},
+        ),
+        patch(
+            "app.routers.gateway.apisix_client.put_resource",
+            new_callable=AsyncMock,
+            return_value=deepcopy(existing),
+        ),
+    )
+
+
+async def test_service_key_edit_keeps_the_virtual_key_and_attribution(client, admin_token) -> None:
+    listing, put = _save_mocks(_provisioned_responses_route())
+    with listing, put as mock_put:
+        resp = await client.put(
+            "/admin/gateway/routes/llm-responses",
+            json=_responses_body(service_keys=[{"header_name": "X-Extra", "header_value": "v"}]),
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 200, resp.text
+    headers = mock_put.call_args[0][2]["plugins"]["proxy-rewrite"]["headers"]
+    assert headers["set"] == {
+        "X-Extra": "v",
+        "x-bf-vk": VK,
+        "x-bf-dim-consumer": "$consumer_name",
+        "x-bf-lh-consumer": "$consumer_name",
+    }
+    assert headers["remove"] == list(llm_routes.REMOVED_HEADERS)
+
+
+@pytest.mark.parametrize("header", ["x-bf-vk", "X-BF-VK", "x-bf-lh-consumer", "x-bf-dim-consumer"])
+async def test_a_hand_set_bifrost_header_is_refused(client, admin_token, header) -> None:
+    listing, put = _save_mocks(_provisioned_responses_route())
+    with listing, put as mock_put:
+        resp = await client.put(
+            "/admin/gateway/routes/llm-responses",
+            json=_responses_body(service_keys=[{"header_name": header, "header_value": "attacker"}]),
+            headers=auth_header(admin_token),
+        )
+    assert resp.status_code == 400
+    assert "startup provisioning" in resp.json()["detail"]
+    mock_put.assert_not_awaited()
+
+
+async def test_curl_sample_uses_the_first_path_of_a_multi_path_route(client, admin_token) -> None:
+    route = {"id": "llm-proxy", **llm_routes.bifrost_proxy_route(VK)}
+    with patch(
+        "app.routers.gateway.apisix_client.get_resource",
+        new_callable=AsyncMock,
+        return_value=route,
+    ):
+        resp = await client.get(
+            "/admin/gateway/routes/llm-proxy/curl", headers=auth_header(admin_token)
+        )
+    assert resp.status_code == 200
+    curl = resp.json()["curl"]
+    assert "-X POST" in curl
+    assert "/api/llm/v1/chat/completions'" in curl
+
+
+def test_openapi_lists_the_endpoints_but_not_the_404_route() -> None:
+    routes = [{"id": route_id, **body} for route_id, body in _on_bifrost().items()]
+    routes.append({"id": LLM_NOT_FOUND_ROUTE_ID, **llm_routes.not_found_route()})
+
+    spec = build_openapi_spec(routes, [], server_url="https://gateway.example")
+
+    assert set(spec["paths"]) == {path for _method, path in ON_BIFROST}

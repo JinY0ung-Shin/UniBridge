@@ -182,10 +182,10 @@ describe('GatewayRoutes', () => {
         makeGatewayRoute({ id: 'route-1', name: 'orders-route', uri: '/api/orders/*' }),
         // APISIX keeps several paths in `uris`, with no `uri` at all.
         makeGatewayRoute({
-          id: 'llm-bi-proxy',
-          name: 'llm-bi-proxy',
+          id: 'llm-proxy',
+          name: 'llm-proxy',
           uri: undefined,
-          uris: ['/api/llm-bi/v1/chat/completions', '/api/llm-bi/v1/embeddings'],
+          uris: ['/api/llm/v1/chat/completions', '/api/llm/v1/embeddings'],
           system: true,
         }),
       ],
@@ -194,24 +194,24 @@ describe('GatewayRoutes', () => {
 
     renderWithProviders(<GatewayRoutes />);
 
-    const row = (await screen.findByText('llm-bi-proxy')).closest('tr');
-    expect(within(row!).getByText('/api/llm-bi/v1/chat/completions, /api/llm-bi/v1/embeddings'))
+    const row = (await screen.findByText('llm-proxy')).closest('tr');
+    expect(within(row!).getByText('/api/llm/v1/chat/completions, /api/llm/v1/embeddings'))
       .toHaveClass('cell-uri');
 
     await userEvent.type(screen.getByRole('searchbox', { name: 'Search routes...' }), 'embeddings');
     expect(screen.queryByText('orders-route')).not.toBeInTheDocument();
-    expect(screen.getByText('llm-bi-proxy')).toBeInTheDocument();
+    expect(screen.getByText('llm-proxy')).toBeInTheDocument();
   });
 
   it('offers no upstream test on a route without an upstream', async () => {
     mockedGetGatewayRoutes.mockResolvedValue({
       items: [
         makeGatewayRoute({ id: 'route-1', name: 'orders-route', uri: '/api/orders/*' }),
-        // Answers every request itself (the /api/llm-bi not-found route).
+        // Answers every request itself (llm-not-found).
         makeGatewayRoute({
-          id: 'llm-bi-not-found',
-          name: 'llm-bi-not-found',
-          uri: '/api/llm-bi/*',
+          id: 'llm-not-found',
+          name: 'llm-not-found',
+          uri: '/api/llm/*',
           upstream_id: undefined,
           system: true,
         }),
@@ -222,8 +222,8 @@ describe('GatewayRoutes', () => {
     renderWithProviders(<GatewayRoutes />);
 
     expect(await screen.findByRole('button', { name: 'Test route orders-route' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Test route llm-bi-not-found' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Show cURL for route llm-bi-not-found' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Test route llm-not-found' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show cURL for route llm-not-found' })).toBeInTheDocument();
   });
 
   it('shows active status badge', async () => {

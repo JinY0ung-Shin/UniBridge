@@ -1991,7 +1991,7 @@ class TestMetricsUsages:
             )
         assert resp.status_code == 200
         assert 'route!="llm-proxy"' in mock.call_args.args[0]
-        # /api/llm-bi is LLM traffic too.
+        # So are the removed /api/llm-bi routes, whose series linger.
         assert 'route!="llm-bi-proxy"' in mock.call_args.args[0]
 
     async def test_include_llm_drops_route_exclusion(self, client, admin_token):
@@ -2789,7 +2789,7 @@ class TestPermissions:
         ["llm-messages", "llm-responses", "llm-bi-proxy", "llm-bi-messages", "llm-bi-responses"],
     )
     async def test_user_cannot_read_llm_converter_routes(self, client, user_token, llm_route):
-        # The converter routes and the /api/llm-bi routes are admin-scope only,
+        # The converter routes and the removed /api/llm-bi ones are admin-scope only,
         # same as llm-proxy.
         resp = await client.get(
             f"/admin/gateway/metrics/summary?range=1h&route={llm_route}",
@@ -3135,7 +3135,7 @@ class TestLlmByModelSeries:
         assert instant_mock.call_args.kwargs["eval_time"] == float(end)
 
 
-# The default exclusion: every LLM route, /api/llm and /api/llm-bi alike.
+# The default exclusion: every LLM route, the removed /api/llm-bi ones included.
 _LLM_EXCLUDED = (
     'route!="llm-proxy",route!="llm-messages",route!="llm-responses",'
     'route!="llm-bi-proxy",route!="llm-bi-messages",route!="llm-bi-responses"'

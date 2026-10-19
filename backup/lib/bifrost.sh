@@ -10,11 +10,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # keeps for 14 days and traffic writes again.
 #
 # The Bifrost image has neither sqlite3 nor Python, so a one-shot sibling
-# container that mounts the volume does the SQLite work. Its default image is
-# the one compose builds for llm-converter-bi next to Bifrost, so nothing is
-# pulled (--pull never: production may be air-gapped). Any local image with
-# python3 works.
-BIFROST_BACKUP_IMAGE="${BIFROST_BACKUP_IMAGE:-llm-converter:bifrost-test}"
+# container that mounts the volume does the SQLite work. Unless
+# BIFROST_BACKUP_IMAGE names one, it runs the image of the app tier's
+# llm-converter container: a Python image the same compose files build on this
+# host, so nothing is pulled (--pull never: production may be air-gapped). Any
+# local image with python3 works.
+BIFROST_BACKUP_IMAGE="${BIFROST_BACKUP_IMAGE:-}"
 
 # Where the bifrost service mounts its data volume (the sibling container
 # mounts it at the same path), and the config store in it.
@@ -27,11 +28,21 @@ bifrost_containers() {
   infra_compose ps -aq bifrost 2>/dev/null || true
 }
 
-# Fail before anything changes when the image is missing: --pull never would
-# only fail later, and a restore would by then have stopped Bifrost.
+# Settles BIFROST_BACKUP_IMAGE, then fails before anything changes when the
+# image is missing: --pull never would only fail later, and a restore would by
+# then have stopped Bifrost. The image id, not its tag, of the llm-converter
+# container (running or stopped): a rebuild may have moved the tag on.
 require_bifrost_tools_image() {
+  if [[ -z "$BIFROST_BACKUP_IMAGE" ]]; then
+    local cids cid=""
+    # No `| head`: under pipefail an early-closed pipe could fail a good listing.
+    cids="$(app_compose ps -aq llm-converter 2>/dev/null)" || cids=""
+    cid="${cids%%$'\n'*}"
+    [[ -n "$cid" ]] && BIFROST_BACKUP_IMAGE="$(docker inspect --format '{{.Image}}' "$cid" 2>/dev/null)" || \
+      die "bifrost: no llm-converter container on the app tier to take a python3 image from; start the app stack or set BIFROST_BACKUP_IMAGE to a local image with python3"
+  fi
   docker image inspect "$BIFROST_BACKUP_IMAGE" >/dev/null 2>&1 || \
-    die "bifrost: image $BIFROST_BACKUP_IMAGE not found on this host; build it (\`build llm-converter-bi\` on Bifrost's compose project) or set BIFROST_BACKUP_IMAGE to a local image with python3"
+    die "bifrost: image $BIFROST_BACKUP_IMAGE not found on this host; set BIFROST_BACKUP_IMAGE to a local image with python3"
 }
 
 # run_bifrost_tools <volume> <python-program> [docker-run-option...]
@@ -194,7 +205,7 @@ restore_bifrost() {
 
   cat >&2 <<EOF
 This will:
-  1. Stop bifrost: /api/llm-bi, and /api/llm under LLM_GATEWAY=bifrost, are down until step 3
+  1. Stop bifrost: /api/llm under LLM_GATEWAY=bifrost is down until step 3
   2. Replace $BIFROST_CONFIG_DB on docker volume $volume with $src
      (logs.db, the request logs, stays as it is)
   3. Start bifrost and wait for it to be healthy

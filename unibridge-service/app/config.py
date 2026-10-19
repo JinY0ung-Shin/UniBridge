@@ -131,13 +131,10 @@ class Settings(BaseSettings):
     # Bifrost keeps its own sessions for 30 days; the service logs out each one
     # it handed to a browser this many hours after the sign-in.
     BIFROST_SSO_SESSION_HOURS: int = Field(8, ge=1, le=720)
-    # The /api/llm-bi routes in front of Bifrost (app/services/bifrost_routes.py),
-    # installed by boot provisioning like the other system routes. false removes
-    # them on the next provisioning boot; /api/llm-bi then answers a 404 that
-    # says it is switched off.
-    BIFROST_GATEWAY_ROUTES: bool = True
-    # The virtual key those routes inject as x-bf-vk: the one credential Bifrost
-    # accepts on inference, so it must be the value the bifrost container runs with.
+    # The virtual key the /api/llm routes inject as x-bf-vk under
+    # LLM_GATEWAY=bifrost: the one credential Bifrost accepts on inference, so it
+    # must be the value the bifrost container runs with. The name is from the
+    # side-by-side test; production .env files carry it.
     BIFROST_TEST_VK: str = ""
     # Which gateway serves /api/llm: "litellm" or "bifrost". Boot provisioning
     # points the llm-* routes at it under the same route ids, so API-key grants

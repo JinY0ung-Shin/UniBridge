@@ -6,7 +6,7 @@ Python 3.12, SQLAlchemy async + Alembic. Meta store = Postgres when deployed, SQ
 ## Layout
 - `app/main.py`        — FastAPI app + lifespan: validate settings, `init_db()`, load DB/S3/NAS
   connections, re-provision the fixed APISIX system routes (`_provision_llm_routes`,
-  `_provision_bifrost_routes`, node-path-prefix rule), sync API-key route restrictions, start
+  `_retire_llm_bi_routes`, node-path-prefix rule), sync API-key route restrictions, start
   the alert checker and retention/key-expiry loops. Mounts all routers.
 - `app/auth.py`        — JWT verify (Keycloak RS256 / dev HS256), `ALL_PERMISSIONS`, RBAC
   + 60s permission cache, API-key auth.

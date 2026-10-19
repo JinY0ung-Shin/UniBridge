@@ -285,7 +285,7 @@ function LlmMonitoring() {
                   {externalLinkIcon}
                 </a>
               )}
-              {/* Bifrost (the /api/llm-bi side-by-side gateway) has a single
+              {/* Bifrost (the gateway behind /api/llm under LLM_GATEWAY=bifrost) has a single
                   admin login, which is gateway-admin level — so the link is
                   admin-only as well. */}
               <a

@@ -3,12 +3,15 @@
 QUERY_API_ROUTE_ID = "query-api"
 QUERY_TEMPLATE_WRITE_ROUTE_ID = "query-template-write-api"
 
-# The /api/llm-bi routes in front of Bifrost (app/services/bifrost_routes.py).
-BIFROST_ROUTE_IDS = ("llm-bi-proxy", "llm-bi-messages", "llm-bi-responses", "llm-bi-models")
-# Answers every /api/llm-bi request those routes do not serve with a 404 that
-# says why. It proxies nothing, so it publishes no API and takes no key grants.
-BIFROST_NOT_FOUND_ROUTE_ID = "llm-bi-not-found"
-BIFROST_UPSTREAM_IDS = ("bifrost", "llm-converter-bi")
+# The /api/llm-bi routes of the Bifrost side-by-side test and the second
+# converter they used. Boot provisioning deletes them (app/main.py
+# _retire_llm_bi_routes); they stay protected so no user resource takes an id
+# provisioning would delete.
+RETIRED_LLM_BI_ROUTE_IDS = ("llm-bi-proxy", "llm-bi-messages", "llm-bi-responses", "llm-bi-models")
+RETIRED_LLM_BI_UPSTREAM_ID = "llm-converter-bi"
+# Answers all of /api/llm-bi with a 404 that points to /api/llm. It proxies
+# nothing, so it publishes no API and takes no key grants.
+LLM_BI_NOT_FOUND_ROUTE_ID = "llm-bi-not-found"
 # The same kind of route for /api/llm while LLM_GATEWAY=bifrost, where llm-proxy
 # serves exact paths instead of the whole prefix (app/services/llm_routes.py).
 LLM_NOT_FOUND_ROUTE_ID = "llm-not-found"
@@ -26,8 +29,8 @@ PROTECTED_ROUTE_IDS = {
     "prometheus-api",
     "llm-metrics",
     "llm-models",
-    *BIFROST_ROUTE_IDS,
-    BIFROST_NOT_FOUND_ROUTE_ID,
+    *RETIRED_LLM_BI_ROUTE_IDS,
+    LLM_BI_NOT_FOUND_ROUTE_ID,
     LLM_NOT_FOUND_ROUTE_ID,
 }
 PROTECTED_UPSTREAM_IDS = {
@@ -35,5 +38,6 @@ PROTECTED_UPSTREAM_IDS = {
     "litellm",
     "llm-converter",
     "prometheus",
-    *BIFROST_UPSTREAM_IDS,
+    "bifrost",
+    RETIRED_LLM_BI_UPSTREAM_ID,
 }

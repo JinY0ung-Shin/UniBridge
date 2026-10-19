@@ -19,14 +19,16 @@ the upstreams and the injected headers change:
   find its credential, whichever way the switch went.
 - ``llm-metrics`` is the gateway's own Prometheus exposition.
 
-Boot provisioning (app/main.py ``_provision_llm_routes``) does the writes.
+Boot provisioning (app/main.py ``_provision_llm_routes``) does the writes. It
+also retires the /api/llm-bi routes of the Bifrost side-by-side test
+(``retired_llm_bi_route``).
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from app.services import bifrost_routes
-from app.services.apisix_system_resources import LLM_NOT_FOUND_ROUTE_ID
+from app.services.apisix_system_resources import LLM_BI_NOT_FOUND_ROUTE_ID, LLM_NOT_FOUND_ROUTE_ID
 from app.services.consumer_restrictions import DENY_ALL_CONSUMER
 
 PATH_PREFIX = "/api/llm"
@@ -38,10 +40,42 @@ LITELLM_UPSTREAM: dict[str, Any] = {
     "nodes": {"litellm:4000": 1},
 }
 
+# Colorless shared infra (one Bifrost for both blue/green colors), like litellm.
+BIFROST_UPSTREAM: dict[str, Any] = {
+    "name": "bifrost",
+    "desc": "Bifrost LLM gateway (/api/llm under LLM_GATEWAY=bifrost)",
+    "type": "roundrobin",
+    "scheme": "http",
+    "nodes": {"bifrost:8080": 1},
+}
+
 # LLM responses can stay silent past APISIX's default 60s read timeout (long
 # TTFT, reasoning, large non-stream completions); allow long reads so the
 # gateway doesn't drop the socket.
-TIMEOUT = dict(bifrost_routes.TIMEOUT)
+TIMEOUT = {"connect": 60, "send": 600, "read": 600}
+
+# Client headers Bifrost would read as a credential or a key selector: a
+# virtual key (Authorization: Bearer / x-api-key / api-key / x-goog-api-key with
+# an sk-bf- value) or a pinned stored provider key (x-bf-api-key /
+# x-bf-api-key-id). APISIX has already authenticated the caller; key-auth runs
+# before proxy-rewrite, so it still reads the client's own key first.
+REMOVED_HEADERS = (
+    "Authorization",
+    "x-api-key",
+    "api-key",
+    "x-goog-api-key",
+    "x-bf-api-key",
+    "x-bf-api-key-id",
+)
+
+# Bifrost swaps a config.json virtual key that lacks the sk-bf- prefix for a
+# random one, so routes injecting it would 401 every request (bifrost/entrypoint.sh
+# refuses to start Bifrost without it). The URL-safe alphabet, which the README's
+# generator produces, is ours: scripts/deploy-bluegreen.sh finds the key in the
+# whitespace-stripped JSON of a route, where a space, quote or backslash would
+# never match and every deploy would re-provision. It applies the same rule.
+_VIRTUAL_KEY_RE = re.compile(r"sk-bf-[A-Za-z0-9_-]{16,}")
+VIRTUAL_KEY_RULE = "sk-bf- followed by at least 16 URL-safe characters (A-Z, a-z, 0-9, - and _)"
 
 _REWRITE = {"regex_uri": [f"^{PATH_PREFIX}(.*)", "$1"], "use_real_request_uri_unsafe": True}
 # Routes to Bifrost rewrite the normalized path instead. APISIX picks the route on
@@ -73,6 +107,29 @@ CONVERTER_ROUTE_IDS = tuple(CONVERTER_ROUTES)
 # LiteLLM it stays on llm-proxy's catch-all, so LiteLLM keeps answering it.
 COUNT_TOKENS_PATH = f"{PATH_PREFIX}/v1/messages/count_tokens"
 
+# The prefix of the Bifrost side-by-side test, whose routes provisioning now
+# deletes; ``retired_llm_bi_route`` keeps answering it with a pointer here.
+LLM_BI_PREFIX = "/api/llm-bi"
+
+
+def usable_virtual_key(value: str) -> bool:
+    """True for a BIFROST_TEST_VK value the routes can carry."""
+    return bool(_VIRTUAL_KEY_RE.fullmatch(value or ""))
+
+
+def virtual_key_headers(virtual_key: str) -> dict[str, str]:
+    """What every route in front of Bifrost sets."""
+    return {
+        # The only credential Bifrost accepts on inference
+        # (enforce_auth_on_inference); `set` also overwrites any client copy.
+        "x-bf-vk": virtual_key,
+        # Per-key attribution: the `consumer` Prometheus label
+        # (client.prometheus_labels in bifrost/config.json) and the log
+        # metadata, where a client-sent x-bf-lh-* value would otherwise win.
+        "x-bf-dim-consumer": "$consumer_name",
+        "x-bf-lh-consumer": "$consumer_name",
+    }
+
 
 def gateway_state(gateway: str | None, virtual_key: str | None) -> str:
     """What provisioning makes of LLM_GATEWAY: ``"litellm"``, ``"bifrost"`` or ``"skip"``.
@@ -83,7 +140,7 @@ def gateway_state(gateway: str | None, virtual_key: str | None) -> str:
     """
     if (gateway or "litellm").strip().lower() != "bifrost":
         return "litellm"
-    return "bifrost" if bifrost_routes.usable_virtual_key(virtual_key or "") else "skip"
+    return "bifrost" if usable_virtual_key(virtual_key or "") else "skip"
 
 
 def _with_paths(body: dict[str, Any], paths: tuple[str, ...]) -> dict[str, Any]:
@@ -125,7 +182,7 @@ def bifrost_proxy_route(virtual_key: str) -> dict[str, Any]:
     here (x-bf-passthrough-extra-params), as they did through LiteLLM.
     """
     headers_set = {
-        **bifrost_routes.virtual_key_headers(virtual_key),
+        **virtual_key_headers(virtual_key),
         "x-bf-passthrough-extra-params": "true",
     }
     return _with_paths(
@@ -142,7 +199,7 @@ def bifrost_proxy_route(virtual_key: str) -> dict[str, Any]:
                     **_REWRITE_NORMALIZED,
                     "headers": {
                         "set": headers_set,
-                        "remove": list(bifrost_routes.REMOVED_HEADERS),
+                        "remove": list(REMOVED_HEADERS),
                     },
                 },
             },
@@ -217,7 +274,7 @@ def bifrost_metrics_route() -> dict[str, Any]:
             "consumer-restriction": {"whitelist": [DENY_ALL_CONSUMER]},
             "proxy-rewrite": {
                 **_REWRITE_NORMALIZED,
-                "headers": {"remove": list(bifrost_routes.REMOVED_HEADERS)},
+                "headers": {"remove": list(REMOVED_HEADERS)},
             },
         },
         "status": 1,
@@ -241,13 +298,13 @@ def converter_route(
     if on_bifrost and route_id == "llm-messages":
         paths = (*paths, COUNT_TOKENS_PATH)
     headers_set: dict[str, str] = {}
-    remove = list(bifrost_routes.REMOVED_HEADERS)
+    remove = list(REMOVED_HEADERS)
     if master_key:
         headers_set["Authorization"] = f"Bearer {master_key}"
         headers_set["x-litellm-end-user-id"] = "$consumer_name"
         remove.remove("Authorization")
-    if bifrost_routes.usable_virtual_key(virtual_key):
-        headers_set.update(bifrost_routes.virtual_key_headers(virtual_key))
+    if usable_virtual_key(virtual_key):
+        headers_set.update(virtual_key_headers(virtual_key))
     body: dict[str, Any] = {"name": route_id}
     if route_id == "llm-models":
         body["desc"] = "Model listing with claude/-prefixed aliases via the converter"
@@ -284,10 +341,9 @@ def not_found_route() -> dict[str, Any]:
     """The ``/api/llm/*`` route that answers 404 while /api/llm runs on Bifrost.
 
     On LiteLLM llm-proxy itself takes the whole prefix, so this route exists
-    only on Bifrost. Same mechanism as ``llm-bi-not-found``
-    (``bifrost_routes.explaining_404_route``).
+    only on Bifrost.
     """
-    return bifrost_routes.explaining_404_route(
+    return explaining_404_route(
         LLM_NOT_FOUND_ROUTE_ID,
         PATH_PREFIX,
         f"No {PATH_PREFIX} endpoint takes this method and path. It serves only "
@@ -298,3 +354,51 @@ def not_found_route() -> dict[str, Any]:
         # the catch-all must still win instead of APISIX picking either.
         priority=-10,
     )
+
+
+def retired_llm_bi_route() -> dict[str, Any]:
+    """The ``/api/llm-bi/*`` route left behind by the Bifrost side-by-side test.
+
+    Its routes are gone (app/main.py ``_retire_llm_bi_routes`` deletes them on
+    every provisioning boot); this 404 tells a client still configured for the
+    old prefix where to go instead of APISIX's bare "404 Route Not Found".
+    scripts/deploy-bluegreen.sh looks for "has been removed" in it.
+    """
+    return explaining_404_route(
+        LLM_BI_NOT_FOUND_ROUTE_ID,
+        LLM_BI_PREFIX,
+        f"{LLM_BI_PREFIX} (the Bifrost side-by-side test) has been removed from "
+        f"UniBridge; {PATH_PREFIX} serves the same endpoints.",
+    )
+
+
+def explaining_404_route(
+    route_id: str, prefix: str, message: str, *, priority: int | None = None
+) -> dict[str, Any]:
+    """A route that answers every request under ``prefix`` with a 404 and ``message``.
+
+    APISIX's router prefers an exact path to a prefix whatever their priority,
+    and a request whose method the exact route does not take falls through to
+    the prefix, so this gets whatever the other routes under ``prefix`` do not
+    serve. consumer-restriction keyed on the route id, with this route's own id
+    blacklisted, rejects in the access phase before anything is proxied, so the
+    route needs no upstream and no key-auth (which would also put it under the
+    consumer-restriction reconciler). It uses only plugins APISIX already loads.
+    """
+    body: dict[str, Any] = {
+        "name": route_id,
+        "desc": f"Explains a 404 under {prefix}",
+        "uri": f"{prefix}/*",
+        "plugins": {
+            "consumer-restriction": {
+                "type": "route_id",
+                "blacklist": [route_id],
+                "rejected_code": 404,
+                "rejected_msg": message,
+            },
+        },
+        "status": 1,
+    }
+    if priority is not None:
+        body["priority"] = priority
+    return body

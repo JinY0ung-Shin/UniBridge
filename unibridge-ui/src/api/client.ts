@@ -480,7 +480,7 @@ export interface GatewayRoute {
   id: string;
   name?: string;
   uri: string;
-  // Set instead of `uri` on a route with several paths (e.g. llm-bi-proxy).
+  // Set instead of `uri` on a route with several paths (e.g. llm-proxy on Bifrost).
   uris?: string[];
   methods?: string[];
   upstream_id?: string;

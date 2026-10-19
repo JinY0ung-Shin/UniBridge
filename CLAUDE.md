@@ -96,14 +96,15 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   load-bearing, not hardening — without it logins 500 on Keycloak's userinfo issuer
   check. Free tier caps LiteLLM's user table at 5 rows and rejected non-admin logins
   still insert rows. See README "LiteLLM admin UI SSO".
-- **Bifrost runs side by side with LiteLLM on `/api/llm-bi`** (`bifrost`, `bifrost-tls`,
-  `llm-converter-bi`; identical in both compose layouts, tested). Its routes are system
-  routes provisioned by `main.py::_provision_bifrost_routes` from
-  `app/services/bifrost_routes.py` while `BIFROST_GATEWAY_ROUTES` is on (false removes
-  them; `llm-bi-not-found` explains the 404 in every state). The deploy script's
-  `apisix_has_core_routes` holds them to that switch and `BIFROST_TEST_VK`, so a flip or
-  key rotation re-provisions on the next deploy; it string-matches the key in route JSON,
-  hence the URL-safe-only key rule shared by `usable_virtual_key` and `bifrost_routes_state`.
+- **Bifrost** (`bifrost`, `bifrost-tls`; identical in both compose layouts, tested) runs in
+  the default stack and serves `/api/llm` under `LLM_GATEWAY=bifrost` (next bullet). The
+  old `/api/llm-bi` side-by-side routes are gone: every provisioning boot deletes the
+  `llm-bi-*` routes and the `llm-converter-bi` upstream (`main.py::_retire_llm_bi_routes`)
+  and keeps only `llm-bi-not-found`, a 404 pointing to `/api/llm`; its ids stay protected
+  and in the LLM-route metric exclusions for old series. `BIFROST_TEST_VK` keeps its name
+  but is the virtual key the `/api/llm` routes inject as `x-bf-vk`; the deploy script
+  string-matches it in route JSON, hence the URL-safe-only key rule shared by
+  `llm_routes.usable_virtual_key` and the deploy's `llm_gateway_state`.
   `bifrost/tls-proxy.conf` (the LLM Monitoring page's Bifrost button) is an allowlist:
   UI + management API only, never inference or `/metrics`. With `BIFROST_UI_HOSTNAME` the UI nginx serves the same
   allowlist on the UniBridge port under that DNS name (`unibridge-ui/nginx-bifrost-ui.conf`,

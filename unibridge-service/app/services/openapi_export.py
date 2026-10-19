@@ -14,12 +14,15 @@ from typing import Any, get_args
 
 from app.schemas import QUERY_RENDER_DESCRIPTION, QueryRender
 from app.services.apisix_system_resources import (
-    BIFROST_NOT_FOUND_ROUTE_ID,
+    LLM_BI_NOT_FOUND_ROUTE_ID,
+    LLM_NOT_FOUND_ROUTE_ID,
     PROTECTED_ROUTE_IDS,
     QUERY_TEMPLATE_WRITE_ROUTE_ID,
 )
 
 OPENAPI_VERSION = "3.0.3"
+
+_NOT_FOUND_ROUTE_IDS = frozenset({LLM_BI_NOT_FOUND_ROUTE_ID, LLM_NOT_FOUND_ROUTE_ID})
 SPEC_TITLE = "UniBridge Gateway API"
 
 # APISIX key-auth reads the API key from the ``apikey`` header by default
@@ -382,8 +385,8 @@ def build_openapi_spec(
     paths: dict[str, dict[str, Any]] = {}
 
     for route in routes:
-        # The /api/llm-bi not-found route only explains a 404; it is no endpoint.
-        if not isinstance(route, dict) or route.get("id") == BIFROST_NOT_FOUND_ROUTE_ID:
+        # The not-found routes only explain a 404; they are no endpoints.
+        if not isinstance(route, dict) or route.get("id") in _NOT_FOUND_ROUTE_IDS:
             continue
         methods = _route_methods(route)
         for uri in _route_uris(route):

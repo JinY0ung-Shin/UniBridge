@@ -796,7 +796,7 @@
     "adminDashboard": "LiteLLM Admin",
     "adminSsoHint": "Opens the LiteLLM admin UI in a new tab (admin accounts only, via UniBridge SSO)",
     "bifrostAdmin": "Bifrost Admin",
-    "bifrostAdminHint": "Opens the Bifrost admin UI in a new tab. /api/llm-bi traffic is shown there, not on this page."
+    "bifrostAdminHint": "Opens the Bifrost admin UI in a new tab (providers, virtual keys and request logs; admin accounts only)"
   },
   "roles": {
     "title": "Roles",

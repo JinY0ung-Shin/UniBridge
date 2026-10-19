@@ -52,8 +52,8 @@ scrape_configs:
     metrics_path: '/metrics'
     scrape_interval: 15s
 
-  # Bifrost, the LLM gateway behind /api/llm-bi (and /api/llm once it is
-  # switched over). Plain HTTP on the internal network; /metrics stays open with
+  # Bifrost, the LLM gateway behind /api/llm under LLM_GATEWAY=bifrost.
+  # Plain HTTP on the internal network; /metrics stays open with
   # the admin login on because bifrost/config.json whitelists it. The LLM
   # monitoring page and the Grafana LLM dashboard add these bifrost_* counters
   # to LiteLLM's, always pinned to this job name.

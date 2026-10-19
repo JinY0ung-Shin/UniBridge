@@ -449,27 +449,6 @@ apisix_absent() {
   [[ "$status" == "404" ]]
 }
 
-# What boot provisioning makes of /api/llm-bi (unibridge-service app/main.py
-# _provision_bifrost_routes; the same parsing, and the key rule of
-# app/services/bifrost_routes.py usable_virtual_key): "off" when
-# BIFROST_GATEWAY_ROUTES is false, "on" with a usable BIFROST_TEST_VK, otherwise
-# "skip" — the service then leaves the four routes as they are.
-bifrost_routes_state() {
-  # ASCII ranges whatever the operator's locale.
-  local LC_ALL=C
-  local enabled="${BIFROST_GATEWAY_ROUTES:-true}"
-  case "${enabled,,}" in
-    0|f|false|n|no|off) printf 'off' ;;
-    *)
-      if [[ "${BIFROST_TEST_VK:-}" =~ ^sk-bf-[A-Za-z0-9_-]{16,}$ ]]; then
-        printf 'on'
-      else
-        printf 'skip'
-      fi
-      ;;
-  esac
-}
-
 # What boot provisioning makes of LLM_GATEWAY (unibridge-service app/main.py
 # _provision_llm_routes; the same rule as app/services/llm_routes.py
 # gateway_state): "bifrost" with a usable BIFROST_TEST_VK, "skip" without one —
@@ -652,42 +631,30 @@ warn_if_target_needs_stopped_litellm() {
   echo "           $(infra_compose_command) up -d --wait litellm-db litellm" >&2
 }
 
-# The /api/llm-bi routes follow the switch: installed and injecting the current
-# virtual key while it is on, gone once it is off, with llm-bi-not-found there
-# in every state. So the first deploy after upgrading from
-# scripts/bifrost-test.sh, a flipped switch and a rotated BIFROST_TEST_VK all
-# re-provision.
-apisix_bifrost_routes_match() {
-  local state not_found_route route route_id upstream_id
-  state="$(bifrost_routes_state)"
+# /api/llm-bi (the Bifrost side-by-side test) is gone: boot provisioning
+# (unibridge-service app/main.py _retire_llm_bi_routes) deletes its four routes
+# and the llm-converter-bi upstream and leaves llm-bi-not-found behind, saying
+# so. A host that still has the old routes, or the old "switched off" 404,
+# therefore re-provisions on its first deploy after upgrading.
+apisix_llm_bi_retired() {
+  local not_found_route compact route_id
   not_found_route="$(apisix_get "routes/llm-bi-not-found")" || return 1
   json_contains_pair "$not_found_route" "uri" "/api/llm-bi/*" || return 1
-  [[ "$state" != "skip" ]] || return 0
+  compact="${not_found_route//[[:space:]]/}"
+  [[ "$compact" == *"hasbeenremoved"* ]] || return 1
   for route_id in llm-bi-proxy llm-bi-messages llm-bi-responses llm-bi-models; do
-    if [[ "$state" == "off" ]]; then
-      apisix_absent "routes/$route_id" || return 1
-      continue
-    fi
-    case "$route_id" in
-      llm-bi-proxy) upstream_id="bifrost" ;;
-      *) upstream_id="llm-converter-bi" ;;
-    esac
-    route="$(apisix_get "routes/$route_id")" || return 1
-    json_contains_pair "$route" "upstream_id" "$upstream_id" || return 1
-    json_contains_pair "$route" "x-bf-vk" "$BIFROST_TEST_VK" || return 1
-    if [[ "$upstream_id" == "bifrost" ]]; then
-      route_rewrites_normalized_path "$route" || return 1
-    fi
+    apisix_absent "routes/$route_id" || return 1
   done
+  apisix_absent "upstreams/llm-converter-bi" || return 1
 }
 
-# A rotated BIFROST_TEST_VK reaches the /api/llm-bi routes through the deploy,
-# but the bifrost container keeps the value it was created with until it is
-# recreated, and refuses every request carrying another (401). Say so; the
-# side-by-side test is no reason to hold up an app deploy. Compared in-shell so
-# the key never lands on a command line.
+# A rotated BIFROST_TEST_VK reaches the /api/llm routes through the deploy
+# under LLM_GATEWAY=bifrost, but the bifrost container keeps the value it was
+# created with until it is recreated, and refuses every request carrying another
+# (401). Say so: deploys leave infra alone, so recreating it is the operator's
+# step. Compared in-shell so the key never lands on a command line.
 warn_bifrost_vk_drift() {
-  [[ "$(bifrost_routes_state)" == "on" || "$(llm_gateway_state)" == "bifrost" ]] || return 0
+  [[ "$(llm_gateway_state)" == "bifrost" ]] || return 0
   local container_id container_env line env_flag=""
   container_id="$(compose_infra ps -q bifrost 2>/dev/null | head -n1)" || return 0
   [[ -n "$container_id" ]] || return 0
@@ -759,7 +726,7 @@ wait_apisix_admin() {
 
 # True only when the core routes already exist in etcd and still match the
 # built-in auth/header shape, the /api/llm routes match LLM_GATEWAY and the
-# /api/llm-bi routes match BIFROST_GATEWAY_ROUTES. A 404 or stale route shape (for example, missing
+# /api/llm-bi routes are retired. A 404 or stale route shape (for example, missing
 # the internal proxy trust header, or llm-proxy still pointing at an older
 # gateway upstream) returns non-zero so the caller can force re-provisioning.
 apisix_has_core_routes() {
@@ -794,7 +761,7 @@ apisix_has_core_routes() {
 
   apisix_llm_routes_match || return 1
 
-  apisix_bifrost_routes_match || return 1
+  apisix_llm_bi_retired || return 1
 }
 
 # The /api/llm routes follow LLM_GATEWAY under the same route ids: on LiteLLM,
@@ -1193,7 +1160,7 @@ deploy_color() {
   elif [[ -n "${APISIX_ADMIN_KEY:-}" ]] && wait_apisix_admin && ! apisix_has_core_routes; then
     echo "WARNING: APISIX is reachable but core routes are missing or out of date" >&2
     echo "         (etcd reset, a release with new routes, or a changed" >&2
-    echo "         BIFROST_GATEWAY_ROUTES / BIFROST_TEST_VK)." >&2
+    echo "         LLM_GATEWAY / BIFROST_TEST_VK)." >&2
     echo "         Forcing route re-provisioning on $target." >&2
     provision_on_start="true"
   fi

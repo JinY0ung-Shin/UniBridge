@@ -166,12 +166,11 @@ async def test_transport_error_propagates_instead_of_putting(apisix):
 def test_lifespan_writes_only_the_colorless_upstream_unconditionally():
     """Color-pinned upstreams must go through the gate, never a bare PUT.
 
-    ``litellm``, ``prometheus`` and the two /api/llm-bi upstreams (``bifrost``,
-    ``llm-converter-bi``, infra-project services) are colorless shared infra
-    (one instance for both colors), so they stay unconditional; the one dynamic
-    id is the gate's own PUT. A new id here means an upstream skipped the claim
-    gate — check it is genuinely not part of the blue/green app pair before
-    widening this.
+    ``litellm``, ``prometheus`` and ``bifrost`` (infra-project services) are
+    colorless shared infra (one instance for both colors), so they stay
+    unconditional; the one dynamic id is the gate's own PUT. A new id here means
+    an upstream skipped the claim gate — check it is genuinely not part of the
+    blue/green app pair before widening this.
     """
     tree = ast.parse(Path(app_main.__file__).read_text(encoding="utf-8"))
     written = {
@@ -189,6 +188,5 @@ def test_lifespan_writes_only_the_colorless_upstream_unconditionally():
         "litellm",
         "prometheus",
         "bifrost",
-        "llm-converter-bi",
         "<dynamic>",
     }

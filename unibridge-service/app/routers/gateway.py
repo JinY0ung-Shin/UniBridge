@@ -231,7 +231,7 @@ def _host_header_for_upstream(upstream: dict[str, Any], node_addr: str) -> str:
 # call on that route until the next boot reconciles it); ``authorization`` and
 # ``x-litellm-end-user-id`` carry the LiteLLM master key and the end-user
 # attribution on the LLM routes, and the ``x-bf-*`` ones the Bifrost virtual key,
-# the per-key attribution and the extra-params switch on the /api/llm-bi routes.
+# the per-key attribution and the extra-params switch on the routes to Bifrost.
 # See app/main.py ``_internal_proxy_headers`` and the LLM route provisioning.
 _SYSTEM_INJECTED_HEADERS = frozenset(
     {
@@ -526,8 +526,8 @@ _SYSTEM_ROUTE_URIS = (
     "/api/llm-admin/*",
     "/api/llm/v1/messages",
     "/api/llm/v1/responses",
-    # The whole prefix: llm-bi-not-found answers every path the llm-bi-* routes
-    # do not take (app/services/bifrost_routes.py).
+    # The whole prefix: llm-bi-not-found answers all of it since the Bifrost
+    # side-by-side test was removed (llm_routes.retired_llm_bi_route).
     "/api/llm-bi/*",
 )
 
@@ -993,7 +993,7 @@ async def route_curl(
             detail=f"Failed to connect to APISIX: {exc}",
         )
 
-    # A route with several paths (``uris``, e.g. llm-bi-proxy) gets its first.
+    # A route with several paths (``uris``, e.g. llm-proxy on Bifrost) gets its first.
     uris = route.get("uris") or []
     uri = route.get("uri") or (uris[0] if uris else "/")
     path = uri.rstrip("*").rstrip("/") or "/"
@@ -1458,10 +1458,11 @@ async def _gateway_monitoring_scope(
 
 
 # The APISIX routes that carry LLM inference: /api/llm (LiteLLM, or Bifrost once
-# switched) and /api/llm-bi (Bifrost). Gateway monitoring leaves them out by
-# default, the LLM monitoring page counts them, and self-scoped callers may not
-# filter on them. Fixed routes keep name == id, so the ids match the
-# ``prefer_name`` route label too.
+# switched) and the removed /api/llm-bi ones (Bifrost side-by-side test), whose
+# series stay in Prometheus, and in APISIX's exposition until it restarts.
+# Gateway monitoring leaves them out by default, the LLM monitoring page counts
+# them, and self-scoped callers may not filter on them. Fixed routes keep
+# name == id, so the ids match the ``prefer_name`` route label too.
 _LLM_ROUTE_IDS = (
     "llm-proxy",
     "llm-messages",
@@ -1665,10 +1666,11 @@ def _llm_consumer_extra(api_key: str | None) -> tuple[str, ...]:
 #
 # The LLM monitoring page reads the gateways' own counters: LiteLLM's
 # ``litellm_*`` (/api/llm until it switches to Bifrost) and Bifrost's
-# ``bifrost_*`` (the ``bifrost`` scrape job: /api/llm-bi, and /api/llm after the
-# switch). Every query adds the two, so the history runs on across the switch and
-# traffic on either gateway is counted. Bifrost's rows are pinned to its job
-# because it also exports ``http_requests_total``, a name other jobs share.
+# ``bifrost_*`` (the ``bifrost`` scrape job: /api/llm after the switch, and the
+# removed /api/llm-bi side-by-side test before it). Every query adds the two, so
+# the history runs on across the switch and traffic on either gateway is
+# counted. Bifrost's rows are pinned to its job because it also exports
+# ``http_requests_total``, a name other jobs share.
 #
 # Each term is aggregated first, then tagged with its own ``src`` label before
 # the union: ``or`` keeps only the left-hand series when two carry the same
@@ -2421,7 +2423,7 @@ async def metrics_usages(
     consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
     include_llm: bool = Query(
         False,
-        description="Include the LLM routes (llm-proxy/llm-messages/llm-responses and their llm-bi-* twins)",
+        description="Include the LLM routes (llm-proxy/llm-messages/llm-responses and the removed llm-bi-* ones)",
     ),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> dict[str, Any]:

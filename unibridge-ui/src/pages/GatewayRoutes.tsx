@@ -287,7 +287,7 @@ function GatewayRoutes() {
                   <td>
                     <div className="action-buttons">
                       {/* The test probes the upstream; a route without one (the
-                          /api/llm-bi not-found route) has nothing to probe. */}
+                          llm-not-found route) has nothing to probe. */}
                       {route.upstream_id && (
                         <button
                           type="button"
