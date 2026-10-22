@@ -122,7 +122,9 @@ def create_metrics(
             "unibridge_query_duration_seconds",
             "Database query execution duration.",
             ["db_alias", "db_type", "status", "consumer"],
-            buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60),
+            # Up to the 300s query-timeout cap: past the last bound
+            # histogram_quantile reports that bound, not the real duration.
+            buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300),
             registry=registry,
         ),
         query_rows_returned=Histogram(

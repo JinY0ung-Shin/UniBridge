@@ -26,6 +26,30 @@ plugin_attr:
     export_addr:
       ip: 0.0.0.0
       port: 9091
+    # apisix_http_latency buckets (ms). APISIX's default stops at 60000, so
+    # histogram_quantile reads every slower request as exactly 60s — while
+    # route timeouts go up to 3600s. Same bounds as the default up to 60s.
+    default_buckets:
+      - 1
+      - 2
+      - 5
+      - 10
+      - 20
+      - 50
+      - 100
+      - 200
+      - 500
+      - 1000
+      - 2000
+      - 5000
+      - 10000
+      - 30000
+      - 60000
+      - 120000
+      - 300000
+      - 600000
+      - 1800000
+      - 3600000
     # NOTE: `prefer_name` (label metrics by route/service *name* instead of id)
     # is NOT a plugin_attr key — APISIX reads it from the prometheus *plugin*
     # conf. It is set on the `prometheus` global rule in

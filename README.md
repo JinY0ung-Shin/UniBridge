@@ -1133,6 +1133,26 @@ docker run --rm --user 1000 --entrypoint python -v unibridge_bifrost-test-data:/
 docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait bifrost
 ```
 
+### Latency percentiles past 60s
+
+The monitoring pages show latency in seconds. p50/p95/p99 come from
+`histogram_quantile`, which cannot read past a histogram's last bucket bound: a
+slower request comes out as exactly that bound. APISIX's stock buckets stop at
+60s, so with longer route timeouts the gateway percentiles stuck at 60s;
+`apisix/config.yaml` (`plugin_attr.prometheus.default_buckets`) now extends
+them to 3600s, the route timeout cap. APISIX reads that file only at start
+(single-file bind mount) and deploys leave infra alone, so recreate it once:
+
+```bash
+docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --force-recreate apisix
+# single stack: docker compose up -d --force-recreate apisix
+```
+
+Until the old series age out of the selected range, windows that mix old and
+new buckets can read a little off. Query execution time
+(`unibridge_query_duration_seconds`) now has buckets up to the 300s query
+timeout; that ships with the service image and needs no extra step.
+
 ### DB query monitoring
 
 **Query Monitoring** (data section of the sidebar) shows query count, error rate
