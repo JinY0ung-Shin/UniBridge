@@ -124,8 +124,8 @@ describe('QueryMonitoring', () => {
     expect(screen.getByText('Total Queries (1h)')).toBeInTheDocument();
     expect(screen.getByText('2.5%')).toBeInTheDocument();
     expect(screen.getByText('3')).toBeInTheDocument();
-    expect(screen.getByText('45.5ms')).toBeInTheDocument();
-    expect(screen.getByText('120ms')).toBeInTheDocument();
+    expect(screen.getByText('0.046s')).toBeInTheDocument();
+    expect(screen.getByText('0.12s')).toBeInTheDocument();
     expect(screen.getByText('12.35')).toBeInTheDocument();
     expect(screen.getByText('Error Rate (incl. timeouts)')).toBeInTheDocument();
     expect(screen.getByText('Avg Rows Returned')).toBeInTheDocument();
@@ -147,7 +147,7 @@ describe('QueryMonitoring', () => {
     await screen.findByText('Total Queries (1h)');
     expect(screen.getByText('Query Count (per interval)')).toBeInTheDocument();
     expect(screen.getByText('Query Outcomes (per interval)')).toBeInTheDocument();
-    expect(screen.getByText('Execution Time (ms)')).toBeInTheDocument();
+    expect(screen.getByText('Execution Time (s)')).toBeInTheDocument();
     expect(screen.getByText(/Successful queries only · measured inside UniBridge from connection acquire/)).toBeInTheDocument();
     expect(screen.getByText('Database Comparison (1h total)')).toBeInTheDocument();
     expect(screen.getByText('API Key Comparison (1h total, top 20)')).toBeInTheDocument();
@@ -184,9 +184,9 @@ describe('QueryMonitoring', () => {
     const chart = await screen.findByTestId('line-chart');
     const rows = JSON.parse(chart.getAttribute('data-rows') ?? '[]') as Array<Record<string, number | null>>;
     expect(rows.map((r) => [r.p50, r.p95, r.p99])).toEqual([
-      [10, 20, null],
+      [0.01, 0.02, null],
       [null, null, null],
-      [null, null, 50],
+      [null, null, 0.05],
     ]);
     for (const key of ['p50', 'p95', 'p99']) {
       expect(screen.getByTestId(`line-${key}`)).toHaveAttribute('data-connect-nulls', 'false');

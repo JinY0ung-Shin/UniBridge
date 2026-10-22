@@ -140,7 +140,7 @@ describe('ExternalMonitoring', () => {
       const points = JSON.parse(screen.getByTestId('line-chart').getAttribute('data-points') ?? '[]');
       expect(points).toEqual([
         { ts, p50: null, p95: null, p99: null },
-        { ts: ts + 60, p50: 8, p95: 20, p99: null },
+        { ts: ts + 60, p50: 0.008, p95: 0.02, p99: null },
       ]);
     });
     const chart = screen.getByTestId('line-chart');
@@ -194,7 +194,7 @@ describe('ExternalMonitoring', () => {
       expect(screen.getByText('4,321')).toBeInTheDocument();
     });
     expect(screen.getByText('0.4%')).toBeInTheDocument();
-    expect(screen.getByText('87ms')).toBeInTheDocument();
+    expect(screen.getByText('0.087s')).toBeInTheDocument();
     expect(screen.getByText('Request Rate (req/s)')).toBeInTheDocument();
     expect(screen.getByText('Request Count (per interval)')).toBeInTheDocument();
     expect(screen.getByText('Status Code Distribution (1h)')).toBeInTheDocument();

@@ -1,9 +1,24 @@
 import { describe, it, expect } from 'vitest';
-import { hasLatencyValues, timeKeyedAxis, toLatencyChartRows } from '../utils/monitoring';
+import { formatLatencyMs, formatSeconds, hasLatencyValues, secondsTooltipFormatter, timeKeyedAxis, toLatencyChartRows } from '../utils/monitoring';
 import { formatBucketLabel, formatChartTimestamp } from '../utils/time';
 
 // 2026-09-24 14:00 KST
 const ts = Date.UTC(2026, 8, 24, 5, 0, 0) / 1000;
+
+describe('formatSeconds', () => {
+  it('shows latency in seconds, three decimals below one second', () => {
+    expect(formatLatencyMs(45.5)).toBe('0.046s');
+    expect(formatLatencyMs(1234)).toBe('1.23s');
+    expect(formatLatencyMs(60000)).toBe('60s');
+    expect(formatLatencyMs(300000)).toBe('300s');
+    expect(formatSeconds(0)).toBe('0s');
+  });
+
+  it('formats numeric tooltip values and passes others through', () => {
+    expect(secondsTooltipFormatter(0.25)).toBe('0.25s');
+    expect(secondsTooltipFormatter(null)).toBe('');
+  });
+});
 
 describe('toLatencyChartRows', () => {
   it('keys rows by epoch and keeps missing percentiles as null gaps', () => {
@@ -13,8 +28,8 @@ describe('toLatencyChartRows', () => {
       p99: [],
     });
     expect(rows).toEqual([
-      { ts, p50: 10, p95: 40, p99: null },
-      { ts: ts + 3600, p50: 12, p95: null, p99: null },
+      { ts, p50: 0.01, p95: 0.04, p99: null },
+      { ts: ts + 3600, p50: 0.012, p95: null, p99: null },
     ]);
   });
 
@@ -25,8 +40,8 @@ describe('toLatencyChartRows', () => {
       p99: [{ timestamp: ts, value: 95 }, { timestamp: ts + 60, value: null }],
     });
     expect(rows).toEqual([
-      { ts, p50: null, p95: null, p99: 95 },
-      { ts: ts + 60, p50: 8, p95: 20, p99: null },
+      { ts, p50: null, p95: null, p99: 0.095 },
+      { ts: ts + 60, p50: 0.008, p95: 0.02, p99: null },
     ]);
   });
 

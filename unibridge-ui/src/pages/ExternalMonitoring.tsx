@@ -27,15 +27,15 @@ import TimeRangeSelector from '../components/TimeRangeSelector';
 import BucketSelector from '../components/BucketSelector';
 import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket, bucketTooCoarse } from '../utils/timeRange';
 import { formatChartTimestamp, formatBucketLabel } from '../utils/time';
-import { errorRateColor, hasLatencyValues, latencyLineDots, timeKeyedAxis, toLatencyChartRows } from '../utils/monitoring';
+import { errorRateColor, formatLatencyMs, hasLatencyValues, latencyLineDots, secondsTooltipFormatter, timeKeyedAxis, toLatencyChartRows } from '../utils/monitoring';
 import GrafanaLink from '../components/GrafanaLink';
 
-function BarCell({ value, max, suffix = '' }: { value: number; max: number; suffix?: string }) {
+function BarCell({ value, max, suffix = '', format }: { value: number; max: number; suffix?: string; format?: (v: number) => string }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
   return (
     <span className="bar-cell">
       <span className="bar-cell__fill" style={{ width: `${pct}%` }} />
-      <span className="bar-cell__text">{value.toLocaleString(undefined, { maximumFractionDigits: 2 })}{suffix}</span>
+      <span className="bar-cell__text">{format ? format(value) : value.toLocaleString(undefined, { maximumFractionDigits: 2 })}{suffix}</span>
     </span>
   );
 }
@@ -268,8 +268,8 @@ function ExternalMonitoring() {
                     <td className="cell-metric"><BarCell value={h.requests} max={maxHandlerRequests} /></td>
                     <td className="cell-metric"><BarCell value={h.share} max={100} suffix="%" /></td>
                     <td className={`cell-metric ${errorRateClass(h.error_rate)}`}>{h.error_rate.toFixed(2)}%</td>
-                    <td className="cell-metric">{h.latency_p50_ms == null ? '—' : <BarCell value={h.latency_p50_ms} max={maxHandlerP50} />}</td>
-                    <td className="cell-metric">{h.latency_p95_ms == null ? '—' : <BarCell value={h.latency_p95_ms} max={maxHandlerP95} />}</td>
+                    <td className="cell-metric">{h.latency_p50_ms == null ? '—' : <BarCell value={h.latency_p50_ms} max={maxHandlerP50} format={formatLatencyMs} />}</td>
+                    <td className="cell-metric">{h.latency_p95_ms == null ? '—' : <BarCell value={h.latency_p95_ms} max={maxHandlerP95} format={formatLatencyMs} />}</td>
                   </tr>
                 ))}
               </tbody>
@@ -336,7 +336,7 @@ function ExternalMonitoring() {
             <div className="metric-card__label">{t('gatewayMonitoring.errorRate')}</div>
           </div>
           <div className="metric-card">
-            <div className="metric-card__value">{summary.avg_latency_ms}ms</div>
+            <div className="metric-card__value">{formatLatencyMs(summary.avg_latency_ms)}</div>
             <div className="metric-card__label">{t('gatewayMonitoring.avgLatency')}</div>
           </div>
         </div>
@@ -444,6 +444,7 @@ function ExternalMonitoring() {
                 <XAxis {...pointAxis.xAxis} stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
                 <Tooltip
+                  formatter={secondsTooltipFormatter}
                   {...pointAxis.tooltip}
                   contentStyle={{ background: chartColors.tooltipBg, border: `1px solid ${chartColors.tooltipBorder}`, borderRadius: 6 }}
                   labelStyle={{ color: chartColors.axis }}
@@ -509,8 +510,8 @@ function ExternalMonitoring() {
                     <td className="cell-metric"><BarCell value={r.requests} max={maxRequests} /></td>
                     <td className="cell-metric"><BarCell value={r.share} max={100} suffix="%" /></td>
                     <td className={`cell-metric ${errorRateClass(r.error_rate)}`}>{r.error_rate.toFixed(2)}%</td>
-                    <td className="cell-metric">{r.latency_p50_ms == null ? '—' : <BarCell value={r.latency_p50_ms} max={maxP50} />}</td>
-                    <td className="cell-metric">{r.latency_p95_ms == null ? '—' : <BarCell value={r.latency_p95_ms} max={maxP95} />}</td>
+                    <td className="cell-metric">{r.latency_p50_ms == null ? '—' : <BarCell value={r.latency_p50_ms} max={maxP50} format={formatLatencyMs} />}</td>
+                    <td className="cell-metric">{r.latency_p95_ms == null ? '—' : <BarCell value={r.latency_p95_ms} max={maxP95} format={formatLatencyMs} />}</td>
                   </tr>
                 ))}
               </tbody>

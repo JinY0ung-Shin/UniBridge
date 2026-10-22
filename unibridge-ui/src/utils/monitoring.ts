@@ -22,6 +22,30 @@ export function timeKeyedAxis(
   };
 }
 
+/**
+ * Latency in seconds for display ("0.045s", "1.23s", "60s"). Sub-second
+ * values keep three decimals so millisecond-scale latencies stay readable.
+ */
+export function formatSeconds(seconds: number): string {
+  const digits = Math.abs(seconds) < 1 ? 3 : 2;
+  return `${seconds.toLocaleString(undefined, { maximumFractionDigits: digits })}s`;
+}
+
+/** formatSeconds for a millisecond value (the API reports latency in ms). */
+export function formatLatencyMs(ms: number): string {
+  return formatSeconds(ms / 1000);
+}
+
+/** ms → s, keeping null gaps (chart rows are plotted in seconds). */
+export function msToSeconds(ms: number | null | undefined): number | null {
+  return ms == null ? null : ms / 1000;
+}
+
+/** Tooltip `formatter` for latency charts whose rows are in seconds. */
+export function secondsTooltipFormatter(value: unknown): string {
+  return typeof value === 'number' ? formatSeconds(value) : String(value ?? '');
+}
+
 export interface LatencyChartRow {
   /** Point epoch (seconds) — the chart's axis key (see timeKeyedAxis). */
   ts: number;
@@ -31,16 +55,16 @@ export interface LatencyChartRow {
 }
 
 /**
- * p50/p95/p99 series → recharts rows keyed by epoch. Quantiles over windows
- * with no traffic arrive as null (and missing points become null), so the
- * lines show gaps instead of misleading dips to zero.
+ * p50/p95/p99 series (ms) → recharts rows in seconds, keyed by epoch.
+ * Quantiles over windows with no traffic arrive as null (and missing points
+ * become null), so the lines show gaps instead of misleading dips to zero.
  */
 export function toLatencyChartRows(data: LatencyData | undefined): LatencyChartRow[] {
   return (data?.p50 ?? []).map((p, i) => ({
     ts: p.timestamp,
-    p50: p.value,
-    p95: data?.p95?.[i]?.value ?? null,
-    p99: data?.p99?.[i]?.value ?? null,
+    p50: msToSeconds(p.value),
+    p95: msToSeconds(data?.p95?.[i]?.value),
+    p99: msToSeconds(data?.p99?.[i]?.value),
   }));
 }
 

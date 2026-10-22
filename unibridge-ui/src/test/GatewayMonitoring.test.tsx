@@ -113,7 +113,7 @@ describe('GatewayMonitoring', () => {
     });
 
     expect(screen.getByText('2.5%')).toBeInTheDocument();
-    expect(screen.getByText('45ms')).toBeInTheDocument();
+    expect(screen.getByText('0.045s')).toBeInTheDocument();
   });
 
   it('renders time range toggle buttons', () => {
@@ -146,7 +146,7 @@ describe('GatewayMonitoring', () => {
     expect(screen.getByText('Request Rate (req/s)')).toBeInTheDocument();
     expect(screen.getByText('Request Count (per interval)')).toBeInTheDocument();
     expect(screen.getByText('Status Code Distribution (1h)')).toBeInTheDocument();
-    expect(screen.getByText('Latency (ms)')).toBeInTheDocument();
+    expect(screen.getByText('Latency (s)')).toBeInTheDocument();
     expect(screen.getByText('Route Comparison (1h total)')).toBeInTheDocument();
   });
 
@@ -333,10 +333,10 @@ describe('GatewayMonitoring', () => {
       expect(mockedGetMetricsLatency).toHaveBeenCalledWith(expect.anything(), 'route-a', undefined);
     });
     const detail = container.querySelector('.route-detail-panel') as HTMLElement;
-    const latencyPanel = (await within(detail).findByText('Latency (ms)')).closest('.chart-panel') as HTMLElement;
+    const latencyPanel = (await within(detail).findByText('Latency (s)')).closest('.chart-panel') as HTMLElement;
     const chart = await within(latencyPanel).findByTestId('line-chart');
     expect(JSON.parse(chart.getAttribute('data-points') ?? '[]')).toEqual([
-      { ts, p50: 12, p95: 40, p99: 90 },
+      { ts, p50: 0.012, p95: 0.04, p99: 0.09 },
     ]);
     expect(within(latencyPanel).getByTestId('x-axis')).toHaveAttribute('data-key', 'ts');
     expect(within(latencyPanel).getByTestId('x-axis')).toHaveAttribute('data-tick', '09:00');
@@ -362,7 +362,7 @@ describe('GatewayMonitoring', () => {
       const points = JSON.parse(screen.getByTestId('line-chart').getAttribute('data-points') ?? '[]');
       expect(points).toEqual([
         { ts, p50: null, p95: null, p99: null },
-        { ts: ts + 60, p50: 8, p95: 20, p99: null },
+        { ts: ts + 60, p50: 0.008, p95: 0.02, p99: null },
       ]);
     });
     unmount();

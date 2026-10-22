@@ -30,15 +30,15 @@ import BucketSelector from '../components/BucketSelector';
 import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket, bucketTooCoarse, GRAFANA_BUCKET_INTERVAL } from '../utils/timeRange';
 import { formatChartTimestamp, formatBucketLabel } from '../utils/time';
 import { isolatedPointDot } from '../utils/chartDots';
-import { errorRateColor, QUERY_UI_CONSUMER, QUERY_UNTRACKED_CONSUMER } from '../utils/monitoring';
+import { errorRateColor, formatLatencyMs, msToSeconds, QUERY_UI_CONSUMER, QUERY_UNTRACKED_CONSUMER, secondsTooltipFormatter } from '../utils/monitoring';
 import GrafanaLink from '../components/GrafanaLink';
 
-function BarCell({ value, max, suffix = '' }: { value: number; max: number; suffix?: string }) {
+function BarCell({ value, max, suffix = '', format }: { value: number; max: number; suffix?: string; format?: (v: number) => string }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
   return (
     <span className="bar-cell">
       <span className="bar-cell__fill" style={{ width: `${pct}%` }} />
-      <span className="bar-cell__text">{value.toLocaleString(undefined, { maximumFractionDigits: 2 })}{suffix}</span>
+      <span className="bar-cell__text">{format ? format(value) : value.toLocaleString(undefined, { maximumFractionDigits: 2 })}{suffix}</span>
     </span>
   );
 }
@@ -294,7 +294,7 @@ function QueryMonitoring() {
     for (const key of ['p50', 'p95', 'p99'] as const) {
       for (const point of latencyQuery.data?.[key] ?? []) {
         const row = byTimestamp.get(point.timestamp) ?? { p50: null, p95: null, p99: null };
-        row[key] = point.value;
+        row[key] = msToSeconds(point.value);
         byTimestamp.set(point.timestamp, row);
       }
     }
@@ -408,13 +408,13 @@ function QueryMonitoring() {
           </div>
           <div className="metric-card">
             <div className="metric-card__value">
-              {summary.avg_latency_ms == null ? '—' : `${summary.avg_latency_ms}ms`}
+              {summary.avg_latency_ms == null ? '—' : formatLatencyMs(summary.avg_latency_ms)}
             </div>
             <div className="metric-card__label">{t('queryMonitoring.avgLatency')}</div>
           </div>
           <div className="metric-card">
             <div className="metric-card__value">
-              {summary.p95_latency_ms == null ? '—' : `${summary.p95_latency_ms}ms`}
+              {summary.p95_latency_ms == null ? '—' : formatLatencyMs(summary.p95_latency_ms)}
             </div>
             <div className="metric-card__label">{t('queryMonitoring.p95Latency')}</div>
           </div>
@@ -487,7 +487,7 @@ function QueryMonitoring() {
                 <CartesianGrid strokeDasharray="3 3" stroke={chartColors.grid} />
                 <XAxis dataKey="time" stroke={chartColors.axis} tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis stroke={chartColors.axis} tick={{ fontSize: 11 }} />
-                <Tooltip {...tooltipProps} />
+                <Tooltip {...tooltipProps} formatter={secondsTooltipFormatter} />
                 <Legend wrapperStyle={{ color: chartColors.axis, fontSize: 11 }} />
                 {/* From 6h ranges the rate window spans a whole step, so sparse
                     traffic leaves lone points between gaps; draw those as dots. */}
@@ -542,8 +542,8 @@ function QueryMonitoring() {
                     <td className="cell-metric"><BarCell value={r.queries} max={dbMax.queries} /></td>
                     <td className="cell-metric"><BarCell value={r.share} max={100} suffix="%" /></td>
                     <td className={`cell-metric ${errorRateClass(r.error_rate)}`}>{r.error_rate.toFixed(2)}%</td>
-                    <td className="cell-metric">{r.avg_latency_ms == null ? '—' : <BarCell value={r.avg_latency_ms} max={dbMax.avg} />}</td>
-                    <td className="cell-metric">{r.latency_p95_ms == null ? '—' : <BarCell value={r.latency_p95_ms} max={dbMax.p95} />}</td>
+                    <td className="cell-metric">{r.avg_latency_ms == null ? '—' : <BarCell value={r.avg_latency_ms} max={dbMax.avg} format={formatLatencyMs} />}</td>
+                    <td className="cell-metric">{r.latency_p95_ms == null ? '—' : <BarCell value={r.latency_p95_ms} max={dbMax.p95} format={formatLatencyMs} />}</td>
                     <td className="cell-metric">{formatRows(r.avg_rows)}</td>
                   </tr>
                 ))}
@@ -606,8 +606,8 @@ function QueryMonitoring() {
                       <td className="cell-metric"><BarCell value={c.queries} max={consumerMax.queries} /></td>
                       <td className="cell-metric"><BarCell value={c.share} max={100} suffix="%" /></td>
                       <td className={`cell-metric ${errorRateClass(c.error_rate)}`}>{c.error_rate.toFixed(2)}%</td>
-                      <td className="cell-metric">{c.avg_latency_ms == null ? '—' : <BarCell value={c.avg_latency_ms} max={consumerMax.avg} />}</td>
-                      <td className="cell-metric">{c.latency_p95_ms == null ? '—' : <BarCell value={c.latency_p95_ms} max={consumerMax.p95} />}</td>
+                      <td className="cell-metric">{c.avg_latency_ms == null ? '—' : <BarCell value={c.avg_latency_ms} max={consumerMax.avg} format={formatLatencyMs} />}</td>
+                      <td className="cell-metric">{c.latency_p95_ms == null ? '—' : <BarCell value={c.latency_p95_ms} max={consumerMax.p95} format={formatLatencyMs} />}</td>
                       <td className="cell-metric">{formatRows(c.avg_rows)}</td>
                     </>
                   );

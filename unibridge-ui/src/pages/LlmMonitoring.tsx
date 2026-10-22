@@ -32,6 +32,7 @@ import BucketSelector from '../components/BucketSelector';
 import GrafanaLink from '../components/GrafanaLink';
 import { type TimeSelection, type Bucket, selectionKey, selectionSpanSeconds, bucketKey, periodForBucket, bucketTooCoarse, GRAFANA_BUCKET_INTERVAL } from '../utils/timeRange';
 import { formatChartTimestamp, formatBucketLabel } from '../utils/time';
+import { formatLatencyMs } from '../utils/monitoring';
 
 type ModelSortColumn = 'model' | 'input_tokens' | 'output_tokens' | 'cached_tokens' | 'tokens' | 'requests' | 'cost';
 type KeySortColumn = 'api_key' | 'input_tokens' | 'output_tokens' | 'cached_tokens' | 'tokens' | 'requests' | 'cost';
@@ -354,7 +355,7 @@ function LlmMonitoring() {
             <div className="metric-card__label">{t('llmMonitoring.totalRequests', { range: rangeLabel })}</div>
           </div>
           <div className="metric-card">
-            <div className="metric-card__value">{summary.avg_latency_ms}ms</div>
+            <div className="metric-card__value">{formatLatencyMs(summary.avg_latency_ms)}</div>
             <div className="metric-card__label">{t('llmMonitoring.avgLatency')}</div>
           </div>
           <div className="metric-card">

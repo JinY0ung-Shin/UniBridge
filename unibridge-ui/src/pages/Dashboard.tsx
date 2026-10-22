@@ -13,7 +13,7 @@ import UniBridgeLogo from '../components/UniBridgeLogo';
 import BucketSelector from '../components/BucketSelector';
 import { type Bucket, type TimeSelection, bucketKey } from '../utils/timeRange';
 import { formatBucketLabel, formatChartTime } from '../utils/time';
-import { errorRateColor } from '../utils/monitoring';
+import { errorRateColor, formatLatencyMs } from '../utils/monitoring';
 import GrafanaLink from '../components/GrafanaLink';
 import OpsSummary from './dashboard/OpsSummary';
 import './Dashboard.css';
@@ -237,7 +237,7 @@ function Dashboard() {
                   <div className="summary-card__label">{t('gatewayMonitoring.errorRate')}</div>
                 </div>
                 <div className="summary-card">
-                  <div className="summary-card__value">{gwSummaryQuery.data.avg_latency_ms}ms</div>
+                  <div className="summary-card__value">{formatLatencyMs(gwSummaryQuery.data.avg_latency_ms)}</div>
                   <div className="summary-card__label">{t('gatewayMonitoring.avgLatency')}</div>
                 </div>
               </div>
