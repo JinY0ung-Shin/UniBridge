@@ -7,7 +7,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, NoReturn
+from typing import Any, Callable, Literal, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 import httpx
@@ -2317,11 +2317,49 @@ async def metrics_top_routes(
     return routes
 
 
+USAGES_INCLUDE_DESCRIPTION = (
+    "latency: add e2eMs (p50/p90/p95/p99 end-to-end gateway latency, ms, all "
+    "responses; null past the 3600s bucket bound or without samples) to each route"
+)
+_USAGE_LATENCY_QUANTILES = (("p50", 0.5), ("p90", 0.9), ("p95", 0.95), ("p99", 0.99))
+
+
+def _bucket_quantile(q: float, buckets: dict[float, float]) -> float | None:
+    """``histogram_quantile`` over one route's cumulative ``le`` → count buckets.
+
+    Same linear interpolation as Prometheus, except where Prometheus would
+    clip: no traffic, or a rank that lands in the +Inf bucket (slower than the
+    last finite bound), read None instead of that bound.
+    """
+    bounds = sorted(buckets)
+    if not bounds or bounds[-1] != math.inf:
+        return None
+    # Buckets added mid-window (the 60s → 3600s extension) count only since
+    # then and can read below a lower bound; Prometheus takes the running max.
+    cumulative: list[float] = []
+    running = 0.0
+    for bound in bounds:
+        running = max(running, buckets[bound])
+        cumulative.append(running)
+    if cumulative[-1] <= 0:
+        return None
+    rank = q * cumulative[-1]
+    prev_bound, prev_count = 0.0, 0.0
+    for bound, count in zip(bounds, cumulative):
+        if count >= rank:
+            if bound == math.inf:
+                return None
+            return prev_bound + (bound - prev_bound) * (rank - prev_count) / (count - prev_count)
+        prev_bound, prev_count = bound, count
+    return None
+
+
 async def usages_payload(
     scope: _MonitoringScope,
     date: str | None,
     consumer: str | None,
     include_llm: bool,
+    include_latency: bool = False,
 ) -> dict[str, Any]:
     """Per-route request counts for one KST calendar day (shared implementation).
 
@@ -2330,7 +2368,13 @@ async def usages_payload(
     ``apisix_http_status`` counter the routes-comparison endpoint uses; they
     are ``increase()`` estimates from Prometheus (15s scrapes), not exact
     integers, and only dates within the Prometheus retention window (60d)
-    return data — older dates yield zero rows.
+    return data — older dates yield zero rows, and so do future dates.
+
+    ``include_latency`` adds ``e2eMs`` (p50/p90/p95/p99, ms) to every row: the
+    end-to-end gateway latency (``type="request"``, upstream time included) of
+    all responses — APISIX's histogram has no status label, so errors count
+    too. A percentile is null when it lies past the last bucket bound (3600s)
+    or the route has no latency samples, never a clipped value.
     """
     if include_llm and scope.restricted:
         raise HTTPException(
@@ -2352,22 +2396,36 @@ async def usages_payload(
             )
         # Midnight KST for that calendar day (KST = UTC+9, no DST).
         start = int(parsed.timestamp()) - _KST_OFFSET
+    resolved_date = datetime.fromtimestamp(start + _KST_OFFSET, tz=timezone.utc).strftime(
+        "%Y-%m-%d"
+    )
+    payload_consumer = None if consumer == _SELF_NO_KEY else consumer
     if start >= now:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="date must not be in the future",
-        )
+        # Nothing has happened yet: the same empty day as one with no traffic.
+        return {
+            "date": resolved_date,
+            "consumer": payload_consumer,
+            "total_requests": 0,
+            "routes": [],
+        }
     end = min(start + 86400, now)
     span = max(int(end - start), 1)
 
     if include_llm:
-        hs = f'{{consumer="{_promql_str(consumer)}"}}' if consumer else ""
+        consumer_matcher = f'consumer="{_promql_str(consumer)}"' if consumer else ""
+        hs = f"{{{consumer_matcher}}}" if consumer_matcher else ""
+        hl = "{" + ",".join(m for m in (_REQUEST_LATENCY, consumer_matcher) if m) + "}"
     else:
         hs = _labels(None, consumer)
+        hl = _labels(None, consumer, _REQUEST_LATENCY)
+    queries = [f"sum by (route) (increase(apisix_http_status{hs}[{span}s]))"]
+    if include_latency:
+        queries.append(
+            f"sum by (route, le) (increase(apisix_http_latency_bucket{hl}[{span}s]))"
+        )
     try:
-        results = await prometheus_client.instant_query(
-            f"sum by (route) (increase(apisix_http_status{hs}[{span}s]))",
-            eval_time=end,
+        results, *latency_results = await asyncio.gather(
+            *(prometheus_client.instant_query(q, eval_time=end) for q in queries)
         )
     except Exception as exc:
         raise HTTPException(
@@ -2403,12 +2461,34 @@ async def usages_payload(
     ]
     routes.sort(key=lambda r: r["requests"], reverse=True)
 
-    resolved_date = datetime.fromtimestamp(start + _KST_OFFSET, tz=timezone.utc).strftime(
-        "%Y-%m-%d"
-    )
+    if include_latency:
+        # Fold id and name rows the same way, bucket by bucket: percentiles of
+        # two halves cannot be combined afterwards.
+        buckets: dict[str, dict[float, float]] = {}
+        for r in latency_results[0]:
+            metric = r.get("metric", {})
+            try:
+                bound = float(metric["le"])
+                count = float(r.get("value", [0, "0"])[1])
+            except (KeyError, IndexError, ValueError, TypeError):
+                continue
+            if math.isnan(count):
+                continue
+            label = metric.get("route", "unknown")
+            canonical = name_map.get(label, label)
+            route_buckets = buckets.setdefault(canonical, {})
+            route_buckets[bound] = route_buckets.get(bound, 0.0) + count
+        for row in routes:
+            route_buckets = buckets.get(row["route"], {})
+            e2e: dict[str, float | None] = {}
+            for key, q in _USAGE_LATENCY_QUANTILES:
+                value = _bucket_quantile(q, route_buckets)
+                e2e[key] = None if value is None else round(value, 2)
+            row["e2eMs"] = e2e
+
     return {
         "date": resolved_date,
-        "consumer": None if consumer == _SELF_NO_KEY else consumer,
+        "consumer": payload_consumer,
         "total_requests": total,
         "routes": routes,
     }
@@ -2425,10 +2505,19 @@ async def metrics_usages(
         False,
         description="Include the LLM routes (llm-proxy/llm-messages/llm-responses and the removed llm-bi-* ones)",
     ),
+    include: Literal["latency"] | None = Query(
+        None, description=USAGES_INCLUDE_DESCRIPTION
+    ),
     scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
 ) -> dict[str, Any]:
     """Per-route request counts for one KST calendar day (JWT callers)."""
-    return await usages_payload(scope, date=date, consumer=consumer, include_llm=include_llm)
+    return await usages_payload(
+        scope,
+        date=date,
+        consumer=consumer,
+        include_llm=include_llm,
+        include_latency=include == "latency",
+    )
 
 
 @router.get("/metrics/routes-comparison")

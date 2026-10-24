@@ -147,6 +147,61 @@ async def test_unknown_consumer_rejected(client):
 
 
 @pytest.mark.asyncio
+async def test_apikey_caller_latency_scoped_to_own_consumer(client, admin_token):
+    await _create_apikey(
+        client, admin_token, name="lat-app", key="lat-key", allowed_routes=["usages-api"]
+    )
+
+    async def fake(query, eval_time=None):
+        if "apisix_http_latency_bucket" in query:
+            return [
+                {"metric": {"route": "query-api", "le": le}, "value": [0, c]}
+                for le, c in (("100", "10"), ("200", "20"), ("+Inf", "20"))
+            ]
+        return [{"metric": {"route": "query-api"}, "value": [0, "20"]}]
+
+    mock = AsyncMock(side_effect=fake)
+    with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+        resp = await client.get(
+            "/usages?date=2026-06-15&include=latency&consumer=other-key",
+            headers={"X-Consumer-Username": "lat-app"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["routes"] == [
+        {
+            "route": "query-api",
+            "name": None,
+            "requests": 20,
+            "e2eMs": {"p50": 100.0, "p90": 180.0, "p95": 190.0, "p99": 198.0},
+        }
+    ]
+    for call in mock.call_args_list:
+        assert 'consumer="lat-app"' in call.args[0]
+        assert "other-key" not in call.args[0]
+
+
+@pytest.mark.asyncio
+async def test_apikey_caller_future_date_empty(client, admin_token):
+    await _create_apikey(
+        client, admin_token, name="fut-app", key="fut-key", allowed_routes=["usages-api"]
+    )
+    mock = AsyncMock(return_value=[])
+    with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+        resp = await client.get(
+            "/usages?date=2999-01-01&include=latency",
+            headers={"X-Consumer-Username": "fut-app"},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "date": "2999-01-01",
+        "consumer": "fut-app",
+        "total_requests": 0,
+        "routes": [],
+    }
+    mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_missing_auth_rejected(client):
     resp = await client.get("/usages?date=2026-06-15")
     assert resp.status_code == 401
@@ -181,7 +236,7 @@ async def test_jwt_self_user_forced_to_sentinel_without_key(client, user_token):
 
 
 @pytest.mark.asyncio
-async def test_invalid_and_future_dates_rejected(client, admin_token):
+async def test_invalid_date_rejected_future_date_empty(client, admin_token):
     resp = await client.get(
         "/usages?date=not-a-date", headers=auth_header(admin_token)
     )
@@ -190,4 +245,5 @@ async def test_invalid_and_future_dates_rejected(client, admin_token):
     resp = await client.get(
         "/usages?date=2999-01-01", headers=auth_header(admin_token)
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 200
+    assert resp.json()["routes"] == []

@@ -187,6 +187,36 @@ class TestUsagesConsumerEscaping:
         assert mock.call_args.args[0].count("{") == 1
         assert 'consumer="svc.prod-1"' in mock.call_args.args[0]
 
+    async def test_llm_usages_latency_selector(self, client, admin_token):
+        mock = AsyncMock(return_value=[])
+        with (
+            patch("app.routers.gateway.prometheus_client.instant_query", mock),
+            patch(
+                "app.routers.gateway.apisix_client.list_resources",
+                new_callable=AsyncMock,
+                return_value={"items": [], "total": 0},
+            ),
+        ):
+            for params in (
+                {"consumer": "svc.prod-1", "include_llm": "true", "include": "latency"},
+                {"include_llm": "true", "include": "latency"},
+            ):
+                resp = await client.get(
+                    "/admin/gateway/metrics/usages",
+                    params=params,
+                    headers=auth_header(admin_token),
+                )
+                assert resp.status_code == 200
+        latency = [
+            c.args[0] for c in mock.call_args_list if "apisix_http_latency_bucket" in c.args[0]
+        ]
+        assert latency == [
+            'sum by (route, le) (increase(apisix_http_latency_bucket'
+            '{type="request",consumer="svc.prod-1"}' + latency[0].split("}", 1)[1],
+            'sum by (route, le) (increase(apisix_http_latency_bucket'
+            '{type="request"}' + latency[1].split("}", 1)[1],
+        ]
+
     async def test_llm_usages_rejects_a_breakout(self, client, admin_token):
         mock = AsyncMock(return_value=[])
         with patch("app.routers.gateway.prometheus_client.instant_query", mock):

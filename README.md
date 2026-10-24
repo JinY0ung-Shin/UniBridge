@@ -412,6 +412,37 @@ Prometheus container runs without `--web.enable-admin-api` and
 endpoint to call. Note that a key with this route sees **every** metric in the
 stack — there is no per-key metric scoping, unlike the in-app monitoring pages.
 
+### Per-route usage and latency through the gateway
+
+`GET /api/usages` (fixed route `usages-api`, granted per key like the others)
+returns one KST calendar day of per-route request counts, scoped to the calling
+key's own traffic (master keys see every key combined). `?include=latency` adds
+end-to-end latency percentiles to the same rows, so `route`/`name` join 1:1:
+
+```bash
+curl -H "apikey: $UNIBRIDGE_API_KEY" \
+  "https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/usages?date=2026-10-23&include=latency"
+# {"date": "2026-10-23", "consumer": "my-key", "total_requests": 12345,
+#  "routes": [{"route": "orders", "name": "orders", "requests": 12345,
+#              "e2eMs": {"p50": 120.0, "p90": 240.0, "p95": 310.0, "p99": 580.0}}]}
+```
+
+- `date` is a KST (UTC+9) day, `00:00`–`24:00`; today runs up to now. A future
+  date returns an empty `routes` list, as does a day older than Prometheus
+  retention (60d).
+- `e2eMs` is per request, in milliseconds, measured by APISIX from receiving the
+  request to finishing the response (upstream time included; APISIX's
+  `type="request"` histogram). It covers **all** responses, errors included:
+  the histogram has no status label.
+- Percentiles interpolate inside histogram buckets exactly like
+  `histogram_quantile`, so they match the Gateway Monitoring page for the same
+  window within bucket resolution. A percentile is `null` when the route has no
+  latency samples, or when it lies past the last bucket bound (3600s, see
+  [Latency percentiles past 60s](#latency-percentiles-past-60s)) — never a
+  clipped value.
+- `requests` counts from the status counter and the percentiles from the
+  latency histogram; both are Prometheus `increase()` estimates.
+
 ### Model discovery for Claude Code
 
 `GET /api/llm/v1/models` lists every registered LiteLLM model, and lists each one

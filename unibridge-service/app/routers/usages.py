@@ -8,11 +8,13 @@ consumer regardless of the ``consumer`` query param (and cannot see LLM
 routes); master keys (``*``/``*``, admin-created only — self-service keys can
 never be master) get the unrestricted admin view: all consumers combined by
 default, any ``consumer`` filter, and ``include_llm``. JWT callers get the
-same read/self scoping as the admin metrics endpoints.
+same read/self scoping as the admin metrics endpoints. ``?include=latency``
+adds per-route end-to-end latency percentiles to the same rows (see
+``usages_payload``).
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey
 from app.database import get_db
 from app.routers.api_keys import _is_master_access
-from app.routers.gateway import _monitoring_scope_for, _MonitoringScope, usages_payload
+from app.routers.gateway import (
+    USAGES_INCLUDE_DESCRIPTION,
+    _monitoring_scope_for,
+    _MonitoringScope,
+    usages_payload,
+)
 
 router = APIRouter(tags=["Usages"])
 
@@ -36,6 +43,7 @@ async def get_usages(
         description="Consumer filter (JWT admins only; API-key callers are always self-scoped)",
     ),
     include_llm: bool = Query(False, description="Include LLM routes (JWT admins only)"),
+    include: Literal["latency"] | None = Query(None, description=USAGES_INCLUDE_DESCRIPTION),
     user: CurrentUser | ApiKeyUser = Depends(get_current_user_or_apikey),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -47,4 +55,10 @@ async def get_usages(
             scope = _MonitoringScope(forced_consumer=user.consumer_name, restricted=True)
     else:
         scope = await _monitoring_scope_for(user, db)
-    return await usages_payload(scope, date=date, consumer=consumer, include_llm=include_llm)
+    return await usages_payload(
+        scope,
+        date=date,
+        consumer=consumer,
+        include_llm=include_llm,
+        include_latency=include == "latency",
+    )

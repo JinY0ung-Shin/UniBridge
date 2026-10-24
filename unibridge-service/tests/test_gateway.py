@@ -2017,12 +2017,21 @@ class TestMetricsUsages:
         span = int(query.split("[")[1].split("s]")[0])
         assert 1 <= span <= 86400
 
-    async def test_future_date_rejected(self, client, admin_token):
-        resp = await client.get(
-            "/admin/gateway/metrics/usages?date=2999-01-01",
-            headers=auth_header(admin_token),
-        )
-        assert resp.status_code == 400
+    async def test_future_date_returns_empty_day(self, client, admin_token):
+        mock = AsyncMock(return_value=[])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/usages?date=2999-01-01&include=latency",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "date": "2999-01-01",
+            "consumer": None,
+            "total_requests": 0,
+            "routes": [],
+        }
+        mock.assert_not_awaited()
 
     async def test_invalid_date_rejected(self, client, admin_token):
         resp = await client.get(
@@ -2067,6 +2076,112 @@ class TestMetricsUsages:
             headers=auth_header(user_token),
         )
         assert resp.status_code == 403
+
+    @staticmethod
+    def _latency_mock(status_rows, bucket_rows):
+        async def fake(query, eval_time=None):
+            return bucket_rows if "apisix_http_latency_bucket" in query else status_rows
+
+        return AsyncMock(side_effect=fake)
+
+    @staticmethod
+    def _buckets(route, counts):
+        return [
+            {"metric": {"route": route, "le": le}, "value": [0, str(c)]}
+            for le, c in counts.items()
+        ]
+
+    async def test_latency_percentiles_per_route(self, client, admin_token):
+        status_rows = [
+            {"metric": {"route": "route-a"}, "value": [0, "100"]},
+            {"metric": {"route": "route-b"}, "value": [0, "10"]},
+        ]
+        # route-a: 50 under 100ms, 90 under 200ms, all 100 under 500ms.
+        bucket_rows = self._buckets(
+            "route-a", {"100": 50, "200": 90, "500": 100, "3600000": 100, "+Inf": 100}
+        )
+        mock = self._latency_mock(status_rows, bucket_rows)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/usages?date=2026-06-15&include=latency",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        routes = resp.json()["routes"]
+        assert routes[0] == {
+            "route": "route-a",
+            "name": None,
+            "requests": 100,
+            "e2eMs": {"p50": 100.0, "p90": 200.0, "p95": 350.0, "p99": 470.0},
+        }
+        # A route with requests but no latency samples reads null, not 0.
+        assert routes[1]["e2eMs"] == {"p50": None, "p90": None, "p95": None, "p99": None}
+
+        queries = [c.args[0] for c in mock.call_args_list]
+        latency_query = next(q for q in queries if "apisix_http_latency_bucket" in q)
+        assert latency_query.startswith("sum by (route, le) (increase(")
+        assert 'type="request"' in latency_query
+        assert 'route!="llm-proxy"' in latency_query
+        assert "[86400s]" in latency_query
+        assert all(c.kwargs["eval_time"] == self.DAY_END for c in mock.call_args_list)
+
+    async def test_latency_folds_id_and_name_rows_by_bucket(self, client, admin_token):
+        status_rows = [
+            {"metric": {"route": "r1"}, "value": [0, "50"]},
+            {"metric": {"route": "orders"}, "value": [0, "50"]},
+        ]
+        # Each half alone has p50 in a different bucket; only the merged
+        # buckets give the day's p50.
+        bucket_rows = self._buckets("r1", {"100": 50, "200": 50, "+Inf": 50}) + self._buckets(
+            "orders", {"100": 0, "200": 50, "+Inf": 50}
+        )
+        listing = {"items": [{"id": "r1", "name": "orders"}], "total": 1}
+        mock = self._latency_mock(status_rows, bucket_rows)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock), patch(
+            "app.routers.gateway.apisix_client.list_resources",
+            new=AsyncMock(return_value=listing),
+        ):
+            resp = await client.get(
+                "/admin/gateway/metrics/usages?date=2026-06-15&include=latency",
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        [row] = resp.json()["routes"]
+        assert row["route"] == "orders"
+        assert row["requests"] == 100
+        assert row["e2eMs"]["p50"] == 100.0
+        assert row["e2eMs"]["p99"] == 198.0
+
+    async def test_latency_past_last_bound_is_null(self, client, admin_token):
+        status_rows = [{"metric": {"route": "slow"}, "value": [0, "100"]}]
+        # 2 of 100 requests ran past the last finite bound.
+        bucket_rows = self._buckets("slow", {"1000": 50, "3600000": 98, "+Inf": 100})
+        mock = self._latency_mock(status_rows, bucket_rows)
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/usages?date=2026-06-15&include=latency",
+                headers=auth_header(admin_token),
+            )
+        e2e = resp.json()["routes"][0]["e2eMs"]
+        assert e2e["p50"] == 1000.0
+        assert e2e["p99"] is None
+
+    async def test_without_include_no_latency_query(self, client, admin_token):
+        mock = AsyncMock(return_value=[{"metric": {"route": "a"}, "value": [0, "1"]}])
+        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
+            resp = await client.get(
+                "/admin/gateway/metrics/usages?date=2026-06-15",
+                headers=auth_header(admin_token),
+            )
+        assert mock.await_count == 1
+        assert "e2eMs" not in resp.json()["routes"][0]
+
+    async def test_unknown_include_rejected(self, client, admin_token):
+        resp = await client.get(
+            "/admin/gateway/metrics/usages?date=2026-06-15&include=bogus",
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 422
 
     async def test_self_scoped_user_without_key_gets_sentinel_and_null_consumer(
         self, client, user_token
