@@ -25,7 +25,8 @@
     "servers": "Servers",
     "externalMonitoring": "External APIs",
     "metricsGuide": "Metrics Guide",
-    "configTransfer": "Config transfer"
+    "configTransfer": "Config transfer",
+    "mcp": "MCP"
   },
   "common": {
     "save": "Save",
@@ -1401,5 +1402,80 @@
     "sectionAlertChannels": "Alert channels",
     "sectionAlertRecipients": "Alert recipients",
     "sectionSystemSettings": "System settings"
+  },
+  "mcp": {
+    "title": "MCP",
+    "subtitle": "Expose query templates, databases, S3 and NAS to AI agents as MCP tools. Each API key sees only what it is granted.",
+    "readOnlyNotice": "You have read-only access to MCP settings.",
+    "loadFailed": "Failed to load MCP settings.",
+    "settingsSection": "Server",
+    "enabled": "Enable the MCP endpoint",
+    "enabledHint": "When off, /api/mcp rejects every request. Keys and their grants stay as they are.",
+    "toolGroupsSection": "Tool groups",
+    "toolGroupsHint": "A key gets a group's tools only when the group is on here and the key also holds the group's underlying grant.",
+    "groups": {
+      "templates": {
+        "label": "Query templates",
+        "hint": "One tool per enabled query template the key may run."
+      },
+      "db_explore": {
+        "label": "DB exploration (list_databases · list_tables · describe_table)",
+        "hint": "Lists the key's databases, their tables and columns."
+      },
+      "run_query": {
+        "label": "Read-only SQL (run_query)",
+        "hint": "Runs a single SELECT only, even for keys allowed to write."
+      },
+      "s3": {
+        "label": "S3",
+        "hint": "Lists buckets and objects and reads small text objects."
+      },
+      "nas": {
+        "label": "NAS",
+        "hint": "Lists entries and reads small text files."
+      }
+    },
+    "limitsSection": "Result limits",
+    "maxRows": "Max rows per result",
+    "maxRowsHint": "1–10,000. Larger results are cut and marked truncated.",
+    "maxResultBytes": "Max result size (bytes)",
+    "maxResultBytesHint": "1,024–1,048,576. Applies to query results and file reads.",
+    "invalidRange": "Enter a whole number between {{min}} and {{max}}.",
+    "unsavedChanges": "Unsaved MCP changes",
+    "noChanges": "No MCP changes",
+    "discardChanges": "Discard changes",
+    "saved": "MCP settings saved.",
+    "saveFailed": "Failed to save MCP settings.",
+    "guideSection": "Connect a client",
+    "endpoint": "Endpoint",
+    "claudeCode": "Claude Code",
+    "mcpJson": ".mcp.json",
+    "codex": "Codex (~/.codex/config.toml)",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyFailed": "Failed to copy to the clipboard.",
+    "grantNote": "Replace <API_KEY> with the key. The key needs the mcp-api route grant (API Key Management) plus the grant behind each tool group: query-api and the database for templates, DB exploration and SQL; s3-api for S3; nas-api for NAS.",
+    "previewSection": "Tool preview",
+    "previewHint": "See which tools an API key would get, and why a group is missing.",
+    "previewKey": "API key",
+    "previewKeyPlaceholder": "Select an API key",
+    "previewConsumerInput": "API key name",
+    "previewButton": "Preview",
+    "previewNotFound": "No API key with that name.",
+    "previewFailed": "Failed to load the tool preview.",
+    "previewDisabled": "MCP is turned off, so this key gets no tools.",
+    "previewNoGrant": "This key lacks the mcp-api grant, so /api/mcp rejects it.",
+    "groupsTable": "Tool groups for this key",
+    "toolsTable": "Tools for this key",
+    "colGroup": "Tool group",
+    "colEnabled": "Enabled",
+    "colGranted": "Granted",
+    "colRequiredRoute": "Required grant",
+    "colTool": "Tool",
+    "colDescription": "Description",
+    "toolCount": "Tools ({{count}})",
+    "noTools": "This key gets no tools.",
+    "yes": "Yes",
+    "no": "No"
   }
 }

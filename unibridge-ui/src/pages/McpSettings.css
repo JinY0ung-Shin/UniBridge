@@ -1,0 +1,108 @@
+.mcp-settings {
+  max-width: 880px;
+}
+
+.mcp-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.mcp-section-hint {
+  margin: -8px 0 16px 0;
+}
+
+.mcp-toggle-row + .mcp-toggle-row {
+  margin-top: 14px;
+}
+
+.mcp-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.mcp-toggle input:disabled {
+  cursor: not-allowed;
+}
+
+.mcp-toggle-hint {
+  margin-left: 24px;
+}
+
+.form-hint.mcp-invalid {
+  color: var(--accent-red);
+}
+
+.mcp-snippet + .mcp-snippet {
+  margin-top: 16px;
+}
+
+.mcp-snippet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.mcp-snippet-header h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mcp-code {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.mcp-select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  font-size: 14px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.mcp-preview-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.mcp-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mcp-tools-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mcp-tool-title {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.mcp-tool-description {
+  white-space: pre-wrap;
+  font-size: 13px;
+}

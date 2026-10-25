@@ -24,6 +24,7 @@ const Roles = lazy(() => import('./pages/Roles'));
 const Users = lazy(() => import('./pages/Users'));
 const AdminAuditLogs = lazy(() => import('./pages/AdminAuditLogs'));
 const ConfigTransfer = lazy(() => import('./pages/ConfigTransfer'));
+const McpSettings = lazy(() => import('./pages/McpSettings'));
 const AlertSettings = lazy(() => import('./pages/AlertSettings'));
 const AlertHistory = lazy(() => import('./pages/AlertHistory'));
 const AlertStatus = lazy(() => import('./pages/AlertStatus'));
@@ -126,6 +127,7 @@ function App() {
           <Route path="/users" element={<ProtectedRoute permission="admin.users.read"><Users /></ProtectedRoute>} />
           <Route path="/admin-audit-logs" element={<ProtectedRoute permission="admin.audit.read"><AdminAuditLogs /></ProtectedRoute>} />
           <Route path="/config-transfer" element={<ProtectedRoute permission="admin.config.read"><ConfigTransfer /></ProtectedRoute>} />
+          <Route path="/mcp" element={<ProtectedRoute permission="admin.config.read"><McpSettings /></ProtectedRoute>} />
           <Route path="/alerts/status" element={<ProtectedRoute permission="alerts.read"><AlertStatus /></ProtectedRoute>} />
           <Route path="/alerts/settings" element={<ProtectedRoute permission="alerts.read"><AlertSettings /></ProtectedRoute>} />
           <Route path="/alerts/history" element={<ProtectedRoute permission="alerts.read"><AlertHistory /></ProtectedRoute>} />

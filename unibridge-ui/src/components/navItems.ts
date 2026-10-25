@@ -48,6 +48,7 @@ export const navItems: NavItem[] = [
   { to: '/users', labelKey: 'nav.users', icon: 'Users', section: 'admin', permission: 'admin.users.read' },
   { to: '/admin-audit-logs', labelKey: 'nav.adminAuditLogs', icon: 'Audit Logs', section: 'admin', permission: 'admin.audit.read' },
   { to: '/config-transfer', labelKey: 'nav.configTransfer', icon: 'Query Settings', section: 'admin', permission: 'admin.config.read' },
+  { to: '/mcp', labelKey: 'nav.mcp', icon: 'Query Settings', section: 'admin', permission: 'admin.config.read' },
   { to: '/alerts/status', labelKey: 'nav.alertStatus', icon: 'Alert Status', section: 'alerts', permission: 'alerts.read' },
   { to: '/alerts/settings', labelKey: 'nav.alertSettings', icon: 'Alert Settings', section: 'alerts', permission: 'alerts.read' },
   { to: '/alerts/history', labelKey: 'nav.alertHistory', icon: 'Alert History', section: 'alerts', permission: 'alerts.read' },

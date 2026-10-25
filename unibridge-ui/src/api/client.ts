@@ -441,6 +441,55 @@ export async function updateQuerySettings(body: QuerySettingsUpdate): Promise<Qu
   return data;
 }
 
+/* ── Admin: MCP ── */
+
+export type McpToolGroup = 'templates' | 'db_explore' | 'run_query' | 's3' | 'nas';
+
+export interface McpSettings {
+  enabled: boolean;
+  tool_groups: Record<McpToolGroup, boolean>;
+  max_rows: number;
+  max_result_bytes: number;
+}
+
+export interface McpPreviewGroup {
+  group: McpToolGroup;
+  enabled: boolean;
+  granted: boolean;
+  required_route: string;
+}
+
+export interface McpPreviewTool {
+  name: string;
+  title: string;
+  description: string;
+  group: string;
+}
+
+/** The MCP tools one API key would see, and why groups are missing. */
+export interface McpPreview {
+  consumer: string;
+  mcp_enabled: boolean;
+  has_mcp_grant: boolean;
+  groups: McpPreviewGroup[];
+  tools: McpPreviewTool[];
+}
+
+export async function getMcpSettings(): Promise<McpSettings> {
+  const { data } = await client.get('/admin/mcp/settings');
+  return data;
+}
+
+export async function updateMcpSettings(body: McpSettings): Promise<McpSettings> {
+  const { data } = await client.put('/admin/mcp/settings', body);
+  return data;
+}
+
+export async function getMcpPreview(consumer: string): Promise<McpPreview> {
+  const { data } = await client.get('/admin/mcp/preview', { params: { consumer } });
+  return data;
+}
+
 /* ── Admin: Query Templates ── */
 
 export async function getQueryTemplates(): Promise<QueryTemplate[]> {

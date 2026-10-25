@@ -25,7 +25,8 @@
     "servers": "서버 모니터링",
     "externalMonitoring": "외부 API 모니터링",
     "metricsGuide": "메트릭 가이드",
-    "configTransfer": "설정 이관"
+    "configTransfer": "설정 이관",
+    "mcp": "MCP"
   },
   "common": {
     "save": "저장",
@@ -1401,5 +1402,80 @@
     "sectionAlertChannels": "알림 채널",
     "sectionAlertRecipients": "알림 수신자",
     "sectionSystemSettings": "시스템 설정"
+  },
+  "mcp": {
+    "title": "MCP",
+    "subtitle": "쿼리 템플릿·DB·S3·NAS를 AI 에이전트용 MCP 도구로 노출합니다. API 키마다 권한이 있는 것만 보입니다.",
+    "readOnlyNotice": "MCP 설정은 읽기 전용으로 볼 수 있습니다.",
+    "loadFailed": "MCP 설정을 불러오지 못했습니다.",
+    "settingsSection": "서버",
+    "enabled": "MCP 엔드포인트 사용",
+    "enabledHint": "끄면 /api/mcp가 모든 요청을 거부합니다. 키와 권한은 그대로 유지됩니다.",
+    "toolGroupsSection": "도구 그룹",
+    "toolGroupsHint": "여기서 켠 그룹이라도 키에 해당 그룹의 기반 권한이 있어야 도구가 보입니다.",
+    "groups": {
+      "templates": {
+        "label": "쿼리 템플릿",
+        "hint": "키가 실행할 수 있는 활성 템플릿마다 도구 1개."
+      },
+      "db_explore": {
+        "label": "DB 탐색 (list_databases · list_tables · describe_table)",
+        "hint": "키가 접근 가능한 DB와 테이블·컬럼을 보여줍니다."
+      },
+      "run_query": {
+        "label": "읽기 전용 SQL (run_query)",
+        "hint": "쓰기 권한이 있는 키라도 SELECT 한 문장만 실행합니다."
+      },
+      "s3": {
+        "label": "S3",
+        "hint": "버킷·객체 목록 조회와 작은 텍스트 객체 읽기."
+      },
+      "nas": {
+        "label": "NAS",
+        "hint": "항목 목록 조회와 작은 텍스트 파일 읽기."
+      }
+    },
+    "limitsSection": "결과 상한",
+    "maxRows": "결과당 최대 행 수",
+    "maxRowsHint": "1~10,000. 넘는 결과는 잘리고 truncated로 표시됩니다.",
+    "maxResultBytes": "결과 최대 크기(바이트)",
+    "maxResultBytesHint": "1,024~1,048,576. 쿼리 결과와 파일 읽기에 모두 적용됩니다.",
+    "invalidRange": "{{min}}~{{max}} 사이의 정수를 입력하세요.",
+    "unsavedChanges": "저장하지 않은 MCP 변경 사항",
+    "noChanges": "MCP 변경 사항 없음",
+    "discardChanges": "변경 취소",
+    "saved": "MCP 설정을 저장했습니다.",
+    "saveFailed": "MCP 설정을 저장하지 못했습니다.",
+    "guideSection": "클라이언트 연결",
+    "endpoint": "엔드포인트",
+    "claudeCode": "Claude Code",
+    "mcpJson": ".mcp.json",
+    "codex": "Codex (~/.codex/config.toml)",
+    "copy": "복사",
+    "copied": "복사됨",
+    "copyFailed": "클립보드에 복사하지 못했습니다.",
+    "grantNote": "<API_KEY>를 실제 키로 바꾸세요. 키에는 mcp-api 라우트 권한(API 키 관리)과 도구 그룹별 기반 권한이 필요합니다: 템플릿·DB 탐색·SQL은 query-api와 해당 DB, S3는 s3-api, NAS는 nas-api.",
+    "previewSection": "도구 미리보기",
+    "previewHint": "API 키가 받게 될 도구와, 그룹이 빠진 이유를 확인합니다.",
+    "previewKey": "API 키",
+    "previewKeyPlaceholder": "API 키 선택",
+    "previewConsumerInput": "API 키 이름",
+    "previewButton": "미리보기",
+    "previewNotFound": "해당 이름의 API 키가 없습니다.",
+    "previewFailed": "도구 미리보기를 불러오지 못했습니다.",
+    "previewDisabled": "MCP가 꺼져 있어 이 키는 도구를 받지 못합니다.",
+    "previewNoGrant": "이 키에는 mcp-api 권한이 없어 /api/mcp가 거부합니다.",
+    "groupsTable": "이 키의 도구 그룹",
+    "toolsTable": "이 키의 도구",
+    "colGroup": "도구 그룹",
+    "colEnabled": "켜짐",
+    "colGranted": "권한",
+    "colRequiredRoute": "필요 권한",
+    "colTool": "도구",
+    "colDescription": "설명",
+    "toolCount": "도구 ({{count}}개)",
+    "noTools": "이 키가 받는 도구가 없습니다.",
+    "yes": "예",
+    "no": "아니요"
   }
 }
