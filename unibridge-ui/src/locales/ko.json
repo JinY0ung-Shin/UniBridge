@@ -1454,7 +1454,7 @@
     "copy": "복사",
     "copied": "복사됨",
     "copyFailed": "클립보드에 복사하지 못했습니다.",
-    "grantNote": "<API_KEY>를 실제 키로 바꾸세요. 키에는 mcp-api 라우트 권한(API 키 관리)과 도구 그룹별 기반 권한이 필요합니다: 템플릿·DB 탐색·SQL은 query-api와 해당 DB, S3는 s3-api, NAS는 nas-api.",
+    "grantNote": "<API_KEY>를 실제 키로 바꾸세요. 키에는 mcp-api 라우트 권한(API 키 관리)과 도구 그룹별 기반 권한이 필요합니다: 템플릿·DB 탐색·SQL은 query-api와 해당 DB, S3는 s3-api, NAS는 nas-api. 도구 호출은 해당 REST 라우트로 게이트웨이를 다시 거쳐 그 라우트에 집계되며(mcp-api는 집계 제외), 키의 분당 한도를 호출당 2회 사용합니다.",
     "previewSection": "도구 미리보기",
     "previewHint": "API 키가 받게 될 도구와, 그룹이 빠진 이유를 확인합니다.",
     "previewKey": "API 키",

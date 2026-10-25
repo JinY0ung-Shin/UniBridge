@@ -134,7 +134,7 @@ async def test_master_key_can_filter_specific_consumer_and_include_llm(client, a
     assert resp.json()["consumer"] == "other-key"
     query = mock.call_args.args[0]
     assert 'consumer="other-key"' in query
-    assert "route!=" not in query  # include_llm honored for master keys
+    assert 'route!="llm-' not in query  # include_llm honored for master keys
 
 
 @pytest.mark.asyncio

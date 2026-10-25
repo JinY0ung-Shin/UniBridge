@@ -88,3 +88,16 @@ def check_table_access(
         denied_list = ", ".join(sorted(denied))
         return f"Access denied to table(s): {denied_list}"
     return None
+
+
+def table_name_allowed(table: str, allowed_tables: list[str] | None) -> bool:
+    """Whether a catalog table name (``schema.table`` or bare) is in scope.
+
+    Query checks compare bare lower-case names (:func:`extract_tables`), so a
+    qualified name passes when either it or its bare name is listed.
+    """
+    if allowed_tables is None:
+        return True
+    allowed = {name.lower() for name in allowed_tables}
+    lowered = table.lower()
+    return lowered in allowed or lowered.rpartition(".")[2] in allowed

@@ -1,7 +1,8 @@
 """MCP server (Streamable HTTP) for API keys, plus its admin settings.
 
 Clients reach ``POST /api/mcp`` through the ``mcp-api`` APISIX route (key-auth,
-consumer-restriction), which rewrites to ``/mcp`` here. The server is
+consumer-restriction), which rewrites to ``/mcp`` here; tool calls go back out
+through the gateway's REST routes with the same key. The server is
 stateless: no ``Mcp-Session-Id``, JSON responses only, no server-initiated
 stream (``GET`` answers 405). Blue/green colors can therefore serve any request
 of a session. Tools come from :mod:`app.services.mcp_tools`.
@@ -160,7 +161,14 @@ async def mcp_endpoint(
         )
 
     user, mcp_settings = auth
-    ctx = mcp_tools.ToolContext(user=user, db=db, settings=mcp_settings)
+    ctx = mcp_tools.ToolContext(
+        user=user,
+        db=db,
+        settings=mcp_settings,
+        # key-auth hands the key on (hide_credentials is off); tool calls
+        # resend it to the REST routes through the gateway.
+        api_key=request.headers.get("apikey"),
+    )
     if isinstance(payload, list):  # JSON-RPC batch (protocol 2025-03-26)
         if not payload or len(payload) > MAX_BATCH_MESSAGES:
             return JSONResponse(

@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -485,8 +485,17 @@ async def download_object(
     alias: str,
     bucket: str = Query(..., min_length=1),
     key: str = Query(..., min_length=1),
+    max_bytes: int | None = Query(
+        None,
+        ge=1,
+        le=MAX_PROXY_DOWNLOAD_BYTES,
+        description=(
+            "Return only the first max_bytes bytes (any object size); "
+            "X-Object-Size carries the full size"
+        ),
+    ),
     _user: CurrentUser | ApiKeyUser = Depends(_require_s3_browse),
-) -> StreamingResponse:
+) -> Response:
     """Proxy-download an S3 object through UniBridge (works for internal S3 endpoints)."""
     if not s3_manager.has_connection(alias):
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
@@ -507,6 +516,28 @@ async def download_object(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Unable to determine object size",
         )
+    filename = key.rsplit("/", 1)[-1] or "download"
+    if max_bytes is not None:
+        # A ranged read of the beginning, so the whole-object cap does not apply.
+        data = b""
+        if file_size:
+            try:
+                data = await s3_manager.read_object_prefix(
+                    alias, bucket, key, min(file_size, max_bytes)
+                )
+            except (BotoCoreError, ClientError) as exc:
+                _handle_s3_error(alias, exc)
+            except Exception:
+                logger.exception("Failed to read object prefix for '%s'", alias)
+                raise HTTPException(status_code=502, detail="Failed to download object")
+        return Response(
+            content=data,
+            media_type=meta.get("content_type") or "application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+                "X-Object-Size": str(file_size),
+            },
+        )
     if file_size > MAX_PROXY_DOWNLOAD_BYTES:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
@@ -525,7 +556,6 @@ async def download_object(
     body = resp["Body"]
     content_type = resp.get("ContentType", "application/octet-stream")
     content_length = resp.get("ContentLength")
-    filename = key.rsplit("/", 1)[-1] or "download"
 
     try:
         response_size = int(content_length) if content_length is not None else None

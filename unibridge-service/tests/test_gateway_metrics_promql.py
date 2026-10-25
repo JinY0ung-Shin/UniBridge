@@ -158,7 +158,7 @@ class TestLabelsEscapesConsumer:
         assert _labels(None, "a\\b") == (
             '{route!="llm-proxy",route!="llm-messages",'
             'route!="llm-responses",route!="llm-bi-proxy",route!="llm-bi-messages",'
-            'route!="llm-bi-responses",consumer="a\\\\b"}'
+            'route!="llm-bi-responses",route!="mcp-api",consumer="a\\\\b"}'
         )
 
     def test_matches_promql_str(self):
@@ -212,9 +212,10 @@ class TestUsagesConsumerEscaping:
         ]
         assert latency == [
             'sum by (route, le) (increase(apisix_http_latency_bucket'
-            '{type="request",consumer="svc.prod-1"}' + latency[0].split("}", 1)[1],
+            '{type="request",route!="mcp-api",consumer="svc.prod-1"}'
+            + latency[0].split("}", 1)[1],
             'sum by (route, le) (increase(apisix_http_latency_bucket'
-            '{type="request"}' + latency[1].split("}", 1)[1],
+            '{type="request",route!="mcp-api"}' + latency[1].split("}", 1)[1],
         ]
 
     async def test_llm_usages_rejects_a_breakout(self, client, admin_token):

@@ -1454,7 +1454,7 @@
     "copy": "Copy",
     "copied": "Copied",
     "copyFailed": "Failed to copy to the clipboard.",
-    "grantNote": "Replace <API_KEY> with the key. The key needs the mcp-api route grant (API Key Management) plus the grant behind each tool group: query-api and the database for templates, DB exploration and SQL; s3-api for S3; nas-api for NAS.",
+    "grantNote": "Replace <API_KEY> with the key. The key needs the mcp-api route grant (API Key Management) plus the grant behind each tool group: query-api and the database for templates, DB exploration and SQL; s3-api for S3; nas-api for NAS. Each tool call goes back out through the gateway on its REST route and is counted there (mcp-api is left out of counts); it uses two requests of the key's per-minute limit.",
     "previewSection": "Tool preview",
     "previewHint": "See which tools an API key would get, and why a group is missing.",
     "previewKey": "API key",

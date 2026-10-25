@@ -1994,7 +1994,7 @@ class TestMetricsUsages:
         # So are the removed /api/llm-bi routes, whose series linger.
         assert 'route!="llm-bi-proxy"' in mock.call_args.args[0]
 
-    async def test_include_llm_drops_route_exclusion(self, client, admin_token):
+    async def test_include_llm_drops_the_llm_route_exclusion(self, client, admin_token):
         mock = AsyncMock(return_value=[])
         with patch("app.routers.gateway.prometheus_client.instant_query", mock):
             resp = await client.get(
@@ -2002,7 +2002,10 @@ class TestMetricsUsages:
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 200
-        assert "route!=" not in mock.call_args.args[0]
+        query = mock.call_args.args[0]
+        assert 'route!="llm-' not in query
+        # mcp-api's tool calls are counted on their REST routes either way.
+        assert '{route!="mcp-api"}' in query
 
     async def test_defaults_to_today(self, client, admin_token):
         mock = AsyncMock(return_value=[])
@@ -3253,7 +3256,8 @@ class TestLlmByModelSeries:
 # The default exclusion: every LLM route, the removed /api/llm-bi ones included.
 _LLM_EXCLUDED = (
     'route!="llm-proxy",route!="llm-messages",route!="llm-responses",'
-    'route!="llm-bi-proxy",route!="llm-bi-messages",route!="llm-bi-responses"'
+    'route!="llm-bi-proxy",route!="llm-bi-messages",route!="llm-bi-responses",'
+    'route!="mcp-api"'
 )
 
 

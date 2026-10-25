@@ -364,7 +364,8 @@ async def list_api_keys(
     return responses
 
 
-_KEYED_REQUESTS = 'apisix_http_status{consumer!=""}'
+# mcp-api is left out: its tool calls are counted on the REST routes they use.
+_KEYED_REQUESTS = 'apisix_http_status{consumer!="",route!="mcp-api"}'
 
 
 def _usage_query(window: str) -> str:

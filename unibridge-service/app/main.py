@@ -818,8 +818,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
                 # Ensure /api/mcp exists with key-auth: the MCP server over the
                 # query/S3/NAS surfaces (app/routers/mcp.py). Inline deny-all
-                # like nas-api until the consumer-restriction replay; its tools
-                # run queries, so the read timeout follows query-api's.
+                # like nas-api until the consumer-restriction replay; its tool
+                # calls wait on query-api, so the read timeout follows query-api's.
                 await apisix_client.put_resource(
                     "routes",
                     MCP_API_ROUTE_ID,
@@ -839,7 +839,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                 "read": settings_manager.query_route_timeout,
                             },
                             "plugins": {
-                                "key-auth": {},
+                                # The app resends the key with each tool call
+                                # (mcp_tools._gateway), so it must reach it.
+                                "key-auth": {"hide_credentials": False},
                                 "consumer-restriction": {"whitelist": [api_keys.DENY_ALL_CONSUMER]},
                                 "proxy-rewrite": {
                                     "uri": "/mcp",
@@ -1166,8 +1168,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Disposing all NAS resources...")
     await nas_manager.dispose_all()
 
-    from app.services import prometheus_client
+    from app.services import mcp_tools, prometheus_client
     await prometheus_client.aclose()
+    await mcp_tools.aclose()
 
     # Close Keycloak admin client if initialized
     from app.routers.users import _kc_admin

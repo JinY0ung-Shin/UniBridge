@@ -681,7 +681,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\"}[$__range]))",
+          "expr": "sum(increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses|mcp-api\"}[$__range]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -743,7 +743,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\",code=~\"5..\"}[$__range])) / sum(increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\"}[$__range])) * 100",
+          "expr": "sum(increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses|mcp-api\",code=~\"5..\"}[$__range])) / sum(increase(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses|mcp-api\"}[$__range])) * 100",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -805,7 +805,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(apisix_http_latency_sum{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\"}[$__range])) / sum(increase(apisix_http_latency_count{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\"}[$__range]))",
+          "expr": "sum(increase(apisix_http_latency_sum{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses|mcp-api\"}[$__range])) / sum(increase(apisix_http_latency_count{type=\"request\",route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses|mcp-api\"}[$__range]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -865,7 +865,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses\"}[$__rate_interval]))",
+          "expr": "sum(rate(apisix_http_status{route!~\"llm-proxy|llm-messages|llm-responses|llm-bi-proxy|llm-bi-messages|llm-bi-responses|mcp-api\"}[$__rate_interval]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"

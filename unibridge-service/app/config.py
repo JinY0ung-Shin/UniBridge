@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # they stay off unless a developer opts in locally.
     ENABLE_API_DOCS: bool = False
     APISIX_ADMIN_URL: str = "http://apisix:9180"
+    # APISIX's proxy listener as this app reaches it on the compose network. MCP
+    # tool calls (app/services/mcp_tools.py) go out through the same gateway
+    # routes as REST calls, so they count, rate-limit and authorize there.
+    APISIX_GATEWAY_URL: str = "http://apisix:9080"
     APISIX_ADMIN_KEY: str = ""
     # Shared secret APISIX injects as X-UniBridge-Internal-Proxy on the system
     # routes that proxy to this app; auth.py trusts APISIX-set consumer headers

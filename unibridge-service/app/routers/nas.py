@@ -313,6 +313,11 @@ async def get_nas_metadata(
 async def download_nas_entry(
     alias: str,
     path: str = Query(..., min_length=1),
+    max_bytes: int | None = Query(
+        None,
+        ge=1,
+        description="Return only the first max_bytes bytes; X-File-Size carries the full size",
+    ),
     _user: CurrentUser | ApiKeyUser = Depends(_require_nas_browse),
 ) -> StreamingResponse:
     """Proxy-download a NAS file through UniBridge (read-only, no Range)."""
@@ -320,7 +325,7 @@ async def download_nas_entry(
         raise HTTPException(status_code=404, detail=f"NAS connection '{alias}' not found")
 
     try:
-        gen, meta = await nas_manager.open_read_stream(alias, path)
+        gen, meta = await nas_manager.open_read_stream(alias, path, length=max_bytes)
     except Exception as exc:
         _handle_nas_error(alias, exc)
 
@@ -334,7 +339,8 @@ async def download_nas_entry(
     }
     size = meta.get("size")
     if size is not None:
-        headers["Content-Length"] = str(size)
+        headers["X-File-Size"] = str(size)
+        headers["Content-Length"] = str(size if max_bytes is None else min(size, max_bytes))
 
     return StreamingResponse(
         gen,

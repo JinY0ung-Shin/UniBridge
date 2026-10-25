@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from datetime import datetime
 import json
 import logging
 from pathlib import Path
 import re
 import time
+from typing import Any, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import PlainTextResponse, StreamingResponse
@@ -56,9 +57,12 @@ from app.services.sparql_analysis import (
     strip_sparql_strings_and_comments,
 )
 from app.services.sql_validator import validate_sql
-from app.services.table_access import check_table_access, extract_tables
+from app.services import schema_browser
+from app.services.table_access import check_table_access, extract_tables, table_name_allowed
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 router = APIRouter(tags=["Query"])
 
@@ -1214,6 +1218,140 @@ async def list_databases(
         )
 
     return responses
+
+
+# ── Schema browsing (API keys and JWT users) ────────────────────────────────
+
+# Catalog queries have no per-connection timeout of their own.
+SCHEMA_QUERY_TIMEOUT_SECONDS = 30
+
+
+async def _schema_scope(
+    db: AsyncSession, user: CurrentUser | ApiKeyUser, alias: str
+) -> list[str] | None:
+    """Authorize browsing ``alias``'s schema; return its table scope (None = all).
+
+    Same scope as running a SELECT there: the key's database and table lists,
+    or the role's SELECT permission on the database.
+    """
+    if isinstance(user, ApiKeyUser):
+        if not _api_key_has_route(user, QUERY_API_ROUTE_ID):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Required API key route: {QUERY_API_ROUTE_ID}",
+            )
+        if "*" not in user.allowed_databases and alias not in user.allowed_databases:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"API key '{user.consumer_name}' is not allowed to access database '{alias}'",
+            )
+        table_scope = user.allowed_tables
+    else:
+        user_perms = await get_role_permissions(db, user.role)
+        if "query.execute" not in user_perms:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Required permission: query.execute",
+            )
+        if "query.databases.write" in user_perms:
+            table_scope = None
+        else:
+            perm = (
+                await db.execute(
+                    select(Permission).where(
+                        Permission.role == user.role,
+                        Permission.db_alias == alias,
+                        Permission.allow_select.is_(True),
+                    )
+                )
+            ).scalar_one_or_none()
+            if perm is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Role '{user.role}' may not read database '{alias}'",
+                )
+            table_scope = _decode_allowed_tables(perm.allowed_tables)
+    if connection_manager.get_db_type(alias) == "unknown":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Database '{alias}' is not registered or not connected",
+        )
+    return table_scope
+
+
+async def _run_catalog_query(
+    db: AsyncSession, user: CurrentUser | ApiKeyUser, work: Coroutine[Any, Any, _T]
+) -> _T:
+    """Run a catalog query under the caller's concurrent-query slot and a timeout."""
+    username = f"apikey:{user.consumer_name}" if isinstance(user, ApiKeyUser) else user.username
+    # Release the meta-store connection first, as execute() does.
+    await db.rollback()
+    if not rate_limiter.try_acquire(username):
+        work.close()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many concurrent queries (max {rate_limiter._max_concurrent})",
+        )
+    try:
+        return await asyncio.wait_for(work, timeout=SCHEMA_QUERY_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_408_REQUEST_TIMEOUT, detail="Catalog query timed out"
+        )
+    finally:
+        rate_limiter.release(username)
+
+
+@router.get("/query/databases/{alias}/tables")
+async def list_database_tables(
+    alias: str,
+    user: CurrentUser | ApiKeyUser = Depends(get_current_user_or_apikey),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Tables of ``alias`` within the caller's table scope (none for graph databases)."""
+    table_scope = await _schema_scope(db, user, alias)
+    try:
+        tables = await _run_catalog_query(db, user, schema_browser.list_tables(alias))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Listing tables of '%s' failed", alias)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to list tables of '{alias}'"
+        )
+    return {
+        "database": alias,
+        "tables": [table for table in tables if table_name_allowed(table, table_scope)],
+    }
+
+
+@router.get("/query/databases/{alias}/tables/{table}")
+async def describe_database_table(
+    alias: str,
+    table: str,
+    user: CurrentUser | ApiKeyUser = Depends(get_current_user_or_apikey),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Columns of one table (``schema.table`` allowed): name, type, nullable."""
+    table_scope = await _schema_scope(db, user, alias)
+    if not table_name_allowed(table, table_scope):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied to table: {table}",
+        )
+    try:
+        columns = await _run_catalog_query(db, user, schema_browser.describe_table(alias, table))
+    except HTTPException:
+        raise
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except Exception:
+        logger.exception("Describing '%s' in '%s' failed", table, alias)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to describe '{table}' in '{alias}'",
+        )
+    return {"database": alias, "table": table, "columns": columns}
 
 
 @router.get("/health", response_model=HealthResponse)

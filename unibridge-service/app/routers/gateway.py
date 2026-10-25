@@ -34,7 +34,11 @@ from app.services import prometheus_client
 from app.services.alert_state import delete_alert_state
 from app.services.audit import log_admin_action
 from app.services.settings_manager import settings_manager
-from app.services.apisix_system_resources import PROTECTED_ROUTE_IDS, PROTECTED_UPSTREAM_IDS
+from app.services.apisix_system_resources import (
+    MCP_API_ROUTE_ID,
+    PROTECTED_ROUTE_IDS,
+    PROTECTED_UPSTREAM_IDS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1472,6 +1476,11 @@ _LLM_ROUTE_IDS = (
     "llm-bi-responses",
 )
 
+# Left out of request counts unless asked for by name: the LLM routes (above),
+# and mcp-api, whose tool calls are counted on the REST routes they go out
+# through (app/services/mcp_tools.py) — counting both would count each twice.
+_UNCOUNTED_ROUTE_IDS = (*_LLM_ROUTE_IDS, MCP_API_ROUTE_ID)
+
 
 def _scope_consumer(
     scope: _MonitoringScope, route: str | list[str] | None, consumer: str | None
@@ -1504,9 +1513,9 @@ def _promql_str(value: str) -> str:
 def _labels(route: str | list[str] | None, consumer: str | None, *extra: str) -> str:
     """Build PromQL label selector.
 
-    Defaults exclude the LLM routes (``_LLM_ROUTE_IDS``) so the gateway
-    monitoring page omits LLM traffic (shown separately on the LLM monitoring
-    page). When ``route`` is explicitly set, that filter replaces the default
+    Defaults exclude ``_UNCOUNTED_ROUTE_IDS``: LLM traffic (shown separately on
+    the LLM monitoring page) and mcp-api (its tool calls are counted on the REST
+    routes they use). When ``route`` is explicitly set, that filter replaces the default
     exclusion; a list matches any of the given values (used to cover both a
     route's id and its name under APISIX ``prefer_name``).
     """
@@ -1519,7 +1528,7 @@ def _labels(route: str | list[str] | None, consumer: str | None, *extra: str) ->
             alternation = "|".join(_promql_str(re.escape(r)) for r in routes)
             parts.append(f'route=~"{alternation}"')
     else:
-        parts.extend(f'route!="{route_id}"' for route_id in _LLM_ROUTE_IDS)
+        parts.extend(f'route!="{route_id}"' for route_id in _UNCOUNTED_ROUTE_IDS)
     if consumer:
         parts.append(f'consumer="{_promql_str(consumer)}"')
     return "{" + ",".join(parts) + "}" if parts else ""
@@ -2412,9 +2421,11 @@ async def usages_payload(
     span = max(int(end - start), 1)
 
     if include_llm:
-        consumer_matcher = f'consumer="{_promql_str(consumer)}"' if consumer else ""
-        hs = f"{{{consumer_matcher}}}" if consumer_matcher else ""
-        hl = "{" + ",".join(m for m in (_REQUEST_LATENCY, consumer_matcher) if m) + "}"
+        matchers = [f'route!="{MCP_API_ROUTE_ID}"']
+        if consumer:
+            matchers.append(f'consumer="{_promql_str(consumer)}"')
+        hs = "{" + ",".join(matchers) + "}"
+        hl = "{" + ",".join([_REQUEST_LATENCY, *matchers]) + "}"
     else:
         hs = _labels(None, consumer)
         hl = _labels(None, consumer, _REQUEST_LATENCY)

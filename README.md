@@ -474,10 +474,23 @@ http_headers = { apikey = "<API_KEY>" }
   | S3 | `s3_list_connections`, `s3_list_buckets`, `s3_list_objects`, `s3_get_object_metadata`, `s3_read_object` | `s3-api` |
   | NAS | `nas_list_connections`, `nas_list_entries`, `nas_get_metadata`, `nas_read_file` | `nas-api` |
 
+- Each tool call that reaches a database, S3 or NAS goes back out through the
+  gateway as the matching REST request, with the caller's own key
+  (`APISIX_GATEWAY_URL`, default `http://apisix:9080`). It is authorized,
+  audited and counted on that route (`query-api`, `s3-api`, `nas-api`) exactly
+  like a direct call, so Gateway Monitoring, `/api/usages`, API key usage, DB
+  query monitoring and Grafana show MCP use under those routes. `mcp-api`
+  itself is left out of those counts (the protocol messages — `initialize`,
+  `tools/list`, … — and the wrapping request of each call); select it by name
+  in Gateway Monitoring to see the endpoint's own traffic and errors.
+  Discovery (`tools/list`, `list_databases`, `*_list_connections`) touches no
+  backend and is not counted.
+- A key's per-minute limit (API Keys) applies per gateway request, so each tool
+  call uses two (`mcp-api` plus the REST route) and each protocol message one:
+  give MCP keys headroom.
 - `run_query` runs one SELECT (or a Cypher/SPARQL read) only, even for a key
   with INSERT/UPDATE/DELETE flags. SQL must parse as exactly one statement:
-  what the parser cannot read is refused rather than guessed. Queries are audited and counted in DB query
-  monitoring under the key, as on `/api/query`.
+  what the parser cannot read is refused rather than guessed.
 - Admin → **MCP** (`admin.config.read`/`write`) switches the endpoint and each
   group on or off and sets the result caps (`max_rows`, default 200;
   `max_result_bytes`, default 64 KiB; a cut result says `truncated: true`).
@@ -485,8 +498,8 @@ http_headers = { apikey = "<API_KEY>" }
 - Text reads (`s3_read_object`, `nas_read_file`) return UTF-8 text only, up to
   `max_result_bytes`; binary files are refused, and so are NAS files over the
   share's download limit.
-- Every tool call counts against the key's per-minute query rate limit (Query
-  Settings); `list_tables`/`describe_table` also take a concurrent-query slot.
+- `list_tables`/`describe_table` use `GET /api/query/databases/{alias}/tables[/{table}]`,
+  open to API keys and to users who may query the database (same table scope).
 - The gateway read timeout follows `query-api`'s (Query Settings).
 - Rolling out: the first deploy of a release with this route finds it missing
   and re-provisions the APISIX routes by itself (`apisix_has_core_routes`).

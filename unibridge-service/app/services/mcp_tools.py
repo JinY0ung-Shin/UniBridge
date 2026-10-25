@@ -1,10 +1,13 @@
 """MCP tools over the query, S3 and NAS surfaces, scoped to one API key.
 
-Each tool runs the same handler its REST route runs, with the caller's
-``ApiKeyUser``, so database/table/bucket scopes, audit logs and query metrics
-apply unchanged. APISIX only checks the ``mcp-api`` grant on the way in, so a
-tool group is offered only when the key also holds the route grant its REST
-twin needs (``GROUP_ROUTES``), and the handlers re-check the rest.
+Every tool that reaches a database, S3 or NAS goes out as the matching REST
+request through APISIX (``APISIX_GATEWAY_URL``) with the caller's own key. So
+each call is authorized, rate-limited, audited and counted on that REST route
+(``query-api``, ``s3-api``, ``nas-api``) exactly like a direct call, and the
+``mcp-api`` route itself is left out of usage numbers. A tool group is offered
+only when the key holds the route grant its REST twin needs (``GROUP_ROUTES``).
+Discovery — tools/list, ``list_databases``, ``*_list_connections`` — touches
+no backend and is answered here.
 
 Settings (on/off, tool groups, result caps) live in ``system_config`` under
 ``MCP_SETTINGS_KEY`` and are read per request, so both blue/green colors see an
@@ -12,47 +15,35 @@ admin's change at once.
 """
 from __future__ import annotations
 
-import asyncio
 import codecs
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import hashlib
 import json
 import logging
 import re
-from typing import Any, TypeVar
+from typing import Any
+from urllib.parse import quote
 
-from fastapi import HTTPException
-from fastapi.encoders import jsonable_encoder
+import httpx
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ApiKeyUser
 from app.config import settings as app_settings
-from app.middleware.rate_limiter import rate_limiter
 from app.models import SystemConfig
-from app.routers import nas as nas_router
 from app.routers import query as query_router
-from app.routers import s3 as s3_router
-from app.schemas import (
-    McpSettings,
-    McpToolGroup,
-    QueryRequest,
-    QueryResponse,
-    QueryTemplateExecuteRequest,
-    QueryTemplateResponse,
-)
-from app.services import schema_browser
+from app.schemas import McpSettings, McpToolGroup, QueryTemplateResponse
 from app.services.apisix_system_resources import QUERY_API_ROUTE_ID
 from app.services.connection_manager import connection_manager
 from app.services.nas_manager import nas_manager
 from app.services.openapi_export import extract_template_params
 from app.services.s3_manager import S3_MAX_PAGE_KEYS, s3_manager
+from app.services.schema_browser import GRAPH_DB_TYPES
+from app.services.settings_manager import settings_manager
 from app.services.sql_analysis import strict_statement_type
 
 logger = logging.getLogger(__name__)
-
-_T = TypeVar("_T")
 
 MCP_SETTINGS_KEY = "mcp_settings"
 
@@ -81,9 +72,9 @@ _TEMPLATE_SQL_IN_DESCRIPTION = 1500
 # Room left in a query result for everything except the rows.
 _ROW_ENVELOPE_BYTES = 512
 _TRUNCATION_MARKER = "\n…[truncated at max_result_bytes]"
-# Catalog queries (list_tables/describe_table) have no per-connection timeout
-# of their own.
-SCHEMA_QUERY_TIMEOUT_SECONDS = 30
+# The gateway's own read timeout for query-api/mcp-api is query_route_timeout;
+# wait a little longer so its answer, not ours, ends a slow call.
+_GATEWAY_TIMEOUT_MARGIN_SECONDS = 10
 
 
 class ToolError(Exception):
@@ -95,6 +86,9 @@ class ToolContext:
     user: ApiKeyUser
     db: AsyncSession
     settings: McpSettings
+    # The caller's key, sent on with each tool call. None outside a real MCP
+    # request (the admin preview), where tools are listed but never run.
+    api_key: str | None = None
 
 
 @dataclass
@@ -167,13 +161,81 @@ def _has_alias(user: ApiKeyUser, alias: str) -> bool:
     return "*" in user.allowed_databases or alias in user.allowed_databases
 
 
-def _table_allowed(user: ApiKeyUser, table: str) -> bool:
-    """Same scope as query execution, which matches bare lower-case names."""
-    if user.allowed_tables is None:
-        return True
-    allowed = {name.lower() for name in user.allowed_tables}
-    lowered = table.lower()
-    return lowered in allowed or lowered.rpartition(".")[2] in allowed
+# ── Gateway ─────────────────────────────────────────────────────────────────
+
+_client: httpx.AsyncClient | None = None
+
+
+def _gateway_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(
+            base_url=app_settings.APISIX_GATEWAY_URL,
+            # The request carries the caller's API key: never via an env proxy.
+            trust_env=False,
+        )
+    return _client
+
+
+async def aclose() -> None:
+    """Close the shared gateway client. Call on app shutdown."""
+    global _client
+    if _client is not None and not _client.is_closed:
+        await _client.aclose()
+    _client = None
+
+
+def _error_detail(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text[:500] or response.reason_phrase
+    if isinstance(body, dict):
+        # FastAPI says "detail"; APISIX plugins (key-auth, limit-count, ...)
+        # say "message" or "error_msg".
+        for field in ("detail", "message", "error_msg"):
+            if body.get(field):
+                detail = body[field]
+                return detail if isinstance(detail, str) else _dumps(detail)
+    return _dumps(body)[:500]
+
+
+async def _gateway(
+    ctx: ToolContext,
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+) -> httpx.Response:
+    """Send ``path`` (e.g. ``/api/query/execute``) through APISIX as the caller."""
+    if not ctx.api_key:
+        raise ToolError("Tool calls need the API key in the apikey header (call /api/mcp)")
+    timeout = settings_manager.query_route_timeout + _GATEWAY_TIMEOUT_MARGIN_SECONDS
+    # The call comes back into this app, which needs a meta-store connection to
+    # authenticate it. Hand ours back first: holding it idle-in-transaction for
+    # the whole call would let concurrent tool calls drain the pool their own
+    # inner requests wait on. The session reconnects if it is used again.
+    await ctx.db.rollback()
+    try:
+        response = await _gateway_client().request(
+            method,
+            path,
+            params={k: v for k, v in (params or {}).items() if v is not None},
+            json=json_body,
+            headers={"apikey": ctx.api_key},
+            timeout=httpx.Timeout(timeout, connect=10),
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("MCP gateway call %s %s failed: %s", method, path, exc)
+        raise ToolError("The UniBridge gateway did not answer") from exc
+    if response.status_code >= 400:
+        raise ToolError(f"{response.status_code}: {_error_detail(response)}")
+    return response
+
+
+def _segment(value: str) -> str:
+    return quote(value, safe="")
 
 
 # ── Arguments ───────────────────────────────────────────────────────────────
@@ -247,13 +309,8 @@ def _error_result(message: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": message}], "isError": True}
 
 
-def _detail_text(exc: HTTPException) -> str:
-    detail = exc.detail if isinstance(exc.detail, str) else _dumps(exc.detail)
-    return f"{exc.status_code}: {detail}"
-
-
-def _query_payload(database: str, response: QueryResponse, cfg: McpSettings) -> dict[str, Any]:
-    data = jsonable_encoder(response)
+def _query_payload(database: str, data: dict[str, Any], cfg: McpSettings) -> dict[str, Any]:
+    """A /query response cut to the result caps."""
     if data.get("graph") is not None:
         # The graph is one serialized document: cut it as text, keep the JSON whole.
         budget = cfg.max_result_bytes - _ROW_ENVELOPE_BYTES
@@ -312,18 +369,11 @@ def _decode_text(data: bytes, *, truncated: bool) -> str:
 
 async def call_tool(ctx: ToolContext, tool: Tool, arguments: dict[str, Any]) -> dict[str, Any]:
     """Run ``tool`` and shape the outcome as an MCP ``CallToolResult``."""
-    # One HTTP request may carry several calls (batches), so every call counts
-    # against the key's per-minute limit, like a /query/execute request.
-    allowed, message, _stamp = rate_limiter.check_rate_limit(f"apikey:{ctx.user.consumer_name}")
-    if not allowed:
-        return _error_result(message)
     try:
         _validate_args(tool.input_schema, arguments)
         result = await tool.handler(ctx, arguments)
     except ToolError as exc:
         return _error_result(str(exc))
-    except HTTPException as exc:
-        return _error_result(_detail_text(exc))
     except Exception:
         logger.exception("MCP tool %s failed", tool.name)
         return _error_result("Tool failed; see the UniBridge server logs")
@@ -352,20 +402,6 @@ def _require_database(user: ApiKeyUser, alias: str) -> str:
     return db_type
 
 
-async def _catalog_query(ctx: ToolContext, alias: str, work: Coroutine[Any, Any, _T]) -> _T:
-    """Run a catalog query under the key's concurrent-query slot and a timeout."""
-    username = f"apikey:{ctx.user.consumer_name}"
-    if not rate_limiter.try_acquire(username):
-        work.close()
-        raise ToolError(f"Too many concurrent queries (max {rate_limiter._max_concurrent})")
-    try:
-        return await asyncio.wait_for(work, timeout=SCHEMA_QUERY_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError as exc:
-        raise ToolError(f"Catalog query on '{alias}' timed out") from exc
-    finally:
-        rate_limiter.release(username)
-
-
 async def _list_databases(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     aliases = sorted(
         alias for alias in connection_manager.list_aliases() if _has_alias(ctx.user, alias)
@@ -381,40 +417,23 @@ async def _list_databases(ctx: ToolContext, args: dict[str, Any]) -> dict[str, A
 async def _list_tables(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     alias = args["database"]
     db_type = _require_database(ctx.user, alias)
-    if db_type in schema_browser.GRAPH_DB_TYPES:
+    if db_type in GRAPH_DB_TYPES:
         return {
             "database": alias,
             "tables": [],
             "note": f"{db_type} has no tables; query it through run_query.",
         }
-    try:
-        tables = await _catalog_query(ctx, alias, schema_browser.list_tables(alias))
-    except ToolError:
-        raise
-    except Exception as exc:
-        logger.exception("MCP list_tables failed for '%s'", alias)
-        raise ToolError(f"Failed to list tables of '{alias}'") from exc
-    return {
-        "database": alias,
-        "tables": [table for table in tables if _table_allowed(ctx.user, table)],
-    }
+    response = await _gateway(ctx, "GET", f"/api/query/databases/{_segment(alias)}/tables")
+    return response.json()
 
 
 async def _describe_table(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     alias, table = args["database"], args["table"]
     _require_database(ctx.user, alias)
-    if not _table_allowed(ctx.user, table):
-        raise ToolError(f"This API key is not allowed to access table '{table}'")
-    try:
-        columns = await _catalog_query(ctx, alias, schema_browser.describe_table(alias, table))
-    except ToolError:
-        raise
-    except LookupError as exc:
-        raise ToolError(str(exc)) from exc
-    except Exception as exc:
-        logger.exception("MCP describe_table failed for '%s'", alias)
-        raise ToolError(f"Failed to describe '{table}' in '{alias}'") from exc
-    return {"database": alias, "table": table, "columns": columns}
+    response = await _gateway(
+        ctx, "GET", f"/api/query/databases/{_segment(alias)}/tables/{_segment(table)}"
+    )
+    return response.json()
 
 
 async def _run_query(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -424,7 +443,7 @@ async def _run_query(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     # must parse as exactly one SELECT: the classifier /query/execute uses
     # falls back to a regex that calls an unparsable T-SQL batch such as
     # "SELECT 1 DELETE FROM t" a SELECT.
-    if db_type in schema_browser.GRAPH_DB_TYPES:
+    if db_type in GRAPH_DB_TYPES:
         statement_type: str | None = query_router._detect_statement_type(sql, db_type)
     else:
         statement_type = strict_statement_type(sql, db_type)
@@ -433,17 +452,18 @@ async def _run_query(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             "run_query is read-only: it runs one SELECT (or a Cypher/SPARQL read) "
             "that the SQL parser can read"
         )
-    response = await query_router.execute(
-        QueryRequest(
-            database=alias,
-            sql=sql,
-            params=args.get("params"),
-            limit=ctx.settings.max_rows,
-        ),
-        user=ctx.user,
-        db=ctx.db,
+    response = await _gateway(
+        ctx,
+        "POST",
+        "/api/query/execute",
+        json_body={
+            "database": alias,
+            "sql": sql,
+            "params": args.get("params"),
+            "limit": ctx.settings.max_rows,
+        },
     )
-    return _query_payload(alias, response, ctx.settings)
+    return _query_payload(alias, response.json(), ctx.settings)
 
 
 _DATABASE_ARG = {"type": "string", "minLength": 1, "description": "Database alias from list_databases"}
@@ -551,13 +571,13 @@ def _template_tool(template: QueryTemplateResponse, name: str, max_rows: int) ->
         bound = {param: args[param] for param in params if param in args}
         requested = args.get(TEMPLATE_LIMIT_ARG) if TEMPLATE_LIMIT_ARG not in params else None
         limit = min(requested or default_limit or ctx.settings.max_rows, ctx.settings.max_rows)
-        response = await query_router.execute_template(
-            template_path=path,
-            body=QueryTemplateExecuteRequest(params=bound or None, limit=limit),
-            user=ctx.user,
-            db=ctx.db,
+        response = await _gateway(
+            ctx,
+            "POST",
+            "/api/query/templates/" + "/".join(_segment(part) for part in path.split("/")),
+            json_body={"params": bound or None, "limit": limit},
         )
-        return _query_payload(database, response, ctx.settings)
+        return _query_payload(database, response.json(), ctx.settings)
 
     return Tool(
         name=name,
@@ -598,45 +618,49 @@ async def _s3_list_connections(ctx: ToolContext, args: dict[str, Any]) -> dict[s
 
 async def _s3_list_buckets(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     _require_s3(ctx.user, args["connection"])
-    buckets = await s3_router.list_buckets(alias=args["connection"], _user=ctx.user)
-    return {"buckets": buckets}
+    response = await _gateway(ctx, "GET", f"/api/s3/{_segment(args['connection'])}/buckets")
+    return {"buckets": response.json()}
 
 
 async def _s3_list_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     _require_s3(ctx.user, args["connection"])
-    return await s3_router.list_objects(
-        alias=args["connection"],
-        request=None,  # only used by the all=true walk
-        bucket=args["bucket"],
-        prefix=args.get("prefix") or "",
-        delimiter="/",
-        max_keys=args.get("max_keys") or 200,
-        continuation_token=args.get("continuation_token"),
-        fetch_all=False,
-        _user=ctx.user,
+    response = await _gateway(
+        ctx,
+        "GET",
+        f"/api/s3/{_segment(args['connection'])}/objects",
+        params={
+            "bucket": args["bucket"],
+            "prefix": args.get("prefix") or "",
+            "delimiter": "/",
+            "max_keys": args.get("max_keys") or 200,
+            "continuation_token": args.get("continuation_token"),
+        },
     )
+    return response.json()
 
 
 async def _s3_get_object_metadata(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     _require_s3(ctx.user, args["connection"])
-    return await s3_router.get_object_metadata(
-        alias=args["connection"], bucket=args["bucket"], key=args["key"], _user=ctx.user
+    response = await _gateway(
+        ctx,
+        "GET",
+        f"/api/s3/{_segment(args['connection'])}/objects/metadata",
+        params={"bucket": args["bucket"], "key": args["key"]},
     )
+    return response.json()
 
 
 async def _s3_read_object(ctx: ToolContext, args: dict[str, Any]) -> TextFile:
     alias, bucket, key = args["connection"], args["bucket"], args["key"]
     _require_s3(ctx.user, alias)
-    # Also enforces the connection's bucket allow-list.
-    meta = await s3_router.get_object_metadata(alias=alias, bucket=bucket, key=key, _user=ctx.user)
-    size = meta.get("size") or 0
-    cap = ctx.settings.max_result_bytes
-    data = b""
-    if size:
-        try:
-            data = await s3_manager.read_object_prefix(alias, bucket, key, min(size, cap))
-        except Exception as exc:
-            s3_router._handle_s3_error(alias, exc)
+    response = await _gateway(
+        ctx,
+        "GET",
+        f"/api/s3/{_segment(alias)}/objects/download",
+        params={"bucket": bucket, "key": key, "max_bytes": ctx.settings.max_result_bytes},
+    )
+    data = response.content
+    size = int(response.headers.get("x-object-size", len(data)))
     truncated = size > len(data)
     return TextFile(
         meta={
@@ -644,7 +668,7 @@ async def _s3_read_object(ctx: ToolContext, args: dict[str, Any]) -> TextFile:
             "bucket": bucket,
             "key": key,
             "size": size,
-            "content_type": meta.get("content_type"),
+            "content_type": response.headers.get("content-type"),
             "truncated": truncated,
         },
         text=_decode_text(data, truncated=truncated),
@@ -738,47 +762,49 @@ async def _nas_list_connections(ctx: ToolContext, args: dict[str, Any]) -> dict[
 
 async def _nas_list_entries(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     _require_nas(ctx.user, args["connection"])
-    return await nas_router.list_nas_entries(
-        alias=args["connection"],
-        path=args.get("path") or "",
-        offset=args.get("offset") or 0,
-        limit=args.get("limit") or 200,
-        q=args.get("query") or "",
-        _user=ctx.user,
+    response = await _gateway(
+        ctx,
+        "GET",
+        f"/api/nas/{_segment(args['connection'])}/entries",
+        params={
+            "path": args.get("path") or "",
+            "offset": args.get("offset") or 0,
+            "limit": args.get("limit") or 200,
+            "q": args.get("query") or "",
+        },
     )
+    return response.json()
 
 
 async def _nas_get_metadata(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     _require_nas(ctx.user, args["connection"])
-    return await nas_router.get_nas_metadata(
-        alias=args["connection"], path=args["path"], _user=ctx.user
+    response = await _gateway(
+        ctx,
+        "GET",
+        f"/api/nas/{_segment(args['connection'])}/metadata",
+        params={"path": args["path"]},
     )
+    return response.json()
 
 
 async def _nas_read_file(ctx: ToolContext, args: dict[str, Any]) -> TextFile:
     alias, path = args["connection"], args["path"]
     _require_nas(ctx.user, alias)
-    if not nas_manager.has_connection(alias):
-        raise ToolError(f"NAS connection '{alias}' not found")
-    cap = ctx.settings.max_result_bytes
-    chunks: list[bytes] = []
-    try:
-        stream, meta = await nas_manager.open_read_stream(alias, path, length=cap)
-        try:
-            async for chunk in stream:
-                chunks.append(chunk)
-        finally:
-            await stream.aclose()
-    except Exception as exc:
-        nas_router._handle_nas_error(alias, exc)
-    data = b"".join(chunks)
-    truncated = meta["size"] > len(data)
+    response = await _gateway(
+        ctx,
+        "GET",
+        f"/api/nas/{_segment(alias)}/download",
+        params={"path": path, "max_bytes": ctx.settings.max_result_bytes},
+    )
+    data = response.content
+    size = int(response.headers.get("x-file-size", len(data)))
+    truncated = size > len(data)
     return TextFile(
         meta={
             "connection": alias,
             "path": path,
-            "size": meta["size"],
-            "content_type": meta["content_type"],
+            "size": size,
+            "content_type": response.headers.get("content-type"),
             "truncated": truncated,
         },
         text=_decode_text(data, truncated=truncated),

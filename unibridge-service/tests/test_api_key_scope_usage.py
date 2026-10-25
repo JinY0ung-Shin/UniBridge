@@ -188,8 +188,10 @@ async def test_usage_counts_each_keys_requests_over_the_last_7_days(client, admi
     mock.assert_awaited_once()
     query = mock.await_args.args[0]
     assert "[7d]" in query and "30d" not in query
-    # Every route counts, LLM ones included: nothing narrows the selector by route.
-    assert "route" not in query
+    # Every route counts, LLM ones included; only mcp-api is left out, its tool
+    # calls being counted on the REST routes they go out through.
+    assert 'route!="mcp-api"' in query
+    assert "llm" not in query
     assert 'consumer!=""' in query
     # The first request of each series counts too (increase() alone drops it).
     assert "min_over_time" in query and "offset 7d" in query
