@@ -107,6 +107,23 @@ def test_legacy_unknown_returns_unknown():
     assert statement_type("garbledgarbled") == "unknown"
 
 
+def test_legacy_read_carrying_a_write_is_execute():
+    # T-SQL runs a batch without semicolons; sqlglot cannot parse it, and the
+    # leading SELECT used to classify it as a read.
+    assert statement_type("SELECT 1 AS a DELETE FROM users COMMIT", "mssql") == "execute"
+    assert statement_type("SELECT 1; DELETE FROM users", "mssql") == "execute"
+
+
+def test_legacy_mixed_writes_are_execute():
+    assert statement_type("DELETE FROM t INSERT INTO u VALUES (1)", "mssql") == "execute"
+
+
+def test_legacy_write_keywords_in_strings_and_identifiers_do_not_count():
+    assert statement_type("SELECT [delete], `update` FROM t WHERE x = $$a$$ GO", "mssql") == "select"
+    assert statement_type("SELECT * FROM t WHERE note = 'please delete me'", "mssql") == "select"
+    assert statement_type("UPDATE t SET deleted = 1 OUTPUT DELETED.id", "mssql") == "update"
+
+
 # ── EXPLAIN handling ────────────────────────────────────────────────────────
 
 

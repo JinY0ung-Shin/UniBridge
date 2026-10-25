@@ -439,10 +439,10 @@ async def _describe_table(ctx: ToolContext, args: dict[str, Any]) -> dict[str, A
 async def _run_query(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     alias, sql = args["database"], args["sql"]
     db_type = _require_database(ctx.user, alias)
-    # MCP never writes, whatever the key's allow_insert/update/delete say. SQL
-    # must parse as exactly one SELECT: the classifier /query/execute uses
-    # falls back to a regex that calls an unparsable T-SQL batch such as
-    # "SELECT 1 DELETE FROM t" a SELECT.
+    # MCP never writes, whatever the key's allow_insert/update/delete say, and
+    # runs only SQL that parses as exactly one SELECT: /query/execute guesses
+    # the type of unparsable text with a regex fallback, which errs strict but
+    # is still a guess.
     if db_type in GRAPH_DB_TYPES:
         statement_type: str | None = query_router._detect_statement_type(sql, db_type)
     else:

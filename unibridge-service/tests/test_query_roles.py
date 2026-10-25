@@ -1451,3 +1451,87 @@ class TestRolePermissionEnforcement:
             "/admin/permissions", headers=auth_header(user_token)
         )
         assert resp.status_code == 403
+
+
+# ============================================================================
+# QUERY ROUTER -- unparsable T-SQL batches
+# ============================================================================
+
+
+class TestUnparsableBatches:
+    """A T-SQL batch needs no semicolons, so "SELECT 1 DELETE FROM t" must not
+    pass as a SELECT for a caller who may only read."""
+
+    BATCH = "SELECT 1 AS a DELETE FROM users COMMIT"
+
+    async def test_api_key_without_delete_flag_is_refused(self, client, seeded_db):
+        import json
+
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+        from app.models import ApiKeyAccess
+
+        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        async with session_factory() as db:
+            db.add(
+                ApiKeyAccess(
+                    consumer_name="reader",
+                    allowed_databases=json.dumps(["maindb"]),
+                    allowed_routes=json.dumps(["query-api"]),
+                    allow_insert=True,
+                )
+            )
+            await db.commit()
+
+        with patch(
+            "app.routers.query.connection_manager.get_db_type", return_value="mssql"
+        ), patch(
+            "app.routers.query.execute_query", new_callable=AsyncMock
+        ) as mock_exec:
+            resp = await client.post(
+                "/query/execute",
+                json={"database": "maindb", "sql": self.BATCH},
+                headers={"X-Consumer-Username": "reader"},
+            )
+
+        assert resp.status_code == 403
+        assert "not allowed to execute EXECUTE" in resp.json()["detail"]
+        mock_exec.assert_not_awaited()
+
+    async def test_select_only_role_is_refused(self, client, admin_token, querier_token):
+        with patch(
+            "app.routers.admin.connection_manager.add_connection", new_callable=AsyncMock
+        ), patch(
+            "app.routers.admin.connection_manager.get_status",
+            return_value={"status": "registered"},
+        ):
+            resp = await client.post(
+                "/admin/query/databases",
+                json={
+                    "alias": "maindb", "db_type": "mssql", "host": "h", "port": 1433,
+                    "database": "app", "username": "u", "password": "p",
+                },
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 201
+        resp = await client.put(
+            "/admin/query/permissions",
+            json={"role": "querier", "db_alias": "maindb", "allow_select": True},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 200, resp.text
+
+        with patch(
+            "app.routers.query.connection_manager.get_db_type", return_value="mssql"
+        ), patch(
+            "app.routers.query.execute_query", new_callable=AsyncMock
+        ) as mock_exec:
+            resp = await client.post(
+                "/query/execute",
+                json={"database": "maindb", "sql": self.BATCH},
+                headers=auth_header(querier_token),
+            )
+
+        assert resp.status_code == 403
+        assert "not allowed to execute EXECUTE" in resp.json()["detail"]
+        mock_exec.assert_not_awaited()

@@ -40,6 +40,32 @@ _LEGACY_SQL_TYPE_RE = re.compile(
     re.IGNORECASE,
 )
 _DML_RE = re.compile(r"\b(INSERT|UPDATE|DELETE|MERGE)\b", re.IGNORECASE)
+# Keywords that make text write or run code, and the statement type each one
+# means. The regex fallback (_legacy_statement_type) scans the whole text for
+# them: T-SQL runs a batch without semicolons ("SELECT 1 DELETE FROM t"), so
+# the leading keyword alone does not say what unparsable text does.
+_WRITE_KEYWORD_TYPES = {
+    "INSERT": "insert",
+    "UPDATE": "update",
+    "DELETE": "delete",
+    "MERGE": "merge",
+    "CREATE": "create",
+    "ALTER": "alter",
+    "DROP": "drop",
+    "TRUNCATE": "truncate",
+    "EXEC": "execute",
+    "EXECUTE": "execute",
+    "CALL": "execute",
+    "DO": "execute",
+    "GRANT": "execute",
+    "REVOKE": "execute",
+    "DENY": "execute",
+}
+_WRITE_KEYWORD_RE = re.compile(
+    r"\b(" + "|".join(_WRITE_KEYWORD_TYPES) + r")\b", re.IGNORECASE
+)
+# [T-SQL] and `ClickHouse` quoted identifiers, which may be named like keywords.
+_BRACKET_IDENTIFIER_RE = re.compile(r"\[[^\]]*\]|`[^`]*`")
 _COMMAND_TYPE_MAP = {
     "CREATE": "create",
     "ALTER": "alter",
@@ -164,19 +190,30 @@ def _strip_strings_and_comments(sql: str) -> str:
 
 
 def _legacy_statement_type(sql: str) -> str:
+    """Classify text the parser could not read, erring towards the stricter type.
+
+    Text that reads but also carries a write keyword, or that mixes write
+    types, is ``execute`` — the type no select-only or single-flag grant
+    allows. Only a CTE leading into one kind of DML keeps that DML's type.
+    """
     match = _LEGACY_SQL_TYPE_RE.match(sql)
     if not match:
         return "unknown"
     keyword = match.group(1).upper()
+    cleaned = _BRACKET_IDENTIFIER_RE.sub("", _strip_strings_and_comments(sql))
+    writes = {
+        _WRITE_KEYWORD_TYPES[found.upper()] for found in _WRITE_KEYWORD_RE.findall(cleaned)
+    }
+    if keyword in ("SELECT", "EXPLAIN"):
+        return "execute" if writes else keyword.lower()
     if keyword == "WITH":
-        cleaned = _strip_strings_and_comments(sql)
-        dml_match = _DML_RE.search(cleaned)
-        if dml_match:
-            return dml_match.group(1).lower()
-        return "select"
-    if keyword in ("EXEC", "EXECUTE", "CALL", "DO"):
+        if not writes:
+            return "select"
+        if len(writes) == 1 and _DML_RE.search(cleaned):
+            return writes.pop()
         return "execute"
-    return keyword.lower()
+    lead = _WRITE_KEYWORD_TYPES[keyword]
+    return lead if writes <= {lead} else "execute"
 
 
 def _statement_type_from_expression(statement: exp.Expression) -> str:
@@ -233,10 +270,8 @@ def statement_type(sql: str, db_type: str = "postgres") -> str:
 def strict_statement_type(sql: str, db_type: str = "postgres") -> str | None:
     """Type of ``sql`` when it parses as exactly one statement, else None.
 
-    Unlike :func:`statement_type` there is no regex fallback, so SQL the parser
-    cannot read — such as a T-SQL batch without semicolons
-    (``SELECT 1 DELETE FROM t``), which the fallback calls a SELECT — is never
-    classified.
+    Unlike :func:`statement_type` there is no regex fallback: SQL the parser
+    cannot read is never classified, not even by a strict guess.
     """
     statements = _parse(sql, db_type)
     if len(statements) != 1:
