@@ -422,6 +422,24 @@ class S3ConnectionManager:
         resp = await self._run_blocking(client.get_object, Bucket=bucket, Key=key)
         return resp
 
+    async def read_object_prefix(
+        self, alias: str, bucket: str, key: str, max_bytes: int
+    ) -> bytes:
+        """Return at most the first ``max_bytes`` bytes of an object (ranged GET)."""
+        client = self.get_client(alias)
+
+        def _read() -> bytes:
+            resp = client.get_object(Bucket=bucket, Key=key, Range=f"bytes=0-{max_bytes - 1}")
+            body = resp["Body"]
+            try:
+                # A server that ignores Range sends the whole object; never
+                # read past the cap either way.
+                return body.read(max_bytes)
+            finally:
+                body.close()
+
+        return await self._run_blocking(_read)
+
     async def generate_presigned_url(
         self, alias: str, bucket: str, key: str, expires_in: int = 3600
     ) -> str:

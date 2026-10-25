@@ -1,0 +1,617 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from contextlib import contextmanager
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.models import AdminAuditLog, ApiKeyAccess, QueryTemplate
+from app.schemas import QueryResponse
+from app.services import mcp_tools
+from tests.conftest import auth_header
+
+ALL_ROUTES = ["mcp-api", "query-api", "s3-api", "nas-api"]
+
+
+async def _create_api_key(
+    seeded_db,
+    name: str = "agent",
+    *,
+    routes: list[str] | None = None,
+    databases: list[str] | None = None,
+    tables: list[str] | None = None,
+    allow_insert: bool = False,
+) -> dict[str, str]:
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        db.add(
+            ApiKeyAccess(
+                consumer_name=name,
+                allowed_databases=json.dumps(["maindb"] if databases is None else databases),
+                allowed_routes=json.dumps(ALL_ROUTES if routes is None else routes),
+                allowed_tables=json.dumps(tables) if tables is not None else None,
+                allow_insert=allow_insert,
+            )
+        )
+        await db.commit()
+    # Dev-token mode trusts the APISIX consumer header without the proxy secret.
+    return {"X-Consumer-Username": name}
+
+
+async def _create_template(
+    seeded_db,
+    path: str = "reports/users",
+    sql: str = "SELECT id, name FROM users WHERE id = :id",
+    default_limit: int | None = 50,
+) -> None:
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        db.add(
+            QueryTemplate(
+                path=path,
+                name="Users report",
+                description="One user by id",
+                db_alias="maindb",
+                sql=sql,
+                default_limit=default_limit,
+            )
+        )
+        from app.models import DBConnection
+
+        if (await db.execute(select(DBConnection))).scalars().first() is None:
+            db.add(
+                DBConnection(
+                    alias="maindb",
+                    db_type="postgres",
+                    host="localhost",
+                    port=5432,
+                    database="app",
+                    username="u",
+                    password_encrypted="x",
+                )
+            )
+        await db.commit()
+
+
+async def _rpc(client, headers, method: str, params: dict | None = None, request_id: Any = 1):
+    message: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
+    if params is not None:
+        message["params"] = params
+    return await client.post("/mcp", json=message, headers=headers)
+
+
+async def _tool_names(client, headers) -> list[str]:
+    resp = await _rpc(client, headers, "tools/list")
+    assert resp.status_code == 200, resp.text
+    return [tool["name"] for tool in resp.json()["result"]["tools"]]
+
+
+async def _call(client, headers, name: str, arguments: dict) -> dict:
+    resp = await _rpc(client, headers, "tools/call", {"name": name, "arguments": arguments})
+    assert resp.status_code == 200, resp.text
+    return resp.json()["result"]
+
+
+def _query_response(rows: list[list[Any]], truncated: bool = False) -> QueryResponse:
+    return QueryResponse(
+        columns=["id", "name"],
+        rows=rows,
+        row_count=len(rows),
+        truncated=truncated,
+        elapsed_ms=3,
+    )
+
+
+@contextmanager
+def _postgres(response: QueryResponse | None = None):
+    with patch(
+        "app.routers.query.connection_manager.get_db_type", return_value="postgres"
+    ), patch(
+        "app.services.mcp_tools.connection_manager.list_aliases",
+        return_value=["maindb", "otherdb"],
+    ), patch(
+        "app.routers.query.connection_manager.get_engine", return_value=MagicMock()
+    ), patch(
+        "app.routers.query.execute_query",
+        new_callable=AsyncMock,
+        return_value=response or _query_response([[1, "alice"]]),
+    ) as execute_query, patch("app.routers.query.log_query", new_callable=AsyncMock):
+        yield execute_query
+
+
+async def _put_settings(client, admin_token, **changes) -> None:
+    body = mcp_tools.McpSettings().model_dump()
+    for key, value in changes.items():
+        if key in body["tool_groups"]:
+            body["tool_groups"][key] = value
+        else:
+            body[key] = value
+    resp = await client.put("/admin/mcp/settings", json=body, headers=auth_header(admin_token))
+    assert resp.status_code == 200, resp.text
+
+
+# ── Protocol ────────────────────────────────────────────────────────────────
+
+
+async def test_initialize_negotiates_the_protocol_version(client, seeded_db):
+    headers = await _create_api_key(seeded_db)
+
+    resp = await _rpc(client, headers, "initialize", {"protocolVersion": "2025-06-18"})
+    result = resp.json()["result"]
+    assert result["protocolVersion"] == "2025-06-18"
+    assert result["serverInfo"]["name"] == "unibridge"
+    assert result["capabilities"] == {"tools": {"listChanged": False}}
+    assert "run_query" in result["instructions"]
+    assert "mcp-session-id" not in resp.headers
+
+    resp = await _rpc(client, headers, "initialize", {"protocolVersion": "1999-01-01"})
+    assert resp.json()["result"]["protocolVersion"] == "2025-11-25"
+
+
+async def test_notifications_and_batches(client, seeded_db):
+    headers = await _create_api_key(seeded_db)
+
+    resp = await client.post(
+        "/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=headers
+    )
+    assert resp.status_code == 202
+    assert resp.content == b""
+
+    resp = await client.post(
+        "/mcp",
+        json=[
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 7, "method": "ping"},
+            {"jsonrpc": "2.0", "id": 8, "method": "resources/list"},
+        ],
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"jsonrpc": "2.0", "id": 7, "result": {}},
+        {"jsonrpc": "2.0", "id": 8, "error": {"code": -32601, "message": "Method not found: resources/list"}},
+    ]
+
+
+async def test_rejects_bad_json_and_unknown_protocol_header(client, seeded_db):
+    headers = await _create_api_key(seeded_db)
+
+    resp = await client.post("/mcp", content=b"{not json", headers=headers)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == -32700
+
+    resp = await _rpc(client, {**headers, "MCP-Protocol-Version": "1999-01-01"}, "ping")
+    assert resp.status_code == 400
+
+
+async def test_get_and_delete_are_not_supported(client, seeded_db):
+    headers = await _create_api_key(seeded_db)
+    for method in ("GET", "DELETE"):
+        resp = await client.request(method, "/mcp", headers=headers)
+        assert resp.status_code == 405
+        assert resp.headers["allow"] == "POST"
+
+
+# ── Access ──────────────────────────────────────────────────────────────────
+
+
+async def test_jwt_users_are_refused(client, admin_token):
+    resp = await _rpc(client, auth_header(admin_token), "ping")
+    assert resp.status_code == 403
+    assert "API key" in resp.json()["detail"]
+
+
+async def test_key_needs_the_mcp_route_grant(client, seeded_db):
+    headers = await _create_api_key(seeded_db, routes=["query-api"])
+    resp = await _rpc(client, headers, "ping")
+    assert resp.status_code == 403
+    assert "mcp-api" in resp.json()["detail"]
+
+    headers = await _create_api_key(seeded_db, "master", routes=["*"], databases=["*"])
+    assert (await _rpc(client, headers, "ping")).status_code == 200
+
+
+async def test_disabled_endpoint_refuses_every_key(client, seeded_db, admin_token):
+    headers = await _create_api_key(seeded_db)
+    await _put_settings(client, admin_token, enabled=False)
+    resp = await _rpc(client, headers, "ping")
+    assert resp.status_code == 403
+    assert "disabled" in resp.json()["detail"]
+
+
+async def test_tools_follow_route_grants_and_groups(client, seeded_db, admin_token):
+    await _create_template(seeded_db)
+    full = await _create_api_key(seeded_db)
+    s3_only = await _create_api_key(seeded_db, "s3-only", routes=["mcp-api", "s3-api"])
+
+    with _postgres():
+        names = await _tool_names(client, full)
+        assert names[:4] == ["list_databases", "list_tables", "describe_table", "run_query"]
+        assert "s3_read_object" in names and "nas_read_file" in names
+        assert names[-1] == "tpl_reports_users"
+        assert all(name.startswith("s3_") for name in await _tool_names(client, s3_only))
+
+        await _put_settings(client, admin_token, run_query=False, templates=False, nas=False)
+        names = await _tool_names(client, full)
+    assert "run_query" not in names
+    assert "tpl_reports_users" not in names
+    assert not any(name.startswith("nas_") for name in names)
+    assert "list_tables" in names
+
+
+async def test_unknown_tool_is_a_protocol_error(client, seeded_db):
+    headers = await _create_api_key(seeded_db, routes=["mcp-api"])
+    resp = await _rpc(client, headers, "tools/call", {"name": "run_query", "arguments": {}})
+    assert resp.json()["error"]["code"] == -32602
+
+
+async def test_bad_arguments_are_a_tool_error(client, seeded_db):
+    headers = await _create_api_key(seeded_db)
+    with _postgres():
+        result = await _call(client, headers, "run_query", {"database": "maindb"})
+        assert result["isError"] is True
+        assert "sql" in result["content"][0]["text"]
+        result = await _call(client, headers, "run_query", {"database": "maindb", "sql": 1})
+        assert "must be of type string" in result["content"][0]["text"]
+        result = await _call(client, headers, "list_databases", {"extra": True})
+        assert "Unknown argument" in result["content"][0]["text"]
+
+
+# ── Databases ───────────────────────────────────────────────────────────────
+
+
+async def test_list_databases_follows_the_key_scope(client, seeded_db):
+    headers = await _create_api_key(seeded_db)
+    with _postgres():
+        result = await _call(client, headers, "list_databases", {})
+    assert json.loads(result["content"][0]["text"]) == {
+        "databases": [{"database": "maindb", "type": "postgres"}]
+    }
+
+
+async def test_list_tables_and_describe_follow_table_scope(client, seeded_db):
+    headers = await _create_api_key(seeded_db, tables=["users"])
+    with _postgres(), patch(
+        "app.services.mcp_tools.schema_browser.list_tables",
+        new_callable=AsyncMock,
+        return_value=["orders", "users"],
+    ), patch(
+        "app.services.mcp_tools.schema_browser.describe_table",
+        new_callable=AsyncMock,
+        return_value=[{"name": "id", "type": "integer", "nullable": False}],
+    ) as describe:
+        result = await _call(client, headers, "list_tables", {"database": "maindb"})
+        assert json.loads(result["content"][0]["text"])["tables"] == ["users"]
+
+        result = await _call(
+            client, headers, "describe_table", {"database": "maindb", "table": "orders"}
+        )
+        assert result["isError"] is True
+        describe.assert_not_awaited()
+
+        result = await _call(
+            client, headers, "describe_table", {"database": "maindb", "table": "public.users"}
+        )
+    assert result["isError"] is False
+    assert json.loads(result["content"][0]["text"])["columns"][0]["name"] == "id"
+
+
+async def test_database_outside_the_key_scope_is_refused(client, seeded_db):
+    headers = await _create_api_key(seeded_db)
+    with _postgres() as execute_query:
+        result = await _call(
+            client, headers, "run_query", {"database": "otherdb", "sql": "SELECT 1"}
+        )
+    assert result["isError"] is True
+    assert "otherdb" in result["content"][0]["text"]
+    execute_query.assert_not_awaited()
+
+
+async def test_run_query_is_read_only_even_for_write_keys(client, seeded_db):
+    headers = await _create_api_key(seeded_db, allow_insert=True)
+    with _postgres() as execute_query:
+        result = await _call(
+            client,
+            headers,
+            "run_query",
+            {"database": "maindb", "sql": "INSERT INTO users (id) VALUES (1)"},
+        )
+    assert result["isError"] is True
+    assert "read-only" in result["content"][0]["text"]
+    execute_query.assert_not_awaited()
+
+
+async def test_run_query_caps_rows_at_max_rows(client, seeded_db, admin_token):
+    headers = await _create_api_key(seeded_db)
+    await _put_settings(client, admin_token, max_rows=2)
+    with _postgres(_query_response([[1, "a"], [2, "b"]], truncated=True)) as execute_query:
+        result = await _call(
+            client,
+            headers,
+            "run_query",
+            {"database": "maindb", "sql": "SELECT id, name FROM users WHERE id > :id", "params": {"id": 0}},
+        )
+    assert execute_query.await_args.kwargs["limit"] == 2
+    assert execute_query.await_args.kwargs["params"] == {"id": 0}
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["rows"] == [[1, "a"], [2, "b"]]
+    assert payload["truncated"] is True
+    assert payload["truncated_reason"] == "max_rows"
+
+
+async def test_run_query_cuts_rows_at_max_result_bytes(client, seeded_db, admin_token):
+    headers = await _create_api_key(seeded_db)
+    await _put_settings(client, admin_token, max_result_bytes=1024)
+    rows = [[i, "x" * 100] for i in range(50)]
+    with _postgres(_query_response(rows)):
+        result = await _call(
+            client, headers, "run_query", {"database": "maindb", "sql": "SELECT id, name FROM users"}
+        )
+    text = result["content"][0]["text"]
+    payload = json.loads(text)
+    assert 0 < payload["row_count"] < 50
+    assert payload["truncated_reason"] == "max_result_bytes"
+    assert len(text.encode()) <= 1024
+
+
+async def test_template_tool_runs_the_template_with_the_key(client, seeded_db, admin_token):
+    await _create_template(seeded_db, default_limit=500)
+    headers = await _create_api_key(seeded_db)
+    with _postgres() as execute_query:
+        tools = (await _rpc(client, headers, "tools/list")).json()["result"]["tools"]
+        tool = next(t for t in tools if t["name"] == "tpl_reports_users")
+        assert tool["inputSchema"]["required"] == ["id"]
+        assert "SELECT id, name FROM users" in tool["description"]
+        assert tool["annotations"]["readOnlyHint"] is True
+
+        result = await _call(client, headers, "tpl_reports_users", {"id": 1})
+    assert result["isError"] is False
+    assert json.loads(result["content"][0]["text"])["rows"] == [[1, "alice"]]
+    kwargs = execute_query.await_args.kwargs
+    assert kwargs["params"] == {"id": 1}
+    # The template's default_limit (500) is clamped to max_rows (200).
+    assert kwargs["limit"] == 200
+
+
+def test_template_tool_names_are_safe_and_unique():
+    taken: set[str] = set()
+    first = mcp_tools.template_tool_name("sales/daily.v2", taken)
+    assert first == "tpl_sales_daily_v2"
+    taken.add(first)
+    second = mcp_tools.template_tool_name("sales/daily_v2", taken)
+    assert second != first and second.startswith("tpl_sales_daily_v2_")
+    long_name = mcp_tools.template_tool_name("a/" * 60 + "b", set())
+    assert len(long_name) <= mcp_tools.MAX_TOOL_NAME
+
+
+# ── S3 / NAS ────────────────────────────────────────────────────────────────
+
+
+async def test_s3_read_object_returns_text_and_marks_truncation(client, seeded_db, admin_token):
+    headers = await _create_api_key(seeded_db, databases=["store"])
+    await _put_settings(client, admin_token, max_result_bytes=1024)
+    # 1023 ASCII bytes then a 3-byte character cut by the 1024-byte cap.
+    body = ("a" * 1023 + "가나").encode()
+    meta = {"size": len(body), "content_type": "text/plain"}
+    with patch(
+        "app.services.mcp_tools.s3_router.get_object_metadata",
+        new_callable=AsyncMock,
+        return_value=meta,
+    ), patch(
+        "app.services.mcp_tools.s3_manager.read_object_prefix",
+        new_callable=AsyncMock,
+        side_effect=lambda alias, bucket, key, n: body[:n],
+    ) as read_prefix:
+        result = await _call(
+            client, headers, "s3_read_object", {"connection": "store", "bucket": "b", "key": "k.txt"}
+        )
+    read_prefix.assert_awaited_once_with("store", "b", "k.txt", 1024)
+    assert result["isError"] is False
+    meta_text, text = (item["text"] for item in result["content"])
+    assert json.loads(meta_text)["truncated"] is True
+    # Metadata and text together stay within max_result_bytes, marker included.
+    assert len(meta_text.encode()) + len(text.encode()) <= 1024
+    assert text.startswith("a" * 500) and text.endswith("[truncated at max_result_bytes]")
+
+
+async def test_s3_refuses_binary_and_foreign_connections(client, seeded_db):
+    headers = await _create_api_key(seeded_db, databases=["store"])
+    with patch(
+        "app.services.mcp_tools.s3_router.get_object_metadata",
+        new_callable=AsyncMock,
+        return_value={"size": 4},
+    ), patch(
+        "app.services.mcp_tools.s3_manager.read_object_prefix",
+        new_callable=AsyncMock,
+        return_value=b"\x89PNG",
+    ):
+        result = await _call(
+            client, headers, "s3_read_object", {"connection": "store", "bucket": "b", "key": "k"}
+        )
+        assert result["isError"] is True
+        assert "UTF-8" in result["content"][0]["text"]
+
+        result = await _call(
+            client, headers, "s3_list_buckets", {"connection": "elsewhere"}
+        )
+    assert result["isError"] is True
+    assert "elsewhere" in result["content"][0]["text"]
+
+
+async def test_nas_read_file_reads_through_the_manager(client, seeded_db, tmp_path):
+    headers = await _create_api_key(seeded_db, databases=["share"])
+
+    async def chunks():
+        yield b"hello "
+        yield b"world"
+
+    with patch(
+        "app.services.mcp_tools.nas_manager.has_connection", return_value=True
+    ), patch(
+        "app.services.mcp_tools.nas_manager.open_read_stream",
+        new_callable=AsyncMock,
+        return_value=(chunks(), {"size": 11, "content_type": "text/plain", "filename": "a.txt"}),
+    ) as open_stream:
+        result = await _call(
+            client, headers, "nas_read_file", {"connection": "share", "path": "docs/a.txt"}
+        )
+    open_stream.assert_awaited_once_with("share", "docs/a.txt", length=65_536)
+    assert result["content"][1]["text"] == "hello world"
+    assert json.loads(result["content"][0]["text"])["truncated"] is False
+
+
+# ── Admin ───────────────────────────────────────────────────────────────────
+
+
+async def test_admin_settings_round_trip_and_audit(client, admin_token, seeded_db):
+    resp = await client.get("/admin/mcp/settings", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert resp.json() == mcp_tools.McpSettings().model_dump()
+
+    await _put_settings(client, admin_token, max_rows=10, s3=False)
+    resp = await client.get("/admin/mcp/settings", headers=auth_header(admin_token))
+    assert resp.json()["max_rows"] == 10
+    assert resp.json()["tool_groups"]["s3"] is False
+
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        entry = (
+            await db.execute(select(AdminAuditLog).where(AdminAuditLog.resource_type == "mcp_settings"))
+        ).scalar_one()
+    assert entry.action == "update"
+
+
+async def test_admin_settings_validate_and_need_write_permission(client, admin_token, user_token):
+    body = mcp_tools.McpSettings().model_dump()
+    resp = await client.put(
+        "/admin/mcp/settings", json={**body, "max_rows": 0}, headers=auth_header(admin_token)
+    )
+    assert resp.status_code == 422
+    resp = await client.put("/admin/mcp/settings", json=body, headers=auth_header(user_token))
+    assert resp.status_code == 403
+
+
+async def test_admin_preview_shows_what_a_key_would_get(client, admin_token, seeded_db):
+    await _create_api_key(seeded_db, routes=["query-api", "s3-api"])
+    with _postgres():
+        resp = await client.get(
+            "/admin/mcp/preview", params={"consumer": "agent"}, headers=auth_header(admin_token)
+        )
+    assert resp.status_code == 200
+    preview = resp.json()
+    assert preview["has_mcp_grant"] is False
+    assert preview["mcp_enabled"] is True
+    groups = {group["group"]: group for group in preview["groups"]}
+    assert groups["nas"] == {"group": "nas", "enabled": True, "granted": False, "required_route": "nas-api"}
+    tool_groups = {tool["group"] for tool in preview["tools"]}
+    assert tool_groups == {"db_explore", "run_query", "s3"}
+
+    resp = await client.get(
+        "/admin/mcp/preview", params={"consumer": "nobody"}, headers=auth_header(admin_token)
+    )
+    assert resp.status_code == 404
+
+
+# ── Review hardening ────────────────────────────────────────────────────────
+
+
+async def test_run_query_refuses_what_does_not_parse_as_one_select(client, seeded_db):
+    headers = await _create_api_key(seeded_db, allow_insert=True)
+    with _postgres() as execute_query, patch(
+        "app.routers.query.connection_manager.get_db_type", return_value="mssql"
+    ):
+        for sql in (
+            # A T-SQL batch without semicolons: the regex fallback calls it a SELECT.
+            "SELECT 1 AS a DELETE FROM users COMMIT",
+            "SELECT 1; DELETE FROM users",
+            "EXPLAIN SELECT * FROM users",
+        ):
+            result = await _call(client, headers, "run_query", {"database": "maindb", "sql": sql})
+            assert result["isError"] is True, sql
+            assert "read-only" in result["content"][0]["text"]
+        result = await _call(
+            client, headers, "run_query", {"database": "maindb", "sql": "SELECT TOP 5 * FROM users"}
+        )
+    assert result["isError"] is False
+    execute_query.assert_awaited_once()
+
+
+async def test_batches_are_capped(client, seeded_db):
+    headers = await _create_api_key(seeded_db)
+    batch = [{"jsonrpc": "2.0", "id": i, "method": "ping"} for i in range(17)]
+    resp = await client.post("/mcp", json=batch, headers=headers)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == -32600
+    resp = await client.post("/mcp", json=batch[:16], headers=headers)
+    assert resp.status_code == 200
+    assert len(resp.json()) == 16
+
+
+async def test_every_tool_call_counts_against_the_rate_limit(client, seeded_db):
+    headers = await _create_api_key(seeded_db)
+    with _postgres(), patch(
+        "app.services.mcp_tools.rate_limiter.check_rate_limit",
+        return_value=(False, "Rate limit exceeded (60/min). Retry after 5s", 0.0),
+    ) as check:
+        result = await _call(client, headers, "list_databases", {})
+    assert result["isError"] is True
+    assert "Rate limit" in result["content"][0]["text"]
+    check.assert_called_once_with("apikey:agent")
+
+
+async def test_null_arguments(client, seeded_db):
+    headers = await _create_api_key(seeded_db, databases=["store"])
+    result = await _call(
+        client, headers, "s3_get_object_metadata", {"connection": "store", "bucket": None, "key": "k"}
+    )
+    assert result["isError"] is True
+    assert "'bucket' must be of type string" in result["content"][0]["text"]
+    with patch(
+        "app.services.mcp_tools.s3_router.list_objects",
+        new_callable=AsyncMock,
+        return_value={"objects": []},
+    ) as list_objects:
+        result = await _call(
+            client,
+            headers,
+            "s3_list_objects",
+            {"connection": "store", "bucket": "b", "continuation_token": None},
+        )
+    assert result["isError"] is False
+    assert list_objects.await_args.kwargs["continuation_token"] is None
+
+
+async def test_catalog_queries_time_out(client, seeded_db):
+    headers = await _create_api_key(seeded_db)
+
+    async def hang(alias):
+        await asyncio.sleep(5)
+
+    with _postgres(), patch(
+        "app.services.mcp_tools.SCHEMA_QUERY_TIMEOUT_SECONDS", 0.05
+    ), patch("app.services.mcp_tools.schema_browser.list_tables", side_effect=hang):
+        result = await _call(client, headers, "list_tables", {"database": "maindb"})
+    assert result["isError"] is True
+    assert "timed out" in result["content"][0]["text"]
+
+
+def test_graph_results_are_cut_as_valid_json():
+    cfg = mcp_tools.McpSettings(max_result_bytes=1024)
+    response = QueryResponse(
+        columns=[], rows=[], row_count=0, truncated=False, elapsed_ms=1,
+        graph='<a> <b> "c\\n" .\n' * 500,
+    )
+    payload = mcp_tools._query_payload("kg", response, cfg)
+    assert payload["truncated"] is True
+    assert payload["truncated_reason"] == "max_result_bytes"
+    assert len(mcp_tools._dumps(payload).encode()) <= 1024
+
+
+def test_capped_text_stays_within_the_cap():
+    text = mcp_tools._capped_text("가" * 1000, 100)
+    assert len(text.encode()) <= 100
+    assert text.endswith("[truncated at max_result_bytes]")

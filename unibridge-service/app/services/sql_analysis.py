@@ -230,6 +230,21 @@ def statement_type(sql: str, db_type: str = "postgres") -> str:
     return parsed_type if parsed_type != "unknown" else _legacy_statement_type(sql)
 
 
+def strict_statement_type(sql: str, db_type: str = "postgres") -> str | None:
+    """Type of ``sql`` when it parses as exactly one statement, else None.
+
+    Unlike :func:`statement_type` there is no regex fallback, so SQL the parser
+    cannot read — such as a T-SQL batch without semicolons
+    (``SELECT 1 DELETE FROM t``), which the fallback calls a SELECT — is never
+    classified.
+    """
+    statements = _parse(sql, db_type)
+    if len(statements) != 1:
+        return None
+    parsed_type = _statement_type_from_expression(statements[0])
+    return None if parsed_type == "unknown" else parsed_type
+
+
 def _expressions_for_table_scan(sql: str, db_type: str = "postgres") -> Iterable[exp.Expression]:
     explain = _split_explain(sql)
     if explain is not None:

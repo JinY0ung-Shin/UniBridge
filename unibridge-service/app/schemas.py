@@ -445,6 +445,48 @@ class SystemConfigUpdate(BaseModel):
             )
 
 
+# ── MCP ─────────────────────────────────────────────────────────────────────
+
+McpToolGroup = Literal["templates", "db_explore", "run_query", "s3", "nas"]
+
+
+class McpToolGroups(BaseModel):
+    templates: bool = True
+    db_explore: bool = True
+    run_query: bool = True
+    s3: bool = True
+    nas: bool = True
+
+
+class McpSettings(BaseModel):
+    enabled: bool = True
+    tool_groups: McpToolGroups = Field(default_factory=McpToolGroups)
+    max_rows: int = Field(200, ge=1, le=10_000)
+    max_result_bytes: int = Field(65_536, ge=1_024, le=1_048_576)
+
+
+class McpPreviewGroup(BaseModel):
+    group: McpToolGroup
+    enabled: bool
+    granted: bool
+    required_route: str
+
+
+class McpPreviewTool(BaseModel):
+    name: str
+    title: str
+    description: str
+    group: McpToolGroup
+
+
+class McpPreview(BaseModel):
+    consumer: str
+    mcp_enabled: bool
+    has_mcp_grant: bool
+    groups: list[McpPreviewGroup]
+    tools: list[McpPreviewTool]
+
+
 # ── Roles (RBAC) ────────────────────────────────────────────────────────────
 
 class RoleCreate(BaseModel):

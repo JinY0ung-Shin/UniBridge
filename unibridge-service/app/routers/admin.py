@@ -39,6 +39,7 @@ from app.schemas import (
     normalize_query_template_path,
 )
 from app.services.alert_state import delete_alert_state
+from app.services.apisix_system_resources import MCP_API_ROUTE_ID
 from app.services.audit import log_admin_action
 from app.services.connection_manager import (
     connection_manager,
@@ -976,24 +977,27 @@ async def update_settings(
         from app.services import apisix_client
 
         timeout_s = settings_manager.query_route_timeout
-        try:
-            await apisix_client.patch_resource(
-                "routes",
-                "query-api",
-                {
-                    "timeout": {
-                        "connect": app_settings.APISIX_QUERY_ROUTE_CONNECT_TIMEOUT,
-                        "send": timeout_s,
-                        "read": timeout_s,
-                    }
-                },
-            )
-        except Exception:
-            logger.exception(
-                "Failed to live-patch query-api route timeout to %ds; "
-                "persisted, will apply on next provisioning",
-                timeout_s,
-            )
+        # mcp-api runs the same queries through its tools.
+        for route_id in ("query-api", MCP_API_ROUTE_ID):
+            try:
+                await apisix_client.patch_resource(
+                    "routes",
+                    route_id,
+                    {
+                        "timeout": {
+                            "connect": app_settings.APISIX_QUERY_ROUTE_CONNECT_TIMEOUT,
+                            "send": timeout_s,
+                            "read": timeout_s,
+                        }
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to live-patch %s route timeout to %ds; "
+                    "persisted, will apply on next provisioning",
+                    route_id,
+                    timeout_s,
+                )
 
     # Re-apply the gateway default timeout to existing non-override routes.
     # Best-effort: the value is persisted regardless, and routes pick it up when

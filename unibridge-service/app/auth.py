@@ -6,7 +6,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import httpx
 from fastapi import Depends, HTTPException, Request, status
@@ -19,6 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
+
+if TYPE_CHECKING:
+    from app.models import ApiKeyAccess
 
 logger = logging.getLogger(__name__)
 APISIX_INTERNAL_PROXY_HEADER = "x-unibridge-internal-proxy"
@@ -297,6 +300,19 @@ async def get_current_user(
         ) from exc
 
 
+def api_key_user_from_access(access: ApiKeyAccess) -> ApiKeyUser:
+    import json
+    return ApiKeyUser(
+        consumer_name=access.consumer_name,
+        allowed_databases=json.loads(access.allowed_databases) if access.allowed_databases else [],
+        allowed_routes=json.loads(access.allowed_routes) if access.allowed_routes else [],
+        allow_insert=bool(access.allow_insert),
+        allow_update=bool(access.allow_update),
+        allow_delete=bool(access.allow_delete),
+        allowed_tables=json.loads(access.allowed_tables) if access.allowed_tables else None,
+    )
+
+
 async def get_current_user_or_apikey(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
@@ -340,16 +356,7 @@ async def get_current_user_or_apikey(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="API key expired",
             )
-        import json
-        return ApiKeyUser(
-            consumer_name=access.consumer_name,
-            allowed_databases=json.loads(access.allowed_databases) if access.allowed_databases else [],
-            allowed_routes=json.loads(access.allowed_routes) if access.allowed_routes else [],
-            allow_insert=bool(access.allow_insert),
-            allow_update=bool(access.allow_update),
-            allow_delete=bool(access.allow_delete),
-            allowed_tables=json.loads(access.allowed_tables) if access.allowed_tables else None,
-        )
+        return api_key_user_from_access(access)
 
     # Fall back to JWT
     if credentials is None:

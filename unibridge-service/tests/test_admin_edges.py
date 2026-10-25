@@ -446,7 +446,7 @@ async def test_update_settings_persists_and_best_effort_syncs_routes(
     rate_limiter.update_limits.assert_called_once_with(
         rate_limit=120, max_concurrent=8
     )
-    patch_query.assert_awaited_once()
+    assert [call.args[1] for call in patch_query.await_args_list] == ["query-api", "mcp-api"]
     sync_gateway.assert_awaited_once_with(90)
     if dependencies_fail:
         assert "Failed to live-patch query-api route timeout" in caplog.text

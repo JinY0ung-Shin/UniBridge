@@ -443,6 +443,54 @@ curl -H "apikey: $UNIBRIDGE_API_KEY" \
 - `requests` counts from the status counter and the percentiles from the
   latency histogram; both are Prometheus `increase()` estimates.
 
+### MCP server (`/api/mcp`)
+
+The fixed route `mcp-api` serves an MCP server (Streamable HTTP, stateless,
+JSON responses) over what an API key can already reach, so MCP clients such as
+Claude Code or Codex can use registered databases, query templates, S3 and NAS
+as tools:
+
+```bash
+claude mcp add --transport http unibridge \
+  "https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/mcp" --header "apikey: $UNIBRIDGE_API_KEY"
+```
+
+```toml
+# ~/.codex/config.toml
+[mcp_servers.unibridge]
+url = "https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/mcp"
+http_headers = { apikey = "<API_KEY>" }
+```
+
+- Grant the key `mcp-api` on the **API Keys** page. Each tool group also needs
+  the grant its REST twin needs, and databases, tables, S3 connections and NAS
+  shares are scoped by the same key settings:
+
+  | Group | Tools | Needs |
+  |---|---|---|
+  | Query templates | `tpl_<path>` per enabled template (bind parameters are the arguments) | `query-api` |
+  | DB browsing | `list_databases`, `list_tables`, `describe_table` | `query-api` |
+  | Read-only SQL | `run_query` | `query-api` |
+  | S3 | `s3_list_connections`, `s3_list_buckets`, `s3_list_objects`, `s3_get_object_metadata`, `s3_read_object` | `s3-api` |
+  | NAS | `nas_list_connections`, `nas_list_entries`, `nas_get_metadata`, `nas_read_file` | `nas-api` |
+
+- `run_query` runs one SELECT (or a Cypher/SPARQL read) only, even for a key
+  with INSERT/UPDATE/DELETE flags. SQL must parse as exactly one statement:
+  what the parser cannot read is refused rather than guessed. Queries are audited and counted in DB query
+  monitoring under the key, as on `/api/query`.
+- Admin → **MCP** (`admin.config.read`/`write`) switches the endpoint and each
+  group on or off and sets the result caps (`max_rows`, default 200;
+  `max_result_bytes`, default 64 KiB; a cut result says `truncated: true`).
+  The page also shows the tools a given key would get.
+- Text reads (`s3_read_object`, `nas_read_file`) return UTF-8 text only, up to
+  `max_result_bytes`; binary files are refused, and so are NAS files over the
+  share's download limit.
+- Every tool call counts against the key's per-minute query rate limit (Query
+  Settings); `list_tables`/`describe_table` also take a concurrent-query slot.
+- The gateway read timeout follows `query-api`'s (Query Settings).
+- Rolling out: the first deploy of a release with this route finds it missing
+  and re-provisions the APISIX routes by itself (`apisix_has_core_routes`).
+
 ### Model discovery for Claude Code
 
 `GET /api/llm/v1/models` lists every registered LiteLLM model, and lists each one

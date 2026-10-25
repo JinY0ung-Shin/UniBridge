@@ -2,6 +2,8 @@
 
 QUERY_API_ROUTE_ID = "query-api"
 QUERY_TEMPLATE_WRITE_ROUTE_ID = "query-template-write-api"
+# MCP (Streamable HTTP) endpoint over the query/S3/NAS surfaces (app/routers/mcp.py).
+MCP_API_ROUTE_ID = "mcp-api"
 
 # The /api/llm-bi routes of the Bifrost side-by-side test and the second
 # converter they used. Boot provisioning deletes them (app/main.py
@@ -26,6 +28,7 @@ PROTECTED_ROUTE_IDS = {
     "llm-responses",
     "nas-api",
     "usages-api",
+    MCP_API_ROUTE_ID,
     "prometheus-api",
     "llm-metrics",
     "llm-models",

@@ -760,6 +760,7 @@ def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
         ("s3-api", "s3_route"),
         ("nas-api", "nas_route"),
         ("usages-api", "usages_route"),
+        ("mcp-api", "mcp_route"),
     ):
         assert f'apisix_get "routes/{route_id}"' in script
         assert f'route_has_internal_proxy_header "${route_var}" || return 1' in script
@@ -2049,7 +2050,7 @@ _DEPLOY_CORE_ROUTES = {
         f"routes/{route_id}": {
             "plugins": {"proxy-rewrite": {"headers": {"set": {"X-UniBridge-Internal-Proxy": "s"}}}}
         }
-        for route_id in ("s3-api", "nas-api", "usages-api")
+        for route_id in ("s3-api", "nas-api", "usages-api", "mcp-api")
     },
     "routes/prometheus-api": {"uri": "/api/prometheus/*", "upstream_id": "prometheus"},
     "routes/llm-proxy": {"uri": "/api/llm/*", "upstream_id": "litellm"},
@@ -2112,6 +2113,16 @@ if apisix_has_core_routes; then echo yes; else echo no; fi
     )
     assert result.returncode == 0, result.stderr
     return result.stdout.strip() == "yes"
+
+
+def test_deploy_reprovisions_when_the_mcp_route_is_missing(tmp_path: Path) -> None:
+    # Steady-state deploys boot with provisioning off, so the release that adds
+    # /api/mcp only creates the route if its absence forces re-provisioning.
+    retired = _llm_bi_retired()
+    assert _deploy_has_core_routes(tmp_path / "present", retired, BIFROST_TEST_VK=BIFROST_VK)
+    assert not _deploy_has_core_routes(
+        tmp_path / "missing", {**retired, "routes/mcp-api": None}, BIFROST_TEST_VK=BIFROST_VK
+    )
 
 
 def test_deploy_reprovisions_until_the_llm_bi_routes_are_retired(tmp_path: Path) -> None:

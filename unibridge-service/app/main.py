@@ -31,6 +31,7 @@ from app.routers import (
     external_metrics,
     gateway,
     internal_alerts,
+    mcp,
     nas,
     query,
     query_history,
@@ -48,6 +49,7 @@ from app.services import llm_routes
 from app.services.apisix_system_resources import (
     LLM_BI_NOT_FOUND_ROUTE_ID,
     LLM_NOT_FOUND_ROUTE_ID,
+    MCP_API_ROUTE_ID,
     RETIRED_LLM_BI_ROUTE_IDS,
     RETIRED_LLM_BI_UPSTREAM_ID,
     QUERY_TEMPLATE_WRITE_ROUTE_ID,
@@ -73,6 +75,7 @@ INTERNAL_PROXY_ROUTE_IDS = (
     "s3-api",
     "nas-api",
     "usages-api",
+    MCP_API_ROUTE_ID,
 )
 
 
@@ -200,6 +203,7 @@ async def _preserve_consumer_restriction(
         "llm-responses",
         "nas-api",
         "usages-api",
+        MCP_API_ROUTE_ID,
         "prometheus-api",
         "llm-metrics",
         "llm-models",
@@ -812,6 +816,42 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
                 logger.info("APISIX usages route provisioned successfully")
 
+                # Ensure /api/mcp exists with key-auth: the MCP server over the
+                # query/S3/NAS surfaces (app/routers/mcp.py). Inline deny-all
+                # like nas-api until the consumer-restriction replay; its tools
+                # run queries, so the read timeout follows query-api's.
+                await apisix_client.put_resource(
+                    "routes",
+                    MCP_API_ROUTE_ID,
+                    await _preserve_consumer_restriction(
+                        MCP_API_ROUTE_ID,
+                        {
+                            "name": MCP_API_ROUTE_ID,
+                            "desc": "MCP server (Streamable HTTP): query templates, databases, S3, NAS",
+                            "uri": "/api/mcp",
+                            "methods": ["GET", "POST", "DELETE"],
+                            "upstream_id": "unibridge-service",
+                            "timeout": {
+                                "connect": getattr(
+                                    settings, "APISIX_QUERY_ROUTE_CONNECT_TIMEOUT", 10
+                                ),
+                                "send": settings_manager.query_route_timeout,
+                                "read": settings_manager.query_route_timeout,
+                            },
+                            "plugins": {
+                                "key-auth": {},
+                                "consumer-restriction": {"whitelist": [api_keys.DENY_ALL_CONSUMER]},
+                                "proxy-rewrite": {
+                                    "uri": "/mcp",
+                                    "headers": _internal_proxy_headers(),
+                                },
+                            },
+                            "status": 1,
+                        },
+                    ),
+                )
+                logger.info("APISIX MCP route provisioned successfully")
+
                 # ── Prometheus query API ──
                 # External PromQL access rides the gateway instead of a raw host
                 # port: Prometheus has no auth of its own, so a published :9090
@@ -1201,6 +1241,7 @@ app.include_router(gateway.router)
 app.include_router(external_metrics.router)
 app.include_router(query_metrics.router)
 app.include_router(internal_alerts.router)
+app.include_router(mcp.router)
 app.include_router(s3.router)
 app.include_router(nas.router)
 app.include_router(servers.router)
