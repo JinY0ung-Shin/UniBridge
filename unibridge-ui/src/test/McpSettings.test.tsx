@@ -3,6 +3,7 @@ vi.mock('../api/client', () => ({
   getMcpSettings: vi.fn(),
   updateMcpSettings: vi.fn(),
   getMcpPreview: vi.fn(),
+  getMcpTemplates: vi.fn(),
   getScopedApiKeys: vi.fn(),
 }));
 
@@ -12,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   getMcpPreview,
   getMcpSettings,
+  getMcpTemplates,
   getScopedApiKeys,
   updateMcpSettings,
   type ApiKey,
@@ -24,6 +26,7 @@ import { renderWithProviders } from './helpers';
 const mockedGetMcpSettings = vi.mocked(getMcpSettings);
 const mockedUpdateMcpSettings = vi.mocked(updateMcpSettings);
 const mockedGetMcpPreview = vi.mocked(getMcpPreview);
+const mockedGetMcpTemplates = vi.mocked(getMcpTemplates);
 const mockedGetScopedApiKeys = vi.mocked(getScopedApiKeys);
 
 const WRITE_PERMISSIONS = ['admin.config.read', 'admin.config.write', 'apikeys.read'];
@@ -32,6 +35,7 @@ const READ_PERMISSIONS = ['admin.config.read'];
 const defaultSettings: McpSettings = {
   enabled: true,
   tool_groups: { templates: true, db_explore: true, run_query: true, s3: true, nas: true },
+  excluded_templates: [],
   max_rows: 200,
   max_result_bytes: 65536,
 };
@@ -63,15 +67,24 @@ const preview: McpPreview = {
   ],
   tools: [
     { name: 'list_databases', title: 'List databases', description: 'Databases this key may query.', group: 'db_explore' },
-    { name: 'tpl_sales__daily', title: 'Daily sales', description: 'Sales per day.', group: 'templates' },
+    { name: 'search_templates', title: 'Search query templates', description: 'Find saved query templates.', group: 'templates' },
   ],
+  templates: [{ path: 'sales/daily', name: 'Daily sales', database: 'sales', enabled: true }],
 };
+
+const templates = [
+  { path: 'ops/disabled', name: 'Old report', database: 'ops', enabled: false },
+  { path: 'sales/daily', name: 'Daily sales', database: 'sales', enabled: true },
+  { path: 'sales/monthly', name: 'Monthly sales', database: 'sales', enabled: true },
+];
 
 describe('McpSettingsPage', () => {
   beforeEach(() => {
     mockedGetMcpSettings.mockReset();
     mockedUpdateMcpSettings.mockReset();
     mockedGetMcpPreview.mockReset();
+    mockedGetMcpTemplates.mockReset();
+    mockedGetMcpTemplates.mockResolvedValue(templates);
     mockedGetScopedApiKeys.mockReset();
     mockedGetMcpSettings.mockResolvedValue(defaultSettings);
     mockedUpdateMcpSettings.mockResolvedValue(defaultSettings);
@@ -121,10 +134,47 @@ describe('McpSettingsPage', () => {
     expect(mockedUpdateMcpSettings.mock.calls[0][0]).toEqual({
       enabled: true,
       tool_groups: { templates: true, db_explore: true, run_query: false, s3: true, nas: true },
+      excluded_templates: [],
       max_rows: 50,
       max_result_bytes: 65536,
     });
     expect(await screen.findByText('MCP settings saved.')).toBeInTheDocument();
+  });
+
+  it('hides chosen templates from MCP', async () => {
+    mockedGetMcpSettings.mockResolvedValue({ ...defaultSettings, excluded_templates: ['sales/monthly'] });
+    renderWithProviders(<McpSettingsPage />, { permissions: WRITE_PERMISSIONS });
+
+    const daily = await screen.findByRole('checkbox', { name: 'sales/daily' });
+    expect(daily).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'sales/monthly' })).not.toBeChecked();
+    expect(screen.getByText('1 of 2 enabled templates offered')).toBeInTheDocument();
+    expect(screen.getByText('Disabled')).toBeInTheDocument();
+
+    await userEvent.click(daily);
+    expect(screen.getByText('Unsaved MCP changes')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => {
+      expect(mockedUpdateMcpSettings).toHaveBeenCalledTimes(1);
+    });
+    expect(mockedUpdateMcpSettings.mock.calls[0][0].excluded_templates).toEqual([
+      'sales/daily',
+      'sales/monthly',
+    ]);
+  });
+
+  it('offers or hides every template the filter shows', async () => {
+    renderWithProviders(<McpSettingsPage />, { permissions: WRITE_PERMISSIONS });
+
+    await screen.findByRole('checkbox', { name: 'sales/daily' });
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Filter by path, name or database' }), 'monthly');
+    expect(screen.queryByRole('checkbox', { name: 'sales/daily' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Hide all shown' }));
+    expect(screen.getByRole('checkbox', { name: 'sales/monthly' })).not.toBeChecked();
+
+    await userEvent.clear(screen.getByRole('searchbox', { name: 'Filter by path, name or database' }));
+    expect(screen.getByRole('checkbox', { name: 'sales/daily' })).toBeChecked();
+    expect(screen.getByText('1 of 2 enabled templates offered')).toBeInTheDocument();
   });
 
   it('blocks saving an out-of-range limit', async () => {
@@ -154,10 +204,13 @@ describe('McpSettingsPage', () => {
     await screen.findByRole('option', { name: 'agent-key' });
     await userEvent.selectOptions(select, 'agent-key');
 
-    expect(await screen.findByText('tpl_sales__daily')).toBeInTheDocument();
+    expect(await screen.findByText('search_templates')).toBeInTheDocument();
     expect(mockedGetMcpPreview).toHaveBeenCalledWith('agent-key');
     expect(screen.getByText('list_databases')).toBeInTheDocument();
-    expect(screen.getByText('Sales per day.')).toBeInTheDocument();
+    expect(screen.getByText('Find saved query templates.')).toBeInTheDocument();
+    const keyTemplates = screen.getByRole('table', { name: 'Templates for this key' });
+    expect(keyTemplates).toHaveTextContent('sales/daily');
+    expect(screen.getByText('Templates for this key (1)')).toBeInTheDocument();
     expect(screen.getByText('Tools (2)')).toBeInTheDocument();
     const groups = screen.getByRole('table', { name: 'Tool groups for this key' });
     expect(groups).toHaveTextContent('s3-api');

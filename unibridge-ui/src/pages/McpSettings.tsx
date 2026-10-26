@@ -4,9 +4,11 @@ import { useTranslation } from 'react-i18next';
 import {
   getMcpPreview,
   getMcpSettings,
+  getMcpTemplates,
   getScopedApiKeys,
   updateMcpSettings,
   type McpSettings,
+  type McpTemplateInfo,
   type McpToolGroup,
 } from '../api/client';
 import { useCanWrite } from '../components/useCanWrite';
@@ -27,6 +29,7 @@ function settingsKey(settings: McpSettings): string {
   return [
     settings.enabled,
     ...MCP_TOOL_GROUPS.map((group) => settings.tool_groups[group]),
+    [...settings.excluded_templates].sort().join('\n'),
     settings.max_rows,
     settings.max_result_bytes,
   ].join(':');
@@ -39,18 +42,134 @@ function httpStatus(error: unknown): number | undefined {
   return undefined;
 }
 
+function templateMatches(template: McpTemplateInfo, terms: string[]): boolean {
+  const haystack = `${template.path}\n${template.name}\n${template.database}`.toLowerCase();
+  return terms.every((term) => haystack.includes(term));
+}
+
+function McpTemplateExposure({
+  excluded,
+  onChange,
+  canWrite,
+  groupEnabled,
+}: {
+  excluded: string[];
+  onChange: (next: string[]) => void;
+  canWrite: boolean;
+  groupEnabled: boolean;
+}) {
+  const { t } = useTranslation();
+  const [filter, setFilter] = useState('');
+  const templatesQuery = useQuery({ queryKey: ['mcp-templates'], queryFn: getMcpTemplates });
+
+  const templates = templatesQuery.data ?? [];
+  const excludedSet = new Set(excluded);
+  const terms = filter.toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = templates.filter((template) => templateMatches(template, terms));
+  const exposedCount = templates.filter((tpl) => tpl.enabled && !excludedSet.has(tpl.path)).length;
+  const enabledCount = templates.filter((tpl) => tpl.enabled).length;
+
+  function setExposed(paths: string[], exposed: boolean) {
+    const next = new Set(excluded);
+    for (const path of paths) {
+      if (exposed) next.delete(path);
+      else next.add(path);
+    }
+    onChange([...next].sort());
+  }
+
+  return (
+    <div className="settings-card">
+      <h3>{t('mcp.templatesSection')}</h3>
+      <p className="form-hint mcp-section-hint">{t('mcp.templatesHint')}</p>
+      {!groupEnabled && (
+        <div className="settings-readonly-notice" role="status">{t('mcp.templatesGroupOff')}</div>
+      )}
+      {templatesQuery.isLoading && <div className="loading-message" role="status">{t('common.loading')}</div>}
+      {templatesQuery.isError && (
+        <div className="error-banner" role="alert">{t('mcp.templatesLoadFailed')}</div>
+      )}
+      {templatesQuery.data && templates.length === 0 && (
+        <p className="form-hint">{t('mcp.templatesEmpty')}</p>
+      )}
+      {templates.length > 0 && (
+        <>
+          <div className="mcp-template-toolbar">
+            <input
+              type="search"
+              className="mcp-template-filter"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder={t('mcp.templatesFilter')}
+              aria-label={t('mcp.templatesFilter')}
+            />
+            <span className="mcp-template-count">
+              {t('mcp.templatesExposedCount', { exposed: exposedCount, total: enabledCount })}
+            </span>
+            {canWrite && (
+              <div className="mcp-template-bulk">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setExposed(shown.map((tpl) => tpl.path), true)}
+                  disabled={shown.length === 0}
+                >
+                  {t('mcp.templatesExposeAll')}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setExposed(shown.map((tpl) => tpl.path), false)}
+                  disabled={shown.length === 0}
+                >
+                  {t('mcp.templatesHideAll')}
+                </button>
+              </div>
+            )}
+          </div>
+          <ul className="mcp-template-list" aria-label={t('mcp.templatesSection')}>
+            {shown.map((template) => (
+              <li key={template.path} className="mcp-template-item">
+                <label className="mcp-toggle">
+                  <input
+                    type="checkbox"
+                    checked={!excludedSet.has(template.path)}
+                    onChange={(e) => setExposed([template.path], e.target.checked)}
+                    disabled={!canWrite}
+                    aria-label={template.path}
+                  />
+                  <code>{template.path}</code>
+                  <span className="mcp-template-meta">
+                    {template.name} · {template.database}
+                  </span>
+                  {!template.enabled && (
+                    <span className="badge badge-error">{t('mcp.templateDisabled')}</span>
+                  )}
+                </label>
+              </li>
+            ))}
+            {shown.length === 0 && <li className="form-hint">{t('mcp.templatesNoMatch')}</li>}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
 function McpSettingsForm({ settings }: { settings: McpSettings }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const canWrite = useCanWrite('admin.config.write');
   const [enabled, setEnabled] = useState(settings.enabled);
   const [toolGroups, setToolGroups] = useState(settings.tool_groups);
+  const [excludedTemplates, setExcludedTemplates] = useState(settings.excluded_templates);
   const [maxRows, setMaxRows] = useState(settings.max_rows);
   const [maxResultBytes, setMaxResultBytes] = useState(settings.max_result_bytes);
 
   const draft: McpSettings = {
     enabled,
     tool_groups: toolGroups,
+    excluded_templates: excludedTemplates,
     max_rows: maxRows,
     max_result_bytes: maxResultBytes,
   };
@@ -62,6 +181,7 @@ function McpSettingsForm({ settings }: { settings: McpSettings }) {
   function applySettings(next: McpSettings) {
     setEnabled(next.enabled);
     setToolGroups(next.tool_groups);
+    setExcludedTemplates(next.excluded_templates);
     setMaxRows(next.max_rows);
     setMaxResultBytes(next.max_result_bytes);
   }
@@ -129,6 +249,13 @@ function McpSettingsForm({ settings }: { settings: McpSettings }) {
           </div>
         ))}
       </div>
+
+      <McpTemplateExposure
+        excluded={excludedTemplates}
+        onChange={setExcludedTemplates}
+        canWrite={canWrite}
+        groupEnabled={toolGroups.templates}
+      />
 
       <div className="settings-card">
         <h3>{t('mcp.limitsSection')}</h3>
@@ -388,6 +515,38 @@ function McpToolPreview() {
               </tbody>
             </table>
           </div>
+
+          {preview.tools.some((tool) => tool.group === 'templates') && (
+            <>
+              <h4 className="mcp-tools-title">
+                {t('mcp.previewTemplateCount', { count: preview.templates.length })}
+              </h4>
+              {preview.templates.length === 0 ? (
+                <p className="form-hint">{t('mcp.previewNoTemplates')}</p>
+              ) : (
+                <div className="table-container">
+                  <table className="data-table" aria-label={t('mcp.previewTemplatesTable')}>
+                    <thead>
+                      <tr>
+                        <th>{t('mcp.colTemplate')}</th>
+                        <th>{t('mcp.colName')}</th>
+                        <th>{t('mcp.colDatabase')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {preview.templates.map((template) => (
+                        <tr key={template.path}>
+                          <td><code>{template.path}</code></td>
+                          <td>{template.name}</td>
+                          <td>{template.database}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
 
           <h4 className="mcp-tools-title">{t('mcp.toolCount', { count: preview.tools.length })}</h4>
           {preview.tools.length === 0 ? (

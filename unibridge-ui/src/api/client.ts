@@ -448,6 +448,8 @@ export type McpToolGroup = 'templates' | 'db_explore' | 'run_query' | 's3' | 'na
 export interface McpSettings {
   enabled: boolean;
   tool_groups: Record<McpToolGroup, boolean>;
+  /** Template paths search_templates/run_template never offer. */
+  excluded_templates: string[];
   max_rows: number;
   max_result_bytes: number;
 }
@@ -466,6 +468,13 @@ export interface McpPreviewTool {
   group: string;
 }
 
+export interface McpTemplateInfo {
+  path: string;
+  name: string;
+  database: string;
+  enabled: boolean;
+}
+
 /** The MCP tools one API key would see, and why groups are missing. */
 export interface McpPreview {
   consumer: string;
@@ -473,6 +482,8 @@ export interface McpPreview {
   has_mcp_grant: boolean;
   groups: McpPreviewGroup[];
   tools: McpPreviewTool[];
+  /** Templates search_templates/run_template offer this key. */
+  templates: McpTemplateInfo[];
 }
 
 export async function getMcpSettings(): Promise<McpSettings> {
@@ -482,6 +493,11 @@ export async function getMcpSettings(): Promise<McpSettings> {
 
 export async function updateMcpSettings(body: McpSettings): Promise<McpSettings> {
   const { data } = await client.put('/admin/mcp/settings', body);
+  return data;
+}
+
+export async function getMcpTemplates(): Promise<McpTemplateInfo[]> {
+  const { data } = await client.get('/admin/mcp/templates');
   return data;
 }
 

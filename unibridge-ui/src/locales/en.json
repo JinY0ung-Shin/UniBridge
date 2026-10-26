@@ -1416,7 +1416,7 @@
     "groups": {
       "templates": {
         "label": "Query templates",
-        "hint": "One tool per enabled query template the key may run."
+        "hint": "search_templates finds the templates the key may run; run_template runs one by its path or name."
       },
       "db_explore": {
         "label": "DB exploration (list_databases · list_tables · describe_table)",
@@ -1435,6 +1435,23 @@
         "hint": "Lists entries and reads small text files."
       }
     },
+    "templatesSection": "Templates offered over MCP",
+    "templatesHint": "Unchecked templates never show up in search_templates or run_template, for any key. They stay available through the REST API.",
+    "templatesGroupOff": "The Query templates group is off, so MCP offers no templates.",
+    "templatesLoadFailed": "Failed to load the query templates.",
+    "templatesEmpty": "No query templates yet.",
+    "templatesFilter": "Filter by path, name or database",
+    "templatesExposedCount": "{{exposed}} of {{total}} enabled templates offered",
+    "templatesExposeAll": "Offer all shown",
+    "templatesHideAll": "Hide all shown",
+    "templatesNoMatch": "No template matches the filter.",
+    "templateDisabled": "Disabled",
+    "previewTemplateCount": "Templates for this key ({{count}})",
+    "previewNoTemplates": "This key can find no templates.",
+    "previewTemplatesTable": "Templates for this key",
+    "colTemplate": "Template",
+    "colName": "Name",
+    "colDatabase": "Database",
     "limitsSection": "Result limits",
     "maxRows": "Max rows per result",
     "maxRowsHint": "1–10,000. Larger results are cut and marked truncated.",
