@@ -3,10 +3,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   getMcpPreview,
+  getMcpRoutes,
   getMcpSettings,
   getMcpTemplates,
   getScopedApiKeys,
   updateMcpSettings,
+  type McpExposedRoute,
   type McpSettings,
   type McpTemplateInfo,
   type McpToolGroup,
@@ -16,7 +18,7 @@ import { useToast } from '../components/useToast';
 import './QuerySettings.css';
 import './McpSettings.css';
 
-const MCP_TOOL_GROUPS: McpToolGroup[] = ['templates', 'db_explore', 'run_query', 's3', 'nas'];
+const MCP_TOOL_GROUPS: McpToolGroup[] = ['templates', 'db_explore', 'run_query', 's3', 'nas', 'apis'];
 
 const MAX_ROWS_RANGE = { min: 1, max: 10000 };
 const MAX_RESULT_BYTES_RANGE = { min: 1024, max: 1048576 };
@@ -30,6 +32,9 @@ function settingsKey(settings: McpSettings): string {
     settings.enabled,
     ...MCP_TOOL_GROUPS.map((group) => settings.tool_groups[group]),
     [...settings.excluded_templates].sort().join('\n'),
+    JSON.stringify(
+      [...settings.exposed_routes].sort((a, b) => a.route_id.localeCompare(b.route_id)),
+    ),
     settings.max_rows,
     settings.max_result_bytes,
   ].join(':');
@@ -156,6 +161,130 @@ function McpTemplateExposure({
   );
 }
 
+function McpApiExposure({
+  exposed,
+  onChange,
+  canWrite,
+  groupEnabled,
+}: {
+  exposed: McpExposedRoute[];
+  onChange: (next: McpExposedRoute[]) => void;
+  canWrite: boolean;
+  groupEnabled: boolean;
+}) {
+  const { t } = useTranslation();
+  const [filter, setFilter] = useState('');
+  const routesQuery = useQuery({ queryKey: ['mcp-routes'], queryFn: getMcpRoutes, retry: false });
+
+  const routes = routesQuery.data ?? [];
+  const exposedById = new Map(exposed.map((route) => [route.route_id, route]));
+  const known = new Set(routes.map((route) => route.route_id));
+  const missing = routesQuery.data ? exposed.filter((route) => !known.has(route.route_id)) : [];
+  const terms = filter.toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = routes.filter((route) => {
+    const haystack = `${route.route_id}\n${route.name}\n${route.paths.join(' ')}`.toLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  });
+
+  function setExposed(routeId: string, on: boolean) {
+    const rest = exposed.filter((route) => route.route_id !== routeId);
+    onChange(on ? [...rest, { route_id: routeId, description: '' }] : rest);
+  }
+
+  function setDescription(routeId: string, description: string) {
+    onChange(exposed.map((route) => (route.route_id === routeId ? { ...route, description } : route)));
+  }
+
+  return (
+    <div className="settings-card">
+      <h3>{t('mcp.apisSection')}</h3>
+      <p className="form-hint mcp-section-hint">{t('mcp.apisHint')}</p>
+      {!groupEnabled && (
+        <div className="settings-readonly-notice" role="status">{t('mcp.apisGroupOff')}</div>
+      )}
+      {routesQuery.isLoading && <div className="loading-message" role="status">{t('common.loading')}</div>}
+      {routesQuery.isError && <div className="error-banner" role="alert">{t('mcp.apisLoadFailed')}</div>}
+      {routesQuery.data && routes.length === 0 && <p className="form-hint">{t('mcp.apisEmpty')}</p>}
+      {missing.length > 0 && (
+        <div className="settings-readonly-notice mcp-api-missing" role="status">
+          <span>{t('mcp.apisMissing', { count: missing.length })}</span>
+          {canWrite && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => onChange(exposed.filter((route) => known.has(route.route_id)))}
+            >
+              {t('mcp.apisRemoveMissing')}
+            </button>
+          )}
+        </div>
+      )}
+      {routes.length > 0 && (
+        <>
+          <div className="mcp-template-toolbar">
+            <input
+              type="search"
+              className="mcp-template-filter"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder={t('mcp.apisFilter')}
+              aria-label={t('mcp.apisFilter')}
+            />
+            <span className="mcp-template-count">
+              {t('mcp.apisExposedCount', {
+                exposed: routes.filter((route) => exposedById.has(route.route_id)).length,
+                total: routes.length,
+              })}
+            </span>
+          </div>
+          <ul className="mcp-template-list mcp-api-list" aria-label={t('mcp.apisSection')}>
+            {shown.map((route) => {
+              const entry = exposedById.get(route.route_id);
+              const descriptionId = `mcp-api-description-${route.route_id}`;
+              return (
+                <li key={route.route_id} className="mcp-template-item">
+                  <label className="mcp-toggle">
+                    <input
+                      type="checkbox"
+                      checked={entry !== undefined}
+                      onChange={(e) => setExposed(route.route_id, e.target.checked)}
+                      disabled={!canWrite}
+                      aria-label={route.name}
+                    />
+                    <span className="mcp-api-head">
+                      <span>{route.name}</span>
+                      <code>{route.paths.join(', ')}</code>
+                      <span className="mcp-template-meta">{route.methods.join(' · ')}</span>
+                      <span className={route.key_auth ? 'badge badge-ok' : 'badge badge-error'}>
+                        {route.key_auth ? t('mcp.apiKeyAuth') : t('mcp.apiPublic')}
+                      </span>
+                    </span>
+                  </label>
+                  {entry !== undefined && (
+                    <div className="mcp-api-description">
+                      <label htmlFor={descriptionId}>{t('mcp.apiDescription')}</label>
+                      <textarea
+                        id={descriptionId}
+                        rows={3}
+                        maxLength={4000}
+                        value={entry.description}
+                        onChange={(e) => setDescription(route.route_id, e.target.value)}
+                        placeholder={route.description || t('mcp.apiDescriptionPlaceholder')}
+                        disabled={!canWrite}
+                      />
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+            {shown.length === 0 && <li className="form-hint">{t('mcp.apisNoMatch')}</li>}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
 function McpSettingsForm({ settings }: { settings: McpSettings }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -163,6 +292,7 @@ function McpSettingsForm({ settings }: { settings: McpSettings }) {
   const [enabled, setEnabled] = useState(settings.enabled);
   const [toolGroups, setToolGroups] = useState(settings.tool_groups);
   const [excludedTemplates, setExcludedTemplates] = useState(settings.excluded_templates);
+  const [exposedRoutes, setExposedRoutes] = useState(settings.exposed_routes);
   const [maxRows, setMaxRows] = useState(settings.max_rows);
   const [maxResultBytes, setMaxResultBytes] = useState(settings.max_result_bytes);
 
@@ -170,6 +300,7 @@ function McpSettingsForm({ settings }: { settings: McpSettings }) {
     enabled,
     tool_groups: toolGroups,
     excluded_templates: excludedTemplates,
+    exposed_routes: exposedRoutes,
     max_rows: maxRows,
     max_result_bytes: maxResultBytes,
   };
@@ -182,6 +313,7 @@ function McpSettingsForm({ settings }: { settings: McpSettings }) {
     setEnabled(next.enabled);
     setToolGroups(next.tool_groups);
     setExcludedTemplates(next.excluded_templates);
+    setExposedRoutes(next.exposed_routes);
     setMaxRows(next.max_rows);
     setMaxResultBytes(next.max_result_bytes);
   }
@@ -255,6 +387,13 @@ function McpSettingsForm({ settings }: { settings: McpSettings }) {
         onChange={setExcludedTemplates}
         canWrite={canWrite}
         groupEnabled={toolGroups.templates}
+      />
+
+      <McpApiExposure
+        exposed={exposedRoutes}
+        onChange={setExposedRoutes}
+        canWrite={canWrite}
+        groupEnabled={toolGroups.apis}
       />
 
       <div className="settings-card">
@@ -509,7 +648,11 @@ function McpToolPreview() {
                     <td>{t(`mcp.groups.${group.group}.label`)}</td>
                     <td><YesNo value={group.enabled} /></td>
                     <td><YesNo value={group.granted} /></td>
-                    <td><code>{group.required_route}</code></td>
+                    <td>
+                      {group.group === 'apis'
+                        ? t('mcp.perRouteGrant')
+                        : <code>{group.required_route}</code>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -545,6 +688,35 @@ function McpToolPreview() {
                   </table>
                 </div>
               )}
+            </>
+          )}
+
+          {preview.apis_error && (
+            <div className="error-banner" role="alert">{t('mcp.previewApisFailed')}</div>
+          )}
+          {preview.apis.length > 0 && (
+            <>
+              <h4 className="mcp-tools-title">{t('mcp.previewApiCount', { count: preview.apis.length })}</h4>
+              <div className="table-container">
+                <table className="data-table" aria-label={t('mcp.previewApisTable')}>
+                  <thead>
+                    <tr>
+                      <th>{t('mcp.colApi')}</th>
+                      <th>{t('mcp.colMethods')}</th>
+                      <th>{t('mcp.colPaths')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.apis.map((api) => (
+                      <tr key={api.route_id}>
+                        <td>{api.name}</td>
+                        <td>{api.methods.join(' · ')}</td>
+                        <td><code>{api.paths.join(', ')}</code></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </>
           )}
 

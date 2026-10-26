@@ -443,13 +443,22 @@ export async function updateQuerySettings(body: QuerySettingsUpdate): Promise<Qu
 
 /* ── Admin: MCP ── */
 
-export type McpToolGroup = 'templates' | 'db_explore' | 'run_query' | 's3' | 'nas';
+export type McpToolGroup = 'templates' | 'db_explore' | 'run_query' | 's3' | 'nas' | 'apis';
+
+/** A gateway route offered through search_apis/call_api. */
+export interface McpExposedRoute {
+  route_id: string;
+  /** Shown to the model; empty falls back to the route's own desc. */
+  description: string;
+}
 
 export interface McpSettings {
   enabled: boolean;
   tool_groups: Record<McpToolGroup, boolean>;
   /** Template paths search_templates/run_template never offer. */
   excluded_templates: string[];
+  /** Gateway routes offered over MCP; none unless an administrator picks them. */
+  exposed_routes: McpExposedRoute[];
   max_rows: number;
   max_result_bytes: number;
 }
@@ -475,6 +484,16 @@ export interface McpTemplateInfo {
   enabled: boolean;
 }
 
+export interface McpRouteInfo {
+  route_id: string;
+  name: string;
+  paths: string[];
+  /** GET/POST as far as the route allows them. */
+  methods: string[];
+  key_auth: boolean;
+  description: string;
+}
+
 /** The MCP tools one API key would see, and why groups are missing. */
 export interface McpPreview {
   consumer: string;
@@ -484,6 +503,10 @@ export interface McpPreview {
   tools: McpPreviewTool[];
   /** Templates search_templates/run_template offer this key. */
   templates: McpTemplateInfo[];
+  /** Gateway APIs search_apis/call_api offer this key. */
+  apis: McpRouteInfo[];
+  /** Set when the gateway routes could not be read. */
+  apis_error?: string | null;
 }
 
 export async function getMcpSettings(): Promise<McpSettings> {
@@ -498,6 +521,11 @@ export async function updateMcpSettings(body: McpSettings): Promise<McpSettings>
 
 export async function getMcpTemplates(): Promise<McpTemplateInfo[]> {
   const { data } = await client.get('/admin/mcp/templates');
+  return data;
+}
+
+export async function getMcpRoutes(): Promise<McpRouteInfo[]> {
+  const { data } = await client.get('/admin/mcp/routes');
   return data;
 }
 

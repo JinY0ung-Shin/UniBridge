@@ -167,3 +167,51 @@
   font-size: 12px;
   color: var(--text-secondary);
 }
+
+.mcp-api-description {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 2px 24px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.mcp-api-description textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+
+.mcp-api-missing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.mcp-api-list .mcp-toggle {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+
+.mcp-api-list .mcp-toggle input {
+  margin-top: 3px;
+}
+
+.mcp-api-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}

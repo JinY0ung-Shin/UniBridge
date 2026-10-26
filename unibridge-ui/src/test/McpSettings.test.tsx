@@ -3,6 +3,7 @@ vi.mock('../api/client', () => ({
   getMcpSettings: vi.fn(),
   updateMcpSettings: vi.fn(),
   getMcpPreview: vi.fn(),
+  getMcpRoutes: vi.fn(),
   getMcpTemplates: vi.fn(),
   getScopedApiKeys: vi.fn(),
 }));
@@ -12,6 +13,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   getMcpPreview,
+  getMcpRoutes,
   getMcpSettings,
   getMcpTemplates,
   getScopedApiKeys,
@@ -27,6 +29,7 @@ const mockedGetMcpSettings = vi.mocked(getMcpSettings);
 const mockedUpdateMcpSettings = vi.mocked(updateMcpSettings);
 const mockedGetMcpPreview = vi.mocked(getMcpPreview);
 const mockedGetMcpTemplates = vi.mocked(getMcpTemplates);
+const mockedGetMcpRoutes = vi.mocked(getMcpRoutes);
 const mockedGetScopedApiKeys = vi.mocked(getScopedApiKeys);
 
 const WRITE_PERMISSIONS = ['admin.config.read', 'admin.config.write', 'apikeys.read'];
@@ -34,8 +37,9 @@ const READ_PERMISSIONS = ['admin.config.read'];
 
 const defaultSettings: McpSettings = {
   enabled: true,
-  tool_groups: { templates: true, db_explore: true, run_query: true, s3: true, nas: true },
+  tool_groups: { templates: true, db_explore: true, run_query: true, s3: true, nas: true, apis: true },
   excluded_templates: [],
+  exposed_routes: [],
   max_rows: 200,
   max_result_bytes: 65536,
 };
@@ -64,13 +68,30 @@ const preview: McpPreview = {
     { group: 'run_query', enabled: true, granted: true, required_route: 'query-api' },
     { group: 's3', enabled: true, granted: false, required_route: 's3-api' },
     { group: 'nas', enabled: false, granted: false, required_route: 'nas-api' },
+    { group: 'apis', enabled: true, granted: true, required_route: '' },
   ],
   tools: [
     { name: 'list_databases', title: 'List databases', description: 'Databases this key may query.', group: 'db_explore' },
     { name: 'search_templates', title: 'Search query templates', description: 'Find saved query templates.', group: 'templates' },
   ],
   templates: [{ path: 'sales/daily', name: 'Daily sales', database: 'sales', enabled: true }],
+  apis: [
+    {
+      route_id: 'orders',
+      name: 'Orders',
+      paths: ['/api/orders/*'],
+      methods: ['GET', 'POST'],
+      key_auth: true,
+      description: '',
+    },
+  ],
+  apis_error: null,
 };
+
+const routes = [
+  { route_id: 'orders', name: 'Orders', paths: ['/api/orders/*'], methods: ['GET', 'POST'], key_auth: true, description: 'Order service' },
+  { route_id: 'status', name: 'Status', paths: ['/api/status'], methods: ['GET'], key_auth: false, description: '' },
+];
 
 const templates = [
   { path: 'ops/disabled', name: 'Old report', database: 'ops', enabled: false },
@@ -85,6 +106,8 @@ describe('McpSettingsPage', () => {
     mockedGetMcpPreview.mockReset();
     mockedGetMcpTemplates.mockReset();
     mockedGetMcpTemplates.mockResolvedValue(templates);
+    mockedGetMcpRoutes.mockReset();
+    mockedGetMcpRoutes.mockResolvedValue(routes);
     mockedGetScopedApiKeys.mockReset();
     mockedGetMcpSettings.mockResolvedValue(defaultSettings);
     mockedUpdateMcpSettings.mockResolvedValue(defaultSettings);
@@ -133,8 +156,9 @@ describe('McpSettingsPage', () => {
     });
     expect(mockedUpdateMcpSettings.mock.calls[0][0]).toEqual({
       enabled: true,
-      tool_groups: { templates: true, db_explore: true, run_query: false, s3: true, nas: true },
+      tool_groups: { templates: true, db_explore: true, run_query: false, s3: true, nas: true, apis: true },
       excluded_templates: [],
+      exposed_routes: [],
       max_rows: 50,
       max_result_bytes: 65536,
     });
@@ -177,6 +201,42 @@ describe('McpSettingsPage', () => {
     expect(screen.getByText('1 of 2 enabled templates offered')).toBeInTheDocument();
   });
 
+  it('offers chosen gateway APIs with optional notes', async () => {
+    mockedGetMcpSettings.mockResolvedValue({
+      ...defaultSettings,
+      exposed_routes: [{ route_id: 'gone', description: '' }],
+    });
+    renderWithProviders(<McpSettingsPage />, { permissions: WRITE_PERMISSIONS });
+
+    const orders = await screen.findByRole('checkbox', { name: 'Orders' });
+    expect(orders).not.toBeChecked();
+    expect(screen.getByText('0 of 2 routes offered')).toBeInTheDocument();
+    expect(screen.getByText('Public')).toBeInTheDocument();
+    expect(screen.getByText('1 offered route(s) no longer exist or can no longer be offered.')).toBeInTheDocument();
+
+    await userEvent.click(orders);
+    const notes = screen.getByRole('textbox', { name: 'Notes for the model (optional)' });
+    // The route's own desc is what the model gets when the notes stay empty.
+    expect(notes).toHaveAttribute('placeholder', 'Order service');
+    await userEvent.type(notes, 'See /api/orders/docs');
+    await userEvent.click(screen.getByRole('button', { name: 'Remove them' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(mockedUpdateMcpSettings).toHaveBeenCalledTimes(1);
+    });
+    expect(mockedUpdateMcpSettings.mock.calls[0][0].exposed_routes).toEqual([
+      { route_id: 'orders', description: 'See /api/orders/docs' },
+    ]);
+  });
+
+  it('reports gateway routes that cannot be read', async () => {
+    mockedGetMcpRoutes.mockRejectedValue(new Error('502'));
+    renderWithProviders(<McpSettingsPage />, { permissions: WRITE_PERMISSIONS });
+
+    expect(await screen.findByText('Failed to load the gateway routes.')).toBeInTheDocument();
+  });
+
   it('blocks saving an out-of-range limit', async () => {
     renderWithProviders(<McpSettingsPage />, { permissions: WRITE_PERMISSIONS });
 
@@ -214,6 +274,8 @@ describe('McpSettingsPage', () => {
     expect(screen.getByText('Tools (2)')).toBeInTheDocument();
     const groups = screen.getByRole('table', { name: 'Tool groups for this key' });
     expect(groups).toHaveTextContent('s3-api');
+    expect(groups).toHaveTextContent("That route's grant");
+    expect(screen.getByRole('table', { name: 'APIs for this key' })).toHaveTextContent('/api/orders/*');
     expect(screen.queryByText('This key lacks the mcp-api grant, so /api/mcp rejects it.')).not.toBeInTheDocument();
   });
 
