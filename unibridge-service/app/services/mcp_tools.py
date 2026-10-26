@@ -8,7 +8,9 @@ each call is authorized, rate-limited, audited and counted on that REST route
 only when the key holds the route grant its REST twin needs (``GROUP_ROUTES``).
 Gateway APIs (``search_apis``/``call_api``) are the routes an administrator
 lists in ``exposed_routes``, each offered only to keys holding its grant;
-``call_api`` sends GET or POST only, on the route itself.
+``call_api`` sends GET or POST only, on the route itself. External MCP
+servers' approved tools come in as ``<server>__<tool>``, offered to keys holding
+the server's relay route and relayed by :mod:`app.services.mcp_remote`.
 Discovery — tools/list, ``list_databases``, ``search_templates``,
 ``*_list_connections`` — touches no backend and is answered here.
 
@@ -36,12 +38,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ApiKeyUser
 from app.config import settings as app_settings
-from app.models import SystemConfig
+from app.models import McpRemoteServer, SystemConfig
 from app.routers import gateway as gateway_router
 from app.routers import query as query_router
 from app.schemas import McpRouteInfo, McpSettings, McpToolGroup, QueryTemplateResponse
-from app.services import apisix_client
-from app.services.apisix_system_resources import PROTECTED_ROUTE_IDS, QUERY_API_ROUTE_ID
+from app.services import apisix_client, mcp_remote
+from app.services.apisix_system_resources import QUERY_API_ROUTE_ID, is_system_route
 from app.services.connection_manager import connection_manager
 from app.services.nas_manager import nas_manager
 from app.services.openapi_export import extract_template_params
@@ -69,6 +71,8 @@ SERVER_INSTRUCTIONS = (
     "list_databases, list_tables and describe_table "
     "before writing SQL for run_query, which runs one SELECT. Gateway APIs the "
     "administrator offers are found with search_apis and called with call_api. "
+    "Tools named <server>__<tool> belong to external MCP servers the "
+    "administrator connected. "
     "Results are capped: "
     "truncated=true means rows or bytes were cut, so narrow the query."
 )
@@ -121,6 +125,10 @@ class Tool:
     handler: Handler
     read_only: bool = True
     open_world: bool = False
+    # An external server's tool: its arguments go to the server unchecked (it
+    # validates them) and the handler returns a whole CallToolResult.
+    passthrough: bool = False
+    server: str | None = None
 
     def to_mcp(self) -> dict[str, Any]:
         return {
@@ -381,7 +389,8 @@ def _decode_text(data: bytes, *, truncated: bool) -> str:
 async def call_tool(ctx: ToolContext, tool: Tool, arguments: dict[str, Any]) -> dict[str, Any]:
     """Run ``tool`` and shape the outcome as an MCP ``CallToolResult``."""
     try:
-        _validate_args(tool.input_schema, arguments)
+        if not tool.passthrough:
+            _validate_args(tool.input_schema, arguments)
         result = await tool.handler(ctx, arguments)
     except ToolError as exc:
         return _error_result(str(exc))
@@ -390,6 +399,8 @@ async def call_tool(ctx: ToolContext, tool: Tool, arguments: dict[str, Any]) -> 
         return _error_result("Tool failed; see the UniBridge server logs")
 
     max_bytes = ctx.settings.max_result_bytes
+    if tool.passthrough:
+        return _capped_call_result(result, max_bytes)
     if isinstance(result, TextFile):
         meta = _dumps(result.meta)
         if result.meta.get("truncated") is False and _utf8_len(result.text) > max_bytes - _utf8_len(meta):
@@ -402,6 +413,42 @@ async def call_tool(ctx: ToolContext, tool: Tool, arguments: dict[str, Any]) -> 
         return {"content": content, "isError": result.is_error}
     content = [{"type": "text", "text": _capped_text(_dumps(result), max_bytes)}]
     return {"content": content, "isError": False}
+
+
+def _capped_call_result(result: Any, max_bytes: int) -> dict[str, Any]:
+    """An external server's CallToolResult within ``max_bytes`` of content.
+
+    Content items are kept in order while they fit; a text item that does not
+    is cut, anything else (images, audio, embedded resources) is replaced by a
+    note. structuredContent goes along only if it still fits.
+    """
+    if not isinstance(result, dict):
+        return _error_result("The external server returned no tool result")
+    budget = max_bytes
+    content: list[dict[str, Any]] = []
+    raw_content = result.get("content")
+    for item in raw_content if isinstance(raw_content, list) else []:
+        if not isinstance(item, dict):
+            continue
+        size = _utf8_len(_dumps(item))
+        if size <= budget:
+            content.append(item)
+            budget -= size
+            continue
+        if item.get("type") == "text" and isinstance(item.get("text"), str) and budget > 256:
+            text = _capped_text(item["text"], budget - 64)
+            content.append({"type": "text", "text": text})
+            budget = 0
+            continue
+        content.append(
+            {"type": "text", "text": f"[{item.get('type', 'content')} item omitted: over max_result_bytes]"}
+        )
+        budget = 0
+    shaped: dict[str, Any] = {"content": content, "isError": result.get("isError") is True}
+    structured = result.get("structuredContent")
+    if isinstance(structured, dict) and _utf8_len(_dumps(structured)) <= budget:
+        shaped["structuredContent"] = structured
+    return shaped
 
 
 # ── Databases ───────────────────────────────────────────────────────────────
@@ -1020,7 +1067,7 @@ def offerable_route(route: dict[str, Any]) -> bool:
     """Whether an administrator may offer ``route`` over MCP at all."""
     return (
         isinstance(route.get("id"), str)
-        and route["id"] not in PROTECTED_ROUTE_IDS
+        and not is_system_route(route["id"])
         and _route_enabled(route)
         and bool(_route_paths(route))
         and bool(_route_api_methods(route))
@@ -1357,6 +1404,66 @@ API_TOOLS = (
 )
 
 
+# ── External MCP servers ────────────────────────────────────────────────────
+
+
+def _external_tool(server: mcp_remote.ServerRef, upstream: dict[str, Any]) -> Tool:
+    tool_name = upstream["name"]
+
+    async def handler(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        if not ctx.api_key:
+            raise ToolError("Tool calls need the API key in the apikey header (call /api/mcp)")
+        secret = await mcp_remote.relay_secret(ctx.db)
+        await ctx.db.rollback()  # see _gateway: free the meta-store connection first
+        try:
+            return await mcp_remote.call_tool(
+                _gateway_client(),
+                server,
+                api_key=ctx.api_key,
+                consumer=ctx.user.consumer_name,
+                secret=secret,
+                tool=tool_name,
+                arguments=args,
+                # Room for base64 media and JSON escaping; the result is cut
+                # to max_result_bytes afterwards.
+                max_bytes=ctx.settings.max_result_bytes * 4 + 65_536,
+            )
+        except mcp_remote.RemoteError as exc:
+            raise ToolError(f"{server.name}: {exc}") from exc
+
+    annotations = upstream.get("annotations") or {}
+    title = upstream.get("title") or annotations.get("title") or tool_name
+    return Tool(
+        name=mcp_remote.exposed_name(server.name, tool_name),
+        title=f"{server.name}: {title}",
+        description=upstream.get("description") or "",
+        group="external",
+        input_schema=upstream["inputSchema"],
+        handler=handler,
+        read_only=annotations.get("readOnlyHint") is True,
+        # MCP's default for a tool that does not say.
+        open_world=annotations.get("openWorldHint") is not False,
+        passthrough=True,
+        server=server.name,
+    )
+
+
+def external_servers_granted(
+    ctx: ToolContext, servers: list[McpRemoteServer]
+) -> list[McpRemoteServer]:
+    return [s for s in servers if has_route(ctx.user, mcp_remote.route_id(s.name))]
+
+
+async def external_tools(ctx: ToolContext) -> list[Tool]:
+    """Approved tools of the enabled servers whose relay route this key holds."""
+    servers = await mcp_remote.load_servers(ctx.db, enabled_only=True)
+    tools: list[Tool] = []
+    for server in external_servers_granted(ctx, servers):
+        ref = mcp_remote.ServerRef.of(server)
+        tools.extend(_external_tool(ref, upstream) for upstream in mcp_remote.offered_tools(server))
+    return tools
+
+
 # ── Catalog ─────────────────────────────────────────────────────────────────
 
 
@@ -1409,4 +1516,6 @@ async def build_tools(ctx: ToolContext) -> list[Tool]:
         tools.extend(TEMPLATE_TOOLS)
     if groups.apis and await _offers_an_api(ctx):
         tools.extend(API_TOOLS)
+    if groups.external:
+        tools.extend(await external_tools(ctx))
     return tools

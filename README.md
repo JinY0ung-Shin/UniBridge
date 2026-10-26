@@ -512,6 +512,30 @@ http_headers = { apikey = "<API_KEY>" }
   The tools are listed only while an offered route the key holds still exists
   and can be offered (checked against a 30-second route listing cache);
   deleting a route also drops it from the MCP settings.
+- External MCP servers (Streamable HTTP only; no stdio, no upstream OAuth) are
+  registered on the **MCP** page with a URL and optional headers (e.g.
+  `Authorization`; stored encrypted, shown masked). Their tools appear in
+  `/api/mcp` as `<server>__<tool>`, and only the ones an administrator
+  approved: **Refresh** fetches the server's tool list (straight from the
+  service container), and a tool the server adds or whose description, schema
+  or annotations change is hidden until approved again. `tools/list` is
+  answered from that stored list and never reaches the server.
+  Each server gets the system route and upstream `mcp-ext-<name>` at
+  `/_mcp-ext/<name>` — outside `/api/`, so clients cannot reach it, and only
+  with a relay header the service sends. Tool calls go out on it with the
+  caller's key (counted, rate-limited and granted like any route; APISIX hides
+  the key from the server and sets the server's headers), so a key needs the
+  `mcp-ext-<name>` grant on the **API Keys** page. Deleting the server removes
+  that grant from every key. Network: both APISIX (tool calls) and the service
+  (refresh) must reach the server directly — APISIX cannot use a forward proxy.
+  APISIX does not verify the server's TLS certificate on tool calls (as on every
+  gateway route; Refresh does, with `SSL_CA_CERT_PATH`/`SSL_VERIFY`), so keep
+  these servers on a trusted network. Moving a server to another
+  scheme/host/port requires typing its header values again. URLs and header
+  values cannot contain `$` (APISIX would read a variable) and URLs no `%`.
+  Server requests (sampling, elicitation) are refused; results are cut to
+  `max_result_bytes`. A key's first call to a server also counts its
+  `initialize` handshake (three requests); later calls reuse the session.
 - `run_query` runs one SELECT (or a Cypher/SPARQL read) only, even for a key
   with INSERT/UPDATE/DELETE flags. SQL must parse as exactly one statement:
   what the parser cannot read is refused rather than guessed.

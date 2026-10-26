@@ -37,7 +37,10 @@ from app.services.settings_manager import settings_manager
 from app.services.apisix_system_resources import (
     MCP_API_ROUTE_ID,
     PROTECTED_ROUTE_IDS,
-    PROTECTED_UPSTREAM_IDS,
+    PROTECTED_UPSTREAM_IDS,  # noqa: F401 -- tests import it from here
+    is_mcp_remote_resource,
+    is_system_route,
+    is_system_upstream,
 )
 
 logger = logging.getLogger(__name__)
@@ -185,7 +188,7 @@ async def sync_default_route_timeout(seconds: int) -> int:
     patched = 0
     for route in listing.get("items", []):
         route_id = route.get("id")
-        if not route_id or route_id in PROTECTED_ROUTE_IDS or _is_timeout_override(route):
+        if not route_id or is_system_route(route_id) or _is_timeout_override(route):
             continue
         if _extract_route_timeout(route) == seconds:
             continue
@@ -443,6 +446,14 @@ def _attach_service_key_fields(route: dict[str, Any]) -> None:
     route["service_keys"] = service_keys
     route["service_key"] = service_keys[0] if service_keys else None
     _redact_service_key_headers(route)
+    # An external MCP server's relay route matches on a secret header value.
+    if is_mcp_remote_resource(route.get("id")) and isinstance(route.get("vars"), list):
+        route["vars"] = [
+            [*var[:2], _mask_value(var[2])]
+            if isinstance(var, list) and len(var) == 3 and isinstance(var[2], str)
+            else var
+            for var in route["vars"]
+        ]
 
 
 def _handle_apisix_error(exc: HTTPStatusError, resource: str) -> NoReturn:
@@ -487,7 +498,7 @@ async def list_routes(
         item["require_auth"] = "key-auth" in item.get("plugins", {})
         item["strip_prefix"] = _extract_strip_prefix(item)
         _attach_timeout_fields(item)
-        item["system"] = item.get("id") in PROTECTED_ROUTE_IDS
+        item["system"] = is_system_route(item.get("id"))
     return result
 
 
@@ -694,6 +705,11 @@ async def save_route(
     _admin: CurrentUser = Depends(require_permission("gateway.routes.write")),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    if is_mcp_remote_resource(route_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="External MCP server routes are managed on the MCP page",
+        )
     # Reject inline upstream
     if "upstream" in body or "nodes" in body:
         raise HTTPException(
@@ -858,7 +874,7 @@ async def delete_route(
     _admin: CurrentUser = Depends(require_permission("gateway.routes.write")),
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    if route_id in PROTECTED_ROUTE_IDS:
+    if is_system_route(route_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="System-managed route cannot be deleted",
@@ -908,6 +924,13 @@ async def test_route(
     _admin: CurrentUser = Depends(require_permission("gateway.routes.read")),
 ) -> dict[str, Any]:
     """Test upstream connectivity by sending GET /health to the first node."""
+    if is_mcp_remote_resource(route_id):
+        # It would send the server's stored credentials to an arbitrary path
+        # for a reader; the MCP page's refresh is that server's test.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Test external MCP servers with Refresh on the MCP page",
+        )
     try:
         route = await apisix_client.get_resource("routes", route_id)
     except HTTPStatusError as exc:
@@ -1076,7 +1099,7 @@ async def list_upstreams(
             detail=f"Failed to connect to APISIX: {exc}",
         )
     for item in result.get("items", []):
-        item["system"] = item.get("id") in PROTECTED_UPSTREAM_IDS
+        item["system"] = is_system_upstream(item.get("id"))
     return result
 
 
@@ -1108,7 +1131,7 @@ async def save_upstream(
     # service-key headers. Repointing one's nodes would deliver those secrets to
     # an attacker-chosen host, so they are read-only here. Mirrors
     # delete_upstream; app startup provisions them through apisix_client.
-    if upstream_id in PROTECTED_UPSTREAM_IDS:
+    if is_system_upstream(upstream_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="System-managed upstream cannot be modified",
@@ -1169,7 +1192,7 @@ async def delete_upstream(
     _admin: CurrentUser = Depends(require_permission("gateway.upstreams.write")),
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    if upstream_id in PROTECTED_UPSTREAM_IDS:
+    if is_system_upstream(upstream_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="System-managed upstream cannot be deleted",

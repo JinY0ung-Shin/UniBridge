@@ -44,3 +44,25 @@ PROTECTED_UPSTREAM_IDS = {
     "bifrost",
     RETIRED_LLM_BI_UPSTREAM_ID,
 }
+
+# External MCP servers (app/services/mcp_remote.py): one route and one upstream
+# each, ``mcp-ext-<name>``, written from the MCP admin page. They are system
+# resources to the gateway editor and the config transfer, like the ids above.
+MCP_REMOTE_ID_PREFIX = "mcp-ext-"
+
+
+def is_system_route(route_id: object) -> bool:
+    """Whether the gateway editor must leave ``route_id`` alone."""
+    return isinstance(route_id, str) and (
+        route_id in PROTECTED_ROUTE_IDS or route_id.startswith(MCP_REMOTE_ID_PREFIX)
+    )
+
+
+def is_system_upstream(upstream_id: object) -> bool:
+    return isinstance(upstream_id, str) and (
+        upstream_id in PROTECTED_UPSTREAM_IDS or upstream_id.startswith(MCP_REMOTE_ID_PREFIX)
+    )
+
+
+def is_mcp_remote_resource(resource_id: object) -> bool:
+    return isinstance(resource_id, str) and resource_id.startswith(MCP_REMOTE_ID_PREFIX)

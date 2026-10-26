@@ -930,6 +930,12 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     class _SettingsDb:
         pass
 
+    class _McpServersDb:
+        async def execute(self, _query):
+            return SimpleNamespace(
+                scalars=lambda: SimpleNamespace(all=lambda: []),
+            )
+
     class _ReplayDb:
         pass
 
@@ -958,6 +964,7 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
             _ServersDb(),
             _IssuerBackfillDb(),
             _SettingsDb(),
+            _McpServersDb(),
             _ReplayDb(),
             _AlertStateDb(),
         ]

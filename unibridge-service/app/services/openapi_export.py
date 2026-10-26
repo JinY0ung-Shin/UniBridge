@@ -18,6 +18,7 @@ from app.services.apisix_system_resources import (
     LLM_NOT_FOUND_ROUTE_ID,
     PROTECTED_ROUTE_IDS,
     QUERY_TEMPLATE_WRITE_ROUTE_ID,
+    is_mcp_remote_resource,
 )
 
 OPENAPI_VERSION = "3.0.3"
@@ -394,8 +395,13 @@ def build_openapi_spec(
     paths: dict[str, dict[str, Any]] = {}
 
     for route in routes:
-        # The not-found routes only explain a 404; they are no endpoints.
-        if not isinstance(route, dict) or route.get("id") in _NOT_FOUND_ROUTE_IDS:
+        # The not-found routes only explain a 404; they are no endpoints. An
+        # external MCP server's route is the MCP server's own relay, not an API.
+        if (
+            not isinstance(route, dict)
+            or route.get("id") in _NOT_FOUND_ROUTE_IDS
+            or is_mcp_remote_resource(route.get("id"))
+        ):
             continue
         methods = _route_methods(route)
         for uri in _route_uris(route):

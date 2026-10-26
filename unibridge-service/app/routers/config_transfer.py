@@ -82,6 +82,8 @@ from app.services import apisix_client, node_path_prefix, server_monitor
 from app.services.apisix_system_resources import (
     PROTECTED_ROUTE_IDS,
     PROTECTED_UPSTREAM_IDS,
+    is_system_route,
+    is_system_upstream,
 )
 from app.services.audit import log_admin_action
 from app.services.connection_manager import connection_manager
@@ -272,12 +274,12 @@ async def _export_gateway() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]
     upstreams = [
         {k: v for k, v in item.items() if k not in _APISIX_VOLATILE_FIELDS}
         for item in upstream_listing.get("items", [])
-        if str(item.get("id")) not in PROTECTED_UPSTREAM_IDS
+        if not is_system_upstream(str(item.get("id")))
     ]
     routes = [
         _export_route(item)
         for item in route_listing.get("items", [])
-        if str(item.get("id")) not in PROTECTED_ROUTE_IDS
+        if not is_system_route(str(item.get("id")))
     ]
     return upstreams, routes
 
@@ -729,7 +731,7 @@ async def _enable_node_path_prefixes(upstream: Any) -> None:
 async def _apply_upstream(
     ctx: _ImportContext, upstream_id: str, item: dict[str, Any]
 ) -> tuple[str, str | None]:
-    if upstream_id in PROTECTED_UPSTREAM_IDS:
+    if is_system_upstream(upstream_id):
         return "skip", "builtin upstream (auto-provisioned)"
 
     body = _apisix_body(item)
@@ -769,7 +771,7 @@ async def _import_upstreams(ctx: _ImportContext, raw: Any) -> None:
 async def _apply_route(
     ctx: _ImportContext, route_id: str, item: dict[str, Any]
 ) -> tuple[str, str | None]:
-    if route_id in PROTECTED_ROUTE_IDS:
+    if is_system_route(route_id):
         return "skip", "builtin route (auto-provisioned)"
 
     # Same guard as save_route: an import writes straight to APISIX, so without

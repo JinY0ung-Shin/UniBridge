@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, Response
@@ -27,16 +28,25 @@ from app.auth import (
 )
 from app.config import settings
 from app.database import get_db
-from app.models import ApiKeyAccess, QueryTemplate
+from app.db_types import utcnow
+from app.models import ApiKeyAccess, McpRemoteServer, QueryTemplate
+from app.routers.gateway import _is_masked_value, _mask_value
 from app.schemas import (
     McpPreview,
     McpPreviewGroup,
     McpPreviewTool,
+    McpRemoteHeader,
+    McpRemoteServerCreate,
+    McpRemoteServerInfo,
+    McpRemoteServerUpdate,
+    McpRemoteToolApproval,
+    McpRemoteToolInfo,
+    McpRemoteToolVersion,
     McpRouteInfo,
     McpSettings,
     McpTemplateInfo,
 )
-from app.services import mcp_tools
+from app.services import mcp_remote, mcp_tools
 from app.services.apisix_system_resources import MCP_API_ROUTE_ID
 from app.services.audit import log_admin_action
 
@@ -285,6 +295,7 @@ async def preview_mcp_tools(
         if any(tool.group == "templates" for tool in tools)
         else []
     )
+    servers = await mcp_remote.load_servers(db)
     apis: list[McpRouteInfo] = []
     apis_error: str | None = None
     if any(tool.group == "apis" for tool in tools):
@@ -313,10 +324,25 @@ async def preview_mcp_tools(
                 granted=bool(mcp_tools.offered_route_ids(ctx)),
                 required_route="",
             )
+        ]
+        + [
+            # One row per external server: its relay route is the grant.
+            McpPreviewGroup(
+                group="external",
+                enabled=mcp_settings.tool_groups.external and server.enabled,
+                granted=mcp_tools.has_route(user, mcp_remote.route_id(server.name)),
+                required_route=mcp_remote.route_id(server.name),
+                server=server.name,
+            )
+            for server in servers
         ],
         tools=[
             McpPreviewTool(
-                name=tool.name, title=tool.title, description=tool.description, group=tool.group
+                name=tool.name,
+                title=tool.title,
+                description=tool.description,
+                group=tool.group,
+                server=tool.server,
             )
             for tool in tools
         ],
@@ -329,3 +355,339 @@ async def preview_mcp_tools(
         apis=apis,
         apis_error=apis_error,
     )
+
+
+# ── External MCP servers ────────────────────────────────────────────────────
+
+
+def _server_info(server: McpRemoteServer) -> McpRemoteServerInfo:
+    approved = mcp_remote.approved_entries(server)
+    try:
+        headers = mcp_remote.decrypt_headers(server)
+    except Exception:
+        logger.warning("Could not decrypt the headers of MCP server %s", server.name)
+        headers = {}
+    tools = []
+    for tool in mcp_remote.listed_tools(server):
+        annotations = tool.get("annotations") or {}
+        read_only = annotations.get("readOnlyHint")
+        tool_status = mcp_remote.tool_status(server, tool, approved)
+        before = approved.get(tool["name"]) if tool_status == "changed" else None
+        tools.append(
+            McpRemoteToolInfo(
+                name=tool["name"],
+                exposed_name=mcp_remote.exposed_name(server.name, tool["name"]),
+                title=tool.get("title") or "",
+                description=tool.get("description") or "",
+                input_schema=tool.get("inputSchema") or {},
+                read_only=read_only if isinstance(read_only, bool) else None,
+                annotations=tool.get("annotations"),
+                status=tool_status,  # type: ignore[arg-type]
+                digest=mcp_remote.tool_digest(tool),
+                approved_version=McpRemoteToolVersion(
+                    title=before.get("title") or "",
+                    description=before.get("description") or "",
+                    input_schema=before.get("inputSchema") or {},
+                    annotations=before.get("annotations"),
+                )
+                if before is not None
+                else None,
+            )
+        )
+    return McpRemoteServerInfo(
+        name=server.name,
+        url=server.url,
+        description=server.description or "",
+        enabled=server.enabled,
+        timeout_seconds=server.timeout_seconds,
+        headers=[
+            McpRemoteHeader.model_construct(name=name, value=_mask_value(value))
+            for name, value in headers.items()
+        ],
+        route_id=mcp_remote.route_id(server.name),
+        tools=tools,
+        refreshed_at=server.refreshed_at,
+        last_error=server.last_error,
+        created_at=server.created_at,
+        updated_at=server.updated_at,
+    )
+
+
+def _audit_view(server: McpRemoteServer | None) -> dict[str, Any] | None:
+    """The audit log's copy of a server: headers masked, tools as names only."""
+    if server is None:
+        return None
+    info = _server_info(server).model_dump(mode="json")
+    info["tools"] = {tool["name"]: tool["status"] for tool in info["tools"]}
+    return info
+
+
+async def _get_server(db: AsyncSession, name: str) -> McpRemoteServer:
+    server = await db.get(McpRemoteServer, name)
+    if server is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"MCP server '{name}' not found"
+        )
+    return server
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parsed = urlparse(url)
+    return parsed.scheme, (parsed.hostname or "").lower(), parsed.port
+
+
+def _merged_headers(
+    submitted: list[McpRemoteHeader], stored: dict[str, str], *, moved: bool = False
+) -> dict[str, str]:
+    """Submitted headers; a masked value keeps what is stored under that name.
+
+    Not when the server moved to another origin: stored credentials go only
+    where they were entered for, so they must be typed again.
+    """
+    stored_by_lower = {name.lower(): value for name, value in stored.items()}
+    merged: dict[str, str] = {}
+    for header in submitted:
+        value = header.value
+        if _is_masked_value(value) or value == "":
+            kept = None if moved else stored_by_lower.get(header.name.lower())
+            if kept is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Header '{header.name}': enter the value again for the new address"
+                        if moved
+                        else f"Header '{header.name}' needs a value"
+                    ),
+                )
+            value = kept
+        merged[header.name] = value
+    return merged
+
+
+async def _provision_or_502(db: AsyncSession, server: McpRemoteServer) -> None:
+    try:
+        await mcp_remote.provision(db, server)
+    except Exception as exc:
+        await db.rollback()
+        logger.warning("Could not provision MCP server %s: %s", server.name, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to write the gateway route: {exc}",
+        ) from exc
+
+
+@router.get("/admin/mcp/servers", response_model=list[McpRemoteServerInfo])
+async def list_mcp_servers(
+    _admin: CurrentUser = Depends(require_permission("admin.config.read")),
+    db: AsyncSession = Depends(get_db),
+) -> list[McpRemoteServerInfo]:
+    return [_server_info(server) for server in await mcp_remote.load_servers(db)]
+
+
+@router.post(
+    "/admin/mcp/servers",
+    response_model=McpRemoteServerInfo,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_mcp_server(
+    body: McpRemoteServerCreate,
+    admin: CurrentUser = Depends(require_permission("admin.config.write")),
+    db: AsyncSession = Depends(get_db),
+) -> McpRemoteServerInfo:
+    if await db.get(McpRemoteServer, body.name) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=f"MCP server '{body.name}' already exists"
+        )
+    # Made (and committed) before anything of this request is pending.
+    await mcp_remote.relay_secret(db)
+    server = McpRemoteServer(
+        name=body.name,
+        url=body.url,
+        description=body.description,
+        enabled=body.enabled,
+        timeout_seconds=body.timeout_seconds,
+        headers_encrypted=mcp_remote.encrypt_headers(_merged_headers(body.headers, {})),
+        tools="[]",
+        approved_tools="{}",
+    )
+    db.add(server)
+    await db.flush()
+    # A name used before may have left grants behind (an older image deleted it).
+    await mcp_remote.revoke_grants(db, server.name)
+    await _provision_or_502(db, server)
+    await db.commit()
+    await db.refresh(server)
+    await log_admin_action(
+        db,
+        actor=admin.username,
+        action="create",
+        resource_type="mcp_server",
+        resource_id=server.name,
+        summary=server.url,
+        before=None,
+        after=_audit_view(server),
+    )
+    return _server_info(server)
+
+
+@router.put("/admin/mcp/servers/{name}", response_model=McpRemoteServerInfo)
+async def update_mcp_server(
+    name: str,
+    body: McpRemoteServerUpdate,
+    admin: CurrentUser = Depends(require_permission("admin.config.write")),
+    db: AsyncSession = Depends(get_db),
+) -> McpRemoteServerInfo:
+    server = await _get_server(db, name)
+    before = _audit_view(server)
+    headers = _merged_headers(
+        body.headers,
+        mcp_remote.decrypt_headers(server),
+        moved=_origin(body.url) != _origin(server.url),
+    )
+    if body.url != server.url:
+        # Another address may be another server: its tools are approved anew.
+        server.tools = "[]"
+        server.approved_tools = "{}"
+        server.refreshed_at = None
+        server.last_error = None
+    server.url = body.url
+    server.description = body.description
+    server.enabled = body.enabled
+    server.timeout_seconds = body.timeout_seconds
+    server.headers_encrypted = mcp_remote.encrypt_headers(headers)
+    await db.flush()
+    await _provision_or_502(db, server)
+    await db.commit()
+    await db.refresh(server)
+    mcp_remote.forget_sessions(name)
+    await log_admin_action(
+        db,
+        actor=admin.username,
+        action="update",
+        resource_type="mcp_server",
+        resource_id=name,
+        summary=server.url,
+        before=before,
+        after=_audit_view(server),
+    )
+    return _server_info(server)
+
+
+@router.delete(
+    "/admin/mcp/servers/{name}", status_code=status.HTTP_204_NO_CONTENT, response_model=None
+)
+async def delete_mcp_server(
+    name: str,
+    admin: CurrentUser = Depends(require_permission("admin.config.write")),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    server = await _get_server(db, name)
+    before = _audit_view(server)
+    try:
+        await mcp_remote.deprovision(name)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to delete the gateway route: {exc}",
+        ) from exc
+    revoked = await mcp_remote.revoke_grants(db, name)
+    await db.delete(server)
+    await db.commit()
+    logger.info("MCP server %s deleted; grant removed from %d key(s)", name, revoked)
+    await log_admin_action(
+        db,
+        actor=admin.username,
+        action="delete",
+        resource_type="mcp_server",
+        resource_id=name,
+        summary=(before or {}).get("url"),
+        before=before,
+        after=None,
+    )
+
+
+@router.post("/admin/mcp/servers/{name}/refresh", response_model=McpRemoteServerInfo)
+async def refresh_mcp_server(
+    name: str,
+    _admin: CurrentUser = Depends(require_permission("admin.config.write")),
+    db: AsyncSession = Depends(get_db),
+) -> McpRemoteServerInfo:
+    """Fetch the server's tool listing; new or changed tools wait for approval."""
+    target = mcp_remote.DirectTarget.of(await _get_server(db, name))
+    # No transaction stays open while the server takes its time.
+    await db.rollback()
+    try:
+        tools = await mcp_remote.list_tools(target)
+    except mcp_remote.RemoteError as exc:
+        server = await _get_server(db, name)
+        server.last_error = str(exc)[:2_000]
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    server = await _get_server(db, name)
+    if server.url != target.url:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The server's address changed during the refresh; refresh again",
+        )
+    listed = {tool["name"] for tool in tools}
+    # Approvals of tools the server dropped go too: one coming back is new again.
+    approved = {k: v for k, v in mcp_remote.approved_entries(server).items() if k in listed}
+    server.tools = json.dumps(tools, ensure_ascii=False)
+    server.approved_tools = json.dumps(approved, ensure_ascii=False)
+    server.refreshed_at = utcnow()
+    server.last_error = None
+    await db.commit()
+    await db.refresh(server)
+    return _server_info(server)
+
+
+@router.put("/admin/mcp/servers/{name}/tools", response_model=McpRemoteServerInfo)
+async def approve_mcp_server_tools(
+    name: str,
+    body: McpRemoteToolApproval,
+    admin: CurrentUser = Depends(require_permission("admin.config.write")),
+    db: AsyncSession = Depends(get_db),
+) -> McpRemoteServerInfo:
+    """Offer exactly ``approved`` of the last fetched listing.
+
+    Each tool comes with the digest the administrator saw: if a refresh has
+    changed the entry since, nothing is approved (409), so an approval never
+    covers a description or schema nobody looked at.
+    """
+    server = await _get_server(db, name)
+    before = _audit_view(server)
+    listed = {tool["name"]: tool for tool in mcp_remote.listed_tools(server)}
+    wanted = {item.name: item.digest for item in body.approved}
+    unknown = sorted(set(wanted) - set(listed))
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Not in the fetched listing: {', '.join(unknown[:20])}",
+        )
+    invalid = sorted(n for n in wanted if not mcp_remote.valid_exposed_name(name, n))
+    if invalid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Not valid as MCP tool names: {', '.join(invalid[:20])}",
+        )
+    stale = sorted(n for n, digest in wanted.items() if mcp_remote.tool_digest(listed[n]) != digest)
+    if stale:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Changed since you loaded them; review again: {', '.join(stale[:20])}",
+        )
+    server.approved_tools = json.dumps(
+        {tool_name: listed[tool_name] for tool_name in sorted(wanted)}, ensure_ascii=False
+    )
+    await db.commit()
+    await db.refresh(server)
+    await log_admin_action(
+        db,
+        actor=admin.username,
+        action="update",
+        resource_type="mcp_server_tools",
+        resource_id=name,
+        before=before,
+        after=_audit_view(server),
+    )
+    return _server_info(server)

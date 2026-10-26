@@ -837,7 +837,7 @@ async def test_admin_preview_shows_what_a_key_would_get(client, admin_token, see
     assert preview["has_mcp_grant"] is False
     assert preview["mcp_enabled"] is True
     groups = {group["group"]: group for group in preview["groups"]}
-    assert groups["nas"] == {"group": "nas", "enabled": True, "granted": False, "required_route": "nas-api"}
+    assert groups["nas"] == {"group": "nas", "enabled": True, "granted": False, "required_route": "nas-api", "server": None}
     tool_groups = {tool["group"] for tool in preview["tools"]}
     assert tool_groups == {"db_explore", "run_query", "s3", "templates"}
     assert preview["templates"] == [

@@ -514,3 +514,30 @@ class BifrostSsoSession(Base):
     token_encrypted = Column(Text, nullable=False)
     expires_at = Column(UtcDateTime, nullable=False, index=True)
     created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+
+
+class McpRemoteServer(Base):
+    """An external MCP server whose tools /api/mcp offers (app/services/mcp_remote.py).
+
+    Calls go through the APISIX route ``mcp-ext-<name>`` with the caller's key,
+    which also injects ``headers_encrypted`` (the upstream's own credentials,
+    encrypted with ENCRYPTION_KEY like database passwords). ``tools`` is the
+    last tool listing an administrator fetched; a tool is offered only while
+    ``approved_tools`` holds its entry exactly as listed there (name → entry),
+    so a tool the server adds or changes stays hidden until approved again.
+    """
+
+    __tablename__ = "mcp_remote_servers"
+
+    name = Column(String(16), primary_key=True)
+    url = Column(Text, nullable=False)
+    description = Column(Text, nullable=False, default="")
+    enabled = Column(Boolean, nullable=False, default=True)
+    timeout_seconds = Column(Integer, nullable=False, default=60)
+    headers_encrypted = Column(Text, nullable=True)
+    tools = Column(Text, nullable=False, default="[]")
+    approved_tools = Column(Text, nullable=False, default="{}")
+    refreshed_at = Column(UtcDateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)

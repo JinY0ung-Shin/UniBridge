@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_serializer, model_validator
 
-from app.services.apisix_system_resources import PROTECTED_ROUTE_IDS
+from app.services.apisix_system_resources import is_system_route
 from app.services.webhook_security import validate_webhook_url
 
 
@@ -448,7 +448,7 @@ class SystemConfigUpdate(BaseModel):
 
 # ── MCP ─────────────────────────────────────────────────────────────────────
 
-McpToolGroup = Literal["templates", "db_explore", "run_query", "s3", "nas", "apis"]
+McpToolGroup = Literal["templates", "db_explore", "run_query", "s3", "nas", "apis", "external"]
 
 
 class McpToolGroups(BaseModel):
@@ -458,6 +458,7 @@ class McpToolGroups(BaseModel):
     s3: bool = True
     nas: bool = True
     apis: bool = True
+    external: bool = True
 
 
 class McpExposedRoute(BaseModel):
@@ -497,7 +498,7 @@ class McpSettings(BaseModel):
         ids = [route.route_id for route in value]
         if len(set(ids)) != len(ids):
             raise ValueError("each route may be listed once")
-        system = sorted(set(ids) & PROTECTED_ROUTE_IDS)
+        system = sorted(route_id for route_id in set(ids) if is_system_route(route_id))
         if system:
             raise ValueError(f"system routes cannot be offered over MCP: {', '.join(system)}")
         return sorted(value, key=lambda route: route.route_id)
@@ -508,6 +509,8 @@ class McpPreviewGroup(BaseModel):
     enabled: bool
     granted: bool
     required_route: str
+    # external only: the server this row is for (one row per server).
+    server: str | None = None
 
 
 class McpPreviewTool(BaseModel):
@@ -515,6 +518,8 @@ class McpPreviewTool(BaseModel):
     title: str
     description: str
     group: McpToolGroup
+    # external only: the server the tool belongs to.
+    server: str | None = None
 
 
 class McpTemplateInfo(BaseModel):
@@ -548,6 +553,161 @@ class McpPreview(BaseModel):
     apis: list[McpRouteInfo]
     # Set when the gateway routes could not be read, so ``apis`` is unknown.
     apis_error: str | None = None
+
+
+# External MCP servers (app/services/mcp_remote.py). Their tools are offered as
+# ``<server>__<tool>``, so a server name stays short and has no ``__``.
+MCP_REMOTE_NAME_PATTERN = r"^[a-z][a-z0-9-]{0,15}$"
+_MCP_REMOTE_HEADER_NAME = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+# Headers the relay sets itself, or that would let a server entry act as the
+# caller (apikey) or break the transport.
+_MCP_REMOTE_RESERVED_HEADERS = frozenset(
+    {
+        "accept",
+        "apikey",
+        "connection",
+        "content-length",
+        "content-type",
+        "host",
+        "keep-alive",
+        "mcp-protocol-version",
+        "mcp-session-id",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    }
+)
+
+
+class McpRemoteHeader(BaseModel):
+    """A header sent to the external server; reads show the value masked."""
+
+    name: str
+    value: str = Field("", max_length=4_096)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        value = value.strip()
+        if not _MCP_REMOTE_HEADER_NAME.match(value):
+            raise ValueError("header names are letters, digits and '-' (at most 64)")
+        lowered = value.lower()
+        if lowered in _MCP_REMOTE_RESERVED_HEADERS or lowered.startswith("x-unibridge-"):
+            raise ValueError(f"header '{value}' is set by UniBridge and cannot be configured")
+        return value
+
+    @field_validator("value")
+    @classmethod
+    def validate_value(cls, value: str) -> str:
+        if not all(ch == "\t" or 32 <= ord(ch) < 127 for ch in value):
+            raise ValueError("header values are printable ASCII (no control characters)")
+        if "$" in value:
+            # APISIX's proxy-rewrite resolves $variables in header values: the
+            # value would change on the way, and could pull in request data.
+            raise ValueError("header values cannot contain '$'")
+        return value
+
+
+class McpRemoteServerUpdate(BaseModel):
+    # Streamable HTTP endpoint, e.g. https://mcp.internal:8443/mcp.
+    url: str = Field(..., min_length=1, max_length=2_048)
+    description: str = Field("", max_length=4_000)
+    enabled: bool = True
+    timeout_seconds: int = Field(60, ge=5, le=600)
+    # A value equal to the mask a read returned keeps the stored value.
+    headers: list[McpRemoteHeader] = Field(default_factory=list, max_length=20)
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        value = value.strip()
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError("url must be an http:// or https:// address")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("put credentials in a header, not in the url")
+        if parsed.query or parsed.fragment:
+            raise ValueError("url cannot carry a query or fragment; use a header")
+        try:
+            parsed.port
+        except ValueError as exc:
+            raise ValueError("url has an invalid port") from exc
+        if any(ord(ch) <= 32 or ord(ch) == 127 for ch in value):
+            raise ValueError("url cannot contain spaces or control characters")
+        if "$" in value:
+            # The gateway would read it as a variable in the rewritten path.
+            raise ValueError("url cannot contain '$'")
+        if "%" in value:
+            # proxy-rewrite escapes the path again: %2F would arrive as %252F.
+            raise ValueError("url cannot contain percent-encoded characters")
+        return value
+
+    @field_validator("headers")
+    @classmethod
+    def unique_headers(cls, value: list[McpRemoteHeader]) -> list[McpRemoteHeader]:
+        names = [header.name.lower() for header in value]
+        if len(set(names)) != len(names):
+            raise ValueError("each header may be listed once")
+        return value
+
+
+class McpRemoteServerCreate(McpRemoteServerUpdate):
+    name: str = Field(..., pattern=MCP_REMOTE_NAME_PATTERN)
+
+
+class McpRemoteToolVersion(BaseModel):
+    title: str
+    description: str
+    input_schema: dict[str, Any]
+    annotations: dict[str, Any] | None
+
+
+class McpRemoteToolInfo(BaseModel):
+    name: str
+    # What /api/mcp calls it: <server>__<tool>.
+    exposed_name: str
+    title: str
+    description: str
+    input_schema: dict[str, Any]
+    read_only: bool | None
+    # As the server declares them (untrusted, like everything here).
+    annotations: dict[str, Any] | None = None
+    # approved: offered; new/changed: waits for approval; invalid_name: the
+    # exposed name breaks the MCP name rules and cannot be offered.
+    status: Literal["approved", "new", "changed", "invalid_name"]
+    # Of this entry as listed; an approval names it, so what is approved is
+    # exactly what the administrator saw.
+    digest: str
+    # changed only: the entry as it was approved, to compare with.
+    approved_version: McpRemoteToolVersion | None = None
+
+
+class McpRemoteServerInfo(BaseModel):
+    name: str
+    url: str
+    description: str
+    enabled: bool
+    timeout_seconds: int
+    headers: list[McpRemoteHeader]
+    route_id: str
+    tools: list[McpRemoteToolInfo]
+    refreshed_at: datetime | None
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class McpRemoteApprovedTool(BaseModel):
+    name: str
+    # McpRemoteToolInfo.digest as the administrator saw it.
+    digest: str
+
+
+class McpRemoteToolApproval(BaseModel):
+    # The tools to offer (as the server lists them); every other tool is hidden.
+    approved: list[McpRemoteApprovedTool] = Field(default_factory=list, max_length=1_000)
 
 
 # ── Roles (RBAC) ────────────────────────────────────────────────────────────

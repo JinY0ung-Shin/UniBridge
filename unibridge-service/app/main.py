@@ -912,6 +912,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 # ── The retired Bifrost side-by-side test (/api/llm-bi) ──
                 await _retire_llm_bi_routes()
 
+                # ── External MCP servers' relay routes (mcp-ext-*) ──
+                # Before the restriction replay below, which fills their
+                # whitelists from the stored key grants.
+                from app.services import mcp_remote
+
+                async for db in get_db():
+                    await mcp_remote.provision_all(db)
+                    break
+
                 break
             except Exception as exc:
                 if _attempt < _max_retries:
