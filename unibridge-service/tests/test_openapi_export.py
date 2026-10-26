@@ -276,6 +276,20 @@ class TestExtractTemplateParams:
     def test_no_params(self):
         assert extract_template_params("SELECT 1") == []
 
+    def test_clickhouse_placeholders(self):
+        sql = (
+            "SELECT * FROM t WHERE id IN (SELECT arrayJoin({pairs:Array(String)}))"
+            " AND day = { day : Date } AND n > {n:UInt32} AND id = {pairs:Array(String)}"
+        )
+        assert extract_template_params(sql) == ["pairs", "day", "n"]
+
+    def test_clickhouse_nested_type_names_are_not_params(self):
+        sql = "SELECT {a:Array(Tuple(p1 String, p2 :Int64))}, {b :Map(String, Nullable(Int64))}"
+        assert extract_template_params(sql) == ["a", "b"]
+
+    def test_both_styles_in_first_seen_order(self):
+        assert extract_template_params("SELECT :x, {y:String}, :x, {z:Int8}") == ["x", "y", "z"]
+
 
 # ---------------------------------------------------------------------------
 # Endpoint tests (mock apisix_client, real DB session for templates)

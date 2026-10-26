@@ -41,9 +41,15 @@ QUERY_TEMPLATE_PUBLIC_PREFIX = "/api/query/templates"
 # OpenAPI 3.0 path item operations (APISIX may also list e.g. PURGE).
 _ALLOWED_OPERATIONS = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
 
-# Named bind parameters (``:name``) in template SQL. The negative lookbehind
-# skips Postgres-style casts (``::int``) and already-matched binds.
-_BIND_PARAM_RE = re.compile(r"(?<![:\w]):([A-Za-z_][A-Za-z0-9_]*)")
+# Named bind parameters in template SQL, in either style the executors pass
+# ``params`` to: ``:name`` (SQLAlchemy) and ClickHouse's server-side
+# ``{name:Type}``. The ``:name`` lookbehind skips Postgres-style casts (``::int``)
+# and already-matched binds. A ClickHouse type never contains braces, so
+# ``[^{}]*`` spans nested types such as ``{a:Array(Tuple(p1 String, p2 Int64))}``.
+_BIND_PARAM_RE = re.compile(
+    r"\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*:[^{}]*\}"
+    r"|(?<![:\w]):([A-Za-z_][A-Za-z0-9_]*)"
+)
 
 _WILDCARD_PARAM = {
     "name": "path",
@@ -133,9 +139,12 @@ def _route_operation(route: dict[str, Any], method: str, has_wildcard: bool) -> 
 
 
 def extract_template_params(sql: str) -> list[str]:
-    """Extract named bind parameter names (``:name``) from template SQL."""
+    """Bind parameter names (``:name``, ``{name:Type}``) in first-seen order."""
     seen: list[str] = []
-    for name in _BIND_PARAM_RE.findall(sql or ""):
+    # One alternation, so the ``:Type`` inside a ClickHouse placeholder is
+    # consumed with it and never read as a ``:name`` bind.
+    for clickhouse_name, named in _BIND_PARAM_RE.findall(sql or ""):
+        name = clickhouse_name or named
         if name not in seen:
             seen.append(name)
     return seen

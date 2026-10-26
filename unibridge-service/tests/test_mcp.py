@@ -564,6 +564,30 @@ async def test_run_template_runs_by_path_or_name_with_the_key(client, seeded_db,
     assert len(gateway.calls) == 2
 
 
+async def test_clickhouse_template_params_reach_run_template(client, seeded_db, gateway):
+    # #98: {name:Type} placeholders were invisible, so run_template refused them.
+    await _create_template(
+        seeded_db,
+        path="common_analysis/eca_metro",
+        sql="SELECT 1 FROM t WHERE x IN (SELECT arrayJoin({pairs:Array(String)}))",
+    )
+    headers = await _create_api_key(seeded_db)
+    # Extraction ignores the engine; the default mock executor stands in for ClickHouse.
+    with _postgres() as execute_query:
+        result = await _call(client, headers, "search_templates", {"query": "eca_metro"})
+        assert json.loads(_text(result))["templates"][0]["params"] == ["pairs"]
+        result = await _call(
+            client,
+            headers,
+            "run_template",
+            {"template": "common_analysis/eca_metro", "params": {"pairs": ["LOT1|W01"]}},
+        )
+        assert result["isError"] is False, result
+        assert execute_query.await_args.kwargs["params"] == {"pairs": ["LOT1|W01"]}
+        result = await _call(client, headers, "run_template", {"template": "common_analysis/eca_metro"})
+    assert "Missing template param(s): pairs" in _text(result)
+
+
 async def test_run_template_asks_for_a_path_when_names_collide(client, seeded_db, gateway):
     await _create_template(seeded_db, path="a/users")
     await _create_template(seeded_db, path="b/users")
