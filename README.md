@@ -468,7 +468,7 @@ http_headers = { apikey = "<API_KEY>" }
 
   | Group | Tools | Needs |
   |---|---|---|
-  | Query templates | `tpl_<path>` per enabled template (bind parameters are the arguments) | `query-api` |
+  | Query templates | `search_templates`, `run_template` | `query-api` |
   | DB browsing | `list_databases`, `list_tables`, `describe_table` | `query-api` |
   | Read-only SQL | `run_query` | `query-api` |
   | S3 | `s3_list_connections`, `s3_list_buckets`, `s3_list_objects`, `s3_get_object_metadata`, `s3_read_object` | `s3-api` |
@@ -488,13 +488,21 @@ http_headers = { apikey = "<API_KEY>" }
 - A key's per-minute limit (API Keys) applies per gateway request, so each tool
   call uses two (`mcp-api` plus the REST route) and each protocol message one:
   give MCP keys headroom.
+- Templates are two tools, not one per template, so `tools/list` stays small:
+  `search_templates` finds the enabled templates the key may run (every word
+  of `query` must appear in the path, name or description; optional
+  `database`) and returns each one's path, params and SQL; `run_template`
+  runs one by path, or by exact name when only one template has it, with its
+  bind parameters in `params`.
 - `run_query` runs one SELECT (or a Cypher/SPARQL read) only, even for a key
   with INSERT/UPDATE/DELETE flags. SQL must parse as exactly one statement:
   what the parser cannot read is refused rather than guessed.
 - Admin → **MCP** (`admin.config.read`/`write`) switches the endpoint and each
   group on or off and sets the result caps (`max_rows`, default 200;
   `max_result_bytes`, default 64 KiB; a cut result says `truncated: true`).
-  The page also shows the tools a given key would get.
+  It can also hide individual templates from MCP for every key (they stay
+  usable over REST). The page also shows the tools and templates a given key
+  would get.
 - Text reads (`s3_read_object`, `nas_read_file`) return UTF-8 text only, up to
   `max_result_bytes`; binary files are refused, and so are NAS files over the
   share's download limit.

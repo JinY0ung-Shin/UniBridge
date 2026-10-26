@@ -27,8 +27,14 @@ from app.auth import (
 )
 from app.config import settings
 from app.database import get_db
-from app.models import ApiKeyAccess
-from app.schemas import McpPreview, McpPreviewGroup, McpPreviewTool, McpSettings
+from app.models import ApiKeyAccess, QueryTemplate
+from app.schemas import (
+    McpPreview,
+    McpPreviewGroup,
+    McpPreviewTool,
+    McpSettings,
+    McpTemplateInfo,
+)
 from app.services import mcp_tools
 from app.services.apisix_system_resources import MCP_API_ROUTE_ID
 from app.services.audit import log_admin_action
@@ -107,13 +113,13 @@ async def _dispatch(
     if method == "ping":
         return {}
     if method == "tools/list":
-        return {"tools": [tool.to_mcp() for tool in await mcp_tools.build_tools(ctx)]}
+        return {"tools": [tool.to_mcp() for tool in mcp_tools.build_tools(ctx)]}
     if method == "tools/call":
         name = params.get("name")
         arguments = params.get("arguments") or {}
         if not isinstance(name, str) or not isinstance(arguments, dict):
             raise _RpcError(INVALID_PARAMS, "tools/call needs a name and an arguments object")
-        tool = next((t for t in await mcp_tools.build_tools(ctx) if t.name == name), None)
+        tool = next((t for t in mcp_tools.build_tools(ctx) if t.name == name), None)
         if tool is None:
             raise _RpcError(INVALID_PARAMS, f"Unknown tool: {name}")
         return await mcp_tools.call_tool(ctx, tool, arguments)
@@ -227,6 +233,21 @@ async def update_mcp_settings(
     return body
 
 
+@router.get("/admin/mcp/templates", response_model=list[McpTemplateInfo])
+async def list_mcp_templates(
+    _admin: CurrentUser = Depends(require_permission("admin.config.read")),
+    db: AsyncSession = Depends(get_db),
+) -> list[McpTemplateInfo]:
+    """Every query template, for choosing which ones MCP hides."""
+    result = await db.execute(select(QueryTemplate).order_by(QueryTemplate.path.asc()))
+    return [
+        McpTemplateInfo(
+            path=t.path, name=t.name, database=t.db_alias, enabled=t.enabled
+        )
+        for t in result.scalars().all()
+    ]
+
+
 @router.get("/admin/mcp/preview", response_model=McpPreview)
 async def preview_mcp_tools(
     consumer: str = Query(..., min_length=1),
@@ -243,8 +264,12 @@ async def preview_mcp_tools(
         )
     user = api_key_user_from_access(access)
     mcp_settings = await mcp_tools.load_settings(db)
-    tools = await mcp_tools.build_tools(
-        mcp_tools.ToolContext(user=user, db=db, settings=mcp_settings)
+    ctx = mcp_tools.ToolContext(user=user, db=db, settings=mcp_settings)
+    tools = mcp_tools.build_tools(ctx)
+    templates = (
+        await mcp_tools.accessible_templates(ctx)
+        if any(tool.group == "templates" for tool in tools)
+        else []
     )
     return McpPreview(
         consumer=consumer,
@@ -264,5 +289,11 @@ async def preview_mcp_tools(
                 name=tool.name, title=tool.title, description=tool.description, group=tool.group
             )
             for tool in tools
+        ],
+        templates=[
+            McpTemplateInfo(
+                path=t.path, name=t.name, database=t.database, enabled=t.enabled
+            )
+            for t in templates
         ],
     )

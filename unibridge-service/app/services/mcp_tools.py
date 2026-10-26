@@ -6,10 +6,13 @@ each call is authorized, rate-limited, audited and counted on that REST route
 (``query-api``, ``s3-api``, ``nas-api``) exactly like a direct call, and the
 ``mcp-api`` route itself is left out of usage numbers. A tool group is offered
 only when the key holds the route grant its REST twin needs (``GROUP_ROUTES``).
-Discovery — tools/list, ``list_databases``, ``*_list_connections`` — touches
-no backend and is answered here.
+Discovery — tools/list, ``list_databases``, ``search_templates``,
+``*_list_connections`` — touches no backend and is answered here.
 
-Settings (on/off, tool groups, result caps) live in ``system_config`` under
+Query templates are two tools — search_templates and run_template — rather
+than one per template, so tools/list stays small however many there are.
+
+Settings (on/off, tool groups, hidden templates, result caps) live in ``system_config`` under
 ``MCP_SETTINGS_KEY`` and are read per request, so both blue/green colors see an
 admin's change at once.
 """
@@ -18,10 +21,8 @@ from __future__ import annotations
 import codecs
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-import hashlib
 import json
 import logging
-import re
 from typing import Any
 from urllib.parse import quote
 
@@ -57,18 +58,16 @@ GROUP_ROUTES: dict[McpToolGroup, str] = {
 
 SERVER_INSTRUCTIONS = (
     "UniBridge exposes the databases, saved query templates, S3 storage and NAS "
-    "shares this API key may use. Prefer a tpl_* tool when one answers the "
-    "question; otherwise call list_databases, list_tables and describe_table "
+    "shares this API key may use. Look for a saved query with search_templates "
+    "and run it with run_template when one answers the question; otherwise call "
+    "list_databases, list_tables and describe_table "
     "before writing SQL for run_query, which runs one SELECT. Results are capped: "
     "truncated=true means rows or bytes were cut, so narrow the query."
 )
 
-# Tool names: MCP clients accept [A-Za-z0-9_-], and several cap them at 64.
-MAX_TOOL_NAME = 64
-TEMPLATE_TOOL_PREFIX = "tpl_"
-_TOOL_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
-TEMPLATE_LIMIT_ARG = "row_limit"
-_TEMPLATE_SQL_IN_DESCRIPTION = 1500
+_TEMPLATE_SQL_PREVIEW = 1500
+_TEMPLATE_SEARCH_DEFAULT = 20
+_TEMPLATE_SEARCH_MAX = 100
 # Room left in a query result for everything except the rows.
 _ROW_ENVELOPE_BYTES = 512
 _TRUNCATION_MARKER = "\n…[truncated at max_result_bytes]"
@@ -535,69 +534,155 @@ RUN_QUERY_TOOL = Tool(
 # ── Query templates ─────────────────────────────────────────────────────────
 
 
-def template_tool_name(path: str, taken: set[str]) -> str:
-    name = TEMPLATE_TOOL_PREFIX + _TOOL_NAME_UNSAFE.sub("_", path)
-    if len(name) > MAX_TOOL_NAME or name in taken:
-        digest = hashlib.sha256(path.encode("utf-8")).hexdigest()[:8]
-        name = f"{name[: MAX_TOOL_NAME - len(digest) - 1]}_{digest}"
-    return name
-
-
-def _template_tool(template: QueryTemplateResponse, name: str, max_rows: int) -> Tool:
-    params = extract_template_params(template.sql)
-    properties: dict[str, Any] = {
-        param: {
-            "type": ["string", "number", "integer", "boolean", "null"],
-            "description": f"Value for :{param}",
-        }
-        for param in params
-    }
-    if TEMPLATE_LIMIT_ARG not in properties:
-        properties[TEMPLATE_LIMIT_ARG] = {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": max_rows,
-            "description": "Maximum rows to return",
-        }
-    sql = template.sql
-    if len(sql) > _TEMPLATE_SQL_IN_DESCRIPTION:
-        sql = sql[:_TEMPLATE_SQL_IN_DESCRIPTION] + " …"
-    summary = template.name + (f": {template.description}" if template.description else "")
-    path = template.path
-    database = template.database
-    default_limit = template.default_limit
-
-    async def run(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-        bound = {param: args[param] for param in params if param in args}
-        requested = args.get(TEMPLATE_LIMIT_ARG) if TEMPLATE_LIMIT_ARG not in params else None
-        limit = min(requested or default_limit or ctx.settings.max_rows, ctx.settings.max_rows)
-        response = await _gateway(
-            ctx,
-            "POST",
-            "/api/query/templates/" + "/".join(_segment(part) for part in path.split("/")),
-            json_body={"params": bound or None, "limit": limit},
-        )
-        return _query_payload(database, response.json(), ctx.settings)
-
-    return Tool(
-        name=name,
-        title=template.name,
-        description=f"{summary}\nSaved query on database '{database}':\n{sql}",
-        group="templates",
-        input_schema=_object_schema(properties, tuple(params)),
-        handler=run,
-    )
-
-
-async def _template_tools(ctx: ToolContext) -> list[Tool]:
+async def accessible_templates(ctx: ToolContext) -> list[QueryTemplateResponse]:
+    """Templates this key may run and the administrator has not hidden from MCP."""
     templates = await query_router.list_accessible_query_templates(user=ctx.user, db=ctx.db)
-    taken: set[str] = set()
-    tools = []
+    excluded = set(ctx.settings.excluded_templates)
+    return [template for template in templates if template.path not in excluded]
+
+
+def _template_matches(template: QueryTemplateResponse, terms: list[str]) -> bool:
+    haystack = f"{template.path}\n{template.name}\n{template.description}".casefold()
+    return all(term in haystack for term in terms)
+
+
+def _template_summary(template: QueryTemplateResponse) -> dict[str, Any]:
+    sql = template.sql
+    if len(sql) > _TEMPLATE_SQL_PREVIEW:
+        sql = sql[:_TEMPLATE_SQL_PREVIEW] + " …"
+    return {
+        "template": template.path,
+        "name": template.name,
+        "description": template.description,
+        "database": template.database,
+        "params": extract_template_params(template.sql),
+        "sql": sql,
+    }
+
+
+async def _search_templates(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    terms = (args.get("query") or "").casefold().split()
+    database = args.get("database")
+    limit = args.get("limit") or _TEMPLATE_SEARCH_DEFAULT
+    matches = [
+        template
+        for template in await accessible_templates(ctx)
+        if (database is None or template.database == database)
+        and _template_matches(template, terms)
+    ]
+    # Whole entries only, so the result stays valid JSON under max_result_bytes.
+    used = _ROW_ENVELOPE_BYTES
+    found: list[dict[str, Any]] = []
+    for template in matches[:limit]:
+        entry = _template_summary(template)
+        used += _utf8_len(_dumps(entry)) + 1
+        if used > ctx.settings.max_result_bytes:
+            break
+        found.append(entry)
+    return {
+        "templates": found,
+        "total": len(matches),
+        "truncated": len(found) < len(matches),
+    }
+
+
+def _find_template(
+    templates: list[QueryTemplateResponse], wanted: str
+) -> QueryTemplateResponse:
     for template in templates:
-        name = template_tool_name(template.path, taken)
-        taken.add(name)
-        tools.append(_template_tool(template, name, ctx.settings.max_rows))
-    return tools
+        if template.path == wanted:
+            return template
+    named = [t for t in templates if t.name.casefold() == wanted.strip().casefold()]
+    if len(named) == 1:
+        return named[0]
+    if named:
+        paths = ", ".join(t.path for t in named)
+        raise ToolError(f"Several templates are named '{wanted}'; pass one of: {paths}")
+    raise ToolError(f"No template '{wanted}' is available to this key; call search_templates")
+
+
+async def _run_template(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    template = _find_template(await accessible_templates(ctx), args["template"])
+    expected = extract_template_params(template.sql)
+    given: dict[str, Any] = args.get("params") or {}
+    missing = [name for name in expected if name not in given]
+    if missing:
+        raise ToolError(f"Missing template param(s): {', '.join(missing)}")
+    unknown = sorted(set(given) - set(expected))
+    if unknown:
+        raise ToolError(f"Unknown template param(s): {', '.join(unknown)}")
+    max_rows = ctx.settings.max_rows
+    limit = min(args.get("row_limit") or template.default_limit or max_rows, max_rows)
+    response = await _gateway(
+        ctx,
+        "POST",
+        "/api/query/templates/" + "/".join(_segment(part) for part in template.path.split("/")),
+        json_body={"params": given or None, "limit": limit},
+    )
+    return _query_payload(template.database, response.json(), ctx.settings)
+
+
+TEMPLATE_TOOLS = (
+    Tool(
+        name="search_templates",
+        title="Search query templates",
+        description=(
+            "Find saved query templates this API key may run. Every word of query "
+            "must appear in the template's path, name or description; leave it out "
+            "to list them all. Each result gives the template id to pass to "
+            "run_template, its database, its params and its SQL."
+        ),
+        group="templates",
+        input_schema=_object_schema(
+            {
+                "query": {"type": "string", "description": "Words to look for"},
+                "database": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Only templates on this database alias",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": _TEMPLATE_SEARCH_MAX,
+                    "description": f"Maximum templates to return (default {_TEMPLATE_SEARCH_DEFAULT})",
+                },
+            }
+        ),
+        handler=_search_templates,
+    ),
+    Tool(
+        name="run_template",
+        title="Run query template",
+        description=(
+            "Run a saved query template by its id (the template field from "
+            "search_templates) or its exact name. Pass a value for each of its "
+            "params. Rows are capped by the administrator; truncated=true means "
+            "the result was cut."
+        ),
+        group="templates",
+        input_schema=_object_schema(
+            {
+                "template": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Template id (path) or exact name",
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Values for the template's :name params",
+                },
+                "row_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum rows to return",
+                },
+            },
+            ("template",),
+        ),
+        handler=_run_template,
+    ),
+)
 
 
 # ── S3 ──────────────────────────────────────────────────────────────────────
@@ -876,7 +961,7 @@ NAS_TOOLS = (
 # ── Catalog ─────────────────────────────────────────────────────────────────
 
 
-async def build_tools(ctx: ToolContext) -> list[Tool]:
+def build_tools(ctx: ToolContext) -> list[Tool]:
     """The tools this key sees: enabled groups whose route grant it holds."""
     groups = ctx.settings.tool_groups
     user = ctx.user
@@ -890,5 +975,5 @@ async def build_tools(ctx: ToolContext) -> list[Tool]:
     if groups.nas and has_route(user, GROUP_ROUTES["nas"]):
         tools.extend(NAS_TOOLS)
     if groups.templates and has_route(user, GROUP_ROUTES["templates"]):
-        tools.extend(await _template_tools(ctx))
+        tools.extend(TEMPLATE_TOOLS)
     return tools

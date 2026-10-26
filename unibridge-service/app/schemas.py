@@ -461,8 +461,18 @@ class McpToolGroups(BaseModel):
 class McpSettings(BaseModel):
     enabled: bool = True
     tool_groups: McpToolGroups = Field(default_factory=McpToolGroups)
+    # Template paths search_templates/run_template never offer, whatever the key.
+    excluded_templates: list[str] = Field(default_factory=list, max_length=10_000)
     max_rows: int = Field(200, ge=1, le=10_000)
     max_result_bytes: int = Field(65_536, ge=1_024, le=1_048_576)
+
+    @field_validator("excluded_templates")
+    @classmethod
+    def normalize_excluded_templates(cls, value: list[str]) -> list[str]:
+        paths = {path.strip() for path in value if path.strip()}
+        if any(len(path) > 200 for path in paths):
+            raise ValueError("template paths are at most 200 characters")
+        return sorted(paths)
 
 
 class McpPreviewGroup(BaseModel):
@@ -479,12 +489,21 @@ class McpPreviewTool(BaseModel):
     group: McpToolGroup
 
 
+class McpTemplateInfo(BaseModel):
+    path: str
+    name: str
+    database: str
+    enabled: bool
+
+
 class McpPreview(BaseModel):
     consumer: str
     mcp_enabled: bool
     has_mcp_grant: bool
     groups: list[McpPreviewGroup]
     tools: list[McpPreviewTool]
+    # What search_templates/run_template offer this key; empty without the group.
+    templates: list[McpTemplateInfo]
 
 
 # ── Roles (RBAC) ────────────────────────────────────────────────────────────

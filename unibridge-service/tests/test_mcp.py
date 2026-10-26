@@ -101,23 +101,29 @@ async def _create_template(
     path: str = "reports/users",
     sql: str = "SELECT id, name FROM users WHERE id = :id",
     default_limit: int | None = 50,
+    name: str = "Users report",
+    db_alias: str = "maindb",
+    enabled: bool = True,
 ) -> None:
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         db.add(
             QueryTemplate(
                 path=path,
-                name="Users report",
+                name=name,
                 description="One user by id",
-                db_alias="maindb",
+                db_alias=db_alias,
+                enabled=enabled,
                 sql=sql,
                 default_limit=default_limit,
             )
         )
-        if (await db.execute(select(DBConnection))).scalars().first() is None:
+        if (
+            await db.execute(select(DBConnection).where(DBConnection.alias == db_alias))
+        ).scalar_one_or_none() is None:
             db.add(
                 DBConnection(
-                    alias="maindb",
+                    alias=db_alias,
                     db_type="postgres",
                     host="localhost",
                     port=5432,
@@ -299,13 +305,14 @@ async def test_tools_follow_route_grants_and_groups(client, seeded_db, admin_tok
         names = await _tool_names(client, full)
         assert names[:4] == ["list_databases", "list_tables", "describe_table", "run_query"]
         assert "s3_read_object" in names and "nas_read_file" in names
-        assert names[-1] == "tpl_reports_users"
+        # One search tool and one run tool, however many templates there are.
+        assert names[-2:] == ["search_templates", "run_template"]
         assert all(name.startswith("s3_") for name in await _tool_names(client, s3_only))
 
         await _put_settings(client, admin_token, run_query=False, templates=False, nas=False)
         names = await _tool_names(client, full)
     assert "run_query" not in names
-    assert "tpl_reports_users" not in names
+    assert "search_templates" not in names and "run_template" not in names
     assert not any(name.startswith("nas_") for name in names)
     assert "list_tables" in names
     # Discovery is answered locally: nothing went through the gateway.
@@ -365,7 +372,8 @@ async def test_tool_calls_go_out_on_their_rest_routes(client, seeded_db, gateway
     ):
         await _call(client, headers, "list_tables", {"database": "maindb"})
         await _call(client, headers, "run_query", {"database": "maindb", "sql": "SELECT 1"})
-        await _call(client, headers, "tpl_reports_users", {"id": 1})
+        await _call(client, headers, "search_templates", {})
+        await _call(client, headers, "run_template", {"template": "reports/users", "params": {"id": 1}})
     with patch("app.routers.s3.s3_manager.has_connection", return_value=True), patch(
         "app.routers.s3.s3_manager.list_buckets", new_callable=AsyncMock, return_value=[]
     ), patch("app.routers.s3.s3_manager.allowed_buckets", return_value=None):
@@ -490,34 +498,115 @@ async def test_run_query_cuts_rows_at_max_result_bytes(client, seeded_db, admin_
     assert len(text.encode()) <= 1024
 
 
-async def test_template_tool_runs_the_template_with_the_key(client, seeded_db, gateway):
+async def test_search_templates_finds_what_the_key_may_run(client, seeded_db, gateway):
+    await _create_template(seeded_db)
+    await _create_template(
+        seeded_db, path="sales/daily", name="Daily sales", sql="SELECT 1", db_alias="otherdb"
+    )
+    headers = await _create_api_key(seeded_db, databases=["maindb", "otherdb"])
+    other_key = await _create_api_key(seeded_db, "maindb-only")
+    with _postgres():
+        result = await _call(client, headers, "search_templates", {})
+        payload = json.loads(_text(result))
+        assert [t["template"] for t in payload["templates"]] == ["reports/users", "sales/daily"]
+        assert payload["total"] == 2 and payload["truncated"] is False
+        users = payload["templates"][0]
+        assert users["params"] == ["id"]
+        assert users["database"] == "maindb"
+        assert "SELECT id, name FROM users" in users["sql"]
+
+        # Every word must match path, name or description (case-insensitive).
+        result = await _call(client, headers, "search_templates", {"query": "USERS report"})
+        assert [t["template"] for t in json.loads(_text(result))["templates"]] == ["reports/users"]
+        result = await _call(client, headers, "search_templates", {"database": "otherdb"})
+        assert [t["template"] for t in json.loads(_text(result))["templates"]] == ["sales/daily"]
+        result = await _call(client, headers, "search_templates", {"limit": 1})
+        payload = json.loads(_text(result))
+        assert len(payload["templates"]) == 1 and payload["truncated"] is True
+
+        # A key only finds templates on databases it may use.
+        result = await _call(client, other_key, "search_templates", {})
+        assert [t["template"] for t in json.loads(_text(result))["templates"]] == ["reports/users"]
+    assert gateway.calls == []
+
+
+async def test_run_template_runs_by_path_or_name_with_the_key(client, seeded_db, gateway):
     await _create_template(seeded_db, default_limit=500)
     headers = await _create_api_key(seeded_db)
     with _postgres() as execute_query:
         tools = (await _rpc(client, headers, "tools/list")).json()["result"]["tools"]
-        tool = next(t for t in tools if t["name"] == "tpl_reports_users")
-        assert tool["inputSchema"]["required"] == ["id"]
-        assert "SELECT id, name FROM users" in tool["description"]
+        tool = next(t for t in tools if t["name"] == "run_template")
+        assert tool["inputSchema"]["required"] == ["template"]
         assert tool["annotations"]["readOnlyHint"] is True
 
-        result = await _call(client, headers, "tpl_reports_users", {"id": 1})
-    assert result["isError"] is False, result
-    assert json.loads(_text(result))["rows"] == [[1, "alice"]]
-    kwargs = execute_query.await_args.kwargs
-    assert kwargs["params"] == {"id": 1}
-    # The template's default_limit (500) is clamped to max_rows (200).
-    assert kwargs["limit"] == 200
+        result = await _call(client, headers, "run_template", {"template": "reports/users", "params": {"id": 1}})
+        assert result["isError"] is False, result
+        assert json.loads(_text(result))["rows"] == [[1, "alice"]]
+        kwargs = execute_query.await_args.kwargs
+        assert kwargs["params"] == {"id": 1}
+        # The template's default_limit (500) is clamped to max_rows (200).
+        assert kwargs["limit"] == 200
+
+        result = await _call(
+            client, headers, "run_template", {"template": "users report", "params": {"id": 2}, "row_limit": 5}
+        )
+        assert result["isError"] is False, result
+        assert execute_query.await_args.kwargs["limit"] == 5
+
+        result = await _call(client, headers, "run_template", {"template": "reports/users"})
+        assert result["isError"] is True and "Missing template param(s): id" in _text(result)
+        result = await _call(
+            client, headers, "run_template", {"template": "reports/users", "params": {"id": 1, "x": 2}}
+        )
+        assert "Unknown template param(s): x" in _text(result)
+        result = await _call(client, headers, "run_template", {"template": "nope"})
+        assert "search_templates" in _text(result)
+    assert len(gateway.calls) == 2
 
 
-def test_template_tool_names_are_safe_and_unique():
-    taken: set[str] = set()
-    first = mcp_tools.template_tool_name("sales/daily.v2", taken)
-    assert first == "tpl_sales_daily_v2"
-    taken.add(first)
-    second = mcp_tools.template_tool_name("sales/daily_v2", taken)
-    assert second != first and second.startswith("tpl_sales_daily_v2_")
-    long_name = mcp_tools.template_tool_name("a/" * 60 + "b", set())
-    assert len(long_name) <= mcp_tools.MAX_TOOL_NAME
+async def test_run_template_asks_for_a_path_when_names_collide(client, seeded_db, gateway):
+    await _create_template(seeded_db, path="a/users")
+    await _create_template(seeded_db, path="b/users")
+    headers = await _create_api_key(seeded_db)
+    with _postgres():
+        result = await _call(client, headers, "run_template", {"template": "Users report", "params": {"id": 1}})
+    assert result["isError"] is True
+    assert "a/users, b/users" in _text(result)
+    assert gateway.calls == []
+
+
+async def test_excluded_templates_are_hidden_from_mcp(client, seeded_db, admin_token, gateway):
+    await _create_template(seeded_db)
+    await _create_template(seeded_db, path="sales/daily", name="Daily sales", sql="SELECT 1")
+    headers = await _create_api_key(seeded_db)
+    await _put_settings(client, admin_token, excluded_templates=[" reports/users ", "reports/users"])
+    resp = await client.get("/admin/mcp/settings", headers=auth_header(admin_token))
+    assert resp.json()["excluded_templates"] == ["reports/users"]
+
+    with _postgres():
+        result = await _call(client, headers, "search_templates", {})
+        assert [t["template"] for t in json.loads(_text(result))["templates"]] == ["sales/daily"]
+        result = await _call(client, headers, "run_template", {"template": "reports/users", "params": {"id": 1}})
+    assert result["isError"] is True
+    assert gateway.calls == []
+
+
+async def test_search_templates_keeps_whole_entries_within_max_result_bytes(
+    client, seeded_db, admin_token, gateway
+):
+    for index in range(10):
+        await _create_template(
+            seeded_db, path=f"big/t{index}", sql="SELECT " + ", ".join(f"c{i}" for i in range(300))
+        )
+    headers = await _create_api_key(seeded_db)
+    await _put_settings(client, admin_token, max_result_bytes=4096)
+    with _postgres():
+        result = await _call(client, headers, "search_templates", {})
+    text = _text(result)
+    payload = json.loads(text)  # still valid JSON: entries are dropped, not cut
+    assert 0 < len(payload["templates"]) < 10
+    assert payload["total"] == 10 and payload["truncated"] is True
+    assert len(text.encode()) <= 4096
 
 
 # ── S3 / NAS ────────────────────────────────────────────────────────────────
@@ -699,6 +788,8 @@ async def test_admin_settings_validate_and_need_write_permission(client, admin_t
 
 
 async def test_admin_preview_shows_what_a_key_would_get(client, admin_token, seeded_db):
+    await _create_template(seeded_db)
+    await _create_template(seeded_db, path="hidden/one", enabled=False)
     await _create_api_key(seeded_db, routes=["query-api", "s3-api"])
     with _postgres():
         resp = await client.get(
@@ -711,9 +802,25 @@ async def test_admin_preview_shows_what_a_key_would_get(client, admin_token, see
     groups = {group["group"]: group for group in preview["groups"]}
     assert groups["nas"] == {"group": "nas", "enabled": True, "granted": False, "required_route": "nas-api"}
     tool_groups = {tool["group"] for tool in preview["tools"]}
-    assert tool_groups == {"db_explore", "run_query", "s3"}
+    assert tool_groups == {"db_explore", "run_query", "s3", "templates"}
+    assert preview["templates"] == [
+        {"path": "reports/users", "name": "Users report", "database": "maindb", "enabled": True}
+    ]
 
     resp = await client.get(
         "/admin/mcp/preview", params={"consumer": "nobody"}, headers=auth_header(admin_token)
     )
     assert resp.status_code == 404
+
+
+async def test_admin_template_list_includes_disabled_ones(client, admin_token, user_token, seeded_db):
+    await _create_template(seeded_db)
+    await _create_template(seeded_db, path="hidden/one", enabled=False)
+    resp = await client.get("/admin/mcp/templates", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"path": "hidden/one", "name": "Users report", "database": "maindb", "enabled": False},
+        {"path": "reports/users", "name": "Users report", "database": "maindb", "enabled": True},
+    ]
+    resp = await client.get("/admin/mcp/templates", headers=auth_header(user_token))
+    assert resp.status_code == 403
