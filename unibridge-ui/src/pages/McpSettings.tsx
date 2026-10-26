@@ -15,12 +15,13 @@ import {
   type McpToolGroup,
 } from '../api/client';
 import ResourceModal from '../components/ResourceModal';
+import McpExternalServers from './McpExternalServers';
 import { useCanWrite } from '../components/useCanWrite';
 import { useToast } from '../components/useToast';
 import './QuerySettings.css';
 import './McpSettings.css';
 
-const MCP_TOOL_GROUPS: McpToolGroup[] = ['templates', 'db_explore', 'run_query', 's3', 'nas', 'apis'];
+const MCP_TOOL_GROUPS: McpToolGroup[] = ['templates', 'db_explore', 'run_query', 's3', 'nas', 'apis', 'external'];
 
 const MAX_ROWS_RANGE = { min: 1, max: 10000 };
 const MAX_RESULT_BYTES_RANGE = { min: 1024, max: 1048576 };
@@ -767,8 +768,12 @@ function McpToolPreview() {
               </thead>
               <tbody>
                 {preview.groups.map((group) => (
-                  <tr key={group.group}>
-                    <td>{t(`mcp.groups.${group.group}.label`)}</td>
+                  <tr key={`${group.group}:${group.server ?? ''}`}>
+                    <td>
+                      {group.group === 'external'
+                        ? t('mcp.previewExternalGroup', { server: group.server ?? '' })
+                        : t(`mcp.groups.${group.group}.label`)}
+                    </td>
                     <td><YesNo value={group.enabled} /></td>
                     <td><YesNo value={group.granted} /></td>
                     <td>
@@ -865,7 +870,11 @@ function McpToolPreview() {
                           <div className="mcp-tool-title">{tool.title}</div>
                         )}
                       </td>
-                      <td>{t(`mcp.groups.${tool.group}.label`, { defaultValue: tool.group })}</td>
+                      <td>
+                        {tool.group === 'external'
+                          ? t('mcp.previewExternalGroup', { server: tool.server ?? '' })
+                          : t(`mcp.groups.${tool.group}.label`, { defaultValue: tool.group })}
+                      </td>
                       <td className="mcp-tool-description">{tool.description}</td>
                     </tr>
                   ))}
@@ -881,6 +890,7 @@ function McpToolPreview() {
 
 function McpSettingsPage() {
   const { t } = useTranslation();
+  const canWrite = useCanWrite('admin.config.write');
 
   const settingsQuery = useQuery({
     queryKey: ['mcp-settings'],
@@ -902,6 +912,11 @@ function McpSettingsPage() {
 
       <div className="mcp-sections">
         {settingsQuery.data && <McpSettingsForm settings={settingsQuery.data} />}
+        {/* Saves on each action, apart from the settings form above. */}
+        <McpExternalServers
+          canWrite={canWrite}
+          groupEnabled={settingsQuery.data?.tool_groups.external ?? true}
+        />
         <McpConnectionGuide />
         <McpToolPreview />
       </div>

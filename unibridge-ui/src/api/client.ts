@@ -443,7 +443,7 @@ export async function updateQuerySettings(body: QuerySettingsUpdate): Promise<Qu
 
 /* ── Admin: MCP ── */
 
-export type McpToolGroup = 'templates' | 'db_explore' | 'run_query' | 's3' | 'nas' | 'apis';
+export type McpToolGroup = 'templates' | 'db_explore' | 'run_query' | 's3' | 'nas' | 'apis' | 'external';
 
 /** A gateway route offered through search_apis/call_api. */
 export interface McpExposedRoute {
@@ -468,6 +468,8 @@ export interface McpPreviewGroup {
   enabled: boolean;
   granted: boolean;
   required_route: string;
+  /** external only: the server this row is for (one row per server). */
+  server?: string | null;
 }
 
 export interface McpPreviewTool {
@@ -475,6 +477,8 @@ export interface McpPreviewTool {
   title: string;
   description: string;
   group: string;
+  /** external only: the server the tool belongs to. */
+  server?: string | null;
 }
 
 export interface McpTemplateInfo {
@@ -531,6 +535,113 @@ export async function getMcpRoutes(): Promise<McpRouteInfo[]> {
 
 export async function getMcpPreview(consumer: string): Promise<McpPreview> {
   const { data } = await client.get('/admin/mcp/preview', { params: { consumer } });
+  return data;
+}
+
+/** A header sent to an external MCP server; reads return the value masked. */
+export interface McpRemoteHeader {
+  name: string;
+  value: string;
+}
+
+export type McpRemoteToolStatus = 'approved' | 'new' | 'changed' | 'invalid_name';
+
+/** A tool entry as it was approved. */
+export interface McpRemoteToolVersion {
+  title: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  annotations: Record<string, unknown> | null;
+}
+
+export interface McpRemoteToolInfo {
+  /** As the external server lists it. */
+  name: string;
+  /** What /api/mcp calls it: <server>__<tool>. */
+  exposed_name: string;
+  title: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  /** The server's own readOnlyHint, when it gives one. */
+  read_only: boolean | null;
+  /** The server-declared annotations as listed now (untrusted). */
+  annotations: Record<string, unknown> | null;
+  status: McpRemoteToolStatus;
+  /** Of the entry as listed; an approval names it, so only what was seen gets approved. */
+  digest: string;
+  /** changed only: the entry as it was approved, to compare with. */
+  approved_version?: McpRemoteToolVersion | null;
+}
+
+export interface McpRemoteServerInfo {
+  name: string;
+  url: string;
+  description: string;
+  enabled: boolean;
+  timeout_seconds: number;
+  headers: McpRemoteHeader[];
+  /** The API-key route grant that gives a key this server's tools. */
+  route_id: string;
+  tools: McpRemoteToolInfo[];
+  refreshed_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface McpRemoteServerUpdate {
+  url: string;
+  description: string;
+  enabled: boolean;
+  timeout_seconds: number;
+  /** A masked value (as read) or '' keeps the stored value of that header. */
+  headers: McpRemoteHeader[];
+}
+
+export interface McpRemoteServerCreate extends McpRemoteServerUpdate {
+  name: string;
+}
+
+export async function getMcpServers(): Promise<McpRemoteServerInfo[]> {
+  const { data } = await client.get('/admin/mcp/servers');
+  return data;
+}
+
+export async function createMcpServer(body: McpRemoteServerCreate): Promise<McpRemoteServerInfo> {
+  const { data } = await client.post('/admin/mcp/servers', body);
+  return data;
+}
+
+export async function updateMcpServer(
+  name: string,
+  body: McpRemoteServerUpdate,
+): Promise<McpRemoteServerInfo> {
+  const { data } = await client.put(`/admin/mcp/servers/${encodeURIComponent(name)}`, body);
+  return data;
+}
+
+export async function deleteMcpServer(name: string): Promise<void> {
+  await client.delete(`/admin/mcp/servers/${encodeURIComponent(name)}`);
+}
+
+/** Fetches the server's tool listing; new or changed tools wait for approval. */
+export async function refreshMcpServer(name: string): Promise<McpRemoteServerInfo> {
+  const { data } = await client.post(`/admin/mcp/servers/${encodeURIComponent(name)}/refresh`);
+  return data;
+}
+
+export interface McpRemoteApprovedTool {
+  name: string;
+  /** McpRemoteToolInfo.digest as loaded: 409 when a refresh has changed the entry since. */
+  digest: string;
+}
+
+/** Offers exactly these tools; every other tool is hidden. */
+export async function approveMcpServerTools(
+  name: string,
+  approved: McpRemoteApprovedTool[],
+): Promise<McpRemoteServerInfo> {
+  const { data } = await client.put(`/admin/mcp/servers/${encodeURIComponent(name)}/tools`, { approved });
   return data;
 }
 
