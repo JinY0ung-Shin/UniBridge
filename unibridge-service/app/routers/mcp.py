@@ -32,6 +32,7 @@ from app.schemas import (
     McpPreview,
     McpPreviewGroup,
     McpPreviewTool,
+    McpRouteInfo,
     McpSettings,
     McpTemplateInfo,
 )
@@ -248,6 +249,19 @@ async def list_mcp_templates(
     ]
 
 
+@router.get("/admin/mcp/routes", response_model=list[McpRouteInfo])
+async def list_mcp_routes(
+    _admin: CurrentUser = Depends(require_permission("admin.config.read")),
+) -> list[McpRouteInfo]:
+    """Gateway routes an administrator may offer over MCP (system routes excluded)."""
+    try:
+        routes = await mcp_tools.gateway_routes()
+    except mcp_tools.ToolError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    infos = [mcp_tools.route_info(route) for route in routes if mcp_tools.offerable_route(route)]
+    return sorted(infos, key=lambda info: (info.name.casefold(), info.route_id))
+
+
 @router.get("/admin/mcp/preview", response_model=McpPreview)
 async def preview_mcp_tools(
     consumer: str = Query(..., min_length=1),
@@ -271,6 +285,13 @@ async def preview_mcp_tools(
         if any(tool.group == "templates" for tool in tools)
         else []
     )
+    apis: list[McpRouteInfo] = []
+    apis_error: str | None = None
+    if any(tool.group == "apis" for tool in tools):
+        try:
+            apis = await mcp_tools.exposed_apis(ctx)
+        except mcp_tools.ToolError as exc:
+            apis_error = str(exc)
     return McpPreview(
         consumer=consumer,
         mcp_enabled=mcp_settings.enabled,
@@ -283,6 +304,15 @@ async def preview_mcp_tools(
                 required_route=route_id,
             )
             for group, route_id in mcp_tools.GROUP_ROUTES.items()
+        ]
+        + [
+            # Granted per route: the exposed routes this key holds.
+            McpPreviewGroup(
+                group="apis",
+                enabled=mcp_settings.tool_groups.apis,
+                granted=bool(mcp_tools.offered_route_ids(ctx)),
+                required_route="",
+            )
         ],
         tools=[
             McpPreviewTool(
@@ -296,4 +326,6 @@ async def preview_mcp_tools(
             )
             for t in templates
         ],
+        apis=apis,
+        apis_error=apis_error,
     )

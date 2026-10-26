@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_serializer, model_validator
 
+from app.services.apisix_system_resources import PROTECTED_ROUTE_IDS
 from app.services.webhook_security import validate_webhook_url
 
 
@@ -447,7 +448,7 @@ class SystemConfigUpdate(BaseModel):
 
 # ── MCP ─────────────────────────────────────────────────────────────────────
 
-McpToolGroup = Literal["templates", "db_explore", "run_query", "s3", "nas"]
+McpToolGroup = Literal["templates", "db_explore", "run_query", "s3", "nas", "apis"]
 
 
 class McpToolGroups(BaseModel):
@@ -456,6 +457,20 @@ class McpToolGroups(BaseModel):
     run_query: bool = True
     s3: bool = True
     nas: bool = True
+    apis: bool = True
+
+
+class McpExposedRoute(BaseModel):
+    """A gateway route offered through search_apis/call_api."""
+
+    route_id: str = Field(..., min_length=1, max_length=64)
+    # Shown to the model; empty falls back to the route's own desc.
+    description: str = Field("", max_length=4_000)
+
+    @field_validator("route_id", "description")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return value.strip()
 
 
 class McpSettings(BaseModel):
@@ -463,6 +478,8 @@ class McpSettings(BaseModel):
     tool_groups: McpToolGroups = Field(default_factory=McpToolGroups)
     # Template paths search_templates/run_template never offer, whatever the key.
     excluded_templates: list[str] = Field(default_factory=list, max_length=10_000)
+    # Gateway routes offered over MCP: nothing unless an administrator picks it.
+    exposed_routes: list[McpExposedRoute] = Field(default_factory=list, max_length=1_000)
     max_rows: int = Field(200, ge=1, le=10_000)
     max_result_bytes: int = Field(65_536, ge=1_024, le=1_048_576)
 
@@ -473,6 +490,17 @@ class McpSettings(BaseModel):
         if any(len(path) > 200 for path in paths):
             raise ValueError("template paths are at most 200 characters")
         return sorted(paths)
+
+    @field_validator("exposed_routes")
+    @classmethod
+    def validate_exposed_routes(cls, value: list[McpExposedRoute]) -> list[McpExposedRoute]:
+        ids = [route.route_id for route in value]
+        if len(set(ids)) != len(ids):
+            raise ValueError("each route may be listed once")
+        system = sorted(set(ids) & PROTECTED_ROUTE_IDS)
+        if system:
+            raise ValueError(f"system routes cannot be offered over MCP: {', '.join(system)}")
+        return sorted(value, key=lambda route: route.route_id)
 
 
 class McpPreviewGroup(BaseModel):
@@ -496,6 +524,18 @@ class McpTemplateInfo(BaseModel):
     enabled: bool
 
 
+class McpRouteInfo(BaseModel):
+    """A gateway route as search_apis shows it (and the admin page lists it)."""
+
+    route_id: str
+    name: str
+    paths: list[str]
+    # GET/POST as far as the route allows them; call_api sends nothing else.
+    methods: list[str]
+    key_auth: bool
+    description: str
+
+
 class McpPreview(BaseModel):
     consumer: str
     mcp_enabled: bool
@@ -504,6 +544,10 @@ class McpPreview(BaseModel):
     tools: list[McpPreviewTool]
     # What search_templates/run_template offer this key; empty without the group.
     templates: list[McpTemplateInfo]
+    # What search_apis/call_api offer this key; empty without the group.
+    apis: list[McpRouteInfo]
+    # Set when the gateway routes could not be read, so ``apis`` is unknown.
+    apis_error: str | None = None
 
 
 # ── Roles (RBAC) ────────────────────────────────────────────────────────────

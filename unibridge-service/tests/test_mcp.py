@@ -37,8 +37,21 @@ class FakeGateway(httpx.AsyncBaseTransport):
         self.inner = httpx.ASGITransport(app=app)
         self.calls: list[tuple[str, str, str]] = []
         self.reply: httpx.Response | None = None
+        # Requests to the stand-in external APIs under /api/ext/.
+        self.external: list[httpx.Request] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.url.raw_path.startswith(b"/api/ext/"):
+            await request.aread()
+            self.external.append(request)
+            self.calls.append(("ext", request.method, request.url.path))
+            if self.reply is not None:
+                return self.reply
+            return httpx.Response(
+                200,
+                json={"method": request.method, "path": request.url.path},
+                headers={"content-type": "application/json"},
+            )
         key = request.headers.get("apikey", "")
         if not key.startswith("key:"):
             return httpx.Response(401, json={"message": "Invalid API key in request"})
@@ -848,3 +861,309 @@ async def test_admin_template_list_includes_disabled_ones(client, admin_token, u
     ]
     resp = await client.get("/admin/mcp/templates", headers=auth_header(user_token))
     assert resp.status_code == 403
+
+
+
+# ── Gateway APIs ────────────────────────────────────────────────────────────
+
+EXT_ROUTES = [
+    {
+        "id": "orders",
+        "name": "Orders",
+        "uri": "/api/ext/orders/*",
+        "methods": ["GET", "POST", "DELETE"],
+        "plugins": {"key-auth": {}},
+        "desc": "Order service",
+    },
+    # More specific than orders: answers its sub-paths, and is not offered.
+    {"id": "orders-admin", "name": "Orders admin", "uri": "/api/ext/orders/admin/*", "plugins": {"key-auth": {}}},
+    {"id": "status", "name": "Status", "uri": "/api/ext/status", "methods": ["GET"]},
+    {"id": "put-only", "name": "Put only", "uri": "/api/ext/put", "methods": ["PUT"]},
+    {"id": "hosted", "name": "Hosted", "uri": "/api/ext/h/*", "hosts": ["api.example.com"]},
+    {"id": "query-api", "name": "query-api", "uri": "/api/query/*"},
+    # Conditional routes under orders: an MCP call can meet both conditions
+    # (it sets the query args; it comes from inside the network).
+    {"id": "orders-v", "name": "Orders v", "uri": "/api/ext/orders/v/*", "vars": [["arg_x", "==", "1"]]},
+    {"id": "orders-internal", "name": "Orders internal", "uri": "/api/ext/orders/internal/*", "remote_addrs": ["0.0.0.0/0"]},
+    # Disabled: APISIX never picks it.
+    {"id": "orders-off", "name": "Orders off", "uri": "/api/ext/orders/off/*", "status": 0},
+    # Plugins bound through a service: whether key-auth runs is unknown.
+    {"id": "svc", "name": "Service bound", "uri": "/api/ext/svc/*", "service_id": "s1"},
+    # key-auth configured but switched off: an open route.
+    {"id": "meta-off", "name": "Meta off", "uri": "/api/ext/meta/*", "plugins": {"key-auth": {"_meta": {"disable": True}}}},
+]
+EXT_KEY_ROUTES = [*ALL_ROUTES, "orders", "orders-admin", "status", "meta-off"]
+
+
+@contextmanager
+def _routes(routes: list[dict] | None = None):
+    with patch(
+        "app.services.mcp_tools.apisix_client.list_resources",
+        new_callable=AsyncMock,
+        return_value={"items": EXT_ROUTES if routes is None else routes},
+    ) as listing:
+        yield listing
+
+
+async def _expose(client, admin_token, *routes: str | tuple[str, str]) -> None:
+    exposed = [
+        {"route_id": r, "description": ""} if isinstance(r, str) else {"route_id": r[0], "description": r[1]}
+        for r in routes
+    ]
+    await _put_settings(client, admin_token, exposed_routes=exposed)
+
+
+async def test_api_tools_need_an_exposed_and_granted_route(client, seeded_db, admin_token):
+    granted = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
+    ungranted = await _create_api_key(seeded_db, "plain")
+    with _routes() as listing:
+        assert "search_apis" not in await _tool_names(client, granted)
+        await _expose(client, admin_token, "orders")
+        names = await _tool_names(client, granted)
+        assert names[-2:] == ["search_apis", "call_api"]
+        assert "search_apis" not in await _tool_names(client, ungranted)
+        await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], apis=False)
+        assert "search_apis" not in await _tool_names(client, granted)
+    # tools/list decides from the settings alone.
+    listing.assert_not_awaited()
+
+
+async def test_search_apis_lists_offered_routes_with_notes(client, seeded_db, admin_token, gateway):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await _expose(client, admin_token, "orders", ("status", "Health check. GET only."), "put-only")
+    with _routes():
+        tools = (await _rpc(client, headers, "tools/list")).json()["result"]["tools"]
+        call_api = next(t for t in tools if t["name"] == "call_api")
+        assert call_api["annotations"]["readOnlyHint"] is False
+        result = await _call(client, headers, "search_apis", {})
+        apis = json.loads(_text(result))["apis"]
+        assert apis == [
+            {
+                "api": "orders",
+                "name": "Orders",
+                "methods": ["GET", "POST"],
+                "paths": ["/api/ext/orders/*"],
+                "description": "Order service",
+            },
+            {
+                "api": "status",
+                "name": "Status",
+                "methods": ["GET"],
+                "paths": ["/api/ext/status"],
+                "description": "Health check. GET only.",
+            },
+        ]
+        result = await _call(client, headers, "search_apis", {"query": "health"})
+        assert [a["api"] for a in json.loads(_text(result))["apis"]] == ["status"]
+    assert gateway.calls == []
+
+
+async def test_call_api_goes_out_on_the_route_with_the_key(client, seeded_db, admin_token, gateway):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await _expose(client, admin_token, "orders", "status", "meta-off")
+    with _routes():
+        result = await _call(
+            client,
+            headers,
+            "call_api",
+            {"api": "orders", "method": "get", "path": "/api/ext/orders/v1/items", "query": {"q": "a b", "id": [1, 2]}},
+        )
+        assert result["isError"] is False, result
+        meta = json.loads(_text(result, 0))
+        assert meta == {
+            "api": "orders",
+            "method": "GET",
+            "path": "/api/ext/orders/v1/items",
+            "status": 200,
+            "content_type": "application/json",
+            "truncated": False,
+        }
+        assert json.loads(_text(result, 1)) == {"method": "GET", "path": "/api/ext/orders/v1/items"}
+        sent = gateway.external[-1]
+        assert sent.headers["apikey"] == "key:agent"
+        assert sent.url.query == b"q=a+b&id=1&id=2"
+
+        result = await _call(
+            client, headers, "call_api", {"api": "Orders", "method": "POST", "path": "/api/ext/orders/new", "body": {"n": 1}}
+        )
+        assert result["isError"] is False, result
+        assert json.loads(gateway.external[-1].content) == {"n": 1}
+
+        # An open route: a single exact path is the default, and the key stays home.
+        result = await _call(client, headers, "call_api", {"api": "status", "method": "GET"})
+        assert result["isError"] is False, result
+        assert "apikey" not in gateway.external[-1].headers
+        # Neither does it go to a route whose key-auth is switched off.
+        result = await _call(client, headers, "call_api", {"api": "meta-off", "method": "GET", "path": "/api/ext/meta/x"})
+        assert result["isError"] is False, result
+        assert "apikey" not in gateway.external[-1].headers
+        # A disabled route does not compete; an encoded non-ASCII path is fine.
+        result = await _call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/off/x"})
+        assert result["isError"] is False, result
+        result = await _call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/%EA%B0%80"})
+        assert result["isError"] is False, result
+    assert gateway.calls == [
+        ("ext", "GET", "/api/ext/orders/v1/items"),
+        ("ext", "POST", "/api/ext/orders/new"),
+        ("ext", "GET", "/api/ext/status"),
+        ("ext", "GET", "/api/ext/meta/x"),
+        ("ext", "GET", "/api/ext/orders/off/x"),
+        ("ext", "GET", "/api/ext/orders/가"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({"api": "orders", "method": "DELETE", "path": "/api/ext/orders/1"}, "not DELETE"),
+        ({"api": "status", "method": "POST"}, "not POST"),
+        ({"api": "orders", "method": "GET", "path": "/api/ext/other"}, "must fall under"),
+        ({"api": "orders", "method": "GET"}, "Pass path"),
+        ({"api": "orders", "method": "GET", "path": "/api/ext/orders/admin/users"}, "another gateway route"),
+        # APISIX decodes once before matching: this is orders-admin's.
+        ({"api": "orders", "method": "GET", "path": "/api/ext/orders/%61dmin/users"}, "another gateway route"),
+        # ...and merges slashes; httpx would drop a leading //host.
+        ({"api": "orders", "method": "GET", "path": "/api/ext/orders//admin/users"}, "'//'"),
+        ({"api": "orders", "method": "GET", "path": "//evil/api/ext/orders/x"}, "'//'"),
+        ({"api": "orders", "method": "GET", "path": "/api/ext/orders/v/x", "query": {"x": "1"}}, "another gateway route"),
+        ({"api": "orders", "method": "GET", "path": "/api/ext/orders/internal/x"}, "another gateway route"),
+        ({"api": "orders", "method": "GET", "path": "/api/ext/orders/a%00b"}, "control characters"),
+        ({"api": "svc", "method": "GET", "path": "/api/ext/svc/x"}, "call search_apis"),
+        ({"api": "orders", "method": "GET", "path": "/api/ext/orders/../status"}, "'..'"),
+        ({"api": "orders", "method": "GET", "path": "/api/ext/orders/%2e%2e/x"}, "'..'"),
+        ({"api": "orders", "method": "GET", "path": "/api/ext/orders/a%2Fb"}, "encoded slashes"),
+        ({"api": "orders", "method": "GET", "path": "/api/ext/orders/x?y=1"}, "put URL parameters in query"),
+        ({"api": "orders", "method": "GET", "path": "/api/ext/orders/x", "body": {}}, "POST only"),
+        ({"api": "orders", "method": "GET", "path": "/api/ext/orders/x", "query": {"a": {"b": 1}}}, "query parameter 'a'"),
+        ({"api": "orders-admin", "method": "GET", "path": "/api/ext/orders/admin/x"}, "call search_apis"),
+        ({"api": "put-only", "method": "GET"}, "call search_apis"),
+    ],
+)
+async def test_call_api_refuses_what_it_must_not_send(client, seeded_db, admin_token, gateway, arguments, message):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await _expose(client, admin_token, "orders", "status")
+    with _routes():
+        result = await _call(client, headers, "call_api", arguments)
+    assert result["isError"] is True
+    assert message in _text(result)
+    assert gateway.calls == []
+
+
+async def test_call_api_reports_errors_binary_and_truncation(client, seeded_db, admin_token, gateway):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], max_result_bytes=1024)
+    args = {"api": "orders", "method": "GET", "path": "/api/ext/orders/x"}
+    with _routes():
+        gateway.reply = httpx.Response(404, json={"detail": "no such order"})
+        result = await _call(client, headers, "call_api", args)
+        assert result["isError"] is True
+        assert json.loads(_text(result, 0))["status"] == 404
+        assert "no such order" in _text(result, 1)
+
+        gateway.reply = httpx.Response(200, content=b"\x89PNG", headers={"content-type": "image/png"})
+        result = await _call(client, headers, "call_api", args)
+        assert result["isError"] is True
+        assert "binary response" in _text(result, 1)
+
+        # Cut at the read, mid-character: the partial character is held back.
+        gateway.reply = httpx.Response(
+            200, content=("가" * 1000).encode(), headers={"content-type": "text/plain; charset=utf-8"}
+        )
+        result = await _call(client, headers, "call_api", args)
+        assert result["isError"] is False
+        assert json.loads(_text(result, 0))["truncated"] is True
+        text = _text(result, 1)
+        assert set(text.removesuffix(mcp_tools._TRUNCATION_MARKER)) == {"가"}
+        assert sum(len(item["text"].encode()) for item in result["content"]) <= 1024
+
+        # Read whole (1000 bytes) but too long once decoded from euc-kr: still marked cut.
+        gateway.reply = httpx.Response(
+            200, content=("가" * 500).encode("euc-kr"), headers={"content-type": "text/plain; charset=euc-kr"}
+        )
+        result = await _call(client, headers, "call_api", args)
+    assert json.loads(_text(result, 0))["truncated"] is True
+    assert set(_text(result, 1).removesuffix(mcp_tools._TRUNCATION_MARKER)) == {"가"}
+    assert sum(len(item["text"].encode()) for item in result["content"]) <= 1024
+
+
+async def test_call_api_yields_to_a_broader_host_route(client, seeded_db, admin_token, gateway):
+    # radixtree_host_uri tries host routes first, whatever their specificity.
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await _expose(client, admin_token, "orders")
+    routes = [*EXT_ROUTES, {"id": "wide", "uri": "/api/*", "hosts": ["apisix"]}]
+    with _routes(routes):
+        result = await _call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/x"})
+    assert result["isError"] is True
+    assert "another gateway route" in _text(result)
+    assert gateway.calls == []
+
+
+async def test_call_api_bounds_a_trickling_answer(client, seeded_db, admin_token, gateway):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await _expose(client, admin_token, "orders")
+
+    class Trickle(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            while True:
+                yield b"x"
+                await asyncio.sleep(0.05)
+
+    gateway.reply = httpx.Response(200, stream=Trickle(), headers={"content-type": "text/plain"})
+    with _routes(), patch.object(mcp_tools, "_route_timeout", return_value=0.3):
+        result = await _call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/x"})
+    assert result["isError"] is True
+    assert "did not answer within" in _text(result)
+
+
+async def test_exposed_routes_are_validated(client, admin_token):
+    body = mcp_tools.McpSettings().model_dump()
+    for exposed in (
+        [{"route_id": "query-api"}],
+        [{"route_id": "orders"}, {"route_id": "orders"}],
+        [{"route_id": ""}],
+    ):
+        resp = await client.put(
+            "/admin/mcp/settings", json={**body, "exposed_routes": exposed}, headers=auth_header(admin_token)
+        )
+        assert resp.status_code == 422, exposed
+
+
+async def test_admin_routes_list_offerable_routes(client, admin_token, user_token):
+    with _routes():
+        resp = await client.get("/admin/mcp/routes", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert [route["route_id"] for route in resp.json()] == ["meta-off", "orders", "orders-admin", "status"]
+    assert resp.json()[0]["key_auth"] is False
+    assert resp.json()[3] == {
+        "route_id": "status",
+        "name": "Status",
+        "paths": ["/api/ext/status"],
+        "methods": ["GET"],
+        "key_auth": False,
+        "description": "",
+    }
+    with _routes():
+        resp = await client.get("/admin/mcp/routes", headers=auth_header(user_token))
+    assert resp.status_code == 403
+    with patch(
+        "app.services.mcp_tools.apisix_client.list_resources", new_callable=AsyncMock, side_effect=OSError("down")
+    ):
+        resp = await client.get("/admin/mcp/routes", headers=auth_header(admin_token))
+    assert resp.status_code == 502
+
+
+async def test_admin_preview_lists_the_keys_apis(client, admin_token, seeded_db):
+    await _create_api_key(seeded_db, routes=["mcp-api", "orders"])
+    await _expose(client, admin_token, "orders", "status")
+    with _routes():
+        resp = await client.get("/admin/mcp/preview", params={"consumer": "agent"}, headers=auth_header(admin_token))
+    preview = resp.json()
+    assert [api["route_id"] for api in preview["apis"]] == ["orders"]
+    assert preview["apis_error"] is None
+    groups = {group["group"]: group for group in preview["groups"]}
+    assert groups["apis"]["granted"] is True
+    with patch(
+        "app.services.mcp_tools.apisix_client.list_resources", new_callable=AsyncMock, side_effect=OSError("down")
+    ):
+        resp = await client.get("/admin/mcp/preview", params={"consumer": "agent"}, headers=auth_header(admin_token))
+    assert resp.json()["apis"] == [] and resp.json()["apis_error"]

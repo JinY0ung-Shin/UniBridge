@@ -473,6 +473,7 @@ http_headers = { apikey = "<API_KEY>" }
   | Read-only SQL | `run_query` | `query-api` |
   | S3 | `s3_list_connections`, `s3_list_buckets`, `s3_list_objects`, `s3_get_object_metadata`, `s3_read_object` | `s3-api` |
   | NAS | `nas_list_connections`, `nas_list_entries`, `nas_get_metadata`, `nas_read_file` | `nas-api` |
+  | Gateway APIs | `search_apis`, `call_api` | each offered route's own grant |
 
 - Each tool call that reaches a database, S3 or NAS goes back out through the
   gateway as the matching REST request, with the caller's own key
@@ -494,6 +495,20 @@ http_headers = { apikey = "<API_KEY>" }
   `database`) and returns each one's path, params and SQL; `run_template`
   runs one by path, or by exact name when only one template has it, with its
   bind parameters in `params`.
+- Gateway APIs are opt-in: only the routes an administrator checks on the
+  **MCP** page are offered, and each only to keys holding that route's grant.
+  `search_apis` lists them (id, name, paths, GET/POST, optional notes for the
+  model — empty notes fall back to the route's `desc`); `call_api` sends GET or
+  POST only, with `query` parameters and a JSON `body`, to a path under the
+  route. There are no request schemas: write notes, point the model at the
+  API's own docs (`/docs`, `/openapi.json`), or give it a skill. A path a more
+  specific route would answer, `.`/`..` segments and encoded slashes are
+  refused; open routes (no key-auth) never receive the caller's key. Responses
+  come back as text (status, content type, body cut at `max_result_bytes`);
+  binary bodies are not returned. System routes, disabled routes, routes with
+  match conditions (`hosts`, `vars`, `remote_addrs`, `filter_func`) and routes
+  whose plugins come from a `service_id` or `plugin_config_id` (whether
+  key-auth runs cannot be read off the route) cannot be offered.
 - `run_query` runs one SELECT (or a Cypher/SPARQL read) only, even for a key
   with INSERT/UPDATE/DELETE flags. SQL must parse as exactly one statement:
   what the parser cannot read is refused rather than guessed.

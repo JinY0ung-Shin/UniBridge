@@ -6,6 +6,9 @@ each call is authorized, rate-limited, audited and counted on that REST route
 (``query-api``, ``s3-api``, ``nas-api``) exactly like a direct call, and the
 ``mcp-api`` route itself is left out of usage numbers. A tool group is offered
 only when the key holds the route grant its REST twin needs (``GROUP_ROUTES``).
+Gateway APIs (``search_apis``/``call_api``) are the routes an administrator
+lists in ``exposed_routes``, each offered only to keys holding its grant;
+``call_api`` sends GET or POST only, on the route itself.
 Discovery — tools/list, ``list_databases``, ``search_templates``,
 ``*_list_connections`` — touches no backend and is answered here.
 
@@ -18,13 +21,14 @@ admin's change at once.
 """
 from __future__ import annotations
 
+import asyncio
 import codecs
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import json
 import logging
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import httpx
 from pydantic import ValidationError
@@ -34,8 +38,9 @@ from app.auth import ApiKeyUser
 from app.config import settings as app_settings
 from app.models import SystemConfig
 from app.routers import query as query_router
-from app.schemas import McpSettings, McpToolGroup, QueryTemplateResponse
-from app.services.apisix_system_resources import QUERY_API_ROUTE_ID
+from app.schemas import McpRouteInfo, McpSettings, McpToolGroup, QueryTemplateResponse
+from app.services import apisix_client
+from app.services.apisix_system_resources import PROTECTED_ROUTE_IDS, QUERY_API_ROUTE_ID
 from app.services.connection_manager import connection_manager
 from app.services.nas_manager import nas_manager
 from app.services.openapi_export import extract_template_params
@@ -61,7 +66,9 @@ SERVER_INSTRUCTIONS = (
     "shares this API key may use. Look for a saved query with search_templates "
     "and run it with run_template when one answers the question; otherwise call "
     "list_databases, list_tables and describe_table "
-    "before writing SQL for run_query, which runs one SELECT. Results are capped: "
+    "before writing SQL for run_query, which runs one SELECT. Gateway APIs the "
+    "administrator offers are found with search_apis and called with call_api. "
+    "Results are capped: "
     "truncated=true means rows or bytes were cut, so narrow the query."
 )
 
@@ -96,6 +103,8 @@ class TextFile:
 
     meta: dict[str, Any]
     text: str
+    # An answer worth showing that still failed (call_api's HTTP errors).
+    is_error: bool = False
 
 
 Handler = Callable[[ToolContext, dict[str, Any]], Awaitable[Any]]
@@ -109,6 +118,8 @@ class Tool:
     group: McpToolGroup
     input_schema: dict[str, Any]
     handler: Handler
+    read_only: bool = True
+    open_world: bool = False
 
     def to_mcp(self) -> dict[str, Any]:
         return {
@@ -118,9 +129,9 @@ class Tool:
             "inputSchema": self.input_schema,
             "annotations": {
                 "title": self.title,
-                "readOnlyHint": True,
-                "destructiveHint": False,
-                "openWorldHint": False,
+                "readOnlyHint": self.read_only,
+                "destructiveHint": not self.read_only,
+                "openWorldHint": self.open_world,
             },
         }
 
@@ -380,12 +391,15 @@ async def call_tool(ctx: ToolContext, tool: Tool, arguments: dict[str, Any]) -> 
     max_bytes = ctx.settings.max_result_bytes
     if isinstance(result, TextFile):
         meta = _dumps(result.meta)
+        if result.meta.get("truncated") is False and _utf8_len(result.text) > max_bytes - _utf8_len(meta):
+            # Cut here rather than at the read (decoding grew it): say so.
+            meta = _dumps({**result.meta, "truncated": True})
         content = [
             {"type": "text", "text": meta},
             {"type": "text", "text": _capped_text(result.text, max_bytes - _utf8_len(meta))},
         ]
-    else:
-        content = [{"type": "text", "text": _capped_text(_dumps(result), max_bytes)}]
+        return {"content": content, "isError": result.is_error}
+    content = [{"type": "text", "text": _capped_text(_dumps(result), max_bytes)}]
     return {"content": content, "isError": False}
 
 
@@ -958,6 +972,390 @@ NAS_TOOLS = (
 )
 
 
+# ── Gateway APIs ────────────────────────────────────────────────────────────
+
+# call_api sends nothing else, whatever the route allows.
+API_METHODS = ("GET", "POST")
+_API_MAX_TIMEOUT_SECONDS = 600
+# Content types call_api returns as text; anything else is refused as binary.
+_TEXT_TYPE_MARKERS = ("json", "xml", "javascript", "yaml", "csv", "x-www-form-urlencoded")
+# Conditions besides uri and method that decide whether APISIX picks a route.
+# Whether an MCP call meets them is not ours to judge: the caller sets the query
+# args ``vars`` may test, and calls come from inside the network that
+# ``remote_addrs`` may allow. So a route carrying one is never offered, and in
+# the conflict check it counts as a route that might answer.
+_CONDITION_FIELDS = ("host", "hosts", "vars", "remote_addrs", "remote_addr", "filter_func")
+
+
+def _route_paths(route: dict[str, Any]) -> list[str]:
+    uri = route.get("uri")
+    if isinstance(uri, str) and uri:
+        return [uri]
+    uris = route.get("uris")
+    return [u for u in uris if isinstance(u, str) and u] if isinstance(uris, list) else []
+
+
+def _route_api_methods(route: dict[str, Any]) -> list[str]:
+    methods = route.get("methods")
+    if not isinstance(methods, list) or not methods:
+        return list(API_METHODS)  # APISIX: no list means any method
+    return [method for method in API_METHODS if method in methods]
+
+
+def _route_enabled(route: dict[str, Any]) -> bool:
+    return route.get("status", 1) != 0
+
+
+def _key_auth_runs(route: dict[str, Any]) -> bool:
+    plugins = route.get("plugins")
+    conf = plugins.get("key-auth") if isinstance(plugins, dict) else None
+    if not isinstance(conf, dict):
+        return False
+    meta = conf.get("_meta")
+    return not (isinstance(meta, dict) and meta.get("disable"))
+
+
+def offerable_route(route: dict[str, Any]) -> bool:
+    """Whether an administrator may offer ``route`` over MCP at all."""
+    return (
+        isinstance(route.get("id"), str)
+        and route["id"] not in PROTECTED_ROUTE_IDS
+        and _route_enabled(route)
+        and bool(_route_paths(route))
+        and bool(_route_api_methods(route))
+        and not any(route.get(field) for field in _CONDITION_FIELDS)
+        # Plugins bound elsewhere: whether key-auth runs, and so whether the
+        # caller's key may be sent, cannot be read off the route.
+        and not route.get("service_id")
+        and not route.get("plugin_config_id")
+    )
+
+
+def route_info(route: dict[str, Any], description: str = "") -> McpRouteInfo:
+    desc = route.get("desc")
+    return McpRouteInfo(
+        route_id=route["id"],
+        name=route.get("name") or route["id"],
+        paths=_route_paths(route),
+        methods=_route_api_methods(route),
+        key_auth=_key_auth_runs(route),
+        description=description or (desc if isinstance(desc, str) else ""),
+    )
+
+
+async def gateway_routes() -> list[dict[str, Any]]:
+    try:
+        listing = await apisix_client.list_resources("routes")
+    except Exception as exc:
+        logger.warning("MCP could not list the APISIX routes: %s", exc)
+        raise ToolError("The gateway routes could not be read") from exc
+    return [item for item in listing.get("items", []) if isinstance(item, dict)]
+
+
+def offered_route_ids(ctx: ToolContext) -> dict[str, str]:
+    """Exposed route id → its MCP description, for the routes this key holds."""
+    return {
+        route.route_id: route.description
+        for route in ctx.settings.exposed_routes
+        if has_route(ctx.user, route.route_id)
+    }
+
+
+async def exposed_apis(
+    ctx: ToolContext, routes: list[dict[str, Any]] | None = None
+) -> list[McpRouteInfo]:
+    """APIs this key may call over MCP: exposed by an administrator AND granted."""
+    offered = offered_route_ids(ctx)
+    if not offered:
+        return []
+    if routes is None:
+        routes = await gateway_routes()
+    apis = [
+        route_info(route, offered[route["id"]])
+        for route in routes
+        if offerable_route(route) and route["id"] in offered
+    ]
+    return sorted(apis, key=lambda api: (api.name.casefold(), api.route_id))
+
+
+async def _search_apis(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    terms = (args.get("query") or "").casefold().split()
+    apis = [
+        api
+        for api in await exposed_apis(ctx)
+        if all(
+            term in f"{api.route_id}\n{api.name}\n{api.description}\n{' '.join(api.paths)}".casefold()
+            for term in terms
+        )
+    ]
+    return {
+        "apis": [
+            {
+                "api": api.route_id,
+                "name": api.name,
+                "methods": api.methods,
+                "paths": api.paths,
+                "description": api.description,
+            }
+            for api in apis
+        ]
+    }
+
+
+def _find_api(apis: list[McpRouteInfo], wanted: str) -> McpRouteInfo:
+    for api in apis:
+        if api.route_id == wanted:
+            return api
+    named = [api for api in apis if api.name.casefold() == wanted.strip().casefold()]
+    if len(named) == 1:
+        return named[0]
+    if named:
+        ids = ", ".join(api.route_id for api in named)
+        raise ToolError(f"Several APIs are named '{wanted}'; pass one of: {ids}")
+    raise ToolError(f"No API '{wanted}' is available to this key; call search_apis")
+
+
+def _path_match(pattern: str, path: str) -> int | None:
+    """APISIX-style specificity of ``pattern`` for ``path``, or None if it misses.
+
+    An exact uri beats every prefix; among prefixes the longest wins.
+    """
+    if pattern.endswith("*"):
+        prefix = pattern[:-1]
+        return len(prefix) if path.startswith(prefix) else None
+    return 1_000_000 + len(pattern) if path == pattern else None
+
+
+def _match_rank(route: dict[str, Any], method: str, path: str) -> tuple[int, int] | None:
+    if not _route_enabled(route):
+        return None
+    methods = route.get("methods")
+    if isinstance(methods, list) and methods and method not in methods:
+        return None
+    scores = [score for uri in _route_paths(route) if (score := _path_match(uri, path)) is not None]
+    if not scores:
+        return None
+    priority = route.get("priority")
+    return max(scores), priority if isinstance(priority, int) else 0
+
+
+def _surely_served_by(
+    routes: list[dict[str, Any]], route: dict[str, Any], method: str, path: str
+) -> bool:
+    """Whether APISIX picks ``route`` for ``method path``, whatever else holds.
+
+    ``path`` is the matched form (see _matched_path). Any other route that ranks
+    as high spoils it: on a tie which one APISIX picks is not ours to rely on,
+    and a route with conditions (_CONDITION_FIELDS) counts, as the call may
+    meet them. A host-bound route spoils it at any rank: the default router
+    (radixtree_host_uri) tries host routes before all others.
+    """
+    own_rank = _match_rank(route, method, path)
+    if own_rank is None:
+        return False
+    for other in routes:
+        if other is route:
+            continue
+        rank = _match_rank(other, method, path)
+        if rank is None:
+            continue
+        if rank >= own_rank or other.get("host") or other.get("hosts"):
+            return False
+    return True
+
+
+def _matched_path(path: str) -> str:
+    """Check ``path`` and return it as APISIX matches it.
+
+    APISIX matches nginx's ``$uri``: percent-decoded once, with ``//`` merged and
+    dot segments resolved. Matching the raw text instead would let
+    ``/api/x/%61dmin`` or ``/api/x//admin`` reach a route nobody offered, and
+    httpx reads a leading ``//`` as an authority and drops it. So encoded slashes,
+    ``//`` and dot segments are refused and the rest is decoded the same way.
+    """
+    if not path.startswith("/") or any(ch in path for ch in "?#\\") or any(
+        ord(ch) < 33 for ch in path
+    ):
+        raise ToolError(
+            "path must be an absolute request path without spaces, '?', '#' or '\\' "
+            "(put URL parameters in query)"
+        )
+    lowered = path.lower()
+    if "%2f" in lowered or "%5c" in lowered:
+        raise ToolError("path must not contain encoded slashes")
+    decoded = unquote(path)
+    if "//" in decoded:
+        raise ToolError("path must not contain '//'")
+    if any(ord(ch) < 32 or ch == "\x7f" for ch in decoded):
+        raise ToolError("path must not contain control characters")
+    if any(segment in {".", ".."} for segment in decoded.split("/")):
+        raise ToolError("path must not contain '.' or '..' segments")
+    return decoded
+
+
+def _check_query(query: dict[str, Any]) -> None:
+    scalar = (str, int, float, bool)
+    for name, value in query.items():
+        values = value if isinstance(value, list) else [value]
+        if not all(isinstance(item, scalar) for item in values):
+            raise ToolError(f"query parameter '{name}' must be a string, number, boolean or a list of them")
+
+
+def _is_text(content_type: str) -> bool:
+    media = content_type.split(";", 1)[0].strip().lower()
+    return not media or media.startswith("text/") or any(m in media for m in _TEXT_TYPE_MARKERS)
+
+
+def _route_timeout(route: dict[str, Any]) -> float:
+    timeout = route.get("timeout")
+    read = timeout.get("read") if isinstance(timeout, dict) else None
+    seconds = read if isinstance(read, (int, float)) and read > 0 else settings_manager.gateway_route_timeout
+    return min(float(seconds), _API_MAX_TIMEOUT_SECONDS) + _GATEWAY_TIMEOUT_MARGIN_SECONDS
+
+
+async def _read_capped(response: httpx.Response, max_bytes: int) -> tuple[bytes, bool]:
+    data = bytearray()
+    async for chunk in response.aiter_bytes():
+        data.extend(chunk)
+        if len(data) > max_bytes:
+            return bytes(data[:max_bytes]), True
+    return bytes(data), False
+
+
+def _query_value(value: Any) -> Any:
+    # httpx renders True as "true"; keep that, and lists as repeated parameters.
+    if isinstance(value, list):
+        return [_query_value(item) for item in value]
+    return "true" if value is True else "false" if value is False else value
+
+
+async def _call_api(ctx: ToolContext, args: dict[str, Any]) -> TextFile:
+    if not ctx.api_key:
+        raise ToolError("Tool calls need the API key in the apikey header (call /api/mcp)")
+    routes = await gateway_routes()
+    api = _find_api(await exposed_apis(ctx, routes), args["api"])
+    method = args["method"].upper()
+    if method not in api.methods:
+        raise ToolError(f"{api.name} accepts {', '.join(api.methods)} over MCP, not {method}")
+    path = args.get("path")
+    if path is None:
+        exact = [p for p in api.paths if not p.endswith("*")]
+        if len(api.paths) != 1 or not exact:
+            raise ToolError(f"Pass path: a request path under {', '.join(api.paths)}")
+        path = exact[0]
+    matched = _matched_path(path)
+    if not any(_path_match(pattern, matched) is not None for pattern in api.paths):
+        raise ToolError(f"path must fall under {', '.join(api.paths)}")
+    route = next(route for route in routes if route.get("id") == api.route_id)
+    if not _surely_served_by(routes, route, method, matched):
+        # A route as or more specific might answer: one nobody offered.
+        raise ToolError(f"{method} {path} may be served by another gateway route, not {api.name}")
+    query = args.get("query") or {}
+    _check_query(query)
+    body = args.get("body")
+    if body is not None and method != "POST":
+        raise ToolError("body is sent with POST only")
+
+    # A key-auth route's upstream gets the key as on a direct call (APISIX
+    # removes it only with hide_credentials, which routes leave off); an open
+    # route's upstream, which no key unlocks, never sees it.
+    headers = {"apikey": ctx.api_key} if api.key_auth else {}
+    await ctx.db.rollback()  # see _gateway: free the meta-store connection first
+    max_bytes = ctx.settings.max_result_bytes
+    deadline = _route_timeout(route)
+    try:
+        # The read timeout is per chunk; the deadline bounds a trickling answer.
+        async with asyncio.timeout(deadline), _gateway_client().stream(
+            method,
+            path,
+            params={name: _query_value(value) for name, value in query.items()},
+            json=body if method == "POST" and body is not None else None,
+            headers=headers,
+            timeout=httpx.Timeout(deadline, connect=10),
+        ) as response:
+            content_type = response.headers.get("content-type", "")
+            meta: dict[str, Any] = {
+                "api": api.route_id,
+                "method": method,
+                "path": path,
+                "status": response.status_code,
+                "content_type": content_type or None,
+            }
+            if not _is_text(content_type):
+                meta["truncated"] = False
+                return TextFile(
+                    meta=meta,
+                    text=f"[binary response not returned: {content_type}]",
+                    is_error=True,
+                )
+            data, truncated = await _read_capped(response, max_bytes)
+            encoding = response.charset_encoding or "utf-8"
+    except TimeoutError as exc:
+        raise ToolError(f"{api.name} did not answer within {deadline:.0f}s") from exc
+    except httpx.HTTPError as exc:
+        logger.warning("MCP call_api %s %s failed: %s", method, path, exc)
+        raise ToolError("The UniBridge gateway did not answer") from exc
+    try:
+        decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
+    except LookupError:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    meta["truncated"] = truncated
+    return TextFile(
+        meta=meta,
+        text=decoder.decode(data, final=not truncated),
+        is_error=meta["status"] >= 400,
+    )
+
+
+API_TOOLS = (
+    Tool(
+        name="search_apis",
+        title="Search gateway APIs",
+        description=(
+            "List the gateway APIs the administrator offers over MCP that this API "
+            "key may call: id, name, methods (GET/POST), paths (a trailing * means "
+            "any sub-path) and the administrator's notes. Every word of query must "
+            "appear in the id, name, paths or notes. There are no request schemas: "
+            "follow the notes, or read the API's own docs with call_api (often "
+            "GET <path prefix>/docs or /openapi.json)."
+        ),
+        group="apis",
+        input_schema=_object_schema({"query": {"type": "string", "description": "Words to look for"}}),
+        handler=_search_apis,
+    ),
+    Tool(
+        name="call_api",
+        title="Call gateway API",
+        description=(
+            "Call an API from search_apis (by its id or exact name) with GET or POST. "
+            "path is the full request path and must fall under one of the API's "
+            "paths; query holds URL parameters; body is sent as JSON with POST. "
+            "Returns the HTTP status, content type and response text, cut at the "
+            "result size cap (truncated=true). Binary responses are not returned. "
+            "POST can change data on the other system."
+        ),
+        group="apis",
+        input_schema=_object_schema(
+            {
+                "api": {"type": "string", "minLength": 1, "description": "API id or exact name"},
+                "method": {"type": "string", "enum": list(API_METHODS), "description": "GET or POST"},
+                "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Request path, e.g. /api/orders/v1/items (optional for a single exact path)",
+                },
+                "query": {"type": "object", "description": "URL query parameters"},
+                "body": {"description": "JSON request body (POST only)"},
+            },
+            ("api", "method"),
+        ),
+        handler=_call_api,
+        read_only=False,
+        open_world=True,
+    ),
+)
+
+
 # ── Catalog ─────────────────────────────────────────────────────────────────
 
 
@@ -976,4 +1374,6 @@ def build_tools(ctx: ToolContext) -> list[Tool]:
         tools.extend(NAS_TOOLS)
     if groups.templates and has_route(user, GROUP_ROUTES["templates"]):
         tools.extend(TEMPLATE_TOOLS)
+    if groups.apis and offered_route_ids(ctx):
+        tools.extend(API_TOOLS)
     return tools
