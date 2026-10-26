@@ -1458,7 +1458,6 @@
     "apisMissing": "노출 목록의 route {{count}}개가 삭제됐거나 더 이상 노출할 수 없습니다.",
     "apisRemoveMissing": "목록에서 제거",
     "apisFilter": "이름·ID·경로로 필터",
-    "apisExposedCount": "route {{total}}개 중 {{exposed}}개 노출",
     "apisNoMatch": "필터와 일치하는 route가 없습니다.",
     "apiKeyAuth": "키 인증",
     "apiPublic": "공개",
@@ -1518,6 +1517,19 @@
     "toolCount": "도구 ({{count}}개)",
     "noTools": "이 키가 받는 도구가 없습니다.",
     "yes": "예",
-    "no": "아니요"
+    "no": "아니요",
+    "apisView": "보기",
+    "apisViewAll": "전체 ({{count}})",
+    "apisViewOffered": "노출됨 ({{count}})",
+    "apisNoneOffered": "아직 노출한 route가 없습니다.",
+    "colOffered": "노출",
+    "colAuth": "인증",
+    "colNotes": "모델에게 줄 설명",
+    "apiNotesNone": "설명 없음",
+    "apiNotesEdit": "{{name}} 설명 편집",
+    "apiNotesTitle": "{{name}} 설명",
+    "apiNotesApply": "적용",
+    "apiNotesFallback": "비워 두면 route 자체 설명(위 회색 글씨)이 모델에게 전달됩니다. 적용한 내용은 저장을 눌러야 반영됩니다.",
+    "apiNotesNoFallback": "선택 사항입니다. 비워 두면 모델이 API 자체 문서나 skill을 보고 호출합니다. 적용한 내용은 저장을 눌러야 반영됩니다."
   }
 }

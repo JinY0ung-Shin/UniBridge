@@ -8,7 +8,7 @@ vi.mock('../api/client', () => ({
   getScopedApiKeys: vi.fn(),
 }));
 
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
@@ -210,24 +210,53 @@ describe('McpSettingsPage', () => {
 
     const orders = await screen.findByRole('checkbox', { name: 'Orders' });
     expect(orders).not.toBeChecked();
-    expect(screen.getByText('0 of 2 routes offered')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Offered (0)' })).toBeInTheDocument();
     expect(screen.getByText('Public')).toBeInTheDocument();
     expect(screen.getByText('1 offered route(s) no longer exist or can no longer be offered.')).toBeInTheDocument();
+    // Notes can be edited only once the route is offered.
+    expect(screen.queryByRole('button', { name: 'Edit notes for Orders' })).not.toBeInTheDocument();
 
     await userEvent.click(orders);
-    const notes = screen.getByRole('textbox', { name: 'Notes for the model (optional)' });
-    // The route's own desc is what the model gets when the notes stay empty.
+    // The route's own desc stands in until notes are written.
+    expect(screen.getByText('Order service')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Edit notes for Orders' }));
+    const dialog = screen.getByRole('dialog', { name: 'Notes for Orders' });
+    const notes = within(dialog).getByRole('textbox', { name: 'Notes for the model (optional)' });
     expect(notes).toHaveAttribute('placeholder', 'Order service');
     await userEvent.type(notes, 'See /api/orders/docs');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Apply' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByText('See /api/orders/docs')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Offered (1)' }));
+    expect(screen.queryByRole('checkbox', { name: 'Status' })).not.toBeInTheDocument();
+
     await userEvent.click(screen.getByRole('button', { name: 'Remove them' }));
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-
     await waitFor(() => {
       expect(mockedUpdateMcpSettings).toHaveBeenCalledTimes(1);
     });
     expect(mockedUpdateMcpSettings.mock.calls[0][0].exposed_routes).toEqual([
       { route_id: 'orders', description: 'See /api/orders/docs' },
     ]);
+  });
+
+  it('keeps notes when a route is unchecked and checked again', async () => {
+    mockedGetMcpSettings.mockResolvedValue({
+      ...defaultSettings,
+      exposed_routes: [{ route_id: 'orders', description: 'Keep me' }],
+    });
+    renderWithProviders(<McpSettingsPage />, { permissions: WRITE_PERMISSIONS });
+
+    const orders = await screen.findByRole('checkbox', { name: 'Orders' });
+    await userEvent.click(screen.getByRole('button', { name: 'Edit notes for Orders' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByText('Keep me')).toBeInTheDocument();
+    await userEvent.click(orders);
+    expect(screen.queryByText('Keep me')).not.toBeInTheDocument();
+    await userEvent.click(orders);
+    expect(screen.getByText('Keep me')).toBeInTheDocument();
+    expect(screen.getByText('No MCP changes')).toBeInTheDocument();
   });
 
   it('reports gateway routes that cannot be read', async () => {

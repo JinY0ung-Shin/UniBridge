@@ -168,28 +168,6 @@
   color: var(--text-secondary);
 }
 
-.mcp-api-description {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 8px 0 2px 24px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.mcp-api-description textarea {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 6px 8px;
-  border: 1px solid var(--border-default);
-  border-radius: 6px;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 13px;
-  resize: vertical;
-}
-
 .mcp-api-missing {
   display: flex;
   flex-wrap: wrap;
@@ -199,19 +177,150 @@
   margin-bottom: 10px;
 }
 
-.mcp-api-list .mcp-toggle {
-  flex-wrap: nowrap;
-  align-items: flex-start;
+
+.mcp-segmented {
+  display: inline-flex;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  overflow: hidden;
 }
 
-.mcp-api-list .mcp-toggle input {
-  margin-top: 3px;
+.mcp-segmented button {
+  padding: 6px 12px;
+  border: none;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
-.mcp-api-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
+.mcp-segmented button + button {
+  border-left: 1px solid var(--border-default);
+}
+
+.mcp-segmented button.active {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Fixed-height rows in a scroll box: checking a route never moves the page. */
+.mcp-api-table-wrap {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.mcp-api-table {
+  table-layout: fixed;
+  width: 100%;
+  min-width: 640px;
+}
+
+.mcp-api-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-primary);
+}
+
+.mcp-api-table td {
+  vertical-align: middle;
+}
+
+.mcp-api-col-check {
+  width: 40px;
+}
+
+.mcp-api-table th:nth-child(3) {
+  width: 110px;
+}
+
+.mcp-api-table th:nth-child(4) {
+  width: 90px;
+}
+
+.mcp-api-table th:nth-child(5) {
+  width: 34%;
+}
+
+.mcp-api-col-name {
   min-width: 0;
+}
+
+.mcp-api-col-name code {
+  display: block;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.mcp-api-row--on td {
+  background: var(--bg-secondary);
+}
+
+.mcp-ellipsis {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-nowrap {
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.mcp-api-notes {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mcp-api-notes .mcp-ellipsis {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.mcp-api-notes--empty {
+  color: var(--text-tertiary);
+}
+
+.mcp-notes-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 24px;
+}
+
+.mcp-notes-body label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mcp-notes-body textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.mcp-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }

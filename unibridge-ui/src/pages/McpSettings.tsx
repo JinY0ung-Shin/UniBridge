@@ -9,10 +9,12 @@ import {
   getScopedApiKeys,
   updateMcpSettings,
   type McpExposedRoute,
+  type McpRouteInfo,
   type McpSettings,
   type McpTemplateInfo,
   type McpToolGroup,
 } from '../api/client';
+import ResourceModal from '../components/ResourceModal';
 import { useCanWrite } from '../components/useCanWrite';
 import { useToast } from '../components/useToast';
 import './QuerySettings.css';
@@ -161,6 +163,61 @@ function McpTemplateExposure({
   );
 }
 
+function McpApiNotesModal({
+  route,
+  notes,
+  onApply,
+  onClose,
+}: {
+  route: McpRouteInfo;
+  notes: string;
+  onApply: (notes: string) => void;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const [draft, setDraft] = useState(notes);
+
+  return (
+    <ResourceModal
+      title={t('mcp.apiNotesTitle', { name: route.name })}
+      onClose={onClose}
+      closeLabel={t('common.close')}
+      style={{ width: 640 }}
+    >
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          onApply(draft.trim());
+        }}
+      >
+        <div className="mcp-notes-body">
+          <p className="form-hint">
+            <code>{route.paths.join(', ')}</code> · {route.methods.join(' · ')}
+          </p>
+          <label htmlFor="mcp-api-notes">{t('mcp.apiDescription')}</label>
+          <textarea
+            id="mcp-api-notes"
+            rows={10}
+            maxLength={4000}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={route.description || t('mcp.apiDescriptionPlaceholder')}
+          />
+          <span className="form-hint">
+            {route.description ? t('mcp.apiNotesFallback') : t('mcp.apiNotesNoFallback')}
+          </span>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="btn btn-secondary" onClick={onClose}>
+            {t('common.cancel')}
+          </button>
+          <button type="submit" className="btn btn-primary">{t('mcp.apiNotesApply')}</button>
+        </div>
+      </form>
+    </ResourceModal>
+  );
+}
+
 function McpApiExposure({
   exposed,
   onChange,
@@ -174,21 +231,31 @@ function McpApiExposure({
 }) {
   const { t } = useTranslation();
   const [filter, setFilter] = useState('');
+  const [onlyOffered, setOnlyOffered] = useState(false);
+  const [editing, setEditing] = useState<McpRouteInfo | null>(null);
   const routesQuery = useQuery({ queryKey: ['mcp-routes'], queryFn: getMcpRoutes, retry: false });
 
   const routes = routesQuery.data ?? [];
   const exposedById = new Map(exposed.map((route) => [route.route_id, route]));
   const known = new Set(routes.map((route) => route.route_id));
   const missing = routesQuery.data ? exposed.filter((route) => !known.has(route.route_id)) : [];
+  const offeredCount = routes.filter((route) => exposedById.has(route.route_id)).length;
   const terms = filter.toLowerCase().split(/\s+/).filter(Boolean);
   const shown = routes.filter((route) => {
+    if (onlyOffered && !exposedById.has(route.route_id)) return false;
     const haystack = `${route.route_id}\n${route.name}\n${route.paths.join(' ')}`.toLowerCase();
     return terms.every((term) => haystack.includes(term));
   });
 
+  // Notes of a route unchecked by mistake come back when it is checked again.
+  const stashedNotes = useRef(new Map<string, string>());
+
   function setExposed(routeId: string, on: boolean) {
     const rest = exposed.filter((route) => route.route_id !== routeId);
-    onChange(on ? [...rest, { route_id: routeId, description: '' }] : rest);
+    const current = exposedById.get(routeId);
+    if (!on && current) stashedNotes.current.set(routeId, current.description);
+    const description = stashedNotes.current.get(routeId) ?? '';
+    onChange(on ? [...rest, current ?? { route_id: routeId, description }] : rest);
   }
 
   function setDescription(routeId: string, description: string) {
@@ -230,56 +297,112 @@ function McpApiExposure({
               placeholder={t('mcp.apisFilter')}
               aria-label={t('mcp.apisFilter')}
             />
-            <span className="mcp-template-count">
-              {t('mcp.apisExposedCount', {
-                exposed: routes.filter((route) => exposedById.has(route.route_id)).length,
-                total: routes.length,
-              })}
-            </span>
+            <div className="mcp-segmented" role="group" aria-label={t('mcp.apisView')}>
+              <button
+                type="button"
+                className={onlyOffered ? '' : 'active'}
+                aria-pressed={!onlyOffered}
+                onClick={() => setOnlyOffered(false)}
+              >
+                {t('mcp.apisViewAll', { count: routes.length })}
+              </button>
+              <button
+                type="button"
+                className={onlyOffered ? 'active' : ''}
+                aria-pressed={onlyOffered}
+                onClick={() => setOnlyOffered(true)}
+              >
+                {t('mcp.apisViewOffered', { count: offeredCount })}
+              </button>
+            </div>
           </div>
-          <ul className="mcp-template-list mcp-api-list" aria-label={t('mcp.apisSection')}>
-            {shown.map((route) => {
-              const entry = exposedById.get(route.route_id);
-              const descriptionId = `mcp-api-description-${route.route_id}`;
-              return (
-                <li key={route.route_id} className="mcp-template-item">
-                  <label className="mcp-toggle">
-                    <input
-                      type="checkbox"
-                      checked={entry !== undefined}
-                      onChange={(e) => setExposed(route.route_id, e.target.checked)}
-                      disabled={!canWrite}
-                      aria-label={route.name}
-                    />
-                    <span className="mcp-api-head">
-                      <span>{route.name}</span>
-                      <code>{route.paths.join(', ')}</code>
-                      <span className="mcp-template-meta">{route.methods.join(' · ')}</span>
-                      <span className={route.key_auth ? 'badge badge-ok' : 'badge badge-error'}>
-                        {route.key_auth ? t('mcp.apiKeyAuth') : t('mcp.apiPublic')}
-                      </span>
-                    </span>
-                  </label>
-                  {entry !== undefined && (
-                    <div className="mcp-api-description">
-                      <label htmlFor={descriptionId}>{t('mcp.apiDescription')}</label>
-                      <textarea
-                        id={descriptionId}
-                        rows={3}
-                        maxLength={4000}
-                        value={entry.description}
-                        onChange={(e) => setDescription(route.route_id, e.target.value)}
-                        placeholder={route.description || t('mcp.apiDescriptionPlaceholder')}
-                        disabled={!canWrite}
-                      />
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-            {shown.length === 0 && <li className="form-hint">{t('mcp.apisNoMatch')}</li>}
-          </ul>
+          <div className="table-container mcp-api-table-wrap">
+            <table className="data-table mcp-api-table" aria-label={t('mcp.apisSection')}>
+              <thead>
+                <tr>
+                  <th className="mcp-api-col-check"><span className="mcp-sr-only">{t('mcp.colOffered')}</span></th>
+                  <th>{t('mcp.colApi')}</th>
+                  <th>{t('mcp.colMethods')}</th>
+                  <th>{t('mcp.colAuth')}</th>
+                  <th>{t('mcp.colNotes')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((route) => {
+                  const entry = exposedById.get(route.route_id);
+                  const notes = entry?.description || '';
+                  return (
+                    <tr key={route.route_id} className={entry ? 'mcp-api-row--on' : undefined}>
+                      <td className="mcp-api-col-check">
+                        <input
+                          type="checkbox"
+                          checked={entry !== undefined}
+                          onChange={(e) => setExposed(route.route_id, e.target.checked)}
+                          disabled={!canWrite}
+                          aria-label={route.name}
+                        />
+                      </td>
+                      <td className="mcp-api-col-name">
+                        <div className="mcp-ellipsis" title={route.name}>{route.name}</div>
+                        <code className="mcp-ellipsis" title={route.paths.join(', ')}>
+                          {route.paths.join(', ')}
+                        </code>
+                      </td>
+                      <td className="mcp-nowrap">{route.methods.join(' · ')}</td>
+                      <td>
+                        <span className={route.key_auth ? 'badge badge-ok' : 'badge badge-error'}>
+                          {route.key_auth ? t('mcp.apiKeyAuth') : t('mcp.apiPublic')}
+                        </span>
+                      </td>
+                      <td className="mcp-api-col-notes">
+                        {entry ? (
+                          <div className="mcp-api-notes">
+                            <span
+                              className={notes ? 'mcp-ellipsis' : 'mcp-ellipsis mcp-api-notes--empty'}
+                              title={notes || route.description || undefined}
+                            >
+                              {notes || route.description || t('mcp.apiNotesNone')}
+                            </span>
+                            {canWrite && (
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => setEditing(route)}
+                                aria-label={t('mcp.apiNotesEdit', { name: route.name })}
+                              >
+                                {t('common.edit')}
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="mcp-api-notes--empty">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {shown.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="form-hint">
+                      {onlyOffered && terms.length === 0 ? t('mcp.apisNoneOffered') : t('mcp.apisNoMatch')}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </>
+      )}
+      {editing && (
+        <McpApiNotesModal
+          route={editing}
+          notes={exposedById.get(editing.route_id)?.description ?? ''}
+          onApply={(notes) => {
+            setDescription(editing.route_id, notes);
+            setEditing(null);
+          }}
+          onClose={() => setEditing(null)}
+        />
       )}
     </div>
   );
