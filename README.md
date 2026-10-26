@@ -509,6 +509,9 @@ http_headers = { apikey = "<API_KEY>" }
   match conditions (`hosts`, `vars`, `remote_addrs`, `filter_func`) and routes
   whose plugins come from a `service_id` or `plugin_config_id` (whether
   key-auth runs cannot be read off the route) cannot be offered.
+  The tools are listed only while an offered route the key holds still exists
+  and can be offered (checked against a 30-second route listing cache);
+  deleting a route also drops it from the MCP settings.
 - `run_query` runs one SELECT (or a Cypher/SPARQL read) only, even for a key
   with INSERT/UPDATE/DELETE flags. SQL must parse as exactly one statement:
   what the parser cannot read is refused rather than guessed.

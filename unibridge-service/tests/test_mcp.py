@@ -918,14 +918,60 @@ async def test_api_tools_need_an_exposed_and_granted_route(client, seeded_db, ad
     ungranted = await _create_api_key(seeded_db, "plain")
     with _routes() as listing:
         assert "search_apis" not in await _tool_names(client, granted)
+        # Nothing offered to this key: tools/list does not ask APISIX.
+        listing.assert_not_awaited()
         await _expose(client, admin_token, "orders")
         names = await _tool_names(client, granted)
         assert names[-2:] == ["search_apis", "call_api"]
         assert "search_apis" not in await _tool_names(client, ungranted)
         await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], apis=False)
         assert "search_apis" not in await _tool_names(client, granted)
-    # tools/list decides from the settings alone.
-    listing.assert_not_awaited()
+    # The route listing is cached: one APISIX call for all of the above.
+    assert listing.await_count == 1
+
+
+@pytest.mark.parametrize(
+    "routes",
+    [
+        [route for route in EXT_ROUTES if route["id"] != "orders"],  # deleted
+        [{**route, "status": 0} if route["id"] == "orders" else route for route in EXT_ROUTES],  # disabled
+    ],
+    ids=["deleted", "disabled"],
+)
+async def test_api_tools_go_when_the_offered_route_does(client, seeded_db, admin_token, routes):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await _expose(client, admin_token, "orders")
+    with _routes(routes):
+        names = await _tool_names(client, headers)
+    assert "search_apis" not in names and "call_api" not in names
+
+
+async def test_api_tools_stay_when_the_route_listing_fails(client, seeded_db, admin_token, gateway):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await _expose(client, admin_token, "orders")
+    with patch(
+        "app.services.mcp_tools.apisix_client.list_resources", new_callable=AsyncMock, side_effect=OSError("down")
+    ):
+        assert "call_api" in await _tool_names(client, headers)
+        # call_api reads its own fresh listing, so it fails cleanly.
+        result = await _call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": "/api/ext/orders/x"})
+    assert result["isError"] is True
+    assert "could not be read" in _text(result)
+    assert gateway.calls == []
+
+
+async def test_deleting_a_route_drops_it_from_mcp(client, admin_token):
+    await _expose(client, admin_token, "orders", ("status", "Health check"))
+    with patch("app.routers.gateway.apisix_client.get_resource", new_callable=AsyncMock, return_value={"id": "orders"}), patch(
+        "app.routers.gateway.apisix_client.delete_resource", new_callable=AsyncMock
+    ):
+        resp = await client.delete("/admin/gateway/routes/orders", headers=auth_header(admin_token))
+        assert resp.status_code in (200, 204), resp.text
+        # A route MCP never offered leaves the settings alone.
+        resp = await client.delete("/admin/gateway/routes/other", headers=auth_header(admin_token))
+        assert resp.status_code in (200, 204), resp.text
+    resp = await client.get("/admin/mcp/settings", headers=auth_header(admin_token))
+    assert resp.json()["exposed_routes"] == [{"route_id": "status", "description": "Health check"}]
 
 
 async def test_search_apis_lists_offered_routes_with_notes(client, seeded_db, admin_token, gateway):

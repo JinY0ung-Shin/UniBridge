@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import ApiKeyUser
 from app.config import settings as app_settings
 from app.models import SystemConfig
+from app.routers import gateway as gateway_router
 from app.routers import query as query_router
 from app.schemas import McpRouteInfo, McpSettings, McpToolGroup, QueryTemplateResponse
 from app.services import apisix_client
@@ -1359,7 +1360,39 @@ API_TOOLS = (
 # ── Catalog ─────────────────────────────────────────────────────────────────
 
 
-def build_tools(ctx: ToolContext) -> list[Tool]:
+async def _offers_an_api(ctx: ToolContext) -> bool:
+    """Whether a route this key may call is offered and still exists as one.
+
+    Read from the gateway's short-TTL route listing, so a deleted or changed
+    route drops the tools within seconds. If the listing cannot be read the
+    tools stay: call_api checks a fresh listing anyway, and a blip should not
+    take them away for the rest of a client's session.
+    """
+    offered = offered_route_ids(ctx)
+    if not offered:
+        return False
+    try:
+        routes = await gateway_router._list_routes_cached()
+    except Exception as exc:
+        logger.warning("MCP could not list the APISIX routes for tools/list: %s", exc)
+        return True
+    return any(
+        isinstance(route, dict) and offerable_route(route) and route["id"] in offered
+        for route in routes
+    )
+
+
+async def forget_exposed_route(db: AsyncSession, route_id: str) -> bool:
+    """Drop a deleted route from ``exposed_routes``; True if it was there."""
+    current = await load_settings(db)
+    kept = [route for route in current.exposed_routes if route.route_id != route_id]
+    if len(kept) == len(current.exposed_routes):
+        return False
+    await save_settings(db, current.model_copy(update={"exposed_routes": kept}))
+    return True
+
+
+async def build_tools(ctx: ToolContext) -> list[Tool]:
     """The tools this key sees: enabled groups whose route grant it holds."""
     groups = ctx.settings.tool_groups
     user = ctx.user
@@ -1374,6 +1407,6 @@ def build_tools(ctx: ToolContext) -> list[Tool]:
         tools.extend(NAS_TOOLS)
     if groups.templates and has_route(user, GROUP_ROUTES["templates"]):
         tools.extend(TEMPLATE_TOOLS)
-    if groups.apis and offered_route_ids(ctx):
+    if groups.apis and await _offers_an_api(ctx):
         tools.extend(API_TOOLS)
     return tools

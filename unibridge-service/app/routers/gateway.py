@@ -880,6 +880,16 @@ async def delete_route(
         )
     _invalidate_route_listing_cache()
     logger.info("Route deleted: id=%s user=%s", route_id, _admin.username)
+    # Imported here: mcp_tools imports this module for the route listing cache.
+    from app.services import mcp_tools
+
+    try:
+        if await mcp_tools.forget_exposed_route(db, route_id):
+            logger.info("Route %s dropped from the MCP gateway APIs", route_id)
+    except Exception:
+        # The route is gone either way; tools/list stops offering it on its own.
+        await db.rollback()
+        logger.warning("Could not drop route %s from the MCP settings", route_id, exc_info=True)
     await log_admin_action(
         db,
         actor=_admin.username,

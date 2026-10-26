@@ -114,13 +114,13 @@ async def _dispatch(
     if method == "ping":
         return {}
     if method == "tools/list":
-        return {"tools": [tool.to_mcp() for tool in mcp_tools.build_tools(ctx)]}
+        return {"tools": [tool.to_mcp() for tool in await mcp_tools.build_tools(ctx)]}
     if method == "tools/call":
         name = params.get("name")
         arguments = params.get("arguments") or {}
         if not isinstance(name, str) or not isinstance(arguments, dict):
             raise _RpcError(INVALID_PARAMS, "tools/call needs a name and an arguments object")
-        tool = next((t for t in mcp_tools.build_tools(ctx) if t.name == name), None)
+        tool = next((t for t in await mcp_tools.build_tools(ctx) if t.name == name), None)
         if tool is None:
             raise _RpcError(INVALID_PARAMS, f"Unknown tool: {name}")
         return await mcp_tools.call_tool(ctx, tool, arguments)
@@ -279,7 +279,7 @@ async def preview_mcp_tools(
     user = api_key_user_from_access(access)
     mcp_settings = await mcp_tools.load_settings(db)
     ctx = mcp_tools.ToolContext(user=user, db=db, settings=mcp_settings)
-    tools = mcp_tools.build_tools(ctx)
+    tools = await mcp_tools.build_tools(ctx)
     templates = (
         await mcp_tools.accessible_templates(ctx)
         if any(tool.group == "templates" for tool in tools)
