@@ -2,8 +2,7 @@
 
 This module is the security single-source-of-truth for read/write
 classification of SPARQL queries directed at GraphDB. It is called from
-``routers/query.py::_detect_statement_type`` and nowhere else (see spec
-``docs/superpowers/specs/2026-05-26-graphdb-integration-design.md`` §6.2).
+``routers/query.py::_detect_statement_type`` and nowhere else.
 
 The implementation works in five passes over the input:
   1. Strip BOM; reject inputs that contain non-ASCII whitespace.
