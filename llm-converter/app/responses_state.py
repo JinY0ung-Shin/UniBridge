@@ -146,7 +146,6 @@ class SQLiteConversationStore:
         max_bytes: int = 0,
         max_entry_bytes: int = 0,
     ) -> None:
-        self._path = path
         self._ttl = ttl_seconds
         self._max = max(1, max_entries)
         self._max_bytes = max(0, max_bytes)

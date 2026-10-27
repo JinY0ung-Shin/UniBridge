@@ -138,10 +138,6 @@ DROP_FROM_RESPONSE = _HOP_BY_HOP | frozenset(
 )
 
 
-def filter_headers(items, drop: frozenset) -> Dict[str, str]:
-    return {k: v for k, v in items if k.lower() not in drop}
-
-
 def forward_request_headers(items, gateway: str) -> Dict[str, str]:
     """The client request headers to send to ``gateway`` (see the notes above)."""
     out: Dict[str, str] = {}
