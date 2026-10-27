@@ -1628,7 +1628,13 @@
       "compareNow": "현재",
       "compareSame": "변경 없음",
       "compareAnnotations": "Annotations",
-      "approvalsStale": "아무것도 승인되지 않았습니다. 불러온 뒤 일부 도구가 바뀌었습니다. 목록을 다시 불러왔으니 다시 검토하세요."
+      "approvalsStale": "아무것도 승인되지 않았습니다. 불러온 뒤 일부 도구가 바뀌었습니다. 목록을 다시 불러왔으니 다시 검토하세요.",
+      "toolCountShort": "{{approved}}/{{total}} 승인",
+      "errorBadge": "가져오기 실패",
+      "searchServers": "이름·URL·설명으로 서버 검색",
+      "reviewOnly": "검토 필요만 ({{count}})",
+      "serversShown": "서버 {{total}}개 중 {{shown}}개",
+      "noServerMatches": "조건에 맞는 서버가 없습니다."
     }
   }
 }

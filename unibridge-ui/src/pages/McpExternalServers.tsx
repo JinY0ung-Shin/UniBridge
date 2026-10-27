@@ -852,11 +852,15 @@ function McpServerTools({
 function McpServerPanel({
   server,
   canWrite,
+  expanded,
+  onToggle,
   onEdit,
   onDelete,
 }: {
   server: McpRemoteServerInfo;
   canWrite: boolean;
+  expanded: boolean;
+  onToggle: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -866,6 +870,7 @@ function McpServerPanel({
   const storeServer = useStoreServer();
   // Outlives the tool table, which remounts on the reload a 409 triggers.
   const [staleDetail, setStaleDetail] = useState<string | null>(null);
+  const bodyId = `mcp-ext-body-${server.name}`;
 
   function stored(updated: McpRemoteServerInfo) {
     setStaleDetail(null);
@@ -900,16 +905,30 @@ function McpServerPanel({
   return (
     <section className="mcp-ext-server" aria-label={server.name}>
       <div className="mcp-ext-server-head">
-        <div className="mcp-ext-server-id">
-          <div className="mcp-ext-server-title">
-            <h4>{server.name}</h4>
-            <span className={server.enabled ? 'badge badge-ok' : 'badge badge-unknown'}>
-              {server.enabled ? t('mcp.ext.on') : t('mcp.ext.off')}
-            </span>
-            {needsReview(server) && <span className="badge mcp-badge-warn">{t('mcp.ext.needsReview')}</span>}
-          </div>
-          <code className="mcp-ellipsis mcp-ext-url" title={server.url}>{server.url}</code>
+        <button
+          type="button"
+          className="mcp-ext-toggle"
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          onClick={onToggle}
+        >
+          <span className="mcp-ext-toggle-icon" aria-hidden="true">▸</span>
+          <span className="mcp-ext-server-name">{server.name}</span>
+        </button>
+        <div className="mcp-ext-server-badges">
+          <span className={server.enabled ? 'badge badge-ok' : 'badge badge-unknown'}>
+            {server.enabled ? t('mcp.ext.on') : t('mcp.ext.off')}
+          </span>
+          {needsReview(server) && <span className="badge mcp-badge-warn">{t('mcp.ext.needsReview')}</span>}
+          {server.last_error && <span className="badge badge-error">{t('mcp.ext.errorBadge')}</span>}
         </div>
+        <code className="mcp-ellipsis mcp-ext-url" title={server.url}>{server.url}</code>
+        <span
+          className="mcp-ext-count"
+          title={t('mcp.ext.toolCount', { approved: approvedCount, total: server.tools.length })}
+        >
+          {t('mcp.ext.toolCountShort', { approved: approvedCount, total: server.tools.length })}
+        </span>
         {canWrite && (
           <div className="mcp-ext-actions">
             <button
@@ -941,46 +960,59 @@ function McpServerPanel({
           </div>
         )}
       </div>
-      {server.description && <p className="mcp-ext-description">{server.description}</p>}
-      <div className="mcp-ext-meta">
-        <span>{t('mcp.ext.toolCount', { approved: approvedCount, total: server.tools.length })}</span>
-        <span>
-          {server.refreshed_at
-            ? t('mcp.ext.refreshedAt', { time: formatKST(server.refreshed_at) })
-            : t('mcp.ext.neverRefreshed')}
-        </span>
-        <span>
-          {t('mcp.ext.grant')} <code>{server.route_id}</code>
-        </span>
-      </div>
-      {server.last_error && (
-        <div className="error-banner mcp-ext-error" role="alert">
-          {t('mcp.ext.lastError', { error: server.last_error })}
+      {/* Hidden rather than unmounted: unsaved checkbox changes survive a collapse. */}
+      <div id={bodyId} className="mcp-ext-server-body" hidden={!expanded}>
+        {/* The row drops the URL on narrow screens; it shows here instead. */}
+        <code className="mcp-ext-body-url">{server.url}</code>
+        {server.description && <p className="mcp-ext-description">{server.description}</p>}
+        <div className="mcp-ext-meta">
+          <span>{t('mcp.ext.toolCount', { approved: approvedCount, total: server.tools.length })}</span>
+          <span>
+            {server.refreshed_at
+              ? t('mcp.ext.refreshedAt', { time: formatKST(server.refreshed_at) })
+              : t('mcp.ext.neverRefreshed')}
+          </span>
+          <span>
+            {t('mcp.ext.grant')} <code>{server.route_id}</code>
+          </span>
         </div>
-      )}
-      {server.tools.length === 0 ? (
-        <p className="form-hint">
-          {server.refreshed_at ? t('mcp.ext.noToolsListed') : t('mcp.ext.noTools')}
-        </p>
-      ) : (
-        <>
-          {staleDetail !== null && (
-            <div className="mcp-warn-notice mcp-ext-stale" role="alert">
-              <strong>{t('mcp.ext.approvalsStale')}</strong>
-              {staleDetail && <div>{staleDetail}</div>}
-            </div>
-          )}
-          <McpServerTools
-            key={toolsKey}
-            server={server}
-            canWrite={canWrite}
-            onStored={stored}
-            onStale={setStaleDetail}
-          />
-        </>
-      )}
+        {server.last_error && (
+          <div className="error-banner mcp-ext-error" role="alert">
+            {t('mcp.ext.lastError', { error: server.last_error })}
+          </div>
+        )}
+        {server.tools.length === 0 ? (
+          <p className="form-hint">
+            {server.refreshed_at ? t('mcp.ext.noToolsListed') : t('mcp.ext.noTools')}
+          </p>
+        ) : (
+          <>
+            {staleDetail !== null && (
+              <div className="mcp-warn-notice mcp-ext-stale" role="alert">
+                <strong>{t('mcp.ext.approvalsStale')}</strong>
+                {staleDetail && <div>{staleDetail}</div>}
+              </div>
+            )}
+            <McpServerTools
+              key={toolsKey}
+              server={server}
+              canWrite={canWrite}
+              onStored={stored}
+              onStale={setStaleDetail}
+            />
+          </>
+        )}
+      </div>
     </section>
   );
+}
+
+// Past this many servers the list gets a search box and a review filter.
+const SERVER_FILTER_FROM = 4;
+
+function serverMatches(server: McpRemoteServerInfo, terms: string[]): boolean {
+  const haystack = `${server.name} ${server.url} ${server.description}`.toLowerCase();
+  return terms.every((term) => haystack.includes(term));
 }
 
 function McpExternalServers({ canWrite, groupEnabled }: { canWrite: boolean; groupEnabled: boolean }) {
@@ -989,8 +1021,25 @@ function McpExternalServers({ canWrite, groupEnabled }: { canWrite: boolean; gro
   // undefined: no modal; null: adding a server.
   const [editing, setEditing] = useState<McpRemoteServerInfo | null | undefined>(undefined);
   const [deleting, setDeleting] = useState<McpRemoteServerInfo | null>(null);
+  // One server open at a time keeps the card short however many there are.
+  // undefined: not chosen yet, so a lone server opens by itself.
+  const [openName, setOpenName] = useState<string | null | undefined>(undefined);
+  const [search, setSearch] = useState('');
+  const [reviewOnly, setReviewOnly] = useState(false);
   const serversQuery = useQuery({ queryKey: SERVERS_KEY, queryFn: getMcpServers });
   const servers = serversQuery.data ?? [];
+  const reviewCount = servers.filter(needsReview).length;
+  const filtering = servers.length >= SERVER_FILTER_FROM;
+  const terms = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = filtering
+    ? servers.filter((server) => (!reviewOnly || needsReview(server)) && serverMatches(server, terms))
+    : servers;
+  const openServer = openName === undefined ? (servers.length === 1 ? servers[0].name : null) : openName;
+
+  function saved(server: McpRemoteServerInfo) {
+    storeServer(server);
+    setOpenName(server.name);
+  }
 
   return (
     <div className="settings-card">
@@ -1013,21 +1062,45 @@ function McpExternalServers({ canWrite, groupEnabled }: { canWrite: boolean; gro
       {serversQuery.isLoading && <div className="loading-message" role="status">{t('common.loading')}</div>}
       {serversQuery.isError && <div className="error-banner" role="alert">{t('mcp.ext.loadFailed')}</div>}
       {serversQuery.data && servers.length === 0 && <p className="form-hint">{t('mcp.ext.empty')}</p>}
+      {filtering && (
+        <div className="mcp-ext-filter">
+          <input
+            type="search"
+            className="mcp-template-filter mcp-ext-search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder={t('mcp.ext.searchServers')}
+            aria-label={t('mcp.ext.searchServers')}
+          />
+          <label className="mcp-ext-review-only">
+            <input
+              type="checkbox"
+              checked={reviewOnly}
+              onChange={(event) => setReviewOnly(event.target.checked)}
+            />
+            {t('mcp.ext.reviewOnly', { count: reviewCount })}
+          </label>
+          <span className="form-hint">{t('mcp.ext.serversShown', { shown: shown.length, total: servers.length })}</span>
+        </div>
+      )}
       {servers.length > 0 && (
         <div className="mcp-ext-list">
-          {servers.map((server) => (
+          {shown.map((server) => (
             <McpServerPanel
               key={server.name}
               server={server}
               canWrite={canWrite}
+              expanded={openServer === server.name}
+              onToggle={() => setOpenName(openServer === server.name ? null : server.name)}
               onEdit={() => setEditing(server)}
               onDelete={() => setDeleting(server)}
             />
           ))}
+          {shown.length === 0 && <p className="form-hint">{t('mcp.ext.noServerMatches')}</p>}
         </div>
       )}
       {editing !== undefined && (
-        <McpServerModal server={editing} onClose={() => setEditing(undefined)} onSaved={storeServer} />
+        <McpServerModal server={editing} onClose={() => setEditing(undefined)} onSaved={saved} />
       )}
       {deleting && <McpServerDeleteModal server={deleting} onClose={() => setDeleting(null)} />}
     </div>

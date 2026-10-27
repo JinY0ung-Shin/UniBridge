@@ -1628,7 +1628,13 @@
       "compareNow": "Now",
       "compareSame": "Unchanged",
       "compareAnnotations": "Annotations",
-      "approvalsStale": "Nothing was approved: some tools changed since you loaded them. The list was reloaded; review them again."
+      "approvalsStale": "Nothing was approved: some tools changed since you loaded them. The list was reloaded; review them again.",
+      "toolCountShort": "{{approved}}/{{total}} approved",
+      "errorBadge": "Fetch failed",
+      "searchServers": "Search servers by name, URL or description",
+      "reviewOnly": "Needs review only ({{count}})",
+      "serversShown": "{{shown}} of {{total}} servers",
+      "noServerMatches": "No server matches."
     }
   }
 }

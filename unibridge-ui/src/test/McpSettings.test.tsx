@@ -449,6 +449,45 @@ describe('McpSettingsPage', () => {
     expect(screen.getByText(/mcp-ext-<name> route grant/)).toBeInTheDocument();
   });
 
+  it('keeps many servers collapsed, one open at a time, and filters them', async () => {
+    const reviewed = { ...jiraServer, tools: jiraServer.tools.filter((tool) => tool.status === 'approved') };
+    const servers = ['alpha', 'beta', 'gamma', 'delta'].map((name, index) => ({
+      ...(index === 0 ? jiraServer : reviewed),
+      tools: (index === 0 ? jiraServer : reviewed).tools.map((tool) => ({
+        ...tool,
+        exposed_name: `${name}__${tool.name}`,
+      })),
+      name,
+      url: `https://mcp.internal/${name}`,
+      route_id: `mcp-ext-${name}`,
+      last_error: null,
+    }));
+    mockedGetMcpServers.mockResolvedValue(servers);
+    renderWithProviders(<McpSettingsPage />, { permissions: WRITE_PERMISSIONS });
+
+    const alpha = await screen.findByRole('button', { name: 'alpha' });
+    expect(alpha).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('table', { name: /^Tools of/ })).not.toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: 'alpha' })).getByText('1/4 approved')).toBeInTheDocument();
+
+    await userEvent.click(alpha);
+    expect(screen.getByRole('table', { name: 'Tools of alpha' })).toBeInTheDocument();
+    await userEvent.click(within(screen.getByRole('table', { name: 'Tools of alpha' })).getByRole('checkbox', { name: 'alpha__create_issue' }));
+    await userEvent.click(screen.getByRole('button', { name: 'beta' }));
+    expect(screen.queryByRole('table', { name: 'Tools of alpha' })).not.toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Tools of beta' })).toBeInTheDocument();
+    // Collapsing kept the unsaved selection.
+    await userEvent.click(screen.getByRole('button', { name: 'alpha' }));
+    expect(screen.getByRole('checkbox', { name: 'alpha__create_issue' })).toBeChecked();
+
+    await userEvent.type(screen.getByRole('searchbox', { name: /Search servers/ }), 'gam');
+    expect(screen.getByText('1 of 4 servers')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'alpha' })).not.toBeInTheDocument();
+    await userEvent.clear(screen.getByRole('searchbox', { name: /Search servers/ }));
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Needs review only (1)' }));
+    expect(screen.getAllByRole('region').map((region) => region.getAttribute('aria-label'))).toEqual(['alpha']);
+  });
+
   it('saves the checked tools as the approvals', async () => {
     mockedGetMcpServers.mockResolvedValue([jiraServer]);
     mockedApproveMcpServerTools.mockResolvedValue(jiraServer);
