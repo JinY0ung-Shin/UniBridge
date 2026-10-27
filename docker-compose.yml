@@ -895,7 +895,6 @@ services:
           memory: 128m
           cpus: "0.25"
     environment:
-      - SSL_VERIFY=${SSL_VERIFY:-true}
       - HOST_IP=${HOST_IP:-localhost}
       - KEYCLOAK_EXTERNAL_URL=${KEYCLOAK_EXTERNAL_URL:-}
       - KEYCLOAK_PORT=${KEYCLOAK_PORT:-8443}
