@@ -44,7 +44,7 @@ history:
 | | Evaluated by | Covers | Recipients |
 |---|---|---|---|
 | **In-app checker** | unibridge-service, ~60s loop | registered resources: hosts, DBs, gateway routes, S3/NAS | resource 담당자 + 관리자 |
-| **Prometheus rules → Alertmanager → webhook** | the Prometheus and Alertmanager containers | the platform itself: APISIX 5xx rate, unibridge-service reachability, metadata/Keycloak/LiteLLM DBs, missing audit writes, no active blue-green color | 관리자 |
+| **Prometheus rules → Alertmanager → webhook** | the Prometheus and Alertmanager containers | the platform itself: APISIX 5xx rate, unibridge-service reachability, metadata/Keycloak DBs, Bifrost, missing audit writes, no active blue-green color | 관리자 |
 
 The second path exists because the checker runs *inside* unibridge-service and
 therefore cannot report its own death — `UniBridgeServiceDown` is precisely the

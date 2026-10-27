@@ -3,7 +3,7 @@
 UniBridge can run blue/green deployments without Kubernetes by splitting the
 stack into three Compose files:
 
-- `docker-compose.infra.yml`: persistent services, APISIX, Keycloak, LiteLLM,
+- `docker-compose.infra.yml`: persistent services, APISIX, Keycloak, Bifrost,
   Prometheus, and databases.
 - `docker-compose.app.yml`: one color of the application tier:
   `unibridge-service`, `llm-converter`, and `unibridge-ui`.
@@ -33,13 +33,13 @@ Work through this before running `deploy-bluegreen.sh` on a real environment.
      `https://HOST_IP:UNIBRIDGE_EDGE_PORT`.
    - All host ports must be distinct: `UNIBRIDGE_EDGE_PORT`,
      `BLUEGREEN_BLUE_UI_PORT`, `BLUEGREEN_GREEN_UI_PORT`, `KEYCLOAK_PORT`,
-     `LITELLM_PORT`, `BIFROST_UI_PORT`, `BIFROST_TEST_ADMIN_PORT`,
+     `BIFROST_UI_PORT`, `BIFROST_TEST_ADMIN_PORT`,
      `PROMETHEUS_PORT`, `APISIX_ADMIN_PORT`.
    - If you changed the APISIX admin port, also set `APISIX_ADMIN_PORT` (or
      `APISIX_ADMIN_HOST_URL`) — promotion calls the admin API there.
 
 3. **Know what is and isn't zero-downtime.** Only UniBridge (the edge port) is
-   rotated blue/green. Keycloak, LiteLLM, Bifrost, APISIX and the databases live
+   rotated blue/green. Keycloak, Bifrost, APISIX and the databases live
    in the **infra** stack as single instances: they stay up *during* an app deploy, but
    updating/restarting them is a normal restart with downtime — blue/green does
    not cover them. After the first bootstrap, normal app deploys verify the
@@ -156,8 +156,6 @@ when this repo runs as project `unibridge`:
 - `unibridge_unibridge-db-data`
 - `unibridge_etcd-data`
 - `unibridge_keycloak-db-data`
-- `unibridge_litellm-db-data`
-- `unibridge_litellm-dataset`
 - `unibridge_prometheus-data`
 - `unibridge_prometheus-file-sd`
 - `unibridge_llm-converter-state`
@@ -171,8 +169,6 @@ UNIBRIDGE_DATA_VOLUME=<old-project>_unibridge-data
 UNIBRIDGE_DB_DATA_VOLUME=<old-project>_unibridge-db-data
 ETCD_DATA_VOLUME=<old-project>_etcd-data
 KEYCLOAK_DB_DATA_VOLUME=<old-project>_keycloak-db-data
-LITELLM_DB_DATA_VOLUME=<old-project>_litellm-db-data
-LITELLM_DATASET_VOLUME=<old-project>_litellm-dataset
 PROMETHEUS_DATA_VOLUME=<old-project>_prometheus-data
 PROMETHEUS_FILE_SD_VOLUME=<old-project>_prometheus-file-sd
 LLM_CONVERTER_STATE_VOLUME=<old-project>_llm-converter-state
@@ -188,7 +184,7 @@ green never compete for Compose ownership of the same volume.
 `backup/backup.sh` and `backup/restore.sh` work on this layout without extra
 flags. They detect blue/green from `.deploy/bluegreen-active` (or a running
 `unibridge-infra` project) and then address each service in the project that
-owns it: infra services (`etcd`, `apisix`, `keycloak(-db)`, `litellm(-db)`,
+owns it: infra services (`etcd`, `apisix`, `keycloak(-db)`,
 `unibridge-db`, `bifrost`, plus the one-shot `etcd-init` auth bootstrap, which exits 0 after
 every `up` and is expected to show as `Exited (0)`) through `unibridge-infra`,
 app-tier services through the color projects. A restore that must stop `unibridge-service` stops it in every color
@@ -313,15 +309,15 @@ shape, including the separately granted `query-template-write-api` lifecycle rou
 and the LLM routes. If those routes are missing or stale, for example
 `llm-proxy` still points at an older gateway upstream, it forces
 re-provisioning on the new color instead of promoting broken routing. The
-`/api/llm` routes are held to `LLM_GATEWAY` the same way: on LiteLLM,
-`llm-proxy` takes the whole prefix and `llm-not-found` is absent; on Bifrost,
-`llm-proxy` and `llm-metrics` point at Bifrost, every route to Bifrost or the
-converter injects the current `BIFROST_TEST_VK`, `llm-not-found` is there and
-LiteLLM's `llm-admin` is gone. So flipping `LLM_GATEWAY` takes effect on the
-next deploy, and flipping it back is the rollback; so does a rotated
-`BIFROST_TEST_VK`. On Bifrost the deploy also warns, without stopping, when the
-infra `bifrost` container still runs with another `BIFROST_TEST_VK` than
-`.env`: it needs a recreate before it accepts the new key.
+`/api/llm` routes are held to Bifrost the same way: `llm-proxy` and
+`llm-metrics` point at Bifrost, every route to Bifrost or the converter injects
+the current `BIFROST_TEST_VK`, `llm-not-found` is there and LiteLLM's old
+`llm-admin` route and `litellm` upstream are gone. So a rotated
+`BIFROST_TEST_VK` takes effect on the next deploy. The deploy also warns,
+without stopping, when the infra `bifrost` container still runs with another
+`BIFROST_TEST_VK` than `.env`: it needs a recreate before it accepts the new
+key. It refuses an `LLM_GATEWAY` in `.env` other than `bifrost`, since LiteLLM
+support was removed ([README: Upgrading past the LiteLLM removal](../README.md#upgrading-past-the-litellm-removal)).
 
 The old `/api/llm-bi` side-by-side routes are retired the same way: the deploy
 re-provisions while any of `llm-bi-proxy`, `llm-bi-messages`,
@@ -368,31 +364,6 @@ routes. Start it first:
 `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --build llm-converter-bi`
 on that checkout.
 
-LiteLLM and its database run only while `LLM_GATEWAY` is `litellm`:
-`litellm/compose-gate.yml` leaves `litellm` and `litellm-db` out of a plain `up`
-and out of `config --services` on `bifrost`, so the infra health gate stops
-requiring them. After a deploy on Bifrost the script stops what still runs of
-them, but only once nothing needs LiteLLM: APISIX has no `litellm` upstream left,
-and no running color's converter forwards to it. It asks each converter which
-gateway its code uses rather than reading the container env, because a standby
-recreated with the current `.env` keeps its older image. So the standby from
-before the switch, the rollback target, keeps both up until the next deploy
-replaces it or `scripts/deploy-bluegreen.sh stop <color>` stops it, and while
-they are kept the deploy warns if either is not healthy (`LiteLLMDbDown` is quiet
-on Bifrost). A `litellm` upstream that
-a route of your own still uses keeps them up as well; once no route uses it, the
-deploy re-provisions and the service removes it. The stop gives requests already
-inside LiteLLM `DRAIN_SECONDS` to finish, then stops `litellm-db` (its volume
-keeps the data), and it is skipped (with a warning) on a Compose that still lists
-them under `bifrost`, which would fail the infra check of every later deploy. A
-normal deploy back on LiteLLM starts both (`up -d --wait litellm-db litellm`,
-recreating them if `.env` or the image changed meanwhile) before the infra check;
-a first deploy or `RECONCILE_INFRA_ON_DEPLOY=true` brings them up with the rest
-of the infra. The deploy refuses an `LLM_GATEWAY` other than the two lowercase
-values, which compose cannot read, and `bifrost` without a usable
-`BIFROST_TEST_VK`. `promote` and `rollback` stay routing-only; they warn when the
-target's converter forwards to a LiteLLM that is not running.
-
 Stored API-key route restrictions are replayed from the database on **every**
 boot regardless of `APISIX_PROVISION_ON_START`, so the database stays the source
 of truth even on inactive colors. Route/upstream *provisioning* stays gated by
@@ -410,7 +381,7 @@ restart. The service therefore skips a color-pinned upstream write, with a
 warning, whenever that upstream already exists pointing at nodes other than its
 own: `promote` is the only writer of the upstream-to-color mapping. A first
 boot, a matching refresh, and a genuinely missing upstream still provision
-normally. The colorless `litellm` upstream and all routes are unaffected, since
+normally. The colorless `bifrost` upstream and all routes are unaffected, since
 routes reference `upstream_id` rather than nodes and so carry no color.
 
 After a promotion the script also clears the flag on the standby it keeps alive,

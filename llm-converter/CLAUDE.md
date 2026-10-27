@@ -1,8 +1,8 @@
 # llm-converter (FastAPI sidecar)
 
 See the repo-root `CLAUDE.md` for cross-service context. Tiny service that sits
-between APISIX and the LLM gateway — LiteLLM or Bifrost, picked by `LLM_GATEWAY` — and
-translates two API shapes into chat/completions.
+between APISIX and the LLM gateway, Bifrost, and translates two API shapes into
+chat/completions.
 Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
 
 ## What it does
@@ -22,13 +22,11 @@ Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
   reach the client, and Bifrost's `<provider>/<id>` ids lose the provider segment (deduped)
   so clients see the bare names they call. Cached process-wide — APISIX injects one shared
   credential, so the listing does not depend on the caller — for `CONVERTER_MODELS_CACHE_TTL`
-  (30s). Because the fetch is shared it carries ONLY that credential (`Authorization` on
-  LiteLLM, `x-bf-vk` on Bifrost): LiteLLM prefers a client's `x-litellm-api-key` to
-  `Authorization`, which would hand every joined caller that key's listing or 401.
-  Concurrent misses share one fetch, and a caller waits `CONVERTER_MODELS_TIMEOUT` (Bifrost
-  2s — it asks every key live with no deadline, and Claude Code gives up after ~3s; LiteLLM
-  30s, the pre-cache wait; an explicit value applies to both) before getting the last good
-  listing (if younger than `CONVERTER_MODELS_STALE_MAX`, 600s) or a 504; the fetch keeps
+  (30s). Because the fetch is shared it carries ONLY that credential (`x-bf-vk`): a
+  client-sent selector header would hand every joined caller that caller's listing or error.
+  Concurrent misses share one fetch, and a caller waits `CONVERTER_MODELS_TIMEOUT` (2s —
+  Bifrost asks every key live with no deadline, and Claude Code gives up after ~3s) before
+  getting the last good listing (if younger than `CONVERTER_MODELS_STALE_MAX`, 600s) or a 504; the fetch keeps
   going and fills the cache. Timeouts, unreachable and 5xx fall back to the last listing;
   4xx do not.
 - `POST /v1/messages/count_tokens` — answered locally (`token_estimate.py`), never upstream:
@@ -44,20 +42,17 @@ Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
 - `config.py` — upstream gateway URL + knobs; `main.py` — app + routes.
 
 ## Notes
-- Request path is `client → UI nginx → APISIX (key-auth, credential inject) → llm-converter →
-  LiteLLM or Bifrost`. Live coverage lives in repo-root `e2e/` (runs only when `LLM_API_KEY`
+- Request path is `client → UI nginx → APISIX (key-auth, virtual-key inject) → llm-converter →
+  Bifrost`. Live coverage lives in repo-root `e2e/` (runs only when `LLM_API_KEY`
   is set), not here.
-- `LLM_GATEWAY` (`litellm`|`bifrost`, default `litellm`, unknown → `litellm`) — the same
-  switch unibridge-service reads for the APISIX routes. `bifrost` sends to
-  `CONVERTER_BIFROST_URL` (default `http://bifrost:8080`, plain HTTP) and needs no
-  `LITELLM_URL`. APISIX sets BOTH gateways' credentials on the converter routes (a deploy
-  re-points routes before the color promotion flips this upstream), so `sse.py`
-  `forward_request_headers` passes only the active one's: litellm → `Authorization` and
-  `x-litellm-*`, no `x-bf-*` at all; bifrost → only `x-bf-vk`/`x-bf-dim-consumer`/
-  `x-bf-lh-consumer`, no other `x-bf-*` (raw capture, passthrough, cache, MCP, stored-key
-  selectors), no `Authorization`/`x-api-key`/`api-key`/`x-goog-api-key`, no `x-litellm-*`.
-  Bifrost's `x-bifrost-*` response headers (provider, key name, fallback) are dropped in both
-  modes.
+- Upstream is `CONVERTER_BIFROST_URL` (default `http://bifrost:8080`, plain HTTP, so no TLS
+  settings: `LITELLM_URL` and `CONVERTER_TLS_*` are gone). The converter reads no `LLM_GATEWAY` (compose still passes `bifrost` for one release, for
+  older images on rollback). `sse.py` `forward_request_headers` passes only
+  `x-bf-vk`/`x-bf-dim-consumer`/`x-bf-lh-consumer` of the `x-bf-*` headers (raw capture,
+  passthrough, cache, MCP, stored-key selectors stay out), no
+  `Authorization`/`x-api-key`/`api-key`/`x-goog-api-key` (Bifrost reads them as virtual keys)
+  and no `x-litellm-*` from clients set up for the old LiteLLM. Bifrost's `x-bifrost-*`
+  response headers (provider, key name, fallback) are dropped.
 - Reasoning models emit a `thinking` block before answer text — keep `max_tokens` generous
   when testing or the answer can be empty.
 - `CONVERTER_MAX_BODY_BYTES` (default 32 MiB, the Anthropic API's own limit; 0 = off) caps the
@@ -77,12 +72,10 @@ Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
   body see the real deployment name. A model actually named `claude/...` upstream is shadowed by
   its own alias — don't register one that way.
 - `CONVERTER_REASONING_EFFORT_LEVELS` (default `low,medium,high`, `*` = passthrough) — the
-  backend's effort vocabulary. Both bridges forward the client's effort verbatim (on LiteLLM via
-  `allowed_openai_params`; that field is LiteLLM-only, since Bifrost's built-in vllm/sgl types
-  would pass it through to the backend), and vLLM/SGLang 400 on anything else, while Codex's
-  ladder reaches `xhigh`/`max`/`ultra`. `reasoning_effort.py` clamps a ladder value to the
-  nearest listed level (ties → the cheaper one) and drops an unknown name, so `reasoning_effort`
-  is simply omitted. The clamp runs in both modes.
+  backend's effort vocabulary. Both bridges forward the client's effort verbatim, and
+  vLLM/SGLang 400 on anything else, while Codex's ladder reaches `xhigh`/`max`/`ultra`.
+  `reasoning_effort.py` clamps a ladder value to the nearest listed level (ties → the cheaper
+  one) and drops an unknown name, so `reasoning_effort` is simply omitted.
 - `CONVERTER_LENGTH_AS_COMPLETED` (`auto`|`true`|`false`, default `auto`) — report a
   `finish_reason=length` truncation as terminal `response.completed` rather than the
   spec-correct `response.incomplete`. Codex CLI reads `incomplete` as a failed stream and

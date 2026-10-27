@@ -12,26 +12,25 @@ Browser ──HTTPS──> unibridge-ui (nginx)
                                           │
                                           ├── /api/query/*     → Registered databases (Postgres, MSSQL, ClickHouse)
                                           ├── /api/llm/v1/messages
-                                          │                  → llm-converter → LiteLLM
+                                          │                  → llm-converter → Bifrost
                                           ├── /api/llm/v1/responses
-                                          │                  → llm-converter → LiteLLM
+                                          │                  → llm-converter → Bifrost
                                           ├── /api/llm/v1/models
                                           │                  → llm-converter (listing + claude/ aliases)
-                                          ├── /api/llm/metrics → LiteLLM raw Prometheus /metrics
-                                          ├── /api/llm/*       → LiteLLM (LLM proxy)
-                                          ├── /api/llm-admin/* → LiteLLM Admin UI/API
+                                          ├── /api/llm/metrics → Bifrost raw Prometheus /metrics
+                                          ├── /api/llm/v1/{chat/completions,completions,embeddings}
+                                          │                  → Bifrost (LLM gateway)
                                           ├── /api/s3/*        → S3 connections
                                           ├── /api/nas/*       → Mounted NAS/local files
                                           ├── /api/prometheus/* → Prometheus HTTP API (PromQL, read-only)
                                           └── Custom upstream services
 
 Keycloak   ── OIDC auth
-Prometheus ── APISIX/LiteLLM/FastAPI metrics + DB TCP probes
-LiteLLM    ── Unified LLM proxy (+ Postgres)
-Bifrost    ── LLM gateway behind /api/llm under LLM_GATEWAY=bifrost (UI via bifrost-tls)
+Prometheus ── APISIX/Bifrost/FastAPI metrics + DB TCP probes
+Bifrost    ── LLM gateway behind /api/llm (UI via bifrost-tls)
 ```
 
-**Services (11):** etcd, APISIX, Keycloak + Postgres, unibridge-service, Prometheus, Blackbox Exporter, Grafana, LiteLLM + Postgres, unibridge-ui
+**Services (11):** etcd, APISIX, Keycloak + Postgres, unibridge-service, Prometheus, Blackbox Exporter, Grafana, Bifrost + bifrost-tls, unibridge-ui
 
 ## Prerequisites
 
@@ -62,8 +61,7 @@ cp .env.example .env
 | `APISIX_ADMIN_KEY` | Fail-fast secret for the APISIX admin API |
 | `APISIX_INTERNAL_PROXY_SECRET` | Fail-fast secret APISIX injects as `X-UniBridge-Internal-Proxy`; unibridge-service trusts gateway-set API-key identity headers only on requests carrying it. Generate a **dedicated** value with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` — never reuse `APISIX_ADMIN_KEY` |
 | `KEYCLOAK_SERVICE_CLIENT_SECRET` | Fail-fast shared secret used by Keycloak and unibridge-service |
-| `LITELLM_DB_PASSWORD` | Fail-fast secret for the LiteLLM database |
-| `LITELLM_MASTER_KEY` | Fail-fast secret for LiteLLM admin/API access |
+| `BIFROST_ENCRYPTION_KEY`, `BIFROST_ADMIN_PASSWORD`, `BIFROST_TEST_VK` | Fail-fast secrets for the LLM gateway; see [Bifrost](#bifrost) step 1 for their format |
 | `ETCD_ROOT_PASSWORD` | Set this unless `ETCD_ALLOW_NONE_AUTH=yes` for dev-only etcd without auth |
 | `HOST_IP` | Server IP or hostname that browsers access (not `localhost` in production) |
 | `JWT_SECRET` | Required when not using Keycloak-issued tokens; generate a separate strong value |
@@ -174,7 +172,6 @@ details.
 | Web UI | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>` |
 | Keycloak Admin | `https://<HOST_IP>:<KEYCLOAK_PORT>/admin` |
 | API Gateway | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/*` |
-| LiteLLM | `https://<HOST_IP>:<LITELLM_PORT>` (admin UI at `/ui` signs in via UniBridge SSO, admins only) |
 | Bifrost | `https://<HOST_IP>:<BIFROST_UI_PORT>`, or `https://<BIFROST_UI_HOSTNAME>` on the UniBridge port when that is set (UI and management API only, Bifrost's own admin login; see [Bifrost](#bifrost)) |
 | Prometheus | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/prometheus/*` (API-key auth via gateway; direct `:9090` is localhost-only, `PROMETHEUS_BIND` overrides) |
 | Grafana | `https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/grafana` (same-origin behind the UI) |
@@ -183,13 +180,13 @@ Default login: Keycloak admin console (`KC_ADMIN_USER` / `KC_ADMIN_PASSWORD`). N
 
 ### Codex through UniBridge
 
-Codex can use UniBridge through the OpenAI-compatible Responses endpoint exposed at `/api/llm/v1/responses`. The gateway authenticates the caller with APISIX `key-auth`, injects the LiteLLM master key internally, and sends the request through `llm-converter`, which translates Responses API traffic to LiteLLM's `/v1/chat/completions` shape and translates the result back.
+Codex can use UniBridge through the OpenAI-compatible Responses endpoint exposed at `/api/llm/v1/responses`. The gateway authenticates the caller with APISIX `key-auth`, injects the Bifrost virtual key internally, and sends the request through `llm-converter`, which translates Responses API traffic to Bifrost's `/v1/chat/completions` shape and translates the result back.
 
 Configure Codex in your user-level `~/.codex/config.toml`:
 
 ```toml
 model_provider = "unibridge"
-model = "<LiteLLM model id>"
+model = "<model name registered in Bifrost>"
 model_supports_reasoning_summaries = true   # required for Codex to send reasoning.effort for unknown model ids
 model_reasoning_effort = "medium"           # low | medium | high; forwarded as reasoning_effort
 show_raw_agent_reasoning = true             # optional: llm-converter streams raw reasoning text, not summaries
@@ -213,7 +210,7 @@ Requirements and behavior:
 - Put provider/auth settings in user config (`~/.codex/config.toml`), not project `.codex/config.toml`; Codex ignores provider and auth redirects from project config.
 - Grant the API key LLM access. Granting the `llm-proxy` route also whitelists the converter routes it fronts — `llm-messages`, `llm-responses`, and `llm-models` (the model listing; see [Model discovery for Claude Code](#model-discovery-for-claude-code)). It does **not** cover `llm-metrics`, which exposes every key's usage and stays an explicit grant.
 - Use a certificate Codex trusts: it needs a SAN and `CA:FALSE` (see [TLS certificates](#3-tls-certificates)), and for self-signed certificates export `SSL_CERT_FILE=/path/to/tls.crt` (or the CA certificate) in the shell that runs Codex. Codex has no option to skip TLS verification.
-- Codex sends `reasoning.effort` only for models it has metadata for. For LiteLLM model ids Codex does not know, set `model_supports_reasoning_summaries = true` together with `model_reasoning_effort` in `config.toml`; `llm-converter` maps the effort to Chat Completions `reasoning_effort` and attaches `allowed_openai_params` so LiteLLM forwards it to the backend instead of dropping it. Because the value now reaches the backend verbatim, effort levels outside its vocabulary (`xhigh`, `max`) are clamped to the nearest accepted level — vLLM/SGLang reject anything but `low`/`medium`/`high` — configurable via `CONVERTER_REASONING_EFFORT_LEVELS`.
+- Codex sends `reasoning.effort` only for models it has metadata for. For model ids Codex does not know, set `model_supports_reasoning_summaries = true` together with `model_reasoning_effort` in `config.toml`; `llm-converter` maps the effort to Chat Completions `reasoning_effort`, which Bifrost forwards to the backend. Because the value reaches the backend verbatim, effort levels outside its vocabulary (`xhigh`, `max`) are clamped to the nearest accepted level — vLLM/SGLang reject anything but `low`/`medium`/`high` — configurable via `CONVERTER_REASONING_EFFORT_LEVELS`.
 - Do not name the provider `OpenAI` or `azure` (or use an Azure-style base URL): Codex then switches to remote compaction items the converter does not implement. `name = "UniBridge"` keeps compaction local.
 - With the default `CONVERTER_LENGTH_AS_COMPLETED=auto`, a `finish_reason=length` truncation is reported to Codex as `response.completed` instead of the spec-correct `response.incomplete`: Codex reads `incomplete` as a failed stream and re-sends the whole turn up to `stream_max_retries` (5) times, so one truncated generation costs six. Other clients keep the spec behaviour.
 - Codex's `multi_agent_v1` sub-agent tools (spawn/send_input/wait/close/resume) and `image_gen` arrive as a Responses `namespace` tool, a shape Chat Completions cannot carry; `llm-converter` flattens them to top-level functions on the request and re-stamps the namespace on the returned tool calls so Codex can route them back to its client-side tools — so sub-agents and image generation work through the gateway. Toggle `CONVERTER_FLATTEN_NAMESPACE_TOOLS=false` to disable.
@@ -299,7 +296,7 @@ The helper authenticates as the Keycloak master admin (the service account lacks
 |------|---------|---------|
 | 3000 | unibridge-ui (HTTPS) | public |
 | 8443 | Keycloak (HTTPS) | public |
-| 4000 | LiteLLM (HTTPS) | public |
+| 18443 | Bifrost UI (`bifrost-tls`, HTTPS) | public |
 | 8000 | unibridge-service | localhost only |
 | 9180 | APISIX admin | localhost only |
 | 9090 | Prometheus | localhost only (`PROMETHEUS_BIND` overrides; external access via gateway `/api/prometheus/*`) |
@@ -373,14 +370,14 @@ Operational defaults in `docker-compose.yml`:
 - Docker `json-file` logs rotate at `50m` with `5` retained files per service.
 - Each service has an initial `deploy.resources.limits` CPU/memory cap for Docker Compose v2, plus `mem_limit`/`cpus` fallbacks for older Compose compatibility. Treat these as conservative starting values and tune from `docker stats` on the deploy host.
 - `unibridge-service` and `unibridge-ui` run with `init: true` for PID 1 signal handling and child process reaping.
-- Prometheus scrapes APISIX, LiteLLM, unibridge-service `/metrics`, and Blackbox TCP probes for the Postgres-backed services. Alert rules live under `prometheus/rules/`.
+- Prometheus scrapes APISIX, Bifrost, unibridge-service `/metrics`, and Blackbox TCP probes for the Postgres-backed services. Alert rules live under `prometheus/rules/`.
 
 ### API key expiry at the gateway
 
 Self-service keys carry a 30-day TTL (`expires_at`); admin-created keys default
 to no expiry. The app rejects an expired key with `401 API key expired`, but the
 LLM routes (`llm-proxy`, `llm-messages`, `llm-responses`, `llm-models`) go APISIX
-→ llm-converter → LiteLLM without ever reaching the app, so expiry is enforced at
+→ llm-converter → Bifrost without ever reaching the app, so expiry is enforced at
 the gateway instead: every `key-auth` route's `consumer-restriction` whitelist is
 reconciled against the database at boot and then every 5 minutes on the active
 blue/green color, and an expired key is dropped from all of them. It then gets
@@ -568,7 +565,7 @@ http_headers = { apikey = "<API_KEY>" }
 
 ### Model discovery for Claude Code
 
-`GET /api/llm/v1/models` lists every registered LiteLLM model, and lists each one
+`GET /api/llm/v1/models` lists every model registered in Bifrost, and lists each one
 a second time under a `claude/` prefix:
 
 ```bash
@@ -578,7 +575,7 @@ curl -H "apikey: $UNIBRIDGE_API_KEY" \
 
 The aliases exist because Claude Code's discovery keeps only model ids
 containing `claude` or `anthropic` (case-insensitive substring since v2.1.223;
-older builds require the id to *start* with one), and no LiteLLM deployment name
+older builds require the id to *start* with one), and no self-hosted model name
 does — `qwen3.5-32b` is dropped by the client, `claude/qwen3.5-32b` is kept. The
 aliases are not decorative: `claude/qwen3.5-32b` is callable at
 `/api/llm/v1/messages` exactly like `qwen3.5-32b`, because `llm-converter` strips
@@ -606,7 +603,7 @@ What the client does, and what it therefore needs from the deployment: it issues
 listing is a single un-paginated page), gives up after a **3-second** timeout,
 does **not** follow redirects, and does **not** send `anthropic-version` on this
 request. So the endpoint must answer directly and quickly: it makes one hop to
-LiteLLM and nothing else. A slow or redirecting front end breaks discovery even
+Bifrost and nothing else. A slow or redirecting front end breaks discovery even
 though the same URL works fine under `curl`.
 
 The route has its own **`llm-models`** grant, but any key already granted
@@ -615,9 +612,9 @@ are implied — so existing LLM keys discover models with no re-grant. The
 implication is one-directional: granting `llm-models` *alone* produces a
 discovery-only key that can list models and invoke none of them.
 
-### LiteLLM raw `/metrics` through the gateway
+### Bifrost raw `/metrics` through the gateway
 
-LiteLLM publishes its own Prometheus exposition, reachable through the fixed
+Bifrost publishes its own Prometheus exposition, reachable through the fixed
 gateway route `llm-metrics` (grant `llm-metrics` to a key on the **API Keys**
 page):
 
@@ -627,36 +624,17 @@ curl -H "apikey: $UNIBRIDGE_API_KEY" \
 ```
 
 This is the raw exposition format — counters and histograms accumulated since
-the LiteLLM process started, meant for an external Prometheus to scrape rather
-than for reading by hand. It carries the per-model latency detail that the
-aggregate views don't expose, including
-`litellm_llm_api_time_to_first_token_metric` and
-`litellm_deployment_latency_per_output_token`.
+the Bifrost process started, meant for an external Prometheus to scrape rather
+than for reading by hand. It carries the per-provider and per-model detail
+that the aggregate views don't expose, such as the `bifrost_upstream_latency_seconds`
+histogram, with the `consumer` label naming the API key.
 
-True inter-token latency is exposed here too, as
-`litellm_inter_token_latency_seconds` — a per-model histogram recorded by this
-stack's custom callback (`litellm/custom_callbacks.py`), streamed requests only.
-LiteLLM itself publishes no real ITL: its
-`litellm_deployment_latency_per_output_token` divides the whole request duration
-by the output token count, so it folds TTFT into every sample and reads high for
-short answers. This one measures only the interval after the first token.
-
-Samples are token gaps, not requests: a call streaming N tokens contributes N−1
-samples at that request's mean gap, so percentiles are token-weighted the way a
-decode-latency SLO means them, `rate(..._sum[5m]) / rate(..._count[5m])` is the
-true mean ITL, and `rate(..._count[5m])` is streamed output-token throughput.
-Buckets are SGLang's `sglang:inter_token_latency_seconds` list verbatim, so
-`histogram_quantile()` here is directly comparable side-by-side with the same
-query against an SGLang backend. Per-chunk timestamps aren't available at the
-callback, so within-request variance is smoothed to the mean — aggregates are
-exact, a single request's spread is not.
-
-The grant is deliberately separate from `llm-proxy`: `/api/llm/metrics` is
-carved out of the `/api/llm/*` catch-all by route priority, so a scraper key can
-read metrics without being able to invoke any model. Note the difference from
-`/api/prometheus/*` above — that one runs PromQL over history already stored by
-UniBridge's Prometheus (which scrapes LiteLLM internally anyway); this one is
-LiteLLM's live process state, for a scraper of your own.
+The grant is deliberately separate from `llm-proxy`, which serves only the
+inference paths: a scraper key can read metrics without being able to invoke
+any model. Note the difference from `/api/prometheus/*` above — that one runs
+PromQL over history already stored by UniBridge's Prometheus (which scrapes
+Bifrost internally anyway); this one is Bifrost's live process state, for a
+scraper of your own.
 
 ### Grafana dashboards
 
@@ -734,147 +712,16 @@ series. API-key (`consumer`) labels are unaffected — admin-created keys alread
 carry their human-readable key name; personal self-service keys show as
 `self_<id>`.
 
-### LiteLLM request timeout and retries
-
-`litellm/config.yaml` caps a single upstream call at `request_timeout: 600`,
-matching the 600s read timeout the APISIX LLM routes already enforce — LiteLLM
-waiting longer than the gateway it sits behind only holds a worker open. The
-timeout is the provider's httpx timeout, so it bounds a connect or an idle read
-against a wedged vLLM/SGLang backend without cutting a stream that keeps
-emitting chunks. `num_retries: 2` still covers connection-level failures, but
-`router_settings.retry_policy.TimeoutErrorRetries: 0` stops a request that
-already timed out from being re-sent, which would otherwise put three copies of
-the same work on a backend that is already saturated. The file is bind-mounted,
-so restart LiteLLM to pick up a change.
-
-### Upgrading LiteLLM
-
-The image tag is pinned in both `docker-compose.infra.yml` and
-`docker-compose.yml`; change it in both. LiteLLM runs its own Prisma migrations
-against `litellm-db` on boot, and it is a single infra instance, so an upgrade
-is a short LLM outage that blue/green does not cover:
-
-```bash
-./backup/backup.sh                     # litellm-db.sql.gz is part of the snapshot
-docker compose -p unibridge-infra -f docker-compose.infra.yml pull litellm
-docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait litellm
-```
-
-To roll back, put the previous tag back and run the same `up -d --wait`. In the
-1.83 → 1.102 rehearsal, 1.102 applied 53 migrations and was healthy in about
-17s. 1.83 then booted on the migrated database with nothing pending and served
-traffic, so a rollback only needed the tag. Keep the backup anyway, since a
-downgraded proxy can't use data written to the newer columns.
-
-Notes for the 1.83 → 1.102 jump:
-
-- 1.102 requires auth on `/metrics` by default; 1.83 didn't. The `litellm`
-  Prometheus scrape job sends no credentials, so `litellm/config.yaml` sets
-  `require_auth_for_metrics_endpoint: false`, and `litellm/tests` fails if that
-  line is dropped.
-- Requests made with the master key (every APISIX-routed call) are recorded
-  under the alias `litellm_proxy_master_key` instead of a key hash, both in
-  spend logs and in the `hashed_api_key` metric label. Per-key attribution uses
-  the `end_user` label, which is unchanged.
-- 1.83.14 never emitted `litellm_input_cached_tokens_metric`, so the
-  cached-token cards and Grafana panels stayed empty. 1.102 emits it, and they
-  start filling after the upgrade.
-
-### LiteLLM admin UI SSO
-
-The LiteLLM admin UI (`https://<HOST_IP>:<LITELLM_PORT>/ui`) signs in with
-UniBridge accounts via Keycloak SSO, admins only — mirroring the Grafana setup.
-Opening `/ui` redirects straight to Keycloak (`AUTO_REDIRECT_UI_LOGIN_TO_SSO`),
-so an admin holding a live UniBridge session lands signed in without touching a
-login form; unset that env var to get the manual login page (and its master-key
-fallback) back, e.g. while debugging a broken Keycloak. The wiring: the realm
-`admin` role is a composite granting the `litellm` client role `proxy_admin`, a
-client-role mapper surfaces it as a single-valued `role` claim, and LiteLLM
-adopts that claim as its own `proxy_admin` role; everyone else resolves to
-`internal_user_viewer` and is rejected at the SSO callback by
-`ui_access_mode: "admin_only"` (`litellm/config.yaml`). The in-app "LiteLLM
-Admin" button is likewise rendered for admins only.
-
-Caveats worth knowing:
-
-- **`GENERIC_CLIENT_USE_PKCE=true` is load-bearing** (see the compose comment):
-  Keycloak pins the token issuer to the browser-facing host, so the userinfo
-  endpoint always rejects tokens presented over the in-network listener; the
-  PKCE code path is what makes LiteLLM fall back to id_token claims instead of
-  500ing on that userinfo reply.
-- **LiteLLM SSO is free for up to 5 rows in its internal user table**;
-  more needs an enterprise license. Rejected non-admin sign-ins still insert an
-  `internal_user_viewer` row before the admin check runs, so prune strays from
-  the LiteLLM UI (Internal Users) or via `POST /user/delete` if the table
-  creeps toward the cap.
-- Accounts need a syntactically valid email — reserved TLDs like `.local` fail
-  LiteLLM's validation at the callback with a 500.
-- On a fresh install the realm import creates everything — the `litellm`
-  OAuth client (from `LITELLM_OAUTH_CLIENT_SECRET`, redirect
-  `https://<HOST_IP>:<LITELLM_PORT>/sso/callback`, PKCE S256), its
-  `proxy_admin` client role, the composite on the realm `admin` role, and the
-  user-client-role mapper emitting a single-valued `role` claim. On a realm
-  imported before this client existed, the Keycloak entrypoint creates the
-  missing pieces automatically at the next boot. The composite link needs
-  realm-management rights beyond the `apihub-service` account, so that one
-  step escalates to the bootstrap admin (`KC_ADMIN_USER`/`KC_ADMIN_PASSWORD`)
-  and, if that account has been removed, logs a warning — add the composite in
-  the Keycloak console then (realm role `admin` → Associated roles →
-  `litellm` `proxy_admin`). The entrypoint also re-syncs the client's secret
-  and redirect URI from env on every boot, same as Grafana's client.
-
-### LLM conversation capture
-
-Every **successful** LLM call through LiteLLM is appended as one JSON line to a
-fine-tuning dataset by [`litellm/custom_callbacks.py`](./litellm/custom_callbacks.py).
-This is deliberate data collection, so know what it keeps and where:
-
-- **What is stored**: the full request messages and the raw response, verbatim,
-  plus token counts, cost, model, and per-user attribution (the
-  `x-litellm-end-user-id` APISIX forwards — every call authenticates as the
-  master key, so this is the only identity available). Prompts and completions
-  are stored in the clear. Failed calls are not captured.
-- **Where**: the `litellm-dataset` Docker volume (container path
-  `LITELLM_DATASET_DIR`, default `/var/lib/litellm-dataset`), as
-  `dataset-YYYYMMDD.jsonl` files rotated daily by UTC date. The same volume name
-  is shared by the single-stack and blue-green layouts, so a capture started
-  under one carries over to the other. `scripts/build_finetune_dataset.py` turns
-  these into a training-ready dataset offline.
-- **Not a backup target**: these files are regenerable training data and can
-  grow large, so backups intentionally skip them (see
-  [`backup/README.md`](./backup/README.md)). Retention is therefore their **only**
-  size guard.
-- **Retention** (opportunistic, enforced from the capture path itself — no cron):
-  - `LITELLM_DATASET_RETENTION_DAYS` — delete files older than N days
-    (`0` = keep forever, the default).
-  - `LITELLM_DATASET_MAX_TOTAL_BYTES` — cap the combined size of all dataset
-    files, deleting oldest-first past the cap (`0` = no cap, the default). The
-    current day's file is never deleted, so the cap can be briefly exceeded by at
-    most one day of capture.
-
-  A full sweep runs at most once per process per day (at the UTC rollover); with
-  a byte cap set, an extra size sweep may run every few minutes so a busy day
-  cannot outrun the cap. Both default to `0`, preserving the original unbounded
-  behaviour for anyone relying on full history. Cleanup never blocks or fails a
-  request; deletions are logged to the LiteLLM container log.
-- **To disable capture entirely**: remove the
-  `callbacks: custom_callbacks.proxy_handler_instance` line from
-  [`litellm/config.yaml`](./litellm/config.yaml) and restart LiteLLM
-  (`docker compose restart litellm`, or restart it in the infra project on a
-  blue-green host). Existing files remain on the volume until removed manually.
-
 ### Bifrost
 
 [Bifrost](https://github.com/maximhq/bifrost) is the LLM gateway behind
-`/api/llm` under `LLM_GATEWAY=bifrost`
-([Switching /api/llm to Bifrost](#switching-apillm-to-bifrost)). It runs in the
-default stack whichever gateway `/api/llm` uses, so its UI and providers can be
-set up before the switch. Through the gateway it gets only the inference paths
-`/api/llm` routes to it. Nothing else of Bifrost is reachable there: not its UI
-at `/` (also served as a 200 fallback for unknown paths), not its management API
-under `/api/*`, not MCP under `/v1/mcp/*`, not `/metrics`. Off the gateway,
-Bifrost answers inference only with the virtual key APISIX injects — just as
-LiteLLM answers only the master key APISIX injects.
+`/api/llm` (earlier releases could also run LiteLLM there; see
+[Upgrading past the LiteLLM removal](#upgrading-past-the-litellm-removal)).
+Through the gateway it gets only the inference paths `/api/llm` routes to it.
+Nothing else of Bifrost is reachable there: not its UI at `/` (also served as a
+200 fallback for unknown paths), not its management API under `/api/*`, not MCP
+under `/v1/mcp/*`, not `/metrics` other than through `llm-metrics`. Off the
+gateway, Bifrost answers inference only with the virtual key APISIX injects.
 
 **`/api/llm-bi` has been removed.** Earlier releases ran Bifrost side by side
 with LiteLLM on `/api/llm-bi` (the `llm-bi-*` routes, a second converter
@@ -910,10 +757,7 @@ The UI nginx then answers that name with the same allowlist
 in both layouts since the blue-green edge passes the Host header through, and
 the button opens `https://<name>` on the port UniBridge was opened on. A path
 such as `/bifrost` is not possible: Bifrost's UI builds every URL from the root
-of its origin, where UniBridge's own `/api` and `/assets` live. The name also
-keeps Bifrost's `token` cookie apart from the LiteLLM admin UI's cookie of the
-same name; on a shared IP the two overwrite each other, so signing in to one
-signs you out of the other.
+of its origin, where UniBridge's own `/api` and `/assets` live.
 
 A certificate of its own for the name goes in `TLS_BIFROST_CERT_PATH` and
 `TLS_BIFROST_KEY_PATH`, for example `./certs/tls-bifrost.crt` and
@@ -937,9 +781,8 @@ setting the variables later (see
 host with those files in place, add the two lines to `.env` first and make that
 switch a planned `deploy`.
 
-Under that name the button also signs the admin in, the way the LiteLLM admin UI
-uses UniBridge SSO. Bifrost OSS has no SSO, so unibridge-service signs in for
-the admin ([`app/routers/bifrost_sso.py`](./unibridge-service/app/routers/bifrost_sso.py)):
+Under that name the button also signs the admin in. Bifrost OSS has no SSO, so
+unibridge-service signs in for the admin ([`app/routers/bifrost_sso.py`](./unibridge-service/app/routers/bifrost_sso.py)):
 a click gets a one-time code (60 s, admins only), the new tab redeems it at
 `https://<name>/_unibridge/sso`, and the service sets Bifrost's own session
 cookie on that host. The service reads `BIFROST_ADMIN_USERNAME` and
@@ -971,13 +814,13 @@ leaves, change the Bifrost admin password and set the new value as
      It must start with `sk-bf-`, because Bifrost silently replaces a value
      without the prefix, followed by at least 16 URL-safe characters (A–Z,
      a–z, 0–9, `-`, `_`), which the command above produces. unibridge-service
-     reads it too: under `LLM_GATEWAY=bifrost` the `/api/llm` routes inject it
+     reads it too: the `/api/llm` routes inject it
      as `x-bf-vk`, and the service installs them with no other kind of key.
      `config.json` declares it with `allow_all_providers`, so providers added
      later need no change, and `enforce_auth_on_inference` makes it mandatory.
      To rotate it, change the value and recreate the container with the start
      command in step 2 (`docker compose restart` keeps the old environment, so
-     every request would get a 401). Then deploy: under `LLM_GATEWAY=bifrost` a
+     every request would get a 401). Then deploy: a
      blue-green deploy finds the routes injecting the old key and re-provisions
      them, and warns if the bifrost container still runs with another key; on a
      single stack, `docker compose up -d unibridge-service` recreates the
@@ -1002,8 +845,8 @@ leaves, change the Bifrost admin password and set the new value as
 
    The **Bifrost Admin** button ships with the UI image, so it appears after
    the next app deploy (single stack: `docker compose up -d --build
-   unibridge-ui`). Open `BIFROST_UI_PORT` in the host firewall the same way as
-   `LITELLM_PORT`, unless the UI is served under `BIFROST_UI_HOSTNAME` (above).
+   unibridge-ui`). Open `BIFROST_UI_PORT` in the host firewall, unless the UI is
+   served under `BIFROST_UI_HOSTNAME` (above).
 
    On a host where the June 2026 Bifrost cutover ran, `up` recreates a leftover
    `bifrost` or `bifrost-tls` container of the same Compose project with this
@@ -1019,9 +862,10 @@ leaves, change the Bifrost admin password and set the new value as
 3. **Register providers** — in the Bifrost UI (the **Bifrost Admin** button) or
    through the management API on the host's loopback-only plain-HTTP port
    (`BIFROST_TEST_ADMIN_PORT`, default `18080`, used below). Register one
-   OpenAI-compatible custom provider per vLLM/SGLang server, with the timeouts
-   and retries LiteLLM had
-   ([LiteLLM request timeout and retries](#litellm-request-timeout-and-retries)).
+   OpenAI-compatible custom provider per vLLM/SGLang server. The example caps a
+   request at 600 s, the read timeout the APISIX LLM routes enforce (Bifrost
+   waiting longer than the gateway in front of it only holds a connection
+   open), and retries connection-level failures twice.
    `curl -u admin` prompts for the password, which keeps it out of the process
    list:
 
@@ -1053,23 +897,46 @@ leaves, change the Bifrost admin password and set the new value as
    - `base_url` has no `/v1`; Bifrost appends `/v1/chat/completions`.
    - Bifrost's defaults are a 300s request timeout, a 120s stream-idle cut and no
      retries. With retries on, it retries connection errors and upstream
-     5xx/429 but never its own request timeout — the same effect as LiteLLM's
-     `TimeoutErrorRetries: 0`.
-   - List the LiteLLM model name in `models` and map it in `aliases` to the id
-     the server serves. Clients then keep the **model names they used on
-     LiteLLM**. `/v1/models` lists them as `provider/name`, and both forms work.
-4. **Routes** — nothing to set up: under `LLM_GATEWAY=bifrost` provisioning
-   points the `/api/llm` routes at the `bifrost` upstream
+     5xx/429 but never its own request timeout, so a request that already timed
+     out is not put on a saturated backend a second time.
+   - List the public model name clients call in `models` and map it in
+     `aliases` to the id the server serves. `/v1/models` lists them as
+     `provider/name`, and both forms work. List each model on one key only:
+     Bifrost retries a failing key on the same key and never fails over to
+     another one, so put replicas of a model behind one router (such as smg)
+     instead.
+4. **Routes** — nothing to set up: provisioning points the `/api/llm` routes at
+   the `bifrost` upstream
    ([`llm_routes.py`](./unibridge-service/app/services/llm_routes.py)). The
    alert checker probes it like every APISIX upstream, so a crashed Bifrost
    mails `upstream_health` alerts to the admins.
 
-Differences from LiteLLM and limits:
+What clients see on `/api/llm`:
 
-- **Conversation capture.** Bifrost traffic is not written to
-  [LLM conversation capture](#llm-conversation-capture), which is a LiteLLM
-  callback. The LLM monitoring page and the Grafana LLM dashboard count both
-  gateways once Prometheus scrapes Bifrost (the `bifrost` job).
+- `llm-proxy` serves only `POST /api/llm/v1/chat/completions`, `/v1/completions`
+  and `/v1/embeddings`, because Bifrost answers other paths with its UI and keeps
+  its management API under `/api/`. `llm-not-found` answers the rest of
+  `/api/llm/` with a 404 that lists what is served.
+- `/v1/messages`, `/v1/messages/count_tokens`, `/v1/responses` and `/v1/models`
+  go through the per-color llm-converter. Bifrost has no `count_tokens` for
+  self-hosted models, so the converter answers it with its own estimate. It
+  lists Bifrost's models under the bare names clients call (without Bifrost's
+  `provider/` prefix), cached for 30 s.
+- `/api/llm/metrics` serves Bifrost's exposition
+  ([Bifrost raw `/metrics`](#bifrost-raw-metrics-through-the-gateway)).
+
+The LLM monitoring page and the Grafana LLM dashboard read Bifrost's counters
+(the `bifrost` Prometheus job). Model rows use the name the client asked for.
+Bifrost shortens a model id that no alias renamed (it drops suffixes such as
+`-v3`, `-preview` and dates), so register public names as key `aliases`.
+Bifrost's request count is one per request (the primary attempt), leaves out
+model listings and includes requests its virtual-key policy refused. Its cost
+and cached-token counters appear only once a value is non-zero, so cost stays 0
+with the bundled empty price list. Usage that LiteLLM served before a host
+moved to Bifrost is no longer charted.
+
+Limits:
+
 - **Bifrost's own observability.** Bifrost serves Prometheus metrics at
   `bifrost:8080/metrics`. They are unauthenticated inside the Docker network.
   APISIX stamps every request with
@@ -1101,8 +968,8 @@ Differences from LiteLLM and limits:
   through on the raw proxy (`x-bf-passthrough-extra-params`). A provider
   registered with Bifrost's built-in `vllm` or `sgl` type passes them through on
   every route; a custom OpenAI-compatible one only with that header. The
-  converter sends the LiteLLM-only `allowed_openai_params` to LiteLLM alone, and
-  clamps `reasoning_effort` for both gateways.
+  converter clamps `reasoning_effort` to the backend's vocabulary
+  (`CONVERTER_REASONING_EFFORT_LEVELS`).
 - **Admin access.** Bifrost OSS has a single admin login and no SSO (UniBridge
   signs admins in to it under `BIFROST_UI_HOSTNAME`, see above). Treat that
   login as gateway-admin level: switching `enforce_auth_on_inference` off in the
@@ -1112,105 +979,67 @@ Differences from LiteLLM and limits:
   `embedding` and `/api/llm/v1/completions` or `/v1/embeddings` is refused
   for that provider.
 
-### Switching /api/llm to Bifrost
+### Upgrading past the LiteLLM removal
 
-`LLM_GATEWAY` in `.env` (default `litellm`) picks the gateway behind `/api/llm`
-itself. With `bifrost`, the same routes (`llm-proxy`, `llm-messages`,
-`llm-responses`, `llm-models`, `llm-metrics`) point at Bifrost, so client base
-URLs and API-key grants stay as they are
-([`llm_routes.py`](./unibridge-service/app/services/llm_routes.py)). LiteLLM
-stops running (see below); setting the switch back is the rollback.
+Earlier releases could run LiteLLM behind `/api/llm` (`LLM_GATEWAY=litellm`,
+the old default) and captured its conversations for fine-tuning. Both are gone:
+`litellm` and `litellm-db` are no longer in any compose file, Prometheus no
+longer scrapes or alerts on them, and the LLM Monitoring page has no LiteLLM
+button. Boot provisioning deletes the `llm-admin` route and the `litellm`
+upstream from APISIX (an upstream that a route of your own still uses stays).
+Nothing deletes data, so a host that ran LiteLLM keeps its containers, volumes,
+dumps and Keycloak client until you remove them:
 
-What clients see on Bifrost:
+1. **Before the first deploy, recreate Prometheus.** Its scrape config is a
+   single-file bind mount and it reads rules only at start, so until then it
+   keeps probing `litellm-db` and keeps the old `LiteLLMDbDown` rule, which the
+   new service image no longer keeps quiet. The data volume stays:
+   `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --force-recreate prometheus`
+   (single stack: `docker compose up -d --force-recreate prometheus`).
+2. **Deploy as usual.** The deploy refuses an `LLM_GATEWAY` in `.env` other
+   than `bifrost`. Nothing reads it or any `LITELLM_*` variable any more, so
+   they can go from `.env` once no checkout from before this release will be
+   deployed again. Until then keep `LLM_GATEWAY=bifrost` (an older checkout reads
+   a missing value as `litellm` and would start LiteLLM again) and
+   `LITELLM_MASTER_KEY`, `LITELLM_DB_PASSWORD`, `LITELLM_OAUTH_CLIENT_SECRET`
+   (its compose files require them, so every compose command fails without). A host still serving
+   `/api/llm` from LiteLLM must first register its models in Bifrost under the
+   same names ([Bifrost](#bifrost) steps 1–3); LiteLLM's models, keys and spend
+   history are not migrated. A bare-code run (`uvicorn` from `unibridge-service/`)
+   must drop those lines from the `.env` it reads, or the service refuses to
+   start with `extra_forbidden`; containers have no `.env` inside and are
+   unaffected.
+3. **Remove the stopped LiteLLM containers by name** after that deploy. Do not
+   use `--remove-orphans` on the infra project, and never `down -v`: the volume
+   names are fixed, so that would delete the shared data volumes.
 
-- `llm-proxy` serves only `POST /api/llm/v1/chat/completions`, `/v1/completions`
-  and `/v1/embeddings`, because Bifrost answers other paths with its UI and keeps
-  its management API under `/api/`. `llm-not-found` answers the rest of
-  `/api/llm/` with a 404 that lists what is served. LiteLLM-only paths are gone:
-  its key, model and spend API, its `/health`, audio, rerank and
-  `/v1/models/{id}`.
-- `/v1/messages`, `/v1/messages/count_tokens`, `/v1/responses` and `/v1/models`
-  keep going through the per-color llm-converter, which reads the same switch for
-  its upstream. Bifrost has no `count_tokens` for self-hosted models, so the
-  converter answers it with its own estimate (on LiteLLM, LiteLLM still does). It
-  lists Bifrost's models under the bare names clients call (without Bifrost's
-  `provider/` prefix), cached for 30 s.
-- `/api/llm/metrics` serves Bifrost's exposition, whose metric names differ from
-  LiteLLM's.
-- LiteLLM's admin UI is gone with LiteLLM: the LLM Monitoring page shows only
-  the Bifrost Admin button, and provisioning removes `/api/llm-admin` and the
-  `litellm` upstream (an upstream that a route of your own still uses stays).
-- `litellm-db` stops with LiteLLM. Its volume keeps LiteLLM's models and keys
-  for a switch back. While it is stopped, `backup.sh` carries the last verified
-  dump into each new snapshot (`litellm-db.carried-from` names the snapshot it
-  was taken in), so rotation never drops it. `LiteLLMDbDown` and the Grafana overview's DB panel leave it
-  out while the active unibridge-service reports `bifrost`.
+   ```bash
+   # Expect unibridge-infra-litellm-1 and unibridge-infra-litellm-db-1
+   # (unibridge-litellm-1 and unibridge-litellm-db-1 on a single stack)
+   docker ps -a --filter name=litellm --format '{{.Names}}\t{{.Status}}'
+   docker stop unibridge-infra-litellm-1 unibridge-infra-litellm-db-1
+   docker rm unibridge-infra-litellm-1 unibridge-infra-litellm-db-1
+   docker image rm ghcr.io/berriai/litellm:v1.102.1   # optional
+   ```
+4. **Optionally drop LiteLLM's data** once you are sure nothing needs it:
+   the `unibridge_litellm-db-data` volume (models, keys, spend logs), the
+   `unibridge_litellm-dataset` volume (the captured conversations, prompts and
+   completions in the clear; copy them out with `tar` first if you want to keep
+   the training data), or the `LITELLM_DB_DATA_VOLUME` / `LITELLM_DATASET_VOLUME`
+   you set instead. Snapshots taken before this release hold a
+   `litellm-db.sql.gz` that nothing restores any more; retention rotates them
+   away after 14 days, so copy the last one elsewhere first if you want it
+   ([`backup/README.md`](./backup/README.md)).
 
-The LLM monitoring page and the Grafana LLM dashboard add LiteLLM's and
-Bifrost's counters, so the history carries across the switch. Model rows use the name the client asked
-for. Bifrost shortens a model id that no alias renamed (it drops suffixes such as
-`-v3`, `-preview` and dates), so register public names as key `aliases`.
-Bifrost's request count is one per request (the primary attempt), leaves out
-model listings and includes requests its virtual-key policy refused. Its cost
-and cached-token counters appear only once a value is non-zero, so cost stays 0
-with the bundled empty price list.
-
-Before switching:
-
-1. Register every model clients use in Bifrost under the same name (key `models`
-   plus `aliases`, step 3 of [Bifrost](#bifrost)). List each model on one key
-   only: Bifrost retries a
-   failing key on the same key and never fails over to another one, so put
-   replicas of a model behind one router (such as smg) instead.
-2. Run Bifrost v2.2.5 or later ([Upgrading Bifrost](#upgrading-bifrost)).
-3. Let Prometheus scrape Bifrost (the `bifrost` job in
-   `prometheus/prometheus.yml`, with the `BifrostDown` alert), so the LLM pages
-   keep counting traffic. Prometheus reads that file through a single-file bind
-   mount and has no reload API enabled, so recreate it once after pulling (its
-   data volume stays); that also loads the `LiteLLMDbDown` rule that stays quiet
-   on Bifrost:
-   `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --force-recreate prometheus`.
-4. Check that the host's Docker Compose leaves LiteLLM out under `bifrost`
-   (it needs Compose 2.20 or later). This must print `bifrost` and nothing else:
-   `LLM_GATEWAY=bifrost docker compose -p unibridge-infra -f docker-compose.infra.yml config --services | grep -xE 'litellm|bifrost'`
-
-Switch with `LLM_GATEWAY=bifrost` in `.env`, then deploy. Write the value in
-lowercase: compose reads it verbatim to leave LiteLLM out of the stack
-([`litellm/compose-gate.yml`](./litellm/compose-gate.yml)) and refuses every
-command on any other spelling. A blue-green deploy finds `/api/llm` out of step
-with the switch and re-provisions on the new color, and the converter upstream
-moves at promotion. The converter routes carry both gateways' credentials and
-each converter forwards only its own, so neither the switch nor a rollback has a
-window of 401s. On a single stack, run
-`docker compose up -d unibridge-service llm-converter unibridge-ui`. Check it
-with the E2E suite against `/api/llm`.
-
-From then on a plain `up` neither starts nor recreates LiteLLM or `litellm-db`,
-and the blue-green infra health gate no longer requires them. What still runs of
-them is stopped once nothing needs LiteLLM:
-
-- Blue-green: the deploy stops them as soon as no running color forwards to
-  LiteLLM and APISIX has no `litellm` upstream left. The standby from before the
-  switch still forwards `/v1/messages` and `/v1/responses` to LiteLLM, and it is
-  the rollback target, so both stay up until the next deploy replaces that color
-  or `scripts/deploy-bluegreen.sh stop <color>` stops it. With
-  `STOP_OLD_AFTER_PROMOTE=true` the switching deploy stops them right away. The
-  deploy refuses `bifrost` without a usable `BIFROST_TEST_VK`.
-- Single stack: `docker compose stop litellm litellm-db`. A later
-  `docker compose down` leaves containers that are still running alone (and then
-  cannot remove the network), so stop them first or run
-  `docker compose --profile litellm down`.
-
-A stack that is already on Bifrost when it pulls this release: recreate
-Prometheus (step 3 above) before its next deploy. That deploy stops
-`litellm-db`, and Prometheus reads its rules only at start, so the old
-`LiteLLMDbDown` would fire.
-
-To roll back, set `LLM_GATEWAY=litellm` and deploy again. The blue-green deploy
-starts `litellm-db` and LiteLLM, on the current `.env` and image, before the
-infra check and before the new color points `/api/llm` back at LiteLLM; on a
-single stack, `docker compose up -d` brings them back. On an air-gapped host,
-load the LiteLLM image first if its tag changed in the meantime.
+   ```bash
+   docker volume rm unibridge_litellm-db-data unibridge_litellm-dataset
+   ```
+5. **Delete the `litellm` client from the production Keycloak realm.** The
+   realm import that no longer creates it only runs on a first boot, and the
+   Keycloak entrypoint no longer touches it, so an existing realm keeps it: in
+   the admin console, realm `apihub` → **Clients** → `litellm` → **Action** →
+   **Delete**. That also removes its `proxy_admin` role from the realm `admin`
+   composite. The host firewall can close `LITELLM_PORT` (default 4000).
 
 ### Upgrading Bifrost
 
@@ -1223,8 +1052,8 @@ an older tag.
 
 Bifrost migrates its config and log stores on boot. It is a single infra
 instance that a normal blue-green deploy never recreates, so a new tag takes
-effect only when you recreate the container, and `/api/llm` under
-`LLM_GATEWAY=bifrost` is down for the few seconds that takes. Run `./backup/backup.sh` first: it snapshots the config
+effect only when you recreate the container, and `/api/llm` is down for the
+few seconds that takes. Run `./backup/backup.sh` first: it snapshots the config
 store (providers, provider keys, virtual keys) as `bifrost-config.db.gz`, which
 `./backup/restore.sh bifrost <snapshot>` puts back
 ([`backup/README.md`](./backup/README.md)). The snapshot leaves out `logs.db`,
@@ -1269,7 +1098,7 @@ A change to `bifrost/config.json`, such as the `x-bf-eh-*` header filter or
 content logging, also takes a new container, since `up` leaves an unchanged
 service running on the file it booted with:
 `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --force-recreate --wait bifrost`
-(`/api/llm` under `LLM_GATEWAY=bifrost` is down until it is healthy). Bifrost then syncs its whole client section from the file, so client
+(`/api/llm` is down until it is healthy). Bifrost then syncs its whole client section from the file, so client
 settings changed in its UI since go back to the file's values.
 
 Rows logged while content logging was on keep their content until the 14-day
@@ -1359,7 +1188,7 @@ Registered resources (DBs, hosts, routes, S3/NAS) are watched by the in-app
 alert checker. The *platform's own* components are watched by Prometheus rules in
 [`prometheus/rules/unibridge-alerts.yml`](./prometheus/rules/unibridge-alerts.yml)
 instead — APISIX 5xx rate, unibridge-service reachability, the metadata DB, the
-Keycloak/LiteLLM DB TCP probes, missing audit writes, and (blue-green only)
+Keycloak DB TCP probe, missing audit writes, and (blue-green only)
 "no color reports itself active". Those go to Alertmanager, which POSTs them to
 `/_api/internal/alertmanager`; the app turns each one into mail for the global
 관리자 plus an entry in alert history (rule type `prometheus_alert`).
@@ -1392,7 +1221,7 @@ receiver are stripped from the rendered config entirely.
 
 ## Backups
 
-Stateful components (etcd, Keycloak DB, LiteLLM DB, unibridge-service meta DB, Bifrost's config store) are backed up by scripts in [`backup/`](./backup/README.md). Snapshots land in `./snapshots/` (gitignored) with 14-day retention, and manifest SHA256s are verified before any destructive restore.
+Stateful components (etcd, Keycloak DB, unibridge-service meta DB, Bifrost's config store) are backed up by scripts in [`backup/`](./backup/README.md). Snapshots land in `./snapshots/` (gitignored) with 14-day retention, and manifest SHA256s are verified before any destructive restore.
 
 ### Deploy-time setup
 
@@ -1561,7 +1390,7 @@ docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait
 ## Key Features
 
 - **Multi-DB support** — PostgreSQL, MSSQL, ClickHouse via a single query endpoint
-- **LLM Proxy** — Unified LiteLLM gateway with centralized auth, usage metrics, and per-model analytics
+- **LLM Proxy** — Bifrost LLM gateway with centralized auth, usage metrics, and per-model analytics
 - **S3 Connections** — Register S3-compatible storage and browse objects through the gateway
 - **Alerts** — Rule-based alerting with webhook delivery and history
 - **APISIX Gateway** — Route management, upstream config, API key auth
