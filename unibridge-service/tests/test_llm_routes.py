@@ -1,17 +1,14 @@
-"""The /api/llm routes on LiteLLM or Bifrost (app/services/llm_routes.py) and their provisioning.
+"""The /api/llm routes on Bifrost (app/services/llm_routes.py) and their provisioning.
 
 Pinned here:
 
-1. On Bifrost, /api/llm exposes exactly the inference, converter and metrics
-   paths, under the same route ids as on LiteLLM, and injects the gateway
-   virtual key; llm-not-found answers every other path.
-2. The converter routes are the same on both gateways and carry each configured
-   gateway's credential, because a deploy rewrites the routes before it moves
-   the converter upstream to the color that reads the new switch.
-3. Boot provisioning follows LLM_GATEWAY, keeps API-key grants across a switch
-   in both directions, takes LiteLLM's admin route and upstream out on Bifrost
-   (LiteLLM does not run there), and leaves everything alone on Bifrost without
-   a usable virtual key.
+1. /api/llm exposes exactly the inference, converter and metrics paths, under
+   the route ids it had on LiteLLM, and injects the gateway virtual key;
+   llm-not-found answers every other path.
+2. The converter routes carry the virtual key and nothing of LiteLLM's.
+3. Boot provisioning keeps the API-key grants of routes it rewrites (including
+   ones still on LiteLLM), leaves everything alone without a usable virtual
+   key, and takes what LiteLLM left in APISIX (its admin route and upstream) out.
 """
 
 from __future__ import annotations
@@ -24,11 +21,10 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from app.main import _provision_llm_routes
+from app.main import _provision_llm_routes, _retire_litellm_routing
 from app.routers.gateway import (
     _SYSTEM_INJECTED_HEADERS,
     _SYSTEM_ROUTE_URIS,
-    _health_path_for_route,
     _shadowed_system_uri,
 )
 from app.services import llm_routes
@@ -37,12 +33,13 @@ from app.services.apisix_system_resources import (
     LLM_NOT_FOUND_ROUTE_ID,
     PROTECTED_ROUTE_IDS,
     PROTECTED_UPSTREAM_IDS,
+    RETIRED_LITELLM_ROUTE_ID,
+    RETIRED_LITELLM_UPSTREAM_ID,
 )
 from app.services.consumer_restrictions import DENY_ALL_CONSUMER, IMPLIED_ROUTES
 from tests.conftest import auth_header
 
 VK = "sk-bf-" + "v" * 32
-MASTER = "sk-litellm-master"
 
 ON_BIFROST = [
     ("POST", "/api/llm/v1/chat/completions"),
@@ -60,15 +57,13 @@ def _paths(body: dict) -> list[str]:
     return body.get("uris") or [body["uri"]]
 
 
-def _on_bifrost(vk: str = VK, master_key: str = MASTER) -> dict[str, dict]:
+def _on_bifrost(vk: str = VK) -> dict[str, dict]:
     bodies = {
         "llm-proxy": llm_routes.bifrost_proxy_route(vk),
         "llm-metrics": llm_routes.bifrost_metrics_route(),
     }
     for route_id in llm_routes.CONVERTER_ROUTE_IDS:
-        bodies[route_id] = llm_routes.converter_route(
-            route_id, master_key=master_key, virtual_key=vk, on_bifrost=True
-        )
+        bodies[route_id] = llm_routes.converter_route(route_id, vk)
     return bodies
 
 
@@ -85,23 +80,6 @@ def _status_error(status_code: int, text: str = "") -> httpx.HTTPStatusError:
 # ---------------------------------------------------------------------------
 # The route definitions
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("gateway", "vk", "state"),
-    [
-        ("litellm", VK, "litellm"),
-        (None, VK, "litellm"),
-        ("bifrost", VK, "bifrost"),
-        (" Bifrost ", VK, "bifrost"),
-        ("bifrost", "", "skip"),
-        ("bifrost", "sk-bf-short", "skip"),
-        ("bifrost", None, "skip"),
-        ("litellm", "", "litellm"),
-    ],
-)
-def test_gateway_state(gateway, vk, state) -> None:
-    assert llm_routes.gateway_state(gateway, vk) == state
 
 
 def test_bifrost_exposes_only_the_served_paths() -> None:
@@ -127,7 +105,7 @@ def test_bifrost_exposes_only_the_served_paths() -> None:
     assert headers["set"]["x-bf-vk"] == VK
     assert headers["set"]["x-bf-dim-consumer"] == "$consumer_name"
     assert headers["set"]["x-bf-lh-consumer"] == "$consumer_name"
-    # Non-OpenAI fields reach the backend on the raw proxy, as through LiteLLM.
+    # Non-OpenAI fields reach the backend on the raw proxy.
     assert headers["set"]["x-bf-passthrough-extra-params"] == "true"
     assert headers["remove"] == list(llm_routes.REMOVED_HEADERS)
 
@@ -150,62 +128,25 @@ def test_bifrost_exposes_only_the_served_paths() -> None:
         assert body["status"] == 1
 
 
-def test_converter_routes_carry_each_configured_credential() -> None:
-    both = llm_routes.converter_route(
-        "llm-messages", master_key=MASTER, virtual_key=VK, on_bifrost=True
-    )
-    headers = _headers(both)
+def test_converter_routes_carry_the_virtual_key() -> None:
+    messages = llm_routes.converter_route("llm-messages", VK)
+    headers = _headers(messages)
     assert headers["set"] == {
-        "Authorization": f"Bearer {MASTER}",
-        "x-litellm-end-user-id": "$consumer_name",
         "x-bf-vk": VK,
         "x-bf-dim-consumer": "$consumer_name",
         "x-bf-lh-consumer": "$consumer_name",
     }
-    # The client's own credential headers never reach either gateway.
-    assert headers["remove"] == [h for h in llm_routes.REMOVED_HEADERS if h != "Authorization"]
-    assert _paths(both) == ["/api/llm/v1/messages", "/api/llm/v1/messages/count_tokens"]
-    assert both["upstream_id"] == "llm-converter"
-    # On LiteLLM, count_tokens stays on llm-proxy's catch-all: LiteLLM answers it.
-    on_litellm = llm_routes.converter_route(
-        "llm-messages", master_key=MASTER, virtual_key=VK, on_bifrost=False
-    )
-    assert _paths(on_litellm) == ["/api/llm/v1/messages"]
-    assert _headers(on_litellm) == headers
+    # The client's own credential headers never reach Bifrost.
+    assert headers["remove"] == list(llm_routes.REMOVED_HEADERS)
+    # The converter answers count_tokens with its own estimate.
+    assert _paths(messages) == ["/api/llm/v1/messages", "/api/llm/v1/messages/count_tokens"]
+    assert messages["upstream_id"] == "llm-converter"
+    assert messages["timeout"] == {"connect": 60, "send": 600, "read": 600}
 
-    litellm_only = _headers(
-        llm_routes.converter_route(
-            "llm-responses", master_key=MASTER, virtual_key="sk-bf-short", on_bifrost=False
-        )
-    )
-    assert not [name for name in litellm_only["set"] if name.startswith("x-bf-")]
-    bifrost_only = _headers(
-        llm_routes.converter_route("llm-models", master_key="", virtual_key=VK, on_bifrost=True)
-    )
-    assert "Authorization" not in bifrost_only["set"]
-    assert "x-litellm-end-user-id" not in bifrost_only["set"]
-    assert "Authorization" in bifrost_only["remove"]
-
-    models = llm_routes.converter_route(
-        "llm-models", master_key=MASTER, virtual_key=VK, on_bifrost=True
-    )
+    models = llm_routes.converter_route("llm-models", VK)
     assert models["methods"] == ["GET"]
     assert "timeout" not in models
-
-
-def test_litellm_bodies_keep_their_shape() -> None:
-    proxy = llm_routes.litellm_proxy_route(MASTER)
-    assert proxy["uri"] == "/api/llm/*"
-    assert proxy["upstream_id"] == "litellm"
-    assert _headers(proxy)["set"] == {
-        "Authorization": f"Bearer {MASTER}",
-        "x-litellm-end-user-id": "$consumer_name",
-    }
-    # Its grants come from the consumer-restriction replay, not a deny-all body.
-    assert "consumer-restriction" not in proxy["plugins"]
-    metrics = llm_routes.litellm_metrics_route(MASTER)
-    assert metrics["upstream_id"] == "litellm"
-    assert _headers(metrics)["set"] == {"Authorization": f"Bearer {MASTER}"}
+    assert _headers(models) == headers
 
 
 def test_not_found_route_answers_the_rest_of_the_prefix() -> None:
@@ -239,21 +180,6 @@ def test_they_stay_system_routes_with_their_grants() -> None:
             assert _shadowed_system_uri(path, list(_SYSTEM_ROUTE_URIS)), path
 
 
-@pytest.mark.parametrize(
-    ("route", "path"),
-    [
-        ({"id": "llm-proxy", "upstream_id": "litellm"}, "/health/liveliness"),
-        ({"id": "llm-proxy", "upstream_id": "bifrost"}, "/health"),
-        ({"id": "llm-admin", "upstream_id": "litellm"}, "/health/liveliness"),
-        ({"id": "llm-proxy"}, "/health/liveliness"),
-        ({"id": "custom", "upstream_id": "litellm"}, "/health/liveliness"),
-        ({"id": "custom", "upstream_id": "other"}, "/health"),
-    ],
-)
-def test_route_health_path_follows_the_upstream(route, path) -> None:
-    assert _health_path_for_route(route) == path
-
-
 # Shared with test_deployment_security.py, which holds the deploy script's rule to it.
 VIRTUAL_KEY_CASES = [
     (VK, True),
@@ -283,6 +209,12 @@ def test_bifrost_upstream_is_protected_and_plain_http() -> None:
     assert "bifrost" in PROTECTED_UPSTREAM_IDS
     assert llm_routes.BIFROST_UPSTREAM["nodes"] == {"bifrost:8080": 1}
     assert llm_routes.BIFROST_UPSTREAM["scheme"] == "http"
+
+
+def test_litellm_ids_stay_protected() -> None:
+    # Retiring deletes them, so no user resource may take either id.
+    assert RETIRED_LITELLM_ROUTE_ID in PROTECTED_ROUTE_IDS
+    assert RETIRED_LITELLM_UPSTREAM_ID in PROTECTED_UPSTREAM_IDS
 
 
 # ---------------------------------------------------------------------------
@@ -329,57 +261,36 @@ class _FakeApisix:
 
 
 
-async def _provision(fake: _FakeApisix, **settings) -> None:
-    config = SimpleNamespace(
-        **{"LITELLM_MASTER_KEY": MASTER, "BIFROST_TEST_VK": VK, "LLM_GATEWAY": "litellm", **settings}
-    )
-    with (
+def _patched(fake: _FakeApisix, **settings):
+    config = SimpleNamespace(**{"BIFROST_TEST_VK": VK, **settings})
+    return (
         patch("app.main.settings", config),
         patch("app.services.apisix_client.get_resource", fake.get_resource),
         patch("app.services.apisix_client.put_resource", fake.put_resource),
         patch("app.services.apisix_client.delete_resource", fake.delete_resource),
-    ):
+    )
+
+
+async def _provision(fake: _FakeApisix, **settings) -> None:
+    config, get, put, delete = _patched(fake, **settings)
+    with config, get, put, delete:
         await _provision_llm_routes()
+
+
+async def _retire(fake: _FakeApisix) -> None:
+    config, get, put, delete = _patched(fake)
+    with config, get, put, delete:
+        await _retire_litellm_routing()
 
 
 def _converter_writes() -> list[tuple[str, str, str]]:
     return [("PUT", "routes", route_id) for route_id in llm_routes.CONVERTER_ROUTE_IDS]
 
 
-async def test_litellm_installs_the_catch_all_and_no_404_route() -> None:
+async def test_provisioning_installs_the_exact_paths_then_the_404_route() -> None:
     fake = _FakeApisix()
 
     await _provision(fake)
-
-    assert fake.writes == [
-        ("PUT", "upstreams", "litellm"),
-        ("PUT", "routes", "llm-admin"),
-        ("PUT", "upstreams", "llm-converter"),
-        *_converter_writes(),
-        ("PUT", "routes", "llm-proxy"),
-        ("PUT", "routes", "llm-metrics"),
-    ]
-    assert fake.bodies[("routes", "llm-proxy")] == llm_routes.litellm_proxy_route(MASTER)
-    assert fake.bodies[("routes", "llm-metrics")] == llm_routes.litellm_metrics_route(MASTER)
-    for route_id in llm_routes.CONVERTER_ROUTE_IDS:
-        assert fake.bodies[("routes", route_id)] == llm_routes.converter_route(
-            route_id, master_key=MASTER, virtual_key=VK, on_bifrost=False
-        )
-
-
-async def test_back_on_litellm_the_404_route_goes_before_the_catch_all() -> None:
-    fake = _FakeApisix({("routes", LLM_NOT_FOUND_ROUTE_ID): llm_routes.not_found_route()})
-
-    await _provision(fake)
-
-    deleted = fake.writes.index(("DELETE", "routes", LLM_NOT_FOUND_ROUTE_ID))
-    assert deleted < fake.writes.index(("PUT", "routes", "llm-proxy"))
-
-
-async def test_bifrost_installs_the_exact_paths_then_the_404_route() -> None:
-    fake = _FakeApisix()
-
-    await _provision(fake, LLM_GATEWAY="bifrost")
 
     assert fake.writes == [
         ("PUT", "upstreams", "bifrost"),
@@ -388,8 +299,6 @@ async def test_bifrost_installs_the_exact_paths_then_the_404_route() -> None:
         ("PUT", "routes", "llm-proxy"),
         ("PUT", "routes", "llm-metrics"),
         ("PUT", "routes", LLM_NOT_FOUND_ROUTE_ID),
-        # LiteLLM does not run on Bifrost; nothing may still route to it.
-        ("DELETE", "upstreams", "litellm"),
     ]
     for route_id, body in _on_bifrost().items():
         assert fake.bodies[("routes", route_id)] == body, route_id
@@ -397,57 +306,61 @@ async def test_bifrost_installs_the_exact_paths_then_the_404_route() -> None:
     assert fake.bodies[("routes", LLM_NOT_FOUND_ROUTE_ID)] == llm_routes.not_found_route()
 
 
-async def test_bifrost_without_litellm_leaves_out_its_credential_and_admin_route() -> None:
-    fake = _FakeApisix()
+# What a boot on LiteLLM left in APISIX: its admin route and upstream, and
+# llm-proxy / llm-metrics pointing at that upstream.
+_LITELLM_UPSTREAM = {
+    "id": "litellm",
+    "name": "litellm",
+    "type": "roundrobin",
+    "scheme": "https",
+    "nodes": {"litellm:4000": 1},
+}
+_LITELLM_ROUTES = {
+    "llm-admin": {"uri": "/api/llm-admin/*", "upstream_id": "litellm"},
+    "llm-proxy": {"uri": "/api/llm/*", "upstream_id": "litellm"},
+    "llm-metrics": {"uri": "/api/llm/metrics", "priority": 10, "upstream_id": "litellm"},
+}
 
-    await _provision(fake, LLM_GATEWAY="bifrost", LITELLM_MASTER_KEY="")
 
-    assert ("PUT", "upstreams", "litellm") not in fake.writes
-    assert ("PUT", "routes", "llm-admin") not in fake.writes
-    for route_id in llm_routes.CONVERTER_ROUTE_IDS:
-        headers = _headers(fake.bodies[("routes", route_id)])
-        assert "Authorization" not in headers["set"]
-        assert headers["set"]["x-bf-vk"] == VK
-
-
-def _litellm_routing() -> dict:
-    """LiteLLM's own APISIX resources as a boot on LiteLLM leaves them."""
-    return {
-        ("upstreams", "litellm"): {"id": "litellm", **llm_routes.LITELLM_UPSTREAM},
-        ("routes", "llm-admin"): {"id": "llm-admin", **llm_routes.llm_admin_route()},
+def _litellm_leftovers() -> dict:
+    existing = {("upstreams", "litellm"): dict(_LITELLM_UPSTREAM)}
+    existing[("routes", "llm-admin")] = {
+        "id": "llm-admin",
+        "name": "llm-admin",
+        **_LITELLM_ROUTES["llm-admin"],
+        "plugins": {"key-auth": {}},
     }
+    return existing
 
 
-async def test_switching_to_bifrost_removes_litellm_once_nothing_routes_to_it() -> None:
-    fake = _FakeApisix(_litellm_routing())
+async def test_retiring_litellm_removes_its_route_then_its_upstream() -> None:
+    fake = _FakeApisix(_litellm_leftovers())
 
-    await _provision(fake, LLM_GATEWAY="bifrost")
+    await _retire(fake)
 
-    route_deleted = fake.writes.index(("DELETE", "routes", "llm-admin"))
-    upstream_deleted = fake.writes.index(("DELETE", "upstreams", "litellm"))
     # APISIX refuses to delete an upstream a route still uses.
-    assert fake.writes.index(("PUT", "routes", "llm-proxy")) < upstream_deleted
-    assert fake.writes.index(("PUT", "routes", "llm-metrics")) < upstream_deleted
-    assert route_deleted < upstream_deleted
+    assert fake.writes == [
+        ("DELETE", "routes", RETIRED_LITELLM_ROUTE_ID),
+        ("DELETE", "upstreams", RETIRED_LITELLM_UPSTREAM_ID),
+    ]
 
 
-async def test_switching_back_to_litellm_reinstalls_its_admin_route_and_upstream() -> None:
+async def test_retiring_litellm_with_nothing_left_writes_nothing() -> None:
     fake = _FakeApisix()
 
-    await _provision(fake, LLM_GATEWAY="litellm")
+    await _retire(fake)
 
-    assert fake.bodies[("upstreams", "litellm")] == llm_routes.LITELLM_UPSTREAM
-    assert fake.bodies[("routes", "llm-admin")] == llm_routes.llm_admin_route()
+    assert fake.writes == []
 
 
-async def test_bifrost_keeps_the_litellm_upstream_another_route_still_uses(caplog) -> None:
+async def test_retiring_keeps_the_litellm_upstream_another_route_still_uses(caplog) -> None:
     fake = _FakeApisix(
-        _litellm_routing(),
+        _litellm_leftovers(),
         delete_errors={("upstreams", "litellm"): _status_error(400, "still referenced")},
     )
 
     with caplog.at_level(logging.WARNING, logger="app.main"):
-        await _provision(fake, LLM_GATEWAY="bifrost")
+        await _retire(fake)
 
     assert ("DELETE", "routes", "llm-admin") in fake.writes
     assert "Kept APISIX upstream litellm" in caplog.text
@@ -455,66 +368,55 @@ async def test_bifrost_keeps_the_litellm_upstream_another_route_still_uses(caplo
 
 async def test_an_outage_removing_the_litellm_upstream_reaches_the_retry_loop() -> None:
     fake = _FakeApisix(
-        _litellm_routing(), delete_errors={("upstreams", "litellm"): _status_error(503)}
+        _litellm_leftovers(), delete_errors={("upstreams", "litellm"): _status_error(503)}
     )
 
     with pytest.raises(Exception):
-        await _provision(fake, LLM_GATEWAY="bifrost")
+        await _retire(fake)
 
 
-@pytest.mark.parametrize("target", ["bifrost", "litellm"])
-async def test_a_switch_keeps_the_grants(target) -> None:
+async def test_moving_off_litellm_keeps_the_grants() -> None:
     granted = {"whitelist": ["alice", "master-app"]}
-    start = _on_bifrost() if target == "litellm" else {
-        "llm-proxy": llm_routes.litellm_proxy_route(MASTER),
-        "llm-metrics": llm_routes.litellm_metrics_route(MASTER),
+    start = {
+        "llm-proxy": _LITELLM_ROUTES["llm-proxy"],
+        "llm-metrics": _LITELLM_ROUTES["llm-metrics"],
         **{
-            route_id: llm_routes.converter_route(
-                route_id, master_key=MASTER, virtual_key=VK, on_bifrost=False
-            )
+            route_id: llm_routes.converter_route(route_id, VK)
             for route_id in llm_routes.CONVERTER_ROUTE_IDS
         },
     }
     existing = {}
     for route_id, body in start.items():
-        route = {"id": route_id, **body}
-        route["plugins"] = {**route["plugins"], "consumer-restriction": dict(granted)}
+        route = {"id": route_id, "name": route_id, **deepcopy(body)}
+        route["plugins"] = {**route.get("plugins", {}), "consumer-restriction": dict(granted)}
         existing[("routes", route_id)] = route
     fake = _FakeApisix(existing)
 
-    await _provision(fake, LLM_GATEWAY=target)
+    await _provision(fake)
 
     for route_id in start:
         body = fake.bodies[("routes", route_id)]
         assert body["plugins"]["consumer-restriction"] == granted, route_id
-    expected_upstream = "bifrost" if target == "bifrost" else "litellm"
-    assert fake.bodies[("routes", "llm-proxy")]["upstream_id"] == expected_upstream
+    assert fake.bodies[("routes", "llm-proxy")]["upstream_id"] == "bifrost"
+    assert fake.bodies[("routes", "llm-metrics")]["upstream_id"] == "bifrost"
 
 
 @pytest.mark.parametrize("value", ["", "sk-bf-short", "not-a-key"])
-async def test_bifrost_without_a_usable_key_leaves_everything_alone(value, caplog) -> None:
+async def test_without_a_usable_key_leaves_everything_alone(value, caplog) -> None:
     fake = _FakeApisix()
 
     with caplog.at_level(logging.ERROR, logger="app.main"):
-        await _provision(fake, LLM_GATEWAY="bifrost", BIFROST_TEST_VK=value)
+        await _provision(fake, BIFROST_TEST_VK=value)
 
     assert fake.writes == []
     assert "left as they are" in caplog.text
-
-
-async def test_litellm_without_a_master_key_leaves_everything_alone() -> None:
-    fake = _FakeApisix()
-
-    await _provision(fake, LITELLM_MASTER_KEY="")
-
-    assert fake.writes == []
 
 
 async def test_apisix_refusing_the_404_route_does_not_block_boot(caplog) -> None:
     fake = _FakeApisix(put_errors={("routes", LLM_NOT_FOUND_ROUTE_ID): _status_error(400, "bad")})
 
     with caplog.at_level(logging.WARNING, logger="app.main"):
-        await _provision(fake, LLM_GATEWAY="bifrost")
+        await _provision(fake)
 
     assert "refused the llm-not-found route" in caplog.text
 
@@ -523,20 +425,18 @@ async def test_a_404_route_outage_still_reaches_the_retry_loop() -> None:
     fake = _FakeApisix(put_errors={("routes", LLM_NOT_FOUND_ROUTE_ID): _status_error(503)})
 
     with pytest.raises(Exception):
-        await _provision(fake, LLM_GATEWAY="bifrost")
+        await _provision(fake)
 
 
 # ---------------------------------------------------------------------------
-# The gateway router keeps the system headers on Bifrost
+# The gateway router keeps the system headers
 # ---------------------------------------------------------------------------
 
 
 def _provisioned_responses_route() -> dict:
     return {
         "id": "llm-responses",
-        **llm_routes.converter_route(
-            "llm-responses", master_key="", virtual_key=VK, on_bifrost=True
-        ),
+        **llm_routes.converter_route("llm-responses", VK),
     }
 
 

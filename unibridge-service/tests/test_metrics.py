@@ -119,19 +119,6 @@ def test_pool_and_meta_db_gauges_record_current_values() -> None:
     assert "unibridge_meta_db_up 0.0" in output
 
 
-@pytest.mark.parametrize("gateway, other", [("bifrost", "litellm"), ("litellm", "bifrost")])
-def test_llm_gateway_gauge_marks_the_configured_gateway(gateway: str, other: str) -> None:
-    registry = CollectorRegistry()
-    recorder = metrics.create_metrics(registry=registry)
-
-    recorder.set_llm_gateway(gateway)
-
-    # Both labels exported, so a dashboard reads 0 rather than nothing for the other.
-    output = _output(registry)
-    assert f'unibridge_llm_gateway{{gateway="{gateway}"}} 1.0' in output
-    assert f'unibridge_llm_gateway{{gateway="{other}"}} 0.0' in output
-
-
 def test_metrics_clamp_negative_observations_and_record_audit_write() -> None:
     registry = CollectorRegistry()
     recorder = metrics.create_metrics(registry=registry)

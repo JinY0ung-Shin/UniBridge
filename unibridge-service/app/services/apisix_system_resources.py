@@ -11,18 +11,23 @@ MCP_API_ROUTE_ID = "mcp-api"
 # provisioning would delete.
 RETIRED_LLM_BI_ROUTE_IDS = ("llm-bi-proxy", "llm-bi-messages", "llm-bi-responses", "llm-bi-models")
 RETIRED_LLM_BI_UPSTREAM_ID = "llm-converter-bi"
+# What LiteLLM had in APISIX: its admin UI route and its upstream. Boot
+# provisioning deletes them (app/main.py _retire_litellm_routing) and they stay
+# protected for the same reason.
+RETIRED_LITELLM_ROUTE_ID = "llm-admin"
+RETIRED_LITELLM_UPSTREAM_ID = "litellm"
 # Answers all of /api/llm-bi with a 404 that points to /api/llm. It proxies
 # nothing, so it publishes no API and takes no key grants.
 LLM_BI_NOT_FOUND_ROUTE_ID = "llm-bi-not-found"
-# The same kind of route for /api/llm while LLM_GATEWAY=bifrost, where llm-proxy
-# serves exact paths instead of the whole prefix (app/services/llm_routes.py).
+# The same kind of route for /api/llm, where llm-proxy serves exact paths
+# instead of the whole prefix (app/services/llm_routes.py).
 LLM_NOT_FOUND_ROUTE_ID = "llm-not-found"
 
 PROTECTED_ROUTE_IDS = {
     QUERY_API_ROUTE_ID,
     QUERY_TEMPLATE_WRITE_ROUTE_ID,
     "llm-proxy",
-    "llm-admin",
+    RETIRED_LITELLM_ROUTE_ID,
     "s3-api",
     "llm-messages",
     "llm-responses",
@@ -38,7 +43,7 @@ PROTECTED_ROUTE_IDS = {
 }
 PROTECTED_UPSTREAM_IDS = {
     "unibridge-service",
-    "litellm",
+    RETIRED_LITELLM_UPSTREAM_ID,
     "llm-converter",
     "prometheus",
     "bifrost",

@@ -89,32 +89,25 @@ _HOP_BY_HOP = frozenset(
     }
 )
 
-# Stripped from the request before forwarding upstream, whatever the gateway:
+# Stripped from the request before forwarding upstream:
 # - ``accept-encoding``: httpx negotiates and auto-decompresses internally; if
 #   we forwarded the client's value, upstream would compress and we'd decode
 #   anyway — wasted upstream CPU.
-# The gateway credentials are filtered per mode in ``forward_request_headers``.
+# The gateway credentials are filtered in ``forward_request_headers``.
 DROP_FROM_REQUEST = _HOP_BY_HOP | frozenset({"accept-encoding"})
 
-# Gateway credentials. APISIX sets BOTH gateways' on the converter routes — the
-# LiteLLM master key (``Authorization``) and ``x-litellm-end-user-id``, plus the
-# Bifrost virtual key (``x-bf-vk``) and the ``x-bf-dim-consumer`` /
-# ``x-bf-lh-consumer`` attribution — because a deploy re-points the routes
-# before the color promotion flips this converter's upstream. Each mode passes
-# on only its own gateway's:
-# - litellm: ``Authorization`` and ``x-litellm-*`` as APISIX set them; every
-#   ``x-bf-*`` is dropped, so the Bifrost virtual key never reaches LiteLLM.
-# - bifrost: the three ``x-bf-*`` headers APISIX sets, nothing else under that
-#   prefix — a client-sent one could switch on raw request capture, extra-param
-#   passthrough, cache or MCP behavior, or name a stored provider key — and no
-#   ``Authorization``, ``x-litellm-*`` or other header Bifrost reads as a
-#   virtual key.
+# Gateway credentials. APISIX sets the Bifrost virtual key (``x-bf-vk``) and the
+# ``x-bf-dim-consumer`` / ``x-bf-lh-consumer`` attribution on the converter
+# routes. Only those three ``x-bf-*`` headers pass, nothing else under that
+# prefix — a client-sent one could switch on raw request capture, extra-param
+# passthrough, cache or MCP behavior, or name a stored provider key — and no
+# ``Authorization`` or other header Bifrost reads as a virtual key. Nothing under
+# ``x-litellm-*`` either: clients set up for the LiteLLM that used to sit here
+# still send its key and tags, which have no business reaching Bifrost.
 BIFROST_REQUEST_HEADER_PREFIX = "x-bf-"
 BIFROST_GATEWAY_HEADERS = frozenset({"x-bf-vk", "x-bf-dim-consumer", "x-bf-lh-consumer"})
 LITELLM_REQUEST_HEADER_PREFIX = "x-litellm-"
-_BIFROST_DROPPED_CREDENTIALS = frozenset(
-    {"authorization", "x-api-key", "api-key", "x-goog-api-key"}
-)
+_DROPPED_CREDENTIALS = frozenset({"authorization", "x-api-key", "api-key", "x-goog-api-key"})
 
 # Bifrost's routed-identity response headers (provider, resolved model, the
 # provider key's name, fallback details) describe the deployment behind the
@@ -138,20 +131,17 @@ DROP_FROM_RESPONSE = _HOP_BY_HOP | frozenset(
 )
 
 
-def forward_request_headers(items, gateway: str) -> Dict[str, str]:
-    """The client request headers to send to ``gateway`` (see the notes above)."""
+def forward_request_headers(items) -> Dict[str, str]:
+    """The client request headers to send to Bifrost (see the notes above)."""
     out: Dict[str, str] = {}
     for key, value in items:
         lowered = key.lower()
         if lowered in DROP_FROM_REQUEST:
             continue
         if lowered.startswith(BIFROST_REQUEST_HEADER_PREFIX):
-            if gateway != "bifrost" or lowered not in BIFROST_GATEWAY_HEADERS:
+            if lowered not in BIFROST_GATEWAY_HEADERS:
                 continue
-        elif gateway == "bifrost" and (
-            lowered in _BIFROST_DROPPED_CREDENTIALS
-            or lowered.startswith(LITELLM_REQUEST_HEADER_PREFIX)
-        ):
+        elif lowered in _DROPPED_CREDENTIALS or lowered.startswith(LITELLM_REQUEST_HEADER_PREFIX):
             continue
         out[key] = value
     return out

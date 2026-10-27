@@ -4,10 +4,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 # Bifrost keeps its providers, provider keys (encrypted with
 # BIFROST_ENCRYPTION_KEY), virtual keys and governance in a SQLite config store
-# on its data volume (config_store in bifrost/config.json). Under
-# LLM_GATEWAY=bifrost, /api/llm itself runs on what is in it. Only that file is
-# backed up: logs.db on the same volume holds the request logs, which Bifrost
-# keeps for 14 days and traffic writes again.
+# on its data volume (config_store in bifrost/config.json). /api/llm itself
+# runs on what is in it. Only that file is backed up: logs.db on the same
+# volume holds the request logs, which Bifrost keeps for 14 days and traffic
+# writes again.
 #
 # The Bifrost image has neither sqlite3 nor Python, so a one-shot sibling
 # container that mounts the volume does the SQLite work. Unless
@@ -165,12 +165,8 @@ backup_bifrost() {
   local out="$1"
 
   if [[ -z "$(bifrost_containers)" ]]; then
-    # /api/llm runs on Bifrost then: no container is an outage, not a stack
-    # without Bifrost.
-    [[ "${LLM_GATEWAY:-litellm}" != "bifrost" ]] || \
-      die "bifrost: LLM_GATEWAY=bifrost, but the stack has no bifrost container to back up; start it (\`up -d --wait bifrost\` on its compose project)"
-    log "bifrost: no bifrost container in this stack (Bifrost is not deployed), skipped"
-    return 0
+    # /api/llm runs on Bifrost: no container is an outage.
+    die "bifrost: the stack has no bifrost container to back up; start it (\`up -d --wait bifrost\` on its compose project)"
   fi
 
   local volume
@@ -205,7 +201,7 @@ restore_bifrost() {
 
   cat >&2 <<EOF
 This will:
-  1. Stop bifrost: /api/llm under LLM_GATEWAY=bifrost is down until step 3
+  1. Stop bifrost: /api/llm is down until step 3
   2. Replace $BIFROST_CONFIG_DB on docker volume $volume with $src
      (logs.db, the request logs, stays as it is)
   3. Start bifrost and wait for it to be healthy

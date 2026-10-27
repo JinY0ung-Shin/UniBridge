@@ -1233,7 +1233,7 @@ class TestUpstreamReachabilityProbe:
         assert result == [("orders", False, "no_nodes")]
 
     @pytest.mark.asyncio
-    async def test_litellm_upstream_uses_the_liveliness_path(self):
+    async def test_every_upstream_is_probed_on_health(self):
         import httpx
         from app.services import alert_checker
 
@@ -1243,12 +1243,13 @@ class TestUpstreamReachabilityProbe:
             seen.append(request.url.path)
             return httpx.Response(200)
 
+        # Even an upstream left over from LiteLLM: /health/liveliness was its own.
         with _upstream_listing({"id": "litellm", "nodes": {"litellm:4000": 1}}):
             await alert_checker._check_upstream_health(
                 transport=httpx.MockTransport(handler)
             )
 
-        assert seen == ["/health/liveliness"]
+        assert seen == ["/health"]
 
     @pytest.mark.asyncio
     async def test_host_header_follows_pass_host_node(self):

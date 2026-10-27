@@ -1,7 +1,7 @@
 """Live E2E: OpenAI Responses endpoint through the deployed gateway.
 
 POST {LLM_BASE_URL}/v1/responses → APISIX → llm-converter (Responses↔OpenAI) →
-LiteLLM /v1/chat/completions. Covers non-streaming, streaming, previous_response_id
+Bifrost /v1/chat/completions. Covers non-streaming, streaming, previous_response_id
 chaining, and the unknown-id error.
 """
 

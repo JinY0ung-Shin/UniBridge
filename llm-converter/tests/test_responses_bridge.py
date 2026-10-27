@@ -47,9 +47,6 @@ def test_request_reasoning_effort_forwarded():
     body = {"model": "m", "input": "hello", "reasoning": {"effort": "high", "summary": "auto"}}
     out = responses_request_to_chat_body(body)
     assert out["reasoning_effort"] == "high"
-    # LiteLLM drops reasoning_effort for models outside its gpt-5/o-series name
-    # map unless the request marks it allowed.
-    assert out["allowed_openai_params"] == ["reasoning_effort"]
     assert "reasoning" not in out
 
 
@@ -864,21 +861,13 @@ async def test_stream_null_usage_counter_reaches_client_as_int_zero():
     assert usage["total_tokens"] == 0
 
 
-def test_request_reasoning_effort_carries_allowed_openai_params():
-    out = responses_request_to_chat_body({"model": "m", "input": "hi", "reasoning": {"effort": "high"}})
-    assert out["reasoning_effort"] == "high"
-    assert out["allowed_openai_params"] == ["reasoning_effort"]
-
-
-def test_request_without_reasoning_omits_both_keys():
+def test_request_without_reasoning_omits_the_effort():
     out = responses_request_to_chat_body({"model": "m", "input": "hi"})
     assert "reasoning_effort" not in out
-    assert "allowed_openai_params" not in out
-    # An effort-less reasoning object must not smuggle either key in either.
+    # An effort-less reasoning object must not smuggle it in either.
     for reasoning in ({}, {"summary": "auto"}, {"effort": None}, {"effort": ""}, "high"):
         out = responses_request_to_chat_body({"model": "m", "input": "hi", "reasoning": reasoning})
         assert "reasoning_effort" not in out, f"failed for {reasoning!r}"
-        assert "allowed_openai_params" not in out, f"failed for {reasoning!r}"
 
 
 def test_request_function_call_output_image_part_leaves_placeholder():
@@ -1008,7 +997,6 @@ def test_request_reasoning_effort_above_the_backend_vocabulary_is_clamped():
     """Codex's ladder reaches xhigh/max; the backend sees the value verbatim."""
     out = responses_request_to_chat_body({"model": "m", "input": "hi", "reasoning": {"effort": "xhigh"}})
     assert out["reasoning_effort"] == "high"
-    assert out["allowed_openai_params"] == ["reasoning_effort"]
 
 
 def test_request_reasoning_effort_off_the_ladder_is_dropped_entirely():
@@ -1016,7 +1004,6 @@ def test_request_reasoning_effort_off_the_ladder_is_dropped_entirely():
         {"model": "m", "input": "hi", "reasoning": {"effort": "disabled"}}
     )
     assert "reasoning_effort" not in out
-    assert "allowed_openai_params" not in out
 
 
 # ---------------------------------------------------------------------------

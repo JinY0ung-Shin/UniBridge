@@ -43,20 +43,11 @@ scrape_configs:
     static_configs:
       - targets: ['unibridge-service-blue:8000', 'unibridge-service-green:8000']
 
-  - job_name: 'litellm'
-    scheme: https
-    tls_config:
-      insecure_skip_verify: true
-    static_configs:
-      - targets: ['litellm:4000']
-    metrics_path: '/metrics'
-    scrape_interval: 15s
-
-  # Bifrost, the LLM gateway behind /api/llm under LLM_GATEWAY=bifrost.
+  # Bifrost, the LLM gateway behind /api/llm.
   # Plain HTTP on the internal network; /metrics stays open with
   # the admin login on because bifrost/config.json whitelists it. The LLM
-  # monitoring page and the Grafana LLM dashboard add these bifrost_* counters
-  # to LiteLLM's, always pinned to this job name.
+  # monitoring page and the Grafana LLM dashboard read these bifrost_* counters,
+  # always pinned to this job name.
   - job_name: 'bifrost'
     metrics_path: '/metrics'
     static_configs:
@@ -94,8 +85,8 @@ scrape_configs:
   - job_name: 'external-services'
     # Per-target scrape scheme comes from the `__scheme__` file_sd label (http by
     # default, https when the service is registered as such). Skip TLS verification
-    # like the litellm job so internal self-signed certs don't break scraping;
-    # harmless for plain-http targets.
+    # so internal self-signed certs don't break scraping; harmless for plain-http
+    # targets.
     tls_config:
       insecure_skip_verify: true
     file_sd_configs:
@@ -119,9 +110,6 @@ scrape_configs:
       - targets: ['keycloak-db:5432']
         labels:
           db: 'keycloak-db'
-      - targets: ['litellm-db:5432']
-        labels:
-          db: 'litellm-db'
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target

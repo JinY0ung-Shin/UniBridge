@@ -210,7 +210,7 @@ _GATE = re.compile(r"qwen3\.\d", re.IGNORECASE)
 @pytest.mark.parametrize("model", ["qwen3.5-32b", "Qwen3.5", "hosted_vllm/qwen3.6-32b"])
 def test_gate_normalizes_when_the_model_matches(model):
     # Neither casing nor a provider prefix may defeat the gate: the pattern is
-    # searched case-insensitively, so a LiteLLM deployment name hits on the
+    # searched case-insensitively, so a provider-prefixed name hits on the
     # substring without the operator having to write wildcards.
     messages = [{"role": "user", "content": "q"}, {"role": "system", "content": "reminder"}]
     assert normalize_system_messages(messages, "user", model=model, model_pattern=_GATE) == [

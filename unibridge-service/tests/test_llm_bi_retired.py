@@ -3,8 +3,8 @@
 Pinned here:
 
 1. Every provisioning boot deletes the four llm-bi-* routes and the
-   llm-converter-bi upstream, and the ``bifrost`` upstream too unless /api/llm
-   runs on it, leaving only llm-bi-not-found, a 404 that points to /api/llm.
+   llm-converter-bi upstream (``bifrost`` stays: /api/llm runs on it), leaving
+   only llm-bi-not-found, a 404 that points to /api/llm.
    APISIX refusing that route never keeps the service from booting.
 2. The old ids stay system resources and /api/llm-bi stays a system namespace,
    so no custom route takes what provisioning would delete; the OpenAPI export
@@ -47,10 +47,8 @@ def _installed() -> dict:
     return existing
 
 
-async def _retire(fake: _FakeApisix, **settings) -> None:
-    config = SimpleNamespace(**{"LLM_GATEWAY": "litellm", **settings})
+async def _retire(fake: _FakeApisix) -> None:
     with (
-        patch("app.main.settings", config),
         patch("app.services.apisix_client.get_resource", fake.get_resource),
         patch("app.services.apisix_client.put_resource", fake.put_resource),
         patch("app.services.apisix_client.delete_resource", fake.delete_resource),
@@ -94,19 +92,16 @@ def test_custom_routes_cannot_take_the_llm_bi_namespace(uri: str, shadowed: bool
     assert (_shadowed_system_uri(uri, list(_SYSTEM_ROUTE_URIS)) is not None) is shadowed
 
 
-@pytest.mark.parametrize("gateway", ["litellm", "bifrost"])
-async def test_explains_first_then_removes_routes_before_upstreams(gateway: str) -> None:
+async def test_explains_first_then_removes_routes_before_upstreams() -> None:
     fake = _FakeApisix(_installed())
 
-    await _retire(fake, LLM_GATEWAY=gateway)
+    await _retire(fake)
 
-    deleted_upstreams = [("DELETE", "upstreams", RETIRED_LLM_BI_UPSTREAM_ID)]
-    if gateway == "litellm":
-        deleted_upstreams.append(("DELETE", "upstreams", "bifrost"))
+    # The bifrost upstream stays: /api/llm runs on it.
     assert fake.writes == [
         ("PUT", "routes", LLM_BI_NOT_FOUND_ROUTE_ID),
         *(("DELETE", "routes", route_id) for route_id in RETIRED_LLM_BI_ROUTE_IDS),
-        *deleted_upstreams,
+        ("DELETE", "upstreams", RETIRED_LLM_BI_UPSTREAM_ID),
     ]
     assert fake.bodies[("routes", LLM_BI_NOT_FOUND_ROUTE_ID)] == llm_routes.retired_llm_bi_route()
 
@@ -123,13 +118,15 @@ async def test_keeps_an_upstream_another_route_still_uses(caplog) -> None:
     in_use = _status_error(
         400, '{"error_msg":"can not delete this upstream, route [mine] is still using it now"}'
     )
-    fake = _FakeApisix(_installed(), delete_errors={("upstreams", "bifrost"): in_use})
+    fake = _FakeApisix(
+        _installed(), delete_errors={("upstreams", RETIRED_LLM_BI_UPSTREAM_ID): in_use}
+    )
 
     with caplog.at_level(logging.WARNING, logger="app.main"):
         await _retire(fake)
 
     assert ("DELETE", "upstreams", RETIRED_LLM_BI_UPSTREAM_ID) in fake.writes
-    assert "Kept APISIX upstream bifrost" in caplog.text
+    assert f"Kept APISIX upstream {RETIRED_LLM_BI_UPSTREAM_ID}" in caplog.text
     assert "route [mine]" in caplog.text
 
 
@@ -176,7 +173,6 @@ async def test_lifespan_retires_them_as_part_of_boot_provisioning() -> None:
         patch(
             "app.main.settings",
             SimpleNamespace(
-                LITELLM_MASTER_KEY="sk-test",
                 APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
                 APISIX_ADMIN_KEY="admin-secret",
                 BIFROST_TEST_VK=VK,

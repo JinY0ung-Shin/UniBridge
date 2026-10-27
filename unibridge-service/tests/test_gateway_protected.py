@@ -14,8 +14,8 @@ Six things are pinned here:
    it, ``proxy-rewrite.regex_uri`` to change the forwarded path.
 3. Service keys are the one editable plugin field, and a service-key edit replaces
    ``headers.set`` wholesale — so on a system route the headers startup injects
-   (the internal-proxy marker API-key auth depends on, the LiteLLM master key,
-   the end-user id) survive that edit and cannot be given a caller-supplied
+   (the internal-proxy marker API-key auth depends on, the Bifrost virtual key,
+   the consumer attribution) survive that edit and cannot be given a caller-supplied
    value. Custom routes keep the plain replace-wholesale semantics.
 4. A non-system route may not claim a uri inside a system route's namespace.
    APISIX picks between overlapping patterns by priority and specificity, so such
@@ -56,8 +56,9 @@ PROTECTED_METHODS = ["POST", "GET", "PUT", "DELETE", "OPTIONS"]
 # Headers startup provisioning injects on system routes.
 INTERNAL_HEADER = "X-UniBridge-Internal-Proxy"
 INTERNAL_SECRET = "internal-proxy-secret-2f9c"
-MASTER_KEY = "Bearer sk-litellm-master-0001"
-END_USER_HEADER = "x-litellm-end-user-id"
+VIRTUAL_KEY = "sk-bf-" + "v" * 28 + "0001"
+VK_HEADER = "x-bf-vk"
+CONSUMER_HEADER = "x-bf-dim-consumer"
 
 
 def _route_with_secret(route_id: str = "r1", **extra) -> dict:
@@ -81,7 +82,7 @@ def _protected_route() -> dict:
         "id": "llm-proxy",
         "name": "llm-proxy",
         "uri": "/api/llm/*",
-        "upstream_id": "litellm",
+        "upstream_id": "bifrost",
         "methods": list(PROTECTED_METHODS),
         "plugins": {
             "key-auth": {},
@@ -133,8 +134,8 @@ def _provisioned_llm_route() -> dict:
         "use_real_request_uri_unsafe": True,
         "headers": {
             "set": {
-                "Authorization": MASTER_KEY,
-                END_USER_HEADER: "$consumer_name",
+                VK_HEADER: VIRTUAL_KEY,
+                CONSUMER_HEADER: "$consumer_name",
                 "X-Api-Key": SECRET,
             }
         },
@@ -161,7 +162,7 @@ def _matching_body(**overrides) -> dict:
     body = {
         "name": "llm-proxy",
         "uri": "/api/llm/*",
-        "upstream_id": "litellm",
+        "upstream_id": "bifrost",
         "methods": list(PROTECTED_METHODS),
     }
     body.update(overrides)
@@ -652,7 +653,7 @@ class TestSystemInjectedHeaders:
             INTERNAL_HEADER: INTERNAL_SECRET
         }
 
-    async def test_llm_route_keeps_the_master_key_and_end_user_id(
+    async def test_llm_route_keeps_the_virtual_key_and_attribution(
         self, client, admin_token
     ):
         with _apisix(_provisioned_llm_route()) as mock_put:
@@ -667,8 +668,8 @@ class TestSystemInjectedHeaders:
             )
         assert resp.status_code == 200
         assert mock_put.call_args[0][2]["plugins"]["proxy-rewrite"]["headers"]["set"] == {
-            "Authorization": MASTER_KEY,
-            END_USER_HEADER: "$consumer_name",
+            VK_HEADER: VIRTUAL_KEY,
+            CONSUMER_HEADER: "$consumer_name",
             "X-Api-Key": NEW_SECRET,
         }
 
@@ -677,9 +678,11 @@ class TestSystemInjectedHeaders:
         [
             (INTERNAL_HEADER, "forge the internal-proxy secret"),
             ("x-unibridge-internal-proxy", "same header, lowercased"),
-            ("Authorization", "swap the LiteLLM master key"),
+            (VK_HEADER, "swap the Bifrost virtual key"),
+            ("X-BF-VK", "same header, uppercased"),
+            ("Authorization", "hand out a credential on a system route"),
             ("authorization", "same header, lowercased"),
-            (END_USER_HEADER, "misattribute another consumer's LLM spend"),
+            (CONSUMER_HEADER, "misattribute another consumer's LLM spend"),
         ],
     )
     async def test_explicit_value_for_a_system_header_is_refused(
@@ -699,7 +702,7 @@ class TestSystemInjectedHeaders:
         assert "startup provisioning" in resp.json()["detail"]
         mock_put.assert_not_awaited()
 
-    @pytest.mark.parametrize("value", ["", _mask_value(MASTER_KEY)])
+    @pytest.mark.parametrize("value", ["", _mask_value(VIRTUAL_KEY)])
     async def test_blank_or_masked_system_header_is_not_an_override(
         self, client, admin_token, value
     ):
@@ -709,13 +712,13 @@ class TestSystemInjectedHeaders:
             resp = await client.put(
                 "/admin/gateway/routes/llm-proxy",
                 json=_matching_body(
-                    service_keys=[{"header_name": "Authorization", "header_value": value}]
+                    service_keys=[{"header_name": VK_HEADER, "header_value": value}]
                 ),
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 200
         headers_set = mock_put.call_args[0][2]["plugins"]["proxy-rewrite"]["headers"]["set"]
-        assert headers_set["Authorization"] == MASTER_KEY
+        assert headers_set[VK_HEADER] == VIRTUAL_KEY
 
     async def test_custom_route_headers_keep_replace_wholesale_semantics(
         self, client, admin_token
@@ -759,10 +762,9 @@ class TestSaveRouteUriShadowing:
             ("/api/usages", "shadow an exact system route"),
             ("/api/prometheus/api/v1/query", "capture PromQL traffic"),
             ("/api/llm/v1/messages", "shadow the converter route"),
-            ("/api/llm/metrics", "shadow the LiteLLM metrics route"),
+            ("/api/llm/metrics", "shadow the Bifrost metrics route"),
             ("/api/llm/v1/models", "shadow the model-discovery route"),
             ("/api/llm/chat/*", "capture LLM traffic (API keys ride along)"),
-            ("/api/llm-admin/x", "reach the LiteLLM admin API"),
             ("/api/*", "swallow every namespace at once"),
             ("/api/q*", "partial-segment wildcard over /api/query"),
         ],

@@ -1,9 +1,8 @@
 """Local input-token estimate for ``POST /v1/messages/count_tokens``.
 
-Neither gateway offers a token count for a self-hosted chat model: Bifrost's
+The gateway offers no token count for a self-hosted chat model: Bifrost's
 Anthropic ``count_tokens`` needs the backend's own Anthropic endpoint (a custom
-OpenAI-compatible provider answers 404), and LiteLLM's falls back to a generic
-tokenizer anyway. So the converter answers from the request alone, without an
+OpenAI-compatible provider answers 404). So the converter answers from the request alone, without an
 upstream call and without a tokenizer (this image ships none, and fetching one
 is impossible offline).
 

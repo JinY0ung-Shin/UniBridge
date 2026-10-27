@@ -1,8 +1,8 @@
 """Unit tests for the reasoning-effort clamp.
 
 The ladder the clients send is wider than what a vLLM/SGLang backend accepts,
-and the value now reaches the backend verbatim (``allowed_openai_params``), so
-the clamp is the only thing between a Codex ``xhigh`` and a 400.
+and Bifrost hands the value to the backend verbatim, so the clamp is the only
+thing between a Codex ``xhigh`` and a 400.
 """
 
 from __future__ import annotations

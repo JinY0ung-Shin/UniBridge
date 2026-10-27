@@ -36,9 +36,6 @@ step "LLM converter tests and coverage"
     --cov-report=term-missing:skip-covered
 )
 
-step "LiteLLM proxy config and callback tests"
-run python3 -m pytest litellm/tests/ -v --tb=short
-
 step "Backend lint"
 (
   cd unibridge-service

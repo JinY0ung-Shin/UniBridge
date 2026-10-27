@@ -17,9 +17,6 @@ UI_QUERY_CONSUMER = "__ui__"
 # Every ``status`` value the query router records.
 QUERY_STATUSES = ("success", "error", "timeout")
 
-# Every value LLM_GATEWAY takes.
-LLM_GATEWAYS = ("litellm", "bifrost")
-
 
 @dataclass
 class MetricsRecorder:
@@ -31,7 +28,6 @@ class MetricsRecorder:
     meta_db_up: Gauge
     active_instance: Gauge
     alert_checker_prometheus_up: Gauge
-    llm_gateway: Gauge
     # (db_alias, db_type, consumer) combinations whose children are pre-created.
     _primed_query_labels: set[tuple[str, str, str]] = field(default_factory=set)
 
@@ -109,10 +105,6 @@ class MetricsRecorder:
     def set_alert_checker_prometheus_up(self, is_up: bool) -> None:
         self.alert_checker_prometheus_up.set(1 if is_up else 0)
 
-    def set_llm_gateway(self, gateway: str) -> None:
-        for known in LLM_GATEWAYS:
-            self.llm_gateway.labels(gateway=known).set(1 if known == gateway else 0)
-
 
 def create_metrics(
     *, registry: CollectorRegistry = REGISTRY,
@@ -176,14 +168,6 @@ def create_metrics(
             "it failed.",
             registry=registry,
         ),
-        # LiteLLM does not run under LLM_GATEWAY=bifrost, so a dashboard needs
-        # this to tell a LiteLLM that is off on purpose from one that is down.
-        llm_gateway=Gauge(
-            "unibridge_llm_gateway",
-            "1 for the gateway LLM_GATEWAY puts behind /api/llm, 0 for the other.",
-            ["gateway"],
-            registry=registry,
-        ),
     )
     recorder.alert_checker_prometheus_up.set(1)
     return recorder
@@ -242,10 +226,6 @@ def set_active_instance(is_active: bool) -> None:
 
 def set_alert_checker_prometheus_up(is_up: bool) -> None:
     recorder.set_alert_checker_prometheus_up(is_up)
-
-
-def set_llm_gateway(gateway: str) -> None:
-    recorder.set_llm_gateway(gateway)
 
 
 async def monitor_meta_db_health(*, interval_seconds: int = 15) -> None:

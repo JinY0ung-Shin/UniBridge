@@ -5,16 +5,11 @@
 set -eu
 
 # Generate runtime config from environment variables
-LITELLM_ADMIN_URL="https://${HOST_IP:-localhost}:${LITELLM_PORT:-4000}/ui"
 # Bifrost has no TLS of its own; the bifrost-tls nginx publishes its UI.
 BIFROST_ADMIN_URL="https://${HOST_IP:-localhost}:${BIFROST_UI_PORT:-18443}"
 # Optional DNS name on which this nginx also serves the Bifrost UI, on its own
 # port (nginx-bifrost-ui.conf); the Bifrost button then links there instead.
 BIFROST_UI_HOSTNAME="${BIFROST_UI_HOSTNAME:-}"
-# The gateway behind /api/llm, the switch unibridge-service reads (normalized
-# below). The LiteLLM Admin button shows only on litellm: on bifrost LiteLLM
-# does not run (litellm/compose-gate.yml).
-LLM_GATEWAY="${LLM_GATEWAY:-}"
 # Same-origin path proxied by this nginx (see nginx.conf /grafana/); override
 # with GRAFANA_EXTERNAL_URL when Grafana lives behind a different endpoint.
 GRAFANA_URL="${GRAFANA_EXTERNAL_URL:-/grafana}"
@@ -80,13 +75,6 @@ bifrost_tls_pair() {
   fi
 }
 
-# Case and spaces do not matter, as for the service; anything but bifrost is
-# the default, litellm.
-LLM_GATEWAY="$(lowercase "$LLM_GATEWAY" | tr -d '[:space:]')"
-if [ "$LLM_GATEWAY" != "bifrost" ]; then
-  LLM_GATEWAY="litellm"
-fi
-
 if [ -n "$BIFROST_UI_HOSTNAME" ]; then
   if ! valid_hostname "$BIFROST_UI_HOSTNAME"; then
     echo "entrypoint: BIFROST_UI_HOSTNAME must be a DNS host name (no IP address, port or scheme): $BIFROST_UI_HOSTNAME" >&2
@@ -102,10 +90,8 @@ fi
 
 cat > /usr/share/nginx/html/runtime-config.js <<EOF
 window.__RUNTIME_CONFIG__ = {
-  LITELLM_ADMIN_URL: "$(json_escape "$LITELLM_ADMIN_URL")",
   BIFROST_ADMIN_URL: "$(json_escape "$BIFROST_ADMIN_URL")",
   BIFROST_UI_HOSTNAME: "$(json_escape "$BIFROST_UI_HOSTNAME")",
-  LLM_GATEWAY: "$(json_escape "$LLM_GATEWAY")",
   GRAFANA_URL: "$(json_escape "$GRAFANA_URL")",
   KEYCLOAK_URL: "$(json_escape "$KEYCLOAK_URL")",
   KEYCLOAK_REALM: "$(json_escape "$KEYCLOAK_REALM_VALUE")",

@@ -1,8 +1,8 @@
 """Route-level tests for the converter.
 
 Verifies that ``POST /v1/messages`` translates the Anthropic request to an
-OpenAI chat-completions body, targets ``{LITELLM_URL}/v1/chat/completions``,
-forwards the APISIX-injected ``Authorization`` header, and translates the
+OpenAI chat-completions body, targets ``{CONVERTER_BIFROST_URL}/v1/chat/completions``,
+forwards the APISIX-injected ``x-bf-vk`` virtual key, and translates the
 response (streaming SSE and one-shot JSON) back to the Anthropic shape.
 """
 
@@ -21,8 +21,7 @@ import app.main as converter_main
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    monkeypatch.setenv("LITELLM_URL", "http://upstream.test")
-    monkeypatch.setenv("CONVERTER_TLS_VERIFY", "false")
+    monkeypatch.setenv("CONVERTER_BIFROST_URL", "http://upstream.test")
     yield
 
 
@@ -84,7 +83,7 @@ def test_streaming_translates_openai_to_anthropic():
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
-        captured["auth"] = request.headers.get("authorization")
+        captured["auth"] = request.headers.get("x-bf-vk")
         captured["body"] = json.loads(request.content)
         return httpx.Response(
             200, headers={"content-type": "text/event-stream"}, content=body
@@ -93,7 +92,7 @@ def test_streaming_translates_openai_to_anthropic():
     client = TestClient(_make_app(handler))
     resp = client.post(
         "/v1/messages",
-        headers={"Authorization": "Bearer master-key"},
+        headers={"x-bf-vk": "sk-bf-gatewaykey"},
         json={
             "model": "GLM-4.6",
             "stream": True,
@@ -106,9 +105,9 @@ def test_streaming_translates_openai_to_anthropic():
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
 
-    # Targeted the OpenAI chat route and forwarded the injected master key.
+    # Targeted the OpenAI chat route and forwarded the injected virtual key.
     assert captured["url"] == "http://upstream.test/v1/chat/completions"
-    assert captured["auth"] == "Bearer master-key"
+    assert captured["auth"] == "sk-bf-gatewaykey"
     # Request was translated to OpenAI shape (system → system message, tools nested).
     assert captured["body"]["messages"][0] == {"role": "system", "content": "be terse"}
     assert captured["body"]["tools"][0]["type"] == "function"

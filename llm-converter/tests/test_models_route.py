@@ -20,8 +20,7 @@ import app.main as converter_main
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    monkeypatch.setenv("LITELLM_URL", "http://upstream.test")
-    monkeypatch.setenv("CONVERTER_TLS_VERIFY", "false")
+    monkeypatch.setenv("CONVERTER_BIFROST_URL", "http://upstream.test")
     yield
 
 
@@ -69,14 +68,15 @@ def test_originals_kept_and_aliases_appended():
 
 
 def test_model_already_named_like_the_vendor_gets_no_alias():
-    """A real Anthropic model proxied by LiteLLM must not become
+    """A real Anthropic model proxied by the gateway must not become
     ``claude/claude-sonnet-4`` — it is already selectable as-is."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return _listing(
             {"id": "claude-sonnet-4", "object": "model"},
             {"id": "CLAUDE-OPUS-4", "object": "model"},  # case-insensitive
-            {"id": "claude/pre-aliased", "object": "model"},
+            # Bifrost's ``<provider>/<id>``: the id itself is ``claude/...``.
+            {"id": "vllm/claude/pre-aliased", "object": "model"},
             {"id": "qwen3.5-32b", "object": "model"},
         )
 
@@ -248,18 +248,18 @@ def test_discovery_without_an_anthropic_version_header_succeeds():
     assert client.get("/v1/models").status_code == 200
 
 
-def test_authorization_header_is_forwarded():
-    """APISIX injects the LiteLLM master key; the converter must pass it on."""
+def test_virtual_key_header_is_forwarded():
+    """APISIX injects the Bifrost virtual key; the converter must pass it on."""
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        captured["auth"] = request.headers.get("authorization")
+        captured["auth"] = request.headers.get("x-bf-vk")
         return _listing({"id": "qwen3.5-32b"})
 
     client = TestClient(_make_app(handler))
-    client.get("/v1/models", headers={"Authorization": "Bearer sk-master"})
+    client.get("/v1/models", headers={"x-bf-vk": "sk-bf-gatewaykey"})
 
-    assert captured["auth"] == "Bearer sk-master"
+    assert captured["auth"] == "sk-bf-gatewaykey"
 
 
 # --- Upstream failures forwarded verbatim ------------------------------------

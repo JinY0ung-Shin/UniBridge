@@ -166,7 +166,7 @@ async def test_transport_error_propagates_instead_of_putting(apisix):
 def test_lifespan_writes_only_the_colorless_upstream_unconditionally():
     """Color-pinned upstreams must go through the gate, never a bare PUT.
 
-    ``litellm``, ``prometheus`` and ``bifrost`` (infra-project services) are
+    ``prometheus`` and ``bifrost`` (infra-project services) are
     colorless shared infra (one instance for both colors), so they stay
     unconditional; the one dynamic id is the gate's own PUT. A new id here means
     an upstream skipped the claim gate — check it is genuinely not part of the
@@ -185,7 +185,6 @@ def test_lifespan_writes_only_the_colorless_upstream_unconditionally():
     }
 
     assert written == {
-        "litellm",
         "prometheus",
         "bifrost",
         "<dynamic>",

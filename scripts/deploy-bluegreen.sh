@@ -449,186 +449,36 @@ apisix_absent() {
   [[ "$status" == "404" ]]
 }
 
-# What boot provisioning makes of LLM_GATEWAY (unibridge-service app/main.py
-# _provision_llm_routes; the same rule as app/services/llm_routes.py
-# gateway_state): "bifrost" with a usable BIFROST_TEST_VK, "skip" without one —
-# the service then leaves the /api/llm routes as they are — and "litellm"
-# otherwise. The service refuses to boot on any value but litellm/bifrost.
-llm_gateway_state() {
+# The rule boot provisioning applies to BIFROST_TEST_VK (unibridge-service
+# app/services/llm_routes.py usable_virtual_key): URL-safe only, since the route
+# checks below string-match it in route JSON. Without a usable key the service
+# leaves the /api/llm routes as they are.
+bifrost_vk_usable() {
   local LC_ALL=C
-  local gateway="${LLM_GATEWAY:-litellm}"
-  gateway="${gateway//[[:space:]]/}"
-  if [[ "${gateway,,}" != "bifrost" ]]; then
-    printf 'litellm'
-  elif [[ "${BIFROST_TEST_VK:-}" =~ ^sk-bf-[A-Za-z0-9_-]{16,}$ ]]; then
-    printf 'bifrost'
-  else
-    printf 'skip'
-  fi
+  [[ "${BIFROST_TEST_VK:-}" =~ ^sk-bf-[A-Za-z0-9_-]{16,}$ ]]
 }
 
-# compose reads LLM_GATEWAY verbatim to decide whether LiteLLM runs
-# (litellm/compose-gate.yml), so only the two lowercase values get past it. Say
-# so before compose fails every command on anything else. Bifrost without a
-# usable BIFROST_TEST_VK is refused too: the service would leave /api/llm where
-# it was, maybe on LiteLLM, while LiteLLM leaves the stack and the new color's
-# converter forwards to Bifrost without a key.
+# LiteLLM support was removed: Bifrost is the only gateway behind /api/llm and
+# nothing this checkout builds reads LLM_GATEWAY (compose passes a literal
+# bifrost, for an older image recreated on rollback). A .env that still names
+# litellm, or anything else, asks for a gateway this release cannot run, so say
+# so before touching anything. A BIFROST_TEST_VK the service would not use is
+# refused too: the Bifrost routes inject it, so the new color would leave the
+# /api/llm routes as they are, on a key that may no longer be Bifrost's.
 require_usable_llm_gateway() {
-  case "${LLM_GATEWAY:-litellm}" in
-    litellm|bifrost) ;;
+  case "${LLM_GATEWAY:-}" in
+    ""|bifrost) ;;
     *)
-      echo "ERROR: LLM_GATEWAY must be litellm or bifrost (lowercase, nothing around it), not '${LLM_GATEWAY}'." >&2
+      echo "ERROR: $ENV_FILE sets LLM_GATEWAY='${LLM_GATEWAY}', but LiteLLM support was removed and" >&2
+      echo "       Bifrost is the only gateway behind /api/llm. Delete the LLM_GATEWAY line." >&2
       exit 1
       ;;
   esac
-  if [[ "$(llm_gateway_state)" == "skip" ]]; then
-    echo "ERROR: LLM_GATEWAY=bifrost needs a usable BIFROST_TEST_VK (sk-bf- and 16 or more of A-Z a-z 0-9 _ -)," >&2
+  if ! bifrost_vk_usable; then
+    echo "ERROR: /api/llm needs a usable BIFROST_TEST_VK (sk-bf- and 16 or more of A-Z a-z 0-9 _ -)," >&2
     echo "       the virtual key the bifrost container runs with." >&2
     exit 1
   fi
-}
-
-# The infra compose command line for a printed hint, as compose_infra runs it.
-infra_compose_command() {
-  local env_flag=""
-  if [[ -f "$ENV_FILE" ]]; then
-    env_flag=" --env-file \"$ENV_FILE\""
-  fi
-  printf 'docker compose%s -p "%s" -f "%s"' "$env_flag" "$INFRA_PROJECT" "$ROOT_DIR/docker-compose.infra.yml"
-}
-
-# LiteLLM and litellm-db run only while LLM_GATEWAY is litellm: a plain `up`
-# leaves them out otherwise. So the deploy back on LiteLLM finds them stopped;
-# start them before the infra check, and before the new color points /api/llm at
-# LiteLLM again. Neither serves anything then, so the `up` may as well recreate
-# them on the current .env and image (a master key rotated meanwhile, say).
-# Without the network the infra check says what is missing instead.
-start_litellm_if_stopped() {
-  [[ "$(llm_gateway_state)" == "litellm" ]] || return 0
-  docker network inspect "$NETWORK_NAME" >/dev/null 2>&1 || return 0
-  local container_id
-  container_id="$(compose_infra ps -q litellm 2>/dev/null | head -n1)" || container_id=""
-  [[ -z "$container_id" ]] || return 0
-  echo "Starting LiteLLM: LLM_GATEWAY is litellm and it is not running..."
-  compose_infra up -d --wait litellm-db litellm
-}
-
-# The gateway llm-converter-$color forwards to, as its own code reads it. Asked
-# inside the container rather than read from its env: a standby recreated with
-# the current .env keeps its older image, and an image from before LLM_GATEWAY
-# forwards to LiteLLM whatever the env says (it has no settings.gateway, so the
-# question fails). Callers treat a failure as LiteLLM.
-converter_gateway() {
-  docker exec "llm-converter-$1" python -c \
-    'from app.config import settings; print(settings.gateway)' 2>/dev/null
-}
-
-# Whether LiteLLM must stay up although /api/llm runs on Bifrost, and why: an
-# APISIX upstream still points at it, or a color that is still running forwards
-# to it — the standby from before the switch is the rollback target, and its
-# converter sends /v1/messages and /v1/responses to LiteLLM. Whatever cannot be
-# checked counts as needed.
-litellm_still_needed() {
-  local names color gateway
-  if ! apisix_absent "upstreams/litellm"; then
-    echo "LiteLLM and litellm-db stay: APISIX still has the litellm upstream (a route outside"
-    echo "  /api/llm uses it, or the admin API did not answer). Once no route uses it, the next"
-    echo "  deploy removes it."
-    return 0
-  fi
-  if ! names="$(docker ps --format '{{.Names}}' 2>/dev/null)"; then
-    echo "LiteLLM and litellm-db stay: could not list the running containers."
-    return 0
-  fi
-  for color in blue green; do
-    grep -qxF "llm-converter-$color" <<<"$names" || continue
-    gateway="$(converter_gateway "$color")" || gateway=""
-    if [[ "$gateway" != "bifrost" ]]; then
-      echo "LiteLLM and litellm-db stay: llm-converter-$color still forwards to LiteLLM (a color"
-      echo "  from before the switch, kept for rollback). They stop on the deploy that replaces"
-      echo "  $color, or once $color is stopped: scripts/deploy-bluegreen.sh stop $color"
-      return 0
-    fi
-  done
-  return 1
-}
-
-# Warn about a container kept for a rollback that could not serve one.
-warn_unless_healthy() {
-  local name="$1" container_id="$2" status="not running"
-  if [[ -n "$container_id" ]]; then
-    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
-      "$container_id" 2>/dev/null)" || status="unknown"
-  fi
-  if [[ "$status" != "healthy" ]]; then
-    echo "WARNING: $name, kept for the reason above, is not healthy (${status:-unknown})." >&2
-  fi
-}
-
-# On Bifrost LiteLLM and litellm-db are no part of the stack, so stop what still
-# runs of them once nothing needs LiteLLM. Not in the "skip" state, where the
-# /api/llm routes were left as they were. Never fails the caller: by then the
-# promotion has happened.
-stop_litellm_when_unused() {
-  [[ "$(llm_gateway_state)" == "bifrost" ]] || return 0
-  local litellm_id db_id services status
-  litellm_id="$(compose_infra ps -q litellm 2>/dev/null | head -n1)" || return 0
-  db_id="$(compose_infra ps -q litellm-db 2>/dev/null | head -n1)" || return 0
-  [[ -n "$litellm_id" || -n "$db_id" ]] || return 0
-  if litellm_still_needed; then
-    # Out of the infra check and LiteLLMDbDown while they are kept: say when
-    # they could not carry a rollback.
-    warn_unless_healthy LiteLLM "$litellm_id"
-    warn_unless_healthy litellm-db "$db_id"
-    return 0
-  fi
-  # A Compose that does not apply the gate still lists them here, and the infra
-  # check would then refuse every later deploy without them.
-  if ! services="$(compose_infra config --services 2>/dev/null)"; then
-    echo "LiteLLM and litellm-db stay: could not evaluate the infra compose file."
-    return 0
-  fi
-  if grep -qxE 'litellm|litellm-db' <<<"$services"; then
-    echo "WARNING: this Docker Compose keeps LiteLLM in the stack under LLM_GATEWAY=bifrost, so it" >&2
-    echo "         does not apply litellm/compose-gate.yml (UniBridge needs Compose 2.20 or later)." >&2
-    echo "         LiteLLM and litellm-db keep running: the infra check would refuse every deploy" >&2
-    echo "         without them." >&2
-    return 0
-  fi
-  if [[ -n "$litellm_id" ]]; then
-    # Requests already inside LiteLLM get DRAIN_SECONDS to finish before the kill.
-    echo "Stopping LiteLLM: /api/llm runs on Bifrost and nothing forwards to LiteLLM any more..."
-    if ! compose_infra stop -t "$DRAIN_SECONDS" litellm; then
-      echo "WARNING: could not stop LiteLLM, so litellm-db keeps running too. Stop both by hand" >&2
-      echo "         once it is safe:" >&2
-      echo "           $(infra_compose_command) stop litellm litellm-db" >&2
-      return 0
-    fi
-  fi
-  if [[ -n "$db_id" ]]; then
-    echo "Stopping litellm-db: its volume keeps LiteLLM's models and keys for a switch back..."
-    if ! compose_infra stop litellm-db; then
-      echo "WARNING: could not stop litellm-db. Stop it by hand:" >&2
-      echo "           $(infra_compose_command) stop litellm-db" >&2
-    fi
-  fi
-  return 0
-}
-
-# Promotion stays routing-only, so it cannot bring back a LiteLLM that the target
-# color's converter forwards to (a standby from before the switch, restarted by
-# hand after LiteLLM stopped). Say so before /v1/messages and /v1/responses fail.
-warn_if_target_needs_stopped_litellm() {
-  local target="$1" names gateway container_id
-  names="$(docker ps --format '{{.Names}}' 2>/dev/null)" || return 0
-  grep -qxF "llm-converter-$target" <<<"$names" || return 0
-  gateway="$(converter_gateway "$target")" || gateway=""
-  [[ "$gateway" != "bifrost" ]] || return 0
-  container_id="$(compose_infra ps -q litellm 2>/dev/null | head -n1)" || container_id=""
-  [[ -z "$container_id" ]] || return 0
-  echo "WARNING: llm-converter-$target forwards to LiteLLM, which is not running, so" >&2
-  echo "         /api/llm/v1/messages and /v1/responses fail on $target until it is started:" >&2
-  echo "           $(infra_compose_command) up -d --wait litellm-db litellm" >&2
 }
 
 # /api/llm-bi (the Bifrost side-by-side test) is gone: boot provisioning
@@ -648,13 +498,12 @@ apisix_llm_bi_retired() {
   apisix_absent "upstreams/llm-converter-bi" || return 1
 }
 
-# A rotated BIFROST_TEST_VK reaches the /api/llm routes through the deploy
-# under LLM_GATEWAY=bifrost, but the bifrost container keeps the value it was
+# A rotated BIFROST_TEST_VK reaches the /api/llm routes through the deploy,
+# but the bifrost container keeps the value it was
 # created with until it is recreated, and refuses every request carrying another
 # (401). Say so: deploys leave infra alone, so recreating it is the operator's
 # step. Compared in-shell so the key never lands on a command line.
 warn_bifrost_vk_drift() {
-  [[ "$(llm_gateway_state)" == "bifrost" ]] || return 0
   local container_id container_env line env_flag=""
   container_id="$(compose_infra ps -q bifrost 2>/dev/null | head -n1)" || return 0
   [[ -n "$container_id" ]] || return 0
@@ -725,7 +574,7 @@ wait_apisix_admin() {
 }
 
 # True only when the core routes already exist in etcd and still match the
-# built-in auth/header shape, the /api/llm routes match LLM_GATEWAY and the
+# built-in auth/header shape, the /api/llm routes match Bifrost and the
 # /api/llm-bi routes are retired. A 404 or stale route shape (for example, missing
 # the internal proxy trust header, or llm-proxy still pointing at an older
 # gateway upstream) returns non-zero so the caller can force re-provisioning.
@@ -767,75 +616,50 @@ apisix_has_core_routes() {
   apisix_llm_bi_retired || return 1
 }
 
-# The /api/llm routes follow LLM_GATEWAY under the same route ids: on LiteLLM,
-# llm-proxy takes the whole prefix and llm-not-found is gone; on Bifrost,
-# llm-proxy and llm-metrics point at Bifrost, every route to Bifrost or the
-# converter injects the current BIFROST_TEST_VK, llm-not-found answers the rest
-# of the prefix and LiteLLM's llm-admin is gone. The converter routes go to
-# llm-converter either way. So a flipped switch and a rotated key on Bifrost
-# each re-provision.
+# The /api/llm routes point at Bifrost under the route ids they had on LiteLLM
+# (grants carry over): llm-proxy and llm-metrics go to Bifrost, the converter
+# routes to llm-converter, every one of them injects the current
+# BIFROST_TEST_VK, llm-not-found answers the rest of the prefix and LiteLLM's
+# llm-admin is gone. So a rotated key, or a host still carrying LiteLLM's
+# routes, re-provisions.
 apisix_llm_routes_match() {
   # ASCII-only matching, and fast over a large route listing.
   local LC_ALL=C
-  local state route routes services route_id bifrost_upstream litellm_upstream
-  state="$(llm_gateway_state)"
-  [[ "$state" != "skip" ]] || return 0
+  local route routes services route_id bifrost_upstream
 
   for route_id in llm-messages llm-responses llm-models; do
     route="$(apisix_get "routes/$route_id")" || return 1
     json_contains_pair "$route" "upstream_id" "llm-converter" || return 1
-    if [[ "$state" == "bifrost" ]]; then
-      json_contains_pair "$route" "x-bf-vk" "$BIFROST_TEST_VK" || return 1
-    fi
+    json_contains_pair "$route" "x-bf-vk" "$BIFROST_TEST_VK" || return 1
   done
   route="$(apisix_get "routes/llm-models")" || return 1
   json_contains_pair "$route" "uri" "/api/llm/v1/models" || return 1
 
-  if [[ "$state" == "bifrost" ]]; then
-    route="$(apisix_get "routes/llm-proxy")" || return 1
-    json_contains_pair "$route" "upstream_id" "bifrost" || return 1
-    json_contains_pair "$route" "x-bf-vk" "$BIFROST_TEST_VK" || return 1
-    route_rewrites_normalized_path "$route" || return 1
-
-    route="$(apisix_get "routes/llm-metrics")" || return 1
-    json_contains_pair "$route" "uri" "/api/llm/metrics" || return 1
-    json_contains_pair "$route" "upstream_id" "bifrost" || return 1
-    route_rewrites_normalized_path "$route" || return 1
-
-    route="$(apisix_get "routes/llm-not-found")" || return 1
-    json_contains_pair "$route" "uri" "/api/llm/*" || return 1
-
-    # LiteLLM does not run on Bifrost, so its admin route goes, and its upstream
-    # with it unless a route or service of someone else's still uses it.
-    # Re-provisioning removes an upstream left behind once nothing uses it.
-    apisix_absent "routes/llm-admin" || return 1
-    if ! apisix_absent "upstreams/litellm"; then
-      routes="$(apisix_get "routes")" || return 1
-      services="$(apisix_get "services")" || services=""
-      [[ "${routes//[[:space:]]/}${services//[[:space:]]/}" == *'"upstream_id":"litellm"'* ]] || return 1
-    fi
-
-    bifrost_upstream="$(apisix_get "upstreams/bifrost")" || return 1
-    [[ "${bifrost_upstream//[[:space:]]/}" == *"\"bifrost:8080\""* ]] || return 1
-    return 0
-  fi
-
   route="$(apisix_get "routes/llm-proxy")" || return 1
-  json_contains_pair "$route" "uri" "/api/llm/*" || return 1
-  json_contains_pair "$route" "upstream_id" "litellm" || return 1
-
-  route="$(apisix_get "routes/llm-admin")" || return 1
-  json_contains_pair "$route" "upstream_id" "litellm" || return 1
+  json_contains_pair "$route" "upstream_id" "bifrost" || return 1
+  json_contains_pair "$route" "x-bf-vk" "$BIFROST_TEST_VK" || return 1
+  route_rewrites_normalized_path "$route" || return 1
 
   route="$(apisix_get "routes/llm-metrics")" || return 1
   json_contains_pair "$route" "uri" "/api/llm/metrics" || return 1
-  json_contains_pair "$route" "upstream_id" "litellm" || return 1
+  json_contains_pair "$route" "upstream_id" "bifrost" || return 1
+  route_rewrites_normalized_path "$route" || return 1
 
-  apisix_absent "routes/llm-not-found" || return 1
+  route="$(apisix_get "routes/llm-not-found")" || return 1
+  json_contains_pair "$route" "uri" "/api/llm/*" || return 1
 
-  litellm_upstream="$(apisix_get "upstreams/litellm")" || return 1
-  json_contains_pair "$litellm_upstream" "scheme" "https" || return 1
-  [[ "${litellm_upstream//[[:space:]]/}" == *"\"litellm:4000\""* ]] || return 1
+  # Boot provisioning deletes LiteLLM's admin route, and its upstream with it
+  # unless a route or service of someone else's still uses it. Re-provisioning
+  # removes an upstream left behind once nothing uses it.
+  apisix_absent "routes/llm-admin" || return 1
+  if ! apisix_absent "upstreams/litellm"; then
+    routes="$(apisix_get "routes")" || return 1
+    services="$(apisix_get "services")" || services=""
+    [[ "${routes//[[:space:]]/}${services//[[:space:]]/}" == *'"upstream_id":"litellm"'* ]] || return 1
+  fi
+
+  bifrost_upstream="$(apisix_get "upstreams/bifrost")" || return 1
+  [[ "${bifrost_upstream//[[:space:]]/}" == *"\"bifrost:8080\""* ]] || return 1
 }
 
 # Switch both APISIX upstreams (unibridge-service + llm-converter) to $color as a
@@ -1145,7 +969,6 @@ deploy_color() {
     echo "Starting/reconciling infra stack..."
     up_infra
   else
-    start_litellm_if_stopped
     echo "Verifying existing infra stack without recreating it..."
     require_existing_infra_healthy
   fi
@@ -1162,8 +985,8 @@ deploy_color() {
     provision_on_start="true"
   elif [[ -n "${APISIX_ADMIN_KEY:-}" ]] && wait_apisix_admin && ! apisix_has_core_routes; then
     echo "WARNING: APISIX is reachable but core routes are missing or out of date" >&2
-    echo "         (etcd reset, a release with new routes, or a changed" >&2
-    echo "         LLM_GATEWAY / BIFROST_TEST_VK)." >&2
+    echo "         (etcd reset, a release with new routes, or a rotated" >&2
+    echo "         BIFROST_TEST_VK)." >&2
     echo "         Forcing route re-provisioning on $target." >&2
     provision_on_start="true"
   fi
@@ -1248,7 +1071,6 @@ deploy_color() {
     fi
   fi
 
-  stop_litellm_when_unused
   echo "Active color: $target"
 }
 
@@ -1264,7 +1086,6 @@ promote_color() {
   # emergency promotion/rollback must not restart shared single-instance
   # services. A healthy target already proves its required infra is reachable.
   wait_color "$target"
-  warn_if_target_needs_stopped_litellm "$target"
   prepare_edge "$target"
   promote_apisix "$target" "$old"
   if ! switch_edge; then
@@ -1318,9 +1139,6 @@ stop_color() {
   local color="$1"
   validate_color "$color"
   compose_app "$color" "$(color_port "$color")" "false" "$color" stop
-  # A standby from before the switch to Bifrost may have been all that kept
-  # LiteLLM up.
-  stop_litellm_when_unused
 }
 
 main() {

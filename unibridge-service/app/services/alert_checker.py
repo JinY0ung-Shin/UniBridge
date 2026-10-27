@@ -322,14 +322,14 @@ async def _check_nas_health() -> list[tuple[str, bool, str | None]]:
 
 
 # ── Upstream reachability probe ──────────────────────────────────────────────
-# Four of the helpers below (_upstream_scheme / _upstream_health_path /
-# _node_host / _upstream_host_header) mirror `app/routers/gateway.py`'s
-# route-test probe (_http_scheme_for_upstream / _health_path_for_route /
-# _node_host / _host_header_for_upstream). They are replicated rather than
+# Three of the helpers below (_upstream_scheme / _node_host /
+# _upstream_host_header) mirror `app/routers/gateway.py`'s route-test probe
+# (_http_scheme_for_upstream / _node_host / _host_header_for_upstream); both
+# probe /health. They are replicated rather than
 # imported because nothing under `app/services/` imports a router today: pulling
 # `app.routers.gateway` in here would invert the layering and drag its whole
 # import chain (api_keys → auth → database → …) into a module that `app.main`
-# deliberately imports late, from its lifespan. Four tiny pure functions are the
+# deliberately imports late, from its lifespan. Three tiny pure functions are the
 # cheaper half of that trade. Keep them in sync with gateway.py if that probe
 # changes. Node normalization is not among them: both sides call
 # `apisix_client.upstream_node_addresses`.
@@ -357,19 +357,6 @@ def _is_http_upstream(upstream: dict[str, Any]) -> bool:
     """True when a GET probe is meaningful: an HTTP scheme, or none (APISIX defaults to http)."""
     scheme = upstream.get("scheme")
     return scheme is None or scheme in _HTTP_SCHEMES
-
-
-def _upstream_health_path(upstream: dict[str, Any]) -> str:
-    """Health path for a bare upstream (no route context).
-
-    LiteLLM answers on /health/liveliness, not /health — the same special case
-    gateway.py's `_health_path_for_route` makes, keyed here on the upstream
-    itself since there is no route to consult.
-    """
-    identifiers = {str(upstream.get("id") or ""), str(upstream.get("name") or "")}
-    if "litellm" in identifiers:
-        return "/health/liveliness"
-    return "/health"
 
 
 def _node_host(node_addr: str) -> str:
@@ -430,12 +417,11 @@ async def _probe_upstream(
     if not _is_http_upstream(upstream):
         return True, None
     scheme = _upstream_scheme(upstream)
-    path = _upstream_health_path(upstream)
     probes = [
         _probe_node(
             client,
             limiter,
-            f"{scheme}://{addr}{path}",
+            f"{scheme}://{addr}/health",
             {"Host": _upstream_host_header(upstream, addr)},
         )
         for addr in addresses[:_MAX_PROBED_NODES_PER_UPSTREAM]

@@ -207,7 +207,7 @@ async def test_codes_are_redeemed_only_on_the_bifrost_host(
     client, admin_token, configured, bifrost, host
 ):
     # Anywhere else (e.g. /_api/bifrost/sso on UniBridge's own host) the cookie
-    # would land on the wrong host, next to the LiteLLM admin UI's.
+    # would land on the wrong host.
     code = (await _handoff(client, admin_token)).json()["code"]
 
     wrong = await _redeem(client, code, host=host)

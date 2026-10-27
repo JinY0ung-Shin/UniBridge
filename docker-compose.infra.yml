@@ -173,10 +173,6 @@ services:
       # Grafana SSO client: secret lands in the realm template on first import,
       # redirect URI is kept in sync by the entrypoint on every boot.
       - GRAFANA_OAUTH_CLIENT_SECRET=${GRAFANA_OAUTH_CLIENT_SECRET:?GRAFANA_OAUTH_CLIENT_SECRET is required}
-      # LiteLLM admin-UI SSO client: same first-import/boot-sync pattern as
-      # Grafana; LITELLM_PORT feeds the derived /sso/callback redirect URI.
-      - LITELLM_OAUTH_CLIENT_SECRET=${LITELLM_OAUTH_CLIENT_SECRET:?LITELLM_OAUTH_CLIENT_SECRET is required}
-      - LITELLM_PORT=${LITELLM_PORT:-4000}
     ports:
       - "${KEYCLOAK_PORT:-8443}:8443"
     volumes:
@@ -395,36 +391,6 @@ services:
     networks:
       - apihub-net
 
-  litellm-db:
-    # LiteLLM's own database, gated with it (litellm/compose-gate.yml): left
-    # out of the stack under LLM_GATEWAY=bifrost, its volume keeping the data.
-    extends:
-      file: ./litellm/compose-gate.yml
-      service: ${LLM_GATEWAY:-litellm}
-    image: postgres:16-alpine
-    restart: unless-stopped
-    logging: *default-logging
-    mem_limit: 512m
-    cpus: "0.50"
-    deploy:
-      resources:
-        limits:
-          memory: 512m
-          cpus: "0.50"
-    environment:
-      - POSTGRES_DB=litellm
-      - POSTGRES_USER=litellm
-      - POSTGRES_PASSWORD=${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}
-    volumes:
-      - litellm-db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - apihub-net
-
   unibridge-db:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -450,98 +416,11 @@ services:
     networks:
       - apihub-net
 
-  litellm:
-    # Runs only while /api/llm is on LiteLLM: litellm/compose-gate.yml leaves
-    # it (and litellm-db) out of the stack under LLM_GATEWAY=bifrost.
-    extends:
-      file: ./litellm/compose-gate.yml
-      service: ${LLM_GATEWAY:-litellm}
-    image: ghcr.io/berriai/litellm:v1.102.1
-    restart: unless-stopped
-    logging: *default-logging
-    mem_limit: 2g
-    cpus: "1.00"
-    deploy:
-      resources:
-        limits:
-          memory: 2g
-          cpus: "1.00"
-    entrypoint: ["sh", "-c"]
-    command:
-      - |
-        if [ -z "$$PROXY_BASE_URL" ]; then
-          export PROXY_BASE_URL="https://$$HOST_IP:$$LITELLM_PORT"
-        fi
-        exec litellm --config /app/config.yaml --port 4000 \
-          --ssl_certfile_path /etc/ssl/tls.crt --ssl_keyfile_path /etc/ssl/tls.key
-    ports:
-      - "${LITELLM_PORT:-4000}:4000"
-    environment:
-      - DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD is required}@litellm-db:5432/litellm
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
-      - LITELLM_LOG=ERROR
-      - STORE_MODEL_IN_DB=true
-      - FORWARDED_ALLOW_IPS=*
-      - SSL_VERIFY=${SSL_VERIFY:-true}
-      - HOST_IP=${HOST_IP:-localhost}
-      - LITELLM_PORT=${LITELLM_PORT:-4000}
-      - PROXY_BASE_URL=${PROXY_BASE_URL:-}
-      # Admin-UI SSO via the UniBridge Keycloak realm. The browser-facing
-      # authorize URL derives from HOST_IP; the server-side token exchange
-      # uses Keycloak's in-network HTTP listener (same internal/external
-      # split as the Grafana env block).
-      - GENERIC_CLIENT_ID=litellm
-      - GENERIC_CLIENT_SECRET=${LITELLM_OAUTH_CLIENT_SECRET:?LITELLM_OAUTH_CLIENT_SECRET is required}
-      - GENERIC_AUTHORIZATION_ENDPOINT=https://${HOST_IP:-localhost}:${KEYCLOAK_PORT:-8443}/realms/${KEYCLOAK_REALM:-apihub}/protocol/openid-connect/auth
-      - GENERIC_TOKEN_ENDPOINT=http://keycloak:8080/realms/${KEYCLOAK_REALM:-apihub}/protocol/openid-connect/token
-      - GENERIC_USERINFO_ENDPOINT=http://keycloak:8080/realms/${KEYCLOAK_REALM:-apihub}/protocol/openid-connect/userinfo
-      # PKCE is load-bearing, not just hardening: it switches LiteLLM to its
-      # own token-exchange path, which falls back to id_token claims when the
-      # userinfo endpoint rejects the token. Keycloak pins the token issuer to
-      # the browser-facing host, so userinfo via the in-network listener always
-      # 401s (the same trap Grafana avoids by omitting api_url) — without PKCE
-      # the login 500s on that userinfo response.
-      - GENERIC_CLIENT_USE_PKCE=true
-      # UniBridge admins usually hold a live Keycloak session, so /ui flows
-      # straight through SSO; non-admins carry no `role` claim and are
-      # rejected by ui_access_mode admin_only (litellm/config.yaml).
-      - AUTO_REDIRECT_UI_LOGIN_TO_SSO=true
-      # Fine-tuning dataset capture dir, written by custom_callbacks.py.
-      - LITELLM_DATASET_DIR=/var/lib/litellm-dataset
-      # Retention for that capture (both 0 = unlimited, the default). Enforced
-      # opportunistically inside custom_callbacks.py; see README.md "LLM
-      # conversation capture". The dataset volume is intentionally not a backup
-      # target (backup/README.md), so these are its only size bound.
-      - LITELLM_DATASET_RETENTION_DAYS=${LITELLM_DATASET_RETENTION_DAYS:-0}
-      - LITELLM_DATASET_MAX_TOTAL_BYTES=${LITELLM_DATASET_MAX_TOTAL_BYTES:-0}
-    volumes:
-      - ./litellm/config.yaml:/app/config.yaml:ro
-      - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/ssl/tls.crt:ro
-      - ${TLS_KEY_PATH:-./certs/tls.key}:/etc/ssl/tls.key:ro
-      # Custom callback module referenced by litellm/config.yaml as
-      # `callbacks: custom_callbacks.proxy_handler_instance`; LiteLLM imports it
-      # by dotted path from its WORKDIR (/app). config.yaml is shared with the
-      # single-stack layout, so this mount must exist wherever that config runs.
-      - ./litellm/custom_callbacks.py:/app/custom_callbacks.py:ro
-      - litellm-dataset:/var/lib/litellm-dataset
-    depends_on:
-      litellm-db:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import ssl,urllib.request;urllib.request.urlopen('https://localhost:4000/health/liveliness', context=ssl._create_unverified_context())\""]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    networks:
-      - apihub-net
-
-  # ── Bifrost: the gateway behind /api/llm under LLM_GATEWAY=bifrost ──
+  # ── Bifrost: the gateway behind /api/llm ──
   # Part of the default stack: a plain `up` starts it, and the blue/green
   # deploy's infra health gate requires it healthy like any infra service.
-  # unibridge-service points the /api/llm routes at it while LLM_GATEWAY=bifrost
-  # (README "Switching /api/llm to Bifrost"). These two services are identical
-  # in docker-compose.yml and docker-compose.infra.yml (tested).
+  # unibridge-service points the /api/llm routes at it. These two services
+  # are identical in docker-compose.yml and docker-compose.infra.yml (tested).
   bifrost:
     image: maximhq/bifrost:v2.2.6
     restart: unless-stopped
@@ -563,9 +442,8 @@ services:
       - BIFROST_ADMIN_USERNAME=${BIFROST_ADMIN_USERNAME:-admin}
       - BIFROST_ADMIN_PASSWORD=${BIFROST_ADMIN_PASSWORD:?BIFROST_ADMIN_PASSWORD is required}
       # The one virtual key Bifrost accepts on inference (config.json
-      # enforce_auth_on_inference); APISIX injects it on the /api/llm routes
-      # under LLM_GATEWAY=bifrost, so nothing that bypasses the gateway gets an
-      # answer.
+      # enforce_auth_on_inference); APISIX injects it on the /api/llm routes,
+      # so nothing that bypasses the gateway gets an answer.
       - BIFROST_TEST_VK=${BIFROST_TEST_VK:?BIFROST_TEST_VK is required}
       - LOG_LEVEL=${BIFROST_LOG_LEVEL:-info}
       - LOG_STYLE=json
@@ -575,8 +453,8 @@ services:
     ports:
       # Loopback only, plain HTTP: the management API for curl on the host.
       # Browsers reach the UI through bifrost-tls below. The gateway forwards
-      # only the /api/llm inference paths (under LLM_GATEWAY=bifrost), and
-      # inference here needs the gateway's virtual key.
+      # only the /api/llm inference paths, and inference here needs the
+      # gateway's virtual key.
       - "127.0.0.1:${BIFROST_TEST_ADMIN_PORT:-18080}:8080"
     volumes:
       - bifrost-test-data:/app/data
@@ -649,12 +527,6 @@ volumes:
     name: ${GRAFANA_DATA_VOLUME:-unibridge_grafana-data}
   keycloak-db-data:
     name: ${KEYCLOAK_DB_DATA_VOLUME:-unibridge_keycloak-db-data}
-  litellm-db-data:
-    name: ${LITELLM_DB_DATA_VOLUME:-unibridge_litellm-db-data}
-  # Same volume name as the single-stack layout's default, so a capture started
-  # under docker-compose.yml carries over to the split stack (and vice versa).
-  litellm-dataset:
-    name: ${LITELLM_DATASET_VOLUME:-unibridge_litellm-dataset}
   unibridge-db-data:
     name: ${UNIBRIDGE_DB_DATA_VOLUME:-unibridge_unibridge-db-data}
   # Bifrost (see the bifrost service). Same names as the single-stack

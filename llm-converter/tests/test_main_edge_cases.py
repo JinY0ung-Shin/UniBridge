@@ -20,9 +20,7 @@ REAL_MAKE_CLIENT = converter_main._make_client
 
 @pytest.fixture(autouse=True)
 def _clean_runtime(monkeypatch):
-    monkeypatch.setenv("LITELLM_URL", "http://upstream.test")
-    monkeypatch.delenv("CONVERTER_TLS_CA", raising=False)
-    monkeypatch.setenv("CONVERTER_TLS_VERIFY", "false")
+    monkeypatch.setenv("CONVERTER_BIFROST_URL", "http://upstream.test")
     monkeypatch.setenv("CONVERTER_TRACE", "false")
     conversation_store.clear()
     yield
@@ -305,8 +303,7 @@ async def _as_async(items) -> AsyncIterator[dict]:
         yield item
 
 
-async def test_real_client_factory_uses_runtime_tls_setting(monkeypatch):
-    expected_verify = object()
+async def test_real_client_factory_builds_a_plain_client(monkeypatch):
     captured = {}
 
     class DummyClient:
@@ -319,15 +316,10 @@ async def test_real_client_factory_uses_runtime_tls_setting(monkeypatch):
         captured.update(kwargs)
         return DummyClient()
 
-    monkeypatch.setattr(
-        type(converter_main.settings),
-        "tls_verify",
-        property(lambda self: expected_verify),
-    )
     monkeypatch.setattr(converter_main.httpx, "AsyncClient", fake_async_client)
 
     client = REAL_MAKE_CLIENT(timeout=None)
-    assert captured == {"timeout": None, "verify": expected_verify}
+    assert captured == {"timeout": None, "verify": converter_main._SSL_CONTEXT}
     await client.aclose()
     assert client.is_closed
 

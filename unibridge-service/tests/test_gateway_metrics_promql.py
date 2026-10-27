@@ -113,7 +113,7 @@ class TestLlmKeyFilterValidation:
     )
     def test_selector_builders_reject_hostile_values(self, bad):
         for builder in (
-            lambda value: _llm_key_matchers(value, "end_user"),
+            _llm_key_matchers,
             _llm_consumer_extra,
             lambda value: _llm_increase("requests", "1h", value),
         ):
@@ -122,23 +122,20 @@ class TestLlmKeyFilterValidation:
             assert ei.value.status_code == 400
 
     def test_safe_values_build_the_selector(self):
-        assert _llm_key_matchers("svc.prod-1", "end_user") == ('end_user="svc.prod-1"',)
+        assert _llm_key_matchers("svc.prod-1") == ('consumer="svc.prod-1"',)
         assert _llm_consumer_extra("svc.prod-1") == ('consumer="svc.prod-1"',)
-        # Each gateway is scoped on its own label: LiteLLM's end_user, Bifrost's consumer.
         query = _llm_increase("requests", "1h", "svc.prod-1")
-        assert 'litellm_proxy_total_requests_metric_total{end_user="svc.prod-1"}' in query
         assert (
             'bifrost_upstream_requests_total{job="bifrost",fallback_index="0",'
             'method!="list_models",consumer="svc.prod-1"}'
         ) in query
 
     def test_unscoped_stays_unscoped(self):
-        assert _llm_key_matchers(None, "end_user") == ()
-        assert _llm_key_matchers("", "consumer") == ()
+        assert _llm_key_matchers(None) == ()
+        assert _llm_key_matchers("") == ()
         assert _llm_consumer_extra(None) == ()
         assert _llm_consumer_extra("") == ()
         query = _llm_increase("requests", "1h", None)
-        assert "end_user=" not in query
         assert "consumer=" not in query
 
 

@@ -50,6 +50,8 @@ from app.services.apisix_system_resources import (
     LLM_BI_NOT_FOUND_ROUTE_ID,
     LLM_NOT_FOUND_ROUTE_ID,
     MCP_API_ROUTE_ID,
+    RETIRED_LITELLM_ROUTE_ID,
+    RETIRED_LITELLM_UPSTREAM_ID,
     RETIRED_LLM_BI_ROUTE_IDS,
     RETIRED_LLM_BI_UPSTREAM_ID,
     QUERY_TEMPLATE_WRITE_ROUTE_ID,
@@ -307,8 +309,8 @@ async def _retire_llm_bi_routes() -> None:
     (scripts/deploy-bluegreen.sh ``apisix_llm_bi_retired`` re-provisions while
     any of it is left). The 404 goes in first, so the paths answer it as the
     routes go; routes go before upstreams, since APISIX refuses to delete an
-    upstream a route uses. The ``bifrost`` upstream stays while /api/llm runs on
-    it; a route this service does not manage keeps an upstream, with a warning.
+    upstream a route uses. A route this service does not manage keeps an
+    upstream, with a warning (``_delete_upstream_unless_used``).
     APISIX refusing the 404 route (a 4xx) is only logged: it explains a 404 and
     must not keep the service down.
     """
@@ -328,20 +330,21 @@ async def _retire_llm_bi_routes() -> None:
         )
     for route_id in RETIRED_LLM_BI_ROUTE_IDS:
         await _delete_route_if_installed(route_id)
-    upstream_ids = [RETIRED_LLM_BI_UPSTREAM_ID]
-    if str(getattr(settings, "LLM_GATEWAY", "litellm")).strip().lower() != "bifrost":
-        upstream_ids.append("bifrost")
-    for upstream_id in upstream_ids:
-        try:
-            await _delete_if_installed("upstreams", upstream_id)
-        except HTTPStatusError as exc:
-            if exc.response.status_code != 400:
-                raise
-            logger.warning(
-                "Kept APISIX upstream %s, which another route still uses: %s",
-                upstream_id,
-                exc.response.text,
-            )
+    await _delete_upstream_unless_used(RETIRED_LLM_BI_UPSTREAM_ID)
+
+
+async def _delete_upstream_unless_used(upstream_id: str) -> None:
+    """Delete an upstream if installed; APISIX refusing because a route uses it is only logged."""
+    try:
+        await _delete_if_installed("upstreams", upstream_id)
+    except HTTPStatusError as exc:
+        if exc.response.status_code != 400:
+            raise
+        logger.warning(
+            "Kept APISIX upstream %s, which another route still uses: %s",
+            upstream_id,
+            exc.response.text,
+        )
 
 
 async def _put_llm_not_found_route() -> None:
@@ -366,67 +369,40 @@ async def _put_llm_not_found_route() -> None:
         )
 
 
-async def _remove_litellm_routing() -> None:
-    """Take LiteLLM out of APISIX while /api/llm runs on Bifrost.
+async def _retire_litellm_routing() -> None:
+    """Take what LiteLLM left in APISIX out: its admin UI route and its upstream.
 
-    LiteLLM does not run then (litellm/compose-gate.yml; the blue/green deploy
-    stops it once nothing forwards to it), so its admin route would only 502
-    and the alert checker would report its upstream down. The route goes first:
-    APISIX refuses to delete an upstream a route still uses, and a route this
-    service does not manage keeps it, with a warning.
+    LiteLLM is gone from the stack, so the route would only 502 and the alert
+    checker would report the upstream down. Every provisioning boot, after
+    ``_provision_llm_routes`` has moved llm-proxy and llm-metrics to Bifrost; the
+    route goes first, since APISIX refuses to delete an upstream a route uses.
     """
-    await _delete_route_if_installed("llm-admin")
-    try:
-        await _delete_if_present("upstreams", "litellm")
-    except HTTPStatusError as exc:
-        if exc.response.status_code != 400:
-            raise
-        logger.warning(
-            "Kept APISIX upstream litellm, which another route still uses: %s",
-            exc.response.text,
-        )
+    await _delete_route_if_installed(RETIRED_LITELLM_ROUTE_ID)
+    await _delete_upstream_unless_used(RETIRED_LITELLM_UPSTREAM_ID)
 
 
 async def _provision_llm_routes() -> None:
-    """Point the /api/llm routes at LLM_GATEWAY: LiteLLM (default) or Bifrost.
+    """Point the /api/llm routes at Bifrost (app/services/llm_routes.py).
 
-    The route ids are the same on both, so key grants survive a switch either
-    way (app/services/llm_routes.py). A blue/green host applies a flipped switch
-    on the deploy that finds the routes out of step with it
-    (scripts/deploy-bluegreen.sh ``apisix_has_core_routes``). Bifrost without a
-    usable BIFROST_TEST_VK leaves every route as it is: injecting no key would
-    turn each request into a 401. On Bifrost, LiteLLM's admin route and upstream
-    go as well (``_remove_litellm_routing``), and switching back puts them back.
+    Without a usable BIFROST_TEST_VK every route is left as it is: injecting no
+    key would turn each request into a 401.
     """
     from app.services import apisix_client
 
-    master_key = getattr(settings, "LITELLM_MASTER_KEY", "") or ""
     virtual_key = getattr(settings, "BIFROST_TEST_VK", "") or ""
-    state = llm_routes.gateway_state(getattr(settings, "LLM_GATEWAY", "litellm"), virtual_key)
-    if state == "skip":
+    if not llm_routes.usable_virtual_key(virtual_key):
         logger.error(
-            "LLM_GATEWAY=bifrost but BIFROST_TEST_VK is %s, so the /api/llm routes "
-            "are left as they are. Set it to the value the bifrost container runs "
-            "with, or LLM_GATEWAY=litellm.",
+            "BIFROST_TEST_VK is %s, so the /api/llm routes are left as they are. "
+            "Set it to the value the bifrost container runs with.",
             "not set" if not virtual_key else f"not {llm_routes.VIRTUAL_KEY_RULE}",
         )
         return
-    if state == "litellm" and not master_key:
-        logger.info("LITELLM_MASTER_KEY not set — skipping LiteLLM route provisioning")
-        return
 
-    if state == "litellm":
-        await apisix_client.put_resource("upstreams", "litellm", llm_routes.LITELLM_UPSTREAM)
-        await apisix_client.put_resource("routes", "llm-admin", llm_routes.llm_admin_route())
-    else:
-        await apisix_client.put_resource(
-            "upstreams", "bifrost", llm_routes.BIFROST_UPSTREAM
-        )
+    await apisix_client.put_resource("upstreams", "bifrost", llm_routes.BIFROST_UPSTREAM)
 
     # The converter translates Anthropic Messages and OpenAI Responses into the
     # chat-completions shape that sglang/vLLM-backed models serve reliably, then
-    # forwards to the gateway LLM_GATEWAY names. It speaks plain HTTP on the
-    # internal network.
+    # forwards to Bifrost. It speaks plain HTTP on the internal network.
     await _put_upstream_if_unclaimed(
         "llm-converter",
         {
@@ -443,37 +419,24 @@ async def _provision_llm_routes() -> None:
             "routes",
             route_id,
             await _preserve_consumer_restriction(
-                route_id,
-                llm_routes.converter_route(
-                    route_id,
-                    master_key=master_key,
-                    virtual_key=virtual_key,
-                    on_bifrost=state == "bifrost",
-                ),
+                route_id, llm_routes.converter_route(route_id, virtual_key)
             ),
         )
 
-    if state == "bifrost":
-        proxy_route = llm_routes.bifrost_proxy_route(virtual_key)
-        metrics_route = llm_routes.bifrost_metrics_route()
-    else:
-        # llm-proxy takes the whole prefix again below, so its 404 goes first.
-        await _delete_route_if_installed(LLM_NOT_FOUND_ROUTE_ID)
-        proxy_route = llm_routes.litellm_proxy_route(master_key)
-        metrics_route = llm_routes.litellm_metrics_route(master_key)
     await apisix_client.put_resource(
-        "routes", "llm-proxy", await _preserve_consumer_restriction("llm-proxy", proxy_route)
+        "routes",
+        "llm-proxy",
+        await _preserve_consumer_restriction(
+            "llm-proxy", llm_routes.bifrost_proxy_route(virtual_key)
+        ),
     )
     await apisix_client.put_resource(
         "routes",
         "llm-metrics",
-        await _preserve_consumer_restriction("llm-metrics", metrics_route),
+        await _preserve_consumer_restriction("llm-metrics", llm_routes.bifrost_metrics_route()),
     )
-    if state == "bifrost":
-        await _put_llm_not_found_route()
-        # Only now that llm-proxy and llm-metrics have left the upstream.
-        await _remove_litellm_routing()
-    logger.info("APISIX /api/llm routes provisioned on %s", state)
+    await _put_llm_not_found_route()
+    logger.info("APISIX /api/llm routes provisioned on Bifrost")
 
 
 @asynccontextmanager
@@ -481,7 +444,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown logic."""
     # ── Startup ──────────────────────────────────────────────────────────
     validate_settings()
-    metrics.set_llm_gateway(getattr(settings, "LLM_GATEWAY", "litellm"))
     logger.info("Initializing meta database...")
     await init_db()
 
@@ -906,8 +868,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
                 logger.info("APISIX Prometheus route provisioned successfully")
 
-                # ── /api/llm on LiteLLM or Bifrost (LLM_GATEWAY) ──
+                # ── /api/llm on Bifrost ──
                 await _provision_llm_routes()
+
+                # ── What LiteLLM left behind (llm-admin, litellm upstream) ──
+                await _retire_litellm_routing()
 
                 # ── The retired Bifrost side-by-side test (/api/llm-bi) ──
                 await _retire_llm_bi_routes()

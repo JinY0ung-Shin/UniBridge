@@ -1,10 +1,9 @@
-"""``LLM_GATEWAY``: what each mode sends upstream and hands back to the client.
+"""What the converter sends Bifrost and hands back to the client.
 
-APISIX sets BOTH gateways' credentials on the converter routes (a deploy
-re-points the routes before the color promotion flips the converter's
-upstream), so the converter alone decides which reach the gateway: LiteLLM gets
-its master key and ``x-litellm-*`` but no ``x-bf-*``; Bifrost gets the three
-``x-bf-*`` headers APISIX sets and nothing else that could steer it.
+Bifrost gets the three ``x-bf-*`` headers APISIX sets and nothing else that
+could steer it: no client-sent ``x-bf-*``, no header it reads as a virtual key,
+and none of the ``x-litellm-*`` headers clients set up for the LiteLLM that used
+to sit here still send.
 """
 
 from __future__ import annotations
@@ -18,10 +17,8 @@ from fastapi.testclient import TestClient
 import app.main as converter_main
 from app.sse import forward_request_headers, forward_response_headers
 
-# What APISIX sets on llm-messages / llm-responses / llm-models in every mode.
+# What APISIX sets on llm-messages / llm-responses / llm-models.
 APISIX_HEADERS = {
-    "Authorization": "Bearer sk-litellm-master",
-    "x-litellm-end-user-id": "team-a-key",
     "x-bf-vk": "sk-bf-gatewaykey00000000000",
     "x-bf-dim-consumer": "team-a-key",
     "x-bf-lh-consumer": "team-a-key",
@@ -33,6 +30,8 @@ CLIENT_HEADERS = {
     "x-bf-api-key": "a-stored-provider-key",
     "x-bf-send-back-raw-response": "true",
     "x-litellm-tags": "client-tag",
+    "x-litellm-api-key": "sk-old-litellm-key",
+    "Authorization": "Bearer client-token",
     "x-api-key": "client-unibridge-key",
     "anthropic-version": "2023-06-01",
     "user-agent": "claude-cli/2.1.300",
@@ -45,22 +44,8 @@ def _lower(headers: dict) -> dict:
 
 
 # --- forward_request_headers / forward_response_headers ----------------------
-def test_litellm_mode_forwards_its_credentials_and_no_bifrost_header():
-    out = _lower(forward_request_headers({**APISIX_HEADERS, **CLIENT_HEADERS}.items(), "litellm"))
-
-    assert out["authorization"] == "Bearer sk-litellm-master"
-    assert out["x-litellm-end-user-id"] == "team-a-key"
-    assert out["x-litellm-tags"] == "client-tag"
-    assert out["x-api-key"] == "client-unibridge-key"
-    assert out["anthropic-version"] == "2023-06-01"
-    assert out["user-agent"] == "claude-cli/2.1.300"
-    # Not even the virtual key APISIX set: it must not land in LiteLLM's logs.
-    assert not [name for name in out if name.startswith("x-bf-")]
-    assert "accept-encoding" not in out
-
-
-def test_bifrost_mode_forwards_only_the_three_gateway_headers():
-    out = _lower(forward_request_headers({**APISIX_HEADERS, **CLIENT_HEADERS}.items(), "bifrost"))
+def test_forwards_only_the_three_gateway_headers():
+    out = _lower(forward_request_headers({**APISIX_HEADERS, **CLIENT_HEADERS}.items()))
 
     assert out["x-bf-vk"] == "sk-bf-gatewaykey00000000000"
     assert out["x-bf-dim-consumer"] == "team-a-key"
@@ -70,7 +55,7 @@ def test_bifrost_mode_forwards_only_the_three_gateway_headers():
         "x-bf-lh-consumer",
         "x-bf-vk",
     ]
-    for dropped in ("authorization", "x-litellm-end-user-id", "x-litellm-tags", "x-api-key"):
+    for dropped in ("authorization", "x-litellm-tags", "x-litellm-api-key", "x-api-key"):
         assert dropped not in out, dropped
     assert out["anthropic-version"] == "2023-06-01"
     assert out["user-agent"] == "claude-cli/2.1.300"
@@ -79,16 +64,15 @@ def test_bifrost_mode_forwards_only_the_three_gateway_headers():
 
 @pytest.mark.parametrize("name", ["X-BF-VK", "X-Bf-Dim-Consumer"])
 def test_bifrost_gateway_headers_match_case_insensitively(name):
-    assert name in forward_request_headers([(name, "v")], "bifrost")
-    assert name not in forward_request_headers([(name, "v")], "litellm")
+    assert name in forward_request_headers([(name, "v")])
 
 
 @pytest.mark.parametrize("name", ["api-key", "x-goog-api-key", "AUTHORIZATION", "X-LiteLLM-End-User-Id"])
-def test_bifrost_mode_drops_credentials_bifrost_would_read(name):
-    assert forward_request_headers([(name, "sk-bf-sneaky0000000000")], "bifrost") == {}
+def test_drops_credentials_bifrost_would_read_and_old_litellm_headers(name):
+    assert forward_request_headers([(name, "sk-bf-sneaky0000000000")]) == {}
 
 
-def test_response_drops_bifrost_routing_headers_in_every_mode():
+def test_response_drops_bifrost_routing_headers():
     upstream = {
         "x-bifrost-provider": "vllm-qwen",
         "X-Bifrost-Routing-Info-Key": "prod-key-a",
@@ -167,19 +151,9 @@ RESPONSES_BODY = {
 }
 
 
-@pytest.fixture
-def bifrost_mode(monkeypatch):
-    monkeypatch.setenv("LLM_GATEWAY", "bifrost")
+@pytest.fixture(autouse=True)
+def bifrost_url(monkeypatch):
     monkeypatch.setenv("CONVERTER_BIFROST_URL", "http://bifrost.test")
-    # The converter in front of Bifrost needs no LiteLLM address at all.
-    monkeypatch.delenv("LITELLM_URL", raising=False)
-
-
-@pytest.fixture
-def litellm_mode(monkeypatch):
-    monkeypatch.setenv("LLM_GATEWAY", "litellm")
-    monkeypatch.setenv("LITELLM_URL", "https://litellm.test")
-    monkeypatch.setenv("CONVERTER_TLS_VERIFY", "false")
 
 
 def _post(path: str, body: dict) -> httpx.Response:
@@ -188,8 +162,7 @@ def _post(path: str, body: dict) -> httpx.Response:
     )
 
 
-@pytest.mark.usefixtures("bifrost_mode")
-def test_messages_go_to_bifrost_with_only_its_headers_and_no_litellm_field(capture):
+def test_messages_go_to_bifrost_with_only_its_headers(capture):
     seen = capture(_chat_json({"x-bifrost-routing-info-key": "prod-key-a"}))
 
     resp = _post("/v1/messages", MESSAGES_BODY)
@@ -199,34 +172,17 @@ def test_messages_go_to_bifrost_with_only_its_headers_and_no_litellm_field(captu
     sent = _lower(seen["headers"])
     assert sent["x-bf-vk"] == APISIX_HEADERS["x-bf-vk"]
     assert "authorization" not in sent
-    assert "x-litellm-end-user-id" not in sent
+    assert "x-litellm-api-key" not in sent
     assert "x-bf-eh-x-forwarded-for" not in sent
     assert "x-bf-passthrough-extra-params" not in sent
-    # Effort still clamped (``max`` -> ``high``) and sent, without LiteLLM's hatch.
+    # Effort clamped (``max`` -> ``high``) and sent, without LiteLLM's old hatch.
     assert seen["body"]["reasoning_effort"] == "high"
     assert "allowed_openai_params" not in seen["body"]
     assert seen["body"]["model"] == "qwen3.5-32b"
     assert "x-bifrost-routing-info-key" not in resp.headers
 
 
-@pytest.mark.usefixtures("litellm_mode")
-def test_messages_go_to_litellm_with_its_credentials_and_the_hatch(capture):
-    seen = capture(_chat_json())
-
-    resp = _post("/v1/messages", MESSAGES_BODY)
-
-    assert resp.status_code == 200, resp.content
-    assert seen["url"] == "https://litellm.test/v1/chat/completions"
-    sent = _lower(seen["headers"])
-    assert sent["authorization"] == "Bearer sk-litellm-master"
-    assert sent["x-litellm-end-user-id"] == "team-a-key"
-    assert not [name for name in sent if name.startswith("x-bf-")]
-    assert seen["body"]["reasoning_effort"] == "high"
-    assert seen["body"]["allowed_openai_params"] == ["reasoning_effort"]
-
-
-@pytest.mark.usefixtures("bifrost_mode")
-def test_responses_go_to_bifrost_without_the_litellm_field(capture):
+def test_responses_go_to_bifrost_with_only_its_headers(capture):
     seen = capture(_chat_json({"x-bifrost-provider": "vllm-qwen"}))
 
     resp = _post("/v1/responses", RESPONSES_BODY)
@@ -241,17 +197,6 @@ def test_responses_go_to_bifrost_without_the_litellm_field(capture):
     assert "x-bifrost-provider" not in resp.headers
 
 
-@pytest.mark.usefixtures("litellm_mode")
-def test_responses_go_to_litellm_with_the_hatch(capture):
-    seen = capture(_chat_json())
-
-    resp = _post("/v1/responses", RESPONSES_BODY)
-
-    assert resp.status_code == 200, resp.content
-    assert seen["url"] == "https://litellm.test/v1/chat/completions"
-    assert seen["body"]["allowed_openai_params"] == ["reasoning_effort"]
-
-
 # --- Upstream error bodies -----------------------------------------------------------
 BIFROST_ERROR = {
     "is_bifrost_error": False,
@@ -264,13 +209,9 @@ BIFROST_ERROR = {
 }
 
 
-@pytest.mark.parametrize("gateway", ["litellm", "bifrost"])
 @pytest.mark.parametrize("path", ["/v1/messages", "/v1/responses"])
 @pytest.mark.parametrize("stream", [False, True], ids=["non-stream", "stream"])
-def test_error_bodies_lose_the_gateway_routing_details(capture, monkeypatch, gateway, path, stream):
-    monkeypatch.setenv("LLM_GATEWAY", gateway)
-    monkeypatch.setenv("LITELLM_URL", "http://litellm.test")
-    monkeypatch.setenv("CONVERTER_BIFROST_URL", "http://bifrost.test")
+def test_error_bodies_lose_the_gateway_routing_details(capture, path, stream):
     capture(httpx.Response(400, headers={"content-type": "application/json"}, content=json.dumps(BIFROST_ERROR).encode()))
 
     body = {**(MESSAGES_BODY if path == "/v1/messages" else RESPONSES_BODY), "stream": stream}
@@ -285,7 +226,6 @@ def test_error_bodies_lose_the_gateway_routing_details(capture, monkeypatch, gat
     assert "prod-key-a" not in resp.text
 
 
-@pytest.mark.usefixtures("litellm_mode")
 @pytest.mark.parametrize("path", ["/v1/messages", "/v1/responses"])
 @pytest.mark.parametrize("stream", [False, True], ids=["non-stream", "stream"])
 def test_non_json_error_bodies_pass_unchanged(capture, path, stream):
@@ -298,7 +238,6 @@ def test_non_json_error_bodies_pass_unchanged(capture, path, stream):
     assert resp.content == b"bad gateway: extra_fields"
 
 
-@pytest.mark.usefixtures("bifrost_mode")
 def test_an_error_body_without_gateway_details_is_forwarded_byte_for_byte(capture):
     raw = b'{"error":  {"message": "rate limited"}}'
     capture(httpx.Response(429, headers={"content-type": "application/json"}, content=raw))
@@ -309,7 +248,6 @@ def test_an_error_body_without_gateway_details_is_forwarded_byte_for_byte(captur
     assert resp.content == raw
 
 
-@pytest.mark.usefixtures("bifrost_mode")
 @pytest.mark.parametrize("path", ["/v1/messages", "/v1/responses"])
 def test_streams_drop_bifrost_routing_headers(capture, path):
     capture(_chat_sse({"x-bifrost-routing-info-key": "prod-key-a", "x-request-id": "req-1"}))

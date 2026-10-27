@@ -1,7 +1,7 @@
 """``POST /v1/messages/count_tokens``: a local, deliberately high estimate.
 
 No gateway can count tokens for a self-hosted model, so the converter answers
-from the request alone — never calling upstream — in both gateway modes.
+from the request alone — never calling upstream.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from app.token_estimate import (
 @pytest.fixture(autouse=True)
 def _no_upstream(monkeypatch):
     """Any upstream call is a failure: the count is answered locally."""
-    monkeypatch.setenv("LITELLM_URL", "http://upstream.test")
+    monkeypatch.setenv("CONVERTER_BIFROST_URL", "http://upstream.test")
 
     def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
         raise AssertionError(f"count_tokens called upstream: {request.url}")
@@ -157,10 +157,7 @@ def test_wrongly_typed_requests_are_rejected_with_where(body, where):
 
 
 # --- The route ----------------------------------------------------------------------
-@pytest.mark.parametrize("gateway", ["litellm", "bifrost"])
-def test_route_answers_locally_in_both_modes(monkeypatch, gateway):
-    monkeypatch.setenv("LLM_GATEWAY", gateway)
-
+def test_route_answers_locally():
     resp = _count({"model": "qwen3.5-32b", **_user("abc" * 25)})
 
     assert resp.status_code == 200

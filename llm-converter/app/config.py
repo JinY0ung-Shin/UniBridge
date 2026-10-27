@@ -1,11 +1,9 @@
 """Runtime configuration for the LLM endpoint converter.
 
 The converter sits behind APISIX, which has already performed key-auth and
-injected the upstream gateway's credential, and forwards the translated request
-to that gateway's ``/v1/chat/completions`` route. ``LLM_GATEWAY`` picks the
-gateway: LiteLLM (APISIX injects the master key and ``x-litellm-end-user-id``)
-or Bifrost (APISIX injects the gateway virtual key as ``x-bf-vk`` plus the
-``x-bf-dim-consumer`` / ``x-bf-lh-consumer`` attribution headers). All settings
+injected Bifrost's gateway virtual key (``x-bf-vk``) plus the
+``x-bf-dim-consumer`` / ``x-bf-lh-consumer`` attribution headers, and forwards
+the translated request to Bifrost's ``/v1/chat/completions`` route. All settings
 are read from the environment so they can be overridden in
 ``docker-compose.yml`` without rebuilding the image.
 """
@@ -14,84 +12,20 @@ from __future__ import annotations
 
 import os
 import re
-import ssl
 
 import httpx
 
-_GATEWAYS = frozenset({"litellm", "bifrost"})
-_DEFAULT_GATEWAY = "litellm"
 _DEFAULT_BIFROST_URL = "http://bifrost:8080"
-
-
-def _get_gateway() -> str:
-    """Which LLM gateway the converter forwards to (``LLM_GATEWAY``).
-
-    ``litellm`` (the default) or ``bifrost``, trimmed and case-insensitive. The
-    same variable switches the APISIX routes in unibridge-service, so the two
-    always move together. An unrecognized value falls back to the default
-    silently, matching ``_int_env``/``_bool_env``.
-    """
-    raw = os.getenv("LLM_GATEWAY", "").strip().lower()
-    return raw if raw in _GATEWAYS else _DEFAULT_GATEWAY
-
-
-def _get_litellm_url() -> str:
-    """Base URL of the upstream LiteLLM proxy (no trailing slash).
-
-    Required while ``LLM_GATEWAY`` is ``litellm``. The converter targets
-    ``{LITELLM_URL}/v1/chat/completions``.
-    """
-    raw = os.getenv("LITELLM_URL", "").strip()
-    if not raw:
-        raise RuntimeError("LITELLM_URL is required")
-    return raw.rstrip("/")
 
 
 def _get_bifrost_url() -> str:
     """Base URL of Bifrost (``CONVERTER_BIFROST_URL``, no trailing slash).
 
-    Used while ``LLM_GATEWAY`` is ``bifrost``; defaults to the in-network
-    ``http://bifrost:8080``. Bifrost has no TLS listener, so the TLS settings
-    below do not come into play on this hop.
+    Defaults to the in-network ``http://bifrost:8080``. The converter targets
+    ``{CONVERTER_BIFROST_URL}/v1/chat/completions``.
     """
     raw = os.getenv("CONVERTER_BIFROST_URL", "").strip()
     return (raw or _DEFAULT_BIFROST_URL).rstrip("/")
-
-
-def _get_tls_verify() -> bool | str | ssl.SSLContext:
-    """TLS verification setting for the upstream httpx client.
-
-    Resolution order:
-    1. ``CONVERTER_TLS_CA`` (a CA bundle file path) — verify the chain against
-       that CA with hostname checking DISABLED. This is the recommended setting:
-       LiteLLM serves a self-signed cert bound to ``HOST_IP`` but the converter
-       dials it by the internal Docker name ``litellm``, so hostname verification
-       would fail deterministically; pinning the CA still rejects any other cert
-       a co-tenant container might present.
-    2. ``CONVERTER_TLS_VERIFY`` — ``true``/``1``/``yes``/``on`` → verify with
-       system CAs; any other non-empty non-boolean value → treat as a CA bundle
-       path (with hostname checking ON).
-    3. Default (both unset) → ``False`` (no verification). Trusted private
-       network only.
-    """
-    ca = os.getenv("CONVERTER_TLS_CA", "").strip()
-    if ca:
-        ctx = ssl.create_default_context(cafile=ca)
-        # The LiteLLM cert's SAN is HOST_IP, not the Docker service name we dial.
-        ctx.check_hostname = False
-        return ctx
-
-    raw = os.getenv("CONVERTER_TLS_VERIFY")
-    if raw is None:
-        return False
-    stripped = raw.strip()
-    if not stripped:
-        return False
-    if stripped.lower() in {"false", "0", "no", "off"}:
-        return False
-    if stripped.lower() in {"true", "1", "yes", "on"}:
-        return True
-    return stripped
 
 
 def _int_env(name: str, default: int) -> int:
@@ -141,7 +75,7 @@ def _get_timeout() -> httpx.Timeout:
     """httpx timeout for the upstream client.
 
     ``connect``/``write``/``pool`` are always bounded so an unreachable or
-    wedged LiteLLM fails fast instead of pinning a worker forever. ``read`` is
+    wedged gateway fails fast instead of pinning a worker forever. ``read`` is
     left unbounded by default (``CONVERTER_REQUEST_TIMEOUT`` <= 0) because LLM
     completions — and especially SSE streams — are legitimately long-lived; set
     ``CONVERTER_REQUEST_TIMEOUT`` to a positive integer to cap it.
@@ -160,25 +94,10 @@ class _Settings:
     """Lazy env-backed settings; properties re-read so tests can monkeypatch."""
 
     @property
-    def gateway(self) -> str:
-        """``litellm`` or ``bifrost`` — see :func:`_get_gateway`."""
-        return _get_gateway()
-
-    @property
-    def LITELLM_URL(self) -> str:
-        return _get_litellm_url()
-
-    @property
-    def bifrost_url(self) -> str:
-        return _get_bifrost_url()
-
-    @property
     def upstream_url(self) -> str:
-        """Base URL of the gateway this converter forwards to (no trailing slash):
-        ``CONVERTER_BIFROST_URL`` in ``bifrost`` mode, ``LITELLM_URL`` otherwise."""
-        if self.gateway == "bifrost":
-            return self.bifrost_url
-        return self.LITELLM_URL
+        """Base URL of the Bifrost this converter forwards to (no trailing slash)
+        — see :func:`_get_bifrost_url`."""
+        return _get_bifrost_url()
 
     @property
     def models_cache_ttl(self) -> float:
@@ -191,26 +110,19 @@ class _Settings:
     @property
     def models_timeout(self) -> float:
         """How long a ``GET /v1/models`` caller waits for upstream
-        (``CONVERTER_MODELS_TIMEOUT``). The default depends on the gateway:
-
-        * ``bifrost`` — 2s. Bifrost asks every provider key live on each listing
-          with no deadline of its own, and Claude Code's discovery gives up after
-          ~3s, so a caller is answered from the last good listing (or a 504) by
-          then.
-        * ``litellm`` — 30s, what the listing always waited before the cache
-          existed: LiteLLM answers from its own model table in one hop.
-
-        Either way the fetch carries on in the background, up to a fixed 30s
-        ceiling, and fills the cache for the next caller. A value set in the
-        environment applies in both modes; <= 0 waits up to that ceiling."""
-        default = 2.0 if self.gateway == "bifrost" else 30.0
+        (``CONVERTER_MODELS_TIMEOUT``, default 2s). Bifrost asks every provider
+        key live on each listing with no deadline of its own, and Claude Code's
+        discovery gives up after ~3s, so a caller is answered from the last good
+        listing (or a 504) by then. The fetch carries on in the background, up to
+        a fixed 30s ceiling, and fills the cache for the next caller; <= 0 waits
+        up to that ceiling."""
         raw = os.getenv("CONVERTER_MODELS_TIMEOUT", "").strip()
         if not raw:
-            return default
+            return 2.0
         try:
             return float(raw)
         except ValueError:
-            return default
+            return 2.0
 
     @property
     def models_stale_max(self) -> float:
@@ -219,10 +131,6 @@ class _Settings:
         (``CONVERTER_MODELS_STALE_MAX``, default 600s). <= 0 never serves a
         stale listing."""
         return _float_env("CONVERTER_MODELS_STALE_MAX", 600.0)
-
-    @property
-    def tls_verify(self) -> bool | str | ssl.SSLContext:
-        return _get_tls_verify()
 
     @property
     def request_timeout(self) -> httpx.Timeout:
@@ -236,7 +144,7 @@ class _Settings:
         non-streaming completion's body arrives atomically only after generation
         finishes, so a per-chunk read timeout tight enough to catch a stall would
         also cut off legitimately slow completions. This is a generous *total*
-        ceiling instead, so a LiteLLM that accepts the connection and then stalls
+        ceiling instead, so a gateway that accepts the connection and then stalls
         (or trickles) the body cannot pin a worker forever. Default 600s; set
         ``CONVERTER_NONSTREAM_TIMEOUT`` <= 0 to disable (restore unbounded)."""
         raw = _int_env("CONVERTER_NONSTREAM_TIMEOUT", 600)
@@ -324,7 +232,7 @@ class _Settings:
         (``CONVERTER_MID_SYSTEM_MODEL_PATTERN``). The pattern is *searched*
         (:meth:`re.Pattern.search`, case-insensitive) against the OUTBOUND
         chat/completions ``model`` value rather than matched whole, so a
-        provider-prefixed deployment name — ``hosted_vllm/qwen3.5-32b`` — hits on
+        provider-prefixed model name — ``vllm-qwen/qwen3.5-32b`` — hits on
         the substring and needs no wildcards.
 
         The gate exists because normalization is not free of consequence: it
@@ -382,16 +290,13 @@ class _Settings:
         (``CONVERTER_REASONING_EFFORT_LEVELS``, default ``low,medium,high``).
 
         Both bridges forward the client's effort as chat/completions
-        ``reasoning_effort`` — alongside ``allowed_openai_params`` on LiteLLM,
-        which then hands it to the backend verbatim; Bifrost forwards the field
-        without being asked. vLLM/SGLang answer 400 on anything outside
-        ``low|medium|high``, while Codex's ladder reaches
-        ``xhigh``/``max``/``ultra`` and Claude Code's ``output_config.effort``
-        reaches ``max``. Values outside this set are clamped to the nearest
+        ``reasoning_effort``, which Bifrost hands to the backend. vLLM/SGLang
+        answer 400 on anything outside ``low|medium|high``, while Codex's ladder
+        reaches ``xhigh``/``max``/``ultra`` and Claude Code's
+        ``output_config.effort`` reaches ``max``. Values outside this set are clamped to the nearest
         listed level (unknown names are dropped) so a too-ambitious effort
         degrades instead of failing the request. Bifrost only normalizes the
-        effort for its built-in vllm/sgl provider types, so the clamp stays on
-        in both modes.
+        effort for its built-in vllm/sgl provider types, so the clamp stays on.
 
         Comma-separated, case-insensitive; unset or blank keeps the default. The
         literal ``*`` returns ``None``, which restores verbatim forwarding for a

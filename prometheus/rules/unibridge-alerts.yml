@@ -11,8 +11,8 @@
 #   or
 #   (<condition on job="unibridge-service"> unless on() (max(up{job="unibridge-service-colors"}) == 1))
 #
-# Only UniBridgeNoActiveInstance and LiteLLMDbDown read both jobs at once,
-# because a repeated series cannot change their sum() == 0 or max() == 1.
+# Only UniBridgeNoActiveInstance reads both jobs at once, because a repeated
+# series cannot change its sum() == 0.
 # Unit tests: prometheus/tests/unibridge-alerts.test.yml (promtool test rules).
 groups:
   - name: unibridge-critical
@@ -104,25 +104,9 @@ groups:
           summary: "Keycloak database TCP probe failed"
           description: "blackbox-exporter cannot connect to keycloak-db:5432."
 
-      # Quiet while /api/llm runs on Bifrost, where litellm-db is stopped on
-      # purpose (litellm/compose-gate.yml): the active instance's
-      # unibridge_llm_gateway says so. An image without that gauge (or no
-      # instance at all) leaves the alert as it was.
-      - alert: LiteLLMDbDown
-        expr: |
-          probe_success{job="infra-db-tcp",db="litellm-db"} == 0
-          unless on() (max(unibridge_llm_gateway{gateway="bifrost"} and on(job, instance) unibridge_active_instance == 1) == 1)
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: "LiteLLM database TCP probe failed"
-          description: "blackbox-exporter cannot connect to litellm-db:5432."
-
-      # Bifrost serves /api/llm under LLM_GATEWAY=bifrost, and runs in the
-      # default stack either way. There the in-app upstream_health check
-      # reaches it through APISIX as well; this one still fires while
-      # unibridge-service itself is down.
+      # Bifrost serves /api/llm. The in-app upstream_health check reaches it
+      # through APISIX as well; this one still fires while unibridge-service
+      # itself is down.
       - alert: BifrostDown
         expr: up{job="bifrost"} == 0
         for: 1m

@@ -195,18 +195,6 @@ async def sync_default_route_timeout(seconds: int) -> int:
     return patched
 
 
-def _health_path_for_route(route: dict[str, Any]) -> str:
-    # LiteLLM answers on /health/liveliness. llm-proxy may run on Bifrost
-    # (LLM_GATEWAY), which answers on /health, so its upstream decides; the
-    # route ids only cover a legacy route without an upstream id.
-    upstream_id = route.get("upstream_id")
-    if upstream_id == "litellm" or (
-        upstream_id is None and route.get("id") in {"llm-proxy", "llm-admin"}
-    ):
-        return "/health/liveliness"
-    return "/health"
-
-
 def _http_scheme_for_upstream(upstream: dict[str, Any]) -> str:
     scheme = upstream.get("scheme")
     return scheme if scheme in {"http", "https"} else "http"
@@ -230,16 +218,16 @@ def _host_header_for_upstream(upstream: dict[str, Any], node_addr: str) -> str:
 # HTTP header names are case-insensitive and ``authorization`` must not slip past
 # a check for ``Authorization``. The internal-proxy marker is what
 # ``auth.py`` authenticates gateway-proxied requests with (dropping it 401s every
-# call on that route until the next boot reconciles it); ``authorization`` and
-# ``x-litellm-end-user-id`` carry the LiteLLM master key and the end-user
-# attribution on the LLM routes, and the ``x-bf-*`` ones the Bifrost virtual key,
-# the per-key attribution and the extra-params switch on the routes to Bifrost.
+# call on that route until the next boot reconciles it); the ``x-bf-*`` ones
+# carry the Bifrost virtual key, the per-key attribution and the extra-params
+# switch on the LLM routes. ``authorization`` is no longer injected (it carried
+# LiteLLM's master key) but stays refused: the LLM routes strip the client's
+# copy, and a value set here would be a credential the gateway hands out.
 # See app/main.py ``_internal_proxy_headers`` and the LLM route provisioning.
 _SYSTEM_INJECTED_HEADERS = frozenset(
     {
         APISIX_INTERNAL_PROXY_HEADER,
         "authorization",
-        "x-litellm-end-user-id",
         "x-bf-vk",
         "x-bf-dim-consumer",
         "x-bf-lh-consumer",
@@ -533,7 +521,6 @@ _SYSTEM_ROUTE_URIS = (
     "/api/usages",
     "/api/prometheus/*",
     "/api/llm/*",
-    "/api/llm-admin/*",
     "/api/llm/v1/messages",
     "/api/llm/v1/responses",
     # The whole prefix: llm-bi-not-found answers all of it since the Bifrost
@@ -962,7 +949,7 @@ async def test_route(
 
     first_addr = addresses[0]
     scheme = _http_scheme_for_upstream(upstream)
-    url = f"{scheme}://{first_addr}{_health_path_for_route(route)}"
+    url = f"{scheme}://{first_addr}/health"
     start = time.monotonic()
     try:
         ssl_verify: str | bool = settings.SSL_CA_CERT_PATH or settings.SSL_VERIFY
@@ -1481,8 +1468,8 @@ async def _gateway_monitoring_scope(
     return await _monitoring_scope_for(user, db)
 
 
-# The APISIX routes that carry LLM inference: /api/llm (LiteLLM, or Bifrost once
-# switched) and the removed /api/llm-bi ones (Bifrost side-by-side test), whose
+# The APISIX routes that carry LLM inference: /api/llm and the removed
+# /api/llm-bi ones (Bifrost side-by-side test), whose
 # series stay in Prometheus, and in APISIX's exposition until it restarts.
 # Gateway monitoring leaves them out by default, the LLM monitoring page counts
 # them, and self-scoped callers may not filter on them. Fixed routes keep
@@ -1656,34 +1643,33 @@ def _llm_labels(*extra: str) -> str:
 
     LLM requests pass through APISIX on the ``_LLM_ROUTE_IDS`` routes, so
     ``apisix_http_status`` carries their real HTTP status codes — including
-    gateway-layer errors (401/403/429) that never reach LiteLLM or Bifrost and
-    so are invisible to their own counters.
+    gateway-layer errors (401/403/429) that never reach Bifrost and so are
+    invisible to its own counters.
     """
     parts = list(extra)
     parts.append(f'route=~"{"|".join(_LLM_ROUTE_IDS)}"')
     return "{" + ",".join(parts) + "}"
 
 
-def _llm_key_matchers(api_key: str | None, label: str) -> tuple[str, ...]:
-    """PromQL matcher scoping one gateway's LLM counters to one API key.
+def _llm_key_matchers(api_key: str | None) -> tuple[str, ...]:
+    """PromQL matcher scoping Bifrost's LLM counters to one API key.
 
-    The gateway routes stamp each LLM request with the UniBridge API-key name:
-    LiteLLM keeps it as ``end_user`` (``x-litellm-end-user-id: $consumer_name``),
-    Bifrost as its ``consumer`` label (``x-bf-dim-consumer: $consumer_name``).
-    ``label`` is the one the gateway uses. Returns no matcher when unscoped.
+    The gateway routes stamp each LLM request with the UniBridge API-key name,
+    which Bifrost keeps as its ``consumer`` label (``x-bf-dim-consumer:
+    $consumer_name``). Returns no matcher when unscoped.
 
     Validating here as well as in each handler keeps every ``api_key`` filter on
     one check: the value is a consumer name, and it reaches a PromQL matcher.
     """
     _validate_consumer(api_key)
-    return (f'{label}="{_promql_str(api_key)}"',) if api_key else ()
+    return (f'consumer="{_promql_str(api_key)}"',) if api_key else ()
 
 
 def _llm_consumer_extra(api_key: str | None) -> tuple[str, ...]:
     """APISIX ``consumer`` label extras for ``_llm_labels``, scoped to one key.
 
     ``apisix_http_status`` carries the API-key name as ``consumer`` (the same
-    value the litellm ``end_user`` and the Bifrost ``consumer`` hold), so
+    value Bifrost's ``consumer`` holds), so
     status/error series can be scoped to the same key the gateway counters are
     filtered by. Validated like :func:`_llm_key_matchers`.
     """
@@ -1693,83 +1679,58 @@ def _llm_consumer_extra(api_key: str | None) -> tuple[str, ...]:
 
 # ── LLM gateway counters ──
 #
-# The LLM monitoring page reads the gateways' own counters: LiteLLM's
-# ``litellm_*`` (/api/llm until it switches to Bifrost) and Bifrost's
-# ``bifrost_*`` (the ``bifrost`` scrape job: /api/llm after the switch, and the
-# removed /api/llm-bi side-by-side test before it). Every query adds the two, so
-# the history runs on across the switch and traffic on either gateway is
-# counted. Bifrost's rows are pinned to its job because it also exports
-# ``http_requests_total``, a name other jobs share.
+# The LLM monitoring page reads Bifrost's own ``bifrost_*`` counters, pinned to
+# its scrape job because Bifrost also exports ``http_requests_total``, a name
+# other jobs share. The ``litellm_*`` counters from before /api/llm moved to
+# Bifrost are no longer read, so that history drops out of the charts.
 #
 # Each term is aggregated first, then tagged with its own ``src`` label before
 # the union: ``or`` keeps only the left-hand series when two carry the same
-# labels, so untagged, a key or model seen on both gateways would lose one
-# gateway's share. The outer sum adds the terms back together.
+# labels, so untagged, a total made of two counters, or a model counted both by
+# alias and by name, would lose a share. The outer sum adds the terms back
+# together.
 #
-# counter -> (LiteLLM metric, Bifrost metrics, Bifrost-only matchers). Bifrost
-# has no total-tokens counter, so its total is input + output. Its request and
-# latency series count each attempt, and a fallback is a second one, so only the
-# primary attempt (fallback_index="0") stands for the client's request; tokens
-# and cost come from whichever attempt answered. Bifrost also counts model
-# listings (/v1/models, which the converter polls) as requests; LiteLLM's
-# request counter never did, so they stay out.
+# counter -> (Bifrost metrics, matchers). Bifrost has no total-tokens counter,
+# so its total is input + output. Its request and latency series count each
+# attempt, and a fallback is a second one, so only the primary attempt
+# (fallback_index="0") stands for the client's request; tokens and cost come
+# from whichever attempt answered. Bifrost also counts model listings
+# (/v1/models, which the converter polls) as requests; those stay out.
 _BIFROST_REQUEST = ('fallback_index="0"', 'method!="list_models"')
-_LLM_COUNTERS: dict[str, tuple[str, tuple[str, ...], tuple[str, ...]]] = {
-    "total_tokens": (
-        "litellm_total_tokens_metric_total",
-        ("bifrost_input_tokens_total", "bifrost_output_tokens_total"),
-        (),
-    ),
-    "input_tokens": ("litellm_input_tokens_metric_total", ("bifrost_input_tokens_total",), ()),
-    "output_tokens": ("litellm_output_tokens_metric_total", ("bifrost_output_tokens_total",), ()),
-    "cached_tokens": (
-        "litellm_input_cached_tokens_metric_total",
-        ("bifrost_cache_read_input_tokens_total",),
-        (),
-    ),
-    "cost": ("litellm_spend_metric_total", ("bifrost_cost_total",), ()),
-    "requests": (
-        "litellm_proxy_total_requests_metric_total",
-        ("bifrost_upstream_requests_total",),
-        _BIFROST_REQUEST,
-    ),
-    "latency_sum": (
-        "litellm_request_total_latency_metric_sum",
-        ("bifrost_upstream_latency_seconds_sum",),
-        _BIFROST_REQUEST,
-    ),
-    "latency_count": (
-        "litellm_request_total_latency_metric_count",
-        ("bifrost_upstream_latency_seconds_count",),
-        _BIFROST_REQUEST,
-    ),
+_LLM_COUNTERS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "total_tokens": (("bifrost_input_tokens_total", "bifrost_output_tokens_total"), ()),
+    "input_tokens": (("bifrost_input_tokens_total",), ()),
+    "output_tokens": (("bifrost_output_tokens_total",), ()),
+    "cached_tokens": (("bifrost_cache_read_input_tokens_total",), ()),
+    "cost": (("bifrost_cost_total",), ()),
+    "requests": (("bifrost_upstream_requests_total",), _BIFROST_REQUEST),
+    "latency_sum": (("bifrost_upstream_latency_seconds_sum",), _BIFROST_REQUEST),
+    "latency_count": (("bifrost_upstream_latency_seconds_count",), _BIFROST_REQUEST),
 }
 
 
 def _llm_increase(
     counter: str, window: str, api_key: str | None = None, by: str | None = None
 ) -> str:
-    """``increase()`` of one LLM counter over ``window``, LiteLLM and Bifrost added.
+    """``increase()`` of one LLM counter over ``window``.
 
     ``by`` groups the result by one label:
 
-    * ``"consumer"`` — the API key: LiteLLM's ``end_user``, Bifrost's
-      ``consumer`` (``x-bf-dim-consumer: $consumer_name``).
-    * ``"model"`` — the model the client asked for: LiteLLM's
-      ``requested_model``, else its ``model``; Bifrost's ``alias``, else its
-      ``model``. Bifrost fills ``alias`` only when alias resolution renamed the
-      model, and its ``model`` drops version and date suffixes (``-v3``,
+    * ``"consumer"`` — the API key: Bifrost's ``consumer``
+      (``x-bf-dim-consumer: $consumer_name``).
+    * ``"model"`` — the model the client asked for: Bifrost's ``alias``, else
+      its ``model``. Bifrost fills ``alias`` only when alias resolution renamed
+      the model, and its ``model`` drops version and date suffixes (``-v3``,
       ``-preview``, ``-2025-09-01``), so the requested name has to come first.
-      Each side is split on its own label, so the choice is made per series.
+      The split is on the label, so the choice is made per series.
 
     ``api_key`` scopes every term to one key. Handlers validate it themselves
     before building their queries (``_validate_consumer``): an HTTPException
     raised in here would surface through their Prometheus-error handler as a
     502 instead of a 400.
     """
-    litellm_metric, bifrost_metrics, bifrost_matchers = _LLM_COUNTERS[counter]
-    litellm_key = _llm_key_matchers(api_key, "end_user")
-    bifrost_key = ('job="bifrost"', *bifrost_matchers, *_llm_key_matchers(api_key, "consumer"))
+    metrics, matchers = _LLM_COUNTERS[counter]
+    key = ('job="bifrost"', *matchers, *_llm_key_matchers(api_key))
     terms: list[tuple[str, str]] = []
 
     def add(
@@ -1779,7 +1740,7 @@ def _llm_increase(
         label: str | None = None,
         as_label: str | None = None,
     ) -> None:
-        selector = "{" + ",".join(matchers) + "}" if matchers else ""
+        selector = "{" + ",".join(matchers) + "}"
         expr = f"increase({metric}{selector}[{window}])"
         if label is None:
             expr = f"sum ({expr})"
@@ -1789,23 +1750,16 @@ def _llm_increase(
                 expr = f'label_replace({expr}, "{as_label}", "$1", "{label}", "(.*)")'
         terms.append((source, expr))
 
-    if by == "model":
-        add("litellm", litellm_metric, (*litellm_key, 'requested_model!=""'),
-            "requested_model", "model")
-        add("litellm-model", litellm_metric, (*litellm_key, 'requested_model=""'), "model")
-        for metric in bifrost_metrics:
-            add(metric, metric, (*bifrost_key, 'alias!=""'), "alias", "model")
-            add(f"{metric}-model", metric, (*bifrost_key, 'alias=""'), "model")
-    elif by == "consumer":
-        add("litellm", litellm_metric, litellm_key, "end_user", "consumer")
-        for metric in bifrost_metrics:
-            add(metric, metric, bifrost_key, "consumer")
-    elif by is None:
-        add("litellm", litellm_metric, litellm_key)
-        for metric in bifrost_metrics:
-            add(metric, metric, bifrost_key)
-    else:
-        raise ValueError(f"cannot group LLM counters by {by!r}")
+    for metric in metrics:
+        if by == "model":
+            add(metric, metric, (*key, 'alias!=""'), "alias", "model")
+            add(f"{metric}-model", metric, (*key, 'alias=""'), "model")
+        elif by == "consumer":
+            add(metric, metric, key, "consumer")
+        elif by is None:
+            add(metric, metric, key)
+        else:
+            raise ValueError(f"cannot group LLM counters by {by!r}")
 
     union = " or ".join(
         f'label_replace({expr}, "src", "{source}", "", "")' for source, expr in terms
@@ -1979,7 +1933,7 @@ async def _volume_series(
         )
 
     # Deterministic calendar axis: emit every bucket in the window, zero-filling
-    # buckets Prometheus returned no samples for. Sparse metrics (e.g. LiteLLM
+    # buckets Prometheus returned no samples for. Sparse metrics (e.g. Bifrost
     # counters that only exist while traffic flows) would otherwise drop empty
     # buckets from the axis entirely, collapsing non-adjacent periods next to
     # each other. Both bounds sit on the same KST grid (no DST), so fixed-step
@@ -2824,7 +2778,7 @@ async def metrics_requests_total(
 # ── LLM Metrics ────────────────────────────────────────────────────────────
 
 
-_LLM_API_KEY_DESCRIPTION = "Filter to one API key (LiteLLM end_user / Bifrost consumer)"
+_LLM_API_KEY_DESCRIPTION = "Filter to one API key (Bifrost consumer)"
 
 
 @router.get("/metrics/llm/summary")
@@ -3138,9 +3092,9 @@ async def llm_metrics_status_codes(
 ) -> list[dict[str, Any]]:
     """LLM HTTP status code distribution.
 
-    Sourced from APISIX (``apisix_http_status``) rather than the LLM gateways'
+    Sourced from APISIX (``apisix_http_status``) rather than Bifrost's
     counters so every status code is broken out (200/400/429/500/…) and
-    gateway-layer errors that never reach LiteLLM or Bifrost are still counted.
+    gateway-layer errors that never reach Bifrost are still counted.
     """
     hs = _llm_labels(*_llm_consumer_extra(api_key))
     try:
@@ -3176,8 +3130,8 @@ async def llm_metrics_errors(
     """LLM request success/error rate over time.
 
     Sourced from APISIX status codes (2xx/3xx = success, everything else = error)
-    so gateway-layer failures (auth, rate-limit) are reflected, unlike the LLM
-    gateways' failed-request counters, which only see requests that reach them. The error
+    so gateway-layer failures (auth, rate-limit) are reflected, unlike Bifrost's
+    failed-request counters, which only see requests that reach it. The error
     bucket is the complement of success (``code!~"2..|3.."``) so non-HTTP outcomes
     APISIX records — notably code 0 for client-aborted/timed-out streams — are not
     silently dropped.

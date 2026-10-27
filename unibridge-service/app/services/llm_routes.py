@@ -1,27 +1,21 @@
-"""The /api/llm gateway routes, on LiteLLM or on Bifrost (LLM_GATEWAY).
+"""The /api/llm gateway routes, on Bifrost.
 
-Both gateways get the same route ids, so API-key grants (the consumer-restriction
-whitelists), the grants an ``llm-proxy`` grant implies and the monitoring
-selectors keyed on route ids all carry over a switch in either direction. Only
-the upstreams and the injected headers change:
+The route ids are the ones /api/llm had on LiteLLM, so API-key grants (the
+consumer-restriction whitelists), the grants an ``llm-proxy`` grant implies and
+the monitoring selectors keyed on route ids carried over when it left:
 
-- ``llm-proxy`` is the raw OpenAI-compatible surface. On LiteLLM it takes all of
-  ``/api/llm/*``. On Bifrost it takes only the three inference paths, because
-  Bifrost answers any other extension-less path with its UI's index.html (200)
-  and serves its management API under ``/api/*``; ``llm-not-found`` answers the
-  rest with a 404 that lists what is served.
+- ``llm-proxy`` is the raw OpenAI-compatible surface: only the three inference
+  paths, because Bifrost answers any other extension-less path with its UI's
+  index.html (200) and serves its management API under ``/api/*``;
+  ``llm-not-found`` answers the rest with a 404 that lists what is served.
 - ``llm-messages``, ``llm-responses`` and ``llm-models`` go to the per-color
-  llm-converter on both, and the converter reads LLM_GATEWAY for its own
-  upstream. Their credentials do not depend on the switch: they carry the one
-  of each gateway that is configured, and the converter forwards only its own.
-  A deploy rewrites the routes when the new color boots but moves the converter
-  upstream only at promotion, so in between the old color's converter must still
-  find its credential, whichever way the switch went.
-- ``llm-metrics`` is the gateway's own Prometheus exposition.
+  llm-converter, which forwards to Bifrost with the virtual key they inject.
+- ``llm-metrics`` is Bifrost's own Prometheus exposition.
 
 Boot provisioning (app/main.py ``_provision_llm_routes``) does the writes. It
-also retires the /api/llm-bi routes of the Bifrost side-by-side test
-(``retired_llm_bi_route``).
+also retires what LiteLLM left in APISIX (``RETIRED_LITELLM_ROUTE_ID``,
+``RETIRED_LITELLM_UPSTREAM_ID``) and the /api/llm-bi routes of the Bifrost
+side-by-side test (``retired_llm_bi_route``).
 """
 from __future__ import annotations
 
@@ -33,17 +27,10 @@ from app.services.consumer_restrictions import DENY_ALL_CONSUMER
 
 PATH_PREFIX = "/api/llm"
 
-LITELLM_UPSTREAM: dict[str, Any] = {
-    "name": "litellm",
-    "type": "roundrobin",
-    "scheme": "https",
-    "nodes": {"litellm:4000": 1},
-}
-
-# Colorless shared infra (one Bifrost for both blue/green colors), like litellm.
+# Colorless shared infra: one Bifrost for both blue/green colors.
 BIFROST_UPSTREAM: dict[str, Any] = {
     "name": "bifrost",
-    "desc": "Bifrost LLM gateway (/api/llm under LLM_GATEWAY=bifrost)",
+    "desc": "Bifrost LLM gateway (/api/llm)",
     "type": "roundrobin",
     "scheme": "http",
     "nodes": {"bifrost:8080": 1},
@@ -78,13 +65,13 @@ _VIRTUAL_KEY_RE = re.compile(r"sk-bf-[A-Za-z0-9_-]{16,}")
 VIRTUAL_KEY_RULE = "sk-bf- followed by at least 16 URL-safe characters (A-Z, a-z, 0-9, - and _)"
 
 _REWRITE = {"regex_uri": [f"^{PATH_PREFIX}(.*)", "$1"], "use_real_request_uri_unsafe": True}
-# Routes to Bifrost rewrite the normalized path instead. APISIX picks the route on
+# Routes straight to Bifrost rewrite the normalized path instead. APISIX picks the route on
 # the normalized path, so with the raw one `/api/llm/%2e%2e/llm/metrics` matched
 # llm-metrics and reached Bifrost as `/%2e%2e/llm/metrics`, which Bifrost
 # resolved to its UI. Their paths are fixed, so the raw form is never needed.
 _REWRITE_NORMALIZED = {"regex_uri": [f"^{PATH_PREFIX}(.*)", "$1"], "use_real_request_uri_unsafe": False}
 
-# The raw inference paths llm-proxy serves on Bifrost.
+# The raw inference paths llm-proxy serves.
 BIFROST_PROXY_PATHS = (
     f"{PATH_PREFIX}/v1/chat/completions",
     f"{PATH_PREFIX}/v1/completions",
@@ -93,19 +80,20 @@ BIFROST_PROXY_PATHS = (
 
 METRICS_PATH = f"{PATH_PREFIX}/metrics"
 
-# route id -> (exact paths, methods, long timeout). Higher priority than the
-# llm-proxy catch-all on LiteLLM; on Bifrost the exact paths win anyway.
+# route id -> (exact paths, methods, long timeout).
 CONVERTER_ROUTES: dict[str, tuple[tuple[str, ...], tuple[str, ...], bool]] = {
-    "llm-messages": ((f"{PATH_PREFIX}/v1/messages",), ("POST", "OPTIONS"), True),
+    # count_tokens too, which the converter answers with its own estimate:
+    # Bifrost has no working one for self-hosted backends.
+    "llm-messages": (
+        (f"{PATH_PREFIX}/v1/messages", f"{PATH_PREFIX}/v1/messages/count_tokens"),
+        ("POST", "OPTIONS"),
+        True,
+    ),
     "llm-responses": ((f"{PATH_PREFIX}/v1/responses",), ("POST", "OPTIONS"), True),
     # A listing returns immediately, unlike a completion: no timeout override.
     "llm-models": ((f"{PATH_PREFIX}/v1/models",), ("GET",), False),
 }
 CONVERTER_ROUTE_IDS = tuple(CONVERTER_ROUTES)
-# On Bifrost, llm-messages also takes count_tokens, which the converter answers
-# with its own estimate: Bifrost has no working one for self-hosted backends. On
-# LiteLLM it stays on llm-proxy's catch-all, so LiteLLM keeps answering it.
-COUNT_TOKENS_PATH = f"{PATH_PREFIX}/v1/messages/count_tokens"
 
 # The prefix of the Bifrost side-by-side test, whose routes provisioning now
 # deletes; ``retired_llm_bi_route`` keeps answering it with a pointer here.
@@ -131,18 +119,6 @@ def virtual_key_headers(virtual_key: str) -> dict[str, str]:
     }
 
 
-def gateway_state(gateway: str | None, virtual_key: str | None) -> str:
-    """What provisioning makes of LLM_GATEWAY: ``"litellm"``, ``"bifrost"`` or ``"skip"``.
-
-    ``"skip"`` is Bifrost without a usable BIFROST_TEST_VK: every request would
-    401, so the routes are left as they are (scripts/deploy-bluegreen.sh
-    ``llm_gateway_state`` applies the same rule).
-    """
-    if (gateway or "litellm").strip().lower() != "bifrost":
-        return "litellm"
-    return "bifrost" if usable_virtual_key(virtual_key or "") else "skip"
-
-
 def _with_paths(body: dict[str, Any], paths: tuple[str, ...]) -> dict[str, Any]:
     if len(paths) == 1:
         body["uri"] = paths[0]
@@ -151,35 +127,11 @@ def _with_paths(body: dict[str, Any], paths: tuple[str, ...]) -> dict[str, Any]:
     return body
 
 
-def litellm_proxy_route(master_key: str) -> dict[str, Any]:
-    """``llm-proxy`` on LiteLLM: all of /api/llm/*, with the master key injected."""
-    return {
-        "name": "llm-proxy",
-        "uri": f"{PATH_PREFIX}/*",
-        "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
-        "upstream_id": "litellm",
-        "timeout": dict(TIMEOUT),
-        "plugins": {
-            "key-auth": {},
-            "proxy-rewrite": {
-                **_REWRITE,
-                "headers": {
-                    "set": {
-                        "Authorization": f"Bearer {master_key}",
-                        "x-litellm-end-user-id": "$consumer_name",
-                    },
-                },
-            },
-        },
-        "status": 1,
-    }
-
-
 def bifrost_proxy_route(virtual_key: str) -> dict[str, Any]:
-    """``llm-proxy`` on Bifrost: the three inference paths, with the virtual key.
+    """``llm-proxy``: the three inference paths, with the virtual key.
 
     Non-OpenAI fields such as chat_template_kwargs pass through to the backend
-    here (x-bf-passthrough-extra-params), as they did through LiteLLM.
+    (x-bf-passthrough-extra-params).
     """
     headers_set = {
         **virtual_key_headers(virtual_key),
@@ -188,7 +140,7 @@ def bifrost_proxy_route(virtual_key: str) -> dict[str, Any]:
     return _with_paths(
         {
             "name": "llm-proxy",
-            "desc": "OpenAI-compatible inference on Bifrost (LLM_GATEWAY=bifrost)",
+            "desc": "OpenAI-compatible inference on Bifrost",
             "methods": ["POST", "OPTIONS"],
             "upstream_id": "bifrost",
             "timeout": dict(TIMEOUT),
@@ -207,52 +159,6 @@ def bifrost_proxy_route(virtual_key: str) -> dict[str, Any]:
         },
         BIFROST_PROXY_PATHS,
     )
-
-
-def llm_admin_route() -> dict[str, Any]:
-    """``/api/llm-admin/*`` → LiteLLM's admin UI and API, same-origin via the gateway."""
-    return {
-        "name": "llm-admin",
-        "uri": "/api/llm-admin/*",
-        "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
-        "upstream_id": "litellm",
-        "plugins": {
-            "key-auth": {},
-            "proxy-rewrite": {
-                "regex_uri": ["^/api/llm-admin(.*)", "$1"],
-                "use_real_request_uri_unsafe": True,
-            },
-        },
-        "status": 1,
-    }
-
-
-def litellm_metrics_route(master_key: str) -> dict[str, Any]:
-    """``/api/llm/metrics`` → LiteLLM's own Prometheus exposition.
-
-    It carves the metrics endpoint out of the llm-proxy grant, so a scraper can
-    be granted monitoring access without any LLM invocation rights. The master
-    key is injected even though LiteLLM serves /metrics unauthenticated here
-    (litellm/config.yaml), so a release that gates it doesn't turn every scrape
-    into a 401. No x-litellm-end-user-id: a scrape has no consumer semantics.
-    """
-    return {
-        "name": "llm-metrics",
-        "desc": "LiteLLM's own Prometheus /metrics exposition via the gateway",
-        "uri": METRICS_PATH,
-        "methods": ["GET"],
-        "priority": 10,
-        "upstream_id": "litellm",
-        "plugins": {
-            "key-auth": {},
-            "consumer-restriction": {"whitelist": [DENY_ALL_CONSUMER]},
-            "proxy-rewrite": {
-                **_REWRITE,
-                "headers": {"set": {"Authorization": f"Bearer {master_key}"}},
-            },
-        },
-        "status": 1,
-    }
 
 
 def bifrost_metrics_route() -> dict[str, Any]:
@@ -281,30 +187,14 @@ def bifrost_metrics_route() -> dict[str, Any]:
     }
 
 
-def converter_route(
-    route_id: str, *, master_key: str, virtual_key: str, on_bifrost: bool
-) -> dict[str, Any]:
-    """``llm-messages`` / ``llm-responses`` / ``llm-models``, for either gateway.
+def converter_route(route_id: str, virtual_key: str) -> dict[str, Any]:
+    """``llm-messages`` / ``llm-responses`` / ``llm-models``, with the virtual key.
 
-    Each credential that is configured goes in: the LiteLLM master key with the
-    end-user attribution, and the Bifrost virtual key with its attribution. The
-    converter keeps the one its LLM_GATEWAY needs and drops the other, so the
-    credentials need not change at the moment the switch flips; only
-    llm-messages differs, taking count_tokens on Bifrost (``COUNT_TOKENS_PATH``).
-    Ships deny-all, so the route is never callable by an arbitrary key between
-    this PUT and the consumer-restriction replay.
+    The converter forwards the key and its attribution to Bifrost. Ships
+    deny-all, so the route is never callable by an arbitrary key between this
+    PUT and the consumer-restriction replay.
     """
     paths, methods, long_timeout = CONVERTER_ROUTES[route_id]
-    if on_bifrost and route_id == "llm-messages":
-        paths = (*paths, COUNT_TOKENS_PATH)
-    headers_set: dict[str, str] = {}
-    remove = list(REMOVED_HEADERS)
-    if master_key:
-        headers_set["Authorization"] = f"Bearer {master_key}"
-        headers_set["x-litellm-end-user-id"] = "$consumer_name"
-        remove.remove("Authorization")
-    if usable_virtual_key(virtual_key):
-        headers_set.update(virtual_key_headers(virtual_key))
     body: dict[str, Any] = {"name": route_id}
     if route_id == "llm-models":
         body["desc"] = "Model listing with claude/-prefixed aliases via the converter"
@@ -316,14 +206,17 @@ def converter_route(
     body["plugins"] = {
         "key-auth": {},
         "consumer-restriction": {"whitelist": [DENY_ALL_CONSUMER]},
-        "proxy-rewrite": {**_REWRITE, "headers": {"set": headers_set, "remove": remove}},
+        "proxy-rewrite": {
+            **_REWRITE,
+            "headers": {"set": virtual_key_headers(virtual_key), "remove": list(REMOVED_HEADERS)},
+        },
     }
     body["status"] = 1
     return _with_paths(body, paths)
 
 
 def served_endpoints() -> list[str]:
-    """``METHOD path`` for every request /api/llm forwards on Bifrost, preflights aside."""
+    """``METHOD path`` for every request /api/llm forwards, preflights aside."""
     endpoints = [f"POST {path}" for path in BIFROST_PROXY_PATHS]
     endpoints += [
         f"{method} {path}"
@@ -332,17 +225,12 @@ def served_endpoints() -> list[str]:
         for method in methods
         if method != "OPTIONS"
     ]
-    endpoints.insert(endpoints.index(f"POST {PATH_PREFIX}/v1/messages") + 1, f"POST {COUNT_TOKENS_PATH}")
     endpoints.append(f"GET {METRICS_PATH}")
     return endpoints
 
 
 def not_found_route() -> dict[str, Any]:
-    """The ``/api/llm/*`` route that answers 404 while /api/llm runs on Bifrost.
-
-    On LiteLLM llm-proxy itself takes the whole prefix, so this route exists
-    only on Bifrost.
-    """
+    """The ``/api/llm/*`` route that answers 404 for whatever /api/llm does not serve."""
     return explaining_404_route(
         LLM_NOT_FOUND_ROUTE_ID,
         PATH_PREFIX,
@@ -350,8 +238,8 @@ def not_found_route() -> dict[str, Any]:
         + ", ".join(served_endpoints())
         + ".",
         # Below any other /api/llm/* route: should one come back without this
-        # route going (a release from before LLM_GATEWAY rolled back on top),
-        # the catch-all must still win instead of APISIX picking either.
+        # route going (a release from before the Bifrost switch rolled back on
+        # top), the catch-all must still win instead of APISIX picking either.
         priority=-10,
     )
 

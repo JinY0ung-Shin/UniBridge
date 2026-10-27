@@ -8,6 +8,9 @@ from fastapi import FastAPI
 
 from app.main import lifespan
 
+# A BIFROST_TEST_VK the /api/llm routes can carry (llm_routes.usable_virtual_key).
+VK = "sk-bf-" + "v" * 32
+
 
 class _DummyTask:
     def cancel(self) -> None:
@@ -58,7 +61,7 @@ def _keyed_get_resource(resources: dict[tuple[str, str], object]) -> AsyncMock:
 
 
 @pytest.mark.asyncio
-async def test_lifespan_provisions_llm_admin_route_when_master_key_set():
+async def test_lifespan_provisions_the_system_routes():
     app = FastAPI()
     put_resource = AsyncMock()
 
@@ -73,7 +76,7 @@ async def test_lifespan_provisions_llm_admin_route_when_master_key_set():
         patch(
             "app.main.settings",
             SimpleNamespace(
-                LITELLM_MASTER_KEY="sk-test",
+                BIFROST_TEST_VK=VK,
                 APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
                 APISIX_ADMIN_KEY="admin-secret",
             ),
@@ -113,24 +116,19 @@ async def test_lifespan_provisions_llm_admin_route_when_master_key_set():
         "plugins": {"prometheus": {"prefer_name": True}}
     }
 
-    assert "litellm" in upstream_calls
-    assert upstream_calls["litellm"]["scheme"] == "https"
+    assert upstream_calls["bifrost"]["scheme"] == "http"
+    assert "litellm" not in upstream_calls
     assert "llm-proxy" in route_calls
-    assert "llm-admin" in route_calls
-    assert route_calls["llm-admin"]["uri"] == "/api/llm-admin/*"
-    assert route_calls["llm-admin"]["plugins"]["proxy-rewrite"]["regex_uri"] == [
-        "^/api/llm-admin(.*)",
-        "$1",
-    ]
-    for route_id in (
-        "query-api", "query-template-write-api", "s3-api", "llm-proxy", "llm-admin"
-    ):
+    assert "llm-admin" not in route_calls
+    for route_id in ("query-api", "query-template-write-api", "s3-api"):
         assert (
             route_calls[route_id]["plugins"]["proxy-rewrite"][
                 "use_real_request_uri_unsafe"
             ]
             is True
         )
+    # llm-proxy goes straight to Bifrost, which gets the normalized path.
+    assert route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]["use_real_request_uri_unsafe"] is False
 
 
 @pytest.mark.asyncio
@@ -149,7 +147,7 @@ async def test_lifespan_uses_configured_apisix_upstream_nodes():
         patch(
             "app.main.settings",
             SimpleNamespace(
-                LITELLM_MASTER_KEY="sk-test",
+                BIFROST_TEST_VK=VK,
                 APISIX_PROVISION_ON_START=True,
                 APISIX_UNIBRIDGE_SERVICE_NODE="unibridge-service-green:8000",
                 APISIX_LLM_CONVERTER_NODE="llm-converter-green:4001",
@@ -199,7 +197,7 @@ async def test_lifespan_provisions_prometheus_query_route():
         patch(
             "app.main.settings",
             SimpleNamespace(
-                LITELLM_MASTER_KEY="sk-test",
+                BIFROST_TEST_VK=VK,
                 APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
                 APISIX_ADMIN_KEY="admin-secret",
             ),
@@ -250,7 +248,7 @@ async def test_lifespan_provisions_prometheus_query_route():
 
 
 @pytest.mark.asyncio
-async def test_lifespan_provisions_litellm_metrics_route():
+async def test_lifespan_provisions_llm_metrics_route():
     app = FastAPI()
     put_resource = AsyncMock()
 
@@ -265,7 +263,7 @@ async def test_lifespan_provisions_litellm_metrics_route():
         patch(
             "app.main.settings",
             SimpleNamespace(
-                LITELLM_MASTER_KEY="sk-test",
+                BIFROST_TEST_VK=VK,
                 APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
                 APISIX_ADMIN_KEY="admin-secret",
             ),
@@ -289,24 +287,21 @@ async def test_lifespan_provisions_litellm_metrics_route():
     }["llm-metrics"]
 
     assert route["uri"] == "/api/llm/metrics"
-    assert route["upstream_id"] == "litellm"
-    # Scrape-only: no other verb reaches LiteLLM through this route.
+    assert route["upstream_id"] == "bifrost"
+    # Scrape-only: no other verb reaches Bifrost through this route.
     assert route["methods"] == ["GET"]
-    # Beats the /api/llm/* catch-all, which is what carves the metrics endpoint
-    # out of the llm-proxy grant into its own.
+    # Its own grant, carved out of /api/llm: the exposition carries every key's usage.
     assert route["priority"] == 10
     assert route["plugins"]["key-auth"] == {}
     assert route["plugins"]["consumer-restriction"] == {"whitelist": ["__deny_all__"]}
     assert route["plugins"]["proxy-rewrite"]["regex_uri"] == ["^/api/llm(.*)", "$1"]
-    assert route["plugins"]["proxy-rewrite"]["use_real_request_uri_unsafe"] is True
+    assert route["plugins"]["proxy-rewrite"]["use_real_request_uri_unsafe"] is False
 
-    headers = route["plugins"]["proxy-rewrite"]["headers"]["set"]
-    # The master key rides along so the route keeps working on LiteLLM releases
-    # that gate /metrics behind bearer auth.
-    assert headers["Authorization"] == "Bearer sk-test"
-    # A scrape has no consumer semantics — tagging it as an end user would
-    # invent LiteLLM spend/usage rows for the scraper.
-    assert "x-litellm-end-user-id" not in headers
+    # Bifrost serves /metrics without a login: nothing is injected, and a scrape
+    # has no consumer to attribute.
+    headers = route["plugins"]["proxy-rewrite"]["headers"]
+    assert "set" not in headers
+    assert "Authorization" in headers["remove"]
 
 
 @pytest.mark.asyncio
@@ -325,7 +320,7 @@ async def test_lifespan_provisions_llm_models_route():
         patch(
             "app.main.settings",
             SimpleNamespace(
-                LITELLM_MASTER_KEY="sk-test",
+                BIFROST_TEST_VK=VK,
                 APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
                 APISIX_ADMIN_KEY="admin-secret",
             ),
@@ -350,7 +345,7 @@ async def test_lifespan_provisions_llm_models_route():
 
     assert route["uri"] == "/api/llm/v1/models"
     # The converter serves the listing (it appends the claude/ aliases), not
-    # LiteLLM directly.
+    # Bifrost directly.
     assert route["upstream_id"] == "llm-converter"
     assert route["methods"] == ["GET"]
     # Beats the /api/llm/* catch-all, which is what gives this path its own grant.
@@ -361,8 +356,9 @@ async def test_lifespan_provisions_llm_models_route():
     assert route["plugins"]["proxy-rewrite"]["use_real_request_uri_unsafe"] is True
 
     headers = route["plugins"]["proxy-rewrite"]["headers"]["set"]
-    assert headers["Authorization"] == "Bearer sk-test"
-    assert headers["x-litellm-end-user-id"] == "$consumer_name"
+    assert headers["x-bf-vk"] == VK
+    assert headers["x-bf-dim-consumer"] == "$consumer_name"
+    assert "Authorization" not in headers
 
 
 @pytest.mark.asyncio
@@ -385,7 +381,7 @@ async def test_lifespan_can_skip_apisix_route_provisioning():
         patch(
             "app.main.settings",
             SimpleNamespace(
-                LITELLM_MASTER_KEY="sk-test",
+                BIFROST_TEST_VK=VK,
                 APISIX_PROVISION_ON_START=False,
             ),
         ),
@@ -438,7 +434,7 @@ async def test_lifespan_loads_persisted_alert_state_before_starting_checker():
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
         patch("app.main.rate_limiter.update_limits"),
-        patch("app.main.settings", SimpleNamespace(LITELLM_MASTER_KEY=None)),
+        patch("app.main.settings", SimpleNamespace(BIFROST_TEST_VK=None)),
         patch("app.services.apisix_client.get_resource", AsyncMock(side_effect=RuntimeError("not found"))),
         patch("app.services.apisix_client.put_resource", put_resource),
         patch("app.services.alert_state.load_alert_state_from_db", load_alert_state),
@@ -569,9 +565,9 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
             ("routes", "llm-proxy"): {
                 "id": "llm-proxy",
                 "name": "llm-proxy",
-                "uri": "/api/llm/*",
-                "methods": ["POST", "GET", "PUT", "DELETE", "OPTIONS"],
-                "upstream_id": "litellm",
+                "uris": ["/api/llm/v1/chat/completions"],
+                "methods": ["POST", "OPTIONS"],
+                "upstream_id": "bifrost",
                 "plugins": {
                     "key-auth": {},
                     "consumer-restriction": {"whitelist": ["llm-consumer"]},
@@ -584,7 +580,7 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 "uri": "/api/llm/metrics",
                 "methods": ["GET"],
                 "priority": 10,
-                "upstream_id": "litellm",
+                "upstream_id": "bifrost",
                 "plugins": {
                     "key-auth": {},
                     "consumer-restriction": {"whitelist": ["scraper-consumer"]},
@@ -644,7 +640,7 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
         patch(
             "app.main.settings",
             SimpleNamespace(
-                LITELLM_MASTER_KEY="sk-test",
+                BIFROST_TEST_VK=VK,
                 APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
                 APISIX_ADMIN_KEY="admin-secret",
             ),
@@ -707,8 +703,8 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
         "whitelist": ["discovery-consumer"]
     }
     llm_headers = route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]["headers"]["set"]
-    assert llm_headers["Authorization"] == "Bearer sk-test"
-    assert llm_headers["x-litellm-end-user-id"] == "$consumer_name"
+    assert llm_headers["x-bf-vk"] == VK
+    assert llm_headers["x-bf-dim-consumer"] == "$consumer_name"
     for route_id in (
         "query-api", "query-template-write-api", "s3-api", "nas-api", "usages-api"
     ):
@@ -716,14 +712,14 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
         assert headers["X-UniBridge-Internal-Proxy"] == "proxy-secret"
 
     # The converter routes preserve their consumer-restriction and inject the
-    # same master-key / end-user headers as llm-proxy.
+    # same virtual key / attribution headers as llm-proxy.
     for _route_id, _consumer in (("llm-messages", "msgs-consumer"), ("llm-responses", "resp-consumer")):
         assert route_calls[_route_id]["plugins"]["consumer-restriction"] == {
             "whitelist": [_consumer]
         }
         _headers = route_calls[_route_id]["plugins"]["proxy-rewrite"]["headers"]["set"]
-        assert _headers["Authorization"] == "Bearer sk-test"
-        assert _headers["x-litellm-end-user-id"] == "$consumer_name"
+        assert _headers["x-bf-vk"] == VK
+        assert _headers["x-bf-dim-consumer"] == "$consumer_name"
         assert route_calls[_route_id]["upstream_id"] == "llm-converter"
 
 
@@ -743,7 +739,7 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
         patch("app.main.rate_limiter.update_limits"),
-        patch("app.main.settings", SimpleNamespace(LITELLM_MASTER_KEY="sk-test")),
+        patch("app.main.settings", SimpleNamespace(BIFROST_TEST_VK=VK)),
         patch("app.services.apisix_client.get_resource", get_resource),
         patch("app.services.apisix_client.put_resource", put_resource),
         patch(
@@ -770,7 +766,10 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
         "whitelist": ["__deny_all__"]
     }
     assert "consumer-restriction" not in route_calls["s3-api"]["plugins"]
-    assert "consumer-restriction" not in route_calls["llm-proxy"]["plugins"]
+    # llm-proxy ships deny-all like the converter routes below.
+    assert route_calls["llm-proxy"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["__deny_all__"]
+    }
     # nas-api ships deny-all by default so it is never callable by an arbitrary
     # key in the window before the consumer-restriction replay runs.
     assert route_calls["nas-api"]["plugins"]["consumer-restriction"] == {
@@ -816,7 +815,7 @@ async def test_lifespan_retries_when_protected_route_state_lookup_fails():
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
         patch("app.main.rate_limiter.update_limits"),
-        patch("app.main.settings", SimpleNamespace(LITELLM_MASTER_KEY="")),
+        patch("app.main.settings", SimpleNamespace(BIFROST_TEST_VK="")),
         patch("app.services.apisix_client.get_resource", get_resource),
         patch("app.services.apisix_client.put_resource", put_resource),
         patch("asyncio.sleep", sleep),
@@ -850,7 +849,7 @@ async def test_lifespan_retries_when_protected_route_state_lookup_fails():
 
 
 @pytest.mark.asyncio
-async def test_lifespan_skips_litellm_routes_when_master_key_missing():
+async def test_lifespan_skips_llm_routes_without_a_usable_virtual_key():
     app = FastAPI()
     put_resource = AsyncMock()
 
@@ -862,7 +861,7 @@ async def test_lifespan_skips_litellm_routes_when_master_key_missing():
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
         patch("app.main.rate_limiter.update_limits"),
-        patch("app.main.settings", SimpleNamespace(LITELLM_MASTER_KEY="")),
+        patch("app.main.settings", SimpleNamespace(BIFROST_TEST_VK="")),
         patch("app.services.apisix_client.get_resource", AsyncMock(side_effect=RuntimeError("not found"))),
         patch("app.services.apisix_client.put_resource", put_resource),
         patch(
@@ -883,16 +882,15 @@ async def test_lifespan_skips_litellm_routes_when_master_key_missing():
 
     assert "query-api" in route_ids
     assert "query-template-write-api" in route_ids
-    # Prometheus has nothing to do with LiteLLM: its route sits outside the
-    # master-key gate, so a deployment without LiteLLM still gets it.
+    # Prometheus has nothing to do with Bifrost: its route sits outside the
+    # virtual-key gate, so a deployment without the key still gets it.
     assert "prometheus-api" in route_ids
+    # Without the key every /api/llm request would 401, so the routes are left
+    # as they are.
     assert "llm-proxy" not in route_ids
-    assert "llm-admin" not in route_ids
-    # llm-metrics is the inverse of prometheus-api: its upstream is litellm,
-    # which only exists inside the master-key gate, so it must not be written.
     assert "llm-metrics" not in route_ids
-    # llm-models likewise: the converter upstream is created inside that gate.
     assert "llm-models" not in route_ids
+    assert "llm-not-found" not in route_ids
 
 
 @pytest.mark.asyncio
@@ -978,7 +976,7 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
         patch("app.main.connection_manager.dispose_all", new=AsyncMock()),
         patch("app.main.settings_manager.load_from_db", new=AsyncMock()),
         patch("app.main.rate_limiter.update_limits"),
-        patch("app.main.settings", SimpleNamespace(LITELLM_MASTER_KEY="sk-test")),
+        patch("app.main.settings", SimpleNamespace(BIFROST_TEST_VK=VK)),
         patch("app.services.apisix_client.get_resource", AsyncMock(side_effect=RuntimeError("not found"))),
         patch("app.services.apisix_client.put_resource", new=AsyncMock(side_effect=put_resource)),
         patch(
@@ -1009,7 +1007,7 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     assert events.index(("routes", "s3-api")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "usages-api")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "llm-proxy")) < events.index(("replay", "_ReplayDb"))
-    assert events.index(("routes", "llm-admin")) < events.index(("replay", "_ReplayDb"))
+    assert events.index(("routes", "llm-models")) < events.index(("replay", "_ReplayDb"))
 
 
 class TestApiDocsGate:

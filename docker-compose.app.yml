@@ -71,7 +71,6 @@ services:
       - PROMETHEUS_GPU_FILE_SD_PATH=${PROMETHEUS_GPU_FILE_SD_PATH:-/etc/prometheus/file_sd/gpus.json}
       - EXTERNAL_SERVICES_JOB=${EXTERNAL_SERVICES_JOB:-external-services}
       - PROMETHEUS_SERVICES_FILE_SD_PATH=${PROMETHEUS_SERVICES_FILE_SD_PATH:-/etc/prometheus/file_sd/services.json}
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
       # Bifrost UI sign-in through UniBridge (app/routers/bifrost_sso.py): with
       # BIFROST_UI_HOSTNAME set, admins open that UI signed in to the Bifrost
       # admin account. Without the password the button shows Bifrost's login.
@@ -80,12 +79,13 @@ services:
       - BIFROST_ADMIN_USERNAME=${BIFROST_ADMIN_USERNAME:-admin}
       - BIFROST_ADMIN_PASSWORD=${BIFROST_ADMIN_PASSWORD:-}
       - BIFROST_SSO_SESSION_HOURS=${BIFROST_SSO_SESSION_HOURS:-8}
-      # The virtual key the /api/llm routes inject under LLM_GATEWAY=bifrost
-      # (app/services/llm_routes.py): the value the bifrost container runs with.
+      # The virtual key the /api/llm routes inject (app/services/llm_routes.py):
+      # the value the bifrost container runs with.
       - BIFROST_TEST_VK=${BIFROST_TEST_VK:-}
-      # Which gateway serves /api/llm: litellm or bifrost (README "Switching
-      # /api/llm to Bifrost"). llm-converter reads the same value.
-      - LLM_GATEWAY=${LLM_GATEWAY:-litellm}
+      # Rollback guard only: an older image recreated on rollback would
+      # otherwise default to LiteLLM, whose support is gone. Nothing new reads
+      # it; drop it after the next release.
+      - LLM_GATEWAY=bifrost
       # Bearer token verifying the internal Alertmanager webhook receiver.
       # Empty = receiver disabled (503); set it to enable infra-alert email.
       - ALERTMANAGER_WEBHOOK_TOKEN=${ALERTMANAGER_WEBHOOK_TOKEN:-}
@@ -167,12 +167,10 @@ services:
           memory: 512m
           cpus: "0.50"
     environment:
-      # The gateway to forward to, the same switch unibridge-service reads:
-      # litellm → LITELLM_URL below, bifrost → http://bifrost:8080.
-      - LLM_GATEWAY=${LLM_GATEWAY:-litellm}
-      - LITELLM_URL=${LITELLM_CONVERTER_UPSTREAM:-https://litellm:4000}
-      - CONVERTER_TLS_CA=${CONVERTER_TLS_CA-/etc/ssl/litellm-ca.crt}
-      - CONVERTER_TLS_VERIFY=${CONVERTER_TLS_VERIFY:-false}
+      # Rollback guard only: an older image recreated on rollback would
+      # otherwise default to LiteLLM, whose support is gone. Nothing new reads
+      # it; drop it after the next release.
+      - LLM_GATEWAY=bifrost
       # Upstream httpx timeouts (seconds; read 0 = unbounded for long streams).
       - CONVERTER_REQUEST_TIMEOUT=${CONVERTER_REQUEST_TIMEOUT:-0}
       - CONVERTER_CONNECT_TIMEOUT=${CONVERTER_CONNECT_TIMEOUT:-10}
@@ -216,7 +214,6 @@ services:
       - "4001"
     volumes:
       - llm-converter-state:/var/lib/llm-converter
-      - ${TLS_CERT_PATH:-./certs/tls.crt}:/etc/ssl/litellm-ca.crt:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4001/health')"]
       interval: 10s
@@ -259,7 +256,6 @@ services:
       - KEYCLOAK_PORT=${KEYCLOAK_PORT:-8443}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-apihub}
       - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
-      - LITELLM_PORT=${LITELLM_PORT:-4000}
       # Must match the bifrost-tls published port: the LLM Monitoring page's
       # Bifrost button links to https://HOST_IP:BIFROST_UI_PORT, unless
       # BIFROST_UI_HOSTNAME is set.
@@ -268,9 +264,10 @@ services:
       # (nginx-bifrost-ui.conf); the button then opens https://NAME on the port
       # UniBridge was opened on.
       - BIFROST_UI_HOSTNAME=${BIFROST_UI_HOSTNAME:-}
-      # The LLM Monitoring page shows the LiteLLM Admin button only on litellm:
-      # LiteLLM does not run under bifrost.
-      - LLM_GATEWAY=${LLM_GATEWAY:-litellm}
+      # Rollback guard only: an older image recreated on rollback would
+      # otherwise show the LiteLLM Admin button, whose service is gone. Nothing
+      # new reads it; drop it after the next release.
+      - LLM_GATEWAY=bifrost
       - GRAFANA_EXTERNAL_URL=${GRAFANA_EXTERNAL_URL:-}
       - GRAFANA_UPSTREAM=${GRAFANA_UPSTREAM:-grafana}
       - UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service-${APP_COLOR}}

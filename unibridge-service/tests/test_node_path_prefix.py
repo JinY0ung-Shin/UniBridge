@@ -794,7 +794,7 @@ async def _run_lifespan(put_resource: AsyncMock, list_resources: AsyncMock | Non
         patch("app.main.rate_limiter.update_limits"),
         patch(
             "app.main.settings",
-            SimpleNamespace(LITELLM_MASTER_KEY="sk-test", APISIX_PROVISION_ON_START=False),
+            SimpleNamespace(APISIX_PROVISION_ON_START=False),
         ),
         patch("app.services.apisix_client.get_resource", AsyncMock()),
         patch("app.services.apisix_client.put_resource", put_resource),

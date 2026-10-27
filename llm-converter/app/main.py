@@ -2,19 +2,19 @@
 
 Translates newer LLM API shapes that sglang/vLLM-backed models do not serve
 reliably into the well-supported ``/v1/chat/completions`` shape, then forwards
-to the upstream LLM gateway — LiteLLM or Bifrost, picked by ``LLM_GATEWAY``.
+to the upstream LLM gateway, Bifrost.
 
 ``POST /v1/messages`` (Anthropic Messages) and ``POST /v1/responses`` (OpenAI
 Responses) are translated to an OpenAI chat-completions body, sent to
 ``{upstream}/v1/chat/completions``, and the response (streaming SSE or one-shot
-JSON) is translated back — bypassing the gateways' own adapters, which
+JSON) is translated back — bypassing gateway-side API adapters, which
 mis-serialize tool calls and reasoning content for vLLM/SGLang backends.
 ``GET /v1/models`` relays the gateway's listing, and
 ``POST /v1/messages/count_tokens`` is answered locally.
 
 Authentication is handled upstream by APISIX (key-auth + credential
-injection); this service trusts its private network and forwards the gateway
-credential headers APISIX set — only the active gateway's (see
+injection); this service trusts its private network and forwards the Bifrost
+credential headers APISIX set — and only those (see
 ``sse.forward_request_headers``).
 """
 
@@ -86,9 +86,16 @@ _MODELS_FETCH_CEILING = 30.0
 app = FastAPI(title="UniBridge LLM Converter")
 
 
+# One system-CA context for every client: a client is made per request, and
+# building the context from the certifi bundle each time costs ~10ms of blocked
+# event loop. The Bifrost hop is plain HTTP by default, so it is only used when
+# CONVERTER_BIFROST_URL points at https.
+_SSL_CONTEXT = httpx.create_ssl_context()
+
+
 def _make_client(timeout: float | None) -> httpx.AsyncClient:
     """AsyncClient factory; tests monkeypatch this to inject a MockTransport."""
-    return httpx.AsyncClient(timeout=timeout, verify=settings.tls_verify)
+    return httpx.AsyncClient(timeout=timeout, verify=_SSL_CONTEXT)
 
 
 async def _conversation_store_get(resp_id: str) -> list[dict] | None:
@@ -433,7 +440,7 @@ def _model_alias_root(prefix: str) -> str:
     """The bare vendor word of an alias prefix — ``claude/`` → ``claude``.
 
     Used to recognize models that already look like the aliased vendor, so
-    ``claude-sonnet-4`` (a real Anthropic model proxied by LiteLLM) is not
+    ``claude-sonnet-4`` (a real Anthropic model proxied by the gateway) is not
     advertised a second time as ``claude/claude-sonnet-4``.
     """
     return prefix.rstrip("/").lower()
@@ -448,15 +455,15 @@ def _fill_model_entry(entry: dict, model_id: object) -> dict:
     means one response satisfies either parser.
 
     Upstream fields win: only missing keys are added. ``owned_by`` defaults to
-    the gateway's name (``litellm`` or ``bifrost``), since neither the gateway
-    nor a self-hosted backend has a better owner to name. ``created_at`` is
+    ``bifrost``, since neither the gateway nor a self-hosted backend has a
+    better owner to name. ``created_at`` is
     derived from ``created`` and both are left absent when upstream sent no
     timestamp — a fabricated date is worse than a missing optional field.
     """
     entry["id"] = model_id
     entry.setdefault("object", "model")
     entry.setdefault("type", "model")
-    entry.setdefault("owned_by", settings.gateway)
+    entry.setdefault("owned_by", "bifrost")
     if isinstance(model_id, str):
         entry.setdefault("display_name", model_id)
     created = entry.get("created")
@@ -513,9 +520,8 @@ def _is_entry(entries: list, index: int) -> bool:
 
 # --- Model listing -------------------------------------------------------------
 # One process-wide cache is correct because the listing does not depend on who
-# asks: APISIX injects the same gateway credential on llm-models whichever API
-# key called (the LiteLLM master key, or the Bifrost gateway virtual key), so
-# every caller would get the same answer from upstream. A credential per caller
+# asks: APISIX injects the same gateway virtual key on llm-models whichever API
+# key called, so every caller would get the same answer from upstream. A credential per caller
 # (one Bifrost virtual key per API key, say) would need a cache per credential.
 
 # Top-level fields of a Bifrost listing or error body that describe the gateway's
@@ -534,7 +540,6 @@ def _clock() -> float:
 @dataclass
 class _ListingSnapshot:
     upstream_url: str
-    gateway: str
     body: dict  # the sanitized upstream listing, before per-request aliasing
     fetched_at: float  # _clock()
 
@@ -553,7 +558,7 @@ class _FetchOutcome:
 
 
 _listing_snapshot: Optional[_ListingSnapshot] = None
-# (event loop, (upstream url, gateway), task) of the fetch in flight. Concurrent
+# (event loop, upstream url, task) of the fetch in flight. Concurrent
 # callers for the same upstream join it instead of each asking; a task is only
 # joinable from its own loop.
 _listing_fetch: Optional[tuple] = None
@@ -566,28 +571,27 @@ def reset_models_cache() -> None:
     _listing_fetch = None
 
 
-def _public_model_id(model_id: object, gateway: str) -> object:
+def _public_model_id(model_id: object) -> object:
     """The id clients call a listed model by.
 
     Bifrost lists every model as ``<provider>/<id>``, while clients send the bare
-    id, which the provider key's ``models``/``aliases`` resolve — the same names
-    LiteLLM listed. Only the provider segment goes: the id itself may contain
-    ``/`` (``Qwen/Qwen3.5-32B``).
+    id, which the provider key's ``models``/``aliases`` resolve. Only the
+    provider segment goes: the id itself may contain ``/`` (``Qwen/Qwen3.5-32B``).
     """
-    if gateway == "bifrost" and isinstance(model_id, str) and "/" in model_id:
+    if isinstance(model_id, str) and "/" in model_id:
         return model_id.split("/", 1)[1]
     return model_id
 
 
-def _sanitize_listing(data: list, gateway: str) -> dict:
+def _sanitize_listing(data: list) -> dict:
     """The listing rebuilt from ``data`` alone, under the ids clients call."""
     entries: list = []
     seen: set = set()
     for item in data:
         if isinstance(item, dict):
             item = dict(item)
-            item["id"] = _public_model_id(item.get("id"), gateway)
-            if gateway == "bifrost" and isinstance(item["id"], str):
+            item["id"] = _public_model_id(item.get("id"))
+            if isinstance(item["id"], str):
                 # Two providers serving one public name list it twice; Bifrost
                 # sends the bare name to one of them either way.
                 if item["id"] in seen:
@@ -601,18 +605,16 @@ def _without_gateway_internals(body: dict) -> dict:
     return {key: value for key, value in body.items() if key not in _GATEWAY_INTERNAL_FIELDS}
 
 
-# The one request header a listing fetch carries, per gateway: the credential
-# APISIX injected. The fetch and its result are shared by every caller, so
-# nothing of the first caller's own may shape them — LiteLLM, for one, prefers a
-# client-sent ``x-litellm-api-key`` to ``Authorization``, which would hand the
-# other callers that key's narrower listing or its 401.
-_LISTING_CREDENTIAL = {"litellm": "authorization", "bifrost": "x-bf-vk"}
+# The one request header a listing fetch carries: the virtual key APISIX
+# injected. The fetch and its result are shared by every caller, so nothing of
+# the first caller's own may shape them — a client-sent selector header, say,
+# would hand the other callers that caller's narrower listing or its error.
+_LISTING_CREDENTIAL = "x-bf-vk"
 
 
-def _listing_credentials(headers, gateway: str) -> dict:
-    name = _LISTING_CREDENTIAL[gateway]
-    value = headers.get(name)
-    return {name: value} if value else {}
+def _listing_credentials(headers) -> dict:
+    value = headers.get(_LISTING_CREDENTIAL)
+    return {_LISTING_CREDENTIAL: value} if value else {}
 
 
 def _scrub_upstream_error(
@@ -634,7 +636,7 @@ def _scrub_upstream_error(
     return json.dumps(_without_gateway_internals(parsed), ensure_ascii=False).encode("utf-8")
 
 
-async def _fetch_listing(upstream_url: str, headers: dict, gateway: str) -> _FetchOutcome:
+async def _fetch_listing(upstream_url: str, headers: dict) -> _FetchOutcome:
     """Ask upstream for its listing once; a listing also becomes the snapshot."""
     global _listing_snapshot
     client = _make_client(settings.request_timeout)
@@ -667,8 +669,8 @@ async def _fetch_listing(upstream_url: str, headers: dict, gateway: str) -> _Fet
             and isinstance(parsed, dict)
             and isinstance(parsed.get("data"), list)
         ):
-            listing = _sanitize_listing(parsed["data"], gateway)
-            _listing_snapshot = _ListingSnapshot(upstream_url, gateway, listing, _clock())
+            listing = _sanitize_listing(parsed["data"])
+            _listing_snapshot = _ListingSnapshot(upstream_url, listing, _clock())
             return _FetchOutcome(listing=listing)
         resp_headers = forward_response_headers(upstream.headers.items())
         if isinstance(parsed, dict) and any(key in parsed for key in _GATEWAY_INTERNAL_FIELDS):
@@ -686,17 +688,16 @@ async def _fetch_listing(upstream_url: str, headers: dict, gateway: str) -> _Fet
         await client.aclose()
 
 
-def _join_listing_fetch(upstream_url: str, headers: dict, gateway: str) -> asyncio.Task:
+def _join_listing_fetch(upstream_url: str, headers: dict) -> asyncio.Task:
     """The fetch in flight on this loop, or a new one (single-flight)."""
     global _listing_fetch
     loop = asyncio.get_running_loop()
-    target = (upstream_url, gateway)
     if _listing_fetch is not None:
-        fetch_loop, fetch_target, task = _listing_fetch
-        if fetch_loop is loop and fetch_target == target and not task.done():
+        fetch_loop, fetch_url, task = _listing_fetch
+        if fetch_loop is loop and fetch_url == upstream_url and not task.done():
             return task
-    task = loop.create_task(_fetch_listing(upstream_url, headers, gateway))
-    _listing_fetch = (loop, target, task)
+    task = loop.create_task(_fetch_listing(upstream_url, headers))
+    _listing_fetch = (loop, upstream_url, task)
 
     def _finished(done: asyncio.Task) -> None:
         global _listing_fetch
@@ -742,26 +743,21 @@ async def models(request: Request) -> Response:
 
     The listing is rebuilt from the upstream ``data`` alone (Bifrost ids lose
     their provider segment) and cached for ``CONVERTER_MODELS_CACHE_TTL``.
-    Concurrent misses share one upstream fetch, which carries only the gateway
-    credential APISIX injected, and a caller waits for it
-    ``CONVERTER_MODELS_TIMEOUT`` at most (2s on Bifrost, 30s on LiteLLM): past
+    Concurrent misses share one upstream fetch, which carries only the virtual
+    key APISIX injected, and a caller waits for it ``CONVERTER_MODELS_TIMEOUT``
+    at most (2s): past
     that, or when upstream times out, is unreachable or answers 5xx, the last
     good listing answers while it is younger than ``CONVERTER_MODELS_STALE_MAX``.
     """
-    gateway = settings.gateway
     upstream_url = settings.upstream_url
     snapshot = _listing_snapshot
-    if snapshot is not None and (
-        snapshot.upstream_url != upstream_url or snapshot.gateway != gateway
-    ):
+    if snapshot is not None and snapshot.upstream_url != upstream_url:
         snapshot = None
     ttl = settings.models_cache_ttl
     if snapshot is not None and ttl > 0 and _clock() - snapshot.fetched_at < ttl:
         return _listing_response(snapshot.body)
 
-    task = _join_listing_fetch(
-        upstream_url, _listing_credentials(request.headers, gateway), gateway
-    )
+    task = _join_listing_fetch(upstream_url, _listing_credentials(request.headers))
     wait = settings.models_timeout
     try:
         # Shielded: a caller giving up must not cancel the fetch, which goes on
@@ -870,7 +866,7 @@ async def messages(request: Request) -> Response:
     openai_body = anthropic_request_to_openai_body(parsed)
     openai_bytes = json.dumps(openai_body, ensure_ascii=False).encode("utf-8")
 
-    fwd_headers = forward_request_headers(request.headers.items(), settings.gateway)
+    fwd_headers = forward_request_headers(request.headers.items())
     fwd_headers["content-type"] = "application/json"
 
     upstream_url = f"{settings.upstream_url}/v1/chat/completions"
@@ -1140,7 +1136,7 @@ async def responses(request: Request) -> Response:
     base_messages = chat_body["messages"]  # prior chain + this turn's input
     chat_bytes = json.dumps(chat_body, ensure_ascii=False).encode("utf-8")
 
-    fwd_headers = forward_request_headers(request.headers.items(), settings.gateway)
+    fwd_headers = forward_request_headers(request.headers.items())
     fwd_headers["content-type"] = "application/json"
     upstream_url = f"{settings.upstream_url}/v1/chat/completions"
     response_id = new_response_id()

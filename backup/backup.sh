@@ -28,19 +28,10 @@ main() {
 
   backup_etcd "$dest/etcd.snap"
   backup_postgres keycloak-db keycloak "${KC_DB_USER:-keycloak}"   "$dest/keycloak-db.sql.gz"
-  backup_litellm_db "$dest/litellm-db.sql.gz"
   backup_unibridge_meta "$dest"
   # Last: it needs a local tools image (lib/bifrost.sh), so if that is missing
   # the dumps above are still on disk for a manual recovery.
   backup_bifrost "$dest/bifrost-config.db.gz"
-
-  # Not backed up on purpose: the litellm-dataset volume (LLM conversation
-  # capture for fine-tuning) is regenerable training data that grows without
-  # bound, so it would balloon snapshots. It is size-bounded by
-  # LITELLM_DATASET_RETENTION_DAYS / LITELLM_DATASET_MAX_TOTAL_BYTES instead
-  # (see backup/README.md "Backup coverage"). To include it anyway, tar the
-  # volume into "$dest" here — write_manifest and rotate_old then cover it
-  # automatically.
 
   write_manifest "$dest" "$stamp"
 

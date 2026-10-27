@@ -108,7 +108,6 @@ def _lifespan_patches(settings_ns, get_resource, put_resource, sleep=None):
 def _steady_state_settings(secret: str) -> SimpleNamespace:
     """A promoted blue/green color: provisioning off, secret configured."""
     return SimpleNamespace(
-        LITELLM_MASTER_KEY="sk-test",
         APISIX_PROVISION_ON_START=False,
         APISIX_INTERNAL_PROXY_SECRET=secret,
         APISIX_ADMIN_KEY="admin-secret",
@@ -285,7 +284,7 @@ async def test_internal_proxy_route_ids_match_the_provisioned_routes():
 
     await _run_lifespan(
         SimpleNamespace(
-            LITELLM_MASTER_KEY="sk-test",
+            BIFROST_TEST_VK="sk-bf-" + "v" * 32,
             APISIX_INTERNAL_PROXY_SECRET="proxy-secret",
             APISIX_ADMIN_KEY="admin-secret",
         ),

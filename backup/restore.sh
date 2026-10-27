@@ -19,7 +19,6 @@ Usage: $0 <component> <backup-dir>
 components:
   etcd              restore APISIX config store from etcd.snap
   keycloak-db       restore Keycloak Postgres from keycloak-db.sql.gz
-  litellm-db        restore LiteLLM Postgres from litellm-db.sql.gz
   unibridge-meta    restore unibridge-service metadata from unibridge-meta.sql.gz
                     (Postgres default) or legacy unibridge-meta.db.gz (SQLite)
   bifrost           restore Bifrost's config store from bifrost-config.db.gz
@@ -115,9 +114,9 @@ main() {
         "$dir/keycloak-db.sql.gz" keycloak
       ;;
     litellm-db)
-      verify_backup_dir "$dir" "litellm-db.sql.gz"
-      restore_postgres litellm-db litellm litellm \
-        "$dir/litellm-db.sql.gz" litellm
+      # Snapshots from before LiteLLM was removed still hold litellm-db.sql.gz;
+      # the other components restore from them as before.
+      die "litellm-db: LiteLLM support was removed, nothing restores litellm-db.sql.gz any more (see backup/README.md)"
       ;;
     unibridge-meta)
       local meta_file

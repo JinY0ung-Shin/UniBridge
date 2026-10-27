@@ -2,9 +2,9 @@
 
 Background
 ----------
-The default sanitizer path forwards Anthropic SSE through an upstream LiteLLM
-proxy that converts the upstream model's native OpenAI-format stream into
-Anthropic SSE. That conversion has confirmed bugs in the field:
+Gateway-side Anthropic adapters, which convert the upstream model's native
+OpenAI-format stream into Anthropic SSE, have had confirmed bugs in the field
+(seen in LiteLLM's, the gateway that used to sit here):
 
 * ``hosted_vllm`` provider: when ``tools`` are defined and the model emits
   ``delta.reasoning_content`` followed by ``delta.content``, the content is
@@ -14,11 +14,11 @@ Anthropic SSE. That conversion has confirmed bugs in the field:
   with the proper ``name``/``id``, but the trailing ``input_json_delta``
   stream is truncated — the SDK sees a tool_use block with no arguments.
 
-The underlying OpenAI route (``/v1/chat/completions``) on the same LiteLLM
-instance is correct and matches what the upstream vLLM emits verbatim. This
-module bypasses LiteLLM's broken Anthropic adapter by translating in-process
-between the two formats so the rest of the gateway (and any downstream
-``claude_agent_sdk`` consumer) keeps speaking Anthropic.
+The gateway's OpenAI route (``/v1/chat/completions``) is correct and matches
+what the upstream vLLM emits verbatim. This module bypasses any gateway-side
+Anthropic adapter by translating in-process between the two formats so the rest
+of the gateway (and any downstream ``claude_agent_sdk`` consumer) keeps
+speaking Anthropic.
 
 Public surface
 --------------
@@ -166,11 +166,11 @@ def _convert_assistant_message(content: Any) -> Dict[str, Any]:
 
     msg: Dict[str, Any] = {"role": "assistant"}
     # OpenAI requires ``content`` to be present even when ``tool_calls`` is
-    # set. ``null`` is allowed in spec but the LiteLLM ``hosted_vllm`` adapter
-    # serializes assistant messages through a Pydantic model that drops the
-    # key entirely when the value is ``None``; vLLM then rejects the request
-    # with a 422 "content field required". An empty string survives that
-    # round-trip and is equally valid under the OpenAI schema.
+    # set. ``null`` is allowed in spec but a gateway that serializes assistant
+    # messages through a model dropping ``None`` keys (LiteLLM's ``hosted_vllm``
+    # adapter did) loses the key entirely; vLLM then rejects the request with a
+    # 422 "content field required". An empty string survives that round-trip
+    # and is equally valid under the OpenAI schema.
     msg["content"] = "".join(text_parts) if text_parts else ""
     if tool_calls:
         msg["tool_calls"] = tool_calls
@@ -302,10 +302,8 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
     reasoning *depth* via its chat template, not via a request flag. Fields
     with a 1:1 analogue (``max_tokens``, ``temperature``, ``top_p``, ``stop``)
     are forwarded as-is. Fields that need a reshape map across:
-    ``output_config.effort`` → ``reasoning_effort`` (on LiteLLM also listed in
-    ``allowed_openai_params`` so it forwards the field for models outside its
-    gpt-5/o-series name map),
-    ``output_config.format`` → ``response_format``,
+    ``output_config.effort`` → ``reasoning_effort`` (clamped to the backend's
+    vocabulary), ``output_config.format`` → ``response_format``,
     ``metadata.user_id`` → ``user``, and ``tool_choice``'s
     ``disable_parallel_tool_use`` → ``parallel_tool_calls``.
     """
@@ -333,24 +331,14 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
     output_config = body.get("output_config")
     if isinstance(output_config, dict):
         if output_config.get("effort"):
-            # LiteLLM only treats ``reasoning_effort`` as supported for models
-            # it name-matches as reasoning models (gpt-5/o-series); everything
-            # else silently drops it under ``drop_params: true`` and 400s
-            # without it. ``allowed_openai_params`` is LiteLLM's per-request
-            # escape hatch: it marks the param supported and forwards it
-            # verbatim to the backend. Bifrost forwards ``reasoning_effort``
-            # on its own, and its built-in vllm/sgl provider types pass unknown
-            # fields through to the backend, so the LiteLLM-only field is not
-            # sent there. Verbatim is also why the value is clamped first:
-            # Claude Code's effort ladder reaches ``max``, which a vLLM/SGLang
-            # backend rejects outright.
+            # Bifrost forwards ``reasoning_effort`` to the backend verbatim, so
+            # the value is clamped first: Claude Code's effort ladder reaches
+            # ``max``, which a vLLM/SGLang backend rejects outright.
             effort = clamp_reasoning_effort(
                 output_config.get("effort"), settings.reasoning_effort_levels
             )
             if effort is not None:
                 out["reasoning_effort"] = effort
-                if settings.gateway == "litellm":
-                    out["allowed_openai_params"] = ["reasoning_effort"]
         rf = _output_format_to_response_format(output_config.get("format"))
         if rf is not None:
             out["response_format"] = rf
@@ -457,11 +445,11 @@ def _token_count(value: Any) -> Optional[int]:
 
 
 def _usage_to_anthropic(usage: Any) -> Dict[str, Any]:
-    """Split LiteLLM's inclusive prompt count into Anthropic's three buckets.
+    """Split chat/completions' inclusive prompt count into Anthropic's three buckets.
 
-    LiteLLM chat/completions includes cache reads AND writes in prompt_tokens
-    (including its Anthropic adapter). Details and top-level cache fields are
-    aliases, not additional counts. Prefer normalized details when available.
+    chat/completions ``prompt_tokens`` includes cache reads AND writes. Details
+    and top-level cache fields are aliases, not additional counts. Prefer
+    normalized details when available.
     """
     usage = usage if isinstance(usage, dict) else {}
     details = usage.get("prompt_tokens_details")

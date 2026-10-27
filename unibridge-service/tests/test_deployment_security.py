@@ -48,8 +48,6 @@ COMPOSE_SERVICE_LIMITS = {
     "keycloak": {"memory": "2g", "cpus": "1.00"},
     "unibridge-service": {"memory": "512m", "cpus": "1.00"},
     "prometheus": {"memory": "512m", "cpus": "0.50"},
-    "litellm-db": {"memory": "512m", "cpus": "0.50"},
-    "litellm": {"memory": "2g", "cpus": "1.00"},
     "unibridge-ui": {"memory": "128m", "cpus": "0.25"},
     "blackbox-exporter": {"memory": "128m", "cpus": "0.25"},
     "bifrost": {"memory": "2g", "cpus": "1.00"},
@@ -66,7 +64,6 @@ REQUIRED_PROMETHEUS_ALERTS = {
     "UniBridgeServiceDown",
     "UniBridgeMetaDbDown",
     "KeycloakDbDown",
-    "LiteLLMDbDown",
     "BifrostDown",
     "UniBridgeAuditWritesMissing",
 }
@@ -75,15 +72,12 @@ FORBIDDEN_COMPOSE_PATTERNS = [
     "KC_BOOTSTRAP_ADMIN_PASSWORD=${KC_ADMIN_PASSWORD:-admin}",
     "POSTGRES_PASSWORD=${KC_DB_PASSWORD:-keycloak}",
     "KC_DB_PASSWORD=${KC_DB_PASSWORD:-keycloak}",
-    "POSTGRES_PASSWORD=${LITELLM_DB_PASSWORD:-litellm}",
-    "DATABASE_URL=postgresql://litellm:${LITELLM_DB_PASSWORD:-litellm}@litellm-db:5432/litellm",
 ]
 
 REQUIRED_COMPOSE_SECRET_INTERPOLATIONS = {
     "ENCRYPTION_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}": 1,
     "APISIX_ADMIN_KEY=${APISIX_ADMIN_KEY:?APISIX_ADMIN_KEY is required}": 2,
     "KEYCLOAK_SERVICE_CLIENT_SECRET=${KEYCLOAK_SERVICE_CLIENT_SECRET:?KEYCLOAK_SERVICE_CLIENT_SECRET is required}": 2,
-    "LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}": 2,
     "APISIX_INTERNAL_PROXY_SECRET=${APISIX_INTERNAL_PROXY_SECRET:?APISIX_INTERNAL_PROXY_SECRET"
     " is required — generate one with python3 -c 'import secrets;"
     " print(secrets.token_urlsafe(32))'}": 1,
@@ -101,8 +95,6 @@ REQUIRED_BLANK_ENV_SECRETS = {
     "KC_ADMIN_PASSWORD",
     "KC_DB_PASSWORD",
     "KEYCLOAK_SERVICE_CLIENT_SECRET",
-    "LITELLM_DB_PASSWORD",
-    "LITELLM_MASTER_KEY",
     "BIFROST_ENCRYPTION_KEY",
     "BIFROST_ADMIN_PASSWORD",
     "BIFROST_TEST_VK",
@@ -315,8 +307,6 @@ def test_bluegreen_compose_splits_stateful_infra_from_app_tier() -> None:
         "apisix",
         "keycloak-db",
         "keycloak",
-        "litellm-db",
-        "litellm",
         "prometheus",
         "blackbox-exporter",
     } <= infra_services
@@ -772,8 +762,8 @@ def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
     assert (
         'json_contains_pair "$prometheus_route" "upstream_id" "prometheus" || return 1' in script
     )
-    # The /api/llm routes follow LLM_GATEWAY (apisix_llm_routes_match; behaviour
-    # pinned in test_deploy_holds_the_llm_routes_to_the_gateway_switch).
+    # The /api/llm routes point at Bifrost (apisix_llm_routes_match; behaviour
+    # pinned in test_deploy_holds_the_llm_routes_to_bifrost).
     llm_check = _shell_function(script, "apisix_llm_routes_match")
     assert "apisix_llm_routes_match || return 1" in _shell_function(script, "apisix_has_core_routes")
     for route_id in ("llm-proxy", "llm-metrics", "llm-models", "llm-messages", "llm-responses"):
@@ -782,7 +772,6 @@ def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
         '"uri" "/api/llm/metrics"',
         '"uri" "/api/llm/v1/models"',
         '"upstream_id" "llm-converter"',
-        '"upstream_id" "litellm"',
         '"upstream_id" "bifrost"',
     ):
         assert f'json_contains_pair "$route" {pair} || return 1' in llm_check
@@ -963,8 +952,7 @@ prepare_edge() {{ :; }}
 promote_apisix() {{ :; }}
 switch_edge() {{ return 0; }}
 commit_active_color() {{ :; }}
-start_litellm_if_stopped() {{ :; }}
-stop_litellm_when_unused() {{ :; }}
+warn_bifrost_vk_drift() {{ :; }}
 compose_app() {{ printf 'CALL|%s|%s|%s\n' "$1" "$3" "$4"; }}
 docker() {{
 {docker_inspect_body}
@@ -976,6 +964,7 @@ deploy_color blue
     env["STOP_OLD_AFTER_PROMOTE"] = "false"
     env.pop("APISIX_ADMIN_KEY", None)
     env.pop("LLM_GATEWAY", None)
+    env["BIFROST_TEST_VK"] = BIFROST_VK
     for name in ("BIFROST_UI_HOSTNAME", "TLS_BIFROST_CERT_PATH", "TLS_BIFROST_KEY_PATH"):
         env.pop(name, None)
     return subprocess.run(
@@ -1249,11 +1238,9 @@ def test_bifrost_services_run_by_default_and_are_identical_in_both_layouts() -> 
     for compose in (single, infra):
         services = compose["services"]
         assert BIFROST_SERVICES <= set(services)
-        # Bifrost runs whatever LLM_GATEWAY says, so nothing may hide behind a
-        # profile of its own: a profiled service is skipped by a plain `up` and
-        # by `config --services`, which the blue/green infra health gate
-        # iterates. Only LiteLLM drops out, under bifrost, through
-        # litellm/compose-gate.yml (test_litellm_runs_only_on_litellm).
+        # Nothing may hide behind a profile of its own: a profiled service is
+        # skipped by a plain `up` and by `config --services`, which the
+        # blue/green infra health gate iterates.
         assert not [name for name, service in services.items() if service.get("profiles")]
         # Only the TLS front is published beyond loopback. Bifrost's own
         # plain-HTTP port stays on 127.0.0.1.
@@ -1978,7 +1965,7 @@ def test_service_gets_the_bifrost_virtual_key() -> None:
     for path in (COMPOSE_FILE, BLUEGREEN_APP_COMPOSE_FILE):
         env = _service_environment(_load_yaml(path), "unibridge-service")
         # Optional: without a usable key the service leaves /api/llm as it is
-        # under LLM_GATEWAY=bifrost and logs why.
+        # and logs why.
         assert env["BIFROST_TEST_VK"] == "${BIFROST_TEST_VK:-}", path.name
         # The /api/llm-bi switch went with the routes.
         assert "BIFROST_GATEWAY_ROUTES" not in env, path.name
@@ -2053,20 +2040,17 @@ _DEPLOY_CORE_ROUTES = {
         for route_id in ("s3-api", "nas-api", "usages-api", "mcp-api")
     },
     "routes/prometheus-api": {"uri": "/api/prometheus/*", "upstream_id": "prometheus"},
-    "routes/llm-proxy": {"uri": "/api/llm/*", "upstream_id": "litellm"},
-    "routes/llm-admin": {"uri": "/api/llm-admin/*", "upstream_id": "litellm"},
-    "routes/llm-metrics": {"uri": "/api/llm/metrics", "upstream_id": "litellm"},
-    "routes/llm-messages": {"uri": "/api/llm/v1/messages", "upstream_id": "llm-converter"},
-    "routes/llm-responses": {"uri": "/api/llm/v1/responses", "upstream_id": "llm-converter"},
-    "routes/llm-models": {"uri": "/api/llm/v1/models", "upstream_id": "llm-converter"},
-    "upstreams/litellm": {"scheme": "https", "nodes": {"litellm:4000": 1}},
 }
 
 
 def _deploy_has_core_routes(tmp_path: Path, resources: dict[str, dict], **env: str) -> bool:
-    """``apisix_has_core_routes`` against canned admin responses (curl stubbed)."""
+    """``apisix_has_core_routes`` against canned admin responses (curl stubbed).
+
+    ``resources`` goes over the core routes and /api/llm as provisioning leaves
+    them for ``BIFROST_VK``, the key the deploy reads unless ``env`` says otherwise.
+    """
     root = tmp_path / "apisix"
-    for path, body in {**_DEPLOY_CORE_ROUTES, **resources}.items():
+    for path, body in {**_DEPLOY_CORE_ROUTES, **_llm_on_bifrost(), **resources}.items():
         if body is None:  # absent: the admin API answers 404
             continue
         target = root / path
@@ -2105,6 +2089,7 @@ if apisix_has_core_routes; then echo yes; else echo no; fi
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "ENV_FILE": "/nonexistent",
             "APISIX_ADMIN_KEY": "admin-key",
+            "BIFROST_TEST_VK": BIFROST_VK,
             **env,
         },
         check=False,
@@ -2166,10 +2151,20 @@ def test_deploy_takes_the_same_virtual_keys_as_the_service() -> None:
 
     for value, usable in VIRTUAL_KEY_CASES:
         # A UTF-8 locale must not widen the script's A-Z ranges.
-        state = _deploy_llm_gateway_state(
-            LLM_GATEWAY="bifrost", BIFROST_TEST_VK=value, LANG="C.UTF-8", LC_ALL="C.UTF-8"
+        result = subprocess.run(
+            ["bash", "-c", f"source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}; bifrost_vk_usable"],
+            env={
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "ENV_FILE": "/nonexistent",
+                "BIFROST_TEST_VK": value,
+                "LANG": "C.UTF-8",
+                "LC_ALL": "C.UTF-8",
+            },
+            check=False,
+            text=True,
+            capture_output=True,
         )
-        assert state == ("bifrost" if usable else "skip"), repr(value)
+        assert (result.returncode == 0) is usable, repr(value)
 
 
 def _run_vk_drift_warning(container_env: str | None, **env: str) -> str:
@@ -2177,8 +2172,8 @@ def _run_vk_drift_warning(container_env: str | None, **env: str) -> str:
     container = "" if container_env is None else "cid-bifrost"
     shell = f"""
 source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}
-compose_infra() {{ [[ "$*" == "ps -q bifrost" ]] && printf '%s\n' {shlex.quote(container)}; }}
-docker() {{ [[ "$1" == inspect ]] && printf '%s\n' {shlex.quote(container_env or "")}; }}
+compose_infra() {{ [[ "$*" == "ps -q bifrost" ]] && printf '%s\\n' {shlex.quote(container)}; }}
+docker() {{ [[ "$1" == inspect ]] && printf '%s\\n' {shlex.quote(container_env or "")}; }}
 warn_bifrost_vk_drift
 echo "exit=$?"
 """
@@ -2196,26 +2191,20 @@ echo "exit=$?"
 def test_deploy_warns_when_bifrost_runs_with_another_virtual_key(tmp_path: Path) -> None:
     current = f"PATH=/usr/bin\nBIFROST_TEST_VK={BIFROST_VK}\nLOG_LEVEL=info"
     stale = "BIFROST_TEST_VK=sk-bf-" + "o" * 32
-    on = {"LLM_GATEWAY": "bifrost", "BIFROST_TEST_VK": BIFROST_VK}
 
-    assert _run_vk_drift_warning(current, **on) == ""
-    warning = _run_vk_drift_warning(stale, **on)
+    assert _run_vk_drift_warning(current, BIFROST_TEST_VK=BIFROST_VK) == ""
+    warning = _run_vk_drift_warning(stale, BIFROST_TEST_VK=BIFROST_VK)
     assert "runs with another BIFROST_TEST_VK" in warning
     # A command that works from any directory, with the env file the deploy used.
     assert f'-f "{REPO_ROOT}/docker-compose.infra.yml" up -d --wait bifrost' in warning
     assert "--env-file" not in warning
     env_file = tmp_path / "deploy.env"
     env_file.write_text(f"BIFROST_TEST_VK={BIFROST_VK}\n", encoding="utf-8")
-    assert f'--env-file "{env_file}"' in _run_vk_drift_warning(
-        stale, ENV_FILE=str(env_file), LLM_GATEWAY="bifrost"
-    )
+    assert f'--env-file "{env_file}"' in _run_vk_drift_warning(stale, ENV_FILE=str(env_file))
     # Never echoes either key.
     assert BIFROST_VK not in warning and "o" * 32 not in warning
-    # Nothing to compare: no container, /api/llm on LiteLLM, or no usable key.
-    assert _run_vk_drift_warning(None, **on) == ""
-    assert _run_vk_drift_warning(stale, BIFROST_TEST_VK=BIFROST_VK) == ""
-    assert _run_vk_drift_warning(stale, LLM_GATEWAY="litellm", BIFROST_TEST_VK=BIFROST_VK) == ""
-    assert _run_vk_drift_warning(stale, LLM_GATEWAY="bifrost", BIFROST_TEST_VK="") == ""
+    # Nothing to compare without a container.
+    assert _run_vk_drift_warning(None, BIFROST_TEST_VK=BIFROST_VK) == ""
 
 
 def test_deploy_checks_for_vk_drift_before_choosing_whether_to_provision() -> None:
@@ -2225,45 +2214,42 @@ def test_deploy_checks_for_vk_drift_before_choosing_whether_to_provision() -> No
 
 
 # ---------------------------------------------------------------------------
-# /api/llm on LiteLLM or Bifrost (LLM_GATEWAY)
+# /api/llm on Bifrost
 # ---------------------------------------------------------------------------
 
 
-def _llm_on_bifrost(vk: str = BIFROST_VK, master_key: str = "sk-master") -> dict[str, dict]:
-    """What boot provisioning leaves in APISIX for /api/llm with LLM_GATEWAY=bifrost."""
+def _llm_on_bifrost(vk: str = BIFROST_VK) -> dict[str, dict]:
+    """What boot provisioning leaves in APISIX for /api/llm."""
     from app.services import llm_routes
-    from app.services.apisix_system_resources import LLM_NOT_FOUND_ROUTE_ID
+    from app.services.apisix_system_resources import (
+        LLM_NOT_FOUND_ROUTE_ID,
+        RETIRED_LITELLM_ROUTE_ID,
+        RETIRED_LITELLM_UPSTREAM_ID,
+    )
 
     resources = {
         "upstreams/bifrost": llm_routes.BIFROST_UPSTREAM,
-        # LiteLLM does not run on Bifrost, so provisioning takes it out.
-        "upstreams/litellm": None,
-        "routes/llm-admin": None,
+        # What LiteLLM left behind goes at boot.
+        f"upstreams/{RETIRED_LITELLM_UPSTREAM_ID}": None,
+        f"routes/{RETIRED_LITELLM_ROUTE_ID}": None,
         "routes/llm-proxy": llm_routes.bifrost_proxy_route(vk),
         "routes/llm-metrics": llm_routes.bifrost_metrics_route(),
         f"routes/{LLM_NOT_FOUND_ROUTE_ID}": llm_routes.not_found_route(),
     }
     for route_id in llm_routes.CONVERTER_ROUTE_IDS:
-        resources[f"routes/{route_id}"] = llm_routes.converter_route(
-            route_id, master_key=master_key, virtual_key=vk, on_bifrost=True
-        )
+        resources[f"routes/{route_id}"] = llm_routes.converter_route(route_id, vk)
     return resources
 
 
-def _llm_on_litellm(vk: str = BIFROST_VK, master_key: str = "sk-master") -> dict[str, dict]:
-    from app.services import llm_routes
-
-    resources = {
-        "upstreams/litellm": llm_routes.LITELLM_UPSTREAM,
-        "routes/llm-admin": llm_routes.llm_admin_route(),
-        "routes/llm-proxy": llm_routes.litellm_proxy_route(master_key),
-        "routes/llm-metrics": llm_routes.litellm_metrics_route(master_key),
-    }
-    for route_id in llm_routes.CONVERTER_ROUTE_IDS:
-        resources[f"routes/{route_id}"] = llm_routes.converter_route(
-            route_id, master_key=master_key, virtual_key=vk, on_bifrost=False
-        )
-    return resources
+# What a host that served /api/llm through LiteLLM had under the same route ids
+# (shapes trimmed to what the deploy looks at).
+_LLM_ON_LITELLM = {
+    "upstreams/litellm": {"scheme": "https", "nodes": {"litellm:4000": 1}},
+    "routes/llm-admin": {"uri": "/api/llm-admin/*", "upstream_id": "litellm"},
+    "routes/llm-proxy": {"uri": "/api/llm/*", "upstream_id": "litellm"},
+    "routes/llm-metrics": {"uri": "/api/llm/metrics", "upstream_id": "litellm"},
+    "routes/llm-not-found": None,
+}
 
 
 def _raw_path_rewrite(route: dict) -> dict:
@@ -2273,142 +2259,147 @@ def _raw_path_rewrite(route: dict) -> dict:
     return {**route, "plugins": plugins}
 
 
-def test_deploy_holds_the_llm_routes_to_the_gateway_switch(tmp_path: Path) -> None:
-    bifrost = {"LLM_GATEWAY": "bifrost", "BIFROST_TEST_VK": BIFROST_VK}
-    litellm = {"LLM_GATEWAY": "litellm", "BIFROST_TEST_VK": BIFROST_VK}
-
-    def check(resources: dict[str, dict], env: dict[str, str], case: str) -> bool:
-        # /api/llm-bi stays out of the picture: retired whatever LLM_GATEWAY says.
-        return _deploy_has_core_routes(tmp_path / case, {**_llm_bi_retired(), **resources}, **env)
+def test_deploy_holds_the_llm_routes_to_bifrost(tmp_path: Path) -> None:
+    def check(resources: dict[str, dict], case: str) -> bool:
+        return _deploy_has_core_routes(tmp_path / case, {**_llm_bi_retired(), **resources})
 
     on_bifrost = _llm_on_bifrost()
-    on_litellm = _llm_on_litellm()
-    assert check(on_bifrost, bifrost, "bifrost")
-    assert check(on_litellm, litellm, "litellm")
-    # The unset switch is LiteLLM.
-    assert check(on_litellm, {"BIFROST_TEST_VK": BIFROST_VK}, "default")
+    assert check(on_bifrost, "bifrost")
 
-    # A flipped switch re-provisions, both ways.
-    assert not check(on_litellm, bifrost, "to-bifrost")
-    assert not check(on_bifrost, litellm, "to-litellm")
-    # Back on LiteLLM, the Bifrost-era 404 route would shadow the catch-all.
-    with_not_found = {**on_litellm, "routes/llm-not-found": on_bifrost["routes/llm-not-found"]}
-    assert not check(with_not_found, litellm, "litellm-with-not-found")
-    # On Bifrost: a rotated key, a missing 404 route, a route left on LiteLLM.
-    assert not check(_llm_on_bifrost("sk-bf-" + "o" * 32), bifrost, "rotated")
-    missing = {k: v for k, v in on_bifrost.items() if k != "routes/llm-not-found"}
-    assert not check(missing, bifrost, "no-not-found")
-    stale_metrics = {**on_bifrost, "routes/llm-metrics": on_litellm["routes/llm-metrics"]}
-    assert not check(stale_metrics, bifrost, "stale-metrics")
+    # A host still on LiteLLM's routes re-provisions onto Bifrost.
+    assert not check({**on_bifrost, **_LLM_ON_LITELLM}, "litellm")
+    # A rotated key, a missing 404 route, a route left on LiteLLM.
+    assert not check(_llm_on_bifrost("sk-bf-" + "o" * 32), "rotated")
+    assert not check({**on_bifrost, "routes/llm-not-found": None}, "no-not-found")
+    stale_metrics = {**on_bifrost, "routes/llm-metrics": _LLM_ON_LITELLM["routes/llm-metrics"]}
+    assert not check(stale_metrics, "stale-metrics")
     # A route to Bifrost forwarding the raw path lets %2e%2e reach Bifrost.
     for route_id in ("llm-proxy", "llm-metrics"):
         raw = {**on_bifrost, f"routes/{route_id}": _raw_path_rewrite(on_bifrost[f"routes/{route_id}"])}
-        assert not check(raw, bifrost, f"raw-{route_id}")
+        assert not check(raw, f"raw-{route_id}")
     # LiteLLM's admin route left over from before re-provisions, which takes it
     # and the upstream out. So does an upstream left behind once no route uses
     # it; one that a route of someone else's still uses stays.
-    with_admin = {**on_bifrost, "routes/llm-admin": on_litellm["routes/llm-admin"]}
-    assert not check(with_admin, bifrost, "bifrost-with-llm-admin")
-    left_upstream = {**on_bifrost, "upstreams/litellm": on_litellm["upstreams/litellm"]}
-    assert not check(left_upstream, bifrost, "bifrost-left-upstream")
+    with_admin = {**on_bifrost, "routes/llm-admin": _LLM_ON_LITELLM["routes/llm-admin"]}
+    assert not check(with_admin, "with-llm-admin")
+    left_upstream = {**on_bifrost, "upstreams/litellm": _LLM_ON_LITELLM["upstreams/litellm"]}
+    assert not check(left_upstream, "left-upstream")
     used_upstream = {**left_upstream, "routes/custom": {"uri": "/custom/*", "upstream_id": "litellm"}}
-    assert check(used_upstream, bifrost, "bifrost-used-upstream")
+    assert check(used_upstream, "used-upstream")
     # An APISIX service can hold it as well.
     service_listing = {"list": [{"value": {"id": "custom", "upstream_id": "litellm"}}]}
-    used_by_service = {**left_upstream, "services": service_listing}
-    assert check(used_by_service, bifrost, "bifrost-service-upstream")
-
-    # Bifrost without a usable key: the service leaves /api/llm as it is.
-    skip = {"LLM_GATEWAY": "bifrost", "BIFROST_TEST_VK": "sk-bf-short"}
-    assert check(on_litellm, skip, "skip-litellm")
-    assert check(on_bifrost, skip, "skip-bifrost")
+    assert check({**left_upstream, "services": service_listing}, "service-upstream")
 
 
-def _deploy_llm_gateway_state(**env: str) -> str:
-    shell = f"source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}; llm_gateway_state"
+def test_deploy_checks_the_ids_the_service_retires_for_litellm() -> None:
+    from app.services.apisix_system_resources import (
+        RETIRED_LITELLM_ROUTE_ID,
+        RETIRED_LITELLM_UPSTREAM_ID,
+    )
+
+    check = _shell_function(DEPLOY_SCRIPT_FILE.read_text(encoding="utf-8"), "apisix_llm_routes_match")
+    assert f'apisix_absent "routes/{RETIRED_LITELLM_ROUTE_ID}" || return 1' in check
+    assert f'apisix_absent "upstreams/{RETIRED_LITELLM_UPSTREAM_ID}"' in check
+    assert f'"upstream_id":"{RETIRED_LITELLM_UPSTREAM_ID}"' in check
+
+
+@pytest.mark.parametrize(
+    "env, refused",
+    [
+        ({"BIFROST_TEST_VK": BIFROST_VK}, None),
+        ({"LLM_GATEWAY": "", "BIFROST_TEST_VK": BIFROST_VK}, None),
+        ({"LLM_GATEWAY": "bifrost", "BIFROST_TEST_VK": BIFROST_VK}, None),
+        # LiteLLM support is gone, whatever the spelling.
+        ({"LLM_GATEWAY": "litellm", "BIFROST_TEST_VK": BIFROST_VK}, "LiteLLM support was removed"),
+        ({"LLM_GATEWAY": "LiteLLM", "BIFROST_TEST_VK": BIFROST_VK}, "LiteLLM support was removed"),
+        ({"LLM_GATEWAY": "Bifrost", "BIFROST_TEST_VK": BIFROST_VK}, "LiteLLM support was removed"),
+        ({"LLM_GATEWAY": "lite", "BIFROST_TEST_VK": BIFROST_VK}, "LiteLLM support was removed"),
+        # Without a usable key the service leaves /api/llm as it is.
+        ({"BIFROST_TEST_VK": "sk-bf-short"}, "usable BIFROST_TEST_VK"),
+        ({}, "usable BIFROST_TEST_VK"),
+    ],
+)
+def test_deploy_refuses_a_gateway_it_cannot_run_on(env: dict[str, str], refused: str | None) -> None:
     result = subprocess.run(
-        ["bash", "-c", shell],
+        ["bash", "-c", f"source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}; require_usable_llm_gateway"],
         env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "ENV_FILE": "/nonexistent", **env},
         check=False,
         text=True,
         capture_output=True,
     )
-    assert result.returncode == 0, result.stderr
-    return result.stdout
+
+    assert (result.returncode == 0) is (refused is None), result.stderr
+    if refused is not None:
+        assert refused in result.stderr
+        assert BIFROST_VK not in result.stderr
 
 
-@pytest.mark.parametrize("value", ["", "litellm", "LiteLLM", "bifrost", "Bifrost", " bifrost "])
-@pytest.mark.parametrize("vk", [BIFROST_VK, "", "sk-bf-short"])
-def test_deploy_reads_the_gateway_switch_like_the_service(value: str, vk: str) -> None:
-    from app.config import Settings
-    from app.services import llm_routes
+def test_deploy_refuses_before_anything_and_leaves_litellm_alone() -> None:
+    script = DEPLOY_SCRIPT_FILE.read_text(encoding="utf-8")
+    deploy = _shell_function(script, "deploy_color")
+    # Refused before anything happens.
+    assert deploy.index("require_usable_llm_gateway") < deploy.index("up_infra")
+    # No step starts, probes or stops LiteLLM any more: what is left of it on a
+    # host is cleaned up by hand (README).
+    for gone in (
+        "start_litellm_if_stopped",
+        "stop_litellm_when_unused",
+        "warn_if_target_needs_stopped_litellm",
+        "litellm_still_needed",
+        "converter_gateway",
+        "llm_gateway_state",
+        "compose-gate",
+        "docker exec",
+    ):
+        assert gone not in script, gone
 
-    env = {"BIFROST_TEST_VK": vk}
-    if value:
-        env["LLM_GATEWAY"] = value
-    gateway = Settings(**({"LLM_GATEWAY": value} if value else {})).LLM_GATEWAY
-    assert _deploy_llm_gateway_state(**env) == llm_routes.gateway_state(gateway, vk)
 
-
-def test_both_layouts_hand_the_gateway_switch_to_the_service_and_its_converter() -> None:
+def test_both_layouts_pin_the_rollback_guard_and_nothing_reads_the_switch() -> None:
     for compose_file in (COMPOSE_FILE, BLUEGREEN_APP_COMPOSE_FILE):
         compose = _load_yaml(compose_file)
-        # The UI too: the LiteLLM Admin button shows only on litellm.
+        # A literal, so an older image recreated on rollback does not default
+        # to LiteLLM (the UI to its admin button); .env no longer feeds it.
         for service in ("unibridge-service", "llm-converter", "unibridge-ui"):
             env = _service_environment(compose, service)
-            assert env["LLM_GATEWAY"] == "${LLM_GATEWAY:-litellm}", (compose_file.name, service)
-
-
-def test_ui_entrypoint_hands_the_gateway_to_the_page() -> None:
-    entrypoint = UI_ENTRYPOINT_FILE.read_text(encoding="utf-8")
-    assert 'LLM_GATEWAY: "$(json_escape "$LLM_GATEWAY")"' in entrypoint
-
-    # Read like the service reads it; anything but bifrost is litellm.
-    lowercase = _shell_function(entrypoint, "lowercase")
-    normalize = re.search(r'^LLM_GATEWAY="\$\(lowercase .*?^fi\n', entrypoint, re.S | re.M)
-    assert normalize
-    cases = {"": "litellm", "litellm": "litellm", "Bifrost ": "bifrost", " BIFROST": "bifrost", "other": "litellm"}
-    for value, expected in cases.items():
-        result = subprocess.run(
-            ["sh", "-c", lowercase + normalize.group(0) + 'printf %s "$LLM_GATEWAY"'],
-            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LLM_GATEWAY": value},
-            check=False,
-            text=True,
-            capture_output=True,
-        )
-        assert result.stdout == expected, repr(value)
+            assert env["LLM_GATEWAY"] == "bifrost", (compose_file.name, service)
+    for compose_file in COMPOSE_FILES:
+        text = compose_file.read_text(encoding="utf-8")
+        assert "${LLM_GATEWAY" not in text, compose_file.name
 
 
 # ---------------------------------------------------------------------------
-# LiteLLM runs only while /api/llm is on it (litellm/compose-gate.yml)
+# LiteLLM is gone from every layout
 # ---------------------------------------------------------------------------
 
-LITELLM_GATE_FILE = REPO_ROOT / "litellm" / "compose-gate.yml"
+
+def test_litellm_is_gone_from_every_layout() -> None:
+    assert not (REPO_ROOT / "litellm").exists()
+    assert not (REPO_ROOT / "scripts" / "build_finetune_dataset.py").exists()
+    for compose_file in COMPOSE_FILES:
+        compose = _load_yaml(compose_file)
+        services = compose.get("services", {})
+        assert not {"litellm", "litellm-db"} & set(services), compose_file.name
+        assert not [name for name in compose.get("volumes") or {} if "litellm" in name], compose_file.name
+        for name, service in services.items():
+            assert "extends" not in service, (compose_file.name, name)
+            depends_on = service.get("depends_on") or {}
+            assert not {"litellm", "litellm-db"} & set(depends_on), (compose_file.name, name)
+            env = _service_environment(compose, name) if "environment" in service else {}
+            assert not [key for key in env if key.startswith("LITELLM_")], (compose_file.name, name)
+            for volume in service.get("volumes") or []:
+                assert "litellm" not in str(volume), (compose_file.name, name, volume)
+    names = _env_example_names()
+    assert not {name for name in names if name.startswith("LITELLM_")}
+    assert "LLM_GATEWAY" not in names
 
 
-def test_litellm_runs_only_on_litellm() -> None:
-    gate = _load_yaml(LITELLM_GATE_FILE)["services"]
-    # One base service per value the switch takes: none profiled on litellm, a
-    # profile nothing enables on bifrost.
-    assert set(gate) == {"litellm", "bifrost"}
-    assert not gate["litellm"].get("profiles")
-    assert gate["bifrost"]["profiles"]
-
-    for compose_file in (COMPOSE_FILE, BLUEGREEN_INFRA_COMPOSE_FILE):
-        services = _load_yaml(compose_file)["services"]
-        assert services["litellm"]["extends"] == {
-            "file": "./litellm/compose-gate.yml",
-            "service": "${LLM_GATEWAY:-litellm}",
-        }, compose_file.name
-        # LiteLLM's database goes with it (its volume keeps the data); nothing
-        # else is gated.
-        assert services["litellm-db"]["extends"] == services["litellm"]["extends"], compose_file.name
-        assert [name for name, service in services.items() if "extends" in service] == [
-            "litellm-db",
-            "litellm",
-        ], compose_file.name
-    # Switching the gate's profile on for every command would run LiteLLM on Bifrost too.
-    assert "COMPOSE_PROFILES" not in ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+def test_single_stack_converter_waits_for_bifrost() -> None:
+    services = _load_yaml(COMPOSE_FILE)["services"]
+    # Healthy, so it does not come up before that name resolves (#95); optional,
+    # so a broken Bifrost does not hold up the rest of the stack.
+    assert services["llm-converter"]["depends_on"] == {
+        "bifrost": {"condition": "service_healthy", "required": False},
+    }
 
 
 def _has_docker_compose() -> bool:
@@ -2425,7 +2416,7 @@ def _compose_services(compose_file: Path, **env: str) -> subprocess.CompletedPro
     full_env.update(env)
     return subprocess.run(
         [
-            "docker", "compose", "--env-file", os.devnull, "-p", "litellm-gate-test",
+            "docker", "compose", "--env-file", os.devnull, "-p", "unibridge-config-test",
             "-f", str(compose_file), "config", "--services",
         ],
         env=full_env,
@@ -2436,407 +2427,27 @@ def _compose_services(compose_file: Path, **env: str) -> subprocess.CompletedPro
 
 
 @pytest.mark.skipif(not _has_docker_compose(), reason="needs the docker compose CLI")
-def test_compose_leaves_litellm_out_only_under_bifrost() -> None:
+def test_compose_runs_bifrost_whatever_an_old_env_says() -> None:
     for compose_file in (COMPOSE_FILE, BLUEGREEN_INFRA_COMPOSE_FILE):
-        for env, runs in (({}, True), ({"LLM_GATEWAY": "litellm"}, True), ({"LLM_GATEWAY": "bifrost"}, False)):
+        # An .env left on LiteLLM changes nothing: compose no longer reads it.
+        for env in ({}, {"LLM_GATEWAY": "litellm"}, {"LLM_GATEWAY": "Bifrost"}):
             result = _compose_services(compose_file, **env)
             assert result.returncode == 0, (compose_file.name, env, result.stderr)
             services = set(result.stdout.split())
-            assert ("litellm" in services) is runs, (compose_file.name, env)
-            assert ("litellm-db" in services) is runs, (compose_file.name, env)
-            # The rest stays, the single stack's dependents of LiteLLM included.
+            assert not {"litellm", "litellm-db"} & services, (compose_file.name, env)
             assert {"bifrost", "bifrost-tls"} <= services, (compose_file.name, env)
             if compose_file == COMPOSE_FILE:
                 assert {"unibridge-service", "llm-converter"} <= services, env
-        rejected = _compose_services(compose_file, LLM_GATEWAY="Bifrost")
-        assert rejected.returncode != 0, compose_file.name
-        assert 'service "Bifrost" not found in ./litellm/compose-gate.yml' in rejected.stderr
-
-
-def test_single_stack_waits_for_each_gateway_but_requires_neither() -> None:
-    services = _load_yaml(COMPOSE_FILE)["services"]
-    # A dependency on a service left out of the stack fails every compose
-    # command ("depends on undefined service") unless it is optional.
-    for name, service in services.items():
-        dependency = service.get("depends_on", {}).get("litellm")
-        if dependency is not None:
-            assert dependency.get("required") is False, name
-    # The converter forwards to either gateway (LLM_GATEWAY): healthy, so it
-    # does not come up before that name resolves (#95); optional, so one gateway
-    # being out or broken does not hold the other's path down.
-    assert services["llm-converter"]["depends_on"] == {
-        "litellm": {"condition": "service_healthy", "required": False},
-        "bifrost": {"condition": "service_healthy", "required": False},
-    }
-
-
-BIFROST_GATEWAY_ENV = {"LLM_GATEWAY": "bifrost", "BIFROST_TEST_VK": BIFROST_VK}
-
-
-def _run_litellm_step(
-    tmp_path: Path,
-    function: str,
-    *,
-    litellm_running: bool,
-    litellm_db_running: bool = True,
-    litellm_health: str = "healthy",
-    listed_services: tuple[str, ...] = ("keycloak-db", "bifrost"),
-    config_fails: bool = False,
-    network: bool = True,
-    upstream_absent: bool = True,
-    converters: dict[str, str | None] | None = None,
-    stop_fails: bool = False,
-    **env: str,
-) -> tuple[subprocess.CompletedProcess, list[str]]:
-    """Run one of the deploy script's LiteLLM steps with compose, docker and APISIX stubbed.
-
-    ``converters`` maps each running color to what its converter answers for
-    ``settings.gateway``; None makes the question fail, as on an image from
-    before LLM_GATEWAY. ``listed_services`` is what ``config --services``
-    prints. Returns the run and the compose calls it made.
-    """
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    log = tmp_path / "compose.log"
-    converters = converters or {}
-    names = " ".join(shlex.quote(f"llm-converter-{color}") for color in converters)
-    answers = "\n".join(
-        f"        llm-converter-{color}) "
-        + ("return 1 ;;" if answer is None else f"printf '%s\\n' {shlex.quote(answer)} ;;")
-        for color, answer in converters.items()
-    )
-    ps_output = "printf 'cid-litellm\\n'" if litellm_running else ":"
-    db_output = "printf 'cid-litellm-db\\n'" if litellm_db_running else ":"
-    services = " ".join(shlex.quote(service) for service in listed_services)
-    config_output = "return 1" if config_fails else f"printf '%s\\n' {services}"
-    stop_status = "return 1" if stop_fails else ":"
-    absent_status = "return 0" if upstream_absent else "return 1"
-    network_status = "return 0" if network else "return 1"
-    shell = f"""
-source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}
-compose_infra() {{
-  printf '%s\\n' "$*" >> {shlex.quote(str(log))}
-  case "$1" in
-    ps)
-      case "${{@: -1}}" in
-        litellm) {ps_output} ;;
-        litellm-db) {db_output} ;;
-      esac
-      ;;
-    config) {config_output} ;;
-    stop) {stop_status} ;;
-  esac
-}}
-apisix_absent() {{ {absent_status}; }}
-docker() {{
-  case "$1" in
-    network) {network_status} ;;
-    ps) printf '%s\\n' unibridge-infra-apisix-1 {names} ;;
-    inspect) printf '%s\\n' {shlex.quote(litellm_health)} ;;
-    exec)
-      case "$2" in
-{answers}
-        *) return 1 ;;
-      esac
-      ;;
-    *) return 1 ;;
-  esac
-}}
-{function}
-"""
-    result = subprocess.run(
-        ["bash", "-c", shell],
-        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "ENV_FILE": "/nonexistent", **env},
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
-    return result, calls
-
-
-def test_deploy_stops_litellm_once_nothing_forwards_to_it(tmp_path: Path) -> None:
-    result, calls = _run_litellm_step(
-        tmp_path,
-        "stop_litellm_when_unused",
-        litellm_running=True,
-        converters={"blue": "bifrost", "green": "bifrost"},
-        **BIFROST_GATEWAY_ENV,
-    )
-
-    assert result.returncode == 0, result.stderr
-    # Requests already inside LiteLLM get DRAIN_SECONDS (15) before the kill,
-    # and its database goes after it.
-    assert calls == [
-        "ps -q litellm",
-        "ps -q litellm-db",
-        "config --services",
-        "stop -t 15 litellm",
-        "stop litellm-db",
-    ]
-    assert "Stopping LiteLLM" in result.stdout
-
-
-@pytest.mark.parametrize(
-    "kwargs, reason",
-    [
-        # The standby from before the switch is the rollback target.
-        ({"converters": {"blue": "bifrost", "green": "litellm"}}, "llm-converter-green still forwards"),
-        # An image from before LLM_GATEWAY forwards to LiteLLM whatever its env says.
-        ({"converters": {"green": None}}, "llm-converter-green still forwards"),
-        # A route this service does not manage still uses the upstream.
-        ({"upstream_absent": False}, "APISIX still has the litellm upstream"),
-    ],
-)
-def test_deploy_keeps_litellm_while_something_still_needs_it(tmp_path: Path, kwargs, reason) -> None:
-    result, calls = _run_litellm_step(
-        tmp_path, "stop_litellm_when_unused", litellm_running=True, **kwargs, **BIFROST_GATEWAY_ENV
-    )
-
-    assert result.returncode == 0, result.stderr
-    # LiteLLM keeps its database.
-    assert calls == ["ps -q litellm", "ps -q litellm-db"]
-    assert reason in result.stdout
-    assert result.stderr == ""
-
-
-def test_deploy_warns_when_the_litellm_kept_for_rollback_is_unhealthy(tmp_path: Path) -> None:
-    # Out of the infra check while it is kept, so a dead one would only show at rollback.
-    result, calls = _run_litellm_step(
-        tmp_path,
-        "stop_litellm_when_unused",
-        litellm_running=True,
-        litellm_health="unhealthy",
-        converters={"green": "litellm"},
-        **BIFROST_GATEWAY_ENV,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert calls == ["ps -q litellm", "ps -q litellm-db"]
-    assert "LiteLLM, kept for the reason above, is not healthy (unhealthy)" in result.stderr
-    # LiteLLMDbDown is quiet on Bifrost, so the database is checked here too.
-    assert "litellm-db, kept for the reason above, is not healthy (unhealthy)" in result.stderr
-
-
-def test_deploy_warns_when_the_database_kept_for_rollback_is_down(tmp_path: Path) -> None:
-    result, calls = _run_litellm_step(
-        tmp_path,
-        "stop_litellm_when_unused",
-        litellm_running=True,
-        litellm_db_running=False,
-        converters={"green": "litellm"},
-        **BIFROST_GATEWAY_ENV,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert calls == ["ps -q litellm", "ps -q litellm-db"]
-    assert "litellm-db, kept for the reason above, is not healthy (not running)" in result.stderr
-    assert "LiteLLM, kept" not in result.stderr
-
-
-def test_deploy_keeps_litellm_where_compose_does_not_apply_the_gate(tmp_path: Path) -> None:
-    # Stopped there, it would fail the infra check of every later deploy.
-    result, calls = _run_litellm_step(
-        tmp_path,
-        "stop_litellm_when_unused",
-        litellm_running=True,
-        listed_services=("keycloak-db", "litellm-db", "bifrost"),
-        **BIFROST_GATEWAY_ENV,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert calls == ["ps -q litellm", "ps -q litellm-db", "config --services"]
-    assert "does not apply litellm/compose-gate.yml" in result.stderr
-
-
-def test_deploy_keeps_litellm_when_it_cannot_read_the_infra_compose_file(tmp_path: Path) -> None:
-    result, calls = _run_litellm_step(
-        tmp_path, "stop_litellm_when_unused", litellm_running=True, config_fails=True, **BIFROST_GATEWAY_ENV
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert calls == ["ps -q litellm", "ps -q litellm-db", "config --services"]
-    assert "could not evaluate the infra compose file" in result.stdout
-
-
-@pytest.mark.parametrize(
-    "env",
-    [
-        {"LLM_GATEWAY": "litellm", "BIFROST_TEST_VK": BIFROST_VK},
-        {"BIFROST_TEST_VK": BIFROST_VK},
-        # Without a usable key the service leaves /api/llm where it was, maybe on LiteLLM.
-        {"LLM_GATEWAY": "bifrost", "BIFROST_TEST_VK": "sk-bf-short"},
-    ],
-)
-def test_deploy_stops_litellm_only_on_bifrost(tmp_path: Path, env: dict[str, str]) -> None:
-    result, calls = _run_litellm_step(tmp_path, "stop_litellm_when_unused", litellm_running=True, **env)
-
-    assert result.returncode == 0, result.stderr
-    assert calls == []
-
-
-def test_deploy_has_nothing_to_stop_when_litellm_and_its_database_are_down(tmp_path: Path) -> None:
-    result, calls = _run_litellm_step(
-        tmp_path,
-        "stop_litellm_when_unused",
-        litellm_running=False,
-        litellm_db_running=False,
-        **BIFROST_GATEWAY_ENV,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert calls == ["ps -q litellm", "ps -q litellm-db"]
-
-
-def test_deploy_stops_a_litellm_db_left_running_on_its_own(tmp_path: Path) -> None:
-    result, calls = _run_litellm_step(
-        tmp_path, "stop_litellm_when_unused", litellm_running=False, **BIFROST_GATEWAY_ENV
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert calls == ["ps -q litellm", "ps -q litellm-db", "config --services", "stop litellm-db"]
-
-
-def test_a_failed_litellm_stop_does_not_fail_the_deploy(tmp_path: Path) -> None:
-    result, calls = _run_litellm_step(
-        tmp_path, "stop_litellm_when_unused", litellm_running=True, stop_fails=True, **BIFROST_GATEWAY_ENV
-    )
-
-    assert result.returncode == 0
-    assert "stop -t 15 litellm" in calls
-    # Its database is left to it.
-    assert "stop litellm-db" not in calls
-    assert "could not stop LiteLLM" in result.stderr
-
-
-@pytest.mark.parametrize("env", [{"LLM_GATEWAY": "litellm"}, {}])
-def test_deploy_back_on_litellm_starts_it(tmp_path: Path, env: dict[str, str]) -> None:
-    result, calls = _run_litellm_step(
-        tmp_path, "start_litellm_if_stopped", litellm_running=False, BIFROST_TEST_VK=BIFROST_VK, **env
-    )
-
-    assert result.returncode == 0, result.stderr
-    # Both named: a Compose that does not start a gated dependency on its own
-    # still brings litellm-db up. Recreated on the current .env and image if
-    # they changed while stopped.
-    assert calls == ["ps -q litellm", "up -d --wait litellm-db litellm"]
-
-
-def test_deploy_leaves_a_running_litellm_as_it_is(tmp_path: Path) -> None:
-    result, calls = _run_litellm_step(
-        tmp_path, "start_litellm_if_stopped", litellm_running=True, LLM_GATEWAY="litellm"
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert calls == ["ps -q litellm"]
-
-
-def test_deploy_on_bifrost_does_not_start_litellm(tmp_path: Path) -> None:
-    result, calls = _run_litellm_step(
-        tmp_path, "start_litellm_if_stopped", litellm_running=False, **BIFROST_GATEWAY_ENV
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert calls == []
-
-
-def test_deploy_without_the_network_leaves_litellm_to_the_infra_check(tmp_path: Path) -> None:
-    # Starting LiteLLM would bring up a partial infra stack first.
-    result, calls = _run_litellm_step(
-        tmp_path, "start_litellm_if_stopped", litellm_running=False, network=False, LLM_GATEWAY="litellm"
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert calls == []
-
-
-def test_promotion_warns_when_the_target_needs_a_stopped_litellm(tmp_path: Path) -> None:
-    function = "warn_if_target_needs_stopped_litellm green"
-
-    on_litellm, _ = _run_litellm_step(
-        tmp_path / "stopped", function, litellm_running=False, converters={"green": "litellm"}
-    )
-    assert "llm-converter-green forwards to LiteLLM, which is not running" in on_litellm.stderr
-    # An image from before LLM_GATEWAY forwards to LiteLLM too.
-    old_image, _ = _run_litellm_step(
-        tmp_path / "old-image", function, litellm_running=False, converters={"green": None}
-    )
-    assert "which is not running" in old_image.stderr
-
-    running, _ = _run_litellm_step(
-        tmp_path / "running", function, litellm_running=True, converters={"green": "litellm"}
-    )
-    on_bifrost, _ = _run_litellm_step(
-        tmp_path / "bifrost", function, litellm_running=False, converters={"green": "bifrost"}
-    )
-    # A converter that is not running forwards nothing.
-    no_converter, _ = _run_litellm_step(tmp_path / "no-converter", function, litellm_running=False)
-    for result in (on_litellm, old_image, running, on_bifrost, no_converter):
-        assert result.returncode == 0, result.stderr
-    assert running.stderr == on_bifrost.stderr == no_converter.stderr == ""
-
-
-def test_deploy_starts_and_stops_litellm_around_the_switch() -> None:
-    script = DEPLOY_SCRIPT_FILE.read_text(encoding="utf-8")
-    deploy = _shell_function(script, "deploy_color")
-    # Refused before anything happens.
-    assert deploy.index("require_usable_llm_gateway") < deploy.index("up_infra")
-    start = deploy.index("start_litellm_if_stopped")
-    # Up before the infra check that requires it, and before the new color
-    # points /api/llm at it.
-    assert start < deploy.index("require_existing_infra_healthy")
-    assert start < deploy.index("compose_app")
-    # Stopped only after the promotion, and after the standby was stopped or disarmed.
-    stop = deploy.index("stop_litellm_when_unused")
-    assert deploy.index("commit_active_color") < stop
-    assert deploy.rindex("compose_app") < stop
-    assert "stop_litellm_when_unused" in _shell_function(script, "stop_color")
-    # Promotion and rollback stay routing-only: they only warn.
-    for name in ("promote_color", "rollback"):
-        body = _shell_function(script, name)
-        for step in ("start_litellm_if_stopped", "stop_litellm_when_unused", "up_infra"):
-            assert step not in body, (name, step)
-    assert "warn_if_target_needs_stopped_litellm" in _shell_function(script, "promote_color")
-
-
-@pytest.mark.parametrize(
-    "env, accepted",
-    [
-        ({}, True),
-        ({"LLM_GATEWAY": "litellm"}, True),
-        ({"LLM_GATEWAY": "bifrost", "BIFROST_TEST_VK": BIFROST_VK}, True),
-        # compose reads the value verbatim.
-        ({"LLM_GATEWAY": "Bifrost", "BIFROST_TEST_VK": BIFROST_VK}, False),
-        ({"LLM_GATEWAY": "bifrost ", "BIFROST_TEST_VK": BIFROST_VK}, False),
-        ({"LLM_GATEWAY": "lite"}, False),
-        # Bifrost without a usable key: /api/llm would stay where it was while
-        # LiteLLM leaves the stack.
-        ({"LLM_GATEWAY": "bifrost", "BIFROST_TEST_VK": "sk-bf-short"}, False),
-        ({"LLM_GATEWAY": "bifrost"}, False),
-    ],
-)
-def test_deploy_refuses_a_gateway_it_cannot_run_on(env: dict[str, str], accepted: bool) -> None:
-    result = subprocess.run(
-        ["bash", "-c", f"source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}; require_usable_llm_gateway"],
-        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "ENV_FILE": "/nonexistent", **env},
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-
-    assert (result.returncode == 0) is accepted, result.stderr
-    if not accepted:
-        assert "ERROR: LLM_GATEWAY" in result.stderr
 
 
 @pytest.mark.parametrize("running", [True, False])
 def test_postgres_restore_puts_back_only_the_consumer_it_stopped(tmp_path: Path, running: bool) -> None:
-    # LiteLLM stays stopped on purpose while /api/llm runs on Bifrost, and a
-    # restore of litellm-db must not start it.
-    dump = tmp_path / "litellm-db.sql.gz"
+    # A consumer stopped on purpose stays stopped: the restore must not start it.
+    dump = tmp_path / "keycloak-db.sql.gz"
     with gzip.open(dump, "wt", encoding="utf-8") as handle:
         handle.write("SELECT 1;\n")
     log = tmp_path / "compose.log"
-    ps_output = "printf 'cid-litellm\\n'" if running else ":"
+    ps_output = "printf 'cid-keycloak\\n'" if running else ":"
     shell = f"""
 source {shlex.quote(str(BACKUP_POSTGRES_LIB_FILE))}
 infra_compose() {{
@@ -2844,14 +2455,14 @@ infra_compose() {{
   case "$1" in
     ps)
       case "${{@: -1}}" in
-        litellm) {ps_output} ;;
-        litellm-db) printf 'cid-litellm-db\\n' ;;
+        keycloak) {ps_output} ;;
+        keycloak-db) printf 'cid-keycloak-db\\n' ;;
       esac
       ;;
     exec) cat >/dev/null ;;
   esac
 }}
-restore_postgres litellm-db litellm litellm {shlex.quote(str(dump))} litellm <<< 'RESTORE PG'
+restore_postgres keycloak-db keycloak keycloak {shlex.quote(str(dump))} keycloak <<< 'RESTORE PG'
 """
     result = subprocess.run(
         ["bash", "-c", shell],
@@ -2863,23 +2474,23 @@ restore_postgres litellm-db litellm litellm {shlex.quote(str(dump))} litellm <<<
 
     assert result.returncode == 0, result.stderr
     calls = log.read_text(encoding="utf-8").splitlines()
-    restore = "exec -T litellm-db psql -U litellm -d litellm -v ON_ERROR_STOP=1 --quiet"
+    restore = "exec -T keycloak-db psql -U keycloak -d keycloak -v ON_ERROR_STOP=1 --quiet"
     if running:
-        assert calls == ["ps -q litellm-db", "ps -q litellm", "stop litellm", restore, "up -d --wait litellm"]
+        assert calls == ["ps -q keycloak-db", "ps -q keycloak", "stop keycloak", restore, "up -d --wait keycloak"]
     else:
-        assert calls == ["ps -q litellm-db", "ps -q litellm", restore]
-        assert "leaving consumer litellm stopped" in result.stdout
+        assert calls == ["ps -q keycloak-db", "ps -q keycloak", restore]
+        assert "leaving consumer keycloak stopped" in result.stdout
 
 
 def test_postgres_restore_refuses_a_database_that_is_not_running(tmp_path: Path) -> None:
-    # litellm-db stays stopped under LLM_GATEWAY=bifrost; say so before the prompt.
-    dump = tmp_path / "litellm-db.sql.gz"
+    # Say so before the prompt, not halfway through the restore.
+    dump = tmp_path / "keycloak-db.sql.gz"
     with gzip.open(dump, "wt", encoding="utf-8") as handle:
         handle.write("SELECT 1;\n")
     shell = f"""
 source {shlex.quote(str(BACKUP_POSTGRES_LIB_FILE))}
 infra_compose() {{ [[ "$1" != "exec" ]] || exit 30; }}
-restore_postgres litellm-db litellm litellm {shlex.quote(str(dump))} litellm <<< 'RESTORE PG'
+restore_postgres keycloak-db keycloak keycloak {shlex.quote(str(dump))} keycloak <<< 'RESTORE PG'
 """
     result = subprocess.run(
         ["bash", "-c", shell],
@@ -2890,168 +2501,50 @@ restore_postgres litellm-db litellm litellm {shlex.quote(str(dump))} litellm <<<
     )
 
     assert result.returncode == 1
-    assert "litellm-db is not running; start it first" in result.stderr
+    assert "keycloak-db is not running; start it first" in result.stderr
     assert "This will:" not in result.stderr
 
 
-@pytest.mark.parametrize(
-    "gateway, running, dumped",
-    [
-        ("bifrost", False, False),
-        # Kept for a rollback, so it still changes and is backed up.
-        ("bifrost", True, True),
-        # Down on LiteLLM is an outage: the dump runs and fails the backup.
-        ("litellm", False, True),
-        ("litellm", True, True),
-    ],
-)
-def test_backup_skips_litellm_db_only_while_it_is_off_on_bifrost(
-    tmp_path: Path, gateway: str, running: bool, dumped: bool
-) -> None:
-    dest = tmp_path / "snapshots" / "2026-10-13_030000Z"
-    dest.mkdir(parents=True)
-    out = dest / "litellm-db.sql.gz"
-    result = _run_litellm_db_backup(tmp_path, out, gateway=gateway, running=running)
+def test_backup_and_restore_leave_litellm_db_out() -> None:
+    # LiteLLM is gone: nothing dumps litellm-db, and restore refuses it by name
+    # while a snapshot that still holds the old dump restores everything else.
+    backup_script = BACKUP_SCRIPT_FILE.read_text(encoding="utf-8")
+    restore_script = RESTORE_SCRIPT_FILE.read_text(encoding="utf-8")
 
-    assert result.returncode == 0, result.stderr
-    assert (f"DUMP litellm-db litellm litellm {out}" in result.stdout) is dumped
-    if not dumped:
-        # No earlier dump to carry forward.
-        assert "skipped" in result.stdout
-        assert not out.exists()
-    assert "backup_litellm_db" in BACKUP_SCRIPT_FILE.read_text(encoding="utf-8")
+    assert "litellm" not in backup_script
+    assert "litellm" not in BACKUP_POSTGRES_LIB_FILE.read_text(encoding="utf-8")
+    assert "restore_postgres litellm-db" not in restore_script
+    assert 'die "litellm-db: LiteLLM support was removed' in restore_script
 
 
-def _run_litellm_db_backup(
-    tmp_path: Path, out: Path, *, gateway: str, running: bool
-) -> subprocess.CompletedProcess:
-    ps_output = "printf 'cid-litellm-db\\n'" if running else ":"
+def test_restore_ignores_an_old_litellm_dump_in_the_snapshot(tmp_path: Path) -> None:
+    snapshot = tmp_path / "2026-10-01_030000Z"
+    snapshot.mkdir()
+    dump = gzip.compress(b"SELECT 1;\n")
+    (snapshot / "keycloak-db.sql.gz").write_bytes(dump)
+    (snapshot / "litellm-db.sql.gz").write_bytes(b"left over from LiteLLM")
+    entries = [
+        {"name": "keycloak-db.sql.gz", "size": len(dump), "sha256": hashlib.sha256(dump).hexdigest()},
+        {"name": "litellm-db.sql.gz", "size": 0, "sha256": "0" * 64},
+    ]
+    (snapshot / "manifest.json").write_text(json.dumps({"files": entries}), encoding="utf-8")
+    # verify_backup_dir is all main() runs before the component's own restore.
+    verify = _shell_function(RESTORE_SCRIPT_FILE.read_text(encoding="utf-8"), "verify_backup_dir")
     shell = f"""
 source {shlex.quote(str(BACKUP_POSTGRES_LIB_FILE))}
-infra_compose() {{ [[ "$1" == "ps" ]] && {ps_output}; }}
-backup_postgres() {{ printf 'DUMP %s\\n' "$*"; }}
-backup_litellm_db {shlex.quote(str(out))}
-"""
-    return subprocess.run(
-        ["bash", "-c", shell],
-        env={
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "BACKUP_STACK": "bluegreen",
-            "LLM_GATEWAY": gateway,
-            "SNAPSHOTS_ROOT": str(tmp_path / "snapshots"),
-        },
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-
-
-def _write_snapshot(snapshot: Path, files: dict[str, bytes], *, manifest: dict[str, str] | None) -> None:
-    """A snapshot dir as backup.sh leaves it; ``manifest`` maps names to the sha256 it records."""
-    snapshot.mkdir(parents=True)
-    for name, content in files.items():
-        (snapshot / name).write_bytes(content)
-    if manifest is not None:
-        entries = [{"name": name, "size": 0, "sha256": sha} for name, sha in manifest.items()]
-        (snapshot / "manifest.json").write_text(json.dumps({"files": entries}), encoding="utf-8")
-
-
-def test_backup_carries_the_last_verified_litellm_dump_forward_while_litellm_db_is_off(tmp_path: Path) -> None:
-    # Rotation would otherwise drop the last dump RETENTION_DAYS after the switch.
-    snapshots = tmp_path / "snapshots"
-    dump = gzip.compress(b"-- the dump taken before the switch\n")
-    sha = hashlib.sha256(dump).hexdigest()
-    _write_snapshot(snapshots / "2026-09-01_030000Z", {"litellm-db.sql.gz": dump}, manifest={"litellm-db.sql.gz": sha})
-    # An earlier carry of it: the newest good source, which names the original.
-    _write_snapshot(
-        snapshots / "2026-10-01_030000Z",
-        {"litellm-db.sql.gz": dump, "litellm-db.carried-from": b"2026-09-01_030000Z\n"},
-        manifest={"litellm-db.sql.gz": sha},
-    )
-    # Newer, but not to be trusted: a checksum the manifest does not vouch for,
-    # a failed run (no manifest) that left a dump cut off midway, and a directory
-    # that is not a snapshot at all.
-    _write_snapshot(
-        snapshots / "2026-10-05_030000Z", {"litellm-db.sql.gz": dump}, manifest={"litellm-db.sql.gz": "0" * 64}
-    )
-    _write_snapshot(snapshots / "2026-10-10_030000Z", {"litellm-db.sql.gz": dump[: len(dump) // 2]}, manifest=None)
-    # A manifest that vouches for a dump which was already cut off: gzip -t.
-    cut = dump[: len(dump) // 2]
-    _write_snapshot(
-        snapshots / "2026-10-11_030000Z",
-        {"litellm-db.sql.gz": cut},
-        manifest={"litellm-db.sql.gz": hashlib.sha256(cut).hexdigest()},
-    )
-    _write_snapshot(
-        snapshots / "keep-litellm",
-        {"litellm-db.sql.gz": gzip.compress(b"-- kept by hand\n")},
-        manifest={"litellm-db.sql.gz": hashlib.sha256(gzip.compress(b"-- kept by hand\n")).hexdigest()},
-    )
-    dest = snapshots / "2026-10-13_030000Z"
-    dest.mkdir()
-    out = dest / "litellm-db.sql.gz"
-
-    result = _run_litellm_db_backup(tmp_path, out, gateway="bifrost", running=False)
-
-    assert result.returncode == 0, result.stderr
-    assert "DUMP" not in result.stdout
-    assert out.read_bytes() == dump
-    # Linked rather than copied: snapshot files are never rewritten.
-    assert os.path.samefile(out, snapshots / "2026-10-01_030000Z" / "litellm-db.sql.gz")
-    assert (dest / "litellm-db.carried-from").read_text(encoding="utf-8") == "2026-09-01_030000Z\n"
-    assert "carried the dump taken in 2026-09-01_030000Z forward (from 2026-10-01_030000Z)" in result.stdout
-
-
-def test_backup_carries_nothing_it_cannot_verify(tmp_path: Path) -> None:
-    snapshots = tmp_path / "snapshots"
-    _write_snapshot(snapshots / "2026-10-10_030000Z", {"litellm-db.sql.gz": b"not a gzip"}, manifest=None)
-    dest = snapshots / "2026-10-13_030000Z"
-    dest.mkdir()
-    out = dest / "litellm-db.sql.gz"
-
-    result = _run_litellm_db_backup(tmp_path, out, gateway="bifrost", running=False)
-
-    assert result.returncode == 0, result.stderr
-    assert not out.exists()
-    assert "no verified earlier dump to carry forward, skipped" in result.stdout
-
-
-def test_backup_says_so_when_it_cannot_verify_earlier_dumps(tmp_path: Path) -> None:
-    # Without jq or python3 nothing ever verifies; that must not read as "no dump".
-    snapshots = tmp_path / "snapshots"
-    dump = gzip.compress(b"-- dump\n")
-    _write_snapshot(
-        snapshots / "2026-10-01_030000Z",
-        {"litellm-db.sql.gz": dump},
-        manifest={"litellm-db.sql.gz": hashlib.sha256(dump).hexdigest()},
-    )
-    dest = snapshots / "2026-10-13_030000Z"
-    dest.mkdir()
-    shell = f"""
-source {shlex.quote(str(BACKUP_POSTGRES_LIB_FILE))}
-infra_compose() {{ :; }}
-command() {{
-  if [[ "$1" == "-v" && ( "$2" == "jq" || "$2" == "python3" ) ]]; then return 1; fi
-  builtin command "$@"
-}}
-backup_litellm_db {shlex.quote(str(dest / "litellm-db.sql.gz"))}
+{verify}
+verify_backup_dir {shlex.quote(str(snapshot))} keycloak-db.sql.gz
 """
     result = subprocess.run(
         ["bash", "-c", shell],
-        env={
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "BACKUP_STACK": "bluegreen",
-            "LLM_GATEWAY": "bifrost",
-            "SNAPSHOTS_ROOT": str(snapshots),
-        },
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "BACKUP_STACK": "single"},
         check=False,
         text=True,
         capture_output=True,
     )
 
     assert result.returncode == 0, result.stderr
-    assert not (dest / "litellm-db.sql.gz").exists()
-    assert "cannot be verified without jq or python3" in result.stderr
+    assert "verified: keycloak-db.sql.gz matches manifest sha256" in result.stdout
 
 
 def test_backup_and_restore_cover_the_bifrost_config_store() -> None:
@@ -3221,26 +2714,20 @@ def test_backup_runs_python_from_the_image_bifrost_backup_image_names(tmp_path: 
     assert run.endswith(" --entrypoint python3 unibridge-service:blue -I -c")
 
 
-@pytest.mark.parametrize("gateway", [None, "litellm", "bifrost"])
-def test_backup_skips_bifrost_only_when_it_is_not_deployed(tmp_path: Path, gateway: str | None) -> None:
+def test_backup_fails_without_a_bifrost_container(tmp_path: Path) -> None:
+    # /api/llm runs on Bifrost: no container is an outage, not a stack without it.
     out = tmp_path / "bifrost-config.db.gz"
     result, calls = _run_bifrost_lib(
         tmp_path,
         tmp_path,
         f"backup_bifrost {shlex.quote(str(out))}",
         containers=False,
-        env={"LLM_GATEWAY": gateway} if gateway else None,
     )
 
     assert calls == ["compose ps -aq bifrost"]
     assert not out.exists()
-    if gateway == "bifrost":
-        # /api/llm runs on Bifrost then: no container is an outage.
-        assert result.returncode == 1
-        assert "LLM_GATEWAY=bifrost, but the stack has no bifrost container" in result.stderr
-    else:
-        assert result.returncode == 0, result.stderr
-        assert "(Bifrost is not deployed), skipped" in result.stdout
+    assert result.returncode == 1
+    assert "bifrost: the stack has no bifrost container to back up" in result.stderr
 
 
 @pytest.mark.parametrize("broken", ["missing store", "not a database", "missing image", "no converter"])
@@ -3367,26 +2854,26 @@ def test_restore_bifrost_changes_nothing_without_confirmation(tmp_path: Path) ->
     assert _bifrost_providers(volume / "config.db") == ["added-later", "vllm-a"]
 
 
-def test_litellm_db_alert_is_quiet_while_api_llm_runs_on_bifrost() -> None:
-    rules = _load_yaml(PROMETHEUS_RULES_DIR / "unibridge-alerts.yml")
-    [alert] = [
-        rule
-        for group in rules["groups"]
-        for rule in group["rules"]
-        if rule.get("alert") == "LiteLLMDbDown"
+def test_litellm_alert_and_scrape_targets_are_gone() -> None:
+    rules = PROMETHEUS_RULES_DIR.joinpath("unibridge-alerts.yml").read_text(encoding="utf-8")
+    assert "LiteLLMDbDown" not in rules
+    # The gauge that told the alert which gateway ran went with it.
+    assert "unibridge_llm_gateway" not in rules
+    config = _load_yaml(PROMETHEUS_CONFIG_FILE)
+    jobs = {job["job_name"]: job for job in config["scrape_configs"]}
+    assert "litellm" not in jobs
+    targets = [
+        target
+        for job in jobs.values()
+        for static in job.get("static_configs", [])
+        for target in static.get("targets", [])
     ]
-    expr = " ".join(alert["expr"].split())
-    assert expr.startswith('probe_success{job="infra-db-tcp",db="litellm-db"} == 0 ')
-    # The active instance's switch, not any instance's: a standby can lag behind.
-    assert expr.endswith(
-        'unless on() (max(unibridge_llm_gateway{gateway="bifrost"} and on(job, instance) '
-        "unibridge_active_instance == 1) == 1)"
-    )
+    assert not [target for target in targets if "litellm" in target]
 
 
 # Rules that read unibridge_* metrics from both scrape jobs at once, as the top
 # of prometheus/rules/unibridge-alerts.yml explains; every other one is gated.
-ALERTS_READING_BOTH_UNIBRIDGE_JOBS = {"UniBridgeNoActiveInstance", "LiteLLMDbDown"}
+ALERTS_READING_BOTH_UNIBRIDGE_JOBS = {"UniBridgeNoActiveInstance"}
 UNIBRIDGE_COLORS_GATE = 'unless on() (max(up{job="unibridge-service-colors"}) == 1)'
 
 

@@ -221,7 +221,7 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "LLM gateways",
+      "title": "LLM gateway",
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -289,7 +289,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "up{job=\"bifrost\"} or (up{job=\"litellm\"} unless on() (max(unibridge_llm_gateway{gateway=\"bifrost\"} and on(job, instance) unibridge_active_instance == 1) == 1))",
+          "expr": "up{job=\"bifrost\"}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -299,7 +299,7 @@
           "legendFormat": "{{job}}"
         }
       ],
-      "description": "LiteLLM and Bifrost (scrape jobs litellm / bifrost). LiteLLM drops out while /api/llm runs on Bifrost (LLM_GATEWAY=bifrost), where it does not run."
+      "description": "Bifrost (scrape job bifrost), the gateway behind /api/llm."
     },
     {
       "id": 4,
@@ -387,7 +387,7 @@
       "id": 5,
       "type": "stat",
       "title": "Infra DB (TCP probe)",
-      "description": "keycloak-db and litellm-db (blackbox TCP probe). litellm-db drops out while /api/llm runs on Bifrost (LLM_GATEWAY=bifrost), where it does not run.",
+      "description": "keycloak-db (blackbox TCP probe).",
       "gridPos": {
         "h": 4,
         "w": 8,
@@ -455,7 +455,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "probe_success{job=\"infra-db-tcp\",db!=\"litellm-db\"} or (probe_success{job=\"infra-db-tcp\",db=\"litellm-db\"} unless on() (max(unibridge_llm_gateway{gateway=\"bifrost\"} and on(job, instance) unibridge_active_instance == 1) == 1))",
+          "expr": "probe_success{job=\"infra-db-tcp\"}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -925,7 +925,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum (label_replace(sum (increase(litellm_total_tokens_metric_total[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_input_tokens_total{job=\"bifrost\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum (increase(bifrost_output_tokens_total{job=\"bifrost\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\"))",
+          "expr": "sum (label_replace(sum (increase(bifrost_input_tokens_total{job=\"bifrost\"}[$__range])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\") or label_replace(sum (increase(bifrost_output_tokens_total{job=\"bifrost\"}[$__range])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -987,7 +987,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum (label_replace(sum (increase(litellm_spend_metric_total[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_cost_total{job=\"bifrost\"}[$__range])), \"src\", \"bifrost_cost_total\", \"\", \"\"))",
+          "expr": "sum (label_replace(sum (increase(bifrost_cost_total{job=\"bifrost\"}[$__range])), \"src\", \"bifrost_cost_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1048,7 +1048,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum (label_replace(sum (increase(litellm_proxy_total_requests_metric_total[$__range])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_upstream_requests_total{job=\"bifrost\",fallback_index=\"0\",method!=\"list_models\"}[$__range])), \"src\", \"bifrost_upstream_requests_total\", \"\", \"\"))",
+          "expr": "sum (label_replace(sum (increase(bifrost_upstream_requests_total{job=\"bifrost\",fallback_index=\"0\",method!=\"list_models\"}[$__range])), \"src\", \"bifrost_upstream_requests_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1108,7 +1108,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum (label_replace(sum (increase(litellm_input_tokens_metric_total[$__interval])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_input_tokens_total{job=\"bifrost\"}[$__interval])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\"))",
+          "expr": "sum (label_replace(sum (increase(bifrost_input_tokens_total{job=\"bifrost\"}[$__interval])), \"src\", \"bifrost_input_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1118,7 +1118,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum (label_replace(sum (increase(litellm_output_tokens_metric_total[$__interval])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_output_tokens_total{job=\"bifrost\"}[$__interval])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\"))",
+          "expr": "sum (label_replace(sum (increase(bifrost_output_tokens_total{job=\"bifrost\"}[$__interval])), \"src\", \"bifrost_output_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1128,7 +1128,7 @@
         },
         {
           "refId": "C",
-          "expr": "sum (label_replace(sum (increase(litellm_input_cached_tokens_metric_total[$__interval])), \"src\", \"litellm\", \"\", \"\") or label_replace(sum (increase(bifrost_cache_read_input_tokens_total{job=\"bifrost\"}[$__interval])), \"src\", \"bifrost_cache_read_input_tokens_total\", \"\", \"\"))",
+          "expr": "sum (label_replace(sum (increase(bifrost_cache_read_input_tokens_total{job=\"bifrost\"}[$__interval])), \"src\", \"bifrost_cache_read_input_tokens_total\", \"\", \"\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"

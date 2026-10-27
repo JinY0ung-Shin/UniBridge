@@ -1,8 +1,8 @@
 """Unit tests for app.messages_bridge.
 
 The bridge swaps in a hand-rolled Anthropic ↔ OpenAI translator in place of
-the LiteLLM Anthropic adapter that mis-serializes tool calls and reasoning
-content for the GaussO3.2 / vLLM stack. The conversion is purely structural,
+gateway-side Anthropic adapters (LiteLLM's mis-serialized tool calls and
+reasoning content for the GaussO3.2 / vLLM stack). The conversion is purely structural,
 so all tests work on plain Python dicts — no HTTP, no SSE encoding.
 """
 
@@ -229,11 +229,11 @@ class TestRequestConversion:
         ]
 
     def test_assistant_message_with_only_tool_use_has_empty_string_content(self):
-        # vLLM (via LiteLLM ``hosted_vllm``) rejects assistant messages whose
-        # ``content`` key is missing with a 422 "field required" — even when
-        # ``tool_calls`` is set. ``None`` round-trips through LiteLLM's
-        # pydantic ``exclude_none`` serialization as a missing key, so the
-        # bridge sends an empty string instead.
+        # vLLM rejects assistant messages whose ``content`` key is missing
+        # with a 422 "field required" — even when ``tool_calls`` is set.
+        # ``None`` round-trips through a gateway's ``exclude_none``
+        # serialization (LiteLLM's ``hosted_vllm`` did) as a missing key, so
+        # the bridge sends an empty string instead.
         body = {
             "model": "m",
             "messages": [
@@ -481,9 +481,6 @@ class TestRequestConversion:
         }
         out = anthropic_request_to_openai_body(body)
         assert out["reasoning_effort"] == "high"
-        # LiteLLM drops reasoning_effort for models outside its gpt-5/o-series
-        # name map unless the request whitelists it.
-        assert out["allowed_openai_params"] == ["reasoning_effort"]
         assert "output_config" not in out
 
     def test_output_config_without_effort_is_ignored(self):
@@ -497,7 +494,6 @@ class TestRequestConversion:
             }
             out = anthropic_request_to_openai_body(body)
             assert "reasoning_effort" not in out, f"failed for {oc!r}"
-            assert "allowed_openai_params" not in out, f"failed for {oc!r}"
 
     def test_output_config_effort_above_the_backend_vocabulary_is_clamped(self):
         """Claude Code's ladder reaches ``max``/``xhigh``; the value now reaches
@@ -509,7 +505,6 @@ class TestRequestConversion:
         }
         out = anthropic_request_to_openai_body(body)
         assert out["reasoning_effort"] == "high"
-        assert out["allowed_openai_params"] == ["reasoning_effort"]
 
     def test_output_config_effort_off_the_ladder_is_dropped_entirely(self):
         body = {
@@ -519,7 +514,6 @@ class TestRequestConversion:
         }
         out = anthropic_request_to_openai_body(body)
         assert "reasoning_effort" not in out
-        assert "allowed_openai_params" not in out
 
     def test_output_config_format_becomes_response_format(self):
         """Anthropic ``output_config.format`` (json_schema) maps to OpenAI
@@ -568,7 +562,6 @@ class TestRequestConversion:
         }
         out = anthropic_request_to_openai_body(body)
         assert out["reasoning_effort"] == "low"
-        assert out["allowed_openai_params"] == ["reasoning_effort"]
         assert out["response_format"] == {"type": "json_object"}
 
     def test_metadata_user_id_becomes_user(self):

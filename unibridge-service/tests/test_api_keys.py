@@ -130,7 +130,7 @@ async def test_sync_consumer_restriction_grants_llm_messages_alongside_llm_proxy
 
     Existing stored keys list ``llm-proxy`` (the only LLM route that existed when
     they were created) — without the alias they would be denied on each exact
-    path as it rolls out. ``llm-metrics`` is excluded on purpose: raw LiteLLM
+    path as it rolls out. ``llm-metrics`` is excluded on purpose: raw Bifrost
     metrics carry other keys' usage, which is a real disclosure, unlike model
     names a key that can invoke them already knows.
     """

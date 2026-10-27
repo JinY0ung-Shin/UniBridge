@@ -14,8 +14,7 @@ from app.responses_state import conversation_store
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    monkeypatch.setenv("LITELLM_URL", "http://upstream.test")
-    monkeypatch.setenv("CONVERTER_TLS_VERIFY", "false")
+    monkeypatch.setenv("CONVERTER_BIFROST_URL", "http://upstream.test")
     conversation_store.clear()
     yield
     conversation_store.clear()
@@ -56,7 +55,7 @@ def test_non_streaming_translates_to_responses_object():
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
-        captured["auth"] = request.headers.get("authorization")
+        captured["auth"] = request.headers.get("x-bf-vk")
         captured["body"] = json.loads(request.content)
         return httpx.Response(200, headers={"content-type": "application/json"},
                               content=json.dumps(_chat_json()).encode())
@@ -64,12 +63,12 @@ def test_non_streaming_translates_to_responses_object():
     client = TestClient(_make_app(handler))
     resp = client.post(
         "/v1/responses",
-        headers={"Authorization": "Bearer master-key"},
+        headers={"x-bf-vk": "sk-bf-gatewaykey"},
         json={"model": "m", "instructions": "be terse", "input": "hi"},
     )
     assert resp.status_code == 200
     assert captured["url"] == "http://upstream.test/v1/chat/completions"
-    assert captured["auth"] == "Bearer master-key"
+    assert captured["auth"] == "sk-bf-gatewaykey"
     # request was translated: instructions -> system message
     assert captured["body"]["messages"][0] == {"role": "system", "content": "be terse"}
 

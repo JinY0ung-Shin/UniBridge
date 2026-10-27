@@ -1,7 +1,7 @@
 """Shared config and fixtures for the live-deployment E2E tests.
 
 These tests run against a RUNNING UniBridge deployment (UI nginx → APISIX →
-llm-converter → LiteLLM), not against unit fixtures. They are skipped unless
+llm-converter → Bifrost), not against unit fixtures. They are skipped unless
 ``LLM_API_KEY`` is set, so they never run in the normal unit-test sweep.
 
 Configure via environment:

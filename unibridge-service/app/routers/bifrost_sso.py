@@ -19,9 +19,8 @@ rights, so the handoff records each one and app/services/bifrost_sessions.py
 logs it out BIFROST_SSO_SESSION_HOURS after the sign-in; the browser cookie
 expires at the same time. Every admin shares the one Bifrost admin account, so
 each sign-in is written to the admin audit log. Redeeming answers only requests
-for BIFROST_UI_HOSTNAME: the cookie never lands on UniBridge's own host, where
-it would also replace the LiteLLM admin UI's cookie of the same name (cookies
-are not separated by port). Codes live in this process; the page and the
+for BIFROST_UI_HOSTNAME: the cookie, an admin session for Bifrost, never lands
+on UniBridge's own host (cookies are not separated by port). Codes live in this process; the page and the
 redeem request reach the same service through the same UI color. Bifrost's own
 password login stays available.
 """

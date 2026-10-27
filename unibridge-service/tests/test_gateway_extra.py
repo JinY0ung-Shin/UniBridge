@@ -818,9 +818,9 @@ async def test_llm_metrics_summary_cache_hit_rate_zero_prompt(client, admin_toke
 
 
 @pytest.mark.asyncio
-async def test_llm_metrics_summary_adds_litellm_and_bifrost(client, admin_token):
-    """Every summary figure is LiteLLM's counter plus Bifrost's, each term
-    tagged with its own ``src`` so the union keeps both."""
+async def test_llm_metrics_summary_reads_bifrost_only(client, admin_token):
+    """Every summary figure is Bifrost's counter, pinned to its job; a total made
+    of two counters tags each term with its own ``src`` so the union keeps both."""
     mock = AsyncMock(return_value=[{"value": [0, "1"]}])
     with patch("app.routers.gateway.prometheus_client.instant_query", mock):
         resp = await client.get(
@@ -832,19 +832,17 @@ async def test_llm_metrics_summary_adds_litellm_and_bifrost(client, admin_token)
         tokens, prompt, completion, spend, requests, latency_sum, latency_count, cached,
     ) = [call.args[0] for call in mock.call_args_list]
     # Bifrost has no total-tokens counter: input + output stand in for it.
-    assert "litellm_total_tokens_metric_total[" in tokens
     assert 'bifrost_input_tokens_total{job="bifrost"}' in tokens
     assert 'bifrost_output_tokens_total{job="bifrost"}' in tokens
-    assert tokens.count('"src"') == 3
-    for query, litellm, bifrost in (
-        (prompt, "litellm_input_tokens_metric_total", "bifrost_input_tokens_total"),
-        (completion, "litellm_output_tokens_metric_total", "bifrost_output_tokens_total"),
-        (spend, "litellm_spend_metric_total", "bifrost_cost_total"),
-        (cached, "litellm_input_cached_tokens_metric_total", "bifrost_cache_read_input_tokens_total"),
+    assert tokens.count('"src"') == 2
+    for query, bifrost in (
+        (prompt, "bifrost_input_tokens_total"),
+        (completion, "bifrost_output_tokens_total"),
+        (spend, "bifrost_cost_total"),
+        (cached, "bifrost_cache_read_input_tokens_total"),
     ):
-        assert litellm in query
         assert f'{bifrost}{{job="bifrost"}}' in query
-        assert query.count('"src"') == 2
+        assert query.count('"src"') == 1
     # Bifrost counts each attempt, and model listings too; only the primary
     # attempt of an LLM call is the client's request.
     for query, bifrost in (
@@ -853,13 +851,13 @@ async def test_llm_metrics_summary_adds_litellm_and_bifrost(client, admin_token)
         (latency_count, "bifrost_upstream_latency_seconds_count"),
     ):
         assert f'{bifrost}{{job="bifrost",fallback_index="0",method!="list_models"}}' in query
-    assert "litellm_proxy_total_requests_metric_total[" in requests
-    assert "litellm_request_total_latency_metric_sum[" in latency_sum
-    assert "litellm_request_total_latency_metric_count[" in latency_count
+    # LiteLLM's counters, from before /api/llm moved to Bifrost, are not read.
+    for query in (tokens, prompt, completion, spend, requests, latency_sum, latency_count, cached):
+        assert "litellm" not in query
 
 
 @pytest.mark.asyncio
-async def test_llm_metrics_api_key_scopes_both_gateways(client, admin_token):
+async def test_llm_metrics_api_key_scopes_every_term(client, admin_token):
     mock = AsyncMock(return_value=[])
     with patch("app.routers.gateway.prometheus_client.instant_query", mock):
         resp = await client.get(
@@ -869,11 +867,7 @@ async def test_llm_metrics_api_key_scopes_both_gateways(client, admin_token):
     assert resp.status_code == 200
     for call in mock.call_args_list:
         query = call.args[0]
-        assert 'end_user="svc.prod-1"' in query
-        assert 'consumer="svc.prod-1"' in query
-        assert query.count('end_user="svc.prod-1"') + query.count('consumer="svc.prod-1"') == (
-            query.count("increase(")
-        )
+        assert query.count('consumer="svc.prod-1"') == query.count("increase(") > 0
 
 
 @pytest.mark.asyncio
@@ -906,7 +900,7 @@ async def test_llm_metrics_tokens_prom_error(client, admin_token):
 @pytest.mark.asyncio
 async def test_llm_metrics_by_model(client, admin_token):
     # The union query hands back one ``model`` label: the requested model name
-    # (LiteLLM requested_model / Bifrost alias) or, without one, the model.
+    # (Bifrost's alias) or, without one, the model.
     tokens = [
         {"metric": {"model": "GaussO3.2-260402-vllm"}, "value": [0, "5000"]},
         {"metric": {"model": "claude"}, "value": [0, "0"]},
@@ -968,14 +962,14 @@ async def test_llm_metrics_by_model(client, admin_token):
     }
     queries = [call.args[0] for call in prom_query.call_args_list]
     assert all(q.startswith("sum by (model) (") for q in queries)
-    # Requested name first on both gateways, decided per series.
-    assert all('requested_model!=""' in q and 'requested_model=""' in q for q in queries)
+    # Requested name first, decided per series.
     assert all('alias!=""' in q and 'alias=""' in q for q in queries)
+    assert not any("requested_model" in q for q in queries)
 
 
 @pytest.mark.asyncio
 async def test_llm_metrics_by_model_adds_rows_that_share_a_model(client, admin_token):
-    """Two series under one model (say, one per gateway) add up instead of the
+    """Two series under one model (say, one per counter) add up instead of the
     last one overwriting the first, so the table agrees with /by-model-series."""
     tokens = [
         {"metric": {"model": "qwen3.5-32b"}, "value": [0, "100"]},
@@ -1022,8 +1016,7 @@ async def test_llm_metrics_by_model_prom_error(client, admin_token):
 
 @pytest.mark.asyncio
 async def test_llm_metrics_top_keys(client, admin_token):
-    # The union query hands back the key as ``consumer`` (LiteLLM's end_user
-    # relabelled, Bifrost's own consumer label).
+    # The union query hands back the key as Bifrost's ``consumer`` label.
     tokens = [
         {"metric": {"consumer": "customer-portal"}, "value": [0, "1000"]},
         {"metric": {"consumer": "internal-batch"}, "value": [0, "0"]},
@@ -1069,10 +1062,7 @@ async def test_llm_metrics_top_keys(client, admin_token):
     queries = [call.args[0] for call in prom_query.call_args_list]
     assert queries[0].startswith("topk(10, sum by (consumer) (")
     assert all(q.startswith("sum by (consumer) (") for q in queries[1:])
-    assert all(
-        "label_replace(sum by (end_user) (" in q and '"consumer", "$1", "end_user"' in q
-        for q in queries
-    )
+    assert not any("end_user" in q for q in queries)
 
 
 @pytest.mark.asyncio

@@ -1198,9 +1198,9 @@ class TestRouteTest:
             "Host": "localhost",
         }
 
-    async def test_uses_litellm_liveliness_for_llm_proxy(self, client, admin_token):
-        route = {"id": "llm-proxy", "upstream_id": "litellm"}
-        upstream = {"id": "litellm", "scheme": "https", "nodes": {"litellm:4000": 1}}
+    async def test_probes_bifrost_health_for_llm_proxy(self, client, admin_token):
+        route = {"id": "llm-proxy", "upstream_id": "bifrost"}
+        upstream = {"id": "bifrost", "scheme": "http", "nodes": {"bifrost:8080": 1}}
         response = SimpleNamespace(
             status_code=200, json=lambda: {"status": "ok"}, text="ok"
         )
@@ -1223,7 +1223,7 @@ class TestRouteTest:
 
         assert resp.status_code == 200
         assert resp.json()["reachable"] is True
-        assert capture["url"] == "https://litellm:4000/health/liveliness"
+        assert capture["url"] == "http://bifrost:8080/health"
 
     async def test_list_form_nodes_reach_the_probe_url(self, client, admin_token):
         """Regression: list-form nodes used to yield a dict as the address, so
@@ -1339,33 +1339,6 @@ class TestRouteTest:
 
         assert resp.status_code == 400
         assert resp.json()["detail"] == "Upstream has no nodes"
-
-    async def test_uses_litellm_liveliness_for_llm_admin(self, client, admin_token):
-        route = {"id": "llm-admin", "upstream_id": "litellm"}
-        upstream = {"id": "litellm", "scheme": "https", "nodes": {"litellm:4000": 1}}
-        response = SimpleNamespace(
-            status_code=200, json=lambda: {"status": "ok"}, text="ok"
-        )
-        capture: dict[str, str] = {}
-
-        with (
-            patch(
-                "app.routers.gateway.apisix_client.get_resource",
-                new_callable=AsyncMock,
-                side_effect=[route, upstream],
-            ),
-            patch(
-                "app.routers.gateway.httpx.AsyncClient",
-                side_effect=lambda *args, **kwargs: _MockAsyncClient(response, capture),
-            ),
-        ):
-            resp = await client.post(
-                "/admin/gateway/routes/llm-admin/test", headers=auth_header(admin_token)
-            )
-
-        assert resp.status_code == 200
-        assert resp.json()["reachable"] is True
-        assert capture["url"] == "https://litellm:4000/health/liveliness"
 
 
 # ---------------------------------------------------------------------------
@@ -2400,7 +2373,7 @@ class TestProtectedRouteNameInvariant:
             "id": "llm-proxy",
             "name": "llm-proxy",
             "uri": "/api/llm/*",
-            "upstream_id": "litellm",
+            "upstream_id": "bifrost",
             "methods": ["POST", "GET"],
         }
         saved = {"id": "llm-proxy", "uri": "/api/llm/*", "name": "llm-proxy"}
@@ -2420,7 +2393,7 @@ class TestProtectedRouteNameInvariant:
                 "/admin/gateway/routes/llm-proxy",
                 json={
                     "uri": "/api/llm/*",
-                    "upstream_id": "litellm",
+                    "upstream_id": "bifrost",
                     "methods": ["POST", "GET"],
                     "name": "renamed-llm",
                 },
@@ -2689,7 +2662,7 @@ class TestMetricsRequestsTotal:
         assert "[43200s]" in instant_mock.call_args.args[0]
 
     async def test_day_bucket_zero_fills_missing_buckets(self, client, admin_token):
-        # Sparse metrics (e.g. LiteLLM counters) return no samples for quiet
+        # Sparse metrics (e.g. Bifrost counters) return no samples for quiet
         # buckets; the axis must still contain every calendar bucket with 0
         # instead of collapsing non-adjacent days next to each other.
         from datetime import datetime, timedelta, timezone

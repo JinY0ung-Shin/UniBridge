@@ -178,8 +178,8 @@ class TestByModelSeries:
         assert by_key["claude"]["total"] == pytest.approx(50)
 
     async def test_groups_by_the_requested_model(self, client, admin_token):
-        # The query keys each series on the name the client asked for (LiteLLM
-        # requested_model, Bifrost alias) and only falls back to the model.
+        # The query keys each series on the name the client asked for (Bifrost's
+        # alias) and only falls back to the model.
         results = [{"metric": {"model": "gpt-4o"}, "values": [(1000, "12")]}]
         mock = AsyncMock(return_value=results)
         with patch("app.routers.gateway.prometheus_client.range_query", mock):
@@ -192,7 +192,7 @@ class TestByModelSeries:
         assert keys == ["gpt-4o"]
         query = mock.call_args.args[0]
         assert query.startswith("sum by (model) (")
-        assert '"model", "$1", "requested_model"' in query
+        assert "requested_model" not in query
         assert '"model", "$1", "alias"' in query
         assert 'bifrost_input_tokens_total{job="bifrost",alias=""}' in query
 

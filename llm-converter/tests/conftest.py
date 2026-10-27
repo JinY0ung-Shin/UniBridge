@@ -6,10 +6,9 @@ import pytest
 
 import app.main as converter_main
 
-# Knobs added for the Bifrost gateway: a developer shell that exports one must
-# not flip every test into another mode.
+# Gateway knobs: a developer shell that exports one must not point every test
+# somewhere else.
 _GATEWAY_ENV = (
-    "LLM_GATEWAY",
     "CONVERTER_BIFROST_URL",
     "CONVERTER_MODELS_CACHE_TTL",
     "CONVERTER_MODELS_TIMEOUT",

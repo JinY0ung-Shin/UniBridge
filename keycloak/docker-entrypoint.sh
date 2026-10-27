@@ -10,10 +10,7 @@
 # OAuth redirect shares the UI's HTTPS endpoint (UNIBRIDGE_UI_PORT is the edge
 # port in blue/green deployments — see compose keycloak env).
 : "${GRAFANA_REDIRECT_URI:=https://${HOST_IP}:${UNIBRIDGE_UI_PORT}/grafana/*}"
-# LiteLLM's admin UI lives on LiteLLM's own HTTPS port; its SSO callback is
-# fixed at {PROXY_BASE_URL}/sso/callback (see compose litellm env).
-: "${LITELLM_REDIRECT_URI:=https://${HOST_IP}:${LITELLM_PORT:-4000}/sso/callback}"
-export KEYCLOAK_REDIRECT_URI KEYCLOAK_WEB_ORIGIN GRAFANA_REDIRECT_URI LITELLM_REDIRECT_URI
+export KEYCLOAK_REDIRECT_URI KEYCLOAK_WEB_ORIGIN GRAFANA_REDIRECT_URI
 
 KCADM=/opt/keycloak/bin/kcadm.sh
 
@@ -43,10 +40,8 @@ else
   # Escape sed replacement metachars (\, &, |) in the secrets before substitution.
   SECRET_ESCAPED=$(printf '%s' "${KEYCLOAK_SERVICE_CLIENT_SECRET}" | sed -e 's/[\\&|]/\\&/g')
   GRAFANA_SECRET_ESCAPED=$(printf '%s' "${GRAFANA_OAUTH_CLIENT_SECRET}" | sed -e 's/[\\&|]/\\&/g')
-  LITELLM_SECRET_ESCAPED=$(printf '%s' "${LITELLM_OAUTH_CLIENT_SECRET}" | sed -e 's/[\\&|]/\\&/g')
   sed -e "s|\${KEYCLOAK_SERVICE_CLIENT_SECRET}|${SECRET_ESCAPED}|g" \
       -e "s|\${GRAFANA_OAUTH_CLIENT_SECRET}|${GRAFANA_SECRET_ESCAPED}|g" \
-      -e "s|\${LITELLM_OAUTH_CLIENT_SECRET}|${LITELLM_SECRET_ESCAPED}|g" \
     "$TEMPLATE" > "$IMPORT_DIR/realm-export.json"
   echo "[init] Environment variables substituted in realm-export.json (sed fallback)"
 fi
@@ -175,95 +170,6 @@ GRAFANA_CLIENT_JSON
       fi
     else
       echo "[init] NOTE: grafana client missing and GRAFANA_OAUTH_CLIENT_SECRET unset; set the secret to auto-create it"
-    fi
-
-    # LiteLLM SSO client: same create-if-missing + sync treatment as grafana,
-    # plus the role wiring LiteLLM needs — a proxy_admin client role composited
-    # into the realm admin role so admins carry a role=proxy_admin claim.
-    LITELLM_CLIENT_UUID=$(client_uuid litellm)
-    if [ -z "$LITELLM_CLIENT_UUID" ] && [ -n "${LITELLM_OAUTH_CLIENT_SECRET}" ]; then
-      "$KCADM" create clients -r apihub -f - >/dev/null 2>&1 <<LITELLM_CLIENT_JSON
-{
-  "clientId": "litellm",
-  "name": "LiteLLM Admin UI",
-  "enabled": true,
-  "publicClient": false,
-  "secret": "${LITELLM_OAUTH_CLIENT_SECRET}",
-  "serviceAccountsEnabled": false,
-  "directAccessGrantsEnabled": false,
-  "standardFlowEnabled": true,
-  "redirectUris": ["${LITELLM_REDIRECT_URI}"],
-  "webOrigins": [],
-  "attributes": {"pkce.code.challenge.method": "S256"},
-  "protocolMappers": [
-    {
-      "name": "litellm role",
-      "protocol": "openid-connect",
-      "protocolMapper": "oidc-usermodel-client-role-mapper",
-      "consentRequired": false,
-      "config": {
-        "usermodel.clientRoleMapping.clientId": "litellm",
-        "claim.name": "role",
-        "jsonType.label": "String",
-        "multivalued": "false",
-        "id.token.claim": "true",
-        "access.token.claim": "true",
-        "userinfo.token.claim": "true"
-      }
-    }
-  ]
-}
-LITELLM_CLIENT_JSON
-      if [ $? -eq 0 ]; then
-        LITELLM_CLIENT_UUID=$(client_uuid litellm)
-        echo "[init] Created litellm client (realm predates it)"
-      else
-        echo "[init] WARNING: Failed to create litellm client"
-      fi
-    fi
-    if [ -n "$LITELLM_CLIENT_UUID" ]; then
-      # Client role + composite, both idempotent (also heals partial
-      # hand-made setups).
-      if ! "$KCADM" get "clients/$LITELLM_CLIENT_UUID/roles/proxy_admin" -r apihub >/dev/null 2>&1; then
-        "$KCADM" create "clients/$LITELLM_CLIENT_UUID/roles" -r apihub \
-          -s name=proxy_admin \
-          -s "description=LiteLLM Admin UI admin (surfaced as the role claim)" >/dev/null 2>&1 \
-          && echo "[init] Created litellm client role proxy_admin" \
-          || echo "[init] WARNING: Failed to create litellm client role proxy_admin"
-      fi
-      if ! "$KCADM" get roles/admin/composites -r apihub 2>/dev/null | grep -q '"proxy_admin"'; then
-        # Composites on a realm role need manage-realm, which the service
-        # account deliberately lacks — try anyway, then escalate to the
-        # bootstrap admin and swap the kcadm session back afterwards.
-        if "$KCADM" add-roles -r apihub --rname admin --cclientid litellm --rolename proxy_admin >/dev/null 2>&1; then
-          echo "[init] Linked realm role admin -> litellm:proxy_admin"
-        elif [ -n "${KC_BOOTSTRAP_ADMIN_USERNAME}" ] && [ -n "${KC_BOOTSTRAP_ADMIN_PASSWORD}" ] \
-          && "$KCADM" config credentials --server http://localhost:8080 --realm master \
-               --user "${KC_BOOTSTRAP_ADMIN_USERNAME}" --password "${KC_BOOTSTRAP_ADMIN_PASSWORD}" >/dev/null 2>&1 \
-          && "$KCADM" add-roles -r apihub --rname admin --cclientid litellm --rolename proxy_admin >/dev/null 2>&1; then
-          echo "[init] Linked realm role admin -> litellm:proxy_admin (via bootstrap admin)"
-          "$KCADM" config credentials --server http://localhost:8080 --realm apihub \
-            --client "${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}" \
-            --secret "${KEYCLOAK_SERVICE_CLIENT_SECRET}" >/dev/null 2>&1 || true
-        else
-          echo "[init] WARNING: Could not link realm role admin -> litellm:proxy_admin (needs manage-realm);"
-          echo "[init]          add the composite in the Keycloak console (README 'LiteLLM admin UI SSO')"
-        fi
-      fi
-      if [ -n "${LITELLM_OAUTH_CLIENT_SECRET}" ]; then
-        /opt/keycloak/bin/kcadm.sh update "clients/$LITELLM_CLIENT_UUID" -r apihub \
-          -s "redirectUris=[\"${LITELLM_REDIRECT_URI}\"]" \
-          -s "secret=${LITELLM_OAUTH_CLIENT_SECRET}" 2>/dev/null \
-          && echo "[init] Updated litellm client: redirectUris=${LITELLM_REDIRECT_URI} (secret synced)" \
-          || echo "[init] WARNING: Failed to update litellm client"
-      else
-        /opt/keycloak/bin/kcadm.sh update "clients/$LITELLM_CLIENT_UUID" -r apihub \
-          -s "redirectUris=[\"${LITELLM_REDIRECT_URI}\"]" 2>/dev/null \
-          && echo "[init] Updated litellm client: redirectUris=${LITELLM_REDIRECT_URI}" \
-          || echo "[init] WARNING: Failed to update litellm client"
-      fi
-    else
-      echo "[init] NOTE: litellm client missing and LITELLM_OAUTH_CLIENT_SECRET unset; set the secret to auto-create it"
     fi
 
     break

@@ -4,7 +4,7 @@ Per-key route grants live in ``api_key_access`` and are enforced at the gateway
 by the ``consumer-restriction`` plugin on every ``key-auth`` route. Expiry
 (``expires_at``) used to be enforced only by the app's own header auth
 (:mod:`app.auth`), so the LLM gateway routes — which go APISIX → llm-converter
-→ LiteLLM and never reach the app at all — kept honouring an expired key
+→ Bifrost and never reach the app at all — kept honouring an expired key
 forever. Self-service keys carry a 30-day TTL, so that gap made a real product
 rule unenforceable on exactly the routes it mattered most for.
 
@@ -56,7 +56,7 @@ MASTER_ACCESS = "*"
 # One-directional: granting only a converter route does NOT widen access to
 # the raw ``/api/llm/*`` proxy — so a discovery-only key is still possible by
 # granting ``llm-models`` alone.
-# Deliberately NOT in this set: ``llm-metrics``. LiteLLM's raw exposition
+# Deliberately NOT in this set: ``llm-metrics``. Bifrost's raw exposition
 # carries every key's usage, so implying it from ``llm-proxy`` would hand one
 # tenant another tenant's traffic — that one IS a disclosure and stays
 # explicit.

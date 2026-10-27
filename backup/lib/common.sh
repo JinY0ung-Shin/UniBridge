@@ -4,7 +4,7 @@
 # Two deployment layouts are supported and detected at runtime:
 #   single    - one stack from docker-compose.yml (compose project "unibridge").
 #   bluegreen - scripts/deploy-bluegreen.sh: shared infra (etcd, apisix,
-#               keycloak(-db), litellm(-db), unibridge-db, bifrost, prometheus)
+#               keycloak(-db), unibridge-db, bifrost, prometheus)
 #               in project "unibridge-infra" from docker-compose.infra.yml, plus
 #               one app stack per color ("unibridge-blue" / "unibridge-green")
 #               from docker-compose.app.yml.
@@ -80,7 +80,7 @@ stack_is_bluegreen() {
 }
 
 # Compose against the shared infra stack (databases, etcd, apisix, keycloak,
-# litellm). In single mode this is the one and only stack.
+# bifrost). In single mode this is the one and only stack.
 infra_compose() {
   if stack_is_bluegreen; then
     (cd "$PROJECT_ROOT" && docker compose -p "$INFRA_PROJECT" \

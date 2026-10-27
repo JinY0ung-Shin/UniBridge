@@ -1,7 +1,7 @@
 """Gateway-side API key expiry: reconciling consumer-restriction whitelists.
 
 App-level auth already rejects an expired key, but the LLM gateway routes go
-APISIX → llm-converter → LiteLLM without ever reaching the app. The only place
+APISIX → llm-converter → Bifrost without ever reaching the app. The only place
 an expired key can be stopped there is the ``consumer-restriction`` whitelist,
 which these tests pin down.
 """
