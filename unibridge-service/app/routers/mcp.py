@@ -158,6 +158,17 @@ async def _handle_message(ctx: mcp_tools.ToolContext, message: Any) -> dict[str,
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
+def _user_tokens(request: Request) -> dict[str, str]:
+    """X-MCP-Auth-<server> headers → server name → token ("" if sent twice)."""
+    prefix = mcp_remote.USER_TOKEN_HEADER_PREFIX.lower()
+    tokens: dict[str, str] = {}
+    for name, value in request.headers.items():  # names come lowercased
+        if name.startswith(prefix):
+            server = name.removeprefix(prefix)
+            tokens[server] = "" if server in tokens else value.strip()
+    return tokens
+
+
 @router.post("/mcp", include_in_schema=False)
 async def mcp_endpoint(
     request: Request,
@@ -185,6 +196,7 @@ async def mcp_endpoint(
         # key-auth hands the key on (hide_credentials is off); tool calls
         # resend it to the REST routes through the gateway.
         api_key=request.headers.get("apikey"),
+        user_tokens=_user_tokens(request),
     )
     if isinstance(payload, list):  # JSON-RPC batch (protocol 2025-03-26)
         if not payload or len(payload) > MAX_BATCH_MESSAGES:
@@ -367,6 +379,11 @@ def _server_info(server: McpRemoteServer) -> McpRemoteServerInfo:
     except Exception:
         logger.warning("Could not decrypt the headers of MCP server %s", server.name)
         headers = {}
+    try:
+        refresh_token = mcp_remote.decrypt_refresh_token(server)
+    except Exception:
+        logger.warning("Could not decrypt the refresh token of MCP server %s", server.name)
+        refresh_token = None
     tools = []
     for tool in mcp_remote.listed_tools(server):
         annotations = tool.get("annotations") or {}
@@ -404,6 +421,12 @@ def _server_info(server: McpRemoteServer) -> McpRemoteServerInfo:
             McpRemoteHeader.model_construct(name=name, value=_mask_value(value))
             for name, value in headers.items()
         ],
+        user_token_header=server.user_token_header,
+        user_token_format=server.user_token_format or "Bearer {token}",
+        user_token_client_header=mcp_remote.client_token_header(server.name)
+        if server.user_token_header
+        else None,
+        user_token_refresh=_mask_value(refresh_token) if refresh_token else None,
         route_id=mcp_remote.route_id(server.name),
         tools=tools,
         refreshed_at=server.refreshed_at,
@@ -464,6 +487,56 @@ def _merged_headers(
     return merged
 
 
+def _user_token_settings(
+    body: McpRemoteServerUpdate,
+    headers: dict[str, str],
+    server: McpRemoteServer | None,
+    *,
+    moved: bool = False,
+) -> tuple[str | None, str | None, str | None]:
+    """(header, format, refresh token) to store for ``body``.
+
+    An update that leaves the header out keeps the stored setting: a client
+    that predates it must not switch it off. The refresh token follows the
+    stored headers' rules (masked or "" keeps it, not across origins).
+    """
+    keep = server is not None and "user_token_header" not in body.model_fields_set
+    header = server.user_token_header if keep and server is not None else body.user_token_header
+    if header is None:
+        return None, None, None
+    if server is not None and "user_token_format" not in body.model_fields_set:
+        token_format = server.user_token_format or body.user_token_format
+    else:
+        token_format = body.user_token_format
+    if any(name.lower() == header.lower() for name in headers):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Header '{header}' carries the end user's token: remove it from the headers "
+                "(a token for refresh goes in the end-user token settings)"
+            ),
+        )
+    submitted = body.user_token_refresh
+    if submitted is None:
+        return header, token_format, None
+    if submitted != "" and not _is_masked_value(submitted):
+        return header, token_format, submitted
+    stored = mcp_remote.decrypt_refresh_token(server) if server is not None else None
+    if stored is None:
+        if submitted:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No refresh token is stored: enter one or leave it blank",
+            )
+        return header, token_format, None
+    if moved:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Refresh token: enter the value again for the new address",
+        )
+    return header, token_format, stored
+
+
 async def _provision_or_502(db: AsyncSession, server: McpRemoteServer) -> None:
     try:
         await mcp_remote.provision(db, server)
@@ -498,6 +571,8 @@ async def create_mcp_server(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=f"MCP server '{body.name}' already exists"
         )
+    headers = _merged_headers(body.headers, {})
+    token_header, token_format, refresh_token = _user_token_settings(body, headers, None)
     # Made (and committed) before anything of this request is pending.
     await mcp_remote.relay_secret(db)
     server = McpRemoteServer(
@@ -506,7 +581,10 @@ async def create_mcp_server(
         description=body.description,
         enabled=body.enabled,
         timeout_seconds=body.timeout_seconds,
-        headers_encrypted=mcp_remote.encrypt_headers(_merged_headers(body.headers, {})),
+        headers_encrypted=mcp_remote.encrypt_headers(headers),
+        user_token_header=token_header,
+        user_token_format=token_format,
+        user_token_refresh_encrypted=mcp_remote.encrypt_refresh_token(refresh_token),
         tools="[]",
         approved_tools="{}",
     )
@@ -539,10 +617,10 @@ async def update_mcp_server(
 ) -> McpRemoteServerInfo:
     server = await _get_server(db, name)
     before = _audit_view(server)
-    headers = _merged_headers(
-        body.headers,
-        mcp_remote.decrypt_headers(server),
-        moved=_origin(body.url) != _origin(server.url),
+    moved = _origin(body.url) != _origin(server.url)
+    headers = _merged_headers(body.headers, mcp_remote.decrypt_headers(server), moved=moved)
+    token_header, token_format, refresh_token = _user_token_settings(
+        body, headers, server, moved=moved
     )
     if body.url != server.url:
         # Another address may be another server: its tools are approved anew.
@@ -555,6 +633,9 @@ async def update_mcp_server(
     server.enabled = body.enabled
     server.timeout_seconds = body.timeout_seconds
     server.headers_encrypted = mcp_remote.encrypt_headers(headers)
+    server.user_token_header = token_header
+    server.user_token_format = token_format
+    server.user_token_refresh_encrypted = mcp_remote.encrypt_refresh_token(refresh_token)
     await db.flush()
     await _provision_or_502(db, server)
     await db.commit()

@@ -525,6 +525,12 @@ class McpRemoteServer(Base):
     last tool listing an administrator fetched; a tool is offered only while
     ``approved_tools`` holds its entry exactly as listed there (name → entry),
     so a tool the server adds or changes stays hidden until approved again.
+
+    With ``user_token_header`` set, each call also carries the end user's own
+    token: the client sends it in ``X-MCP-Auth-<name>`` and it goes out in that
+    header, shaped by ``user_token_format``. Nothing of it is stored. Refresh,
+    which has no end user, sends ``user_token_refresh_encrypted`` there instead:
+    a column the relay route never reads, so no image ever puts it on a call.
     """
 
     __tablename__ = "mcp_remote_servers"
@@ -535,6 +541,9 @@ class McpRemoteServer(Base):
     enabled = Column(Boolean, nullable=False, default=True)
     timeout_seconds = Column(Integer, nullable=False, default=60)
     headers_encrypted = Column(Text, nullable=True)
+    user_token_header = Column(String(64), nullable=True)  # NULL = no per-call token
+    user_token_format = Column(String(256), nullable=True)  # holds "{token}" once
+    user_token_refresh_encrypted = Column(Text, nullable=True)  # refresh's own token
     tools = Column(Text, nullable=False, default="[]")
     approved_tools = Column(Text, nullable=False, default="{}")
     refreshed_at = Column(UtcDateTime, nullable=True)

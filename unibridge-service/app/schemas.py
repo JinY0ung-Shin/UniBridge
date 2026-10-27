@@ -581,6 +581,28 @@ _MCP_REMOTE_RESERVED_HEADERS = frozenset(
 )
 
 
+def _mcp_remote_header_name(value: str) -> str:
+    value = value.strip()
+    if not _MCP_REMOTE_HEADER_NAME.match(value):
+        raise ValueError("header names are letters, digits and '-' (at most 64)")
+    lowered = value.lower()
+    if lowered in _MCP_REMOTE_RESERVED_HEADERS or lowered.startswith("x-unibridge-"):
+        raise ValueError(f"header '{value}' is set by UniBridge and cannot be configured")
+    return value
+
+
+# The gateway strips or rewrites these on the way, so a token sent in one would
+# never arrive as sent.
+_MCP_REMOTE_GATEWAY_HEADERS = frozenset(
+    {
+        "x-consumer-username",
+        "x-credential-identifier",
+        "x-consumer-custom-id",
+        "x-real-ip",
+    }
+)
+
+
 class McpRemoteHeader(BaseModel):
     """A header sent to the external server; reads show the value masked."""
 
@@ -590,13 +612,7 @@ class McpRemoteHeader(BaseModel):
     @field_validator("name")
     @classmethod
     def validate_name(cls, value: str) -> str:
-        value = value.strip()
-        if not _MCP_REMOTE_HEADER_NAME.match(value):
-            raise ValueError("header names are letters, digits and '-' (at most 64)")
-        lowered = value.lower()
-        if lowered in _MCP_REMOTE_RESERVED_HEADERS or lowered.startswith("x-unibridge-"):
-            raise ValueError(f"header '{value}' is set by UniBridge and cannot be configured")
-        return value
+        return _mcp_remote_header_name(value)
 
     @field_validator("value")
     @classmethod
@@ -618,6 +634,40 @@ class McpRemoteServerUpdate(BaseModel):
     timeout_seconds: int = Field(60, ge=5, le=600)
     # A value equal to the mask a read returned keeps the stored value.
     headers: list[McpRemoteHeader] = Field(default_factory=list, max_length=20)
+    # Where the end user's token goes (None = no per-call token). Left out of
+    # an update, the stored setting stays.
+    user_token_header: str | None = None
+    user_token_format: str = Field("Bearer {token}", max_length=256)
+    # The administrator's token for refresh only, sent in user_token_header:
+    # "" or the mask a read returned keeps the stored one, None removes it.
+    user_token_refresh: str | None = Field("", max_length=4_096)
+
+    @field_validator("user_token_header")
+    @classmethod
+    def validate_user_token_header(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = _mcp_remote_header_name(value)
+        lowered = value.lower()
+        if lowered in _MCP_REMOTE_GATEWAY_HEADERS or lowered.startswith("x-forwarded-"):
+            raise ValueError(f"the gateway rewrites '{value}': the token would not arrive")
+        return value
+
+    @field_validator("user_token_refresh")
+    @classmethod
+    def validate_user_token_refresh(cls, value: str | None) -> str | None:
+        if value and not all(0x21 <= ord(ch) <= 0x7E for ch in value):
+            raise ValueError("the refresh token is visible ASCII (no spaces)")
+        return value
+
+    @field_validator("user_token_format")
+    @classmethod
+    def validate_user_token_format(cls, value: str) -> str:
+        if value.count("{token}") != 1:
+            raise ValueError("the token format holds {token} exactly once")
+        if not all(32 <= ord(ch) < 127 for ch in value):
+            raise ValueError("the token format is printable ASCII")
+        return value
 
     @field_validator("url")
     @classmethod
@@ -691,6 +741,12 @@ class McpRemoteServerInfo(BaseModel):
     enabled: bool
     timeout_seconds: int
     headers: list[McpRemoteHeader]
+    user_token_header: str | None
+    user_token_format: str
+    # What clients put the end user's token in (X-MCP-Auth-<name>), when used.
+    user_token_client_header: str | None
+    # Masked; None when no refresh token is stored.
+    user_token_refresh: str | None
     route_id: str
     tools: list[McpRemoteToolInfo]
     refreshed_at: datetime | None

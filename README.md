@@ -526,7 +526,19 @@ http_headers = { apikey = "<API_KEY>" }
   caller's key (counted, rate-limited and granted like any route; APISIX hides
   the key from the server and sets the server's headers), so a key needs the
   `mcp-ext-<name>` grant on the **API Keys** page. Deleting the server removes
-  that grant from every key. Network: both APISIX (tool calls) and the service
+  that grant from every key.
+- A server that acts as each end user (a PAT per person, while the calling
+  service holds one UniBridge key) gets **End-user token** on its entry: the
+  header the server reads and its value format around `{token}` (e.g.
+  `Authorization` + `Bearer {token}`, GitLab's `PRIVATE-TOKEN` + `{token}`).
+  The client then sends the end user's token in `X-MCP-Auth-<name>` with each
+  `/api/mcp` request (next to `apikey`), and each call to that server carries
+  it; UniBridge never stores it, keeps one upstream session per token, and
+  refuses a call without one (no fallback to a stored credential). That header
+  cannot also be a stored header; **Refresh**, which has no end user, sends an
+  optional administrator token there instead, kept apart so no call ever
+  carries it. With the Python SDK:
+  `streamablehttp_client(url, headers={"apikey": KEY, "X-MCP-Auth-gitlab": user_pat})`. Network: both APISIX (tool calls) and the service
   (refresh) must reach the server directly — APISIX cannot use a forward proxy.
   APISIX does not verify the server's TLS certificate on tool calls (as on every
   gateway route; Refresh does, with `SSL_CA_CERT_PATH`/`SSL_VERIFY`), so keep

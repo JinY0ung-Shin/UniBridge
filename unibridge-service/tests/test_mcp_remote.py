@@ -48,6 +48,8 @@ class FakeMcp:
         self.requests: list[httpx.Request] = []
         self.client_replies: list[dict[str, Any]] = []
         self.methods: list[str] = []
+        # Authorization values answered with 401, like a revoked PAT.
+        self.refused_authorizations: set[str] = set()
 
     def _reply(self, message: dict[str, Any], headers: dict[str, str] | None = None) -> httpx.Response:
         if not self.sse:
@@ -64,6 +66,8 @@ class FakeMcp:
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if request.headers.get("authorization") in self.refused_authorizations:
+            return httpx.Response(401, json={"message": "Bad credentials"})
         session = request.headers.get("mcp-session-id")
         if request.method == "DELETE":
             self.sessions.discard(session or "")
@@ -351,6 +355,15 @@ async def test_master_keys_get_a_new_route(client, admin_token, seeded_db, net):
         ({"headers": [{"name": "A", "value": "x\r\nB: y"}]}, "control"),
         ({"headers": [{"name": "A", "value": "토큰"}]}, "ASCII"),
         ({"timeout_seconds": 1}, "greater"),
+        ({"user_token_header": "apikey"}, "set by UniBridge"),
+        ({"user_token_header": "Mcp-Session-Id"}, "set by UniBridge"),
+        ({"user_token_header": "Bad Header"}, "letters"),
+        ({"user_token_header": "X-Consumer-Username"}, "would not arrive"),
+        ({"user_token_header": "X-Forwarded-For"}, "would not arrive"),
+        ({"user_token_header": "Authorization", "user_token_refresh": "two words"}, "visible ASCII"),
+        ({"user_token_header": "Authorization", "user_token_format": "Bearer"}, "exactly once"),
+        ({"user_token_header": "Authorization", "user_token_format": "{token}{token}"}, "exactly once"),
+        ({"user_token_header": "Authorization", "user_token_format": "Bearer {token}\n"}, "ASCII"),
     ],
 )
 async def test_server_entries_are_validated(client, admin_token, net, changes, message):
@@ -678,3 +691,201 @@ async def test_preview_lists_one_row_per_server(client, admin_token, seeded_db, 
     assert [(tool["name"], tool["server"]) for tool in preview["tools"] if tool["group"] == "external"] == [
         ("docs__search", "docs")
     ]
+
+
+# ── End-user tokens ─────────────────────────────────────────────────────────
+
+
+async def _register_user_token_server(client, admin_token) -> dict:
+    # Refresh sends the administrator's token; calls carry the end user's.
+    return await _register(
+        client,
+        admin_token,
+        approve=["search", "write"],
+        user_token_header="Authorization",
+        user_token_format="Bearer {token}",
+        user_token_refresh="upstream-secret-1234",
+        headers=[{"name": "X-Tenant", "value": "t1"}],
+    )
+
+
+def _update_body(info: dict, **changes: Any) -> dict[str, Any]:
+    body = {
+        "url": info["url"],
+        "description": info["description"],
+        "enabled": info["enabled"],
+        "timeout_seconds": info["timeout_seconds"],
+        "headers": info["headers"],
+        "user_token_header": info["user_token_header"],
+        "user_token_format": info["user_token_format"],
+        "user_token_refresh": info["user_token_refresh"] or "",
+    }
+    return {**body, **changes}
+
+
+async def test_end_user_tokens_go_out_in_the_configured_header(client, admin_token, seeded_db, net):
+    info = await _register_user_token_server(client, admin_token)
+    assert info["user_token_header"] == "Authorization"
+    assert info["user_token_format"] == "Bearer {token}"
+    assert info["user_token_client_header"] == "X-MCP-Auth-docs"
+    assert info["user_token_refresh"] == "***1234"
+    # Refresh went straight out with the administrator's token.
+    assert net.direct[-1].headers["authorization"] == "Bearer upstream-secret-1234"
+    assert net.direct[-1].headers["x-tenant"] == "t1"
+    # The route never holds the refresh token.
+    route = net.apisix.store["routes"][RID]
+    assert route["plugins"]["proxy-rewrite"]["headers"]["set"] == {"X-Tenant": "t1"}
+
+    headers = await _key(seeded_db, net)
+    result = await _call(client, {**headers, "X-MCP-Auth-docs": " alice-pat "}, "docs__search", {"q": "x"})
+    assert result["isError"] is False
+    seen = json.loads(result["content"][0]["text"])
+    assert seen["authorization"] == "Bearer alice-pat"
+    assert seen["apikey"] is None
+    sent = net.apisix.mcp.requests[-1].headers
+    assert sent["x-tenant"] == "t1"
+    assert "x-mcp-auth-docs" not in sent  # only the formatted value leaves
+
+    # Switched off: the refresh token goes with it, and the header is ignored.
+    body = _update_body(
+        info,
+        user_token_header=None,
+        headers=[{"name": "Authorization", "value": "Bearer shared-5678"}],
+    )
+    resp = await client.put("/admin/mcp/servers/docs", json=body, headers=auth_header(admin_token))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["user_token_header"] is None
+    assert resp.json()["user_token_client_header"] is None
+    assert resp.json()["user_token_refresh"] is None
+    result = await _call(client, {**headers, "X-MCP-Auth-docs": "alice-pat"}, "docs__search", {"q": "x"})
+    assert json.loads(result["content"][0]["text"])["authorization"] == "Bearer shared-5678"
+
+
+async def test_the_token_header_cannot_also_be_a_stored_header(client, admin_token, net):
+    body = _server_body(user_token_header="authorization")
+    resp = await client.post("/admin/mcp/servers", json=body, headers=auth_header(admin_token))
+    assert resp.status_code == 400
+    assert "carries the end user's token" in resp.json()["detail"]
+    assert RID not in net.apisix.store["routes"]
+
+
+async def test_an_update_that_leaves_the_setting_out_keeps_it(client, admin_token, seeded_db, net):
+    info = await _register_user_token_server(client, admin_token)
+    # A client from before the setting existed sends none of its fields.
+    body = _update_body(info, description="Docs v2")
+    for field in ("user_token_header", "user_token_format", "user_token_refresh"):
+        del body[field]
+    resp = await client.put("/admin/mcp/servers/docs", json=body, headers=auth_header(admin_token))
+    assert resp.status_code == 200, resp.text
+    updated = resp.json()
+    assert updated["user_token_header"] == "Authorization"
+    assert updated["user_token_format"] == "Bearer {token}"
+    assert updated["user_token_refresh"] == "***1234"
+    # Naming the header but not the format keeps the stored format too.
+    body = _update_body(updated, user_token_format="{token}")
+    assert (await client.put("/admin/mcp/servers/docs", json=body, headers=auth_header(admin_token))).status_code == 200
+    del body["user_token_format"]
+    resp = await client.put("/admin/mcp/servers/docs", json=body, headers=auth_header(admin_token))
+    assert resp.json()["user_token_format"] == "{token}"
+
+    headers = await _key(seeded_db, net)
+    result = await _call(client, headers, "docs__search", {"q": "x"})
+    assert result["isError"] is True  # still needs the end user's token
+
+
+async def test_the_refresh_token_is_kept_masked_and_not_sent_elsewhere(client, admin_token, seeded_db, net):
+    info = await _register_user_token_server(client, admin_token)
+    resp = await client.put(
+        "/admin/mcp/servers/docs", json=_update_body(info, timeout_seconds=40), headers=auth_header(admin_token)
+    )
+    assert resp.status_code == 200, resp.text
+    await client.post("/admin/mcp/servers/docs/refresh", headers=auth_header(admin_token))
+    assert net.direct[-1].headers["authorization"] == "Bearer upstream-secret-1234"
+
+    moved = _update_body(
+        info, url="https://other.internal/mcp", headers=[{"name": "X-Tenant", "value": "t2"}]
+    )
+    resp = await client.put("/admin/mcp/servers/docs", json=moved, headers=auth_header(admin_token))
+    assert resp.status_code == 400
+    assert "Refresh token: enter the value again" in resp.json()["detail"]
+    resp = await client.put(
+        "/admin/mcp/servers/docs", json={**moved, "user_token_refresh": None}, headers=auth_header(admin_token)
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["user_token_refresh"] is None
+
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        rows = (await db.execute(select(AdminAuditLog).where(AdminAuditLog.resource_type == "mcp_server"))).scalars().all()
+    assert rows
+    for row in rows:
+        assert "upstream-secret" not in (row.before or "") + (row.after or "")
+
+
+async def test_each_end_user_gets_their_own_session(client, admin_token, seeded_db, net):
+    await _register_user_token_server(client, admin_token)
+    headers = await _key(seeded_db, net)
+    mcp = net.apisix.mcp
+    mcp.stateful = True
+    mcp.methods.clear()
+    mcp.requests.clear()
+    for token in ("alice-pat", "alice-pat", "bob-pat"):
+        result = await _call(client, {**headers, "X-MCP-Auth-docs": token}, "docs__search", {"q": "x"})
+        assert result["isError"] is False
+    assert mcp.methods == [
+        "initialize", "notifications/initialized", "tools/call",
+        "tools/call",
+        "initialize", "notifications/initialized", "tools/call",
+    ]  # fmt: skip
+    sessions = {
+        request.headers.get("authorization"): request.headers.get("mcp-session-id")
+        for request in mcp.requests
+        if json.loads(request.content).get("method") == "tools/call"
+    }
+    assert sessions.keys() == {"Bearer alice-pat", "Bearer bob-pat"}
+    assert sessions["Bearer alice-pat"] != sessions["Bearer bob-pat"]
+    # The cache holds a digest, never the token.
+    assert "alice-pat" not in repr(list(mcp_remote._sessions))
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({}, "send their token in the X-MCP-Auth-docs header"),
+        ({"X-MCP-Auth-docs": "   "}, "does not hold one usable token"),
+        ({"X-MCP-Auth-docs": "two words"}, "does not hold one usable token"),
+    ],
+)
+async def test_a_missing_or_unusable_token_never_leaves(client, admin_token, seeded_db, net, extra, message):
+    await _register_user_token_server(client, admin_token)
+    headers = await _key(seeded_db, net)
+    result = await _call(client, {**headers, **extra}, "docs__search", {"q": "x"})
+    assert result["isError"] is True
+    assert message in result["content"][0]["text"]
+    assert net.apisix.counted == []
+
+
+async def test_a_token_sent_twice_is_refused(client, admin_token, seeded_db, net):
+    await _register_user_token_server(client, admin_token)
+    headers = await _key(seeded_db, net)
+    message = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "docs__search", "arguments": {}}}
+    resp = await client.post(
+        "/mcp",
+        json=message,
+        headers=[*headers.items(), ("X-MCP-Auth-docs", "alice-pat"), ("X-MCP-Auth-docs", "bob-pat")],
+    )
+    result = resp.json()["result"]
+    assert result["isError"] is True
+    assert "does not hold one usable token" in result["content"][0]["text"]
+    assert net.apisix.counted == []
+
+
+async def test_a_refused_end_user_token_is_named_in_the_error(client, admin_token, seeded_db, net):
+    await _register_user_token_server(client, admin_token)
+    headers = await _key(seeded_db, net)
+    net.apisix.mcp.refused_authorizations.add("Bearer revoked-pat")
+    result = await _call(client, {**headers, "X-MCP-Auth-docs": "revoked-pat"}, "docs__search", {"q": "x"})
+    assert result["isError"] is True
+    text = result["content"][0]["text"]
+    assert "HTTP 401: Bad credentials" in text
+    assert "X-MCP-Auth-docs" in text and "revoked-pat" not in text

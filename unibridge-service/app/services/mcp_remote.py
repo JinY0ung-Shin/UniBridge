@@ -10,6 +10,12 @@ gets an APISIX route and upstream, ``mcp-ext-<name>``, that only this app uses:
   own key, so key-auth, the route grant, rate limits and request counts apply
   exactly as on every other route. key-auth hides the key from the upstream and
   proxy-rewrite swaps in the server's own headers (stored encrypted here).
+- A server may also want the end user's own token (a PAT) on each call: the
+  client sends it in ``X-MCP-Auth-<name>`` and the call carries it in the
+  header the server reads (``user_token_header``, value shaped by
+  ``user_token_format``). It is never stored. Refresh has no end user and
+  sends the administrator's own token there, kept in a column of its own
+  (``user_token_refresh_encrypted``) that the route never reads.
 - ``tools/list`` never reaches the server: it answers from the listing an
   administrator last fetched (``refresh``, sent straight from this app), and
   only with the tools approved against that listing's digests. A tool the
@@ -19,7 +25,8 @@ The upstream speaks MCP over Streamable HTTP. This side is a client of the
 minimum the spec needs: ``initialize`` → ``notifications/initialized`` →
 ``tools/list``/``tools/call``, JSON or SSE answers, ``Mcp-Session-Id``. Server
 requests (sampling, elicitation, roots) are refused; notifications are dropped.
-Sessions for tool calls are kept per (server, key) in this process.
+Sessions for tool calls are kept per (server, key, end-user token) in this
+process.
 """
 from __future__ import annotations
 
@@ -61,6 +68,9 @@ _RELAY_REMOVED_HEADERS = [
     "X-Consumer-Custom-Id",
 ]
 RELAY_SECRET_KEY = "mcp_relay_secret"
+# Clients send the end user's token for server <name> in X-MCP-Auth-<name>.
+USER_TOKEN_HEADER_PREFIX = "X-MCP-Auth-"
+_USER_TOKEN_MAX_LENGTH = 4_096
 PROTOCOL_VERSION = "2025-06-18"
 TOOL_SEPARATOR = "__"
 # What MCP clients accept as a tool name (Claude caps it at 64).
@@ -82,6 +92,10 @@ _TOOL_FIELDS = ("name", "title", "description", "inputSchema", "annotations")
 class RemoteError(Exception):
     """The external server, or the hop to it, failed; the text is for the model."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class _SessionExpired(RemoteError):
     pass
@@ -96,6 +110,15 @@ def route_id(name: str) -> str:
 
 def relay_path(name: str) -> str:
     return f"{RELAY_PATH_PREFIX}{name}"
+
+
+def client_token_header(name: str) -> str:
+    return f"{USER_TOKEN_HEADER_PREFIX}{name}"
+
+
+def usable_user_token(value: str) -> bool:
+    """Visible ASCII only: a token never needs more, and a header could not carry it."""
+    return 0 < len(value) <= _USER_TOKEN_MAX_LENGTH and all(0x21 <= ord(ch) <= 0x7E for ch in value)
 
 
 def exposed_name(server: str, tool: str) -> str:
@@ -170,6 +193,16 @@ def decrypt_headers(server: McpRemoteServer) -> dict[str, str]:
     return {str(k): str(v) for k, v in decoded.items()} if isinstance(decoded, dict) else {}
 
 
+def encrypt_refresh_token(token: str | None) -> str | None:
+    return encrypt_password(token) if token else None
+
+
+def decrypt_refresh_token(server: McpRemoteServer) -> str | None:
+    if not server.user_token_refresh_encrypted:
+        return None
+    return decrypt_password(server.user_token_refresh_encrypted)
+
+
 async def load_servers(db: AsyncSession, *, enabled_only: bool = False) -> list[McpRemoteServer]:
     stmt = select(McpRemoteServer).order_by(McpRemoteServer.name.asc())
     if enabled_only:
@@ -185,6 +218,8 @@ class ServerRef:
     timeout_seconds: int
     # Changes whenever the row does; a cached upstream session dies with it.
     revision: str
+    user_token_header: str | None = None
+    user_token_format: str = "{token}"
 
     @classmethod
     def of(cls, server: McpRemoteServer) -> ServerRef:
@@ -192,6 +227,8 @@ class ServerRef:
             name=server.name,
             timeout_seconds=server.timeout_seconds,
             revision=server.updated_at.isoformat() if server.updated_at else "",
+            user_token_header=server.user_token_header or None,
+            user_token_format=server.user_token_format or "{token}",
         )
 
 
@@ -256,6 +293,11 @@ def route_body(
     _scheme, _node_addr, path = _node(server.url)
     headers: dict[str, Any] = {"remove": list(_RELAY_REMOVED_HEADERS)}
     upstream_headers = decrypt_headers(server)
+    if server.user_token_header:
+        # The call brings the end user's token in this header: nothing stored
+        # may replace it (saving refuses such a header; this is the backstop).
+        user_header = server.user_token_header.lower()
+        upstream_headers = {k: v for k, v in upstream_headers.items() if k.lower() != user_header}
     if upstream_headers:
         headers["set"] = upstream_headers
     timeout = server.timeout_seconds
@@ -520,7 +562,10 @@ async def _send(
             detail = _error_text(response.status_code, await _read_capped(response, 4096))
             raise _SessionExpired(detail)
         if response.status_code >= 400:
-            raise RemoteError(_error_text(response.status_code, await _read_capped(response, 4096)))
+            raise RemoteError(
+                _error_text(response.status_code, await _read_capped(response, 4096)),
+                status_code=response.status_code,
+            )
         if "id" not in message:
             return None, response.headers
         content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
@@ -627,11 +672,17 @@ class DirectTarget:
 
     @classmethod
     def of(cls, server: McpRemoteServer) -> DirectTarget:
-        return cls(server.url, decrypt_headers(server), server.timeout_seconds)
+        headers = decrypt_headers(server)
+        refresh_token = decrypt_refresh_token(server) if server.user_token_header else None
+        if server.user_token_header and refresh_token:
+            headers[server.user_token_header] = (server.user_token_format or "{token}").replace(
+                "{token}", refresh_token
+            )
+        return cls(server.url, headers, server.timeout_seconds)
 
 
 async def list_tools(server: DirectTarget) -> list[dict[str, Any]]:
-    """The server's tools, fetched directly with its stored headers."""
+    """The server's tools, fetched directly with its stored headers (and refresh token)."""
     async with _direct_client() as client:
         t = _Transport(
             client=client,
@@ -673,7 +724,9 @@ async def list_tools(server: DirectTarget) -> list[dict[str, Any]]:
 
 # ── Tool calls (through the gateway, as the caller) ─────────────────────────
 
-_sessions: OrderedDict[tuple[str, str, str], _Session] = OrderedDict()
+# (server, revision, consumer, hash of the end user's token or "").
+_SessionKey = tuple[str, str, str, str]
+_sessions: OrderedDict[_SessionKey, _Session] = OrderedDict()
 
 
 def forget_sessions(name: str) -> None:
@@ -681,7 +734,7 @@ def forget_sessions(name: str) -> None:
         _sessions.pop(key, None)
 
 
-def _cached_session(key: tuple[str, str, str]) -> _Session | None:
+def _cached_session(key: _SessionKey) -> _Session | None:
     now = time.monotonic()
     for stale in [k for k, s in _sessions.items() if now - s.last_used > _SESSION_IDLE_SECONDS]:
         _sessions.pop(stale, None)
@@ -691,7 +744,7 @@ def _cached_session(key: tuple[str, str, str]) -> _Session | None:
     return session
 
 
-def _store_session(key: tuple[str, str, str], session: _Session) -> None:
+def _store_session(key: _SessionKey, session: _Session) -> None:
     session.last_used = time.monotonic()
     _sessions[key] = session
     _sessions.move_to_end(key)
@@ -709,16 +762,29 @@ async def call_tool(
     tool: str,
     arguments: dict[str, Any],
     max_bytes: int,
+    user_token: str | None = None,
 ) -> dict[str, Any]:
-    """``tools/call`` on the server through its relay route; the CallToolResult."""
+    """``tools/call`` on the server through its relay route; the CallToolResult.
+
+    ``user_token`` is the end user's token for a server that wants one
+    (checked with :func:`usable_user_token` by the caller).
+    """
+    headers = {"apikey": api_key, RELAY_HEADER: secret}
+    token_key = ""
+    if server.user_token_header:
+        if user_token is None:
+            raise RemoteError(f"The end user's token is missing ({client_token_header(server.name)})")
+        headers[server.user_token_header] = server.user_token_format.replace("{token}", user_token)
+        # Sessions may be bound to who opened them: one per end user.
+        token_key = hashlib.sha256(user_token.encode("ascii")).hexdigest()
     t = _Transport(
         client=client,
         url=relay_path(server.name),
-        headers={"apikey": api_key, RELAY_HEADER: secret},
+        headers=headers,
         max_bytes=max_bytes,
         timeout=float(server.timeout_seconds),
     )
-    key = (server.name, server.revision, consumer)
+    key = (server.name, server.revision, consumer, token_key)
     try:
         async with asyncio.timeout(server.timeout_seconds + _DEADLINE_MARGIN_SECONDS):
             for attempt in range(2):
@@ -739,6 +805,15 @@ async def call_tool(
                 return _result(answer)
     except TimeoutError as exc:
         raise RemoteError(f"No answer within {server.timeout_seconds}s") from exc
+    except RemoteError as exc:
+        if server.user_token_header and exc.status_code in (401, 403):
+            raise RemoteError(
+                f"{exc} (the call carried the end user's token from "
+                f"{client_token_header(server.name)}; if the server refused it, the token "
+                "may be invalid, expired or lack access)",
+                status_code=exc.status_code,
+            ) from exc
+        raise
     except httpx.HTTPError as exc:
         logger.warning("MCP relay call %s on %s failed: %s", tool, server.name, exc)
         raise RemoteError("The UniBridge gateway did not answer") from exc

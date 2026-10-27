@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import codecs
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import logging
 from typing import Any
@@ -100,6 +100,9 @@ class ToolContext:
     # The caller's key, sent on with each tool call. None outside a real MCP
     # request (the admin preview), where tools are listed but never run.
     api_key: str | None = None
+    # External server name → the end user's token the client sent for it
+    # (X-MCP-Auth-<name>); "" when the header came more than once.
+    user_tokens: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 @dataclass
@@ -1413,6 +1416,17 @@ def _external_tool(server: mcp_remote.ServerRef, upstream: dict[str, Any]) -> To
     async def handler(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         if not ctx.api_key:
             raise ToolError("Tool calls need the API key in the apikey header (call /api/mcp)")
+        user_token = None
+        if server.user_token_header:
+            header = mcp_remote.client_token_header(server.name)
+            user_token = ctx.user_tokens.get(server.name)
+            if user_token is None:
+                raise ToolError(
+                    f"{server.name}: this server acts as the end user; "
+                    f"send their token in the {header} header of the /api/mcp request"
+                )
+            if not mcp_remote.usable_user_token(user_token):
+                raise ToolError(f"{server.name}: the {header} header does not hold one usable token")
         secret = await mcp_remote.relay_secret(ctx.db)
         await ctx.db.rollback()  # see _gateway: free the meta-store connection first
         try:
@@ -1427,6 +1441,7 @@ def _external_tool(server: mcp_remote.ServerRef, upstream: dict[str, Any]) -> To
                 # Room for base64 media and JSON escaping; the result is cut
                 # to max_result_bytes afterwards.
                 max_bytes=ctx.settings.max_result_bytes * 4 + 65_536,
+                user_token=user_token,
             )
         except mcp_remote.RemoteError as exc:
             raise ToolError(f"{server.name}: {exc}") from exc
