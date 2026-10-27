@@ -14,7 +14,7 @@ vi.mock('../api/client', () => ({
   approveMcpServerTools: vi.fn(),
 }));
 
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
@@ -145,6 +145,10 @@ const jiraServer: McpRemoteServerInfo = {
   enabled: true,
   timeout_seconds: 60,
   headers: [{ name: 'Authorization', value: '***abcd' }],
+  user_token_header: null,
+  user_token_format: 'Bearer {token}',
+  user_token_client_header: null,
+  user_token_refresh: null,
   route_id: 'mcp-ext-jira',
   tools: [
     makeTool('search', 'approved'),
@@ -541,6 +545,9 @@ describe('McpSettingsPage', () => {
         enabled: true,
         timeout_seconds: 60,
         headers: [{ name: 'Authorization', value: '***abcd' }],
+        user_token_header: null,
+        user_token_format: 'Bearer {token}',
+        user_token_refresh: null,
       });
     });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -594,9 +601,110 @@ describe('McpSettingsPage', () => {
       enabled: true,
       timeout_seconds: 60,
       headers: [{ name: 'Authorization', value: 'Bearer s3cret' }],
+      user_token_header: null,
+      user_token_format: 'Bearer {token}',
+      user_token_refresh: null,
     });
     expect(await screen.findByText('jira added: 1 tool(s) fetched. Approve the ones to offer.')).toBeInTheDocument();
     expect(await screen.findByRole('checkbox', { name: 'jira__search' })).not.toBeChecked();
+  });
+
+  it('adds a server that takes the end user\'s token per call', async () => {
+    const created = {
+      ...jiraServer,
+      name: 'gitlab',
+      headers: [],
+      tools: [],
+      refreshed_at: null,
+      last_error: null,
+      user_token_header: 'PRIVATE-TOKEN',
+      user_token_format: '{token}',
+      user_token_client_header: 'X-MCP-Auth-gitlab',
+    };
+    mockedCreateMcpServer.mockResolvedValue(created);
+    mockedRefreshMcpServer.mockResolvedValue(created);
+    renderWithProviders(<McpSettingsPage />, { permissions: WRITE_PERMISSIONS });
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Add server' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add external MCP server' });
+    await userEvent.type(within(dialog).getByRole('textbox', { name: 'Name' }), 'gitlab');
+    await userEvent.type(within(dialog).getByRole('textbox', { name: 'URL' }), 'https://mcp.internal/gitlab');
+    expect(within(dialog).queryByRole('textbox', { name: 'Header the server reads' })).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: /Pass the end user's own token/ }));
+    expect(within(dialog).getByText(/in the X-MCP-Auth-gitlab header of their \/api\/mcp request/)).toBeInTheDocument();
+    const header = within(dialog).getByRole('textbox', { name: 'Header the server reads' });
+    await userEvent.clear(header);
+    await userEvent.type(header, 'PRIVATE-TOKEN');
+    const format = within(dialog).getByRole('textbox', { name: 'Value format' });
+    fireEvent.change(format, { target: { value: 'token' } });
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('holds {token} exactly once');
+    expect(mockedCreateMcpServer).not.toHaveBeenCalled();
+
+    fireEvent.change(format, { target: { value: '{token}' } });
+    await userEvent.type(within(dialog).getByLabelText('Refresh token (optional)'), 'glpat-admin');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+    await waitFor(() => {
+      expect(mockedCreateMcpServer).toHaveBeenCalledWith({
+        name: 'gitlab',
+        url: 'https://mcp.internal/gitlab',
+        description: '',
+        enabled: true,
+        timeout_seconds: 60,
+        headers: [],
+        user_token_header: 'PRIVATE-TOKEN',
+        user_token_format: '{token}',
+        user_token_refresh: 'glpat-admin',
+      });
+    });
+  });
+
+  it('keeps the token header out of the stored headers', async () => {
+    renderWithProviders(<McpSettingsPage />, { permissions: WRITE_PERMISSIONS });
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Add server' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add external MCP server' });
+    await userEvent.type(within(dialog).getByRole('textbox', { name: 'Name' }), 'gitlab');
+    await userEvent.type(within(dialog).getByRole('textbox', { name: 'URL' }), 'https://mcp.internal/gitlab');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Add header' }));
+    await userEvent.type(within(dialog).getByRole('textbox', { name: 'Header 1 name' }), 'authorization');
+    await userEvent.type(within(dialog).getByLabelText('Header 1 value'), 'Bearer admin');
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: /Pass the end user's own token/ }));
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('carries the end user\'s token');
+    expect(mockedCreateMcpServer).not.toHaveBeenCalled();
+  });
+
+  it('shows which header carries the end user\'s token', async () => {
+    mockedGetMcpServers.mockResolvedValue([
+      {
+        ...jiraServer,
+        headers: [],
+        user_token_header: 'Authorization',
+        user_token_client_header: 'X-MCP-Auth-jira',
+        user_token_refresh: '***wxyz',
+      },
+    ]);
+    mockedUpdateMcpServer.mockResolvedValue(jiraServer);
+    renderWithProviders(<McpSettingsPage />, { permissions: WRITE_PERMISSIONS });
+
+    expect(await screen.findByText('X-MCP-Auth-jira')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Edit jira' }));
+    const dialog = screen.getByRole('dialog', { name: 'Edit jira' });
+    expect(within(dialog).getByRole('checkbox', { name: /Pass the end user's own token/ })).toBeChecked();
+    expect(within(dialog).getByRole('textbox', { name: 'Header the server reads' })).toHaveValue('Authorization');
+    const refresh = within(dialog).getByLabelText('Refresh token (optional)');
+    expect(refresh).toHaveAttribute('placeholder', 'Stored (***wxyz), blank keeps it');
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Remove the stored refresh token' }));
+    expect(refresh).toBeDisabled();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => {
+      expect(mockedUpdateMcpServer).toHaveBeenCalledTimes(1);
+    });
+    expect(mockedUpdateMcpServer.mock.calls[0][1]).toMatchObject({
+      user_token_header: 'Authorization',
+      user_token_refresh: null,
+    });
   });
 
   it('rejects a bad server name before sending it', async () => {

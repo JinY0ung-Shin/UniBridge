@@ -615,6 +615,22 @@
   align-items: center;
 }
 
+.mcp-ext-token-row {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+}
+
+.mcp-ext-token-refresh {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.mcp-ext-token-refresh input[type='password'] {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
 .mcp-modal-body {
   padding: 16px 24px;
   font-size: 14px;

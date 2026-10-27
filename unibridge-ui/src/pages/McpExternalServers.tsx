@@ -22,6 +22,9 @@ const SERVERS_KEY = ['mcp-servers'];
 const SERVER_NAME_PATTERN = /^[a-z][a-z0-9-]{0,15}$/;
 const TIMEOUT_RANGE = { min: 5, max: 600 };
 const MAX_HEADERS = 20;
+// Must match mcp_remote.USER_TOKEN_HEADER_PREFIX.
+const USER_TOKEN_HEADER_PREFIX = 'X-MCP-Auth-';
+const DEFAULT_TOKEN_FORMAT = 'Bearer {token}';
 
 const STATUS_BADGE: Record<McpRemoteToolStatus, string> = {
   approved: 'badge badge-ok',
@@ -105,9 +108,16 @@ function McpServerModal({
   const [headers, setHeaders] = useState<HeaderRow[]>(
     () => server?.headers.map((header) => headerRow(header.name, header.value)) ?? [],
   );
+  const [userToken, setUserToken] = useState(Boolean(server?.user_token_header));
+  const [tokenHeader, setTokenHeader] = useState(server?.user_token_header ?? 'Authorization');
+  const [tokenFormat, setTokenFormat] = useState(server?.user_token_format ?? DEFAULT_TOKEN_FORMAT);
+  const storedRefresh = server?.user_token_refresh ?? null;
+  const [refreshToken, setRefreshToken] = useState('');
+  const [removeRefresh, setRemoveRefresh] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState('');
 
+  const clientTokenHeader = `${USER_TOKEN_HEADER_PREFIX}${server?.name ?? (name || '<name>')}`;
   const nameValid = server !== null || SERVER_NAME_PATTERN.test(name);
   const timeoutValid =
     Number.isInteger(timeout) && timeout >= TIMEOUT_RANGE.min && timeout <= TIMEOUT_RANGE.max;
@@ -127,6 +137,10 @@ function McpServerModal({
             row.name.trim().toLowerCase() === row.storedName?.toLowerCase();
           return { name: row.name.trim(), value: keep ? (row.masked ?? '') : row.value };
         }),
+        user_token_header: userToken ? tokenHeader.trim() : null,
+        user_token_format: userToken ? tokenFormat : DEFAULT_TOKEN_FORMAT,
+        // '' keeps what is stored.
+        user_token_refresh: !userToken || removeRefresh ? null : refreshToken.trim(),
       };
       if (server) return { server: await updateMcpServer(server.name, body), refreshError: null };
       const created = await createMcpServer({ ...body, name });
@@ -173,6 +187,13 @@ function McpServerModal({
       seen.add(headerName.toLowerCase());
       const keepsStored = row.masked !== null && headerName.toLowerCase() === row.storedName?.toLowerCase();
       if (row.value === '' && !keepsStored) return t('mcp.ext.headerValueRequired', { name: headerName });
+    }
+    if (userToken) {
+      if (!tokenHeader.trim()) return t('mcp.ext.userTokenHeaderRequired');
+      if (tokenFormat.split('{token}').length !== 2) return t('mcp.ext.userTokenFormatInvalid');
+      if (seen.has(tokenHeader.trim().toLowerCase())) {
+        return t('mcp.ext.userTokenHeaderClash', { name: tokenHeader.trim() });
+      }
     }
     return null;
   }
@@ -328,6 +349,72 @@ function McpServerModal({
                 {t('mcp.ext.headerAdd')}
               </button>
             </div>
+          </fieldset>
+          <fieldset className="form-group form-group--full mcp-ext-headers">
+            <legend>{t('mcp.ext.userToken')}</legend>
+            <label className="mcp-toggle">
+              <input
+                type="checkbox"
+                checked={userToken}
+                onChange={(e) => setUserToken(e.target.checked)}
+                aria-describedby="mcp-ext-user-token-hint"
+              />
+              <span>{t('mcp.ext.userTokenEnabled')}</span>
+            </label>
+            <span id="mcp-ext-user-token-hint" className="form-hint">
+              {t('mcp.ext.userTokenHint', { header: clientTokenHeader })}
+            </span>
+            {userToken && (
+              <>
+                <div className="mcp-ext-header-row mcp-ext-token-row">
+                  <input
+                    type="text"
+                    value={tokenHeader}
+                    onChange={(e) => setTokenHeader(e.target.value)}
+                    maxLength={64}
+                    placeholder="Authorization"
+                    aria-label={t('mcp.ext.userTokenHeader')}
+                  />
+                  <input
+                    type="text"
+                    value={tokenFormat}
+                    onChange={(e) => setTokenFormat(e.target.value)}
+                    maxLength={256}
+                    placeholder={DEFAULT_TOKEN_FORMAT}
+                    aria-label={t('mcp.ext.userTokenFormat')}
+                  />
+                </div>
+                <span className="form-hint">{t('mcp.ext.userTokenFormatHint')}</span>
+                <div className="mcp-ext-token-refresh">
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={refreshToken}
+                    onChange={(e) => setRefreshToken(e.target.value)}
+                    disabled={removeRefresh}
+                    maxLength={4096}
+                    placeholder={
+                      storedRefresh !== null ? t('mcp.ext.headerValueKeep', { masked: storedRefresh }) : ''
+                    }
+                    aria-label={t('mcp.ext.userTokenRefresh')}
+                    aria-describedby="mcp-ext-token-refresh-hint"
+                  />
+                  {storedRefresh !== null && (
+                    <label className="mcp-toggle">
+                      <input
+                        type="checkbox"
+                        checked={removeRefresh}
+                        onChange={(e) => setRemoveRefresh(e.target.checked)}
+                      />
+                      <span>{t('mcp.ext.userTokenRefreshRemove')}</span>
+                    </label>
+                  )}
+                </div>
+                <span id="mcp-ext-token-refresh-hint" className="form-hint">
+                  {t('mcp.ext.userTokenRefreshHint')}
+                </span>
+              </>
+            )}
           </fieldset>
         </div>
 
@@ -975,6 +1062,12 @@ function McpServerPanel({
           <span>
             {t('mcp.ext.grant')} <code>{server.route_id}</code>
           </span>
+          {server.user_token_client_header && (
+            <span>
+              {t('mcp.ext.userTokenMeta')} <code>{server.user_token_client_header}</code> →{' '}
+              <code>{server.user_token_header}</code>
+            </span>
+          )}
         </div>
         {server.last_error && (
           <div className="error-banner mcp-ext-error" role="alert">

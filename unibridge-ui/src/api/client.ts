@@ -580,6 +580,14 @@ export interface McpRemoteServerInfo {
   enabled: boolean;
   timeout_seconds: number;
   headers: McpRemoteHeader[];
+  /** Where each call puts the end user's token (null = no per-call token). */
+  user_token_header: string | null;
+  /** The value sent in user_token_header, around {token}. */
+  user_token_format: string;
+  /** What clients send the end user's token in: X-MCP-Auth-<name>, when used. */
+  user_token_client_header: string | null;
+  /** The administrator's token for refresh only, masked; null when none is stored. */
+  user_token_refresh: string | null;
   /** The API-key route grant that gives a key this server's tools. */
   route_id: string;
   tools: McpRemoteToolInfo[];
@@ -596,6 +604,11 @@ export interface McpRemoteServerUpdate {
   timeout_seconds: number;
   /** A masked value (as read) or '' keeps the stored value of that header. */
   headers: McpRemoteHeader[];
+  /** null: no per-call token. Must not also be one of `headers`. */
+  user_token_header: string | null;
+  user_token_format: string;
+  /** Refresh's own token: '' or the mask keeps the stored one, null removes it. */
+  user_token_refresh: string | null;
 }
 
 export interface McpRemoteServerCreate extends McpRemoteServerUpdate {
