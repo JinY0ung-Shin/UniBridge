@@ -32,7 +32,7 @@ from app.config import settings
 from app.database import async_session
 from app.models import AlertSettings, MonitoredHost
 from app.services import server_monitor
-from app.services.alert_mutes import load_mute_index
+from app.services.alert_mutes import _as_utc, load_mute_index
 from app.services.alert_owner_dispatcher import dispatch_alert
 
 logger = logging.getLogger(__name__)
@@ -43,13 +43,6 @@ KST = timezone(timedelta(hours=9))
 
 RULE_TYPE = "server_gpu_underutil"
 MONITOR_LABEL = "서버 GPU 목표 사용률(일일)"
-
-
-def _as_utc(value: datetime) -> datetime:
-    """Normalize to UTC, treating a naive value as UTC (SQLite reads back naive)."""
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 def is_report_due(

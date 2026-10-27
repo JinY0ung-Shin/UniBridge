@@ -82,6 +82,7 @@ class MuteIndex:
 
 
 def _as_utc(value: datetime) -> datetime:
+    """Normalize to UTC, treating a naive value as UTC (SQLite reads back naive)."""
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)

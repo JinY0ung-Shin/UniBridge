@@ -266,18 +266,6 @@ class AlertStateManager:
             return "triggered"
         return None
 
-    def get_all_alerts(self) -> list[dict]:
-        return [
-            {
-                "type": k[0],
-                "target": v.get("display_target", k[1]),
-                "status": "alert",
-                "since": v["since"],
-            }
-            for k, v in self._states.items()
-            if v["status"] == "alert"
-        ]
-
     def get_entries(
         self,
         *,

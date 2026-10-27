@@ -25,7 +25,6 @@ from app.services.node_path_prefix import (
     describe_apisix_error,
     ensure_global_rule,
     is_unknown_plugin_error,
-    node_path_prefixes,
     plugin_unavailable_detail,
     uses_node_path_prefixes,
     validate_upstream_node_prefixes,
@@ -79,8 +78,6 @@ class TestPrefixFormat:
         upstream = _upstream(_node("10.0.0.1"), _node("10.0.0.2", prefix=prefix))
 
         validate_upstream_node_prefixes(upstream)
-
-        assert node_path_prefixes(upstream["nodes"]) == {"10.0.0.2:8080": prefix}
 
     @pytest.mark.parametrize(
         "prefix, problem",
@@ -151,7 +148,6 @@ class TestUpstreamRules:
         validate_upstream_node_prefixes(upstream)
 
         assert not uses_node_path_prefixes(upstream)
-        assert node_path_prefixes(upstream["nodes"]) == {}
 
     @pytest.mark.parametrize("scheme", ["grpc", "grpcs", "tcp", "kafka"])
     def test_prefix_needs_an_http_scheme(self, scheme):
@@ -243,21 +239,9 @@ class TestUpstreamRules:
         validate_upstream_node_prefixes(upstream)
 
         assert not uses_node_path_prefixes(upstream)
-        assert node_path_prefixes(upstream.get("nodes")) == {}
 
 
 class TestPrefixLookup:
-    def test_maps_addresses_the_way_upstream_node_addresses_does(self):
-        nodes = [
-            _node("10.0.0.1"),
-            _node("10.0.0.2", prefix="/api"),
-            _node("svc.internal", port=None, prefix="/v2"),
-            {"weight": 1, "metadata": {"path_prefix": "/no-host"}},
-            "not-a-node",
-        ]
-
-        assert node_path_prefixes(nodes) == {"10.0.0.2:8080": "/api", "svc.internal": "/v2"}
-
     def test_uses_prefixes_detects_any_node(self):
         assert uses_node_path_prefixes(_upstream(_node("a"), _node("b", prefix="/api")))
         assert not uses_node_path_prefixes(_upstream(_node("a"), _node("b")))

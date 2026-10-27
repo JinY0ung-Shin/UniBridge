@@ -20,28 +20,12 @@ from sqlalchemy.exc import StatementError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from urllib3.exceptions import ProtocolError
 
-try:  # pragma: no cover - exercised when neo4j is installed
-    from neo4j import READ_ACCESS as NEO4J_READ_ACCESS
-    from neo4j import WRITE_ACCESS as NEO4J_WRITE_ACCESS
-    from neo4j import Query as Neo4jQuery
-    from neo4j.graph import Node as Neo4jNode
-    from neo4j.graph import Path as Neo4jPath
-    from neo4j.graph import Relationship as Neo4jRelationship
-except ImportError:  # pragma: no cover - test environment may omit neo4j
-    NEO4J_READ_ACCESS = "READ"
-    NEO4J_WRITE_ACCESS = "WRITE"
-
-    class Neo4jQuery:
-        def __init__(self, text: str, timeout: int | float | None = None) -> None:
-            self.text = text
-            self.timeout = timeout
-
-        def __str__(self) -> str:
-            return self.text
-
-    Neo4jNode = ()
-    Neo4jPath = ()
-    Neo4jRelationship = ()
+from neo4j import READ_ACCESS as NEO4J_READ_ACCESS
+from neo4j import WRITE_ACCESS as NEO4J_WRITE_ACCESS
+from neo4j import Query as Neo4jQuery
+from neo4j.graph import Node as Neo4jNode
+from neo4j.graph import Path as Neo4jPath
+from neo4j.graph import Relationship as Neo4jRelationship
 
 from app.config import settings
 from app.schemas import QueryResponse
@@ -152,76 +136,6 @@ def check_multi_statement(sql: str) -> bool:
 
         i += 1
     return False
-
-
-def _strip_strings_and_comments(sql: str) -> str:
-    """Remove string literals and comments from SQL for safe keyword scanning."""
-    result: list[str] = []
-    i = 0
-    length = len(sql)
-    while i < length:
-        c = sql[i]
-        # Single-line comment
-        if c == '-' and i + 1 < length and sql[i + 1] == '-':
-            i = sql.find('\n', i)
-            if i == -1:
-                break
-            i += 1
-            continue
-        # Block comment
-        if c == '/' and i + 1 < length and sql[i + 1] == '*':
-            end = sql.find('*/', i + 2)
-            if end == -1:
-                break
-            i = end + 2
-            continue
-        # Single-quoted string
-        if c == "'":
-            i += 1
-            while i < length:
-                if sql[i] == "'":
-                    if i + 1 < length and sql[i + 1] == "'":
-                        i += 2
-                    else:
-                        i += 1
-                        break
-                else:
-                    i += 1
-            result.append("''")
-            continue
-        # Double-quoted identifier
-        if c == '"':
-            i += 1
-            while i < length:
-                if sql[i] == '"':
-                    if i + 1 < length and sql[i + 1] == '"':
-                        i += 2
-                    else:
-                        i += 1
-                        break
-                else:
-                    i += 1
-            result.append('""')
-            continue
-        # Dollar-quoted string
-        if c == '$':
-            tag_end = sql.find('$', i + 1)
-            if tag_end != -1:
-                tag = sql[i:tag_end + 1]
-                tag_body = tag[1:-1]
-                if all(ch.isalnum() or ch == '_' for ch in tag_body):
-                    close = sql.find(tag, tag_end + 1)
-                    if close == -1:
-                        break
-                    i = close + len(tag)
-                    result.append("''")
-                    continue
-            result.append(c)
-            i += 1
-            continue
-        result.append(c)
-        i += 1
-    return "".join(result)
 
 
 def detect_statement_type(sql: str) -> str:

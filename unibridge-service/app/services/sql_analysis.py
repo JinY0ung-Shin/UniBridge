@@ -6,12 +6,7 @@ from collections.abc import Iterable
 
 import sqlglot
 from sqlglot import ErrorLevel, exp
-from sqlglot.errors import ParseError
-
-try:
-    from sqlglot.errors import TokenError
-except ImportError:  # pragma: no cover - compatibility with older sqlglot
-    TokenError = ParseError
+from sqlglot.errors import ParseError, TokenError
 
 
 _DIALECT_BY_DB_TYPE = {

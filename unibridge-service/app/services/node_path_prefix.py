@@ -100,24 +100,6 @@ def _path_prefix_problem(value: Any) -> str | None:
     return None
 
 
-def node_path_prefixes(nodes: Any) -> dict[str, str]:
-    """Map ``host:port`` to path prefix for the nodes that carry one."""
-    prefixes: dict[str, str] = {}
-    if not isinstance(nodes, list):
-        return prefixes
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        metadata = node.get("metadata")
-        address = _node_address(node)
-        if not isinstance(metadata, dict) or address is None:
-            continue
-        prefix = metadata.get(PATH_PREFIX_KEY)
-        if isinstance(prefix, str) and prefix:
-            prefixes[address] = prefix
-    return prefixes
-
-
 def uses_node_path_prefixes(upstream: dict[str, Any]) -> bool:
     """Whether any node of ``upstream`` asks for a path prefix."""
     nodes = upstream.get("nodes")

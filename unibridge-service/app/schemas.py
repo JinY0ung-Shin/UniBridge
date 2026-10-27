@@ -279,15 +279,6 @@ class AuditLogResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class AuditLogQuery(BaseModel):
-    database: str | None = None
-    user: str | None = None
-    from_date: datetime | None = None
-    to_date: datetime | None = None
-    limit: int = Field(100, ge=1, le=1000)
-    offset: int = Field(0, ge=0)
-
-
 class QueryHistoryResponse(BaseModel):
     """Page of the current user's own query executions, plus total for paging."""
 

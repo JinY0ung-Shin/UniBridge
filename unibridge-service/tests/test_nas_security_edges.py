@@ -1,25 +1,11 @@
 """Deterministic edge-path tests for the NAS security primitives."""
 from __future__ import annotations
 
-import ctypes
-import errno
 import os
 
 import pytest
 
 from app.services import nas_security as nas
-
-
-class _FakeLibc:
-    def __init__(self, result: int, error: int = 0) -> None:
-        self.result = result
-        self.error = error
-        self.calls = 0
-
-    def syscall(self, *args) -> int:
-        self.calls += 1
-        ctypes.set_errno(self.error)
-        return self.result
 
 
 def test_resolve_base_skips_incomparable_allowed_root(tmp_path):
@@ -117,115 +103,6 @@ def test_safe_resolve_rejects_incomparable_commonpath(monkeypatch, tmp_path):
 
     with pytest.raises(nas.NasSecurityError, match="Invalid path"):
         nas.safe_resolve(tmp_path, target.name, follow_symlinks=True)
-
-
-def test_detect_openat2_caches_non_linux_result(monkeypatch):
-    monkeypatch.setattr(nas, "_openat2_available", None)
-    monkeypatch.setattr(nas.platform, "system", lambda: "Darwin")
-
-    assert nas.openat2_supported() is False
-    monkeypatch.setattr(
-        nas.platform,
-        "system",
-        lambda: pytest.fail("cached capability should avoid probing again"),
-    )
-    assert nas.openat2_supported() is False
-
-
-def test_detect_openat2_records_success(monkeypatch):
-    probe_fd = os.open(os.devnull, os.O_RDONLY)
-    fake_libc = _FakeLibc(probe_fd)
-    monkeypatch.setattr(nas, "_openat2_available", None)
-    monkeypatch.setattr(nas.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(nas.ctypes, "CDLL", lambda *_args, **_kwargs: fake_libc)
-
-    assert nas.openat2_supported() is True
-    assert fake_libc.calls == 1
-
-
-def test_detect_openat2_records_probe_failure(monkeypatch):
-    fake_libc = _FakeLibc(-1, errno.ENOSYS)
-    monkeypatch.setattr(nas, "_openat2_available", None)
-    monkeypatch.setattr(nas.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(nas.ctypes, "CDLL", lambda *_args, **_kwargs: fake_libc)
-
-    assert nas.openat2_supported() is False
-    assert fake_libc.calls == 1
-
-
-def test_openat2_beneath_reports_unavailable(monkeypatch):
-    monkeypatch.setattr(nas, "_detect_openat2", lambda: False)
-
-    with pytest.raises(NotImplementedError, match="not available"):
-        nas.openat2_beneath(-1, "file.txt")
-
-
-@pytest.mark.parametrize(
-    ("error", "exception"),
-    [
-        (errno.EXDEV, nas.NasSecurityError),
-        (errno.ELOOP, nas.NasSecurityError),
-        (errno.ENOENT, FileNotFoundError),
-        (errno.EACCES, PermissionError),
-        (errno.EIO, nas.NasSecurityError),
-    ],
-)
-def test_openat2_beneath_maps_syscall_errors(monkeypatch, error, exception):
-    fake_libc = _FakeLibc(-1, error)
-    monkeypatch.setattr(nas, "_detect_openat2", lambda: True)
-    monkeypatch.setattr(nas.ctypes, "CDLL", lambda *_args, **_kwargs: fake_libc)
-
-    with pytest.raises(exception):
-        nas.openat2_beneath(-1, "file.txt")
-
-
-def test_openat2_beneath_returns_regular_fd(monkeypatch, tmp_path):
-    target = tmp_path / "data.txt"
-    target.write_text("hello")
-    opened_fd = os.open(target, os.O_RDONLY | os.O_NONBLOCK)
-    fake_libc = _FakeLibc(opened_fd)
-    monkeypatch.setattr(nas, "_detect_openat2", lambda: True)
-    monkeypatch.setattr(nas.ctypes, "CDLL", lambda *_args, **_kwargs: fake_libc)
-
-    fd = nas.openat2_beneath(-1, target.name)
-    try:
-        assert fd == opened_fd
-        assert os.read(fd, 5) == b"hello"
-    finally:
-        os.close(fd)
-
-
-def test_openat2_beneath_rejects_non_regular_fd(monkeypatch, tmp_path):
-    opened_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
-    fake_libc = _FakeLibc(opened_fd)
-    monkeypatch.setattr(nas, "_detect_openat2", lambda: True)
-    monkeypatch.setattr(nas.ctypes, "CDLL", lambda *_args, **_kwargs: fake_libc)
-
-    with pytest.raises(nas.NasSecurityError, match="unsupported file type"):
-        nas.openat2_beneath(-1, ".")
-    with pytest.raises(OSError):
-        os.fstat(opened_fd)
-
-
-def test_openat2_beneath_closes_fd_when_fstat_fails(monkeypatch, tmp_path):
-    target = tmp_path / "data.txt"
-    target.write_text("hello")
-    opened_fd = os.open(target, os.O_RDONLY)
-    fake_libc = _FakeLibc(opened_fd)
-    monkeypatch.setattr(nas, "_detect_openat2", lambda: True)
-    monkeypatch.setattr(nas.ctypes, "CDLL", lambda *_args, **_kwargs: fake_libc)
-
-    def _raise_fstat(_fd):
-        raise OSError("fstat failed")
-
-    monkeypatch.setattr(nas.os, "fstat", _raise_fstat)
-
-    with pytest.raises(OSError, match="fstat failed"):
-        nas.openat2_beneath(-1, target.name)
-
-    # The syscall-returned descriptor is closed even on classification failure.
-    with pytest.raises(OSError):
-        os.close(opened_fd)
 
 
 def test_open_regular_fd_preserves_missing_file_error(tmp_path):

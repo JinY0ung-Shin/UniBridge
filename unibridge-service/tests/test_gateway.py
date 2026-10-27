@@ -12,10 +12,8 @@ from fastapi import HTTPException
 
 from app.routers.gateway import (
     _extract_scalar,
-    _extract_service_key,
     _extract_service_keys,
     _extract_timeseries,
-    _get_step,
     _inject_plugins,
     _labels,
     _mask_value,
@@ -48,10 +46,6 @@ class TestExtractServiceKeys:
         }
         result = _extract_service_keys(route)
         assert result == [{"header_name": "X-Api-Key", "header_value": "***1234"}]
-        assert _extract_service_key(route) == {
-            "header_name": "X-Api-Key",
-            "header_value": "***1234",
-        }
 
     def test_route_with_multiple_headers(self):
         route = {
@@ -418,23 +412,6 @@ class TestExtractTimeseries:
     def test_empty_values(self):
         results = [{"values": []}]
         assert _extract_timeseries(results) == []
-
-
-class TestGetStep:
-    def test_15m(self):
-        assert _get_step("15m") == "15s"
-
-    def test_1h(self):
-        assert _get_step("1h") == "60s"
-
-    def test_6h(self):
-        assert _get_step("6h") == "300s"
-
-    def test_24h(self):
-        assert _get_step("24h") == "600s"
-
-    def test_unknown_defaults_to_60s(self):
-        assert _get_step("99h") == "60s"
 
 
 # ---------------------------------------------------------------------------
@@ -2961,7 +2938,6 @@ class TestResolveTimeWindow:
         from app.routers.gateway import resolve_time_window
 
         tw = resolve_time_window(time_range="6h", start=None, end=None)
-        assert tw.is_custom is False
         assert tw.promql_window == "6h"
         assert tw.step == "300s"          # RANGE_STEPS["6h"]
         assert tw.volume_window == "30m"  # RANGE_VOLUME["6h"][1]
@@ -2981,7 +2957,7 @@ class TestResolveTimeWindow:
         # 2 day span → tier "7d"
         start, end = 1_000_000, 1_000_000 + 2 * 86400
         tw = resolve_time_window(time_range="1h", start=start, end=end)
-        assert tw.is_custom is True
+        assert tw.start == start and tw.end == end
         assert tw.promql_window == f"{2 * 86400}s"
         assert tw.step == "3600s"          # RANGE_STEPS["7d"]
         assert tw.volume_window == "1h"    # RANGE_VOLUME["7d"][1]
@@ -3052,7 +3028,7 @@ class TestBucketWindow:
 
         tw = resolve_time_window(time_range="30d", start=None, end=None, bucket="day")
         assert tw.bucket == "day"
-        assert tw.is_custom is True
+        assert tw.start is not None
         assert tw.volume_step == "86400s"
         assert tw.step == "86400s"
         assert tw.volume_window == "1d"

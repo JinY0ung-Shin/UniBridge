@@ -298,16 +298,6 @@ class TestAlertState:
         ]
         assert transitions == [None, None, "resolved"]
 
-    def test_get_all_alerts(self):
-        mgr = AlertStateManager()
-        mgr.update("db_health", "db1", is_healthy=False, trigger_after_failures=1)
-        mgr.update("upstream_health", "svc1", is_healthy=False, trigger_after_failures=1)
-        mgr.update("db_health", "db2", is_healthy=True, trigger_after_failures=1)
-        alerts = mgr.get_all_alerts()
-        assert len(alerts) == 2
-        targets = {a["target"] for a in alerts}
-        assert targets == {"db1", "svc1"}
-
     def test_get_entries_includes_known_ok_and_alert_states(self):
         mgr = AlertStateManager()
         mgr.update("db_health", "db1", is_healthy=False, trigger_after_failures=1)
@@ -321,7 +311,7 @@ class TestAlertState:
         mgr.update("db_health", "mydb", is_healthy=False, trigger_after_failures=1)
         mgr.reset()
         assert mgr.get_status("db_health", "mydb") == "ok"
-        assert mgr.get_all_alerts() == []
+        assert mgr.get_entries() == []
 
     def test_n_lowered_mid_flight_fires_on_next_failure(self):
         mgr = AlertStateManager()
@@ -349,7 +339,7 @@ class TestAlertState:
     def test_discard_is_noop_when_missing(self):
         mgr = AlertStateManager()
         mgr.discard("db_health", "never-existed")
-        assert mgr.get_all_alerts() == []
+        assert mgr.get_entries() == []
 
     @pytest.mark.asyncio
     async def test_purge_stale_states(self, seeded_db):

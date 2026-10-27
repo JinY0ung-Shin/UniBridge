@@ -99,11 +99,6 @@ def _extract_service_keys(route: dict[str, Any]) -> list[dict[str, str]]:
     ]
 
 
-def _extract_service_key(route: dict[str, Any]) -> dict[str, str] | None:
-    keys = _extract_service_keys(route)
-    return keys[0] if keys else None
-
-
 def _service_headers_for_route(route: dict[str, Any]) -> dict[str, str]:
     return _headers_set_for_route(route)
 
@@ -1306,7 +1301,6 @@ class TimeWindow:
     eval_time: float | None   # custom → end epoch; preset → None (= now)
     start: float | None       # custom → start epoch; preset → None
     end: float | None
-    is_custom: bool
     bucket: str = "auto"      # calendar bucket for volume series: auto|hour|day|week
 
 
@@ -1347,7 +1341,6 @@ def _bucketed_window(raw_start: float, raw_end: float, bucket: str) -> TimeWindo
         eval_time=float(raw_end),
         start=float(aligned_start),
         end=float(raw_end),
-        is_custom=True,
         bucket=bucket,
     )
 
@@ -1383,7 +1376,6 @@ def resolve_time_window(
             eval_time=float(end),
             start=float(start),
             end=float(end),
-            is_custom=True,
         )
     if time_range not in VALID_RANGES:
         time_range = "1h"
@@ -1399,7 +1391,6 @@ def resolve_time_window(
         eval_time=None,
         start=None,
         end=None,
-        is_custom=False,
     )
 
 
@@ -1410,10 +1401,6 @@ _SAFE_CONSUMER_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
 # value). Names are free-form display strings, so only cap length and reject
 # control characters; PromQL safety comes from escaping in ``_labels``.
 _ROUTE_FILTER_MAX_LEN = 200
-
-
-def _get_step(time_range: str) -> str:
-    return RANGE_STEPS.get(time_range, "60s")
 
 
 _MIN_RATE_WINDOW_SECONDS = 300

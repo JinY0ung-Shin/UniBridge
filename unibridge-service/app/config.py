@@ -170,7 +170,6 @@ class Settings(BaseSettings):
     KEYCLOAK_SERVICE_CLIENT_ID: str = "apihub-service"
     KEYCLOAK_SERVICE_CLIENT_SECRET: str = ""
 
-    GRAPHDB_DEFAULT_PORT: int = 7200
     GRAPHDB_MAX_RESPONSE_BYTES: int = 10 * 1024 * 1024  # 10 MiB
 
     # NAS / local-filesystem read-only provider

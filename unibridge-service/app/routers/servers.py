@@ -37,9 +37,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/servers", tags=["Servers"])
 
-_METRICS = {"cpu", "mem", "disk"}
-
-
 def _finite_float(raw: Any) -> float | None:
     try:
         value = float(raw)

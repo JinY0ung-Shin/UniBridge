@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import re
 
-from app.services.query_executor import _strip_strings_and_comments
-from app.services.sql_analysis import blocked_ast_keyword
+from app.services.sql_analysis import _strip_strings_and_comments, blocked_ast_keyword
 
 # Default blocked keywords
 _SINGLE_KEYWORDS = [

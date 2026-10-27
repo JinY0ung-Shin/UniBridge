@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import ctypes
 import errno
 import fcntl
 import logging
 import os
-import platform
 import stat
-import struct
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -263,139 +260,6 @@ def safe_resolve(base_real: Path, relpath: str, *, follow_symlinks: bool) -> Pat
         raise NasSecurityError("Invalid path")
 
     return target_real
-
-
-# --------------------------------------------------------------------------- #
-# openat2(2) Linux fast path (race-free containment)
-# --------------------------------------------------------------------------- #
-# Resolve flags from linux/openat2.h.
-_RESOLVE_NO_SYMLINKS = 0x04
-_RESOLVE_BENEATH = 0x08
-
-# openat2 syscall number is 437 on every Linux ABI that defines it
-# (x86_64, aarch64, arm, riscv, ...). It was added in kernel 5.6.
-_OPENAT2_SYSCALL_NR = 437
-
-# struct open_how { __u64 flags; __u64 mode; __u64 resolve; } — three u64s.
-_OPEN_HOW_FORMAT = "QQQ"
-_OPEN_HOW_SIZE = struct.calcsize(_OPEN_HOW_FORMAT)
-
-_openat2_available: bool | None = None
-
-
-def _detect_openat2() -> bool:
-    """Probe whether openat2(2) with RESOLVE_BENEATH is usable on this host.
-
-    Cached after the first call. Returns False on non-Linux platforms, kernels
-    older than 5.6 (ENOSYS), or any probe failure — callers then fall back to
-    ``safe_resolve`` + ``open_regular_fd``.
-    """
-    global _openat2_available
-    if _openat2_available is not None:
-        return _openat2_available
-
-    if platform.system() != "Linux":
-        _openat2_available = False
-        return False
-
-    try:
-        libc = ctypes.CDLL(None, use_errno=True)
-        dir_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        try:
-            how = struct.pack(
-                _OPEN_HOW_FORMAT,
-                os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC,
-                0,
-                _RESOLVE_BENEATH | _RESOLVE_NO_SYMLINKS,
-            )
-            buf = ctypes.create_string_buffer(how, _OPEN_HOW_SIZE)
-            ctypes.set_errno(0)
-            res = libc.syscall(
-                ctypes.c_long(_OPENAT2_SYSCALL_NR),
-                ctypes.c_int(dir_fd),
-                ctypes.c_char_p(b"."),
-                ctypes.byref(buf),
-                ctypes.c_size_t(_OPEN_HOW_SIZE),
-            )
-            err = ctypes.get_errno()
-            if res >= 0:
-                os.close(res)
-                _openat2_available = True
-            else:
-                logger.debug("openat2 probe failed: errno=%s", err)
-                _openat2_available = False
-        finally:
-            os.close(dir_fd)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("openat2 probe raised: %s", exc)
-        _openat2_available = False
-
-    return _openat2_available
-
-
-def openat2_supported() -> bool:
-    """Public accessor for the cached openat2 capability probe."""
-    return _detect_openat2()
-
-
-def openat2_beneath(base_fd: int, relpath: str) -> int:
-    """Open ``relpath`` beneath ``base_fd`` race-free via openat2(2).
-
-    Uses ``RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`` so the kernel atomically
-    refuses any path escape or symlink traversal, plus ``O_NONBLOCK`` so a FIFO
-    with no writer cannot block. The returned fd is fstat-checked and rejected
-    unless it refers to a regular file (matching ``open_regular_fd``).
-
-    Raises ``NasSecurityError`` on containment/symlink escape (EXDEV/ELOOP) or
-    a non-regular file, ``FileNotFoundError`` if the target is missing,
-    ``NotImplementedError`` if openat2 is unavailable (caller should fall back).
-    """
-    if not _detect_openat2():
-        raise NotImplementedError("openat2 is not available on this host")
-
-    pure = sanitize_relpath(relpath, max_bytes=4096)
-    rel = str(pure) if pure.parts else "."
-
-    libc = ctypes.CDLL(None, use_errno=True)
-    how = struct.pack(
-        _OPEN_HOW_FORMAT,
-        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC,
-        0,
-        _RESOLVE_BENEATH | _RESOLVE_NO_SYMLINKS,
-    )
-    buf = ctypes.create_string_buffer(how, _OPEN_HOW_SIZE)
-    ctypes.set_errno(0)
-    fd = libc.syscall(
-        ctypes.c_long(_OPENAT2_SYSCALL_NR),
-        ctypes.c_int(base_fd),
-        ctypes.c_char_p(rel.encode("utf-8", "surrogatepass")),
-        ctypes.byref(buf),
-        ctypes.c_size_t(_OPEN_HOW_SIZE),
-    )
-    if fd < 0:
-        err = ctypes.get_errno()
-        if err in (errno.EXDEV, errno.ELOOP):
-            logger.debug("openat2_beneath: containment/symlink escape errno=%s", err)
-            raise NasSecurityError("Invalid path")
-        if err == errno.ENOENT:
-            raise FileNotFoundError(rel)
-        if err == errno.EACCES:
-            raise PermissionError(rel)
-        logger.debug("openat2_beneath: syscall failed errno=%s", err)
-        raise NasSecurityError("Invalid path")
-
-    try:
-        st = os.fstat(fd)
-    except OSError:
-        os.close(fd)
-        raise
-    if not stat.S_ISREG(st.st_mode):
-        os.close(fd)
-        logger.debug("openat2_beneath: non-regular file rejected (mode=%o)", st.st_mode)
-        raise NasSecurityError("unsupported file type")
-
-    _clear_nonblock(fd)
-    return fd
 
 
 # --------------------------------------------------------------------------- #

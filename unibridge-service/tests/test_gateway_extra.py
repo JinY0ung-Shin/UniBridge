@@ -14,7 +14,6 @@ from app.routers.gateway import (
     _extract_service_keys,
     _extract_strip_prefix,
     _extract_timeseries,
-    _get_step,
     _mask_value,
     _validate_route,
 )
@@ -64,11 +63,6 @@ def test_extract_service_keys_present_and_absent():
 def test_extract_strip_prefix_true_when_regex_uri():
     assert _extract_strip_prefix({"plugins": {"proxy-rewrite": {"regex_uri": ["a", "b"]}}})
     assert not _extract_strip_prefix({"plugins": {}})
-
-
-def test_get_step_known_and_unknown():
-    assert _get_step("1h") == "60s"
-    assert _get_step("nonsense") == "60s"
 
 
 def test_validate_route_accepts_safe_and_rejects_unsafe():
