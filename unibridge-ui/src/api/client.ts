@@ -296,13 +296,6 @@ export interface SavedQueryCreate {
   description?: string;
 }
 
-export interface SavedQueryUpdate {
-  name?: string;
-  database_alias?: string | null;
-  sql_text?: string;
-  description?: string;
-}
-
 function encodeTemplatePath(path: string): string {
   return path.split('/').map(encodeURIComponent).join('/');
 }
@@ -349,11 +342,6 @@ export async function getSavedQueries(): Promise<SavedQuery[]> {
 
 export async function createSavedQuery(body: SavedQueryCreate): Promise<SavedQuery> {
   const { data } = await client.post('/query/saved', body);
-  return data;
-}
-
-export async function updateSavedQuery(id: number, body: SavedQueryUpdate): Promise<SavedQuery> {
-  const { data } = await client.put(`/query/saved/${id}`, body);
   return data;
 }
 
@@ -679,13 +667,6 @@ export async function deleteQueryTemplate(path: string): Promise<void> {
   await client.delete(`/admin/query/templates/${encodeTemplatePath(path)}`);
 }
 
-/* ── Auth ── */
-
-export async function getToken(username: string, role: string): Promise<{ access_token: string }> {
-  const { data } = await client.post('/auth/token', { username, role });
-  return data;
-}
-
 /* ── Gateway Types ── */
 
 export interface GatewayServiceKey {
@@ -791,11 +772,6 @@ export async function getGatewayUpstreams(): Promise<GatewayListResponse<Gateway
   return data;
 }
 
-export async function getGatewayUpstream(id: string): Promise<GatewayUpstream> {
-  const { data } = await client.get(`/admin/gateway/upstreams/${id}`);
-  return data;
-}
-
 export async function saveGatewayUpstream(id: string, upstream: Record<string, unknown>): Promise<GatewayUpstream> {
   const { data } = await client.put(`/admin/gateway/upstreams/${id}`, upstream);
   return data;
@@ -821,11 +797,6 @@ export interface TimeSeriesPoint {
 export interface StatusCodeData {
   code: string;
   count: number;
-}
-
-export interface TopRoute {
-  route: string;
-  requests: number;
 }
 
 /** Series point that may carry no value — e.g. a latency quantile over a window
@@ -883,11 +854,6 @@ export async function getMetricsLatency(
   const { data } = await client.get('/admin/gateway/metrics/latency', {
     params: { ...timeParams(sel), route, consumer },
   });
-  return data;
-}
-
-export async function getMetricsTopRoutes(sel: TimeSelection = DEFAULT_SELECTION): Promise<TopRoute[]> {
-  const { data } = await client.get('/admin/gateway/metrics/top-routes', { params: { ...timeParams(sel) } });
   return data;
 }
 
@@ -1286,11 +1252,6 @@ export async function getRoles(): Promise<RoleInfo[]> {
   return data;
 }
 
-export async function getRole(id: number): Promise<RoleInfo> {
-  const { data } = await client.get(`/admin/roles/${id}`);
-  return data;
-}
-
 export async function createRole(body: { name: string; description?: string; permissions: string[] }): Promise<RoleInfo> {
   const { data } = await client.post('/admin/roles', body);
   return data;
@@ -1566,12 +1527,6 @@ export async function setAlertResourceOwner(
   const id = encodeURIComponent(resourceId);
   const { data } = await client.put(`/admin/alerts/resource-owners/${type}/${id}`, body);
   return data;
-}
-
-export async function deleteAlertResourceOwner(resourceType: string, resourceId: string): Promise<void> {
-  const type = encodeURIComponent(resourceType);
-  const id = encodeURIComponent(resourceId);
-  await client.delete(`/admin/alerts/resource-owners/${type}/${id}`);
 }
 
 // History & Status
@@ -2155,14 +2110,6 @@ export async function downloadS3Object(
     ? decodeURIComponent(raw)
     : params.key.split('/').pop() || 'download';
   return { blob: response.data as Blob, filename };
-}
-
-export async function getS3PresignedUrl(
-  alias: string,
-  params: { bucket: string; key: string; expires_in?: number },
-): Promise<{ url: string; expires_in: number }> {
-  const { data } = await client.get(`/s3/${alias}/objects/presigned-url`, { params });
-  return data;
 }
 
 /* ── NAS Types ── */

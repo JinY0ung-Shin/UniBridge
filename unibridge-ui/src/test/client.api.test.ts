@@ -155,7 +155,6 @@ describe('api client API helpers', () => {
     await mod.getQueryHistory({ database_alias: 'main', limit: 10 });
     await mod.getSavedQueries();
     await mod.createSavedQuery({ name: 'daily', sql_text: 'SELECT 1' });
-    await mod.updateSavedQuery(4, { description: 'updated' });
     await mod.deleteSavedQuery(4);
     await mod.getAdminAuditLogs({ actor: 'admin', offset: 20 });
 
@@ -163,7 +162,6 @@ describe('api client API helpers', () => {
       { method: 'get', url: '/query/history', params: { database_alias: 'main', limit: 10 }, data: undefined },
       { method: 'get', url: '/query/saved', params: undefined, data: undefined },
       { method: 'post', url: '/query/saved', params: undefined, data: { name: 'daily', sql_text: 'SELECT 1' } },
-      { method: 'put', url: '/query/saved/4', params: undefined, data: { description: 'updated' } },
       { method: 'delete', url: '/query/saved/4', params: undefined, data: undefined },
       { method: 'get', url: '/admin/audit-logs', params: { actor: 'admin', offset: 20 }, data: undefined },
     ]);
@@ -238,19 +236,6 @@ describe('api client API helpers', () => {
     });
   });
 
-  it('getToken POSTs auth token request', async () => {
-    const mod = await importClient(keycloak);
-    let body: { username?: string; role?: string } | undefined;
-    mod.default.defaults.adapter = makeAdapter((c) => {
-      body = JSON.parse(c.data);
-      expect(c.url).toBe('/auth/token');
-      return { access_token: 'jwt.token' };
-    });
-    const res = await mod.getToken('user', 'admin');
-    expect(body).toEqual({ username: 'user', role: 'admin' });
-    expect(res.access_token).toBe('jwt.token');
-  });
-
   it('gateway routes', async () => {
     const mod = await importClient(keycloak);
     const calls: Array<{ method?: string; url?: string }> = [];
@@ -284,12 +269,10 @@ describe('api client API helpers', () => {
       return {};
     });
     await mod.getGatewayUpstreams();
-    await mod.getGatewayUpstream('u1');
     await mod.saveGatewayUpstream('u1', { type: 'roundrobin' });
     await mod.deleteGatewayUpstream('u1');
     expect(calls).toEqual([
       { method: 'get', url: '/admin/gateway/upstreams' },
-      { method: 'get', url: '/admin/gateway/upstreams/u1' },
       { method: 'put', url: '/admin/gateway/upstreams/u1' },
       { method: 'delete', url: '/admin/gateway/upstreams/u1' },
     ]);
@@ -320,7 +303,6 @@ describe('api client API helpers', () => {
     });
 
     await mod.getMetricsLatency({ kind: 'preset', value: '24h' }, 'orders', 'client-a');
-    await mod.getMetricsTopRoutes();
     await mod.getMetricsRequestsTotal({ kind: 'custom', start: 10, end: 20 }, undefined, 'client-b', 'day');
     await mod.getMetricsRoutesComparison({ kind: 'preset', value: '6h' }, 'client-c');
     await mod.getMetricsConsumersComparison({ kind: 'preset', value: '1h' });
@@ -329,7 +311,6 @@ describe('api client API helpers', () => {
 
     expect(calls).toEqual([
       { url: '/admin/gateway/metrics/latency', params: { range: '24h', route: 'orders', consumer: 'client-a' } },
-      { url: '/admin/gateway/metrics/top-routes', params: { range: '1h' } },
       { url: '/admin/gateway/metrics/requests-total', params: { start: 10, end: 20, bucket: 'day', route: undefined, consumer: 'client-b' } },
       { url: '/admin/gateway/metrics/routes-comparison', params: { range: '6h', consumer: 'client-c' } },
       { url: '/admin/gateway/metrics/consumers-comparison', params: { range: '1h' } },
@@ -438,7 +419,6 @@ describe('api client API helpers', () => {
     await mod.getAuthRoles();
     await mod.getCurrentUser();
     await mod.getRoles();
-    await mod.getRole(1);
     await mod.createRole({ name: 'a', permissions: [] });
     await mod.updateRole(1, { permissions: [] });
     await mod.deleteRole(1);
@@ -455,7 +435,6 @@ describe('api client API helpers', () => {
       '/auth/roles',
       '/auth/me',
       '/admin/roles',
-      '/admin/roles/1',
       '/admin/roles',
       '/admin/roles/1',
       '/admin/roles/1',
@@ -490,7 +469,6 @@ describe('api client API helpers', () => {
 
     await mod.getAlertResourceOwners();
     await mod.setAlertResourceOwner('db', 'orders-db', { emails: ['owner@example.com'] });
-    await mod.deleteAlertResourceOwner('db', 'orders-db');
 
     await mod.getAlertHistory({ alert_type: 'triggered' });
     await mod.getAlertStatus();
@@ -506,7 +484,6 @@ describe('api client API helpers', () => {
       'post /admin/alerts/settings/recipients/test',
       'get /admin/alerts/resource-owners',
       'put /admin/alerts/resource-owners/db/orders-db',
-      'delete /admin/alerts/resource-owners/db/orders-db',
       'get /admin/alerts/history',
       'get /admin/alerts/status',
     ]);
@@ -538,7 +515,6 @@ describe('api client API helpers', () => {
     await mod.getS3Buckets('a');
     await mod.getS3Objects('a', { bucket: 'b', prefix: 'p/' });
     await mod.getS3ObjectMetadata('a', { bucket: 'b', key: 'k' });
-    await mod.getS3PresignedUrl('a', { bucket: 'b', key: 'k', expires_in: 60 });
 
     expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
       'get /admin/s3/connections',
@@ -549,7 +525,6 @@ describe('api client API helpers', () => {
       'get /s3/a/buckets',
       'get /s3/a/objects',
       'get /s3/a/objects/metadata',
-      'get /s3/a/objects/presigned-url',
     ]);
   });
 

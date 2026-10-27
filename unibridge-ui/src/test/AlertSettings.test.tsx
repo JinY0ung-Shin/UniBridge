@@ -10,7 +10,6 @@ vi.mock('../api/client', () => ({
   testRecipientDelivery: vi.fn(),
   getAlertResourceOwners: vi.fn(),
   setAlertResourceOwner: vi.fn(),
-  deleteAlertResourceOwner: vi.fn(),
 }));
 
 import { screen, waitFor, fireEvent } from '@testing-library/react';
@@ -27,7 +26,6 @@ import {
   testRecipientDelivery,
   getAlertResourceOwners,
   setAlertResourceOwner,
-  deleteAlertResourceOwner,
 } from '../api/client';
 import AlertSettings from '../pages/AlertSettings';
 import { renderWithProviders } from './helpers';
@@ -43,7 +41,6 @@ const mocks = {
   testRecipientDelivery: vi.mocked(testRecipientDelivery),
   getResourceOwners: vi.mocked(getAlertResourceOwners),
   setResourceOwner: vi.mocked(setAlertResourceOwner),
-  deleteResourceOwner: vi.mocked(deleteAlertResourceOwner),
 };
 
 const channelFixture = {
