@@ -42,6 +42,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from .config import settings
 from .reasoning_effort import clamp_reasoning_effort
 from .system_norm import normalize_system_messages
+from .tool_norm import normalize_tool_messages
 
 
 # ---------------------------------------------------------------------------
@@ -379,11 +380,18 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
     # prompt) is what strict chat templates reject; fix it in one place, last, so
     # the policy sees the fully assembled array — and only for the models whose
     # template actually rejects it, hence the model gate.
-    out["messages"] = normalize_system_messages(
-        messages,
-        settings.mid_system_policy,
+    # Then pull tool results up next to their ``tool_calls`` turn: a demoted
+    # reminder (or a separate user turn) wedged in between is ``user → tool``,
+    # which Mistral Large 4's template rejects. Gated by model like the above.
+    out["messages"] = normalize_tool_messages(
+        normalize_system_messages(
+            messages,
+            settings.mid_system_policy,
+            model=out.get("model"),
+            model_pattern=settings.mid_system_model_regex,
+        ),
         model=out.get("model"),
-        model_pattern=settings.mid_system_model_regex,
+        model_pattern=settings.tool_norm_model_regex,
     )
 
     tools = body.get("tools")

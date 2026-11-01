@@ -65,7 +65,14 @@ Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
   `role:"system"` reminders. `system_norm.py` merges the leading run + role-swaps later ones;
   both bridges apply it as the last request step (so `/v1/responses` chains stay normalized).
   Gated by `CONVERTER_MID_SYSTEM_MODEL_PATTERN` — case-insensitive regex `search`ed against the
-  outbound model (default `qwen3\.\d`, so `qwen3-8b`/`gpt-4o` pass through untouched; `.*` = all).
+  outbound model (default `qwen3\.\d|mistral-large-4`, so `qwen3-8b`/`gpt-4o` pass through
+  untouched; `.*` = all).
+- `CONVERTER_TOOL_NORM_MODEL_PATTERN` (default `mistral-large-4`, same regex rules) —
+  Mistral Large 4's template enforces role order (no `user → tool`, no `assistant|tool → system`;
+  Mistral won't relax it, HF discussion #5). `tool_norm.py` moves the `tool` messages answering an
+  assistant's `tool_calls` up ahead of any user/system message wedged in before them (a demoted
+  reminder, a separate user turn); runs after `system_norm` in both bridges, idempotent. Empty
+  tool content is fine: the template rejects only `None`/`[]`, and vLLM stringifies tool content.
 - `CONVERTER_MODEL_ALIAS_PREFIX` (default `claude/`, empty disables both halves) — the prefix
   `/v1/models` advertises aliases under and both bridges strip inbound. Stripping happens right
   after body parsing, before the request builders, so the mid-system model gate and the outbound

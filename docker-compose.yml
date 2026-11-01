@@ -619,8 +619,13 @@ services:
       - CONVERTER_MID_SYSTEM_POLICY=${CONVERTER_MID_SYSTEM_POLICY:-user}
       # Which models the policy above applies to: case-insensitive regex searched
       # against the outbound model name. Empty = the converter's own default
-      # (qwen3.<digit>, i.e. the strict Qwen3.5/3.6/3.8 line); set .* for all models.
+      # (qwen3.<digit>|mistral-large-4: strict Qwen3.5/3.6/3.8 and Mistral Large 4);
+      # set .* for all models.
       - CONVERTER_MID_SYSTEM_MODEL_PATTERN=${CONVERTER_MID_SYSTEM_MODEL_PATTERN:-}
+      # Models whose tool results are moved up next to the assistant tool_calls turn
+      # when a user/system message sits in between (Mistral Large 4's template 400s
+      # on user -> tool). Same regex rules; empty = default (mistral-large-4).
+      - CONVERTER_TOOL_NORM_MODEL_PATTERN=${CONVERTER_TOOL_NORM_MODEL_PATTERN:-}
     expose:
       - "4001"
     volumes:

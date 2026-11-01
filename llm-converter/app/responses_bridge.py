@@ -25,6 +25,7 @@ from typing import Any, AsyncIterator, Optional
 from .config import settings
 from .reasoning_effort import clamp_reasoning_effort
 from .system_norm import normalize_system_messages
+from .tool_norm import normalize_tool_messages
 
 # ---------------------------------------------------------------------------
 # ID generation
@@ -366,11 +367,18 @@ def responses_request_to_chat_body(
     elif body.get("instructions"):
         messages.append({"role": "system", "content": body["instructions"]})
     messages.extend(_input_to_messages(body.get("input", [])))
-    out["messages"] = normalize_system_messages(
-        messages,
-        settings.mid_system_policy,
+    # Then pull tool results up next to their ``tool_calls`` turn: a demoted
+    # reminder (or a separate user turn) wedged in between is ``user → tool``,
+    # which Mistral Large 4's template rejects. Gated by model like the above.
+    out["messages"] = normalize_tool_messages(
+        normalize_system_messages(
+            messages,
+            settings.mid_system_policy,
+            model=out.get("model"),
+            model_pattern=settings.mid_system_model_regex,
+        ),
         model=out.get("model"),
-        model_pattern=settings.mid_system_model_regex,
+        model_pattern=settings.tool_norm_model_regex,
     )
 
     if "max_output_tokens" in body and body["max_output_tokens"] is not None:

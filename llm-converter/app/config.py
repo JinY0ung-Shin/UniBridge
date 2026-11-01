@@ -55,7 +55,15 @@ _MID_SYSTEM_POLICIES = frozenset({"user", "hoist", "asis"})
 # Qwen3.x generations (3.5 / 3.6 / 3.8) hard-error on a misplaced system turn;
 # the hyphenated 2025 line (``qwen3-8b``) tolerates it, so ``qwen3`` alone would
 # over-match and reshape requests that never needed it.
-_DEFAULT_MID_SYSTEM_MODEL_PATTERN = r"qwen3\.\d"
+# Mistral Large 4's template rejects a system turn right after an assistant or
+# tool turn (it allows one only after system/user), which is where Claude Code's
+# mid-history reminders land; demoting them to ``user`` is what it accepts.
+_DEFAULT_MID_SYSTEM_MODEL_PATTERN = r"qwen3\.\d|mistral-large-4"
+
+# Which models get tool results moved up next to their assistant ``tool_calls``
+# turn (``tool_norm.normalize_tool_messages``). Mistral Large 4's template raises
+# on ``user → tool``; tolerant backends keep the client's shape.
+_DEFAULT_TOOL_NORM_MODEL_PATTERN = r"mistral-large-4"
 
 # Effort levels a vLLM/SGLang backend actually accepts. The OpenAI ladder the
 # clients send is wider (see ``reasoning_effort.EFFORT_LADDER``), and an
@@ -255,6 +263,25 @@ class _Settings:
             except re.error:
                 pass
         return re.compile(_DEFAULT_MID_SYSTEM_MODEL_PATTERN, re.IGNORECASE)
+
+    @property
+    def tool_norm_model_regex(self) -> re.Pattern[str]:
+        """Which models get their tool results moved up
+        (``CONVERTER_TOOL_NORM_MODEL_PATTERN``, default ``mistral-large-4``).
+
+        Searched case-insensitively against the outbound ``model`` like
+        :attr:`mid_system_model_regex`, so ``mistralai/Mistral-Large-4-1T-A52B``
+        matches. Strict templates (Mistral Large 4) 400 when a ``user`` message
+        sits between an assistant's ``tool_calls`` and its ``tool`` results;
+        :func:`app.tool_norm.normalize_tool_messages` moves the results up. Set
+        ``.*`` for every model. An unparseable regex falls back to the default."""
+        raw = os.getenv("CONVERTER_TOOL_NORM_MODEL_PATTERN", "").strip()
+        if raw:
+            try:
+                return re.compile(raw, re.IGNORECASE)
+            except re.error:
+                pass
+        return re.compile(_DEFAULT_TOOL_NORM_MODEL_PATTERN, re.IGNORECASE)
 
     @property
     def model_alias_prefix(self) -> str:
