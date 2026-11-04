@@ -7,6 +7,7 @@ import {
   executeQueryTemplate,
   getDatabases,
   getQueryTemplates,
+  getQueryTemplateUsage,
   updateQueryTemplate,
   type QueryResult,
   type QueryTemplate,
@@ -14,6 +15,7 @@ import {
   type QueryTemplateUpdate,
 } from '../api/client';
 import { usePermissions } from '../components/usePermissions';
+import { formatKST } from '../utils/time';
 import AgentApiModal from './queryTemplates/AgentApiModal';
 import './QueryTemplates.css';
 
@@ -151,6 +153,8 @@ function QueryTemplates() {
   const { permissions } = usePermissions();
   const canWrite = permissions.includes('query.settings.write');
   const canExecute = permissions.includes('query.execute');
+  // Run counts come from the query audit log, so they follow its read permission.
+  const canSeeUsage = permissions.includes('query.audit.read');
 
   const [form, setForm] = useState<TemplateFormState>(emptyForm);
   const [editingPath, setEditingPath] = useState<string | null>(null);
@@ -172,6 +176,15 @@ function QueryTemplates() {
     queryKey: ['databases'],
     queryFn: getDatabases,
   });
+
+  const usageQuery = useQuery({
+    queryKey: ['query-template-usage'],
+    queryFn: getQueryTemplateUsage,
+    staleTime: 60_000,
+    enabled: canSeeUsage,
+  });
+  const usageDays = usageQuery.data?.window_days ?? 7;
+  const retentionDays = usageQuery.data?.retention_days ?? 0;
 
   const templates = useMemo(() => templatesQuery.data ?? [], [templatesQuery.data]);
   const databases = useMemo(() => databasesQuery.data ?? [], [databasesQuery.data]);
@@ -258,6 +271,9 @@ function QueryTemplates() {
       setResult(null);
       setRunError(errorMessage(err, t('queryTemplates.runFailed')));
     },
+    onSettled: () => {
+      if (canSeeUsage) queryClient.invalidateQueries({ queryKey: ['query-template-usage'] });
+    },
   });
 
   function updateForm<K extends keyof TemplateFormState>(key: K, value: TemplateFormState[K]) {
@@ -285,6 +301,36 @@ function QueryTemplates() {
     if (window.confirm(t('queryTemplates.deleteConfirm', { path: template.path }))) {
       deleteMutation.mutate(template.path);
     }
+  }
+
+  function renderRunCount(path: string) {
+    if (usageQuery.isPending) return '\u2026';
+    if (usageQuery.isError) return '\u2014';
+    const total = usageQuery.data?.templates[path]?.total ?? 0;
+    return t('queryTemplates.usageCount', { days: usageDays, formatted: total.toLocaleString() });
+  }
+
+  function renderUsageSummary(path: string) {
+    if (usageQuery.isPending) return null;
+    if (usageQuery.isError) {
+      return <p className="template-usage-summary template-usage-summary--error">{t('queryTemplates.usageLoadFailed')}</p>;
+    }
+    const usage = usageQuery.data?.templates[path];
+    const truncated = retentionDays > 0 && retentionDays < usageDays;
+    return (
+      <p className="template-usage-summary">
+        {usage
+          ? t('queryTemplates.usageSummary', {
+              days: usageDays,
+              total: usage.total.toLocaleString(),
+              success: usage.success.toLocaleString(),
+              failed: usage.failed.toLocaleString(),
+              last: formatKST(usage.last_executed_at),
+            })
+          : t('queryTemplates.usageNone', { days: usageDays })}
+        {truncated && ` ${t('queryTemplates.usageRetentionNote', { days: retentionDays })}`}
+      </p>
+    );
   }
 
   function handleRun() {
@@ -337,7 +383,10 @@ function QueryTemplates() {
               className="btn btn-secondary btn-sm"
               aria-label={t('queryTemplates.refreshTemplates')}
               title={t('queryTemplates.refreshTemplates')}
-              onClick={() => templatesQuery.refetch()}
+              onClick={() => {
+                templatesQuery.refetch();
+                if (canSeeUsage) usageQuery.refetch();
+              }}
             >
               {t('common.refresh')}
             </button>
@@ -367,8 +416,18 @@ function QueryTemplates() {
                     <span className="template-row-name">{template.name}</span>
                     <span className="template-row-path">/api/query/templates/{template.path}</span>
                   </span>
-                  <span className={`status-pill ${template.enabled ? 'status-pill--active' : 'status-pill--disabled'}`}>
-                    {template.enabled ? t('common.active') : t('common.disabled')}
+                  <span className="template-row-side">
+                    {canSeeUsage && (
+                      <span
+                        className="template-usage-count"
+                        title={t('queryTemplates.usageCountTitle', { days: usageDays })}
+                      >
+                        {renderRunCount(template.path)}
+                      </span>
+                    )}
+                    <span className={`status-pill ${template.enabled ? 'status-pill--active' : 'status-pill--disabled'}`}>
+                      {template.enabled ? t('common.active') : t('common.disabled')}
+                    </span>
                   </span>
                 </button>
               ))}
@@ -532,6 +591,7 @@ function QueryTemplates() {
             <div>
               <h2>{selectedTemplate.name}</h2>
               <span>/api/query/templates/{selectedTemplate.path}</span>
+              {canSeeUsage && renderUsageSummary(selectedTemplate.path)}
             </div>
             <div className="template-detail-actions">
               <button

@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
@@ -34,6 +35,8 @@ from app.schemas import (
     QueryTemplateCreate,
     QueryTemplateResponse,
     QueryTemplateUpdate,
+    QueryTemplateUsage,
+    QueryTemplateUsageResponse,
     SystemConfigResponse,
     SystemConfigUpdate,
     normalize_query_template_path,
@@ -669,6 +672,47 @@ async def list_query_templates(
     """List saved query templates."""
     result = await db.execute(select(QueryTemplate).order_by(QueryTemplate.path.asc()))
     return [_to_template_response(template) for template in result.scalars().all()]
+
+
+TEMPLATE_USAGE_WINDOW_DAYS = 7
+
+
+@router.get("/admin/query/template-usage", response_model=QueryTemplateUsageResponse)
+async def query_template_usage(
+    _admin: CurrentUser = Depends(require_permission("query.audit.read")),
+    db: AsyncSession = Depends(get_db),
+) -> QueryTemplateUsageResponse:
+    """Per-template run counts over the last 7 days, from the query audit log.
+
+    Counts every audited run through POST /query/templates/{path} (UI, API key or
+    MCP ``run_template``), including failed ones. Runs before migration 0030
+    carry no template and are not counted.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=TEMPLATE_USAGE_WINDOW_DAYS)
+    stmt = (
+        select(
+            AuditLog.template_path,
+            func.count(),
+            func.sum(case((AuditLog.status == "success", 1), else_=0)),
+            func.max(AuditLog.timestamp),
+        )
+        .where(AuditLog.template_path.is_not(None), AuditLog.timestamp >= since)
+        .group_by(AuditLog.template_path)
+    )
+    rows = (await db.execute(stmt)).all()
+    return QueryTemplateUsageResponse(
+        window_days=TEMPLATE_USAGE_WINDOW_DAYS,
+        retention_days=settings_manager.audit_log_retention_days,
+        templates={
+            path: QueryTemplateUsage(
+                total=total,
+                success=int(success or 0),
+                failed=total - int(success or 0),
+                last_executed_at=last,
+            )
+            for path, total, success, last in rows
+        },
+    )
 
 
 @router.post(

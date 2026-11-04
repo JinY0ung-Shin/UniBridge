@@ -316,6 +316,7 @@ async def _record_failed_query(
     audit_status: str,
     error_message: str,
     duration_seconds: float = 0,
+    template_path: str | None = None,
 ) -> None:
     metrics.record_query(
         db_alias=database_alias,
@@ -333,6 +334,7 @@ async def _record_failed_query(
             params=params,
             status=audit_status,
             error_message=error_message,
+            template_path=template_path,
         )
     except Exception:
         logger.exception("Failed to write audit log for failed query")
@@ -345,6 +347,17 @@ async def execute(
     db: AsyncSession = Depends(get_db),
 ) -> QueryResponse | StreamingResponse:
     """Execute an SQL query against a registered database."""
+    return await _run_query(req, user=user, db=db)
+
+
+async def _run_query(
+    req: QueryRequest,
+    *,
+    user: CurrentUser | ApiKeyUser,
+    db: AsyncSession,
+    template_path: str | None = None,
+) -> QueryResponse | StreamingResponse:
+    """Body of :func:`execute`; ``template_path`` tags the audit row of a template run."""
 
     username = f"apikey:{user.consumer_name}" if isinstance(user, ApiKeyUser) else user.username
     # Query metrics are attributed per API key; JWT callers have no key, so they
@@ -416,6 +429,7 @@ async def execute(
             metric_status="error",
             audit_status="error",
             error_message=str(exc.detail),
+            template_path=template_path,
         )
         raise
     # Neo4j allows data reads and data writes only; data writes still have to
@@ -607,7 +621,7 @@ async def execute(
         try:
             await log_query(db, user=username, database_alias=req.database,
                             sql=req.sql, params=req.params, status="timeout",
-                            error_message="Query timed out")
+                            error_message="Query timed out", template_path=template_path)
         except Exception:
             logger.exception("Failed to write audit log for timed-out query")
         raise HTTPException(
@@ -631,6 +645,7 @@ async def execute(
             metric_status=status_label,
             audit_status=status_label,
             error_message=str(exc.detail),
+            template_path=template_path,
             duration_seconds=time.monotonic() - query_started_at,
         )
         raise
@@ -645,7 +660,7 @@ async def execute(
         try:
             await log_query(db, user=username, database_alias=req.database,
                             sql=req.sql, params=req.params, status="error",
-                            error_message=str(exc))
+                            error_message=str(exc), template_path=template_path)
         except Exception:
             logger.exception("Failed to write audit log for failed query")
         logger.exception("Query execution failed")
@@ -669,7 +684,8 @@ async def execute(
     try:
         await log_query(db, user=username, database_alias=req.database,
                         sql=req.sql, params=req.params, row_count=response.row_count,
-                        elapsed_ms=response.elapsed_ms, status="success")
+                        elapsed_ms=response.elapsed_ms, status="success",
+                        template_path=template_path)
     except Exception:
         logger.exception("Failed to write audit log for successful query")
 
@@ -855,7 +871,7 @@ async def execute_template(
         timeout=execute_body.timeout if execute_body.timeout is not None else template.timeout,
         render=execute_body.render,
     )
-    return await execute(request, user=user, db=db)
+    return await _run_query(request, user=user, db=db, template_path=template.path)
 
 
 @router.get("/query/templates", response_model=list[QueryTemplateResponse])

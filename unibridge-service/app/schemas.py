@@ -183,6 +183,23 @@ class QueryTemplateResponse(BaseModel):
     updated_at: datetime | None = None
 
 
+class QueryTemplateUsage(BaseModel):
+    """Runs of one template inside the usage window (from the query audit log)."""
+
+    total: int
+    success: int
+    failed: int  # status "error" or "timeout"
+    last_executed_at: datetime | None = None
+
+
+class QueryTemplateUsageResponse(BaseModel):
+    window_days: int
+    # Query audit retention in days (0 = keep forever). Below window_days the
+    # counts only cover the retained part of the window.
+    retention_days: int
+    templates: dict[str, QueryTemplateUsage]  # keyed by template path; unused = absent
+
+
 class QueryTemplateExecuteRequest(BaseModel):
     params: dict[str, Any] | None = Field(None, description="Named bind parameters for the stored query")
     limit: int | None = Field(None, ge=1, le=1_000_000, description="Override the template default row limit")
@@ -275,6 +292,7 @@ class AuditLogResponse(BaseModel):
     elapsed_ms: int | None = None
     status: str
     error_message: str | None = None
+    template_path: str | None = None
 
     model_config = {"from_attributes": True}
 

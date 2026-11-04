@@ -725,3 +725,105 @@ async def test_agent_template_edit_writes_actor_and_snapshots_to_audit_log(
     assert entry["actor"] == "apikey:audited-editor"
     assert json.loads(entry["before"])["description"] == ""
     assert json.loads(entry["after"])["description"] == "audited change"
+
+
+# ── Per-template usage (audit_logs.template_path) ─────────────────────────────
+
+
+async def _run_template_and_adhoc(client, admin_token, *, fail_template: bool = False) -> None:
+    """One template run plus one ad-hoc run of the same SQL, real audit writes."""
+    with patch(
+        "app.routers.query.connection_manager.get_db_type",
+        return_value="postgres",
+    ), patch(
+        "app.routers.query.connection_manager.get_engine",
+        return_value=MagicMock(),
+    ), patch(
+        "app.routers.query.execute_query",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("boom") if fail_template else None,
+        return_value=_mock_query_response(),
+    ):
+        resp = await client.post(
+            "/query/templates/reports/users",
+            json={"params": {"id": 1}},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == (400 if fail_template else 200)
+    with patch(
+        "app.routers.query.connection_manager.get_db_type",
+        return_value="postgres",
+    ), patch(
+        "app.routers.query.connection_manager.get_engine",
+        return_value=MagicMock(),
+    ), patch(
+        "app.routers.query.execute_query",
+        new_callable=AsyncMock,
+        return_value=_mock_query_response(),
+    ):
+        resp = await client.post(
+            "/query/execute",
+            json={"database": "maindb", "sql": "SELECT id, name FROM users WHERE id = :id",
+                  "params": {"id": 1}},
+            headers=auth_header(admin_token),
+        )
+        assert resp.status_code == 200
+
+
+async def test_template_runs_are_tagged_in_audit_log(client, admin_token, seeded_db):
+    from app.models import AuditLog
+
+    await _create_database(client, admin_token)
+    await _create_template(client, admin_token)
+    await _run_template_and_adhoc(client, admin_token)
+
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        rows = (await db.execute(select(AuditLog).order_by(AuditLog.id))).scalars().all()
+    assert [(row.template_path, row.status) for row in rows] == [
+        ("reports/users", "success"),
+        (None, "success"),
+    ]
+
+
+async def test_template_usage_counts_recent_runs_per_template(client, admin_token, seeded_db):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import AuditLog
+
+    await _create_database(client, admin_token)
+    await _create_template(client, admin_token)
+    await _run_template_and_adhoc(client, admin_token)
+    await _run_template_and_adhoc(client, admin_token, fail_template=True)
+
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        # Outside the 7-day window: not counted.
+        db.add(AuditLog(
+            user="admin", database_alias="maindb", sql="SELECT 1", status="success",
+            template_path="reports/users",
+            timestamp=datetime.now(timezone.utc) - timedelta(days=8),
+        ))
+        db.add(AuditLog(
+            user="admin", database_alias="maindb", sql="SELECT 1", status="timeout",
+            template_path="reports/other",
+            timestamp=datetime.now(timezone.utc) - timedelta(days=1),
+        ))
+        await db.commit()
+
+    resp = await client.get("/admin/query/template-usage", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["window_days"] == 7
+    assert body["retention_days"] == 0
+    users = body["templates"]["reports/users"]
+    assert (users["total"], users["success"], users["failed"]) == (2, 1, 1)
+    assert users["last_executed_at"] is not None
+    other = body["templates"]["reports/other"]
+    assert (other["total"], other["success"], other["failed"]) == (1, 0, 1)
+    assert set(body["templates"]) == {"reports/users", "reports/other"}
+
+
+async def test_template_usage_requires_query_audit_read(client, querier_token):
+    resp = await client.get("/admin/query/template-usage", headers=auth_header(querier_token))
+    assert resp.status_code == 403

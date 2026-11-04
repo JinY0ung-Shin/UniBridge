@@ -144,6 +144,30 @@
   white-space: nowrap;
 }
 
+.template-row-side {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.template-usage-count {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.template-detail-header .template-usage-summary {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.template-detail-header .template-usage-summary--error {
+  color: var(--accent-red);
+}
+
 .status-pill {
   flex: 0 0 auto;
   padding: 3px 7px;

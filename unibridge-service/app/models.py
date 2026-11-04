@@ -4,6 +4,7 @@ from sqlalchemy import (
     Column,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -168,6 +169,13 @@ class AuditLog(Base):
     elapsed_ms = Column(Integer, nullable=True)
     status = Column(String, nullable=False)  # "success" or "error"
     error_message = Column(Text, nullable=True)
+    # Saved template the query ran through (POST /query/templates/{path});
+    # NULL for ad-hoc SQL and for rows written before 0030.
+    template_path = Column(String(200), nullable=True)
+
+    __table_args__ = (
+        Index("ix_audit_logs_template_path_timestamp", "template_path", "timestamp"),
+    )
 
 
 class SavedQuery(Base):

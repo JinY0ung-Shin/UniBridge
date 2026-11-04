@@ -742,7 +742,7 @@ async def test_template_execution_passes_render_through(monkeypatch):
         return_value=SimpleNamespace(scalar_one_or_none=lambda: template)
     )
     execute = AsyncMock(return_value="sent")
-    monkeypatch.setattr(query, "execute", execute)
+    monkeypatch.setattr(query, "_run_query", execute)
 
     result = await query.execute_template(
         "reports/daily",
@@ -754,3 +754,4 @@ async def test_template_execution_passes_render_through(monkeypatch):
     assert result == "sent"
     request = execute.await_args.args[0]
     assert (request.render, request.sql, request.limit) == ("database", "SELECT v FROM t", 50)
+    assert execute.await_args.kwargs["template_path"] == "reports/daily"

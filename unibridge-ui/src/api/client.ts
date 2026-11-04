@@ -667,6 +667,27 @@ export async function deleteQueryTemplate(path: string): Promise<void> {
   await client.delete(`/admin/query/templates/${encodeTemplatePath(path)}`);
 }
 
+export interface QueryTemplateUsage {
+  total: number;
+  success: number;
+  /** Runs that ended in error or timeout. */
+  failed: number;
+  last_executed_at: string | null;
+}
+
+export interface QueryTemplateUsageResponse {
+  window_days: number;
+  /** Query audit retention in days; 0 = kept forever. */
+  retention_days: number;
+  /** Keyed by template path; templates without runs in the window are absent. */
+  templates: Record<string, QueryTemplateUsage>;
+}
+
+export async function getQueryTemplateUsage(): Promise<QueryTemplateUsageResponse> {
+  const { data } = await client.get('/admin/query/template-usage');
+  return data;
+}
+
 /* ── Gateway Types ── */
 
 export interface GatewayServiceKey {

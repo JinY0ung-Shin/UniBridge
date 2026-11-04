@@ -46,6 +46,7 @@ async def log_query(
     elapsed_ms: int | None = None,
     status: str,
     error_message: str | None = None,
+    template_path: str | None = None,
 ) -> AuditLog:
     """Write an audit log entry for a query execution."""
     entry = AuditLog(
@@ -57,6 +58,7 @@ async def log_query(
         elapsed_ms=elapsed_ms,
         status=status,
         error_message=error_message,
+        template_path=template_path,
     )
 
     session_factory = async_sessionmaker(db.bind, class_=AsyncSession, expire_on_commit=False)

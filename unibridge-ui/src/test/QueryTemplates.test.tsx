@@ -6,6 +6,7 @@ vi.mock('../api/client', () => ({
   getDatabases: vi.fn(),
   getQueryTemplateGuide: vi.fn(),
   getQueryTemplates: vi.fn(),
+  getQueryTemplateUsage: vi.fn(),
   updateQueryTemplate: vi.fn(),
 }));
 
@@ -19,6 +20,7 @@ import {
   getDatabases,
   getQueryTemplateGuide,
   getQueryTemplates,
+  getQueryTemplateUsage,
   updateQueryTemplate,
 } from '../api/client';
 import QueryTemplates from '../pages/QueryTemplates';
@@ -30,6 +32,7 @@ const mockedExecuteQueryTemplate = vi.mocked(executeQueryTemplate);
 const mockedGetDatabases = vi.mocked(getDatabases);
 const mockedGetQueryTemplateGuide = vi.mocked(getQueryTemplateGuide);
 const mockedGetQueryTemplates = vi.mocked(getQueryTemplates);
+const mockedGetQueryTemplateUsage = vi.mocked(getQueryTemplateUsage);
 const mockedUpdateQueryTemplate = vi.mocked(updateQueryTemplate);
 
 const template = {
@@ -59,6 +62,7 @@ describe('QueryTemplates', () => {
     vi.clearAllMocks();
     mockedGetDatabases.mockResolvedValue([makeDatabase({ alias: 'maindb' })]);
     mockedGetQueryTemplates.mockResolvedValue([template]);
+    mockedGetQueryTemplateUsage.mockResolvedValue({ window_days: 7, retention_days: 0, templates: {} });
     mockedCreateQueryTemplate.mockResolvedValue(template);
     mockedUpdateQueryTemplate.mockResolvedValue(template);
     mockedDeleteQueryTemplate.mockResolvedValue(undefined);
@@ -231,6 +235,44 @@ describe('QueryTemplates', () => {
     await user.type(screen.getByRole('searchbox', { name: 'Search templates...' }), 'orders');
 
     expect(screen.getByRole('heading', { name: 'Saved Templates 1 / 2' })).toBeInTheDocument();
+  });
+
+  it('shows 7-day run counts per template to audit readers', async () => {
+    mockedGetQueryTemplates.mockResolvedValue([
+      template,
+      { ...template, id: 2, path: 'reports/orders', name: 'Orders report' },
+    ]);
+    mockedGetQueryTemplateUsage.mockResolvedValue({
+      window_days: 7,
+      retention_days: 3,
+      templates: {
+        'reports/users': {
+          total: 1234,
+          success: 1230,
+          failed: 4,
+          last_executed_at: '2026-11-03T01:02:03Z',
+        },
+      },
+    });
+
+    renderWithProviders(<QueryTemplates />);
+
+    const usersRow = await screen.findByRole('button', { name: /templates\/reports\/users/ });
+    await waitFor(() => expect(usersRow).toHaveTextContent('7d: 1,234'));
+    expect(screen.getByRole('button', { name: /templates\/reports\/orders/ })).toHaveTextContent('7d: 0');
+    expect(
+      screen.getByText(/1,234 runs in the last 7 days · 1,230 succeeded · 4 failed · last run 2026/),
+    ).toHaveTextContent('(only the 3 days kept by query audit retention are counted)');
+  });
+
+  it('hides run counts from users without query audit access', async () => {
+    renderWithProviders(<QueryTemplates />, {
+      permissions: ADMIN_PERMISSIONS.filter((permission) => permission !== 'query.audit.read'),
+    });
+
+    const usersRow = await screen.findByRole('button', { name: /templates\/reports\/users/ });
+    expect(usersRow).not.toHaveTextContent('7d:');
+    expect(mockedGetQueryTemplateUsage).not.toHaveBeenCalled();
   });
 
   it('opens the agent API guide from the page header', async () => {
