@@ -120,7 +120,9 @@ async def test_lifespan_provisions_the_system_routes():
     assert "litellm" not in upstream_calls
     assert "llm-proxy" in route_calls
     assert "llm-admin" not in route_calls
-    for route_id in ("query-api", "query-template-write-api", "s3-api"):
+    for route_id in (
+        "query-api", "query-template-write-api", "s3-api", "network-api", "network-write-api"
+    ):
         assert (
             route_calls[route_id]["plugins"]["proxy-rewrite"][
                 "use_real_request_uri_unsafe"
@@ -550,6 +552,27 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
                 },
                 "status": 1,
             },
+            **{
+                ("routes", route_id): {
+                    "id": route_id,
+                    "name": route_id,
+                    "uri": "/api/network/*",
+                    "methods": methods,
+                    "upstream_id": "unibridge-service",
+                    "plugins": {
+                        "key-auth": {},
+                        "consumer-restriction": {"whitelist": [consumer]},
+                        "proxy-rewrite": {
+                            "headers": {"set": {"X-UniBridge-Internal-Proxy": "proxy-secret"}}
+                        },
+                    },
+                    "status": 1,
+                }
+                for route_id, methods, consumer in (
+                    ("network-api", ["GET"], "network-reader"),
+                    ("network-write-api", ["POST", "PUT", "DELETE"], "network-recorder"),
+                )
+            },
             ("routes", "prometheus-api"): {
                 "id": "prometheus-api",
                 "name": "prometheus-api",
@@ -690,6 +713,21 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     assert route_calls["usages-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["usages-consumer"]
     }
+    assert route_calls["network-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["network-reader"]
+    }
+    assert route_calls["network-write-api"]["plugins"]["consumer-restriction"] == {
+        "whitelist": ["network-recorder"]
+    }
+    assert route_calls["network-api"]["methods"] == ["GET"]
+    assert route_calls["network-write-api"]["methods"] == ["POST", "PUT", "DELETE"]
+    for route_id in ("network-api", "network-write-api"):
+        assert route_calls[route_id]["uri"] == "/api/network/*"
+        assert route_calls[route_id]["upstream_id"] == "unibridge-service"
+        assert route_calls[route_id]["plugins"]["proxy-rewrite"]["regex_uri"] == [
+            "^/api/network(.*)",
+            "/network$1",
+        ]
     assert route_calls["prometheus-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["prometheus-consumer"]
     }
@@ -706,7 +744,8 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     assert llm_headers["x-bf-vk"] == VK
     assert llm_headers["x-bf-dim-consumer"] == "$consumer_name"
     for route_id in (
-        "query-api", "query-template-write-api", "s3-api", "nas-api", "usages-api"
+        "query-api", "query-template-write-api", "s3-api", "nas-api", "usages-api",
+        "network-api", "network-write-api",
     ):
         headers = route_calls[route_id]["plugins"]["proxy-rewrite"]["headers"]["set"]
         assert headers["X-UniBridge-Internal-Proxy"] == "proxy-secret"
@@ -779,6 +818,11 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
     assert route_calls["usages-api"]["plugins"]["consumer-restriction"] == {
         "whitelist": ["__deny_all__"]
     }
+    # Both network routes ship deny-all, same as nas-api.
+    for route_id in ("network-api", "network-write-api"):
+        assert route_calls[route_id]["plugins"]["consumer-restriction"] == {
+            "whitelist": ["__deny_all__"]
+        }
     # prometheus-api likewise — an open metric read is the whole thing the
     # gateway route exists to prevent.
     assert route_calls["prometheus-api"]["plugins"]["consumer-restriction"] == {
@@ -1006,6 +1050,10 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     )
     assert events.index(("routes", "s3-api")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "usages-api")) < events.index(("replay", "_ReplayDb"))
+    assert events.index(("routes", "network-api")) < events.index(("replay", "_ReplayDb"))
+    assert events.index(("routes", "network-write-api")) < events.index(
+        ("replay", "_ReplayDb")
+    )
     assert events.index(("routes", "llm-proxy")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "llm-models")) < events.index(("replay", "_ReplayDb"))
 

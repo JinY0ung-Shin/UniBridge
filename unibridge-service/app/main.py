@@ -33,6 +33,7 @@ from app.routers import (
     internal_alerts,
     mcp,
     nas,
+    network,
     query,
     query_history,
     query_metrics,
@@ -50,6 +51,8 @@ from app.services.apisix_system_resources import (
     LLM_BI_NOT_FOUND_ROUTE_ID,
     LLM_NOT_FOUND_ROUTE_ID,
     MCP_API_ROUTE_ID,
+    NETWORK_API_ROUTE_ID,
+    NETWORK_WRITE_ROUTE_ID,
     RETIRED_LITELLM_ROUTE_ID,
     RETIRED_LITELLM_UPSTREAM_ID,
     RETIRED_LLM_BI_ROUTE_IDS,
@@ -78,6 +81,8 @@ INTERNAL_PROXY_ROUTE_IDS = (
     "nas-api",
     "usages-api",
     MCP_API_ROUTE_ID,
+    NETWORK_API_ROUTE_ID,
+    NETWORK_WRITE_ROUTE_ID,
 )
 
 
@@ -206,6 +211,8 @@ async def _preserve_consumer_restriction(
         "nas-api",
         "usages-api",
         MCP_API_ROUTE_ID,
+        NETWORK_API_ROUTE_ID,
+        NETWORK_WRITE_ROUTE_ID,
         "prometheus-api",
         "llm-metrics",
         "llm-models",
@@ -816,6 +823,51 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
                 logger.info("APISIX MCP route provisioned successfully")
 
+                # Network map (app/routers/network.py): reads on network-api,
+                # writes on network-write-api, a separate grant like
+                # query-template-write-api. Same uri, split by method. Both ship
+                # inline deny-all like nas-api until the consumer-restriction
+                # replay below.
+                for network_route_id, methods, desc in (
+                    (
+                        NETWORK_API_ROUTE_ID,
+                        ["GET"],
+                        "Network map: regions, hosts, firewall openings, port usage, access checks",
+                    ),
+                    (
+                        NETWORK_WRITE_ROUTE_ID,
+                        ["POST", "PUT", "DELETE"],
+                        "Network map: record regions, hosts, firewall openings and port usage",
+                    ),
+                ):
+                    await apisix_client.put_resource(
+                        "routes",
+                        network_route_id,
+                        await _preserve_consumer_restriction(
+                            network_route_id,
+                            {
+                                "name": network_route_id,
+                                "desc": desc,
+                                "uri": "/api/network/*",
+                                "methods": methods,
+                                "upstream_id": "unibridge-service",
+                                "plugins": {
+                                    "key-auth": {},
+                                    "consumer-restriction": {
+                                        "whitelist": [api_keys.DENY_ALL_CONSUMER]
+                                    },
+                                    "proxy-rewrite": {
+                                        "regex_uri": ["^/api/network(.*)", "/network$1"],
+                                        "use_real_request_uri_unsafe": True,
+                                        "headers": _internal_proxy_headers(),
+                                    },
+                                },
+                                "status": 1,
+                            },
+                        ),
+                    )
+                logger.info("APISIX network routes provisioned successfully")
+
                 # ── Prometheus query API ──
                 # External PromQL access rides the gateway instead of a raw host
                 # port: Prometheus has no auth of its own, so a published :9090
@@ -1221,6 +1273,7 @@ app.include_router(internal_alerts.router)
 app.include_router(mcp.router)
 app.include_router(s3.router)
 app.include_router(nas.router)
+app.include_router(network.router)
 app.include_router(servers.router)
 app.include_router(roles.router)
 app.include_router(usages.router)

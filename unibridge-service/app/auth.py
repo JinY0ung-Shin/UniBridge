@@ -73,6 +73,8 @@ ALL_PERMISSIONS = [
     "nas.browse",
     "servers.read",
     "servers.write",
+    "network.read",
+    "network.write",
 ]
 
 # ── Permission cache ────────────────────────────────────────────────────────

@@ -43,8 +43,8 @@ async def test_admin_role_has_all_permissions(seeded_db):
 # ── Role seed version: an older image never rewrites a newer one's roles ─────
 
 # Change _seed_role_definitions() → bump ROLE_SEED_VERSION, then update both pins.
-PINNED_ROLE_SEED_VERSION = 1
-PINNED_ROLE_DEFINITIONS_DIGEST = "027c4f8680bc25b9dbd90ac60ca3aadd249d751483d56a0f01ee154e10088568"
+PINNED_ROLE_SEED_VERSION = 2
+PINNED_ROLE_DEFINITIONS_DIGEST = "560c86889218df264cfec44a6e050177e9727f5efe055e31c66961deb42f5526"
 
 
 def _definitions_digest() -> str:

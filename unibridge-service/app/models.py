@@ -558,3 +558,113 @@ class McpRemoteServer(Base):
     last_error = Column(Text, nullable=True)
     created_at = Column(UtcDateTime, default=utcnow, nullable=False)
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+# ── Network map: regions, hosts, firewall openings, port usage ──────────────
+#
+# Hosts in one region reach each other on every port; a connection across
+# regions needs a firewall opening requested through the company system. These
+# tables record which openings exist and what listens on each port, so the
+# answer to "can A reach B:port?" lives in one place (app/services/network_map.py).
+# Rows written through an API key (an agent) carry source="agent" and stay
+# unverified until a person confirms them (verified_at/verified_by).
+
+
+class Region(Base):
+    __tablename__ = "network_regions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(64), unique=True, nullable=False, index=True)
+    description = Column(String(255), default="", nullable=False, server_default="")
+    # JSON array of CIDRs; a host or raw IP inside one is placed in this region.
+    cidrs = Column(Text, nullable=True)
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class NetworkHost(Base):
+    __tablename__ = "network_hosts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), unique=True, nullable=False, index=True)
+    ip = Column(String(64), unique=True, nullable=False, index=True)
+    # NULL = not placed in a region yet: access checks answer "unknown".
+    region_id = Column(
+        Integer, ForeignKey("network_regions.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    description = Column(String(255), default="", nullable=False, server_default="")
+    owner = Column(String(255), default="", nullable=False, server_default="")
+    monitored_host_id = Column(
+        Integer, ForeignKey("monitored_hosts.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
+    source = Column(String(16), default="manual", nullable=False, server_default="manual")
+    created_by = Column(String(255), nullable=True)
+    verified_at = Column(UtcDateTime, nullable=True)
+    verified_by = Column(String(255), nullable=True)
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class FirewallOpening(Base):
+    """One direction of a cross-region opening: src (host or CIDR) → dst host ports."""
+
+    __tablename__ = "firewall_openings"
+    __table_args__ = (
+        CheckConstraint(
+            "(src_host_id IS NULL) <> (src_cidr IS NULL)", name="ck_firewall_openings_one_source"
+        ),
+        CheckConstraint(
+            "port_from >= 1 AND port_to <= 65535 AND port_from <= port_to",
+            name="ck_firewall_openings_ports",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    src_host_id = Column(
+        Integer, ForeignKey("network_hosts.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    src_cidr = Column(String(64), nullable=True)
+    dst_host_id = Column(
+        Integer, ForeignKey("network_hosts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    port_from = Column(Integer, nullable=False)
+    port_to = Column(Integer, nullable=False)
+    protocol = Column(String(8), default="tcp", nullable=False, server_default="tcp")
+    status = Column(String(16), default="open", nullable=False, server_default="open")
+    ticket_no = Column(String(100), default="", nullable=False, server_default="")
+    requester = Column(String(100), default="", nullable=False, server_default="")
+    purpose = Column(String(500), default="", nullable=False, server_default="")
+    source = Column(String(16), default="manual", nullable=False, server_default="manual")
+    created_by = Column(String(255), nullable=True)
+    verified_at = Column(UtcDateTime, nullable=True)
+    verified_by = Column(String(255), nullable=True)
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PortUsage(Base):
+    """A service listening on a host port (recorded by a person or an agent)."""
+
+    __tablename__ = "port_usages"
+    __table_args__ = (
+        UniqueConstraint(
+            "host_id", "port", "protocol", "service_name", name="uq_port_usages_host_port_service"
+        ),
+        CheckConstraint("port >= 1 AND port <= 65535", name="ck_port_usages_port"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    host_id = Column(
+        Integer, ForeignKey("network_hosts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    port = Column(Integer, nullable=False)
+    protocol = Column(String(8), default="tcp", nullable=False, server_default="tcp")
+    service_name = Column(String(100), nullable=False)
+    description = Column(String(255), default="", nullable=False, server_default="")
+    owner = Column(String(255), default="", nullable=False, server_default="")
+    source = Column(String(16), default="manual", nullable=False, server_default="manual")
+    created_by = Column(String(255), nullable=True)
+    verified_at = Column(UtcDateTime, nullable=True)
+    verified_by = Column(String(255), nullable=True)
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)

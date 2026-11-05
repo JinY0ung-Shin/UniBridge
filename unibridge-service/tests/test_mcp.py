@@ -31,6 +31,8 @@ class FakeGateway(httpx.AsyncBaseTransport):
         (b"/api/query/", b"/query/", "query-api"),
         (b"/api/s3/", b"/s3/", "s3-api"),
         (b"/api/nas/", b"/nas/", "nas-api"),
+        # Split by method like the fixed routes: GET reads, the rest writes.
+        (b"/api/network/", b"/network/", "network-api"),
     )
 
     def __init__(self, app) -> None:
@@ -58,6 +60,8 @@ class FakeGateway(httpx.AsyncBaseTransport):
         raw = request.url.raw_path
         for prefix, target, route in self._ROUTES:
             if raw.startswith(prefix):
+                if route == "network-api" and request.method != "GET":
+                    route = "network-write-api"
                 self.calls.append((route, request.method, request.url.path))
                 break
         else:

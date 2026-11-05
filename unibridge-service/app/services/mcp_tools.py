@@ -1,11 +1,14 @@
-"""MCP tools over the query, S3 and NAS surfaces, scoped to one API key.
+"""MCP tools over the query, S3, NAS and network-map surfaces, scoped to one API key.
 
 Every tool that reaches a database, S3 or NAS goes out as the matching REST
 request through APISIX (``APISIX_GATEWAY_URL``) with the caller's own key. So
 each call is authorized, rate-limited, audited and counted on that REST route
-(``query-api``, ``s3-api``, ``nas-api``) exactly like a direct call, and the
-``mcp-api`` route itself is left out of usage numbers. A tool group is offered
-only when the key holds the route grant its REST twin needs (``GROUP_ROUTES``).
+(``query-api``, ``s3-api``, ``nas-api``, ``network-api``/``network-write-api``)
+exactly like a direct call, and the ``mcp-api`` route itself is left out of
+usage numbers. A tool group is offered only when the key holds the route grant
+its REST twin needs (``GROUP_ROUTES``); the network map's write tools also need
+``network-write-api``, and what they record stays unverified until a person
+confirms it.
 Gateway APIs (``search_apis``/``call_api``) are the routes an administrator
 lists in ``exposed_routes``, each offered only to keys holding its grant;
 ``call_api`` sends GET or POST only, on the route itself. External MCP
@@ -25,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import ipaddress
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 import json
@@ -43,7 +47,12 @@ from app.routers import gateway as gateway_router
 from app.routers import query as query_router
 from app.schemas import McpRouteInfo, McpSettings, McpToolGroup, QueryTemplateResponse
 from app.services import apisix_client, mcp_remote
-from app.services.apisix_system_resources import QUERY_API_ROUTE_ID, is_system_route
+from app.services.apisix_system_resources import (
+    NETWORK_API_ROUTE_ID,
+    NETWORK_WRITE_ROUTE_ID,
+    QUERY_API_ROUTE_ID,
+    is_system_route,
+)
 from app.services.connection_manager import connection_manager
 from app.services.nas_manager import nas_manager
 from app.services.openapi_export import extract_template_params
@@ -62,6 +71,8 @@ GROUP_ROUTES: dict[McpToolGroup, str] = {
     "run_query": QUERY_API_ROUTE_ID,
     "s3": "s3-api",
     "nas": "nas-api",
+    # Write tools additionally need NETWORK_WRITE_ROUTE_ID (build_tools).
+    "network": NETWORK_API_ROUTE_ID,
 }
 
 SERVER_INSTRUCTIONS = (
@@ -73,6 +84,10 @@ SERVER_INSTRUCTIONS = (
     "administrator offers are found with search_apis and called with call_api. "
     "Tools named <server>__<tool> belong to external MCP servers the "
     "administrator connected. "
+    "For whether one server can reach another, call network_check_access: hosts "
+    "in one region reach each other on every port, other regions only through a "
+    "recorded firewall opening, and a blocked answer carries a request_draft for "
+    "the company firewall request system. "
     "Results are capped: "
     "truncated=true means rows or bytes were cut, so narrow the query."
 )
@@ -267,6 +282,7 @@ _JSON_TYPES: dict[str, Callable[[Any], bool]] = {
     "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
     "boolean": lambda v: isinstance(v, bool),
     "object": lambda v: isinstance(v, dict),
+    "array": lambda v: isinstance(v, list),
 }
 
 
@@ -1023,6 +1039,473 @@ NAS_TOOLS = (
 )
 
 
+# ── Network map ─────────────────────────────────────────────────────────────
+
+_NETWORK_LIST_DEFAULT = 100
+_NETWORK_LIST_MAX = 1000
+_AGENT_RECORD_NOTE = (
+    " What an API key records is marked source=agent and stays unverified until "
+    "a person confirms it on the Network page."
+)
+
+
+def _capped_items(items: list[Any], key: str, limit: int, cfg: McpSettings) -> dict[str, Any]:
+    """Whole entries only, so the result stays valid JSON under max_result_bytes."""
+    used = _ROW_ENVELOPE_BYTES
+    kept: list[Any] = []
+    for item in items[:limit]:
+        used += _utf8_len(_dumps(item)) + 1
+        if used > cfg.max_result_bytes:
+            break
+        kept.append(item)
+    return {key: kept, "total": len(items), "truncated": len(kept) < len(items)}
+
+
+def _same_ip(a: str, b: str) -> bool:
+    try:
+        return ipaddress.ip_address(a.strip()) == ipaddress.ip_address(b.strip())
+    except ValueError:
+        return False
+
+
+async def _network_host_id(ctx: ToolContext, ref: str) -> int:
+    """A registered host's id from its IP, name (case-insensitive) or id.
+
+    IP and name come first, so a host named e.g. "1001" is found by its name;
+    a bare number that matches neither is taken as the id.
+    """
+    ref = ref.strip()
+    response = await _gateway(ctx, "GET", "/api/network/hosts", params={"q": ref})
+    hosts = [h for h in response.json() if isinstance(h, dict)]
+    for host in hosts:
+        if _same_ip(str(host.get("ip", "")), ref):
+            return int(host["id"])
+    for host in hosts:
+        if str(host.get("name", "")).casefold() == ref.casefold():
+            return int(host["id"])
+    if ref.isdigit():
+        return int(ref)
+    raise ToolError(f"No registered host '{ref}'; call network_find_hosts")
+
+
+def _body(args: dict[str, Any], *skip: str) -> dict[str, Any]:
+    return {k: v for k, v in args.items() if v is not None and k not in skip}
+
+
+async def _network_overview(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    return (await _gateway(ctx, "GET", "/api/network/overview")).json()
+
+
+async def _network_list_regions(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    return {"regions": (await _gateway(ctx, "GET", "/api/network/regions")).json()}
+
+
+async def _network_find_hosts(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    response = await _gateway(
+        ctx,
+        "GET",
+        "/api/network/hosts",
+        params={
+            "q": args.get("query"),
+            "region_id": args.get("region_id"),
+            "unverified": "true" if args.get("unverified") else None,
+        },
+    )
+    limit = args.get("limit") or _NETWORK_LIST_DEFAULT
+    return _capped_items(response.json(), "hosts", limit, ctx.settings)
+
+
+async def _network_get_host(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    host_id = await _network_host_id(ctx, args["host"])
+    return (await _gateway(ctx, "GET", f"/api/network/hosts/{host_id}")).json()
+
+
+async def _network_check_access(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    response = await _gateway(
+        ctx,
+        "GET",
+        "/api/network/check",
+        params={
+            "src": args["src"],
+            "dst": args["dst"],
+            "port": args["port"],
+            "protocol": args.get("protocol") or "tcp",
+        },
+    )
+    return response.json()
+
+
+async def _network_list_openings(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    host = args.get("host")
+    response = await _gateway(
+        ctx,
+        "GET",
+        "/api/network/openings",
+        params={
+            "host_id": await _network_host_id(ctx, host) if host else None,
+            "region_id": args.get("region_id"),
+            "status": args.get("status"),
+            "port": args.get("port"),
+            "unverified": "true" if args.get("unverified") else None,
+        },
+    )
+    limit = args.get("limit") or _NETWORK_LIST_DEFAULT
+    return _capped_items(response.json(), "openings", limit, ctx.settings)
+
+
+async def _network_list_port_usages(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    host = args.get("host")
+    response = await _gateway(
+        ctx,
+        "GET",
+        "/api/network/port-usages",
+        params={
+            "host_id": await _network_host_id(ctx, host) if host else None,
+            "port": args.get("port"),
+            "source": args.get("source"),
+            "unverified": "true" if args.get("unverified") else None,
+        },
+    )
+    limit = args.get("limit") or _NETWORK_LIST_DEFAULT
+    return _capped_items(response.json(), "port_usages", limit, ctx.settings)
+
+
+async def _network_register_host(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    return (await _gateway(ctx, "POST", "/api/network/hosts", json_body=_body(args))).json()
+
+
+async def _network_update_host(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    host_id = await _network_host_id(ctx, args["host"])
+    body = _body(args, "host")
+    if not body:
+        raise ToolError("Nothing to change: pass at least one field")
+    return (
+        await _gateway(ctx, "PUT", f"/api/network/hosts/{host_id}", json_body=body)
+    ).json()
+
+
+async def _network_record_opening(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    return (await _gateway(ctx, "POST", "/api/network/openings", json_body=_body(args))).json()
+
+
+async def _network_update_opening(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    body = _body(args, "opening_id")
+    if not body:
+        raise ToolError("Nothing to change: pass at least one field")
+    return (
+        await _gateway(
+            ctx, "PUT", f"/api/network/openings/{args['opening_id']}", json_body=body
+        )
+    ).json()
+
+
+async def _network_delete_opening(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    await _gateway(ctx, "DELETE", f"/api/network/openings/{args['opening_id']}")
+    return {"deleted": True, "opening_id": args["opening_id"]}
+
+
+async def _network_record_port_usage(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    return (
+        await _gateway(ctx, "POST", "/api/network/port-usages", json_body=_body(args))
+    ).json()
+
+
+async def _network_delete_port_usage(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    await _gateway(ctx, "DELETE", f"/api/network/port-usages/{args['usage_id']}")
+    return {"deleted": True, "usage_id": args["usage_id"]}
+
+
+_HOST_REF_ARG = {
+    "type": "string",
+    "minLength": 1,
+    "description": "Registered host: its name, IP address or id",
+}
+_PORT_ARG = {"type": "integer", "minimum": 1, "maximum": 65535}
+_PROTOCOL_ARG = {"type": "string", "enum": ["tcp", "udp"], "description": "tcp (default) or udp"}
+_UNVERIFIED_ARG = {
+    "type": "boolean",
+    "description": "Only records nobody has confirmed yet",
+}
+_REGION_ID_ARG = {"type": "integer", "minimum": 1, "description": "Region id from network_list_regions"}
+_LIST_LIMIT_ARG = {
+    "type": "integer",
+    "minimum": 1,
+    "maximum": _NETWORK_LIST_MAX,
+    "description": f"Maximum entries to return (default {_NETWORK_LIST_DEFAULT})",
+}
+_OPENING_ID_ARG = {"type": "integer", "minimum": 1, "description": "Opening id from network_list_openings"}
+_OPENING_FIELDS: dict[str, Any] = {
+    "src_host": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Source: a registered host's name or IP (or give src_cidr)",
+    },
+    "src_cidr": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Source as a network range, e.g. 10.1.0.0/16 (instead of src_host)",
+    },
+    "dst_host": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Destination: a registered host's name or IP",
+    },
+    "port_from": {**_PORT_ARG, "description": "First port (or the only one)"},
+    "port_to": {**_PORT_ARG, "description": "Last port of a range; leave out for one port"},
+    "protocol": _PROTOCOL_ARG,
+    "status": {
+        "type": "string",
+        "enum": ["open", "closed"],
+        "description": "open (default) or closed",
+    },
+    "ticket_no": {"type": "string", "description": "Firewall request ticket number"},
+    "requester": {"type": "string", "description": "Who requested the opening"},
+    "purpose": {"type": "string", "description": "What the opening is for"},
+}
+_HOST_FIELDS: dict[str, Any] = {
+    "name": {"type": "string", "minLength": 1, "description": "Host name"},
+    "ip": {"type": "string", "minLength": 1, "description": "IPv4 or IPv6 address"},
+    "region": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Region name; leave out (and region_id) to place it by the regions' CIDRs",
+    },
+    "region_id": _REGION_ID_ARG,
+    "description": {"type": "string"},
+    "owner": {"type": "string", "description": "Owner or team"},
+}
+
+NETWORK_READ_TOOLS = (
+    Tool(
+        name="network_overview",
+        title="Network map overview",
+        description=(
+            "Regions, the firewall openings between them (region-to-region ports), and "
+            "counts of hosts, openings, unverified records, openings nothing listens "
+            "on and usages the UniBridge platform host cannot reach."
+        ),
+        group="network",
+        input_schema=_object_schema({}),
+        handler=_network_overview,
+    ),
+    Tool(
+        name="network_list_regions",
+        title="List network regions",
+        description=(
+            "List the network regions (zones) with their CIDRs and host counts. Hosts "
+            "in one region reach each other on every port."
+        ),
+        group="network",
+        input_schema=_object_schema({}),
+        handler=_network_list_regions,
+    ),
+    Tool(
+        name="network_find_hosts",
+        title="Find network hosts",
+        description=(
+            "Find registered hosts: query matches part of the name, IP or description. "
+            "Each result gives the host's id, IP, region and whether a person verified it."
+        ),
+        group="network",
+        input_schema=_object_schema(
+            {
+                "query": {"type": "string", "description": "Part of a name, IP or description"},
+                "region_id": _REGION_ID_ARG,
+                "unverified": _UNVERIFIED_ARG,
+                "limit": _LIST_LIMIT_ARG,
+            }
+        ),
+        handler=_network_find_hosts,
+    ),
+    Tool(
+        name="network_get_host",
+        title="Get network host",
+        description=(
+            "One host with its inbound and outbound firewall openings and the services "
+            "recorded or discovered on its ports."
+        ),
+        group="network",
+        input_schema=_object_schema({"host": _HOST_REF_ARG}, ("host",)),
+        handler=_network_get_host,
+    ),
+    Tool(
+        name="network_check_access",
+        title="Check network access",
+        description=(
+            "Whether src can reach dst on a port. Hosts in the same region reach each "
+            "other on every port, so the answer is always open there. Across regions "
+            "it is open only through a recorded firewall opening that is not closed. "
+            "src and dst are registered host names or IPs; an unregistered IP is "
+            "placed in a region by the regions' CIDRs. status is open, blocked or "
+            "unknown (a side is in no region); reason and message say why, openings "
+            "lists the matching records and usages the services on that port. When "
+            "blocked, request_draft holds text to submit to the company firewall "
+            "request system: show it to the user rather than recording an opening "
+            "that does not exist yet."
+        ),
+        group="network",
+        input_schema=_object_schema(
+            {
+                "src": {"type": "string", "minLength": 1, "description": "Source host name or IP"},
+                "dst": {"type": "string", "minLength": 1, "description": "Destination host name or IP"},
+                "port": _PORT_ARG,
+                "protocol": _PROTOCOL_ARG,
+            },
+            ("src", "dst", "port"),
+        ),
+        handler=_network_check_access,
+    ),
+    Tool(
+        name="network_list_openings",
+        title="List firewall openings",
+        description=(
+            "List recorded firewall openings between regions, optionally for one host "
+            "(as source or destination), one region, a status, or a port inside the "
+            "opening's range. in_use says whether a known service listens there."
+        ),
+        group="network",
+        input_schema=_object_schema(
+            {
+                "host": _HOST_REF_ARG,
+                "region_id": _REGION_ID_ARG,
+                "status": {"type": "string", "enum": ["open", "closed"]},
+                "port": _PORT_ARG,
+                "unverified": _UNVERIFIED_ARG,
+                "limit": _LIST_LIMIT_ARG,
+            }
+        ),
+        handler=_network_list_openings,
+    ),
+    Tool(
+        name="network_list_port_usages",
+        title="List port usages",
+        description=(
+            "List which services use which host ports: recorded by people (manual) or "
+            "agents (agent), or discovered from UniBridge's own configuration (auto)."
+        ),
+        group="network",
+        input_schema=_object_schema(
+            {
+                "host": _HOST_REF_ARG,
+                "port": _PORT_ARG,
+                "source": {"type": "string", "enum": ["manual", "agent", "auto"]},
+                "unverified": _UNVERIFIED_ARG,
+                "limit": _LIST_LIMIT_ARG,
+            }
+        ),
+        handler=_network_list_port_usages,
+    ),
+)
+
+NETWORK_WRITE_TOOLS = (
+    Tool(
+        name="network_register_host",
+        title="Register network host",
+        description=(
+            "Register a host (server) on the network map. Without region or region_id "
+            "it is placed by the regions' CIDRs." + _AGENT_RECORD_NOTE
+        ),
+        group="network",
+        input_schema=_object_schema(_HOST_FIELDS, ("name", "ip")),
+        handler=_network_register_host,
+        read_only=False,
+    ),
+    Tool(
+        name="network_update_host",
+        title="Update network host",
+        description=(
+            "Change a registered host's name, IP, region, description or owner; fields "
+            "left out stay as they are. The host becomes unverified again." + _AGENT_RECORD_NOTE
+        ),
+        group="network",
+        input_schema=_object_schema({"host": _HOST_REF_ARG, **_HOST_FIELDS}, ("host",)),
+        handler=_network_update_host,
+        read_only=False,
+    ),
+    Tool(
+        name="network_record_opening",
+        title="Record firewall opening",
+        description=(
+            "Record a firewall opening that exists (it does not open anything): from "
+            "src_host or src_cidr to dst_host on port_from[-port_to]. Openings inside "
+            "one region are refused, as every port is open there already."
+            + _AGENT_RECORD_NOTE
+        ),
+        group="network",
+        input_schema=_object_schema(_OPENING_FIELDS, ("dst_host", "port_from")),
+        handler=_network_record_opening,
+        read_only=False,
+    ),
+    Tool(
+        name="network_update_opening",
+        title="Update firewall opening",
+        description=(
+            "Change a recorded firewall opening (e.g. mark it closed, fix the ports or "
+            "ticket); fields left out stay as they are. The opening becomes unverified "
+            "again." + _AGENT_RECORD_NOTE
+        ),
+        group="network",
+        input_schema=_object_schema(
+            {"opening_id": _OPENING_ID_ARG, **_OPENING_FIELDS}, ("opening_id",)
+        ),
+        handler=_network_update_opening,
+        read_only=False,
+    ),
+    Tool(
+        name="network_delete_opening",
+        title="Delete firewall opening",
+        description=(
+            "Delete a recorded firewall opening (a record removed, not a firewall rule). "
+            "To keep its history, mark it closed with network_update_opening instead."
+        ),
+        group="network",
+        input_schema=_object_schema({"opening_id": _OPENING_ID_ARG}, ("opening_id",)),
+        handler=_network_delete_opening,
+        read_only=False,
+    ),
+    Tool(
+        name="network_record_port_usage",
+        title="Record port usage",
+        description=(
+            "Record that a service uses a port on a registered host." + _AGENT_RECORD_NOTE
+        ),
+        group="network",
+        input_schema=_object_schema(
+            {
+                "host": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Registered host's name or IP",
+                },
+                "port": _PORT_ARG,
+                "protocol": _PROTOCOL_ARG,
+                "service_name": {"type": "string", "minLength": 1, "description": "Service name"},
+                "description": {"type": "string"},
+                "owner": {"type": "string", "description": "Owner or team"},
+            },
+            ("host", "port", "service_name"),
+        ),
+        handler=_network_record_port_usage,
+        read_only=False,
+    ),
+    Tool(
+        name="network_delete_port_usage",
+        title="Delete port usage",
+        description=(
+            "Delete a recorded port usage by id (from network_list_port_usages). "
+            "Discovered (auto) usages have no id and cannot be deleted."
+        ),
+        group="network",
+        input_schema=_object_schema(
+            {"usage_id": {"type": "integer", "minimum": 1, "description": "Port usage id"}},
+            ("usage_id",),
+        ),
+        handler=_network_delete_port_usage,
+        read_only=False,
+    ),
+)
+
+
 # ── Gateway APIs ────────────────────────────────────────────────────────────
 
 # call_api sends nothing else, whatever the route allows.
@@ -1529,6 +2012,10 @@ async def build_tools(ctx: ToolContext) -> list[Tool]:
         tools.extend(NAS_TOOLS)
     if groups.templates and has_route(user, GROUP_ROUTES["templates"]):
         tools.extend(TEMPLATE_TOOLS)
+    if groups.network and has_route(user, GROUP_ROUTES["network"]):
+        tools.extend(NETWORK_READ_TOOLS)
+        if has_route(user, NETWORK_WRITE_ROUTE_ID):
+            tools.extend(NETWORK_WRITE_TOOLS)
     if groups.apis and await _offers_an_api(ctx):
         tools.extend(API_TOOLS)
     if groups.external:

@@ -210,7 +210,7 @@ async def init_db() -> None:
 # would delete them again. The number stored in system_config lets an image skip
 # roles last written by a newer one. tests/test_seed_roles.py pins it to a digest
 # of the definitions, so changing them without a bump fails the suite.
-ROLE_SEED_VERSION = 1
+ROLE_SEED_VERSION = 2
 ROLE_SEED_VERSION_KEY = "role_seed_version"
 
 

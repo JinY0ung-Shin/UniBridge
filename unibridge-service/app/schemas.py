@@ -457,7 +457,9 @@ class SystemConfigUpdate(BaseModel):
 
 # ── MCP ─────────────────────────────────────────────────────────────────────
 
-McpToolGroup = Literal["templates", "db_explore", "run_query", "s3", "nas", "apis", "external"]
+McpToolGroup = Literal[
+    "templates", "db_explore", "run_query", "s3", "nas", "network", "apis", "external"
+]
 
 
 class McpToolGroups(BaseModel):
@@ -466,6 +468,7 @@ class McpToolGroups(BaseModel):
     run_query: bool = True
     s3: bool = True
     nas: bool = True
+    network: bool = True
     apis: bool = True
     external: bool = True
 
@@ -1721,3 +1724,402 @@ class ConfigImportResponse(BaseModel):
     dry_run: bool
     results: list[ConfigImportResultRow]
     summary: ConfigImportSummary
+
+
+# ── Network map (app/routers/network.py) ────────────────────────────────────
+
+NetworkProtocol = Literal["tcp", "udp"]
+OpeningStatus = Literal["open", "closed"]
+NETWORK_PROTOCOLS: tuple[str, ...] = ("tcp", "udp")
+_REGION_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f/\\]{1,64}$")
+
+
+def _validate_region_name(name: str) -> str:
+    name = name.strip()
+    if not _REGION_NAME_RE.match(name):
+        raise ValueError("region name must be 1-64 characters without control characters or slashes")
+    return name
+
+
+def _validate_cidr(value: str) -> str:
+    import ipaddress
+
+    try:
+        return str(ipaddress.ip_network(value.strip(), strict=False))
+    except ValueError as exc:
+        raise ValueError(f"invalid CIDR: {value!r}") from exc
+
+
+def _validate_cidrs(values: list[str] | None) -> list[str] | None:
+    if values is None:
+        return None
+    out: list[str] = []
+    for value in values:
+        cidr = _validate_cidr(value)
+        if cidr not in out:
+            out.append(cidr)
+    return out
+
+
+def _validate_ip(value: str) -> str:
+    import ipaddress
+
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError as exc:
+        raise ValueError(f"ip must be an IPv4 or IPv6 address, got {value!r}") from exc
+
+
+def _exactly_one(model: BaseModel, fields: tuple[str, ...], what: str, *, required: bool) -> None:
+    given = [f for f in fields if getattr(model, f) is not None]
+    if len(given) > 1:
+        raise ValueError(f"give only one of {', '.join(fields)} for the {what}")
+    if required and not given:
+        raise ValueError(f"the {what} is required: give one of {', '.join(fields)}")
+
+
+class RegionCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    description: str = Field("", max_length=255)
+    cidrs: list[str] = Field(default_factory=list, max_length=200)
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, v: str) -> str:
+        return _validate_region_name(v)
+
+    @field_validator("cidrs")
+    @classmethod
+    def check_cidrs(cls, v: list[str]) -> list[str]:
+        return _validate_cidrs(v) or []
+
+
+class RegionUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=64)
+    description: str | None = Field(None, max_length=255)
+    cidrs: list[str] | None = Field(None, max_length=200)
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, v: str | None) -> str | None:
+        return _validate_region_name(v) if v is not None else None
+
+    @field_validator("cidrs")
+    @classmethod
+    def check_cidrs(cls, v: list[str] | None) -> list[str] | None:
+        return _validate_cidrs(v)
+
+
+class RegionResponse(BaseModel):
+    id: int
+    name: str
+    description: str = ""
+    cidrs: list[str] = Field(default_factory=list)
+    host_count: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+def _validate_network_host_name(name: str) -> str:
+    import ipaddress
+
+    name = _validate_host_name(name)
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return name
+    raise ValueError("a host name must not be an IP address (put the address in ip)")
+
+
+class NetworkHostCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    ip: str = Field(..., min_length=1, max_length=64)
+    # Region by id or by name; neither = placed by the regions' CIDRs (or unassigned).
+    region_id: int | None = None
+    region: str | None = Field(None, max_length=64)
+    description: str = Field("", max_length=255)
+    owner: str = Field("", max_length=255)
+    monitored_host_id: int | None = None
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, v: str) -> str:
+        return _validate_network_host_name(v)
+
+    @field_validator("ip")
+    @classmethod
+    def check_ip(cls, v: str) -> str:
+        return _validate_ip(v)
+
+    @model_validator(mode="after")
+    def one_region(self) -> "NetworkHostCreate":
+        _exactly_one(self, ("region_id", "region"), "region", required=False)
+        return self
+
+
+class NetworkHostUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=100)
+    ip: str | None = Field(None, min_length=1, max_length=64)
+    # Explicit null region_id unassigns the host.
+    region_id: int | None = None
+    region: str | None = Field(None, max_length=64)
+    description: str | None = Field(None, max_length=255)
+    owner: str | None = Field(None, max_length=255)
+    monitored_host_id: int | None = None
+
+    @field_validator("name")
+    @classmethod
+    def check_name(cls, v: str | None) -> str | None:
+        return _validate_network_host_name(v) if v is not None else None
+
+    @field_validator("ip")
+    @classmethod
+    def check_ip(cls, v: str | None) -> str | None:
+        return _validate_ip(v) if v is not None else None
+
+    @model_validator(mode="after")
+    def one_region(self) -> "NetworkHostUpdate":
+        _exactly_one(self, ("region_id", "region"), "region", required=False)
+        return self
+
+
+class NetworkHostResponse(BaseModel):
+    id: int
+    name: str
+    ip: str
+    region_id: int | None = None
+    region_name: str | None = None
+    description: str = ""
+    owner: str = ""
+    monitored_host_id: int | None = None
+    monitored_host_name: str | None = None
+    source: str = "manual"
+    created_by: str | None = None
+    verified: bool = False
+    verified_at: datetime | None = None
+    verified_by: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class FirewallOpeningCreate(BaseModel):
+    # Source: a registered host (id, or name/IP) or a CIDR.
+    src_host_id: int | None = None
+    src_host: str | None = Field(None, min_length=1, max_length=100)
+    src_cidr: str | None = Field(None, max_length=64)
+    # Destination: a registered host (id, or name/IP).
+    dst_host_id: int | None = None
+    dst_host: str | None = Field(None, min_length=1, max_length=100)
+    port_from: int = Field(..., ge=1, le=65535)
+    port_to: int | None = Field(None, ge=1, le=65535)  # null = single port
+    protocol: NetworkProtocol = "tcp"
+    status: OpeningStatus = "open"
+    ticket_no: str = Field("", max_length=100)
+    requester: str = Field("", max_length=100)
+    purpose: str = Field("", max_length=500)
+
+    @field_validator("src_cidr")
+    @classmethod
+    def check_cidr(cls, v: str | None) -> str | None:
+        return _validate_cidr(v) if v is not None else None
+
+    @model_validator(mode="after")
+    def check_refs(self) -> "FirewallOpeningCreate":
+        _exactly_one(self, ("src_host_id", "src_host", "src_cidr"), "source", required=True)
+        _exactly_one(self, ("dst_host_id", "dst_host"), "destination", required=True)
+        if self.port_to is None:
+            self.port_to = self.port_from
+        if self.port_to < self.port_from:
+            raise ValueError("port_to must be >= port_from")
+        return self
+
+
+class FirewallOpeningUpdate(BaseModel):
+    src_host_id: int | None = None
+    src_host: str | None = Field(None, min_length=1, max_length=100)
+    src_cidr: str | None = Field(None, max_length=64)
+    dst_host_id: int | None = None
+    dst_host: str | None = Field(None, min_length=1, max_length=100)
+    port_from: int | None = Field(None, ge=1, le=65535)
+    port_to: int | None = Field(None, ge=1, le=65535)
+    protocol: NetworkProtocol | None = None
+    status: OpeningStatus | None = None
+    ticket_no: str | None = Field(None, max_length=100)
+    requester: str | None = Field(None, max_length=100)
+    purpose: str | None = Field(None, max_length=500)
+
+    @field_validator("src_cidr")
+    @classmethod
+    def check_cidr(cls, v: str | None) -> str | None:
+        return _validate_cidr(v) if v is not None else None
+
+    @model_validator(mode="after")
+    def check_refs(self) -> "FirewallOpeningUpdate":
+        _exactly_one(self, ("src_host_id", "src_host", "src_cidr"), "source", required=False)
+        _exactly_one(self, ("dst_host_id", "dst_host"), "destination", required=False)
+        return self
+
+
+class FirewallOpeningResponse(BaseModel):
+    id: int
+    src_host_id: int | None = None
+    src_host_name: str | None = None
+    src_host_ip: str | None = None
+    src_cidr: str | None = None
+    src_region_id: int | None = None
+    src_region_name: str | None = None
+    dst_host_id: int
+    dst_host_name: str
+    dst_host_ip: str
+    dst_region_id: int | None = None
+    dst_region_name: str | None = None
+    port_from: int
+    port_to: int
+    protocol: str
+    status: str
+    ticket_no: str = ""
+    requester: str = ""
+    purpose: str = ""
+    # Whether any recorded or discovered service listens inside the port range.
+    in_use: bool = False
+    source: str = "manual"
+    created_by: str | None = None
+    verified: bool = False
+    verified_at: datetime | None = None
+    verified_by: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class PortUsageCreate(BaseModel):
+    host_id: int | None = None
+    host: str | None = Field(None, min_length=1, max_length=100)
+    port: int = Field(..., ge=1, le=65535)
+    protocol: NetworkProtocol = "tcp"
+    service_name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field("", max_length=255)
+    owner: str = Field("", max_length=255)
+
+    @field_validator("service_name")
+    @classmethod
+    def strip_service(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("service_name must not be blank")
+        return v
+
+    @model_validator(mode="after")
+    def one_host(self) -> "PortUsageCreate":
+        _exactly_one(self, ("host_id", "host"), "host", required=True)
+        return self
+
+
+class PortUsageUpdate(BaseModel):
+    port: int | None = Field(None, ge=1, le=65535)
+    protocol: NetworkProtocol | None = None
+    service_name: str | None = Field(None, min_length=1, max_length=100)
+    description: str | None = Field(None, max_length=255)
+    owner: str | None = Field(None, max_length=255)
+
+    @field_validator("service_name")
+    @classmethod
+    def strip_service(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            raise ValueError("service_name must not be blank")
+        return v
+
+
+class PortUsageResponse(BaseModel):
+    # null for a discovered (auto) usage, which is not stored.
+    id: int | None = None
+    host_id: int
+    host_name: str
+    host_ip: str
+    port: int
+    protocol: str = "tcp"
+    service_name: str
+    description: str = ""
+    owner: str = ""
+    # manual | agent (stored) | auto (discovered from UniBridge's own config)
+    source: str = "manual"
+    # auto only: db | s3 | node_exporter | dcgm | metrics | gateway_upstream
+    auto_kind: str | None = None
+    # auto only: UniBridge's platform host connects to it. Whether that host can
+    # reach it (null = unknown: no platform host set, or a region is unknown).
+    reachable_from_platform: bool | None = None
+    created_by: str | None = None
+    verified: bool = False
+    verified_at: datetime | None = None
+    verified_by: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class NetworkHostDetail(NetworkHostResponse):
+    inbound: list[FirewallOpeningResponse] = Field(default_factory=list)
+    outbound: list[FirewallOpeningResponse] = Field(default_factory=list)
+    usages: list[PortUsageResponse] = Field(default_factory=list)
+
+
+class AccessEndpoint(BaseModel):
+    input: str
+    host_id: int | None = None
+    host_name: str | None = None
+    ip: str | None = None
+    region_id: int | None = None
+    region_name: str | None = None
+
+
+class AccessCheckResponse(BaseModel):
+    # open | blocked | unknown
+    status: str
+    # same_region | opening | opening_closed | no_opening | unknown_region
+    reason: str
+    message: str
+    src: AccessEndpoint
+    dst: AccessEndpoint
+    port: int
+    protocol: str
+    openings: list[FirewallOpeningResponse] = Field(default_factory=list)
+    usages: list[PortUsageResponse] = Field(default_factory=list)
+    # When blocked: text to paste into the company's firewall request form.
+    request_draft: str | None = None
+
+
+class RegionLink(BaseModel):
+    # null = a CIDR source outside every region
+    src_region_id: int | None = None
+    dst_region_id: int | None = None
+    openings: int = 0
+    open_openings: int = 0
+    unverified: int = 0
+    ports: list[str] = Field(default_factory=list)  # "tcp/5432", "tcp/8000-8010"
+
+
+class NetworkOverview(BaseModel):
+    regions: list[RegionResponse] = Field(default_factory=list)
+    links: list[RegionLink] = Field(default_factory=list)
+    host_count: int = 0
+    unassigned_hosts: int = 0
+    opening_count: int = 0
+    unverified_count: int = 0
+    unused_openings: int = 0
+    unreachable_usages: int = 0
+    platform_host_id: int | None = None
+    # Discovery sources that could not be read this time (e.g. "gateway_upstream").
+    auto_sources_failed: list[str] = Field(default_factory=list)
+
+
+class NetworkSettings(BaseModel):
+    # The host UniBridge (service, APISIX, Prometheus) runs on: the client of
+    # every discovered usage, so its reachability can be checked.
+    platform_host_id: int | None = None
+
+
+class MonitoredImportResult(BaseModel):
+    created: list[str] = Field(default_factory=list)
+    linked: list[str] = Field(default_factory=list)
+    skipped: list[dict[str, str]] = Field(default_factory=list)

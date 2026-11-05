@@ -305,8 +305,8 @@ then remove old fields in a later release.
 The inactive color starts with `APISIX_PROVISION_ON_START=false` during normal
 updates. This prevents a warming container from changing APISIX before health
 checks pass. Before each deploy, the script verifies the built-in APISIX route
-shape, including the separately granted `query-template-write-api` lifecycle route
-and the LLM routes. If those routes are missing or stale, for example
+shape, including the separately granted `query-template-write-api` lifecycle route,
+the `network-api`/`network-write-api` pair and the LLM routes. If those routes are missing or stale, for example
 `llm-proxy` still points at an older gateway upstream, it forces
 re-provisioning on the new color instead of promoting broken routing. The
 `/api/llm` routes are held to Bifrost the same way: `llm-proxy` and

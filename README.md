@@ -440,6 +440,20 @@ curl -H "apikey: $UNIBRIDGE_API_KEY" \
 - `requests` counts from the status counter and the percentiles from the
   latency histogram; both are Prometheus `increase()` estimates.
 
+### Network map through the gateway
+
+The network map (regions, hosts, firewall openings, port usage, access checks)
+is reachable with an API key under `/api/network/*` on two fixed routes, granted
+per key like the others: `network-api` for `GET` (reads and
+`GET /api/network/check?src=&dst=&port=&protocol=`) and `network-write-api`
+for `POST`/`PUT`/`DELETE` (recording hosts, openings and port usage). Whatever
+a key records is stored as `source=agent` and stays unverified until a person
+confirms it in the UI. Defining regions, confirming, deleting a confirmed
+record, the platform-host setting and the monitored-server import are
+people-only (Keycloak login with `network.write`). Keys other than master keys
+see discovered port usage by kind only (e.g. `database (discovered)`), not the
+names of UniBridge's own connections.
+
 ### MCP server (`/api/mcp`)
 
 The fixed route `mcp-api` serves an MCP server (Streamable HTTP, stateless,
@@ -470,12 +484,15 @@ http_headers = { apikey = "<API_KEY>" }
   | Read-only SQL | `run_query` | `query-api` |
   | S3 | `s3_list_connections`, `s3_list_buckets`, `s3_list_objects`, `s3_get_object_metadata`, `s3_read_object` | `s3-api` |
   | NAS | `nas_list_connections`, `nas_list_entries`, `nas_get_metadata`, `nas_read_file` | `nas-api` |
+  | Network map | `network_overview`, `network_list_regions`, `network_find_hosts`, `network_get_host`, `network_check_access`, `network_list_openings`, `network_list_port_usages` | `network-api` |
+  | Network map (record) | `network_register_host`, `network_update_host`, `network_record_opening`, `network_update_opening`, `network_delete_opening`, `network_record_port_usage`, `network_delete_port_usage` | `network-api` and `network-write-api` |
   | Gateway APIs | `search_apis`, `call_api` | each offered route's own grant |
 
 - Each tool call that reaches a database, S3 or NAS goes back out through the
   gateway as the matching REST request, with the caller's own key
   (`APISIX_GATEWAY_URL`, default `http://apisix:9080`). It is authorized,
-  audited and counted on that route (`query-api`, `s3-api`, `nas-api`) exactly
+  audited and counted on that route (`query-api`, `s3-api`, `nas-api`,
+  `network-api`/`network-write-api`) exactly
   like a direct call, so Gateway Monitoring, `/api/usages`, API key usage, DB
   query monitoring and Grafana show MCP use under those routes. `mcp-api`
   itself is left out of those counts (the protocol messages — `initialize`,
@@ -1181,6 +1198,33 @@ separate lines. GPU hosts can optionally run NVIDIA `dcgm-exporter` as well
 ([`deploy/dcgm-exporter/`](./deploy/dcgm-exporter/docker-compose.yml)) for GPU
 down/utilisation/memory alerts and per-GPU charts. Full guide:
 [`docs/server-monitoring.md`](./docs/server-monitoring.md).
+
+### Network map (regions and firewall openings)
+
+Servers in one region reach each other on every port; across regions a
+firewall opening is requested through the company system by whoever needs it.
+**Network / Firewall** keeps the one shared record of what is open:
+
+- **Regions** (name + optional CIDRs; a host or raw IP inside a CIDR is placed
+  in that region), **hosts** (IP, region, owner; **Import monitored servers**
+  adds every server from **Servers**), **firewall openings** (one direction
+  each: source host or CIDR → destination host, port range, tcp/udp, open or
+  closed, ticket no., requester, purpose — expiry is left to the company
+  system) and **port usage** (which service listens on a host port).
+- **Access check** answers "can A reach B:port?": same region → open; across
+  regions → open only through a recorded opening, otherwise blocked with a
+  request draft to paste into the company form.
+- Port usage UniBridge already knows (database connections, S3 endpoints,
+  node_exporter/dcgm-exporter targets, external-service metrics, APISIX upstream
+  nodes) is listed automatically. Set the **platform host** (the server
+  UniBridge runs on) in the page's settings and those rows show whether
+  UniBridge can reach them across regions.
+- Openings no service uses are flagged as cleanup candidates.
+- Agents read and record through `/api/network/*` or the MCP `network` tools
+  (see below). What they record is marked unverified until a person confirms it;
+  regions and deleting confirmed records stay with people.
+
+Roles need `network.read` to view and `network.write` to edit.
 
 ### Infra alerting (Prometheus → Alertmanager)
 

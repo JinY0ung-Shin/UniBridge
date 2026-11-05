@@ -580,6 +580,7 @@ wait_apisix_admin() {
 # gateway upstream) returns non-zero so the caller can force re-provisioning.
 apisix_has_core_routes() {
   local query_route query_template_write_route s3_route nas_route usages_route mcp_route prometheus_route
+  local network_route network_write_route
   query_route="$(apisix_get "routes/query-api")" || return 1
   [[ -n "$query_route" ]] || return 1
   route_has_internal_proxy_header "$query_route" || return 1
@@ -603,6 +604,17 @@ apisix_has_core_routes() {
 
   mcp_route="$(apisix_get "routes/mcp-api")" || return 1
   route_has_internal_proxy_header "$mcp_route" || return 1
+
+  network_route="$(apisix_get "routes/network-api")" || return 1
+  route_has_internal_proxy_header "$network_route" || return 1
+  json_contains_pair "$network_route" "uri" "/api/network/*" || return 1
+
+  network_write_route="$(apisix_get "routes/network-write-api")" || return 1
+  route_has_internal_proxy_header "$network_write_route" || return 1
+  route_allows_method "$network_write_route" "POST" || return 1
+  route_allows_method "$network_write_route" "PUT" || return 1
+  route_allows_method "$network_write_route" "DELETE" || return 1
+  json_contains_pair "$network_write_route" "uri" "/api/network/*" || return 1
 
   # Upstream is Prometheus, not this app, so there is no internal-proxy header
   # to check — but the route must exist, or steady-state deploys (which boot

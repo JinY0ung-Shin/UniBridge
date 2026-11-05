@@ -751,6 +751,8 @@ def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
         ("nas-api", "nas_route"),
         ("usages-api", "usages_route"),
         ("mcp-api", "mcp_route"),
+        ("network-api", "network_route"),
+        ("network-write-api", "network_write_route"),
     ):
         assert f'apisix_get "routes/{route_id}"' in script
         assert f'route_has_internal_proxy_header "${route_var}" || return 1' in script
@@ -788,6 +790,10 @@ def test_deploy_script_guards_shared_sqlite_and_serializes() -> None:
         'json_contains_pair "$query_template_write_route" "upstream_id" '
         '"unibridge-service" || return 1' in script
     )
+    for method in ("POST", "PUT", "DELETE"):
+        assert f'route_allows_method "$network_write_route" "{method}" || return 1' in script
+    for route_var in ("network_route", "network_write_route"):
+        assert f'json_contains_pair "${route_var}" "uri" "/api/network/*" || return 1' in script
     # APISIX promotion PUTs retry instead of leaving colors half-switched.
     assert "apisix_put" in script
 
@@ -2039,6 +2045,16 @@ _DEPLOY_CORE_ROUTES = {
         }
         for route_id in ("s3-api", "nas-api", "usages-api", "mcp-api")
     },
+    "routes/network-api": {
+        "uri": "/api/network/*",
+        "methods": ["GET"],
+        "plugins": {"proxy-rewrite": {"headers": {"set": {"X-UniBridge-Internal-Proxy": "s"}}}},
+    },
+    "routes/network-write-api": {
+        "uri": "/api/network/*",
+        "methods": ["POST", "PUT", "DELETE"],
+        "plugins": {"proxy-rewrite": {"headers": {"set": {"X-UniBridge-Internal-Proxy": "s"}}}},
+    },
     "routes/prometheus-api": {"uri": "/api/prometheus/*", "upstream_id": "prometheus"},
 }
 
@@ -2107,6 +2123,31 @@ def test_deploy_reprovisions_when_the_mcp_route_is_missing(tmp_path: Path) -> No
     assert _deploy_has_core_routes(tmp_path / "present", retired, BIFROST_TEST_VK=BIFROST_VK)
     assert not _deploy_has_core_routes(
         tmp_path / "missing", {**retired, "routes/mcp-api": None}, BIFROST_TEST_VK=BIFROST_VK
+    )
+
+
+def test_deploy_reprovisions_when_the_network_routes_are_missing_or_stale(
+    tmp_path: Path,
+) -> None:
+    # The release that adds /api/network creates both routes only if their
+    # absence forces re-provisioning on a deploy that boots with it off.
+    retired = _llm_bi_retired()
+
+    def check(resources: dict[str, dict | None], case: str) -> bool:
+        return _deploy_has_core_routes(
+            tmp_path / case, {**retired, **resources}, BIFROST_TEST_VK=BIFROST_VK
+        )
+
+    assert check({}, "present")
+    assert not check({"routes/network-api": None}, "read-missing")
+    assert not check({"routes/network-write-api": None}, "write-missing")
+    write_route = _DEPLOY_CORE_ROUTES["routes/network-write-api"]
+    assert not check(
+        {"routes/network-write-api": {**write_route, "methods": ["POST", "PUT"]}}, "no-delete"
+    )
+    assert not check(
+        {"routes/network-api": {**_DEPLOY_CORE_ROUTES["routes/network-api"], "plugins": {}}},
+        "no-header",
     )
 
 
