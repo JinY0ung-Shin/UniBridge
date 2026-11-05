@@ -21,7 +21,16 @@ import { useToast } from '../components/useToast';
 import './QuerySettings.css';
 import './McpSettings.css';
 
-const MCP_TOOL_GROUPS: McpToolGroup[] = ['templates', 'db_explore', 'run_query', 's3', 'nas', 'apis', 'external'];
+const MCP_TOOL_GROUPS: McpToolGroup[] = [
+  'templates',
+  'db_explore',
+  'run_query',
+  's3',
+  'nas',
+  'network',
+  'apis',
+  'external',
+];
 
 const MAX_ROWS_RANGE = { min: 1, max: 10000 };
 const MAX_RESULT_BYTES_RANGE = { min: 1024, max: 1048576 };

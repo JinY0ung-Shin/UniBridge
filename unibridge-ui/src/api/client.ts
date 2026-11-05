@@ -431,7 +431,15 @@ export async function updateQuerySettings(body: QuerySettingsUpdate): Promise<Qu
 
 /* ── Admin: MCP ── */
 
-export type McpToolGroup = 'templates' | 'db_explore' | 'run_query' | 's3' | 'nas' | 'apis' | 'external';
+export type McpToolGroup =
+  | 'templates'
+  | 'db_explore'
+  | 'run_query'
+  | 's3'
+  | 'nas'
+  | 'network'
+  | 'apis'
+  | 'external';
 
 /** A gateway route offered through search_apis/call_api. */
 export interface McpExposedRoute {

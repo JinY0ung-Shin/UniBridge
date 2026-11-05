@@ -26,7 +26,8 @@
     "externalMonitoring": "External APIs",
     "metricsGuide": "Metrics Guide",
     "configTransfer": "Config transfer",
-    "mcp": "MCP"
+    "mcp": "MCP",
+    "network": "Network / Firewall"
   },
   "common": {
     "save": "Save",
@@ -1383,7 +1384,7 @@
   },
   "mcp": {
     "title": "MCP",
-    "subtitle": "Expose query templates, databases, S3, NAS and chosen gateway APIs to AI agents as MCP tools. Each API key sees only what it is granted.",
+    "subtitle": "Expose query templates, databases, S3, NAS, the network map and chosen gateway APIs to AI agents as MCP tools. Each API key sees only what it is granted.",
     "readOnlyNotice": "You have read-only access to MCP settings.",
     "loadFailed": "Failed to load MCP settings.",
     "settingsSection": "Server",
@@ -1411,6 +1412,10 @@
       "nas": {
         "label": "NAS",
         "hint": "Lists entries and reads small text files."
+      },
+      "network": {
+        "label": "Network map",
+        "hint": "Looks up regions, hosts, firewall openings and port usage, and checks whether one host can reach another. Keys that also hold network-write-api get the tools that record them; what an agent records stays unverified until a person confirms it."
       },
       "apis": {
         "label": "Gateway APIs (search_apis · call_api)",
@@ -1477,7 +1482,7 @@
     "copy": "Copy",
     "copied": "Copied",
     "copyFailed": "Failed to copy to the clipboard.",
-    "grantNote": "Replace <API_KEY> with the key. The key needs the mcp-api route grant (API Key Management) plus the grant behind each tool group: query-api and the database for templates, DB exploration and SQL; s3-api for S3; nas-api for NAS; each offered route's own grant for gateway APIs; mcp-ext-<name> for an external MCP server's tools. Each tool call goes back out through the gateway on its REST route and is counted there (mcp-api is left out of counts); it uses two requests of the key's per-minute limit.",
+    "grantNote": "Replace <API_KEY> with the key. The key needs the mcp-api route grant (API Key Management) plus the grant behind each tool group: query-api and the database for templates, DB exploration and SQL; s3-api for S3; nas-api for NAS; network-api for the network map (plus network-write-api to record); each offered route's own grant for gateway APIs; mcp-ext-<name> for an external MCP server's tools. Each tool call goes back out through the gateway on its REST route and is counted there (mcp-api is left out of counts); it uses two requests of the key's per-minute limit.",
     "previewSection": "Tool preview",
     "previewHint": "See which tools an API key would get, and why a group is missing.",
     "previewKey": "API key",
@@ -1626,6 +1631,182 @@
       "reviewOnly": "Needs review only ({{count}})",
       "serversShown": "{{shown}} of {{total}} servers",
       "noServerMatches": "No server matches."
+    }
+  },
+  "network": {
+    "title": "Network / Firewall",
+    "subtitle": "Regions, hosts, cross-region firewall openings and which service uses each port. Hosts in one region reach each other on every port; across regions only recorded openings are known.",
+    "tabs": {
+      "overview": "Overview",
+      "regions": "Regions",
+      "hosts": "Hosts",
+      "openings": "Firewall openings",
+      "usages": "Port usage",
+      "check": "Access check",
+      "settings": "Settings"
+    },
+    "region": "Region",
+    "noRegion": "No region",
+    "allRegions": "All regions",
+    "allHosts": "All hosts",
+    "allStatuses": "All statuses",
+    "filterHost": "Filter by host",
+    "filterPort": "Port",
+    "onlyUnverified": "Unverified only",
+    "description": "Description",
+    "owner": "Owner",
+    "ports": "Ports",
+    "protocol": "Protocol",
+    "flags": "Flags",
+    "selectHost": "Select a host",
+    "unverified": "Unverified",
+    "verify": "Verify",
+    "verifyItem": "Verify {{name}}",
+    "editItem": "Edit {{name}}",
+    "deleteItem": "Delete {{name}}",
+    "saveFailed": "Failed to save",
+    "deleteFailed": "Failed to delete",
+    "verifyFailed": "Failed to verify",
+    "source": {
+      "manual": "Manual",
+      "agent": "Agent",
+      "import": "Imported",
+      "auto": "Auto-discovered"
+    },
+    "status": {
+      "open": "Open",
+      "closed": "Closed"
+    },
+    "autoKind": {
+      "db": "Database connection",
+      "s3": "S3 connection",
+      "node_exporter": "node_exporter",
+      "dcgm": "dcgm-exporter",
+      "metrics": "External service metrics",
+      "gateway_upstream": "Gateway upstream"
+    },
+    "overview": {
+      "hosts": "Hosts",
+      "unassignedHosts": "Hosts without a region",
+      "openings": "Firewall openings",
+      "unverified": "Unverified records",
+      "unusedOpenings": "Open but unused openings",
+      "unreachableUsages": "Discovered usages UniBridge cannot reach",
+      "autoFailed": "Some discovery sources could not be read this time: {{sources}}. Auto-discovered usage may be incomplete.",
+      "noPlatformHost": "No platform host is set, so whether UniBridge can reach what it connects to is unknown. Set it on the Settings tab.",
+      "matrixTitle": "Region × region openings",
+      "matrixHint": "Rows are the source region, columns the destination. A cell counts open firewall openings; hover for ports, click to list them.",
+      "srcDst": "Source ↓ / Destination →",
+      "sameRegion": "Same region: all open",
+      "outsideRegions": "Outside regions (CIDR / unassigned)",
+      "cellLabel": "{{src}} → {{dst}}: {{count}} open openings {{ports}}",
+      "ofTotal": "of {{count}}",
+      "unverifiedCount": "{{count}} unverified",
+      "noRegions": "No regions yet. Add regions first, then hosts and openings.",
+      "selectedTitle": "Openings {{src}} → {{dst}}"
+    },
+    "regions": {
+      "add": "Add region",
+      "edit": "Edit region",
+      "name": "Name",
+      "cidrs": "CIDRs",
+      "hostCount": "Hosts",
+      "cidrsHint": "One per line or comma-separated. Hosts without an explicit region are placed by these.",
+      "hint": "Hosts in the same region reach each other on every port.",
+      "empty": "No regions registered yet.",
+      "deleteConfirm": "Delete region {{name}}? A region that still has hosts cannot be deleted."
+    },
+    "hosts": {
+      "add": "Add host",
+      "edit": "Edit host",
+      "name": "Name",
+      "ip": "IP",
+      "monitored": "Monitored server",
+      "monitoredNone": "Not linked",
+      "regionAuto": "Place by region CIDRs",
+      "regionNone": "No region",
+      "searchPlaceholder": "Search name, IP, description",
+      "empty": "No hosts found.",
+      "import": "Import monitored servers",
+      "importHint": "Register (or link by IP) every monitored server not yet on the map.",
+      "importDone": "Imported: {{created}} created, {{linked}} linked, {{skipped}} skipped",
+      "importFailed": "Import failed",
+      "deleteConfirm": "Delete host {{name}}? Its firewall openings and port usages are deleted with it.",
+      "notFound": "Host not found or could not be loaded.",
+      "inbound": "Inbound openings",
+      "outbound": "Outbound openings",
+      "recordedBy": "Recorded by",
+      "verifiedBy": "Verified by {{name}}"
+    },
+    "openings": {
+      "add": "Add opening",
+      "edit": "Edit opening",
+      "source": "Source",
+      "destination": "Destination",
+      "sourceType": "Source type",
+      "sourceHost": "Registered host",
+      "sourceCidr": "CIDR",
+      "cidrHint": "e.g. a partner network outside the regions",
+      "portFrom": "Port",
+      "portTo": "Port to",
+      "portToHint": "blank = single port",
+      "status": "Status",
+      "ticket": "Ticket no.",
+      "requester": "Requester",
+      "purpose": "Purpose",
+      "inUse": "In use",
+      "unused": "Unused",
+      "unusedHint": "Open, but no recorded or discovered service listens on these ports.",
+      "empty": "No firewall openings.",
+      "hint": "One direction each: source → destination. Same-region pairs need no opening.",
+      "deleteConfirm": "Delete opening {{name}}?"
+    },
+    "usages": {
+      "add": "Add port usage",
+      "edit": "Edit port usage",
+      "host": "Host",
+      "port": "Port",
+      "service": "Service",
+      "sourceFilter": "Source",
+      "allSources": "All sources",
+      "readOnly": "Read-only (auto)",
+      "unreachable": "Not reachable from platform",
+      "unreachableHint": "UniBridge connects to this, but no recorded opening lets the platform host reach it.",
+      "empty": "No port usage recorded.",
+      "hint": "Auto-discovered rows come from UniBridge's own configuration and cannot be edited here.",
+      "deleteConfirm": "Delete port usage {{name}}?"
+    },
+    "check": {
+      "hint": "Can the source reach the destination port? Pick a host or type an IP.",
+      "src": "Source",
+      "dst": "Destination",
+      "endpointPlaceholder": "Host name or IP",
+      "run": "Check",
+      "result": "Result",
+      "status": {
+        "open": "Open",
+        "blocked": "Blocked",
+        "unknown": "Unknown"
+      },
+      "reason": {
+        "same_region": "Same region: hosts in one region reach each other on every port.",
+        "opening": "Open through a recorded firewall opening.",
+        "opening_closed": "A firewall opening was recorded for this but is marked closed.",
+        "no_opening": "Different regions and no firewall opening is recorded: request one.",
+        "unknown_region": "A host is not placed in a region, so access cannot be judged."
+      },
+      "requestDraft": "Firewall request draft",
+      "copy": "Copy",
+      "copied": "Copied to clipboard",
+      "copyFailed": "Could not copy",
+      "matchingOpenings": "Matching openings",
+      "usagesOnPort": "Usage on this port"
+    },
+    "settings": {
+      "platformHost": "Platform host",
+      "platformHostNone": "Not set",
+      "platformHostHint": "The host UniBridge (service, APISIX, Prometheus) runs on; discovered usages are checked for reachability from it.",
+      "saved": "Network settings saved"
     }
   }
 }

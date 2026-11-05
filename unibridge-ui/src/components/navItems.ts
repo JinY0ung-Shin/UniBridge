@@ -39,6 +39,7 @@ export const navItems: NavItem[] = [
   { to: '/llm/monitoring', labelKey: 'nav.llmMonitoring', icon: 'LLM Monitoring', section: 'llm', permission: 'gateway.monitoring.read' },
   { to: '/servers', labelKey: 'nav.servers', icon: 'Gateway Monitoring', section: 'servers', permission: 'servers.read' },
   { to: '/external/monitoring', labelKey: 'nav.externalMonitoring', icon: 'Gateway Monitoring', section: 'servers', permission: 'gateway.monitoring.read' },
+  { to: '/network', labelKey: 'nav.network', icon: 'Network', section: 'servers', permission: ['network.read', 'network.write'] },
   { to: '/external/guide', labelKey: 'nav.metricsGuide', icon: 'Audit Logs', section: 'servers', permission: null },
   { to: '/api-keys', labelKey: 'nav.apiKeys', icon: 'API Keys', section: 'access', permission: 'apikeys.read' },
   // Key administrators manage every key (incl. their own) on /api-keys, so the

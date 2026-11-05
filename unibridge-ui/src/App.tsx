@@ -35,6 +35,8 @@ const NasBrowser = lazy(() => import('./pages/NasBrowser'));
 const Servers = lazy(() => import('./pages/Servers'));
 const ServerDetail = lazy(() => import('./pages/ServerDetail'));
 const ExternalMonitoring = lazy(() => import('./pages/ExternalMonitoring'));
+const Network = lazy(() => import('./pages/Network'));
+const NetworkHostDetail = lazy(() => import('./pages/NetworkHostDetail'));
 const MetricsGuide = lazy(() => import('./pages/MetricsGuide'));
 
 export function ProtectedRoute({ permission, children }: { permission: string | string[]; children: React.ReactNode }) {
@@ -112,6 +114,8 @@ function App() {
           <Route path="/nas/browse/:alias" element={<ProtectedRoute permission="nas.browse"><NasBrowser /></ProtectedRoute>} />
           <Route path="/servers" element={<ProtectedRoute permission="servers.read"><Servers /></ProtectedRoute>} />
           <Route path="/servers/:id" element={<ProtectedRoute permission="servers.read"><ServerDetail /></ProtectedRoute>} />
+          <Route path="/network" element={<ProtectedRoute permission={['network.read', 'network.write']}><Network /></ProtectedRoute>} />
+          <Route path="/network/hosts/:id" element={<ProtectedRoute permission={['network.read', 'network.write']}><NetworkHostDetail /></ProtectedRoute>} />
           <Route path="/external/monitoring" element={<ProtectedRoute permission="gateway.monitoring.read"><ExternalMonitoring /></ProtectedRoute>} />
           {/* Documentation — no permission gate beyond login. */}
           <Route path="/external/guide" element={<MetricsGuide />} />

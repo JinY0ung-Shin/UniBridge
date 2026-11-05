@@ -249,6 +249,13 @@ function Layout({ children }: LayoutProps) {
                         <path d="M1 17h16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                       </svg>
                     )}
+                    {item.icon === 'Network' && (
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                        <rect x="1" y="1.5" width="6" height="5" rx="1" stroke="currentColor" strokeWidth="1.5" />
+                        <rect x="11" y="11.5" width="6" height="5" rx="1" stroke="currentColor" strokeWidth="1.5" />
+                        <path d="M4 6.5v3.5h10v1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    )}
                     {item.icon === 'LLM Monitoring' && (
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                         <path d="M3 14V7l3-2 3 4 3-6 3 5v6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
