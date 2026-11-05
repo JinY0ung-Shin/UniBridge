@@ -947,3 +947,115 @@ async def test_start_checker_logs_cycle_failure_and_keeps_scheduling(
         await task
 
     assert "Alert checker cycle failed" in caplog.text
+
+
+async def test_reload_state_on_activation_replaces_stale_memory(db_session, monkeypatch) -> None:
+    """The promoted color adopts what the other color persisted, dropping its own stale view."""
+    from app.services.alert_state import save_alert_state_to_db
+
+    # What the previously active color persisted: one open incident.
+    persisted = AlertStateManager()
+    persisted.update("server_down", "web1", is_healthy=False, trigger_after_failures=1)
+    await save_alert_state_to_db(db_session, persisted, "server_down", "web1")
+    monkeypatch.setattr(alert_checker, "async_session", lambda: _SessionContext(db_session))
+
+    # The standby's frozen view: an incident long since resolved and deleted.
+    state = AlertStateManager()
+    state.update("server_disk", "old-host", is_healthy=False, trigger_after_failures=1)
+
+    assert await alert_checker._reload_state_on_activation(state) is True
+    assert state.get_entry("server_disk", "old-host") is None
+    assert state.get_status("server_down", "web1") == "alert"
+
+
+async def test_reload_state_on_activation_reports_db_failure(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(
+        alert_checker, "async_session",
+        lambda: _SessionContext(enter_error=RuntimeError("db down")),
+    )
+    state = AlertStateManager()
+    state.update("server_down", "web1", is_healthy=False, trigger_after_failures=1)
+
+    assert await alert_checker._reload_state_on_activation(state) is False
+    assert state.get_status("server_down", "web1") == "alert"
+    assert "Alert state reload on activation failed" in caplog.text
+
+
+async def test_check_server_health_reports_failed_prometheus_query(monkeypatch) -> None:
+    monkeypatch.setattr(
+        alert_checker,
+        "_load_server_monitoring",
+        AsyncMock(return_value=(
+            [SimpleNamespace(name="web1", enabled=True)], alert_checker.ServerThresholds(), 0,
+        )),
+    )
+
+    async def evaluate(hosts, thresholds, *, failed_queries):
+        failed_queries.append("disk forecast")
+        return []
+
+    monkeypatch.setattr(alert_checker.server_monitor, "evaluate_hosts", evaluate)
+    monkeypatch.setattr(alert_checker, "_persist_state_safely", AsyncMock())
+
+    assert await alert_checker._check_server_health(
+        AlertStateManager(), trigger_after_failures=1
+    ) is False
+
+
+async def test_check_server_health_reports_success(monkeypatch) -> None:
+    _server_checker_stubs(
+        monkeypatch,
+        hosts=[SimpleNamespace(name="web1", enabled=True)],
+        thresholds=alert_checker.ServerThresholds(),
+    )
+    assert await alert_checker._check_server_health(
+        AlertStateManager(), trigger_after_failures=1
+    ) is True
+
+
+async def test_check_service_health_reports_failed_prometheus_query(monkeypatch) -> None:
+    monkeypatch.setattr(
+        alert_checker,
+        "_load_service_monitoring",
+        AsyncMock(return_value=([SimpleNamespace(name="orders", enabled=True)], 0)),
+    )
+
+    async def evaluate(services, *, failed_queries):
+        failed_queries.append("external service up")
+        return []
+
+    monkeypatch.setattr(alert_checker.server_monitor, "evaluate_services", evaluate)
+    monkeypatch.setattr(alert_checker, "_persist_state_safely", AsyncMock())
+
+    assert await alert_checker._check_service_health(
+        AlertStateManager(), trigger_after_failures=1
+    ) is False
+
+
+@pytest.mark.parametrize(
+    ("hosts_ok", "services_ok", "expected"),
+    [(True, True, 1.0), (False, True, 0.0), (True, False, 0.0)],
+)
+async def test_run_single_check_host_or_service_query_failure_pulls_gauge_down(
+    monkeypatch, hosts_ok, services_ok, expected
+) -> None:
+    """The route query alone set the gauge, so a failing host query never paged."""
+    from prometheus_client import REGISTRY
+
+    monkeypatch.setattr(alert_checker, "_check_db_health", AsyncMock(return_value=[]))
+    monkeypatch.setattr(alert_checker, "_check_nas_health", AsyncMock(return_value=[]))
+    monkeypatch.setattr(alert_checker, "_check_s3_health", AsyncMock(return_value=[]))
+    monkeypatch.setattr(alert_checker, "_check_upstream_health", AsyncMock(return_value=[]))
+    monkeypatch.setattr(alert_checker, "_check_server_health", AsyncMock(return_value=hosts_ok))
+    monkeypatch.setattr(alert_checker, "_check_service_health", AsyncMock(return_value=services_ok))
+
+    async def route_ok():
+        alert_checker.metrics.set_alert_checker_prometheus_up(True)
+        return []
+
+    monkeypatch.setattr(alert_checker, "_check_route_error_rate", route_ok)
+    monkeypatch.setattr(alert_checker, "load_mute_index", AsyncMock(return_value=alert_checker.MuteIndex()))
+
+    await alert_checker.run_single_check(AlertStateManager(), trigger_after_failures=2)
+
+    assert REGISTRY.get_sample_value("unibridge_alert_checker_prometheus_up") == expected

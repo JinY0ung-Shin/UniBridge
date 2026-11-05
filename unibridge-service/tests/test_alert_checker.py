@@ -1384,7 +1384,9 @@ class TestActiveInstanceGating:
             [False, True], monotonic=[100.0, 115.0, 160.0, 175.0]
         )
         with patch("app.services.alert_checker.run_single_check",
-                   new_callable=AsyncMock) as check:
+                   new_callable=AsyncMock) as check, \
+             patch("app.services.alert_checker._reload_state_on_activation",
+                   new=AsyncMock(return_value=True)) as reload:
             for p in patches:
                 p.start()
             try:
@@ -1396,7 +1398,69 @@ class TestActiveInstanceGating:
                     p.stop()
 
         assert check.await_count == 1
+        reload.assert_awaited_once_with(state)
         assert delays == [45.0, 45.0]
+
+    async def _run_loop(self, active, monotonic, reload):
+        from app.services import alert_checker
+
+        state = AlertStateManager()
+        calls: list[str] = []
+
+        async def record_reload(st):
+            calls.append("reload")
+            return await reload(st)
+
+        async def record_check(*a, **k):
+            calls.append("check")
+
+        _delays, patches = self._loop_patches(active, monotonic=monotonic)
+        with patch("app.services.alert_checker.run_single_check", new=record_check), \
+             patch("app.services.alert_checker._reload_state_on_activation", new=record_reload):
+            for p in patches:
+                p.start()
+            try:
+                task = await alert_checker.start_checker(state)
+                with pytest.raises(RuntimeError, match="stop loop"):
+                    await task
+            finally:
+                for p in patches:
+                    p.stop()
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_promotion_reloads_state_before_the_first_check(self):
+        """A promoted standby must not check against the state it froze with."""
+        calls = await self._run_loop(
+            [False, True, True], [100.0, 115.0, 160.0, 175.0, 220.0, 235.0],
+            AsyncMock(return_value=True),
+        )
+        assert calls == ["reload", "check", "check"]
+
+    @pytest.mark.asyncio
+    async def test_active_from_boot_does_not_reload(self):
+        """Boot already loaded the state; only a standby → active transition reloads."""
+        calls = await self._run_loop(
+            [True, True], [100.0, 115.0, 160.0, 175.0], AsyncMock(return_value=True),
+        )
+        assert calls == ["check", "check"]
+
+    @pytest.mark.asyncio
+    async def test_failed_reload_skips_the_cycle_and_retries(self):
+        calls = await self._run_loop(
+            [False, True, True], [100.0, 115.0, 160.0, 175.0, 220.0, 235.0],
+            AsyncMock(side_effect=[False, True]),
+        )
+        assert calls == ["reload", "reload", "check"]
+
+    @pytest.mark.asyncio
+    async def test_demotion_and_repromotion_reloads_again(self):
+        calls = await self._run_loop(
+            [True, False, True],
+            [100.0, 115.0, 160.0, 175.0, 220.0, 235.0],
+            AsyncMock(return_value=True),
+        )
+        assert calls == ["check", "reload", "check"]
 
     @pytest.mark.asyncio
     async def test_daily_gpu_report_runs_only_on_the_active_color(self):

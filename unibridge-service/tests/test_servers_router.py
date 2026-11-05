@@ -73,6 +73,39 @@ async def test_invalid_address_and_name_rejected(client, admin_token):
     assert (await client.post("/admin/servers", headers=h, json={"name": "y", "address": "1.2.3.4:99999"})).status_code == 422
 
 
+# Prometheus drops a file_sd target whose address has a scheme, path or
+# whitespace, so such a host never gets an ``up`` series and pages as down forever.
+_BAD_SCRAPE_ADDRESSES = (
+    "http://10.0.0.5:9100",
+    "10.0.0.5:9100/metrics:9100",
+    "a b:80",
+    "10.0.0.1/admin?x=:80",
+    "user@10.0.0.5:9100",
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("address", _BAD_SCRAPE_ADDRESSES)
+async def test_scrape_addresses_with_scheme_path_or_spaces_rejected(client, admin_token, address):
+    h = auth_header(admin_token)
+    for path, body in (
+        ("/admin/servers", {"name": "h", "address": address}),
+        ("/admin/servers", {"name": "h", "address": "1.2.3.4:9100", "gpu_address": address}),
+        ("/admin/servers/external-services", {"name": "s", "address": address}),
+    ):
+        resp = await client.post(path, headers=h, json=body)
+        assert resp.status_code == 422, (path, body, resp.text)
+
+
+@pytest.mark.asyncio
+async def test_host_name_and_ipv6_scrape_addresses_accepted(client, admin_token):
+    h = auth_header(admin_token)
+    for i, address in enumerate(("node-1.example.com:39100", "[fe80::1]:9100", " 10.0.0.5:9100 ")):
+        resp = await client.post("/admin/servers", headers=h, json={"name": f"ok{i}", "address": address})
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["address"] == address.strip()
+
+
 @pytest.mark.asyncio
 async def test_invalid_disk_mountpoints_rejected(client, admin_token):
     h = auth_header(admin_token)

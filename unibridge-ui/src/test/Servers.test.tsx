@@ -173,7 +173,12 @@ describe('Servers', () => {
       'id',
       'server-thresholds-hint',
     );
-    expect(screen.getByRole('spinbutton', { name: 'Disk warn %' })).toHaveAttribute('id', 'server-disk-warn');
+    expect(screen.getByRole('spinbutton', { name: 'Disk warn % (0=off)' })).toHaveAttribute('id', 'server-disk-warn');
+    // Thresholds are floats on the backend: without step="any" the browser's
+    // default step of 1 blocks submitting 85.5 (and any host already holding one).
+    for (const input of thresholdGroup.querySelectorAll('input[type="number"]')) {
+      expect(input).toHaveAttribute('step', 'any');
+    }
 
     const gpuAddress = screen.getByRole('textbox', { name: 'GPU exporter address (dcgm)' });
     expect(gpuAddress).toHaveAttribute('id', 'server-gpu-address');
@@ -203,9 +208,9 @@ describe('Servers', () => {
     await user.type(screen.getByRole('textbox', { name: 'node_exporter address' }), ' 10.0.0.9:39100 ');
     await user.type(screen.getByRole('textbox', { name: 'Description' }), ' edge host ');
     await user.type(screen.getByRole('textbox', { name: 'Disk mountpoints' }), ' /,/data ');
-    await user.type(screen.getByRole('spinbutton', { name: 'Disk warn %' }), '80');
-    await user.type(screen.getByRole('spinbutton', { name: 'Disk critical %' }), '90');
-    await user.type(screen.getByRole('spinbutton', { name: 'CPU warn %' }), '85');
+    await user.type(screen.getByRole('spinbutton', { name: 'Disk warn % (0=off)' }), '80');
+    await user.type(screen.getByRole('spinbutton', { name: 'Disk critical % (0 with warn = off)' }), '90');
+    await user.type(screen.getByRole('spinbutton', { name: 'CPU warn % (0=off)' }), '85');
     await user.type(screen.getByRole('textbox', { name: 'GPU exporter address (dcgm)' }), ' 10.0.0.9:39400 ');
     await user.type(screen.getByRole('spinbutton', { name: 'GPU util warn % (0=off)' }), '95');
     await user.type(screen.getByRole('spinbutton', { name: 'GPU target util % · daily report' }), '30');
@@ -251,14 +256,14 @@ describe('Servers', () => {
 
     await user.click(screen.getByRole('button', { name: 'Edit web-1' }));
     expect(screen.getByRole('textbox', { name: 'Name' })).toBeDisabled();
-    expect(screen.getByRole('spinbutton', { name: 'Disk warn %' })).toHaveValue(70);
+    expect(screen.getByRole('spinbutton', { name: 'Disk warn % (0=off)' })).toHaveValue(70);
     expect(screen.getByRole('textbox', { name: 'GPU exporter address (dcgm)' })).toHaveValue('10.0.0.5:39400');
     expect(screen.getByRole('spinbutton', { name: 'GPU util warn % (0=off)' })).toHaveValue(88);
     expect(screen.getByRole('spinbutton', { name: 'GPU target util % · daily report' })).toHaveValue(40);
     await user.clear(screen.getByRole('textbox', { name: 'node_exporter address' }));
     await user.type(screen.getByRole('textbox', { name: 'node_exporter address' }), ' new.example:39100 ');
     await user.clear(screen.getByRole('textbox', { name: 'Disk mountpoints' }));
-    await user.clear(screen.getByRole('spinbutton', { name: 'Disk warn %' }));
+    await user.clear(screen.getByRole('spinbutton', { name: 'Disk warn % (0=off)' }));
     await user.clear(screen.getByRole('textbox', { name: 'GPU exporter address (dcgm)' }));
     await user.click(screen.getByRole('checkbox', { name: /Enabled/ }));
     await user.click(screen.getByRole('button', { name: 'Save' }));

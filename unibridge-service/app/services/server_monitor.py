@@ -514,6 +514,15 @@ def _effective(override: float | None, default: float) -> float:
 DISABLED_FORECAST_MESSAGE = (
     "Server '{display}' disk fill forecasting is disabled; projection alert cleared."
 )
+DISABLED_DISK_MESSAGE = (
+    "Server '{display}' disk usage alerting is disabled (thresholds 0); alert cleared."
+)
+DISABLED_CPU_MESSAGE = (
+    "Server '{display}' CPU usage alerting is disabled (threshold 0); alert cleared."
+)
+DISABLED_MEM_MESSAGE = (
+    "Server '{display}' memory usage alerting is disabled (threshold 0); alert cleared."
+)
 DISABLED_GPU_MESSAGE = "Server '{display}' GPU monitoring is disabled; alert cleared."
 DISABLED_GPU_UTIL_MESSAGE = (
     "Server '{display}' GPU utilisation alerting is disabled (threshold 0); alert cleared."
@@ -549,6 +558,16 @@ def disabled_signals(
             continue
         if forecast_off:
             off[("server_disk_forecast", name)] = DISABLED_FORECAST_MESSAGE
+        # A 0 threshold switches the signal off, as for GPU below. Disk has two
+        # levels: it is off only when both are 0 (warn 0 alone = critical only).
+        disk_warn = _effective(getattr(host, "disk_warn_pct", None), thresholds.disk_warn_pct)
+        disk_crit = _effective(getattr(host, "disk_crit_pct", None), thresholds.disk_crit_pct)
+        if disk_warn <= 0 and disk_crit <= 0:
+            off[("server_disk", name)] = DISABLED_DISK_MESSAGE
+        if _effective(getattr(host, "cpu_warn_pct", None), thresholds.cpu_warn_pct) <= 0:
+            off[("server_cpu", name)] = DISABLED_CPU_MESSAGE
+        if _effective(getattr(host, "mem_warn_pct", None), thresholds.mem_warn_pct) <= 0:
+            off[("server_mem", name)] = DISABLED_MEM_MESSAGE
         if not _gpu_address(host):
             # Defensive: the servers router already clears these when GPU
             # monitoring is switched off for a host, so this only catches state
@@ -571,43 +590,66 @@ def disabled_signals(
     return off
 
 
+def _pct_label(value: float) -> str:
+    return f"{value:.0f}%" if value > 0 else "off"
+
+
 async def evaluate_hosts(
     hosts: list[Any],
     thresholds: ServerThresholds,
+    *,
+    failed_queries: list[str] | None = None,
 ) -> list[HostSignal]:
     """Query Prometheus once per signal and build per-host results.
 
-    Returns an empty list (skip this cycle) if Prometheus is unreachable, so a
-    transient outage never produces a false ``server_down`` for every host.
+    Each query fails on its own: a failed metric query only drops that metric's
+    signals (the checker marks them unavailable), so one slow query -- the
+    ``predict_linear`` forecast is the heaviest -- cannot silence ``server_down``
+    for every host. Only a failed ``up`` query skips the whole cycle (returns
+    an empty list): without it an absent host would read as down, so a transient
+    outage would produce a false ``server_down`` for every host. The same holds
+    for ``up`` of the GPU job and the GPU signals.
+
+    The names of failed queries are appended to ``failed_queries`` so the
+    checker can report that it could not read Prometheus.
     """
     enabled = [h for h in hosts if getattr(h, "enabled", True)]
     if not enabled:
         return []
 
+    async def _query(label: str, promql: str) -> dict[str, float] | None:
+        try:
+            return _map_by_host(await prometheus_client.instant_query(promql))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Server %s query failed: %s", label, exc)
+            if failed_queries is not None:
+                failed_queries.append(label)
+            return None
+
+    up_map = await _query("up", _q_up())
+    if up_map is None:
+        logger.warning("Server health check skipped (Prometheus up query failed)")
+        return []
+
     forecast_on = thresholds.forecast_hours and thresholds.forecast_hours > 0
     gpu_hosts = [h for h in enabled if _gpu_address(h)]
-    try:
-        up_map = _map_by_host(await prometheus_client.instant_query(_q_up()))
-        disk_map = _map_by_host(await prometheus_client.instant_query(_q_disk_pct_for_hosts(enabled)))
-        cpu_map = _map_by_host(await prometheus_client.instant_query(_q_cpu_pct()))
-        mem_map = _map_by_host(await prometheus_client.instant_query(_q_mem_pct()))
-        forecast_map: dict[str, float] = {}
-        if forecast_on:
-            forecast_map = _map_by_host(
-                await prometheus_client.instant_query(
-                    _q_disk_forecast_for_hosts(enabled, thresholds.forecast_hours * 3600.0)
-                )
-            )
-        gpu_up_values: dict[str, float] = {}
-        gpu_util_map: dict[str, float] = {}
-        gpu_mem_map: dict[str, float] = {}
-        if gpu_hosts:
-            gpu_up_values = _map_by_host(await prometheus_client.instant_query(_q_gpu_up()))
-            gpu_util_map = _map_by_host(await prometheus_client.instant_query(_q_gpu_util_pct()))
-            gpu_mem_map = _map_by_host(await prometheus_client.instant_query(_q_gpu_mem_pct()))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Server health check skipped (Prometheus query failed): %s", exc)
-        return []
+    disk_map = await _query("disk", _q_disk_pct_for_hosts(enabled)) or {}
+    cpu_map = await _query("cpu", _q_cpu_pct()) or {}
+    mem_map = await _query("memory", _q_mem_pct()) or {}
+    forecast_map: dict[str, float] = {}
+    if forecast_on:
+        forecast_map = await _query(
+            "disk forecast",
+            _q_disk_forecast_for_hosts(enabled, thresholds.forecast_hours * 3600.0),
+        ) or {}
+    gpu_up_values: dict[str, float] | None = None
+    gpu_util_map: dict[str, float] = {}
+    gpu_mem_map: dict[str, float] = {}
+    if gpu_hosts:
+        gpu_up_values = await _query("gpu up", _q_gpu_up())
+        if gpu_up_values is not None:
+            gpu_util_map = await _query("gpu utilisation", _q_gpu_util_pct()) or {}
+            gpu_mem_map = await _query("gpu memory", _q_gpu_mem_pct()) or {}
 
     signals: list[HostSignal] = []
     for host in enabled:
@@ -638,42 +680,42 @@ async def evaluate_hosts(
         if not is_up:
             continue
 
-        # 2. Disk usage (worst filesystem), two-level severity.
+        # 2. Disk usage (worst filesystem), two-level severity. A level whose
+        # threshold is 0 is off (warn 0 = critical only); both 0 = no signal.
         disk_pct = disk_map.get(name)
         if disk_pct is not None:
             warn = _effective(host.disk_warn_pct, thresholds.disk_warn_pct)
             crit = _effective(host.disk_crit_pct, thresholds.disk_crit_pct)
-            alert_threshold = min(warn, crit)
-            if warn > crit:
-                logger.warning(
-                    "Invalid disk thresholds for host %s: warn %.1f > crit %.1f; "
-                    "using %.1f for alert health",
-                    name,
-                    warn,
-                    crit,
-                    alert_threshold,
+            levels = [(lvl, thr) for lvl, thr in (("critical", crit), ("warning", warn)) if thr > 0]
+            if levels:
+                alert_threshold = min(thr for _, thr in levels)
+                if crit > 0 and warn > crit:
+                    logger.warning(
+                        "Invalid disk thresholds for host %s: warn %.1f > crit %.1f; "
+                        "using %.1f for alert health",
+                        name,
+                        warn,
+                        crit,
+                        alert_threshold,
+                    )
+                severity: str | None = next(
+                    (lvl for lvl, thr in levels if disk_pct >= thr), None
                 )
-            if disk_pct >= crit:
-                severity: str | None = "critical"
-            elif disk_pct >= warn:
-                severity = "warning"
-            else:
-                severity = None
-            signals.append(HostSignal(
-                alert_type="server_disk",
-                target=name,
-                display=display,
-                is_healthy=disk_pct < alert_threshold,
-                severity=severity,
-                value=disk_pct,
-                threshold=alert_threshold,
-                message=(
-                    f"Server '{display}' disk usage is {disk_pct:.1f}% "
-                    f"(warn {warn:.0f}% / crit {crit:.0f}%)."
-                ),
-                monitor_label=HOST_SIGNAL_LABELS["server_disk"],
-                description=description,
-            ))
+                signals.append(HostSignal(
+                    alert_type="server_disk",
+                    target=name,
+                    display=display,
+                    is_healthy=disk_pct < alert_threshold,
+                    severity=severity,
+                    value=disk_pct,
+                    threshold=alert_threshold,
+                    message=(
+                        f"Server '{display}' disk usage is {disk_pct:.1f}% "
+                        f"(warn {_pct_label(warn)} / crit {_pct_label(crit)})."
+                    ),
+                    monitor_label=HOST_SIGNAL_LABELS["server_disk"],
+                    description=description,
+                ))
 
             # 3. Disk-fill forecast — proactive "will fill within N hours".
             if forecast_on:
@@ -698,10 +740,10 @@ async def evaluate_hosts(
                         description=description,
                     ))
 
-        # 4. CPU utilisation.
+        # 4. CPU utilisation. A threshold of 0 disables the alert.
         cpu_pct = cpu_map.get(name)
-        if cpu_pct is not None:
-            warn = _effective(host.cpu_warn_pct, thresholds.cpu_warn_pct)
+        warn = _effective(host.cpu_warn_pct, thresholds.cpu_warn_pct)
+        if cpu_pct is not None and warn > 0:
             signals.append(HostSignal(
                 alert_type="server_cpu",
                 target=name,
@@ -715,10 +757,10 @@ async def evaluate_hosts(
                 description=description,
             ))
 
-        # 5. Memory utilisation.
+        # 5. Memory utilisation. A threshold of 0 disables the alert.
         mem_pct = mem_map.get(name)
-        if mem_pct is not None:
-            warn = _effective(host.mem_warn_pct, thresholds.mem_warn_pct)
+        warn = _effective(host.mem_warn_pct, thresholds.mem_warn_pct)
+        if mem_pct is not None and warn > 0:
             signals.append(HostSignal(
                 alert_type="server_mem",
                 target=name,
@@ -732,8 +774,10 @@ async def evaluate_hosts(
                 description=description,
             ))
 
-        # 6. GPU — only for hosts that additionally run dcgm-exporter.
-        if not _gpu_address(host):
+        # 6. GPU — only for hosts that additionally run dcgm-exporter. Skipped
+        # (left unobserved) when the GPU up query failed, for the same reason a
+        # failed node up query skips the cycle.
+        if not _gpu_address(host) or gpu_up_values is None:
             continue
 
         gpu_is_up = gpu_up_values.get(name, 0.0) >= 1.0
@@ -922,7 +966,11 @@ class ServiceSignal:
     description: str = ""
 
 
-async def evaluate_services(services: list[Any]) -> list[ServiceSignal]:
+async def evaluate_services(
+    services: list[Any],
+    *,
+    failed_queries: list[str] | None = None,
+) -> list[ServiceSignal]:
     """Query Prometheus once for ``up`` and build a down-signal per service.
 
     Returns an empty list (skip this cycle) if Prometheus is unreachable, so a
@@ -938,6 +986,8 @@ async def evaluate_services(services: list[Any]) -> list[ServiceSignal]:
         logger.warning(
             "External-service health check skipped (Prometheus query failed): %s", exc
         )
+        if failed_queries is not None:
+            failed_queries.append("external service up")
         return []
 
     signals: list[ServiceSignal] = []

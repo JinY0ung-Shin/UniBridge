@@ -446,34 +446,34 @@ function Servers() {
             >
               <div className="form-group">
                 <label htmlFor="server-disk-warn">{t('servers.diskWarn')}</label>
-                <input id="server-disk-warn" type="number" min={0} max={100} value={form.disk_warn_pct} onChange={(e) => setForm({ ...form, disk_warn_pct: e.target.value })} placeholder="80" aria-label={t('servers.diskWarn')} />
+                <input id="server-disk-warn" type="number" min={0} max={100} step="any" value={form.disk_warn_pct} onChange={(e) => setForm({ ...form, disk_warn_pct: e.target.value })} placeholder="80" aria-label={t('servers.diskWarn')} />
               </div>
               <div className="form-group">
                 <label htmlFor="server-disk-crit">{t('servers.diskCrit')}</label>
-                <input id="server-disk-crit" type="number" min={0} max={100} value={form.disk_crit_pct} onChange={(e) => setForm({ ...form, disk_crit_pct: e.target.value })} placeholder="90" aria-label={t('servers.diskCrit')} />
+                <input id="server-disk-crit" type="number" min={0} max={100} step="any" value={form.disk_crit_pct} onChange={(e) => setForm({ ...form, disk_crit_pct: e.target.value })} placeholder="90" aria-label={t('servers.diskCrit')} />
               </div>
               <div className="form-group">
                 <label htmlFor="server-cpu-warn">{t('servers.cpuWarn')}</label>
-                <input id="server-cpu-warn" type="number" min={0} max={100} value={form.cpu_warn_pct} onChange={(e) => setForm({ ...form, cpu_warn_pct: e.target.value })} placeholder="90" aria-label={t('servers.cpuWarn')} />
+                <input id="server-cpu-warn" type="number" min={0} max={100} step="any" value={form.cpu_warn_pct} onChange={(e) => setForm({ ...form, cpu_warn_pct: e.target.value })} placeholder="90" aria-label={t('servers.cpuWarn')} />
               </div>
               <div className="form-group">
                 <label htmlFor="server-mem-warn">{t('servers.memWarn')}</label>
-                <input id="server-mem-warn" type="number" min={0} max={100} value={form.mem_warn_pct} onChange={(e) => setForm({ ...form, mem_warn_pct: e.target.value })} placeholder="90" aria-label={t('servers.memWarn')} />
+                <input id="server-mem-warn" type="number" min={0} max={100} step="any" value={form.mem_warn_pct} onChange={(e) => setForm({ ...form, mem_warn_pct: e.target.value })} placeholder="90" aria-label={t('servers.memWarn')} />
               </div>
               <div className="form-group">
                 <label htmlFor="server-gpu-util-warn">{t('servers.gpuUtilWarn')}</label>
-                <input id="server-gpu-util-warn" type="number" min={0} max={100} value={form.gpu_util_warn_pct} onChange={(e) => setForm({ ...form, gpu_util_warn_pct: e.target.value })} placeholder="90" aria-label={t('servers.gpuUtilWarn')} />
+                <input id="server-gpu-util-warn" type="number" min={0} max={100} step="any" value={form.gpu_util_warn_pct} onChange={(e) => setForm({ ...form, gpu_util_warn_pct: e.target.value })} placeholder="90" aria-label={t('servers.gpuUtilWarn')} />
               </div>
               <div className="form-group">
                 <label htmlFor="server-gpu-mem-warn">{t('servers.gpuMemWarn')}</label>
-                <input id="server-gpu-mem-warn" type="number" min={0} max={100} value={form.gpu_mem_warn_pct} onChange={(e) => setForm({ ...form, gpu_mem_warn_pct: e.target.value })} placeholder="90" aria-label={t('servers.gpuMemWarn')} />
+                <input id="server-gpu-mem-warn" type="number" min={0} max={100} step="any" value={form.gpu_mem_warn_pct} onChange={(e) => setForm({ ...form, gpu_mem_warn_pct: e.target.value })} placeholder="90" aria-label={t('servers.gpuMemWarn')} />
               </div>
               <div className="form-group">
                 <label htmlFor="server-gpu-util-target">
                   {t('servers.gpuUtilTarget')}{' '}
                   <span id="server-gpu-util-target-hint" className="hint">{t('servers.gpuUtilTargetHint')}</span>
                 </label>
-                <input id="server-gpu-util-target" type="number" min={0} max={100} value={form.gpu_util_target_pct} onChange={(e) => setForm({ ...form, gpu_util_target_pct: e.target.value })} placeholder="0" aria-label={t('servers.gpuUtilTarget')} aria-describedby="server-gpu-util-target-hint" />
+                <input id="server-gpu-util-target" type="number" min={0} max={100} step="any" value={form.gpu_util_target_pct} onChange={(e) => setForm({ ...form, gpu_util_target_pct: e.target.value })} placeholder="0" aria-label={t('servers.gpuUtilTarget')} aria-describedby="server-gpu-util-target-hint" />
               </div>
             </div>
 

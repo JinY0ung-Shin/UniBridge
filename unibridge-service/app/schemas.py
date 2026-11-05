@@ -1278,13 +1278,29 @@ def _validate_host_name(name: str) -> str:
     return name
 
 
+# The host part of a scrape address: a DNS name / IPv4 address, or a bracketed
+# IPv6 literal. Anything else -- a scheme, a path, credentials, whitespace --
+# makes Prometheus drop the target ("address ... contains /" etc.), so the host
+# would never get an ``up`` series and would read as down forever.
+_HOST_ADDRESS_HOST_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\]")
+
+
 def _validate_host_address(address: str) -> str:
     address = address.strip()
+    if "://" in address:
+        raise ValueError(
+            "address must be host:port without a scheme (e.g. 10.0.0.5:39100, not http://...)"
+        )
     if ":" not in address:
         raise ValueError("address must be in host:port form (e.g. 10.0.0.5:39100)")
     host, _, port = address.rpartition(":")
     if not host:
         raise ValueError("address must include a host")
+    if not _HOST_ADDRESS_HOST_RE.fullmatch(host):
+        raise ValueError(
+            "address host must be a host name, IPv4 address or [IPv6] address "
+            "(no path, spaces or credentials)"
+        )
     if not port.isdigit() or not (1 <= int(port) <= 65535):
         raise ValueError("address port must be a number between 1 and 65535")
     return address

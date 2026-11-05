@@ -20,6 +20,7 @@ from app.services.alert_owner_dispatcher import dispatch_alert
 from app.services.alert_state import (
     AlertStateManager,
     delete_alert_state,
+    load_alert_state_from_db,
     save_alert_state_to_db,
 )
 from app.services.apisix_client import upstream_node_addresses
@@ -588,8 +589,12 @@ async def _check_server_health(
     trigger_after_failures: int,
     resolve_after_successes: int = 1,
     mutes: MuteIndex | None = None,
-) -> None:
+) -> bool:
     """Evaluate node_exporter host signals and dispatch transitions.
+
+    Returns False when a Prometheus query failed (some or all host signals went
+    unobserved this cycle), True otherwise, so the cycle can report it on the
+    checker's Prometheus gauge.
 
     Reuses the shared state machine + dispatch pipeline: each signal is one
     (alert_type, host) binary state, with warn/critical severity escalation and
@@ -610,7 +615,7 @@ async def _check_server_health(
         hosts, thresholds, repeat = await _load_server_monitoring()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Server health check skipped (config load failed): %s", exc)
-        return
+        return True
     forecast_off = not (thresholds.forecast_hours and thresholds.forecast_hours > 0)
     disabled: dict[tuple[str, str], str] = {}
     if forecast_off:
@@ -631,8 +636,11 @@ async def _check_server_health(
         repeat=repeat,
     )
     if not enabled:
-        return
-    signals = await server_monitor.evaluate_hosts(enabled, thresholds)
+        return True
+    failed_queries: list[str] = []
+    signals = await server_monitor.evaluate_hosts(
+        enabled, thresholds, failed_queries=failed_queries
+    )
     observed = {(sig.alert_type, sig.target) for sig in signals}
     enabled_names = {getattr(h, "name", None) for h in enabled}
     for entry in state.get_entries():
@@ -650,6 +658,7 @@ async def _check_server_health(
             repeat=repeat,
             mutes=mutes,
         )
+    return not failed_queries
 
 
 async def _process_host_signal(
@@ -780,8 +789,11 @@ async def _check_service_health(
     trigger_after_failures: int,
     resolve_after_successes: int = 1,
     mutes: MuteIndex | None = None,
-) -> None:
+) -> bool:
     """Evaluate external-service reachability signals and dispatch transitions.
+
+    Returns False when the Prometheus query failed, True otherwise (see
+    :func:`_check_server_health`).
 
     The service analogue of :func:`_check_server_health`: one binary
     ``external_service_down`` state per enabled service, fed through the same
@@ -794,11 +806,12 @@ async def _check_service_health(
         services, repeat = await _load_service_monitoring()
     except Exception as exc:  # noqa: BLE001
         logger.warning("External-service health check skipped (config load failed): %s", exc)
-        return
+        return True
     enabled = [s for s in services if getattr(s, "enabled", False)]
     if not enabled:
-        return
-    signals = await server_monitor.evaluate_services(enabled)
+        return True
+    failed_queries: list[str] = []
+    signals = await server_monitor.evaluate_services(enabled, failed_queries=failed_queries)
     if not signals:
         for entry in state.get_entries(alert_type="external_service_down"):
             state.mark_unavailable(entry["type"], entry["target"], "Service metrics could not be collected")
@@ -835,6 +848,7 @@ async def _check_service_health(
                 state, outbound=outbound, result=result,
                 rule_type=sig.alert_type, target=sig.target,
             )
+    return not failed_queries
 
 
 async def _persist_state_safely(
@@ -1239,19 +1253,25 @@ async def run_single_check(
             )
 
     # 5. Server (host) health via node_exporter metrics
-    await _check_server_health(
+    hosts_prometheus_ok = await _check_server_health(
         state, trigger_after_failures=trigger_after_failures,
         resolve_after_successes=resolve_after_successes, mutes=mutes,
     )
 
     # 5b. External API-service reachability (RED-metrics registry)
-    await _check_service_health(
+    services_prometheus_ok = await _check_service_health(
         state, trigger_after_failures=trigger_after_failures,
         resolve_after_successes=resolve_after_successes, mutes=mutes,
     )
 
     # 6. Route-level error rate (automatic for every route; global threshold)
     route_results = await _check_route_error_rate()
+    if not (hosts_prometheus_ok and services_prometheus_ok):
+        # The route check above sets the checker's Prometheus gauge from its own
+        # query only; a failed host/service query also leaves alerts unevaluated
+        # (UniBridgeAlertCheckerPrometheusDown), so it pulls the gauge down too.
+        # No await between the two sets, so a scrape never sees the brief 1.
+        metrics.set_alert_checker_prometheus_up(False)
     if route_results is None:
         for entry in state.get_entries(alert_type="route_error_rate"):
             state.mark_unavailable(entry["type"], entry["target"], "Prometheus query failed")
@@ -1313,10 +1333,24 @@ async def run_single_check(
         )
 
 
+async def _reload_state_on_activation(state: AlertStateManager) -> bool:
+    """Replace the in-memory alert state with the persisted rows; False on failure."""
+    try:
+        async with async_session() as db:
+            await load_alert_state_from_db(db, state)
+    except Exception:
+        logger.exception("Alert state reload on activation failed; skipping this cycle")
+        return False
+    logger.info("Became the active instance; reloaded alert state from the database")
+    return True
+
+
 async def start_checker(state: AlertStateManager) -> asyncio.Task:
     """Start the periodic health check loop as a background task."""
     async def _loop():
         logger.info("Alert checker started")
+        # None until the first cycle: boot (app.main) has just loaded the state.
+        was_active: bool | None = None
         while True:
             cycle_start = _monotonic()
             check_interval = await _get_check_interval_seconds()
@@ -1329,7 +1363,17 @@ async def start_checker(state: AlertStateManager) -> asyncio.Task:
             # demoted one must stop) on the next tick without any restart.
             # `is_active_instance` logs its own transitions; staying quiet here
             # keeps a standby color from writing a line every interval.
-            if await is_active_instance():
+            active = await is_active_instance()
+            if active and was_active is False:
+                # A standby's in-memory state froze when it was demoted (or at its
+                # boot), while the other color kept checking and persisting. Reload
+                # it before checking, or old incidents re-resolve and open ones are
+                # announced twice. On failure stay "not active" and retry next tick
+                # rather than check against stale state.
+                if not await _reload_state_on_activation(state):
+                    active = False
+            was_active = active
+            if active:
                 trigger_after_failures = await _get_trigger_after_failures()
                 resolve_after_successes = await _get_resolve_after_successes()
                 try:

@@ -399,6 +399,7 @@ export default function AlertDeliveryPanel() {
                 type="number"
                 min={min}
                 max={max}
+                step={field === 'repeat_alert_after_cycles' ? 1 : 'any'}
                 value={settingsForm[field] as number}
                 disabled={!hasSettings || !canWrite}
                 onChange={(e) =>

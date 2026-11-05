@@ -744,3 +744,145 @@ class TestProbeMetricsEndpoint:
         )
         assert status == "down"
         assert "ConnectError" in detail
+
+
+# ── per-query failure isolation & 0 = off for disk/CPU/memory ────────────────
+
+
+def _failing_queries(mapping, failing):
+    """Like _patch_queries, but queries containing any ``failing`` needle raise."""
+    ok = _patch_queries(mapping)
+
+    async def fake(query, *a, **k):
+        if any(needle in query for needle in failing):
+            raise RuntimeError("query timed out")
+        return await ok(query, *a, **k)
+    return fake
+
+
+_UP_HOSTS = {
+    'up{job="nodes"}': [_series("web1", 1), _series("web2", 0)],
+    "node_filesystem_avail_bytes": [_series("web1", 50)],
+    "node_cpu_seconds_total": [_series("web1", 10)],
+    "node_memory_MemAvailable_bytes": [_series("web1", 10)],
+}
+
+
+@pytest.mark.asyncio
+async def test_failed_metric_query_keeps_server_down_and_other_signals():
+    """A timed-out forecast query must not silence server_down for every host."""
+    th = ServerThresholds(forecast_hours=24)
+    failed: list[str] = []
+    with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+        q.side_effect = _failing_queries(_UP_HOSTS, ["predict_linear"])
+        signals = await evaluate_hosts(
+            [_host("web1"), _host("web2", "10.0.0.2:9100")], th, failed_queries=failed
+        )
+    emitted = {(s.alert_type, s.target): s for s in signals}
+    assert emitted[("server_down", "web2")].is_healthy is False
+    assert {("server_disk", "web1"), ("server_cpu", "web1"), ("server_mem", "web1")} <= set(emitted)
+    assert ("server_disk_forecast", "web1") not in emitted
+    assert failed == ["disk forecast"]
+
+
+@pytest.mark.asyncio
+async def test_failed_up_query_skips_cycle_and_reports_it():
+    failed: list[str] = []
+    with patch.object(
+        server_monitor.prometheus_client, "instant_query",
+        new=AsyncMock(side_effect=RuntimeError("down")),
+    ):
+        signals = await evaluate_hosts([_host("web1")], ServerThresholds(), failed_queries=failed)
+    assert signals == []
+    assert failed == ["up"]
+
+
+@pytest.mark.asyncio
+async def test_failed_gpu_up_query_emits_no_gpu_signals():
+    """Without GPU up, an absent exporter would read as down: emit nothing instead."""
+    th = ServerThresholds(forecast_hours=0)
+    failed: list[str] = []
+    with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+        q.side_effect = _failing_queries(
+            {'up{job="nodes"}': [_series("gpu1", 1)]}, ['up{job="gpu-nodes"}']
+        )
+        signals = await evaluate_hosts(
+            [_host("gpu1", gpu_address="10.0.0.1:9400")], th, failed_queries=failed
+        )
+    types = {s.alert_type for s in signals}
+    assert types == {"server_down"}
+    assert failed == ["gpu up"]
+
+
+@pytest.mark.asyncio
+async def test_zero_cpu_and_memory_thresholds_disable_the_signals():
+    th = ServerThresholds(forecast_hours=0, cpu_warn_pct=0)
+    host = _host("web1", mem_warn_pct=0)
+    with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+        q.side_effect = _patch_queries(_UP_HOSTS)
+        signals = await evaluate_hosts([host], th)
+    types = {s.alert_type for s in signals if s.target == "web1"}
+    assert "server_cpu" not in types and "server_mem" not in types
+    assert "server_disk" in types
+
+
+@pytest.mark.asyncio
+async def test_zero_disk_warn_alerts_at_critical_only():
+    th = ServerThresholds(disk_warn_pct=0, disk_crit_pct=90, forecast_hours=0)
+    for pct, healthy, severity in ((50, True, None), (95, False, "critical")):
+        with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+            q.side_effect = _patch_queries({
+                'up{job="nodes"}': [_series("web1", 1)],
+                "node_filesystem_avail_bytes": [_series("web1", pct)],
+            })
+            signals = await evaluate_hosts([_host("web1")], th)
+        disk = next(s for s in signals if s.alert_type == "server_disk")
+        assert (disk.is_healthy, disk.severity, disk.threshold) == (healthy, severity, 90)
+        assert "warn off / crit 90%" in disk.message
+
+
+@pytest.mark.asyncio
+async def test_zero_disk_thresholds_disable_disk_but_keep_forecast():
+    th = ServerThresholds(disk_warn_pct=0, disk_crit_pct=0, forecast_hours=24)
+    with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+        q.side_effect = _patch_queries({
+            'up{job="nodes"}': [_series("web1", 1)],
+            "predict_linear": [_series("web1", -1)],
+            "node_filesystem_avail_bytes": [_series("web1", 99)],
+        })
+        signals = await evaluate_hosts([_host("web1")], th)
+    types = {s.alert_type for s in signals}
+    assert "server_disk" not in types
+    assert "server_disk_forecast" in types
+
+
+def test_disabled_signals_reports_zero_disk_cpu_and_memory_thresholds():
+    th = ServerThresholds(disk_warn_pct=0, disk_crit_pct=0, cpu_warn_pct=0, forecast_hours=24)
+    hosts = [_host("web1", mem_warn_pct=0), _host("web2", "10.0.0.2:9100", cpu_warn_pct=70)]
+    off = disabled_signals(hosts, th)
+    assert {k for k in off if k[0] in ("server_disk", "server_cpu", "server_mem")} == {
+        ("server_disk", "web1"), ("server_cpu", "web1"), ("server_mem", "web1"),
+        ("server_disk", "web2"),
+    }
+    assert off[("server_cpu", "web1")].format(display="Web 1") == (
+        "Server 'Web 1' CPU usage alerting is disabled (threshold 0); alert cleared."
+    )
+
+
+def test_disabled_signals_keeps_disk_on_when_only_warn_is_zero():
+    th = ServerThresholds(disk_warn_pct=0, disk_crit_pct=90, forecast_hours=24)
+    assert ("server_disk", "web1") not in disabled_signals([_host("web1")], th)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_services_reports_failed_query():
+    failed: list[str] = []
+    with patch.object(
+        server_monitor.prometheus_client, "instant_query",
+        new=AsyncMock(side_effect=RuntimeError("down")),
+    ):
+        signals = await evaluate_services(
+            [SimpleNamespace(name="orders", enabled=True)], failed_queries=failed
+        )
+    assert signals == []
+    assert failed == ["external service up"]
