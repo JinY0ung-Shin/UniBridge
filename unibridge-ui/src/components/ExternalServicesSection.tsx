@@ -14,6 +14,7 @@ import {
 import ResourceModal from './ResourceModal';
 import { useToast } from './useToast';
 import { useCanWrite } from './useCanWrite';
+import { scrapeStatusLabel } from '../utils/scrapeStatus';
 
 interface FormState {
   name: string;
@@ -97,18 +98,34 @@ function ExternalServicesSection() {
     mutationFn: (id: number) => testExternalService(id),
     onSuccess: (data) => addToast({
       type: data.status === 'up' ? 'success' : 'error',
-      title: `${t('servers.statusLabel')}: ${data.status}`,
+      title: `${t('servers.statusLabel')}: ${scrapeStatusLabel(t, data.status)}`,
       message: data.detail ?? undefined,
     }),
+    onError: (err) => {
+      let message = '';
+      if (err && typeof err === 'object' && 'isAxiosError' in err) {
+        const detail = (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
+        if (typeof detail === 'string') message = detail;
+      }
+      addToast({ type: 'error', title: t('servers.testFailed'), message });
+    },
   });
 
+  /** A save that failed in an earlier modal must not greet the next one. */
+  function resetSaveErrors() {
+    createMutation.reset();
+    updateMutation.reset();
+  }
+
   function openCreate() {
+    resetSaveErrors();
     setForm({ ...emptyForm });
     setEditingId(null);
     setShowModal(true);
   }
 
   function openEdit(svc: ExternalService) {
+    resetSaveErrors();
     setForm({
       name: svc.name,
       address: svc.address,
@@ -183,7 +200,7 @@ function ExternalServicesSection() {
                     <tr key={s.id}>
                       <td>
                         <span className={`status-badge ${statusClass(s.enabled ? s.status : 'disabled')}`}>
-                          {s.enabled ? (s.status ?? 'unknown') : t('servers.disabled')}
+                          {scrapeStatusLabel(t, s.enabled ? s.status : 'disabled')}
                         </span>
                       </td>
                       <td>{s.name}</td>

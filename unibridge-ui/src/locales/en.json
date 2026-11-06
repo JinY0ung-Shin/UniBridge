@@ -1286,6 +1286,10 @@
     "enabled": "Enabled (scraped & monitored)",
     "statusLabel": "Status",
     "disabled": "disabled",
+    "status_up": "up",
+    "status_down": "down",
+    "status_unknown": "unknown",
+    "testFailed": "Test failed",
     "test": "Test",
     "openDetails": "Open details for {{name}}",
     "testServer": "Test {{name}}",
@@ -1315,7 +1319,9 @@
     "diskCapacity": "Disk capacity",
     "diskCapacityValue": "{{used}} / {{total}}",
     "diskTotal": "total {{total}}",
-    "noMetricData": "No metric data in this window."
+    "noMetricData": "No metric data in this window.",
+    "metricsUnavailable": "Prometheus is unreachable, so metrics could not be loaded.",
+    "chartTimeHint": "Times are KST; breaks in a line are periods with no samples."
   },
   "configTransfer": {
     "title": "Config transfer",

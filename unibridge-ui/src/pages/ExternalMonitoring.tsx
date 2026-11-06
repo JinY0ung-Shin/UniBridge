@@ -12,6 +12,7 @@ import {
   getExternalRequestsTotal,
   getExternalStatusCodes,
   getExternalLatency,
+  getExternalServiceNames,
   getExternalServicesComparison,
   getExternalServicesComparisonSeries,
   getExternalHandlersComparison,
@@ -151,12 +152,18 @@ function ExternalMonitoring() {
     refetchInterval,
   });
 
-  // Always fetched (cheap, top-10): also feeds the service filter options, so
-  // the dropdown keeps working while the comparison panel itself is hidden.
+  // Always fetched (cheap, top-10). It also feeds the service filter, together
+  // with the registry names below: the top 10 alone would hide quieter services.
   const comparisonQuery = useQuery({
     queryKey: ['ext-services-comparison', selKey],
     queryFn: () => getExternalServicesComparison(selection),
     refetchInterval,
+  });
+
+  const serviceNamesQuery = useQuery({
+    queryKey: ['ext-service-names'],
+    queryFn: getExternalServiceNames,
+    staleTime: 60_000,
   });
 
   const comparisonSeriesQuery = useQuery({
@@ -189,10 +196,13 @@ function ExternalMonitoring() {
   }, [handlersQuery.data]);
 
   const serviceOptions = useMemo(() => {
-    const names = (comparisonQuery.data?.services ?? []).map((s) => s.service);
+    const names = [
+      ...(serviceNamesQuery.data ?? []),
+      ...(comparisonQuery.data?.services ?? []).map((s) => s.service),
+    ];
     if (selectedService && !names.includes(selectedService)) names.push(selectedService);
     return [...new Set(names)].sort((a, b) => a.localeCompare(b));
-  }, [comparisonQuery.data, selectedService]);
+  }, [serviceNamesQuery.data, comparisonQuery.data, selectedService]);
 
   const sortedServices = useMemo(() => {
     const rows = comparisonQuery.data?.services ?? [];

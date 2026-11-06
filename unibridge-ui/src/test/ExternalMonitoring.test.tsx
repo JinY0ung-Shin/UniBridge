@@ -40,6 +40,7 @@ vi.mock('../api/client', () => ({
   getExternalRequestsTotal: vi.fn(),
   getExternalStatusCodes: vi.fn(),
   getExternalLatency: vi.fn(),
+  getExternalServiceNames: vi.fn(),
   getExternalServicesComparison: vi.fn(),
   getExternalServicesComparisonSeries: vi.fn(),
   getExternalHandlersComparison: vi.fn(),
@@ -53,6 +54,7 @@ import {
   getExternalRequestsTotal,
   getExternalStatusCodes,
   getExternalLatency,
+  getExternalServiceNames,
   getExternalServicesComparison,
   getExternalServicesComparisonSeries,
   getExternalHandlersComparison,
@@ -65,6 +67,7 @@ const mockedRequests = vi.mocked(getExternalRequests);
 const mockedRequestsTotal = vi.mocked(getExternalRequestsTotal);
 const mockedStatusCodes = vi.mocked(getExternalStatusCodes);
 const mockedLatency = vi.mocked(getExternalLatency);
+const mockedServiceNames = vi.mocked(getExternalServiceNames);
 const mockedComparison = vi.mocked(getExternalServicesComparison);
 const mockedComparisonSeries = vi.mocked(getExternalServicesComparisonSeries);
 const mockedHandlers = vi.mocked(getExternalHandlersComparison);
@@ -78,6 +81,7 @@ describe('ExternalMonitoring', () => {
     mockedStatusCodes.mockResolvedValue([]);
     mockedLatency.mockResolvedValue({ p50: [], p95: [], p99: [] });
     mockedComparison.mockResolvedValue({ total_requests: 0, services: [] });
+    mockedServiceNames.mockResolvedValue([]);
     mockedComparisonSeries.mockResolvedValue({ buckets: [], series: [], unit: 'requests' });
     mockedHandlers.mockResolvedValue({ total_requests: 0, handlers: [] });
   });
@@ -219,6 +223,21 @@ describe('ExternalMonitoring', () => {
     expect(screen.getAllByText('billing-api').length).toBeGreaterThan(0);
     expect(screen.getByRole('option', { name: 'order-api' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'billing-api' })).toBeInTheDocument();
+  });
+
+  it('offers registered services the top-10 comparison leaves out', async () => {
+    mockedServiceNames.mockResolvedValue(['quiet-api', 'order-api']);
+    mockedComparison.mockResolvedValue({
+      total_requests: 100,
+      services: [
+        { service: 'order-api', requests: 100, share: 100, error_rate: 0, latency_p50_ms: 10, latency_p95_ms: 20 },
+      ],
+    });
+
+    renderWithProviders(<ExternalMonitoring />);
+
+    expect(await screen.findByRole('option', { name: 'quiet-api' })).toBeInTheDocument();
+    expect(screen.getAllByRole('option', { name: 'order-api' })).toHaveLength(1);
   });
 
   it('passes the selected service to metric calls and shows the filtered note', async () => {

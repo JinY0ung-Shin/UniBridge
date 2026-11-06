@@ -15,7 +15,9 @@ vi.mock('recharts', () => ({
     rechartsCapture.chartData.push(data);
     return <div data-testid="line-chart">{children}</div>;
   },
-  Line: ({ name }: { name: string }) => <span data-testid="chart-line">{name}</span>,
+  Line: ({ name, stroke, connectNulls }: { name: string; stroke?: string; connectNulls?: boolean }) => (
+    <span data-testid="chart-line" data-stroke={stroke} data-connect-nulls={String(Boolean(connectNulls))}>{name}</span>
+  ),
   XAxis: () => null,
   YAxis: () => null,
   CartesianGrid: () => null,
@@ -242,5 +244,53 @@ describe('ServerDetail page', () => {
     renderWithProviders(<ServerDetail />);
     expect(await screen.findByRole('heading', { name: '#7' })).toBeInTheDocument();
     expect(screen.queryByText('10.0.0.7:39100')).not.toBeInTheDocument();
+  });
+
+  it('breaks the line where samples are missing and labels times in KST', async () => {
+    mockGetServers.mockResolvedValue([server]);
+    // 1h window, 60s step: 00:00, 00:01, then nothing until 00:10 UTC (an outage).
+    mockGetServerMetrics.mockResolvedValue([
+      { metric: 'cpu', points: [{ t: 0, v: 10 }, { t: 60, v: 11 }, { t: 600, v: 12 }] },
+    ]);
+    renderWithProviders(<ServerDetail />);
+    await screen.findByRole('heading', { name: 'CPU usage (%)' });
+
+    const rows = rechartsCapture.chartData.at(-1) as Array<{ timestamp: number; time: string; value_0: number | null }>;
+    expect(rows.map((row) => [row.timestamp, row.value_0])).toEqual([[0, 10], [60, 11], [120, null], [600, 12]]);
+    expect(rows[0].time).toBe('09:00'); // epoch 0 = 09:00 KST, whatever the browser's zone
+    expect(screen.getByTestId('chart-line')).toHaveAttribute('data-connect-nulls', 'false');
+  });
+
+  it('gives each of eight GPUs its own colour', async () => {
+    const root = document.documentElement.style;
+    const accents = { '--accent-yellow': '#eab308', '--accent-blue': '#3b82f6', '--accent-green': '#22c55e', '--accent-red': '#ef4444' };
+    for (const [name, value] of Object.entries(accents)) root.setProperty(name, value);
+    mockGetServers.mockResolvedValue([{ ...server, gpu_address: '10.0.0.7:39400' }]);
+    mockGetServerMetrics.mockResolvedValue(
+      Array.from({ length: 8 }, (_, gpu) => ({
+        metric: 'gpu_util' as const, gpu: String(gpu), points: [{ t: 1, v: gpu }],
+      })),
+    );
+    renderWithProviders(<ServerDetail />);
+    await screen.findByRole('heading', { name: 'GPU utilization (per GPU)' });
+
+    const strokes = screen.getAllByTestId('chart-line').map((line) => line.getAttribute('data-stroke'));
+    expect(strokes).toHaveLength(8);
+    expect(new Set(strokes).size).toBe(8);
+    for (const name of Object.keys(accents)) root.removeProperty(name);
+  });
+
+  it('says Prometheus is unreachable when the metrics call returns 502', async () => {
+    const { AxiosError } = await import('axios');
+    mockGetServers.mockResolvedValue([server]);
+    mockGetServerMetrics.mockRejectedValue(
+      new AxiosError('Bad Gateway', 'ERR_BAD_RESPONSE', undefined, undefined, {
+        status: 502, data: { detail: 'Prometheus is unreachable' },
+      } as never),
+    );
+    renderWithProviders(<ServerDetail />);
+    expect(await screen.findByRole('alert', {}, { timeout: 5000 })).toHaveTextContent(
+      'Prometheus is unreachable, so metrics could not be loaded.',
+    );
   });
 });

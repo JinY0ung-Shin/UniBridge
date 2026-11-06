@@ -167,6 +167,41 @@ describe('ExternalServicesSection', () => {
     expect(mockTestExternalService).toHaveBeenNthCalledWith(2, 5);
   });
 
+  it('reports a failed test call instead of silently resetting the button', async () => {
+    mockGetExternalServices.mockResolvedValue([makeService()]);
+    mockTestExternalService.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: { data: { detail: 'Service not found' } },
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<ExternalServicesSection />, { permissions: ['servers.read'] });
+    await screen.findByText('orders-api');
+
+    await user.click(screen.getByRole('button', { name: 'Test service orders-api' }));
+    expect((await screen.findByText('Test failed')).closest('.toast')).toHaveClass('toast--error');
+    expect(screen.getByText('Service not found')).toBeInTheDocument();
+  });
+
+  it('does not carry a failed save into the next modal', async () => {
+    mockGetExternalServices.mockResolvedValue([makeService()]);
+    mockUpdateExternalService.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: { data: { detail: 'boom' } },
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<ExternalServicesSection />, { permissions: ['servers.read', 'servers.write'] });
+    await screen.findByText('orders-api');
+
+    await user.click(screen.getByRole('button', { name: 'Edit service orders-api' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(dialog.querySelector('.form-error')).not.toBeNull());
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    await user.click(screen.getByRole('button', { name: 'Edit service orders-api' }));
+    expect((await screen.findByRole('dialog')).querySelector('.form-error')).toBeNull();
+  });
+
   it('honors delete confirmation and surfaces delete failures', async () => {
     mockGetExternalServices.mockResolvedValue([makeService()]);
     const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);

@@ -380,6 +380,7 @@ async def server_metrics(
     metrics = ("cpu", "mem", "disk")
     if host.gpu_address:
         metrics += ("gpu_util", "gpu_mem")
+    failed = 0
     for metric in metrics:
         query = server_monitor.metric_query(metric, host.name, disk_mountpoints=host.disk_mountpoints)
         if query is None:
@@ -388,10 +389,17 @@ async def server_metrics(
             results = await prometheus_client.range_query(query, duration=duration, step=step)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Server metric query failed (%s/%s): %s", host.name, metric, exc)
+            failed += 1
             results = []
         if metric in ("gpu_util", "gpu_mem"):
-            # One series per GPU, ordered by the dcgm `gpu` index label.
-            for result in sorted(results, key=lambda item: str(item.get("metric", {}).get("gpu") or "")):
+            if not results:
+                # Keep the panel (as "no data") so a host whose dcgm-exporter is
+                # down does not look like one without GPU monitoring.
+                series.append(ServerMetricSeries(metric=metric))
+                continue
+            # One series per GPU, ordered by the dcgm `gpu` index (numerically,
+            # so GPU 10 follows GPU 9 rather than GPU 1).
+            for result in sorted(results, key=lambda item: _gpu_sort_key(item.get("metric", {}).get("gpu"))):
                 labels = result.get("metric", {})
                 gpu = labels.get("gpu")
                 model = labels.get("modelName")
@@ -424,7 +432,16 @@ async def server_metrics(
                 )
             continue
         series.append(ServerMetricSeries(metric=metric, points=points_from_result(results[0] if results else None)))
+    if failed == len(metrics):
+        # Every query failed: Prometheus is unreachable. Say so instead of
+        # drawing each panel as "no data".
+        raise HTTPException(status_code=502, detail="Prometheus is unreachable")
     return series
+
+
+def _gpu_sort_key(gpu: Any) -> tuple[int, str]:
+    text = str(gpu if gpu is not None else "")
+    return (int(text), "") if text.isdigit() else (1 << 30, text)
 
 
 # ── External services (RED-metrics registry) ─────────────────────────────────
@@ -484,7 +501,11 @@ async def list_external_services(
     up_map = await server_monitor.service_up_map()  # None if Prometheus unreachable
     rows: list[MonitoredServiceResponse] = []
     for service in services:
-        if up_map is None:
+        if not service.enabled:
+            # Like hosts: a disabled service is unscraped, so its last up/down
+            # would only linger until it decays into "unknown".
+            status = "disabled"
+        elif up_map is None:
             status = "unknown"
         elif service.name in up_map:
             status = "up" if up_map[service.name] else "down"

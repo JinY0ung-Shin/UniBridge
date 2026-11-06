@@ -1286,6 +1286,10 @@
     "enabled": "활성화 (수집·모니터링)",
     "statusLabel": "상태",
     "disabled": "비활성",
+    "status_up": "정상",
+    "status_down": "다운",
+    "status_unknown": "알 수 없음",
+    "testFailed": "테스트 실패",
     "test": "테스트",
     "openDetails": "\"{{name}}\" 상세 열기",
     "testServer": "\"{{name}}\" 테스트",
@@ -1315,7 +1319,9 @@
     "diskCapacity": "디스크 용량",
     "diskCapacityValue": "{{used}} / {{total}}",
     "diskTotal": "전체 {{total}}",
-    "noMetricData": "이 구간에 메트릭 데이터가 없습니다."
+    "noMetricData": "이 구간에 메트릭 데이터가 없습니다.",
+    "metricsUnavailable": "Prometheus에 연결할 수 없어 메트릭을 불러오지 못했습니다.",
+    "chartTimeHint": "시각은 KST, 끊긴 구간은 수집되지 않은 시간입니다."
   },
   "configTransfer": {
     "title": "설정 이관",

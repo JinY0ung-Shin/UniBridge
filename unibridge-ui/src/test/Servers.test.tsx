@@ -335,6 +335,47 @@ describe('Servers', () => {
     expect(window.location.pathname).toBe('/servers/1');
   });
 
+  it('colours a test with a down GPU exporter as a failure and reports a failed test call', async () => {
+    mockedGetServers.mockResolvedValue([makeServer({ gpu_address: '10.0.0.5:39400' })]);
+    mockedTestServer.mockResolvedValueOnce({ status: 'up', detail: null, gpu_status: 'down' });
+    mockedTestServer.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: { data: { detail: 'Server not found' } },
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<Servers />, { permissions: ['servers.read'] });
+    await screen.findByText('web-1');
+
+    await user.click(screen.getByRole('button', { name: 'Test web-1' }));
+    const partial = await screen.findByText('Status: up · GPU: down');
+    expect(partial.closest('.toast')).toHaveClass('toast--error');
+
+    await user.click(screen.getByRole('button', { name: 'Test web-1' }));
+    const failed = await screen.findByText('Test failed');
+    expect(failed.closest('.toast')).toHaveClass('toast--error');
+    expect(screen.getByText('Server not found')).toBeInTheDocument();
+  });
+
+  it('does not carry a failed save into the next modal', async () => {
+    const user = userEvent.setup();
+    mockedGetServers.mockResolvedValue([makeServer()]);
+    mockedUpdateServer.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: { data: { detail: 'boom' } },
+    });
+    renderWithProviders(<Servers />, { permissions: ['servers.read', 'servers.write'] });
+    await screen.findByText('web-1');
+
+    await user.click(screen.getByRole('button', { name: 'Edit web-1' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(dialog.querySelector('.form-error')).not.toBeNull());
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    await user.click(screen.getByRole('button', { name: 'Edit web-1' }));
+    expect((await screen.findByRole('dialog')).querySelector('.form-error')).toBeNull();
+  });
+
   it('hides host mutations for read-only users and renders status fallbacks', async () => {
     mockedGetServers.mockResolvedValue([
       makeServer({ id: 1, name: 'disabled-host', enabled: false, status: 'down' }),

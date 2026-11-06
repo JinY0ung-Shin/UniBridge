@@ -5,17 +5,25 @@ import { useTranslation } from 'react-i18next';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
+import { AxiosError } from 'axios';
 import { getServers, getServerMetrics, type ServerMetricSeries } from '../api/client';
 import { useChartTheme, type ChartTheme } from '../components/useChartTheme';
 import GrafanaLink from '../components/GrafanaLink';
+import { isolatedPointDot } from '../utils/chartDots';
+import { formatChartPointTime, formatChartTimestamp } from '../utils/time';
 import './Connections.css';
 import './Servers.css';
 
-const DURATIONS: Array<{ key: string; step: string }> = [
-  { key: '1h', step: '60s' },
-  { key: '6h', step: '120s' },
-  { key: '24h', step: '300s' },
+const DURATIONS: Array<{ key: string; step: string; seconds: number }> = [
+  { key: '1h', step: '60s', seconds: 3600 },
+  { key: '6h', step: '120s', seconds: 6 * 3600 },
+  { key: '24h', step: '300s', seconds: 24 * 3600 },
 ];
+
+interface ChartWindow {
+  spanSeconds: number;
+  stepSeconds: number;
+}
 
 const METRIC_COLORS: Record<string, 'blue' | 'green' | 'yellow'> = {
   cpu: 'blue',
@@ -57,13 +65,19 @@ interface ChartPanel {
   lines: ChartLine[];
 }
 
-function formatTime(ts: number) {
-  return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
+/** Distinct hues after the theme accents, so an 8-GPU box gets 8 different lines. */
+const EXTRA_DEVICE_COLORS = [
+  '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#84cc16', '#06b6d4', '#a855f7',
+];
 
 function deviceLineColor(theme: ChartTheme, index: number) {
-  const colors = [theme.yellow, theme.blue, theme.green, theme.red, theme.textSecondary, theme.textTertiary];
+  const colors = [theme.yellow, theme.blue, theme.green, theme.red, ...EXTRA_DEVICE_COLORS];
   return colors[index % colors.length];
+}
+
+function stepSeconds(step: string): number {
+  const n = Number.parseInt(step, 10);
+  return Number.isFinite(n) && n > 0 ? n : 60;
 }
 
 const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
@@ -107,6 +121,7 @@ function buildChartPanel(
   metric: ServerMetricSeries['metric'],
   metricSeries: ServerMetricSeries[],
   theme: ChartTheme,
+  win: ChartWindow,
 ): ChartPanel {
   const dataByTimestamp = new Map<number, ChartDatum>();
   const lines = metricSeries.map((s, index) => {
@@ -125,7 +140,7 @@ function buildChartPanel(
     for (const point of s.points) {
       let datum = dataByTimestamp.get(point.t);
       if (!datum) {
-        datum = { timestamp: point.t, time: formatTime(point.t) };
+        datum = { timestamp: point.t, time: formatChartTimestamp(point.t, win.spanSeconds) };
         dataByTimestamp.set(point.t, datum);
       }
       datum[key] = point.v;
@@ -152,8 +167,39 @@ function buildChartPanel(
   return {
     metric,
     lines,
-    data: Array.from(dataByTimestamp.values()).sort((a, b) => a.timestamp - b.timestamp),
+    data: withGaps(
+      Array.from(dataByTimestamp.values()).sort((a, b) => a.timestamp - b.timestamp),
+      lines.map((line) => line.key),
+      win,
+    ),
   };
+}
+
+/**
+ * Make missing samples visible: Prometheus omits the steps where a series had
+ * no data (host down, exporter not scraped), so drawing the remaining points
+ * joined up would hide an outage. Every row gets an explicit null for each line
+ * it lacks, and a null row is inserted one step into every hole, so the lines
+ * break there (the chart does not connect nulls).
+ */
+function withGaps(rows: ChartDatum[], keys: string[], win: ChartWindow): ChartDatum[] {
+  const out: ChartDatum[] = [];
+  const blank = (timestamp: number): ChartDatum => {
+    const row: ChartDatum = { timestamp, time: formatChartTimestamp(timestamp, win.spanSeconds) };
+    for (const key of keys) row[key] = null;
+    return row;
+  };
+  rows.forEach((row, i) => {
+    const previous = rows[i - 1];
+    if (previous && row.timestamp - previous.timestamp > win.stepSeconds * 1.5) {
+      out.push(blank(previous.timestamp + win.stepSeconds));
+    }
+    for (const key of keys) {
+      if (!(key in row)) row[key] = null;
+    }
+    out.push(row);
+  });
+  return out;
 }
 
 function ServerDetail() {
@@ -175,9 +221,14 @@ function ServerDetail() {
   });
 
   const series = metricsQuery.data ?? [];
+  const chartWindow: ChartWindow = {
+    spanSeconds: duration.seconds,
+    stepSeconds: stepSeconds(duration.step),
+  };
   const chartPanels = METRIC_ORDER
-    .map((metric) => buildChartPanel(metric, series.filter((s) => s.metric === metric), theme))
+    .map((metric) => buildChartPanel(metric, series.filter((s) => s.metric === metric), theme, chartWindow))
     .filter((panel) => panel.lines.length > 0);
+  const prometheusDown = metricsQuery.error instanceof AxiosError && metricsQuery.error.response?.status === 502;
 
   return (
     <div className="connections">
@@ -186,6 +237,7 @@ function ServerDetail() {
           <button type="button" className="link-button" onClick={() => navigate('/servers')}>&larr; {t('servers.title')}</button>
           <h1>{server?.name ?? `#${id}`}</h1>
           <p className="page-subtitle">{server?.address}</p>
+          <p className="hint">{t('servers.chartTimeHint')}</p>
         </div>
         <div className="server-detail-controls">
           <GrafanaLink
@@ -207,7 +259,11 @@ function ServerDetail() {
       </div>
 
       {metricsQuery.isLoading && <div className="loading-message" role="status">{t('common.loading')}</div>}
-      {metricsQuery.isError && <div className="error-banner" role="alert">{t('common.errorOccurred')}</div>}
+      {metricsQuery.isError && (
+        <div className="error-banner" role="alert">
+          {prometheusDown ? t('servers.metricsUnavailable') : t('common.errorOccurred')}
+        </div>
+      )}
 
       {!metricsQuery.isLoading && !metricsQuery.isError && (
         chartPanels.length === 0 ? (
@@ -261,6 +317,10 @@ function ServerDetail() {
                           <XAxis dataKey="time" stroke={theme.axis} tick={{ fontSize: 11 }} minTickGap={40} />
                           <YAxis stroke={theme.axis} tick={{ fontSize: 11 }} domain={[0, 100]} unit="%" />
                           <Tooltip
+                            labelFormatter={(label, payload) => {
+                              const ts = payload?.[0]?.payload?.timestamp;
+                              return typeof ts === 'number' ? formatChartPointTime(ts) : String(label);
+                            }}
                             contentStyle={{ background: theme.tooltipBg, border: `1px solid ${theme.tooltipBorder}` }}
                             formatter={(value, _name, item) => {
                               const n = Number(value);
@@ -294,8 +354,7 @@ function ServerDetail() {
                               name={line.name}
                               stroke={line.color}
                               strokeWidth={2}
-                              dot={false}
-                              connectNulls
+                              dot={isolatedPointDot(panel.data as Array<Record<string, number | null>>, line.key)}
                             />
                           ))}
                         </LineChart>

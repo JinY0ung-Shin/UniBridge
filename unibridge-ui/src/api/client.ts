@@ -1816,6 +1816,12 @@ export async function getExternalLatency(
   return data;
 }
 
+/** Every registered external service name (for filters; not limited to the busiest 10). */
+export async function getExternalServiceNames(): Promise<string[]> {
+  const { data } = await client.get('/admin/external/metrics/services');
+  return data;
+}
+
 export async function getExternalServicesComparison(
   sel: TimeSelection = DEFAULT_SELECTION,
 ): Promise<ServiceComparisonResponse> {

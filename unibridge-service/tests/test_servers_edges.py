@@ -240,6 +240,63 @@ async def test_server_metrics_tolerates_prometheus_failures_and_empty_disk(
     assert "Server metric query failed" in caplog.text
 
 
+async def test_server_metrics_reports_a_prometheus_outage(client, admin_token):
+    host_id = await _create_host(client, admin_token)
+    range_query = AsyncMock(side_effect=RuntimeError("connection refused"))
+    with patch("app.routers.servers.prometheus_client.range_query", range_query):
+        response = await client.get(
+            f"/admin/servers/{host_id}/metrics", headers=auth_header(admin_token),
+        )
+    assert response.status_code == 502
+
+
+async def test_server_metrics_orders_gpus_numerically_and_keeps_empty_gpu_panels(
+    client, admin_token
+):
+    created = await client.post(
+        "/admin/servers",
+        json={"name": "gpu-host", "address": "10.0.0.1:9100", "gpu_address": "10.0.0.1:9400"},
+        headers=auth_header(admin_token),
+    )
+    host_id = created.json()["id"]
+
+    async def fake_range_query(query, **_kwargs):
+        if "DCGM_FI_DEV_GPU_UTIL" in query:
+            return [
+                {"metric": {"gpu": str(gpu)}, "values": [[1, "1"]]} for gpu in (10, 2, 1, 0)
+            ]
+        return []  # dcgm memory series missing (exporter down for that metric)
+
+    with (
+        patch("app.routers.servers.prometheus_client.range_query", new=fake_range_query),
+        patch("app.routers.servers.prometheus_client.instant_query", new=AsyncMock(return_value=[])),
+    ):
+        response = await client.get(
+            f"/admin/servers/{host_id}/metrics", headers=auth_header(admin_token),
+        )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [s["gpu"] for s in body if s["metric"] == "gpu_util"] == ["0", "1", "2", "10"]
+    assert [s["points"] for s in body if s["metric"] == "gpu_mem"] == [[]]
+
+
+async def test_disabled_service_lists_as_disabled(client, admin_token):
+    service_id = await _create_service(client, admin_token)
+    await client.put(
+        f"/admin/servers/external-services/{service_id}",
+        json={"enabled": False},
+        headers=auth_header(admin_token),
+    )
+    with patch(
+        "app.routers.servers.server_monitor.service_up_map",
+        new=AsyncMock(return_value={"service-a": True}),
+    ):
+        response = await client.get(
+            "/admin/servers/external-services", headers=auth_header(admin_token),
+        )
+    assert [s["status"] for s in response.json()] == ["disabled"]
+
+
 async def test_update_service_sets_all_mutable_fields(client, admin_token):
     service_id = await _create_service(client, admin_token)
     response = await client.put(

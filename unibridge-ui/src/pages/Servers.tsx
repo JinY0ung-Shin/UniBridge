@@ -16,6 +16,7 @@ import ExternalServicesSection from '../components/ExternalServicesSection';
 import GrafanaLink from '../components/GrafanaLink';
 import { useToast } from '../components/useToast';
 import { useCanWrite } from '../components/useCanWrite';
+import { scrapeStatusLabel, testToastType } from '../utils/scrapeStatus';
 import './Connections.css';
 import './Servers.css';
 
@@ -146,22 +147,37 @@ function Servers() {
     mutationFn: (id: number) => testServer(id),
     onSuccess: (data) => {
       // gpu_status only comes back for hosts that have a gpu_address.
-      const gpuSuffix = data.gpu_status ? ` · ${t('servers.gpuTestStatus', { status: data.gpu_status })}` : '';
+      const gpuSuffix = data.gpu_status
+        ? ` · ${t('servers.gpuTestStatus', { status: scrapeStatusLabel(t, data.gpu_status) })}`
+        : '';
       addToast({
-        type: data.status === 'up' ? 'success' : 'error',
-        title: `${t('servers.statusLabel')}: ${data.status}${gpuSuffix}`,
+        type: testToastType(data.status, data.gpu_status),
+        title: `${t('servers.statusLabel')}: ${scrapeStatusLabel(t, data.status)}${gpuSuffix}`,
         message: data.detail ?? undefined,
       });
     },
+    onError: (err) => addToast({
+      type: 'error',
+      title: t('servers.testFailed'),
+      message: extractErrorMessage(err, ''),
+    }),
   });
 
+  /** A save that failed in an earlier modal must not greet the next one. */
+  function resetSaveErrors() {
+    createMutation.reset();
+    updateMutation.reset();
+  }
+
   function openCreate() {
+    resetSaveErrors();
     setForm({ ...emptyForm });
     setEditingId(null);
     setShowModal(true);
   }
 
   function openEdit(server: MonitoredServer) {
+    resetSaveErrors();
     setForm({
       name: server.name,
       address: server.address,
@@ -226,7 +242,7 @@ function Servers() {
         server.address,
         server.description,
         server.disk_mountpoints || t('servers.diskMountpointsInherited'),
-        server.enabled ? (server.status ?? 'unknown') : t('servers.disabled'),
+        scrapeStatusLabel(t, server.enabled ? server.status : 'disabled'),
       ]
         .filter(Boolean)
         .join(' ')
@@ -295,7 +311,7 @@ function Servers() {
                     <tr key={s.id}>
                       <td>
                         <span className={`status-badge ${statusClass(s.enabled ? s.status : 'disabled')}`}>
-                          {s.enabled ? (s.status ?? 'unknown') : t('servers.disabled')}
+                          {scrapeStatusLabel(t, s.enabled ? s.status : 'disabled')}
                         </span>
                       </td>
                       <td>

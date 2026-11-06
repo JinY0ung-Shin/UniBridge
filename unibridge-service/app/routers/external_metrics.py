@@ -22,9 +22,13 @@ import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
 from app.config import settings
+from app.database import get_db
+from app.models import MonitoredService
 from app.routers.gateway import (
     TimeWindow,
     _extract_scalar,
@@ -271,6 +275,21 @@ async def latency(
         "p95": _extract_timeseries(p95, nan_as_none=True),
         "p99": _extract_timeseries(p99, nan_as_none=True),
     }
+
+
+@router.get("/services")
+async def registered_services(
+    _admin: CurrentUser = Depends(require_permission("gateway.monitoring.read")),
+    db: AsyncSession = Depends(get_db),
+) -> list[str]:
+    """Names of every registered service, for the dashboard's service filter.
+
+    The comparison query is a ``topk(10)`` by traffic, so building the filter from
+    it would hide the 11th-busiest service and every service without traffic.
+    Only names: the registry itself (addresses etc.) stays behind servers.read.
+    """
+    result = await db.execute(select(MonitoredService.name).order_by(MonitoredService.name))
+    return [name for name in result.scalars().all() if _SAFE_SERVICE_RE.match(name)]
 
 
 @router.get("/services-comparison")

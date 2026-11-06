@@ -256,3 +256,27 @@ class TestHandlersComparison:
             headers=auth_header(user_token),
         )
         assert resp.status_code == 403
+
+
+class TestRegisteredServices:
+    async def test_lists_every_registered_service_without_prometheus(
+        self, client, admin_token, db_session
+    ):
+        """The filter must offer services the top-10 comparison leaves out."""
+        from app.models import MonitoredService
+
+        for i in range(12):
+            db_session.add(MonitoredService(name=f"svc-{i:02d}", address=f"10.0.0.{i}:80", enabled=i != 3))
+        await db_session.commit()
+        with patch(_INSTANT, AsyncMock(side_effect=AssertionError("no Prometheus needed"))):
+            resp = await client.get(
+                "/admin/external/metrics/services", headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 200
+        assert resp.json() == [f"svc-{i:02d}" for i in range(12)]
+
+    async def test_requires_monitoring_permission(self, client, user_token):
+        resp = await client.get(
+            "/admin/external/metrics/services", headers=auth_header(user_token),
+        )
+        assert resp.status_code == 403
