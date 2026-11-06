@@ -1346,6 +1346,32 @@ def _normalize_disk_mountpoints(value: str | None) -> str | None:
     return ",".join(mounts) if mounts else None
 
 
+# Prometheus label names (no leading "__": those are Prometheus' own).
+_LABEL_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Labels the scrape job or the monitoring queries depend on. A file_sd target
+# label beats the one on the scraped series, so a user label with one of these
+# names would silently break the host: ``job`` drops it out of ``up{job=...}``
+# (permanent server_down), ``mode``/``mountpoint``/``fstype`` rewrite the series
+# the CPU and disk queries select, ``gpu``/``modelName`` the per-GPU charts.
+RESERVED_HOST_LABELS = frozenset({
+    "host", "job", "instance", "mode", "mountpoint", "fstype", "device", "gpu", "modelName", "UUID",
+})
+
+
+def _validate_host_labels(value: dict[str, str] | None) -> dict[str, str] | None:
+    if value is None:
+        return None
+    for key in value:
+        if not _LABEL_NAME_RE.fullmatch(key) or key.startswith("__"):
+            raise ValueError(
+                f"label name {key!r} is not a valid Prometheus label name "
+                "(letters, digits and _, not starting with a digit or '__')"
+            )
+        if key in RESERVED_HOST_LABELS:
+            raise ValueError(f"label name {key!r} is reserved for monitoring")
+    return value
+
+
 class MonitoredHostCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     address: str = Field(..., min_length=1, max_length=255)
@@ -1371,6 +1397,11 @@ class MonitoredHostCreate(BaseModel):
     @classmethod
     def check_address(cls, v: str) -> str:
         return _validate_host_address(v)
+
+    @field_validator("labels")
+    @classmethod
+    def check_labels(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        return _validate_host_labels(v)
 
     @field_validator("gpu_address")
     @classmethod
@@ -1407,6 +1438,11 @@ class MonitoredHostUpdate(BaseModel):
     @classmethod
     def check_address(cls, v: str | None) -> str | None:
         return _validate_host_address(v) if v is not None else v
+
+    @field_validator("labels")
+    @classmethod
+    def check_labels(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        return _validate_host_labels(v)
 
     @field_validator("gpu_address")
     @classmethod

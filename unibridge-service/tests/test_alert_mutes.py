@@ -652,7 +652,7 @@ async def test_repeat_cadence_reminder_muted_then_resolved_still_notifies(monkey
     that actually passes ``repeat_after_cycles``."""
     from app.services.server_monitor import HostSignal
 
-    host = type("H", (), {"enabled": True})()
+    host = type("H", (), {"enabled": True, "name": "host-a"})()
 
     def _signal(is_healthy: bool) -> HostSignal:
         return HostSignal(

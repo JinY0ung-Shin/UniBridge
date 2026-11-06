@@ -635,6 +635,9 @@ async def _check_server_health(
         trigger_after_failures=trigger_after_failures,
         repeat=repeat,
     )
+    await _discard_unmonitored_states(
+        state, prefix="server_", monitored={getattr(h, "name", None) for h in enabled},
+    )
     if not enabled:
         return True
     failed_queries: list[str] = []
@@ -690,6 +693,7 @@ async def _process_host_signal(
         resolve_after_successes=resolve_after_successes,
         repeat_after_cycles=repeat,
     )
+    announced = _is_announced(state, sig.alert_type, sig.target, was_alerting)
     outbound = _outbound_alert_type(
         state, mutes,
         rule_type=sig.alert_type, target=sig.target, transition=transition,
@@ -708,7 +712,7 @@ async def _process_host_signal(
         )
         await _handle_dispatch_result(
             state, outbound=outbound, result=result,
-            rule_type=sig.alert_type, target=sig.target,
+            rule_type=sig.alert_type, target=sig.target, announced=announced,
         )
 
 
@@ -772,6 +776,29 @@ async def _retire_disabled_host_signals(
         await _discard_state_safely(state, alert_type, target)
 
 
+async def _discard_unmonitored_states(
+    state: AlertStateManager, *, prefix: str, monitored: set[str | None]
+) -> None:
+    """Silently drop host/service alert state whose target is no longer monitored.
+
+    The servers router clears a host's (or service's) state when it is disabled
+    or deleted, but a check cycle that loaded the registry just before that can
+    still be evaluating it and write the entry back afterwards. Nothing would
+    ever touch that entry again — no signal is evaluated for it, and the startup
+    purge keeps every registered name — so it would sit on the status page (and
+    be reloaded on every restart) for good. Re-checking against the freshly
+    loaded registry each cycle drops it on the next cycle, the same silent way
+    the router does.
+    """
+    for entry in state.get_entries():
+        if entry["type"].startswith(prefix) and entry["target"] not in monitored:
+            logger.info(
+                "Dropping alert state %s/%s: target is disabled or no longer registered",
+                entry["type"], entry["target"],
+            )
+            await _discard_state_safely(state, entry["type"], entry["target"])
+
+
 async def _load_service_monitoring() -> tuple[list[MonitoredService], int]:
     """Load registered external services and the re-notify cadence."""
     async with async_session() as db:
@@ -808,6 +835,10 @@ async def _check_service_health(
         logger.warning("External-service health check skipped (config load failed): %s", exc)
         return True
     enabled = [s for s in services if getattr(s, "enabled", False)]
+    await _discard_unmonitored_states(
+        state, prefix="external_service_",
+        monitored={getattr(s, "name", None) for s in enabled},
+    )
     if not enabled:
         return True
     failed_queries: list[str] = []
@@ -828,6 +859,7 @@ async def _check_service_health(
             resolve_after_successes=resolve_after_successes,
             repeat_after_cycles=repeat,
         )
+        announced = _is_announced(state, sig.alert_type, sig.target, was_alerting)
         outbound = _outbound_alert_type(
             state, mutes,
             rule_type=sig.alert_type, target=sig.target, transition=transition,
@@ -846,7 +878,7 @@ async def _check_service_health(
             )
             await _handle_dispatch_result(
                 state, outbound=outbound, result=result,
-                rule_type=sig.alert_type, target=sig.target,
+                rule_type=sig.alert_type, target=sig.target, announced=announced,
             )
     return not failed_queries
 
@@ -972,6 +1004,17 @@ async def _rearm_pending_after_failed_dispatch(
     await _persist_state_safely(state, rule_type, target)
 
 
+def _is_announced(
+    state: AlertStateManager, rule_type: str, target: str, was_alerting: bool
+) -> bool:
+    """Whether recipients already know about the target's open incident.
+
+    Read *before* :func:`_outbound_alert_type`, which clears ``pending_notify``
+    the moment it decides to send.
+    """
+    return was_alerting and not state.get_pending_notify(rule_type, target)
+
+
 async def _handle_dispatch_result(
     state: AlertStateManager,
     *,
@@ -979,19 +1022,29 @@ async def _handle_dispatch_result(
     result: bool | None,
     rule_type: str,
     target: str,
+    announced: bool = False,
 ) -> None:
     """React to what :func:`dispatch_alert` reported for one just-sent alert.
 
     ``result`` is tri-state (see :func:`dispatch_alert`): True = delivered,
     None = nothing to deliver to (a skip, not a failure), False = a delivery was
-    attempted and failed. Only a failed *trigger* is re-armed, so the next cycle
-    re-announces it. A failed *recovery* is deliberately left alone — the target
+    attempted and failed. Only a failed *first* trigger is re-armed, so the next
+    cycle re-announces it. A failed re-announcement (severity escalation or the
+    repeat cadence) of an incident recipients were already paged for is not:
+    re-arming would mark it unannounced, and its recovery would then be withheld
+    — the same rule the mute path follows. A failed *recovery* is deliberately left alone — the target
     is healthy again, so a missed recovery is self-correcting and re-arming would
     only risk a spurious re-trigger — but it is logged.
     """
     if result is not False:
         return
-    if outbound == "triggered":
+    if outbound == "triggered" and announced:
+        logger.warning(
+            "Re-announcement of %s/%s failed to deliver — not re-arming "
+            "(the incident was already announced; its recovery must still go out)",
+            rule_type, target,
+        )
+    elif outbound == "triggered":
         logger.warning(
             "Alert dispatch for %s/%s failed to deliver — re-arming to retry next cycle",
             rule_type, target,
@@ -1042,6 +1095,7 @@ async def _evaluate_route_error_rule(
         trigger_after_failures=trigger_after_failures,
         resolve_after_successes=resolve_after_successes,
     )
+    announced = _is_announced(state, "route_error_rate", route_id, was_alerting)
     outbound = _outbound_alert_type(
         state, mutes if mutes is not None else MuteIndex(),
         rule_type="route_error_rate", target=route_id, transition=transition,
@@ -1064,7 +1118,7 @@ async def _evaluate_route_error_rule(
         )
         await _handle_dispatch_result(
             state, outbound=outbound, result=result,
-            rule_type="route_error_rate", target=route_id,
+            rule_type="route_error_rate", target=route_id, announced=announced,
         )
 
 
@@ -1099,6 +1153,7 @@ async def run_single_check(
             trigger_after_failures=trigger_after_failures,
             resolve_after_successes=resolve_after_successes,
         )
+        announced = _is_announced(state, "db_health", alias, was_alerting)
         outbound = _outbound_alert_type(
             state, mutes,
             rule_type="db_health", target=alias, transition=transition,
@@ -1124,7 +1179,7 @@ async def run_single_check(
             )
             await _handle_dispatch_result(
                 state, outbound=outbound, result=result,
-                rule_type="db_health", target=alias,
+                rule_type="db_health", target=alias, announced=announced,
             )
 
     # 2. S3 connection health
@@ -1139,6 +1194,7 @@ async def run_single_check(
             trigger_after_failures=trigger_after_failures,
             resolve_after_successes=resolve_after_successes,
         )
+        announced = _is_announced(state, "s3_health", alias, was_alerting)
         outbound = _outbound_alert_type(
             state, mutes,
             rule_type="s3_health", target=alias, transition=transition,
@@ -1156,7 +1212,7 @@ async def run_single_check(
             )
             await _handle_dispatch_result(
                 state, outbound=outbound, result=result,
-                rule_type="s3_health", target=alias,
+                rule_type="s3_health", target=alias, announced=announced,
             )
 
     # 3. NAS connection health
@@ -1171,6 +1227,7 @@ async def run_single_check(
             trigger_after_failures=trigger_after_failures,
             resolve_after_successes=resolve_after_successes,
         )
+        announced = _is_announced(state, "nas_health", alias, was_alerting)
         outbound = _outbound_alert_type(
             state, mutes,
             rule_type="nas_health", target=alias, transition=transition,
@@ -1196,7 +1253,7 @@ async def run_single_check(
             )
             await _handle_dispatch_result(
                 state, outbound=outbound, result=result,
-                rule_type="nas_health", target=alias,
+                rule_type="nas_health", target=alias, announced=announced,
             )
 
     # 4. Upstream health
@@ -1214,6 +1271,7 @@ async def run_single_check(
             trigger_after_failures=trigger_after_failures,
             resolve_after_successes=resolve_after_successes,
         )
+        announced = _is_announced(state, "upstream_health", uid, was_alerting)
         outbound = _outbound_alert_type(
             state, mutes,
             rule_type="upstream_health", target=uid, transition=transition,
@@ -1249,7 +1307,7 @@ async def run_single_check(
             )
             await _handle_dispatch_result(
                 state, outbound=outbound, result=result,
-                rule_type="upstream_health", target=uid,
+                rule_type="upstream_health", target=uid, announced=announced,
             )
 
     # 5. Server (host) health via node_exporter metrics
@@ -1391,6 +1449,13 @@ async def start_checker(state: AlertStateManager) -> asyncio.Task:
                     await maybe_send_gpu_util_report()
                 except Exception:
                     logger.exception("Daily GPU utilisation report failed")
+                # Repairs a lost or overwritten Prometheus targets file within a
+                # cycle; only the active color writes, so the colors cannot keep
+                # undoing each other.
+                try:
+                    await server_monitor.reconcile_scrape_targets()
+                except Exception:
+                    logger.exception("Scrape-target reconcile failed")
             elapsed = _monotonic() - cycle_start
             await asyncio.sleep(max(0.0, check_interval - elapsed))
 

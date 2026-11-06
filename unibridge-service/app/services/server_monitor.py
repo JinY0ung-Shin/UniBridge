@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from app.config import settings
+from app.schemas import _LABEL_NAME_RE, RESERVED_HOST_LABELS
 from app.services import prometheus_client
 
 logger = logging.getLogger(__name__)
@@ -163,10 +164,19 @@ def _entry_labels(host: Any) -> dict[str, str]:
             extra = None
         if isinstance(extra, dict):
             for key, value in extra.items():
-                # Never let a user label clobber the identifying host label.
-                if str(key) == "host":
+                # Never let a user label clobber the identifying host label or one
+                # the queries rely on, and never write a name Prometheus rejects:
+                # one bad entry makes it discard the whole file. The API refuses
+                # these; this guards rows stored before it did.
+                key = str(key)
+                if (
+                    key in RESERVED_HOST_LABELS
+                    or key.startswith("__")
+                    or not _LABEL_NAME_RE.fullmatch(key)
+                ):
+                    logger.warning("Ignoring label %r of monitored host %s", key, host.name)
                     continue
-                labels[str(key)] = str(value)
+                labels[key] = str(value)
     return labels
 
 
@@ -197,13 +207,30 @@ def build_gpu_targets(hosts: Iterable[Any]) -> list[dict[str, Any]]:
     return entries
 
 
+# Serialises "read the registry, write the targets file" within this process.
+# Without it a request that read the registry before another request's commit
+# could write its older snapshot last and drop the other request's target.
+# (Across processes — the two blue/green colors — the periodic reconcile below
+# repairs any such overwrite within one check interval.)
+_SYNC_LOCK = asyncio.Lock()
+
+
 def _write_json_atomic(path: str, data: Any) -> None:
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
+    text = json.dumps(data, ensure_ascii=False, indent=2)
+    try:
+        with open(path, encoding="utf-8") as current:
+            if current.read() == text:
+                # Unchanged: skip the rewrite, so the periodic reconcile does
+                # not make Prometheus re-read an identical file every cycle.
+                return
+    except OSError:
+        pass
     fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=2)
+            handle.write(text)
         # mkstemp creates the file 0600; Prometheus scrapes file_sd as a
         # different UID (nobody) and must be able to read it. Without this the
         # targets file is silently unreadable -> zero "nodes" targets.
@@ -239,6 +266,11 @@ async def sync_targets_from_db(db) -> None:
     it. Callers should not depend on this raising. The node and GPU files are
     written independently so a failure on one still refreshes the other.
     """
+    async with _SYNC_LOCK:
+        await _sync_targets_locked(db)
+
+
+async def _sync_targets_locked(db) -> None:
     from sqlalchemy import select
 
     from app.models import MonitoredHost
@@ -633,7 +665,8 @@ async def evaluate_hosts(
 
     forecast_on = thresholds.forecast_hours and thresholds.forecast_hours > 0
     gpu_hosts = [h for h in enabled if _gpu_address(h)]
-    disk_map = await _query("disk", _q_disk_pct_for_hosts(enabled)) or {}
+    disk_result = await _query("disk", _q_disk_pct_for_hosts(enabled))
+    disk_map = disk_result or {}
     cpu_map = await _query("cpu", _q_cpu_pct()) or {}
     mem_map = await _query("memory", _q_mem_pct()) or {}
     forecast_map: dict[str, float] = {}
@@ -683,9 +716,45 @@ async def evaluate_hosts(
         # 2. Disk usage (worst filesystem), two-level severity. A level whose
         # threshold is 0 is off (warn 0 = critical only); both 0 = no signal.
         disk_pct = disk_map.get(name)
+        disk_warn = _effective(host.disk_warn_pct, thresholds.disk_warn_pct)
+        disk_crit = _effective(host.disk_crit_pct, thresholds.disk_crit_pct)
+        if (
+            disk_pct is None
+            and disk_result is not None
+            and (disk_warn > 0 or disk_crit > 0)
+        ):
+            # The host is up and the query worked, yet no filesystem matched:
+            # a mountpoint typo, or an exporter that reports paths under another
+            # root (a containerised node_exporter's /rootfs/...). Left alone
+            # that would switch disk alerting off without a word, so it is
+            # raised as a warning on the disk signal until a filesystem matches.
+            mounts = _mountpoint_values(
+                getattr(host, "disk_mountpoints", None)
+                or (settings.NODE_EXPORTER_DISK_MOUNTPOINTS or "")
+            )
+            where = (
+                "the disk mountpoints " + ", ".join(mounts)
+                if mounts else "any real filesystem"
+            )
+            signals.append(HostSignal(
+                alert_type="server_disk",
+                target=name,
+                display=display,
+                is_healthy=False,
+                severity="warning",
+                value=None,
+                threshold=None,
+                message=(
+                    f"Server '{display}' reports no filesystem matching {where}; "
+                    "disk usage is not being monitored. Check the host's mountpoints "
+                    "(or set both disk thresholds to 0 to turn disk alerting off)."
+                ),
+                monitor_label=HOST_SIGNAL_LABELS["server_disk"],
+                description=description,
+            ))
         if disk_pct is not None:
-            warn = _effective(host.disk_warn_pct, thresholds.disk_warn_pct)
-            crit = _effective(host.disk_crit_pct, thresholds.disk_crit_pct)
+            warn = disk_warn
+            crit = disk_crit
             levels = [(lvl, thr) for lvl, thr in (("critical", crit), ("warning", warn)) if thr > 0]
             if levels:
                 alert_threshold = min(thr for _, thr in levels)
@@ -905,6 +974,11 @@ async def sync_service_targets_from_db(db) -> None:
     truth; a write failure here is logged but not fatal, and the next successful
     sync (a later CRUD op or boot reconcile) repairs it.
     """
+    async with _SYNC_LOCK:
+        await _sync_service_targets_locked(db)
+
+
+async def _sync_service_targets_locked(db) -> None:
     from sqlalchemy import select
 
     from app.models import MonitoredService
@@ -919,6 +993,22 @@ async def sync_service_targets_from_db(db) -> None:
             settings.PROMETHEUS_SERVICES_FILE_SD_PATH,
             exc,
         )
+
+
+async def reconcile_scrape_targets() -> None:
+    """Rewrite every file_sd targets file from the registry (best-effort).
+
+    Called by the active instance on every alert-check cycle. CRUD and boot
+    syncs are otherwise the only writers, so a lost write — a failed write, or
+    an older snapshot from the other blue/green color landing last — would
+    leave a registered host unscraped (and alerting as down) until the next
+    edit or restart. Files whose content is unchanged are not rewritten.
+    """
+    from app.database import async_session
+
+    async with async_session() as db:
+        await sync_targets_from_db(db)
+        await sync_service_targets_from_db(db)
 
 
 def _q_service_up() -> str:

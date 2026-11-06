@@ -810,7 +810,8 @@ async def test_failed_gpu_up_query_emits_no_gpu_signals():
             [_host("gpu1", gpu_address="10.0.0.1:9400")], th, failed_queries=failed
         )
     types = {s.alert_type for s in signals}
-    assert types == {"server_down"}
+    assert "server_down" in types
+    assert not types & set(GPU_ALERT_TYPES)
     assert failed == ["gpu up"]
 
 

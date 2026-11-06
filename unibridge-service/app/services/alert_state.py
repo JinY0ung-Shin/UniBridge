@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 _SEVERITY_RANK = {"warning": 1, "critical": 2}
 
+# The highest severity an open incident has announced, kept in the entry's
+# persisted ``details`` so the escalation rule survives a restart or failover.
+PEAK_SEVERITY_KEY = "peak_severity"
+
 
 def _severity_rank(severity: str | None) -> int:
     return _SEVERITY_RANK.get(severity or "", 0)
@@ -190,6 +194,7 @@ class AlertStateManager:
                     alert_type, target,
                     status="alert", since=now, display_target=display_target,
                     fail_count=fail_count, severity=severity,
+                    details={PEAK_SEVERITY_KEY: severity} if severity is not None else None,
                 )
                 logger.info("Alert state %s/%s initialized as alert", alert_type, target)
                 return "triggered"
@@ -229,6 +234,7 @@ class AlertStateManager:
             entry["since"] = now
             entry["severity"] = None
             entry["success_count"] = 0
+            entry.setdefault("details", {}).pop(PEAK_SEVERITY_KEY, None)
             logger.info("Alert state %s/%s: alert → ok", alert_type, target)
             return "resolved"
 
@@ -237,15 +243,24 @@ class AlertStateManager:
         entry["fail_count"] = entry.get("fail_count", 0) + 1
         if entry["status"] == "alert":
             entry["fail_count"] = min(entry["fail_count"], trigger_after_failures)
-            # Severity escalation: a rise re-fires immediately; a fall is recorded silently.
+            # Severity escalation: a rise past anything this incident has already
+            # announced re-fires immediately; a fall is recorded silently. Rising
+            # back to a level that was announced before stays silent too, or a
+            # value hovering at the critical threshold would mail "critical"
+            # every other cycle (the repeat cadence below still reminds).
             if severity is not None and _severity_rank(severity) != _severity_rank(entry.get("severity")):
-                escalated = _severity_rank(severity) > _severity_rank(entry.get("severity"))
+                details = entry.setdefault("details", {})
+                peak = details.get(PEAK_SEVERITY_KEY) or entry.get("severity")
+                escalated = _severity_rank(severity) > _severity_rank(peak)
                 entry["severity"] = severity
                 if escalated:
+                    details[PEAK_SEVERITY_KEY] = severity
                     entry["since"] = now
                     entry["cycles_in_alert"] = 0
                     logger.info("Alert state %s/%s escalated to %s", alert_type, target, severity)
                     return "triggered"
+                if _severity_rank(severity) > _severity_rank(details.get(PEAK_SEVERITY_KEY)):
+                    details[PEAK_SEVERITY_KEY] = severity
             # Re-notification cadence while still firing.
             if repeat_after_cycles and repeat_after_cycles > 0:
                 entry["cycles_in_alert"] = entry.get("cycles_in_alert", 0) + 1
@@ -258,6 +273,11 @@ class AlertStateManager:
             entry["status"] = "alert"
             entry["since"] = now
             entry["severity"] = severity
+            details = entry.setdefault("details", {})
+            if severity is not None:
+                details[PEAK_SEVERITY_KEY] = severity
+            else:
+                details.pop(PEAK_SEVERITY_KEY, None)
             entry["cycles_in_alert"] = 0
             logger.info(
                 "Alert state %s/%s: ok → alert (fail_count=%d, threshold=%d)",
