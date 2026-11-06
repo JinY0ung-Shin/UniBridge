@@ -1043,6 +1043,7 @@ NAS_TOOLS = (
 
 _NETWORK_LIST_DEFAULT = 100
 _NETWORK_LIST_MAX = 1000
+_PROBE_BATCH_MAX = 500  # ProbeBatch's limit
 _AGENT_RECORD_NOTE = (
     " What an API key records is marked source=agent and stays unverified until "
     "a person confirms it on the Network page."
@@ -1170,6 +1171,66 @@ async def _network_list_port_usages(ctx: ToolContext, args: dict[str, Any]) -> d
     return _capped_items(response.json(), "port_usages", limit, ctx.settings)
 
 
+async def _network_list_probes(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    host = args.get("host")
+    response = await _gateway(
+        ctx,
+        "GET",
+        "/api/network/probes",
+        params={
+            "host_id": await _network_host_id(ctx, host) if host else None,
+            "mismatch": "true" if args.get("mismatch") else None,
+            "result": args.get("result"),
+        },
+    )
+    limit = args.get("limit") or _NETWORK_LIST_DEFAULT
+    return _capped_items(response.json(), "probes", limit, ctx.settings)
+
+
+async def _network_probe_targets(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    response = await _gateway(
+        ctx, "GET", "/api/network/probe-targets", params={"src": args["src"].strip()}
+    )
+    payload = response.json()
+    targets = payload.pop("targets", []) if isinstance(payload, dict) else []
+    limit = args.get("limit") or _NETWORK_LIST_MAX
+    return {**payload, **_capped_items(targets, "targets", limit, ctx.settings)}
+
+
+async def _network_report_probes(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    src = args["src_host"].strip()
+    items = args["results"]
+    if not items or not all(isinstance(item, dict) for item in items):
+        raise ToolError("results must be a non-empty list of objects")
+    if len(items) > _PROBE_BATCH_MAX:
+        raise ToolError(f"At most {_PROBE_BATCH_MAX} results per call; send the rest in another")
+    # Every attempt is from src_host: a per-item source is not taken.
+    results = [
+        {**_body(item, "src_host", "src_host_id"), "src_host": src} for item in items
+    ]
+    response = await _gateway(
+        ctx, "POST", "/api/network/probes", json_body={"results": results}
+    )
+    payload = response.json()
+    stored = payload.get("stored", []) if isinstance(payload, dict) else []
+    mismatches = [
+        {
+            key: probe.get(key)
+            for key in (
+                "id", "dst_host_name", "dst_host_ip", "port", "protocol", "result",
+                "expected", "expected_reason", "mismatch",
+            )
+        }
+        for probe in stored
+        if isinstance(probe, dict) and probe.get("mismatch")
+    ]
+    return {
+        "stored": len(stored),
+        "errors": payload.get("errors", []) if isinstance(payload, dict) else [],
+        **_capped_items(mismatches, "mismatches", _NETWORK_LIST_MAX, ctx.settings),
+    }
+
+
 async def _network_register_host(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return (await _gateway(ctx, "POST", "/api/network/hosts", json_body=_body(args))).json()
 
@@ -1273,6 +1334,16 @@ _HOST_FIELDS: dict[str, Any] = {
     "region_id": _REGION_ID_ARG,
     "description": {"type": "string"},
     "owner": {"type": "string", "description": "Owner or team"},
+}
+
+_PROBE_RESULT_ARG = {
+    "type": "string",
+    "enum": ["open", "refused", "timeout", "error"],
+    "description": (
+        "open: connected. refused: reached the host but nothing listens on the port "
+        "(the firewall let it through). timeout: no answer, which is what a firewall "
+        "dropping the connection looks like. error: anything else (DNS, no route, …)"
+    ),
 }
 
 NETWORK_READ_TOOLS = (
@@ -1395,6 +1466,56 @@ NETWORK_READ_TOOLS = (
         ),
         handler=_network_list_port_usages,
     ),
+    Tool(
+        name="network_list_probes",
+        title="List connection probes",
+        description=(
+            "List the latest measured connection attempts between hosts (one per "
+            "source, destination, port and protocol), newest first, each with what "
+            "the records expect (expected: open, blocked or unknown). mismatch=true "
+            "keeps only probes that contradict the records: "
+            "recorded_open_but_blocked (an opening is recorded but the probe timed "
+            "out: it may have expired) or passes_without_opening (the records say "
+            "blocked but the probe got through: an opening nobody recorded)."
+        ),
+        group="network",
+        input_schema=_object_schema(
+            {
+                "host": {**_HOST_REF_ARG, "description": "Source or destination host: name, IP or id"},
+                "mismatch": {
+                    "type": "boolean",
+                    "description": "Only probes that contradict the recorded openings",
+                },
+                "result": _PROBE_RESULT_ARG,
+                "limit": _LIST_LIMIT_ARG,
+            }
+        ),
+        handler=_network_list_probes,
+    ),
+    Tool(
+        name="network_probe_targets",
+        title="Get probe targets",
+        description=(
+            "What a host should test to check the recorded openings: every opening "
+            "whose source covers that host (the host itself or a CIDR containing its "
+            "IP), as destination host, IP, port and protocol with what the records "
+            "expect. Measure each from that host itself (a TCP connect with a short "
+            "timeout) and send the results with network_report_probes."
+        ),
+        group="network",
+        input_schema=_object_schema(
+            {
+                "src": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The host the tests run on: its registered name or IP",
+                },
+                "limit": _LIST_LIMIT_ARG,
+            },
+            ("src",),
+        ),
+        handler=_network_probe_targets,
+    ),
 )
 
 NETWORK_WRITE_TOOLS = (
@@ -1501,6 +1622,71 @@ NETWORK_WRITE_TOOLS = (
             ("usage_id",),
         ),
         handler=_network_delete_port_usage,
+        read_only=False,
+    ),
+    Tool(
+        name="network_report_probes",
+        title="Report connection probes",
+        description=(
+            "Report connection attempts measured FROM src_host itself: run them on "
+            "that server (e.g. a TCP connect with a few seconds' timeout to each of "
+            "network_probe_targets), never from where the agent happens to run, or "
+            "the result says nothing about that server's firewall path. result per "
+            "attempt: open = connected; refused = reached the host but nothing "
+            "listens (the firewall passes, the service is down or elsewhere); "
+            "timeout = no answer, most likely a firewall dropping it; error = "
+            "anything else (put the message in error). Each report replaces the "
+            "previous one on its path unless that one is newer. The answer counts "
+            "what was stored, lists items refused by index under errors, and lists "
+            "mismatches where a probe contradicts the recorded openings. A probe "
+            "is a measurement, not a record: it changes no opening."
+        ),
+        group="network",
+        input_schema=_object_schema(
+            {
+                "src_host": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The registered host (name or IP) the attempts were made from",
+                },
+                "results": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": _PROBE_BATCH_MAX,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "dst_host": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Destination: a registered host's name or IP",
+                            },
+                            "port": _PORT_ARG,
+                            "protocol": _PROTOCOL_ARG,
+                            "result": _PROBE_RESULT_ARG,
+                            "latency_ms": {
+                                "type": "number",
+                                "minimum": 0,
+                                "description": "How long the connect took (open or refused)",
+                            },
+                            "error": {
+                                "type": "string",
+                                "maxLength": 255,
+                                "description": "The error message, for result=error",
+                            },
+                            "observed_at": {
+                                "type": "string",
+                                "description": "When it was measured, ISO 8601 UTC; default now",
+                            },
+                        },
+                        "required": ["dst_host", "port", "result"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            ("src_host", "results"),
+        ),
+        handler=_network_report_probes,
         read_only=False,
     ),
 )

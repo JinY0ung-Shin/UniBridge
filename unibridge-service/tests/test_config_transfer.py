@@ -16,17 +16,24 @@ from app.models import (
     AlertSettings,
     ApiKeyAccess,
     DBConnection,
+    FirewallOpening,
     MonitoredHost,
     MonitoredService,
     NASConnection,
+    NetworkHost,
     Permission,
+    PortUsage,
     QueryTemplate,
+    Region,
     ResourceOwner,
     Role,
     RolePermission,
     S3Connection,
+    SystemConfig,
 )
 from app.routers.config_transfer import MAX_IMPORT_BYTES
+from app.routers.network import set_src_key
+from app.services import network_map
 from app.services.connection_manager import decrypt_password, encrypt_password
 from app.services.consumer_restrictions import DENY_ALL_CONSUMER, MASTER_ACCESS
 from app.services.settings_manager import settings_manager
@@ -189,6 +196,53 @@ async def seed_full_config(engine) -> None:
         ))
         db.add(ResourceOwner(resource_type="db", resource_id="analytics", emails=json.dumps(["owner@example.com"])))
         await db.commit()
+    await seed_network_map(engine)
+
+
+async def seed_network_map(engine) -> None:
+    """Regions seoul/busan; app1 (seoul, verified, linked to web1), db.internal (busan,
+    an agent's unverified record), an opening each from a host and a CIDR, port
+    usage, and app1 as the platform host."""
+    async with factory_for(engine)() as db:
+        seoul = Region(name="seoul", description="DC1", cidrs=json.dumps(["10.1.0.0/16"]))
+        busan = Region(name="busan", cidrs=json.dumps(["10.2.0.0/16"]))
+        db.add_all([seoul, busan])
+        await db.flush()
+        web1 = (await db.execute(select(MonitoredHost).where(MonitoredHost.name == "web1"))).scalar_one()
+        now = datetime.now(timezone.utc)
+        app1 = NetworkHost(
+            name="app1", ip="10.1.0.10", region_id=seoul.id, owner="team-a",
+            monitored_host_id=web1.id, source="manual", created_by="kim",
+            verified_at=now, verified_by="kim",
+        )
+        # Named like the DB connection's host, so discovery lists a usage on it.
+        dbhost = NetworkHost(
+            name="db.internal", ip="10.2.0.20", region_id=busan.id,
+            source="agent", created_by="apikey:bot",
+        )
+        db.add_all([app1, dbhost])
+        await db.flush()
+        from_host = FirewallOpening(
+            src_host_id=app1.id, dst_host_id=dbhost.id, port_from=5432, port_to=5432,
+            protocol="tcp", status="open", ticket_no="FW-1", requester="lee",
+            purpose="orders", source="manual", created_by="kim", verified_at=now, verified_by="kim",
+        )
+        from_cidr = FirewallOpening(
+            src_cidr="172.16.0.0/12", dst_host_id=dbhost.id, port_from=8000, port_to=8010,
+            protocol="tcp", status="closed", source="agent", created_by="apikey:bot",
+        )
+        for opening in (from_host, from_cidr):
+            set_src_key(opening)
+            db.add(opening)
+        db.add(PortUsage(
+            host_id=dbhost.id, port=5432, protocol="tcp", service_name="postgres",
+            description="orders db", owner="dba", source="manual", created_by="kim",
+            verified_at=now, verified_by="kim",
+        ))
+        db.add(SystemConfig(
+            key=network_map.SETTINGS_KEY, value=json.dumps({"platform_host_id": app1.id})
+        ))
+        await db.commit()
 
 
 def seed_gateway(state: dict) -> None:
@@ -330,7 +384,8 @@ class TestExport:
             "upstreams", "routes", "db_connections", "s3_connections", "nas_connections",
             "roles", "db_permissions", "query_templates", "monitored_hosts",
             "monitored_services", "alert_settings", "alert_channels", "alert_recipients",
-            "system_settings",
+            "network_regions", "network_hosts", "firewall_openings", "port_usages",
+            "network_settings", "system_settings",
         ]
 
     async def test_export_performs_no_db_writes(self, client, admin_token, seeded_db, apisix_state):
@@ -717,6 +772,12 @@ class TestRoundTrip:
         assert actions[("alert_settings", "global")] == "update"
         assert actions[("alert_recipients", "db/analytics")] == "update"
         assert actions[("system_settings", "global")] == "update"
+        assert actions[("network_regions", "seoul")] == "update"
+        assert actions[("network_hosts", "app1")] == "update"
+        assert actions[("firewall_openings", "app1 → db.internal tcp/5432")] == "update"
+        assert actions[("firewall_openings", "172.16.0.0/12 → db.internal tcp/8000-8010")] == "update"
+        assert actions[("port_usages", "db.internal tcp/5432 postgres")] == "update"
+        assert actions[("network_settings", "global")] == "update"
 
         # Replaying the document changes nothing observable.
         second = await client.get("/admin/config/export", headers=auth_header(admin_token))
@@ -1374,3 +1435,277 @@ class TestAudit:
             logs = (await db.execute(select(AdminAuditLog))).scalars().all()
         serialized = json.dumps([{"before": log.before, "after": log.after} for log in logs])
         assert ROUTE_SERVICE_KEY not in serialized
+
+
+# ── Network map ─────────────────────────────────────────────────────────────
+
+NETWORK_SECTIONS = [
+    "network_regions", "network_hosts", "firewall_openings", "port_usages", "network_settings",
+]
+
+
+def network_doc(**overrides) -> dict:
+    """A network map from another deployment: two regions, two hosts, an opening each
+    from a host and a CIDR, a port usage and the platform host."""
+    sections = {
+        "network_regions": [
+            {"name": "seoul", "description": "DC1", "cidrs": ["10.1.0.0/16"]},
+            {"name": "busan", "description": "", "cidrs": ["10.2.0.0/16"]},
+        ],
+        "network_hosts": [
+            {"name": "app1", "ip": "10.1.0.10", "region": "seoul", "owner": "team-a",
+             "description": "", "monitored_host": None, "source": "manual", "verified": True},
+            # No region: placed by the CIDRs, as when added through the API.
+            {"name": "db1", "ip": "10.2.0.20", "region": None, "owner": "", "description": "",
+             "monitored_host": None, "source": "agent", "verified": False},
+        ],
+        "firewall_openings": [
+            {"src_host": "app1", "src_cidr": None, "dst_host": "db1", "protocol": "tcp",
+             "port_from": 5432, "port_to": 5432, "status": "open", "ticket_no": "FW-1",
+             "requester": "lee", "purpose": "orders", "source": "manual", "verified": True},
+            {"src_host": None, "src_cidr": "172.16.0.0/12", "dst_host": "db1", "protocol": "tcp",
+             "port_from": 8000, "port_to": 8010, "status": "closed", "ticket_no": "",
+             "requester": "", "purpose": "", "source": "agent", "verified": False},
+        ],
+        "port_usages": [
+            {"host": "db1", "port": 5432, "protocol": "tcp", "service_name": "postgres",
+             "description": "orders db", "owner": "dba", "source": "manual", "verified": True},
+        ],
+        "network_settings": {"platform_host": "app1"},
+    }
+    sections.update(overrides)
+    return export_doc(**sections)
+
+
+async def network_rows(engine) -> dict[str, list]:
+    async with factory_for(engine)() as db:
+        return {
+            "regions": list((await db.execute(select(Region).order_by(Region.name))).scalars()),
+            "hosts": list((await db.execute(select(NetworkHost).order_by(NetworkHost.name))).scalars()),
+            "openings": list((await db.execute(select(FirewallOpening).order_by(FirewallOpening.port_from))).scalars()),
+            "usages": list((await db.execute(select(PortUsage))).scalars()),
+            "settings": await network_map.load_settings(db),
+        }
+
+
+class TestNetworkMap:
+    async def test_export_names_every_reference_and_skips_discovered_usage(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        await seed_full_config(seeded_db)
+        resp = await client.get("/admin/config/export", headers=auth_header(admin_token))
+        assert resp.status_code == 200, resp.text
+        sections = resp.json()["sections"]
+
+        assert sections["network_regions"] == [
+            {"name": "busan", "description": "", "cidrs": ["10.2.0.0/16"]},
+            {"name": "seoul", "description": "DC1", "cidrs": ["10.1.0.0/16"]},
+        ]
+        hosts = {h["name"]: h for h in sections["network_hosts"]}
+        assert hosts["app1"] == {
+            "name": "app1", "ip": "10.1.0.10", "region": "seoul", "description": "",
+            "owner": "team-a", "monitored_host": "web1", "source": "manual", "verified": True,
+        }
+        assert hosts["db.internal"]["verified"] is False
+        assert hosts["db.internal"]["source"] == "agent"
+        assert [
+            (o["src_host"], o["src_cidr"], o["dst_host"], o["port_from"], o["port_to"], o["status"])
+            for o in sections["firewall_openings"]
+        ] == [
+            (None, "172.16.0.0/12", "db.internal", 8000, 8010, "closed"),
+            ("app1", None, "db.internal", 5432, 5432, "open"),
+        ]
+        # Only the recorded usage: the one discovered from the DB connection stays home.
+        assert [(u["host"], u["service_name"]) for u in sections["port_usages"]] == [
+            ("db.internal", "postgres")
+        ]
+        assert sections["network_settings"] == {"platform_host": "app1"}
+        # Nothing the export carries is a row id.
+        serialized = json.dumps({k: sections[k] for k in NETWORK_SECTIONS})
+        assert "_id" not in serialized
+
+    async def test_dry_run_plans_the_whole_map_without_writing(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        resp = await do_import(
+            client, admin_token, dry_run=True, sections=NETWORK_SECTIONS, doc=network_doc()
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # Hosts are placed in regions, and openings checked against hosts, that the
+        # same import only plans to create.
+        assert body["summary"] == {"create": 7, "update": 1, "skip": 0, "error": 0}, body["results"]
+        rows = await network_rows(seeded_db)
+        assert rows["regions"] == [] and rows["hosts"] == [] and rows["openings"] == []
+        async with factory_for(seeded_db)() as db:
+            assert (await db.execute(select(AdminAuditLog))).scalars().all() == []
+
+    async def test_apply_creates_the_map_and_carries_verification(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        resp = await do_import(
+            client, admin_token, dry_run=False, sections=NETWORK_SECTIONS, doc=network_doc()
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["summary"] == {"create": 7, "update": 1, "skip": 0, "error": 0}
+
+        rows = await network_rows(seeded_db)
+        regions = {r.name: r for r in rows["regions"]}
+        hosts = {h.name: h for h in rows["hosts"]}
+        assert hosts["app1"].region_id == regions["seoul"].id
+        assert hosts["db1"].region_id == regions["busan"].id  # placed by CIDR
+        for row in (*rows["hosts"], *rows["openings"], *rows["usages"]):
+            assert row.source == "import" and row.created_by == "testadmin"
+        # A confirmed record is confirmed again by the importing admin; an agent's
+        # unconfirmed one stays up for review.
+        assert hosts["app1"].verified_by == "testadmin" and hosts["app1"].verified_at is not None
+        assert hosts["db1"].verified_at is None and hosts["db1"].verified_by is None
+        by_port = {o.port_from: o for o in rows["openings"]}
+        assert by_port[5432].src_key == f"host:{hosts['app1'].id}"
+        assert by_port[5432].verified_by == "testadmin"
+        assert by_port[8000].src_key == "cidr:172.16.0.0/12"
+        assert by_port[8000].status == "closed" and by_port[8000].verified_at is None
+        assert rows["usages"][0].host_id == hosts["db1"].id
+        assert rows["settings"].platform_host_id == hosts["app1"].id
+
+        async with factory_for(seeded_db)() as db:
+            logs = (await db.execute(select(AdminAuditLog))).scalars().all()
+        audited = {log.resource_type for log in logs}
+        assert {"network_region", "network_host", "firewall_opening", "port_usage",
+                "network_settings"} <= audited
+        assert all(log.actor == "testadmin" for log in logs)
+
+    async def test_bad_items_are_reported_and_the_rest_applies(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        doc = network_doc()
+        doc["sections"]["network_hosts"] += [
+            {"name": "ghost", "ip": "10.9.0.1", "region": "nowhere"},
+            {"name": "clash", "ip": "10.1.0.10"},  # app1's IP
+        ]
+        opening = doc["sections"]["firewall_openings"][0]
+        doc["sections"]["firewall_openings"] += [
+            dict(opening),  # the same opening twice
+            # Both ends in seoul: everything is open there already.
+            {"src_cidr": "10.1.5.0/24", "dst_host": "app1", "port_from": 22},
+            {"src_host": "nobody", "dst_host": "db1", "port_from": 80},
+            {"src_host": "app1", "src_cidr": "10.0.0.0/8", "dst_host": "db1", "port_from": 80},
+            {"src_host": "app1", "dst_host": "db1", "port_from": 90, "port_to": 80},
+        ]
+        doc["sections"]["port_usages"] += [
+            dict(doc["sections"]["port_usages"][0]),
+            {"host": "nobody", "port": 1, "service_name": "x"},
+        ]
+        resp = await do_import(client, admin_token, dry_run=False, sections=NETWORK_SECTIONS, doc=doc)
+        assert resp.status_code == 200, resp.text
+        results = resp.json()["results"]
+        outcome = {(r["section"], r["name"]): (r["action"], r["reason"] or "") for r in results}
+
+        assert outcome[("network_hosts", "ghost")][0] == "error"
+        assert "Region 'nowhere' does not exist" in outcome[("network_hosts", "ghost")][1]
+        assert outcome[("network_hosts", "clash")][0] == "error"
+        assert "already registered to host 'app1'" in outcome[("network_hosts", "clash")][1]
+        openings = [r for r in results if r["section"] == "firewall_openings"]
+        assert [r["action"] for r in openings] == [
+            "create", "create", "skip", "skip", "error", "error", "error"
+        ]
+        assert "duplicate" in openings[2]["reason"]
+        assert "same region" in openings[3]["reason"]
+        assert "not registered" in openings[4]["reason"]
+        usages = [r for r in results if r["section"] == "port_usages"]
+        assert [r["action"] for r in usages] == ["create", "skip", "error"]
+
+        rows = await network_rows(seeded_db)
+        assert sorted(h.name for h in rows["hosts"]) == ["app1", "db1"]
+        assert len(rows["openings"]) == 2 and len(rows["usages"]) == 1
+
+    async def test_dry_run_reports_what_the_apply_does(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        doc = network_doc()
+        doc["sections"]["firewall_openings"].append(
+            {"src_cidr": "10.1.5.0/24", "dst_host": "app1", "port_from": 22}
+        )
+        doc["sections"]["network_hosts"].append({"name": "ghost", "ip": "10.9.0.1", "region": "nowhere"})
+        dry = await do_import(client, admin_token, dry_run=True, sections=NETWORK_SECTIONS, doc=doc)
+        applied = await do_import(client, admin_token, dry_run=False, sections=NETWORK_SECTIONS, doc=doc)
+
+        def plan(resp):
+            return [(r["section"], r["name"], r["action"]) for r in resp.json()["results"]]
+
+        assert plan(dry) == plan(applied)
+
+    async def test_update_keeps_or_drops_verification_by_what_changed(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        await seed_full_config(seeded_db)
+        exported = (await client.get("/admin/config/export", headers=auth_header(admin_token))).json()
+        doc = export_doc(**{k: exported["sections"][k] for k in NETWORK_SECTIONS})
+        hosts = {h["name"]: h for h in doc["sections"]["network_hosts"]}
+        # Unchanged but flagged unverified in the file: kim's confirmation stays.
+        hosts["app1"]["verified"] = False
+        # Changed by an unverified record: back up for review.
+        usage = doc["sections"]["port_usages"][0]
+        usage["owner"] = "someone-else"
+        usage["verified"] = False
+        # Unverified here, confirmed in the file: the importing admin confirms it.
+        hosts["db.internal"]["verified"] = True
+
+        resp = await do_import(client, admin_token, dry_run=False, sections=NETWORK_SECTIONS, doc=doc)
+        assert resp.json()["summary"]["error"] == 0, resp.json()["results"]
+
+        rows = await network_rows(seeded_db)
+        by_name = {h.name: h for h in rows["hosts"]}
+        assert by_name["app1"].verified_by == "kim"
+        assert by_name["app1"].source == "manual" and by_name["app1"].created_by == "kim"
+        assert by_name["db.internal"].verified_by == "testadmin"
+        assert rows["usages"][0].owner == "someone-else"
+        assert rows["usages"][0].verified_at is None
+
+    async def test_monitored_link_and_platform_host_resolve_by_name(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        async with factory_for(seeded_db)() as db:
+            db.add(MonitoredHost(name="mon-a", address="10.1.0.10:9100"))
+            await db.commit()
+        doc = network_doc()
+        hosts = doc["sections"]["network_hosts"]
+        hosts[0]["monitored_host"] = "mon-a"
+        hosts[1]["monitored_host"] = "mon-missing"
+        doc["sections"]["network_settings"] = {"platform_host": "nobody"}
+
+        resp = await do_import(client, admin_token, dry_run=False, sections=NETWORK_SECTIONS, doc=doc)
+        outcome = {(r["section"], r["name"]): r for r in resp.json()["results"]}
+        assert outcome[("network_hosts", "db1")]["action"] == "create"
+        assert "mon-missing" in outcome[("network_hosts", "db1")]["reason"]
+        assert outcome[("network_settings", "global")]["action"] == "skip"
+
+        rows = await network_rows(seeded_db)
+        by_name = {h.name: h for h in rows["hosts"]}
+        async with factory_for(seeded_db)() as db:
+            mon = (await db.execute(select(MonitoredHost).where(MonitoredHost.name == "mon-a"))).scalar_one()
+        assert by_name["app1"].monitored_host_id == mon.id
+        assert by_name["db1"].monitored_host_id is None
+        assert rows["settings"].platform_host_id is None
+
+        # Linking a second host to the same monitored server is refused politely.
+        doc2 = network_doc(network_hosts=[{"name": "app2", "ip": "10.1.0.11", "monitored_host": "mon-a"}])
+        resp = await do_import(client, admin_token, dry_run=False, sections=["network_hosts"], doc=doc2)
+        row = resp.json()["results"][0]
+        assert row["action"] == "create" and "already linked to host 'app1'" in row["reason"]
+
+    async def test_hosts_without_their_regions_section_fail_per_item(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        resp = await do_import(
+            client, admin_token, dry_run=True, sections=["network_hosts", "firewall_openings"],
+            doc=network_doc(),
+        )
+        results = resp.json()["results"]
+        assert [(r["name"], r["action"]) for r in results if r["section"] == "network_hosts"] == [
+            ("app1", "error"), ("db1", "create"),
+        ]
+        assert "include network_regions" in results[0]["reason"]
+        # app1 never got planned, so its opening cannot be either.
+        openings = [r for r in results if r["section"] == "firewall_openings"]
+        assert [r["action"] for r in openings] == ["error", "create"]

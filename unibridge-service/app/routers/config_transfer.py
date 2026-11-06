@@ -29,7 +29,8 @@ from typing import Any, Awaitable
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import ValidationError
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import delete as sa_delete, inspect as sa_inspect, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import (
@@ -39,15 +40,20 @@ from app.auth import (
     require_permission,
 )
 from app.database import get_db
+from app.db_types import utcnow
 from app.models import (
     AlertChannel,
     AlertSettings,
     DBConnection,
+    FirewallOpening,
     MonitoredHost,
     MonitoredService,
     NASConnection,
+    NetworkHost,
     Permission,
+    PortUsage,
     QueryTemplate,
+    Region,
     ResourceOwner,
     Role,
     RolePermission,
@@ -57,6 +63,7 @@ from app.routers import admin as admin_router
 from app.routers import alerts as alerts_router
 from app.routers import api_keys as api_keys_router
 from app.routers import nas as nas_router
+from app.routers import network as network_router
 from app.routers import query as query_router
 from app.routers import s3 as s3_router
 from app.routers import servers as servers_router
@@ -69,16 +76,21 @@ from app.schemas import (
     ConfigImportResultRow,
     ConfigImportSummary,
     DBConnectionUpdate,
+    FirewallOpeningCreate,
     MonitoredHostCreate,
     MonitoredServiceCreate,
     NasConnectionCreate,
+    NetworkHostCreate,
+    NetworkSettings,
     PermissionCreate,
+    PortUsageCreate,
     QueryTemplateCreate,
+    RegionCreate,
     RoleCreate,
     S3ConnectionUpdate,
     SystemConfigUpdate,
 )
-from app.services import apisix_client, node_path_prefix, server_monitor
+from app.services import apisix_client, network_map, node_path_prefix, server_monitor
 from app.services.apisix_system_resources import (
     PROTECTED_ROUTE_IDS,
     PROTECTED_UPSTREAM_IDS,
@@ -128,6 +140,11 @@ SECTION_MONITORED_SERVICES = "monitored_services"
 SECTION_ALERT_SETTINGS = "alert_settings"
 SECTION_ALERT_CHANNELS = "alert_channels"
 SECTION_ALERT_RECIPIENTS = "alert_recipients"
+SECTION_NETWORK_REGIONS = "network_regions"
+SECTION_NETWORK_HOSTS = "network_hosts"
+SECTION_FIREWALL_OPENINGS = "firewall_openings"
+SECTION_PORT_USAGES = "port_usages"
+SECTION_NETWORK_SETTINGS = "network_settings"
 SECTION_SYSTEM_SETTINGS = "system_settings"
 
 # Document order — what the UI lists, grouped by screen.
@@ -145,12 +162,19 @@ EXPORT_SECTIONS = (
     SECTION_ALERT_SETTINGS,
     SECTION_ALERT_CHANNELS,
     SECTION_ALERT_RECIPIENTS,
+    SECTION_NETWORK_REGIONS,
+    SECTION_NETWORK_HOSTS,
+    SECTION_FIREWALL_OPENINGS,
+    SECTION_PORT_USAGES,
+    SECTION_NETWORK_SETTINGS,
     SECTION_SYSTEM_SETTINGS,
 )
 
 # Apply order — a dependency order, independent of the request's order:
 # upstreams before the routes that reference them, roles before the per-DB
-# grants that key off them, channels before the alert settings that link one.
+# grants that key off them, channels before the alert settings that link one,
+# monitored servers before the network hosts that link one, regions before the
+# hosts placed in them, hosts before the openings and port usage that name them.
 IMPORT_ORDER = (
     SECTION_UPSTREAMS,
     SECTION_ROUTES,
@@ -165,6 +189,11 @@ IMPORT_ORDER = (
     SECTION_ALERT_CHANNELS,
     SECTION_ALERT_SETTINGS,
     SECTION_ALERT_RECIPIENTS,
+    SECTION_NETWORK_REGIONS,
+    SECTION_NETWORK_HOSTS,
+    SECTION_FIREWALL_OPENINGS,
+    SECTION_PORT_USAGES,
+    SECTION_NETWORK_SETTINGS,
     SECTION_SYSTEM_SETTINGS,
 )
 
@@ -186,6 +215,10 @@ EXPORT_NOTES = (
     "the consumer-restriction plugin is stripped from exported routes; "
     "it is rebuilt from the API key table on import and on every boot",
     f"excluded secret values are marked {SECRET_PLACEHOLDER!r} where the field is kept",
+    "network map: connection probes (measurements) and discovered port usage "
+    "(derived from this deployment's own connections) are not exported; "
+    "'verified' is carried as a flag — an import re-confirms verified items in "
+    "the importing admin's name and leaves unverified ones for review",
 )
 
 
@@ -468,6 +501,95 @@ async def _export_alert_recipients(db: AsyncSession) -> list[dict[str, Any]]:
     ]
 
 
+async def _export_network(db: AsyncSession) -> dict[str, Any]:
+    """The network map, every reference by name instead of by row id.
+
+    Only what people (or agents) recorded: discovered port usage is derived
+    from this deployment's own connections and probes are measurements, so
+    neither is portable. ``source`` and ``verified`` describe the record here;
+    the import keeps the verification flag (see ``_stamp_network_row``).
+    """
+    snap = await network_map.load_snapshot(db)
+    hosts_by_id = snap.hosts
+
+    def host_name(host_id: int | None) -> str | None:
+        host = hosts_by_id.get(host_id) if host_id is not None else None
+        return host.name if host is not None else None
+
+    regions = [
+        {
+            "name": region.name,
+            "description": region.description or "",
+            "cidrs": network_map.region_cidrs(region),
+        }
+        for region in sorted(snap.regions.values(), key=lambda r: r.name)
+    ]
+    hosts = [
+        {
+            "name": host.name,
+            "ip": host.ip,
+            "region": snap.region_name(host.region_id),
+            "description": host.description or "",
+            "owner": host.owner or "",
+            "monitored_host": (
+                snap.monitored_names.get(host.monitored_host_id)
+                if host.monitored_host_id is not None
+                else None
+            ),
+            "source": host.source,
+            "verified": host.verified_at is not None,
+        }
+        for host in sorted(hosts_by_id.values(), key=lambda h: h.name)
+    ]
+    openings = [
+        {
+            "src_host": host_name(opening.src_host_id),
+            "src_cidr": opening.src_cidr,
+            "dst_host": host_name(opening.dst_host_id),
+            "protocol": opening.protocol,
+            "port_from": opening.port_from,
+            "port_to": opening.port_to,
+            "status": opening.status,
+            "ticket_no": opening.ticket_no or "",
+            "requester": opening.requester or "",
+            "purpose": opening.purpose or "",
+            "source": opening.source,
+            "verified": opening.verified_at is not None,
+        }
+        for opening in snap.openings
+    ]
+    openings.sort(
+        key=lambda o: (
+            o["dst_host"] or "", o["src_host"] or o["src_cidr"] or "",
+            o["protocol"], o["port_from"], o["port_to"],
+        )
+    )
+    usages = [
+        {
+            "host": host_name(usage.host_id),
+            "port": usage.port,
+            "protocol": usage.protocol,
+            "service_name": usage.service_name,
+            "description": usage.description or "",
+            "owner": usage.owner or "",
+            "source": usage.source,
+            "verified": usage.verified_at is not None,
+        }
+        for usage in snap.usages
+    ]
+    usages.sort(key=lambda u: (u["host"] or "", u["port"], u["protocol"], u["service_name"]))
+    platform = snap.platform_host
+    return {
+        SECTION_NETWORK_REGIONS: regions,
+        SECTION_NETWORK_HOSTS: hosts,
+        SECTION_FIREWALL_OPENINGS: openings,
+        SECTION_PORT_USAGES: usages,
+        SECTION_NETWORK_SETTINGS: {
+            "platform_host": platform.name if platform is not None else None
+        },
+    }
+
+
 @router.get("/export", response_model=ConfigExportResponse)
 async def export_config(
     _user: CurrentUser = Depends(require_permission("admin.config.read")),
@@ -489,6 +611,7 @@ async def export_config(
         SECTION_ALERT_SETTINGS: await _export_alert_settings(db),
         SECTION_ALERT_CHANNELS: await _export_alert_channels(db),
         SECTION_ALERT_RECIPIENTS: await _export_alert_recipients(db),
+        **await _export_network(db),
         SECTION_SYSTEM_SETTINGS: settings_manager.get_all(),
     }
     return ConfigExportResponse(
@@ -520,6 +643,8 @@ class _ImportContext:
         self.user = user
         self.dry_run = dry_run
         self.results: list[ConfigImportResultRow] = []
+        # Loaded by the first network section; see ``_NetworkPlan``.
+        self.network_plan: _NetworkPlan | None = None
 
     def record(
         self, section: str, name: str, action: str, reason: str | None = None
@@ -1681,6 +1806,571 @@ async def _import_alert_recipients(ctx: _ImportContext, raw: Any) -> None:
         )
 
 
+# ── Import: network map ─────────────────────────────────────────────────────
+
+
+def _detached(row: Any) -> Any:
+    """A transient copy of an ORM row's columns, outside the session.
+
+    The plan below must survive ``_apply_item``'s rollback after a failed item,
+    which expires every object the session holds (and an expired attribute
+    cannot lazy-load under asyncio).
+    """
+    mapper = sa_inspect(type(row))
+    return type(row)(**{attr.key: getattr(row, attr.key) for attr in mapper.column_attrs})
+
+
+class _NetworkPlan:
+    """The network map as this import sees it, kept in step item by item.
+
+    A snapshot of detached copies, updated after every applied write — and,
+    on a dry run, with what each item would have created under a negative
+    stand-in id. Hosts are placed against regions, and openings validated
+    against hosts, that earlier items of the same import create, so a dry run
+    reports what the apply would do.
+    """
+
+    def __init__(self, snap: network_map.Snapshot) -> None:
+        self.snap = snap
+        self._next_planned_id = -1
+        # Composite natural keys already handled by this import.
+        self.seen_openings: set[tuple[Any, ...]] = set()
+        self.seen_usages: set[tuple[Any, ...]] = set()
+
+    @classmethod
+    async def load(cls, db: AsyncSession) -> _NetworkPlan:
+        snap = await network_map.load_snapshot(db)
+        snap.regions = {k: _detached(v) for k, v in snap.regions.items()}
+        snap.hosts = {k: _detached(v) for k, v in snap.hosts.items()}
+        snap.openings = [_detached(o) for o in snap.openings]
+        snap.usages = [_detached(u) for u in snap.usages]
+        snap.probes = []
+        return cls(snap)
+
+    def planned_id(self) -> int:
+        value = self._next_planned_id
+        self._next_planned_id -= 1
+        return value
+
+    def region_by_name(self, name: str) -> Region | None:
+        wanted = name.strip().lower()
+        return next(
+            (r for r in self.snap.regions.values() if r.name.lower() == wanted), None
+        )
+
+    def host_by_name(self, name: str) -> NetworkHost | None:
+        wanted = name.strip().lower()
+        return next((h for h in self.snap.hosts.values() if h.name.lower() == wanted), None)
+
+    def put_region(self, region: Region) -> None:
+        self.snap.regions[region.id] = _detached(region)
+        # Re-derive the CIDR → region index the snapshot builds once.
+        self.snap.__post_init__()
+
+    def put_host(self, host: NetworkHost) -> None:
+        self.snap.hosts[host.id] = _detached(host)
+
+    def put_opening(self, opening: FirewallOpening) -> None:
+        copy_ = _detached(opening)
+        self.snap.openings = [o for o in self.snap.openings if o.id != opening.id]
+        self.snap.openings.append(copy_)
+
+    def put_usage(self, usage: PortUsage) -> None:
+        copy_ = _detached(usage)
+        self.snap.usages = [u for u in self.snap.usages if u.id != usage.id]
+        self.snap.usages.append(copy_)
+
+
+async def _network_plan(ctx: _ImportContext) -> _NetworkPlan:
+    if ctx.network_plan is None:
+        ctx.network_plan = await _NetworkPlan.load(ctx.db)
+    return ctx.network_plan
+
+
+def _stamp_network_row(
+    ctx: _ImportContext, row: Any, *, created: bool, changed: bool, verified: bool
+) -> None:
+    """Who wrote an imported network record, and whether a person confirmed it.
+
+    Created rows are ``source='import'`` by the importing admin (the CSV import's
+    convention). The ``verified`` flag travels with the record: a confirmed one
+    is confirmed again in the importing admin's name (who/when are per
+    deployment), an unconfirmed one — typically an agent's — stays up for
+    review rather than being vouched for wholesale. An unchanged record a
+    person already confirmed here keeps that confirmation.
+    """
+    if created:
+        row.source = "import"
+        row.created_by = ctx.user.username
+    if verified:
+        if created or changed or row.verified_at is None:
+            row.verified_at = utcnow()
+            row.verified_by = ctx.user.username
+    elif created or changed:
+        row.verified_at = None
+        row.verified_by = None
+
+
+def _item_verified(item: dict[str, Any]) -> bool:
+    return item.get("verified") is True
+
+
+def _present(item: dict[str, Any], *fields: str) -> dict[str, Any]:
+    """The fields the item actually carries, so model defaults fill the rest."""
+    return {f: item[f] for f in fields if item.get(f) is not None}
+
+
+def _changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    return {k: v for k, v in before.items() if k != "verified"} != {
+        k: v for k, v in after.items() if k != "verified"
+    }
+
+
+async def _commit_network(ctx: _ImportContext, conflict: str) -> None:
+    """Commit; a unique-constraint race (or anything the plan missed) is a 409."""
+    try:
+        await ctx.db.commit()
+    except IntegrityError as exc:
+        await ctx.db.rollback()
+        raise HTTPException(status_code=409, detail=conflict) from exc
+
+
+def _require_host(plan: _NetworkPlan, ref: Any, what: str) -> NetworkHost:
+    host = plan.snap.find_host(ref) if isinstance(ref, str) and ref.strip() else None
+    if host is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The {what} host {ref!r} is not registered — include network_hosts "
+                "in the import, or add the host first"
+            ),
+        )
+    return host
+
+
+async def _apply_network_region(
+    ctx: _ImportContext, name: str, item: dict[str, Any]
+) -> tuple[str, str | None]:
+    body = RegionCreate.model_validate(
+        {**_present(item, "description", "cidrs"), "name": name}
+    )
+    plan = await _network_plan(ctx)
+    existing = plan.region_by_name(body.name)
+    action = "update" if existing is not None else "create"
+    if ctx.dry_run:
+        planned = _detached(existing) if existing is not None else Region(
+            id=plan.planned_id(), name=body.name
+        )
+        planned.description = body.description
+        planned.cidrs = json.dumps(body.cidrs)
+        plan.put_region(planned)
+        return action, None
+
+    region = await ctx.db.get(Region, existing.id) if existing is not None else None
+    before = network_router._region_snapshot(region) if region is not None else None
+    if region is None:
+        region = Region(name=body.name)
+        ctx.db.add(region)
+    region.description = body.description
+    region.cidrs = json.dumps(body.cidrs)
+    await _commit_network(ctx, f"Region '{body.name}' already exists")
+    await ctx.db.refresh(region)
+    plan.put_region(region)
+
+    await ctx.audit(
+        action=action,
+        resource_type="network_region",
+        resource_id=region.name,
+        before=before,
+        after=network_router._region_snapshot(region),
+    )
+    return action, None
+
+
+async def _import_network_regions(ctx: _ImportContext, raw: Any) -> None:
+    for index, item in _dict_items(ctx, SECTION_NETWORK_REGIONS, raw):
+        name = _natural_key(ctx, SECTION_NETWORK_REGIONS, item, "name", index)
+        if name is None:
+            continue
+        await _apply_item(
+            ctx, SECTION_NETWORK_REGIONS, name, _apply_network_region(ctx, name, item)
+        )
+
+
+def _monitored_link(
+    ctx: _ImportContext, plan: _NetworkPlan, item: dict[str, Any], host: NetworkHost | None
+) -> tuple[bool, int | None, str | None]:
+    """(relink?, monitored host id, reason) for an exported ``monitored_host`` name.
+
+    Like the alert settings' mail channel: a missing key leaves the link alone,
+    an explicit null unlinks, a name that cannot be linked is reported and
+    leaves it alone too.
+    """
+    if "monitored_host" not in item:
+        return False, None, None
+    name = item.get("monitored_host")
+    if not name:
+        return True, None, None
+    name = str(name)
+    monitored_id = next(
+        (mid for mid, mname in plan.snap.monitored_names.items() if mname == name), None
+    )
+    if monitored_id is None:
+        if ctx.dry_run and any(
+            row.section == SECTION_MONITORED_HOSTS and row.name == name and row.action == "create"
+            for row in ctx.results
+        ):
+            return False, None, None  # this import creates it: linked on apply
+        return False, None, f"monitored server '{name}' not found — link left unchanged"
+    other = next(
+        (
+            h for h in plan.snap.hosts.values()
+            if h.monitored_host_id == monitored_id and (host is None or h.id != host.id)
+        ),
+        None,
+    )
+    if other is not None:
+        return False, None, (
+            f"monitored server '{name}' is already linked to host '{other.name}' — "
+            "link left unchanged"
+        )
+    return True, monitored_id, None
+
+
+async def _apply_network_host(
+    ctx: _ImportContext, name: str, item: dict[str, Any]
+) -> tuple[str, str | None]:
+    region_name = item.get("region")
+    body = NetworkHostCreate.model_validate({
+        **_present(item, "ip", "description", "owner"),
+        "name": name,
+        "region": region_name if isinstance(region_name, str) and region_name else None,
+    })
+    plan = await _network_plan(ctx)
+    existing = plan.host_by_name(body.name)
+    holder = plan.snap.find_host(body.ip)
+    if holder is not None and (existing is None or holder.id != existing.id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"IP {body.ip} is already registered to host '{holder.name}'",
+        )
+    if body.region is not None:
+        region = plan.region_by_name(body.region)
+        if region is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Region '{body.region}' does not exist — include network_regions "
+                    "in the import, or define it first"
+                ),
+            )
+        region_id: int | None = region.id
+    else:
+        # As when a host is added without a region: placed by the CIDRs.
+        region_id = plan.snap.region_for_ip(body.ip)
+    relink, monitored_id, reason = _monitored_link(ctx, plan, item, existing)
+    action = "update" if existing is not None else "create"
+    verified = _item_verified(item)
+
+    if ctx.dry_run:
+        planned = _detached(existing) if existing is not None else NetworkHost(
+            id=plan.planned_id(), name=body.name, monitored_host_id=None
+        )
+        planned.ip = body.ip
+        planned.region_id = region_id
+        if relink:
+            planned.monitored_host_id = monitored_id
+        plan.put_host(planned)
+        return action, reason
+
+    host = await ctx.db.get(NetworkHost, existing.id) if existing is not None else None
+    before = network_router._host_snapshot(host) if host is not None else None
+    if host is None:
+        host = NetworkHost(name=body.name)
+        ctx.db.add(host)
+    host.ip = body.ip
+    host.region_id = region_id
+    host.description = body.description
+    host.owner = body.owner
+    if relink:
+        host.monitored_host_id = monitored_id
+    _stamp_network_row(
+        ctx, host,
+        created=before is None,
+        changed=before is None or _changed(before, network_router._host_snapshot(host)),
+        verified=verified,
+    )
+    await _commit_network(ctx, "A host with this name, IP or monitored server already exists")
+    await ctx.db.refresh(host)
+    plan.put_host(host)
+
+    await ctx.audit(
+        action=action,
+        resource_type="network_host",
+        resource_id=host.name,
+        summary=host.ip,
+        before=before,
+        after=network_router._host_snapshot(host),
+    )
+    return action, reason
+
+
+async def _import_network_hosts(ctx: _ImportContext, raw: Any) -> None:
+    for index, item in _dict_items(ctx, SECTION_NETWORK_HOSTS, raw):
+        name = _natural_key(ctx, SECTION_NETWORK_HOSTS, item, "name", index)
+        if name is None:
+            continue
+        await _apply_item(
+            ctx, SECTION_NETWORK_HOSTS, name, _apply_network_host(ctx, name, item)
+        )
+
+
+_OPENING_FIELDS = ("status", "ticket_no", "requester", "purpose")
+
+
+def _opening_label(item: dict[str, Any]) -> str:
+    src = item.get("src_host") or item.get("src_cidr") or "?"
+    dst = item.get("dst_host") or "?"
+    protocol = item.get("protocol") or "tcp"
+    port_from, port_to = item.get("port_from"), item.get("port_to")
+    ports = (
+        f"{port_from}" if port_to in (None, port_from) else f"{port_from}-{port_to}"
+    )
+    return f"{src} → {dst} {protocol}/{ports}"
+
+
+async def _apply_firewall_opening(
+    ctx: _ImportContext, item: dict[str, Any]
+) -> tuple[str, str | None]:
+    if item.get("src_host") and item.get("src_cidr"):
+        raise HTTPException(status_code=422, detail="give src_host or src_cidr, not both")
+    body = FirewallOpeningCreate.model_validate(
+        _present(
+            item, "src_host", "src_cidr", "dst_host", "port_from", "port_to", "protocol",
+            *_OPENING_FIELDS,
+        )
+    )
+    plan = await _network_plan(ctx)
+    src = _require_host(plan, body.src_host, "source") if body.src_host is not None else None
+    dst = _require_host(plan, body.dst_host, "destination")
+    opening = FirewallOpening(
+        src_host_id=src.id if src is not None else None,
+        src_cidr=body.src_cidr,
+        dst_host_id=dst.id,
+        port_from=body.port_from,
+        port_to=body.port_to if body.port_to is not None else body.port_from,
+        protocol=body.protocol,
+        status=body.status,
+        ticket_no=body.ticket_no,
+        requester=body.requester,
+        purpose=body.purpose,
+    )
+    network_router.set_src_key(opening)
+    identity = (
+        opening.src_key, opening.dst_host_id, opening.protocol, opening.port_from, opening.port_to
+    )
+    if identity in plan.seen_openings:
+        return "skip", "duplicate of an earlier item in this file"
+    plan.seen_openings.add(identity)
+    existing = next(
+        (
+            o for o in plan.snap.openings
+            if (o.src_key, o.dst_host_id, o.protocol, o.port_from, o.port_to) == identity
+        ),
+        None,
+    )
+    verified = _item_verified(item)
+
+    if existing is None:
+        src_region = plan.snap.opening_src_region(opening)
+        if src_region is not None and src_region == dst.region_id:
+            return "skip", "same region: every port is already open there, no opening needed"
+        # Same rules as the API (same host, port order, an identical record).
+        network_router._validate_opening(plan.snap, opening)
+        if ctx.dry_run:
+            opening.id = plan.planned_id()
+            plan.put_opening(opening)
+            return "create", None
+        _stamp_network_row(ctx, opening, created=True, changed=True, verified=verified)
+        ctx.db.add(opening)
+        await _commit_network(ctx, "This opening is already recorded")
+        await ctx.db.refresh(opening)
+        plan.put_opening(opening)
+        await ctx.audit(
+            action="create",
+            resource_type="firewall_opening",
+            resource_id=str(opening.id),
+            summary=f"{dst.name} {network_map.port_label(opening.protocol, opening.port_from, opening.port_to)}",
+            before=None,
+            after=network_router._opening_snapshot(opening),
+        )
+        return "create", None
+
+    # The natural key matched: only the descriptive fields can differ. The
+    # region rule is not re-checked, as for an API edit that keeps the ends.
+    if ctx.dry_run:
+        planned = _detached(existing)
+        for field in _OPENING_FIELDS:
+            setattr(planned, field, getattr(body, field))
+        plan.put_opening(planned)
+        return "update", None
+
+    row = await ctx.db.get(FirewallOpening, existing.id)
+    if row is None:
+        raise HTTPException(status_code=409, detail="The opening was deleted during the import")
+    before = network_router._opening_snapshot(row)
+    for field in _OPENING_FIELDS:
+        setattr(row, field, getattr(body, field))
+    _stamp_network_row(
+        ctx, row,
+        created=False,
+        changed=_changed(before, network_router._opening_snapshot(row)),
+        verified=verified,
+    )
+    await _commit_network(ctx, "This opening is already recorded")
+    await ctx.db.refresh(row)
+    plan.put_opening(row)
+    await ctx.audit(
+        action="update",
+        resource_type="firewall_opening",
+        resource_id=str(row.id),
+        before=before,
+        after=network_router._opening_snapshot(row),
+    )
+    return "update", None
+
+
+async def _import_firewall_openings(ctx: _ImportContext, raw: Any) -> None:
+    for _index, item in _dict_items(ctx, SECTION_FIREWALL_OPENINGS, raw):
+        await _apply_item(
+            ctx,
+            SECTION_FIREWALL_OPENINGS,
+            _opening_label(item),
+            _apply_firewall_opening(ctx, item),
+        )
+
+
+_USAGE_FIELDS = ("description", "owner")
+
+
+async def _apply_port_usage(
+    ctx: _ImportContext, item: dict[str, Any]
+) -> tuple[str, str | None]:
+    body = PortUsageCreate.model_validate(
+        _present(item, "host", "port", "protocol", "service_name", *_USAGE_FIELDS)
+    )
+    plan = await _network_plan(ctx)
+    host = _require_host(plan, body.host, "port usage's")
+    identity = (host.id, body.port, body.protocol, body.service_name)
+    if identity in plan.seen_usages:
+        return "skip", "duplicate of an earlier item in this file"
+    plan.seen_usages.add(identity)
+    existing = next(
+        (
+            u for u in plan.snap.usages
+            if (u.host_id, u.port, u.protocol, u.service_name) == identity
+        ),
+        None,
+    )
+    action = "update" if existing is not None else "create"
+    verified = _item_verified(item)
+
+    if ctx.dry_run:
+        planned = _detached(existing) if existing is not None else PortUsage(
+            id=plan.planned_id(), host_id=host.id, port=body.port,
+            protocol=body.protocol, service_name=body.service_name,
+        )
+        for field in _USAGE_FIELDS:
+            setattr(planned, field, getattr(body, field))
+        plan.put_usage(planned)
+        return action, None
+
+    usage = await ctx.db.get(PortUsage, existing.id) if existing is not None else None
+    before = network_router._usage_snapshot(usage) if usage is not None else None
+    if usage is None:
+        usage = PortUsage(
+            host_id=host.id, port=body.port, protocol=body.protocol,
+            service_name=body.service_name,
+        )
+        ctx.db.add(usage)
+    for field in _USAGE_FIELDS:
+        setattr(usage, field, getattr(body, field))
+    _stamp_network_row(
+        ctx, usage,
+        created=before is None,
+        changed=before is None or _changed(before, network_router._usage_snapshot(usage)),
+        verified=verified,
+    )
+    await _commit_network(ctx, network_router._USAGE_CONFLICT)
+    await ctx.db.refresh(usage)
+    plan.put_usage(usage)
+    await ctx.audit(
+        action=action,
+        resource_type="port_usage",
+        resource_id=str(usage.id),
+        summary=f"{host.name}:{usage.port} {usage.service_name}",
+        before=before,
+        after=network_router._usage_snapshot(usage),
+    )
+    return action, None
+
+
+def _usage_label(item: dict[str, Any]) -> str:
+    protocol = item.get("protocol") or "tcp"
+    return (
+        f"{item.get('host') or '?'} {protocol}/{item.get('port') or '?'} "
+        f"{item.get('service_name') or '?'}"
+    )
+
+
+async def _import_port_usages(ctx: _ImportContext, raw: Any) -> None:
+    for _index, item in _dict_items(ctx, SECTION_PORT_USAGES, raw):
+        await _apply_item(
+            ctx, SECTION_PORT_USAGES, _usage_label(item), _apply_port_usage(ctx, item)
+        )
+
+
+async def _apply_network_settings(
+    ctx: _ImportContext, item: dict[str, Any]
+) -> tuple[str, str | None]:
+    if "platform_host" not in item:
+        return "skip", "no platform_host in the file"
+    name = item.get("platform_host")
+    plan = await _network_plan(ctx)
+    host_id: int | None = None
+    if name:
+        host = plan.host_by_name(str(name))
+        if host is None:
+            return "skip", (
+                f"platform host '{name}' is not registered — setting left unchanged"
+            )
+        host_id = host.id
+    if ctx.dry_run:
+        return "update", None
+
+    before = await network_map.load_settings(ctx.db)
+    after = NetworkSettings(platform_host_id=host_id)
+    await network_map.save_settings(ctx.db, after)
+    await ctx.audit(
+        action="update",
+        resource_type="network_settings",
+        resource_id="network",
+        summary=str(name) if name else None,
+        before=before.model_dump(),
+        after=after.model_dump(),
+    )
+    return "update", None
+
+
+async def _import_network_settings(ctx: _ImportContext, raw: Any) -> None:
+    if not isinstance(raw, dict):
+        ctx.record(SECTION_NETWORK_SETTINGS, _SECTION_ROW, "error", "section must be an object")
+        return
+    await _apply_item(
+        ctx, SECTION_NETWORK_SETTINGS, _SINGLETON_ROW, _apply_network_settings(ctx, raw)
+    )
+
+
 # ── Import: system settings ─────────────────────────────────────────────────
 
 
@@ -1744,6 +2434,11 @@ _SECTION_IMPORTERS = {
     SECTION_ALERT_CHANNELS: _import_alert_channels,
     SECTION_ALERT_SETTINGS: _import_alert_settings,
     SECTION_ALERT_RECIPIENTS: _import_alert_recipients,
+    SECTION_NETWORK_REGIONS: _import_network_regions,
+    SECTION_NETWORK_HOSTS: _import_network_hosts,
+    SECTION_FIREWALL_OPENINGS: _import_firewall_openings,
+    SECTION_PORT_USAGES: _import_port_usages,
+    SECTION_NETWORK_SETTINGS: _import_network_settings,
     SECTION_SYSTEM_SETTINGS: _import_system_settings,
 }
 

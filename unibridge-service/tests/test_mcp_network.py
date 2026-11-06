@@ -227,3 +227,114 @@ async def test_admin_preview_lists_the_network_group(client, admin_token, seeded
     }
     tools = [tool["name"] for tool in resp.json()["tools"] if tool["group"] == "network"]
     assert tools == READ_TOOLS
+
+
+async def test_probe_tools_measure_from_the_source_and_report_mismatches(
+    client, seeded_db, admin_token, gateway
+):
+    ids = await _map(client, admin_token)
+    h = auth_header(admin_token)
+    # a1 → b1:5432 is recorded open; nothing is recorded for a1 → b1:22.
+    resp = await client.post(
+        "/network/openings", headers=h,
+        json={"src_host": "a1", "dst_host": "b1", "port_from": 5432},
+    )
+    assert resp.status_code == 201, resp.text
+    key = await _create_api_key(
+        seeded_db, "prober", routes=["mcp-api", "network-api", "network-write-api"]
+    )
+
+    targets = _json(await _call(client, key, "network_probe_targets", {"src": "10.1.0.1"}))
+    assert targets["src_host_name"] == "a1"
+    assert [(t["dst_host_name"], t["port"], t["expected"]) for t in targets["targets"]] == [
+        ("b1", 5432, "open")
+    ]
+    assert targets["truncated"] is False
+    unknown = await _call(client, key, "network_probe_targets", {"src": "ghost"})
+    assert unknown["isError"] is True and _text(unknown).startswith("404: ")
+
+    report = _json(
+        await _call(
+            client,
+            key,
+            "network_report_probes",
+            {
+                "src_host": "a1",
+                "results": [
+                    # The recorded opening times out: it may have expired.
+                    {"dst_host": "b1", "port": 5432, "result": "timeout"},
+                    # Refused = the firewall let it through, though nothing is recorded.
+                    {"dst_host": "10.2.0.1", "port": 22, "result": "refused", "latency_ms": 1.5},
+                    {"dst_host": "ghost", "port": 80, "result": "open"},
+                ],
+            },
+        )
+    )
+    assert report["stored"] == 2
+    assert [e["index"] for e in report["errors"]] == [2]
+    assert {(m["port"], m["mismatch"]) for m in report["mismatches"]} == {
+        (5432, "recorded_open_but_blocked"),
+        (22, "passes_without_opening"),
+    }
+
+    probes = _json(await _call(client, key, "network_list_probes", {"host": "b1"}))
+    assert probes["total"] == 2
+    assert {p["reported_by"] for p in probes["probes"]} == {"apikey:prober"}
+    assert {p["src_host_id"] for p in probes["probes"]} == {ids["a1"]}
+    only_timeouts = _json(await _call(client, key, "network_list_probes", {"result": "timeout"}))
+    assert [p["port"] for p in only_timeouts["probes"]] == [5432]
+    mismatched = _json(await _call(client, key, "network_list_probes", {"mismatch": True}))
+    assert mismatched["total"] == 2
+
+    assert ("network-write-api", "POST", "/api/network/probes") in gateway.calls
+    assert ("network-api", "GET", "/api/network/probe-targets") in gateway.calls
+    assert ("network-api", "GET", "/api/network/probes") in gateway.calls
+
+
+async def test_report_probes_takes_the_source_from_the_call(client, seeded_db, admin_token, gateway):
+    await _map(client, admin_token)
+    key = await _create_api_key(
+        seeded_db, "prober", routes=["mcp-api", "network-api", "network-write-api"]
+    )
+    # A per-item source is not taken: every attempt is reported as from src_host.
+    report = _json(
+        await _call(
+            client,
+            key,
+            "network_report_probes",
+            {
+                "src_host": "b1",
+                "results": [{"dst_host": "a1", "src_host": "a2", "port": 80, "result": "open"}],
+            },
+        )
+    )
+    assert report["stored"] == 1 and report["errors"] == []
+    probes = _json(await _call(client, key, "network_list_probes", {}))
+    assert [p["src_host_name"] for p in probes["probes"]] == ["b1"]
+
+    empty = await _call(client, key, "network_report_probes", {"src_host": "b1", "results": []})
+    assert empty["isError"] is True and "non-empty" in _text(empty)
+    too_many = await _call(
+        client,
+        key,
+        "network_report_probes",
+        {"src_host": "b1", "results": [{"dst_host": "a1", "port": 80, "result": "open"}] * 501},
+    )
+    assert too_many["isError"] is True and "At most 500" in _text(too_many)
+
+
+async def test_probe_tools_follow_the_grants(client, seeded_db, gateway):
+    reader = await _create_api_key(seeded_db, "reader", routes=["mcp-api", "network-api"])
+    names = await _tool_names(client, reader)
+    assert {"network_list_probes", "network_probe_targets"} <= set(names)
+    assert "network_report_probes" not in names
+    tools = (
+        await client.post(
+            "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=reader
+        )
+    ).json()["result"]["tools"]
+    targets = next(tool for tool in tools if tool["name"] == "network_probe_targets")
+    assert "network_report_probes" in targets["description"]
+    report = next(tool for tool in mcp_tools.NETWORK_WRITE_TOOLS if tool.name == "network_report_probes")
+    for word in ("open", "refused", "timeout", "error", "FROM src_host"):
+        assert word in report.description

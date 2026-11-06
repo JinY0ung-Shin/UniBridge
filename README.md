@@ -484,8 +484,8 @@ http_headers = { apikey = "<API_KEY>" }
   | Read-only SQL | `run_query` | `query-api` |
   | S3 | `s3_list_connections`, `s3_list_buckets`, `s3_list_objects`, `s3_get_object_metadata`, `s3_read_object` | `s3-api` |
   | NAS | `nas_list_connections`, `nas_list_entries`, `nas_get_metadata`, `nas_read_file` | `nas-api` |
-  | Network map | `network_overview`, `network_list_regions`, `network_find_hosts`, `network_get_host`, `network_check_access`, `network_list_openings`, `network_list_port_usages` | `network-api` |
-  | Network map (record) | `network_register_host`, `network_update_host`, `network_record_opening`, `network_update_opening`, `network_delete_opening`, `network_record_port_usage`, `network_delete_port_usage` | `network-api` and `network-write-api` |
+  | Network map | `network_overview`, `network_list_regions`, `network_find_hosts`, `network_get_host`, `network_check_access`, `network_list_openings`, `network_list_port_usages`, `network_list_probes`, `network_probe_targets` | `network-api` |
+  | Network map (record) | `network_register_host`, `network_update_host`, `network_record_opening`, `network_update_opening`, `network_delete_opening`, `network_record_port_usage`, `network_delete_port_usage`, `network_report_probes` | `network-api` and `network-write-api` |
   | Gateway APIs | `search_apis`, `call_api` | each offered route's own grant |
 
 - Each tool call that reaches a database, S3 or NAS goes back out through the
@@ -1220,6 +1220,12 @@ firewall opening is requested through the company system by whoever needs it.
   UniBridge runs on) in the page's settings and those rows show whether
   UniBridge can reach them across regions.
 - Openings no service uses are flagged as cleanup candidates.
+- **Probes** check the records against reality: `scripts/network_probe.py` (or
+  an agent) tries each recorded opening from the source server and reports
+  open / refused / timeout; contradictions with the records are flagged.
+- Hosts, openings and port usage can be imported from a CSV sheet (English or
+  Korean headers, dry run first), and the map is part of the config
+  export/import.
 - Agents read and record through `/api/network/*` or the MCP `network` tools
   (see below). What they record is marked unverified until a person confirms it;
   regions and deleting confirmed records stay with people.

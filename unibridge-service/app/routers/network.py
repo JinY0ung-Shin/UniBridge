@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -27,7 +28,14 @@ from app.auth import (
 )
 from app.database import get_db
 from app.db_types import utcnow
-from app.models import FirewallOpening, MonitoredHost, NetworkHost, PortUsage, Region
+from app.models import (
+    FirewallOpening,
+    MonitoredHost,
+    NetworkHost,
+    NetworkProbe,
+    PortUsage,
+    Region,
+)
 from app.schemas import (
     AccessCheckResponse,
     FirewallOpeningCreate,
@@ -44,11 +52,18 @@ from app.schemas import (
     PortUsageCreate,
     PortUsageResponse,
     PortUsageUpdate,
+    ProbeBatch,
+    ProbeBatchError,
+    ProbeBatchResponse,
+    ProbeResponse,
+    ProbeTargetsResponse,
+    NetworkImportRequest,
+    NetworkImportResponse,
     RegionCreate,
     RegionResponse,
     RegionUpdate,
 )
-from app.services import network_map
+from app.services import network_import, network_map
 from app.services.apisix_system_resources import NETWORK_API_ROUTE_ID, NETWORK_WRITE_ROUTE_ID
 from app.services.audit import log_admin_action
 from app.services.network_map import NetworkMapError, Snapshot
@@ -502,7 +517,7 @@ async def delete_host(
             *(u for u in snap.usages if u.host_id == host_id),
         )
     before = _host_snapshot(host)
-    # Openings and usages go with it. ON DELETE CASCADE covers this too, but
+    # Openings, usages and probes go with it. ON DELETE CASCADE covers this too, but
     # only where the database enforces foreign keys, so delete them explicitly.
     await db.execute(
         sa_delete(FirewallOpening).where(
@@ -510,6 +525,11 @@ async def delete_host(
         )
     )
     await db.execute(sa_delete(PortUsage).where(PortUsage.host_id == host_id))
+    await db.execute(
+        sa_delete(NetworkProbe).where(
+            (NetworkProbe.src_host_id == host_id) | (NetworkProbe.dst_host_id == host_id)
+        )
+    )
     await db.delete(host)
     await db.commit()
     await log_admin_action(
@@ -613,6 +633,42 @@ def _resolve_host(snap: Snapshot, *, host_id: int | None, ref: str | None, what:
         shown = host_id if host_id is not None else ref
         raise HTTPException(status_code=422, detail=f"The {what} host {shown!r} is not registered")
     return host
+
+
+def set_src_key(opening: FirewallOpening) -> None:
+    """The one non-null source value the opening's unique constraint keys on."""
+    opening.src_key = (
+        f"host:{opening.src_host_id}" if opening.src_host_id is not None else f"cidr:{opening.src_cidr}"
+    )
+
+
+async def _commit_opening(db: AsyncSession, opening: FirewallOpening) -> None:
+    """Commit; a concurrent identical record (the unique constraint) answers 409."""
+    # Read the identity first: a rollback expires the row, and reading an
+    # expired attribute would lazy-load, which async sessions cannot.
+    identity = (
+        opening.src_key, opening.dst_host_id, opening.protocol, opening.port_from, opening.port_to
+    )
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        src_key, dst_host_id, protocol, port_from, port_to = identity
+        existing = (
+            await db.execute(
+                select(FirewallOpening.id).where(
+                    FirewallOpening.src_key == src_key,
+                    FirewallOpening.dst_host_id == dst_host_id,
+                    FirewallOpening.protocol == protocol,
+                    FirewallOpening.port_from == port_from,
+                    FirewallOpening.port_to == port_to,
+                )
+            )
+        ).scalar_one_or_none()
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "This opening is already recorded", "id": existing},
+        )
 
 
 def _validate_opening(
@@ -719,8 +775,9 @@ async def create_opening(
     )
     _validate_opening(snap, opening)
     _stamp(opening, actor, created=True)
+    set_src_key(opening)
     db.add(opening)
-    await db.commit()
+    await _commit_opening(db, opening)
     await db.refresh(opening)
     await log_admin_action(
         db, actor=actor.name, action="create", resource_type="firewall_opening",
@@ -769,7 +826,8 @@ async def update_opening(
     )
     _validate_opening(snap, current, endpoints_changed=endpoints_changed)
     _stamp(current, actor, created=False)
-    await db.commit()
+    set_src_key(current)
+    await _commit_opening(db, current)
     await db.refresh(current)
     await log_admin_action(
         db, actor=actor.name, action="update", resource_type="firewall_opening",
@@ -942,3 +1000,158 @@ async def verify_port_usage(
         resource_id=str(usage_id),
     )
     return network_map.stored_usage_response(await _snapshot(db), usage)
+
+
+# ── Probes ──────────────────────────────────────────────────────────────────
+
+# A report may not claim to be from the future (clock skew allowance).
+_PROBE_FUTURE_SLACK_SECONDS = 300
+
+
+@router.post("/probes", response_model=ProbeBatchResponse)
+async def report_probes(
+    body: ProbeBatch,
+    actor: Actor = Depends(network_writer),
+    db: AsyncSession = Depends(get_db),
+) -> ProbeBatchResponse:
+    """Store measured connection attempts; each replaces the previous one on its path.
+
+    Items fail on their own (unknown host, a future timestamp) and come back
+    under ``errors`` by index; the rest are stored.
+    """
+    snap = await _snapshot(db)
+    now = utcnow()
+    existing = {(p.src_host_id, p.dst_host_id, p.port, p.protocol): p for p in snap.probes}
+    errors: list[ProbeBatchError] = []
+    touched: list[NetworkProbe] = []
+    for index, item in enumerate(body.results):
+        try:
+            src = _resolve_host(snap, host_id=item.src_host_id, ref=item.src_host, what="source")
+            dst = _resolve_host(snap, host_id=item.dst_host_id, ref=item.dst_host, what="destination")
+        except HTTPException as exc:
+            errors.append(ProbeBatchError(index=index, message=str(exc.detail)))
+            continue
+        if src.id == dst.id:
+            errors.append(ProbeBatchError(index=index, message="Source and destination are the same host"))
+            continue
+        observed = item.observed_at or now
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        if observed > now + timedelta(seconds=_PROBE_FUTURE_SLACK_SECONDS):
+            errors.append(ProbeBatchError(index=index, message="observed_at is in the future"))
+            continue
+        key = (src.id, dst.id, item.port, item.protocol)
+        probe = existing.get(key)
+        if probe is not None and probe.observed_at > observed:
+            touched.append(probe)  # an older measurement never replaces a newer one
+            continue
+        if probe is None:
+            probe = NetworkProbe(
+                src_host_id=src.id, dst_host_id=dst.id, port=item.port, protocol=item.protocol
+            )
+            db.add(probe)
+            existing[key] = probe
+        probe.result = item.result
+        probe.latency_ms = item.latency_ms
+        probe.error = item.error
+        probe.reported_by = actor.name
+        probe.observed_at = observed
+        touched.append(probe)
+    await _commit(db, "A concurrent report stored the same path; send it again")
+    snap = await _snapshot(db)
+    by_id = {p.id: p for p in snap.probes}
+    stored = []
+    for probe_id in dict.fromkeys(p.id for p in touched):  # a path once, in order
+        current = by_id.get(probe_id)
+        if current is not None:
+            stored.append(network_map.probe_response(snap, current))
+    return ProbeBatchResponse(stored=stored, errors=errors)
+
+
+@router.delete("/probes/{probe_id}", status_code=204, response_model=None)
+async def delete_probe(
+    probe_id: int,
+    actor: Actor = Depends(network_writer),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Drop a measurement (e.g. one taken from the wrong host or with a wrong clock)."""
+    probe = await db.get(NetworkProbe, probe_id)
+    if probe is None:
+        raise HTTPException(status_code=404, detail="Probe not found")
+    before = {
+        "src_host_id": probe.src_host_id, "dst_host_id": probe.dst_host_id,
+        "port": probe.port, "protocol": probe.protocol, "result": probe.result,
+    }
+    await db.delete(probe)
+    await db.commit()
+    await log_admin_action(
+        db, actor=actor.name, action="delete", resource_type="network_probe",
+        resource_id=str(probe_id), before=before, after=None,
+    )
+
+
+@router.get("/probes", response_model=list[ProbeResponse])
+async def list_probes(
+    host_id: int | None = Query(None, description="Source or destination host"),
+    mismatch: bool = Query(False, description="Only probes that contradict the records"),
+    result: str | None = Query(None, pattern="^(open|refused|timeout|error)$"),
+    _actor: Actor = Depends(network_reader),
+    db: AsyncSession = Depends(get_db),
+) -> list[ProbeResponse]:
+    snap = await _snapshot(db)
+    out = []
+    for probe in sorted(snap.probes, key=lambda p: p.observed_at, reverse=True):
+        if host_id is not None and host_id not in (probe.src_host_id, probe.dst_host_id):
+            continue
+        if result is not None and probe.result != result:
+            continue
+        resp = network_map.probe_response(snap, probe)
+        if mismatch and resp.mismatch is None:
+            continue
+        out.append(resp)
+    return out
+
+
+@router.get("/probe-targets", response_model=ProbeTargetsResponse)
+async def get_probe_targets(
+    src: str = Query(..., min_length=1, max_length=100, description="This host's name or IP"),
+    _actor: Actor = Depends(network_reader),
+    db: AsyncSession = Depends(get_db),
+) -> ProbeTargetsResponse:
+    """What a host should test: every recorded opening whose source covers it."""
+    snap = await _snapshot(db)
+    host = snap.find_host(src)
+    if host is None:
+        raise HTTPException(status_code=404, detail=f"No registered host {src!r}")
+    usages, _failed = await network_map.all_usages(db, snap, include_gateway=False)
+    return ProbeTargetsResponse(
+        src_host_id=host.id,
+        src_host_name=host.name,
+        src_ip=host.ip,
+        targets=network_map.probe_targets(snap, host, usages),
+    )
+
+
+# ── CSV import ──────────────────────────────────────────────────────────────
+
+
+@router.post("/import", response_model=NetworkImportResponse)
+async def import_csv(
+    body: NetworkImportRequest,
+    actor: Actor = Depends(network_person_writer),
+    db: AsyncSession = Depends(get_db),
+) -> NetworkImportResponse:
+    """Bulk-add hosts, openings or port usage from CSV (people only).
+
+    ``dry_run`` (the default) answers what each line would do without writing.
+    Lines already recorded are skipped, invalid ones reported; the valid rest
+    are added in one transaction, recorded as source ``import`` and verified.
+    """
+    result = await network_import.run_import(db, body, actor_name=actor.name)
+    if not body.dry_run and result.created:
+        await log_admin_action(
+            db, actor=actor.name, action="import", resource_type=f"network_{body.kind}",
+            resource_id="csv", summary=f"created {result.created}, skipped {result.skipped}, "
+            f"errors {result.errors}",
+        )
+    return result

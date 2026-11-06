@@ -7,7 +7,10 @@ map is that picture: one shared record of regions, hosts, the openings between
 regions and the services listening on each port, kept by people and by agents.
 
 UI: **Network / Firewall** (tabs Overview, Regions, Hosts, Firewall openings,
-Port usage, Access check, Settings) and a page per host (`/network/hosts/:id`).
+Port usage, Probes, Access check, Settings) and a page per host
+(`/network/hosts/:id`). The overview shows the regions as a matrix or as a map
+(regions as nodes, open openings as directed edges; click a cell or an edge for
+its openings).
 API: `/_api/network/*` for the UI, `/api/network/*` through the gateway for API
 keys, and the MCP `network` tool group.
 
@@ -17,8 +20,9 @@ keys, and the MCP `network` tool group.
 |---|---|---|
 | Region | name, description, CIDRs | A host (or a raw IP in an access check) inside a CIDR belongs to that region; the most specific CIDR wins. |
 | Host | name, IP, region, owner, description, linked monitored server | Without a region it is placed by the CIDRs; with none matching it stays unassigned. A name must not be an IP address, and names are unique ignoring case. |
-| Firewall opening | source (registered host **or** CIDR) → destination host, port or port range, tcp/udp, open/closed, ticket no., requester, purpose | One direction each: a two-way opening is two records. Expiry is not tracked here; it stays in the company system. Openings inside one region are refused (everything is open there). |
+| Firewall opening | source (registered host **or** CIDR) → destination host, port or port range, tcp/udp, open/closed, ticket no., requester, purpose | One direction each: a two-way opening is two records, and the same opening (source, destination, protocol, ports) is recorded once. Expiry is not tracked here; it stays in the company system. Openings inside one region are refused (everything is open there). |
 | Port usage | host, port, tcp/udp, service, description, owner | Recorded by people or agents, plus what UniBridge discovers itself (below). |
+| Probe | source host → destination host, port, tcp/udp, result, latency, when | The latest measured connection attempt on that path, reported from the source host (see [Probes](#probes)). |
 
 Every host, opening and port usage also records **who** wrote it
 (`created_by`), its **source** (`manual`, `agent`, `import`) and whether a
@@ -59,9 +63,12 @@ or revoked openings **closed** rather than deleting them, so their history stays
 3. **Platform host** — on the Settings tab, pick the host UniBridge runs on.
    Discovered port usage is then checked for reachability from it.
 4. **Existing openings** — record the openings already approved (ticket no.,
-   requester and purpose make them traceable), or have an agent do it.
+   requester and purpose make them traceable): import them from a sheet
+   ([CSV import](#csv-import)), or have an agent do it.
 5. **Roles** — `network.read` to view, `network.write` to edit. The built-in
    admin role has both.
+6. **Probes** (optional) — run [`scripts/network_probe.py`](#probe-script) on
+   the servers, or let agents report, to check the records against reality.
 
 ## Discovered port usage
 
@@ -83,6 +90,86 @@ a likely reason a database connection, scrape or upstream fails.
 API keys other than master keys see these rows by kind only (e.g.
 `database (discovered)`), not the names of UniBridge's own connections.
 
+## CSV import
+
+People with `network.write` can add hosts, firewall openings or port usage in
+bulk: **CSV import** on the Hosts, Firewall openings and Port usage tabs, or
+`POST /network/import {kind, csv, dry_run}`. A dry run first shows what every
+line would do — `create`, `skip` (already recorded, or an opening inside one
+region) or `error` (with the reason); importing then adds the valid lines in
+one go, as source `import`, verified by the importer. Files may be UTF-8 or
+EUC-KR (Excel on Korean Windows); comma, tab or semicolon separated; at most
+5000 lines. The header row names the columns, in English or Korean (case,
+spaces and `_` ignored; other columns are ignored):
+
+| Kind | Columns (required in bold) |
+|---|---|
+| hosts | **name** (서버명, 호스트명), **ip** (IP 주소), region (리전, 지역), owner (담당자), description (설명, 비고) |
+| openings | **src** (출발지), **dst** (목적지), **ports** (포트), protocol (프로토콜), status (상태), ticket_no (신청번호), requester (신청자), purpose (용도, 목적) |
+| port_usages | **host** (호스트), **port** (포트), **service_name** (서비스), protocol, owner, description |
+
+For openings, `src` is a registered host (name or IP), a CIDR, or an IP no host
+has (recorded as that single address); `dst` must be a registered host, so
+import hosts first. `ports` takes `5432`, `8000-8010` or `8000~8010`, or several
+separated by commas or spaces (one opening each; at most 64 per cell and 5000
+openings per import). `status` reads open/closed and
+열림/허용/승인 or 해제/만료/폐기/차단; empty means open. Hosts without a region
+column are placed by the region CIDRs.
+
+## Probes
+
+Records are what people wrote down; a **probe** is what a connection attempt
+actually did. Probes are reported from the **source** host — by the probe script
+below or by an agent — and each replaces the previous one on its path
+(an older measurement never replaces a newer one). A report may carry
+`observed_at` (at most 5 minutes ahead of UniBridge's clock); without it
+UniBridge's clock stamps it, which is what the probe script does, so a server
+with a wrong clock still reports correctly. A wrong measurement can be deleted
+(`DELETE /network/probes/{id}`).
+
+| Result | Meaning |
+|---|---|
+| `open` | Connected. |
+| `refused` | The network let it through but nothing listens: the firewall is open, the service is down or elsewhere. |
+| `timeout` | No answer: what a firewall that drops the connection looks like. |
+| `error` | Anything else (DNS, routing, …). |
+
+Each probe is compared with the records (the access-check answer for its path):
+
+| Mismatch | When |
+|---|---|
+| `recorded_open_but_blocked` | The records say open, the probe timed out: the opening expired, was never applied, or the record is wrong. |
+| `passes_without_opening` | The records say blocked, the probe got through: an opening nobody recorded (record it), or a closed one still in place. |
+
+The Probes tab lists them (filter: mismatches only); the overview counts
+mismatches; openings, the access check and host pages show the latest probe.
+
+### Probe script
+
+[`scripts/network_probe.py`](../scripts/network_probe.py) runs on a server
+(Python 3.6+, standard library only). It asks UniBridge which openings this
+host's source is covered by (`GET /api/network/probe-targets?src=`, closed ones
+included to confirm they are closed; port ranges of up to 16 ports are tried
+port by port, wider ones on their first port and the ports with a known
+service), tries a TCP connection to each, and reports the results. UDP targets
+are skipped. The host must be registered on the map; the API key needs
+`network-api` and `network-write-api`.
+
+```bash
+export UNIBRIDGE_URL=https://<HOST_IP>:<UNIBRIDGE_UI_PORT>
+export UNIBRIDGE_API_KEY=<key>
+python3 network_probe.py --cacert /etc/pki/unibridge-ca.pem   # or --insecure
+python3 network_probe.py --dry-run          # measure and print, report nothing
+
+# hourly, quiet unless something is wrong
+0 * * * * UNIBRIDGE_URL=... UNIBRIDGE_API_KEY=... python3 /opt/unibridge/network_probe.py -q --cacert /etc/pki/unibridge-ca.pem
+```
+
+Options: `--src` (this host's registered name or IP; default its primary IP,
+else hostname), `--timeout` (default 3 s), `--concurrency` (default 8),
+`--fail-on-mismatch`. Exit codes: 0 done, 1 an HTTP failure or a rejected
+result, 2 bad arguments, 3 a mismatch with `--fail-on-mismatch`.
+
 ## Flags
 
 | Flag | Meaning |
@@ -90,6 +177,7 @@ API keys other than master keys see these rows by kind only (e.g.
 | Unused | An open opening with no recorded or discovered service on its ports: a cleanup candidate (or a missing port-usage record). |
 | Agent / Unverified | Written or last changed by an API key; a person confirms it with **Verify**. A person's edit verifies a record; an agent's edit makes it unverified again. |
 | Not reachable from platform | A discovered usage UniBridge cannot reach under the recorded openings. |
+| Probe mismatch | The latest probe on a path contradicts the records (see [Probes](#probes)). |
 
 The overview counts each, and its region × region matrix shows the open
 openings between every pair of regions (click a cell for the list; a "CIDR
@@ -102,7 +190,7 @@ Grant an API key, on the **API Keys** page:
 | Route | Allows |
 |---|---|
 | `network-api` | `GET /api/network/*`: overview, regions, hosts, openings, port usage, access checks |
-| `network-write-api` | `POST`/`PUT`/`DELETE /api/network/*`: register and update hosts, record, update and delete openings and port usage |
+| `network-write-api` | `POST`/`PUT`/`DELETE /api/network/*`: register and update hosts, record, update and delete openings and port usage, report probes |
 
 ```bash
 curl -H "apikey: $UNIBRIDGE_API_KEY" \
@@ -120,17 +208,21 @@ one that also has `network-write-api` the write tools:
 
 - read: `network_overview`, `network_list_regions`, `network_find_hosts`,
   `network_get_host`, `network_check_access`, `network_list_openings`,
-  `network_list_port_usages`
+  `network_list_port_usages`, `network_list_probes`, `network_probe_targets`
 - write: `network_register_host`, `network_update_host`,
   `network_record_opening`, `network_update_opening`, `network_delete_opening`,
-  `network_record_port_usage`, `network_delete_port_usage`
+  `network_record_port_usage`, `network_delete_port_usage`,
+  `network_report_probes`
 
 Tools take a host by name, IP or id. Recording an opening records one that
-exists; it does not open anything.
+exists; it does not open anything. An agent that can run commands on a server
+can measure from it: `network_probe_targets` for that host, try each
+connection there, then `network_report_probes` with the results (the source is
+the host it measured from).
 
 People only (Keycloak login with `network.write`): defining regions, verifying,
 deleting a record a person verified (or a host that has any), the platform-host
-setting and the monitored-server import. What an agent records is stored as
+setting, the monitored-server import and CSV import. What an agent records is stored as
 `source=agent` and stays unverified until a person confirms it. Every change is
 in the admin audit log with its actor (`apikey:<name>` for agents).
 
@@ -146,7 +238,7 @@ All under `/network` (`/_api/network` from the UI, `/api/network` with a key).
 | GET / POST | `/regions` | POST people only |
 | PUT / DELETE | `/regions/{id}` | people only; a region with hosts cannot be deleted |
 | GET / POST | `/hosts` | GET filters `region_id`, `q`, `unverified`; POST takes `region_id` or `region` (name) |
-| GET / PUT / DELETE | `/hosts/{id}` | GET adds inbound and outbound openings and port usage; DELETE removes its openings and port usage too |
+| GET / PUT / DELETE | `/hosts/{id}` | GET adds inbound and outbound openings and port usage; DELETE removes its openings, port usage and probes too |
 | POST | `/hosts/{id}/verify` | people only |
 | POST | `/hosts/import-monitored` | people only |
 | GET / POST | `/openings` | GET filters `host_id`, `region_id`, `status`, `port`, `unverified`; POST takes `src_host_id`/`src_host`/`src_cidr` and `dst_host_id`/`dst_host` (name or IP); a duplicate answers 409 with the existing `id` |
@@ -155,10 +247,22 @@ All under `/network` (`/_api/network` from the UI, `/api/network` with a key).
 | GET / POST | `/port-usages` | GET filters `host_id`, `port`, `source` (`manual`/`agent`/`auto`), `unverified` |
 | PUT / DELETE | `/port-usages/{id}` | stored rows only |
 | POST | `/port-usages/{id}/verify` | people only |
+| GET / POST | `/probes` | GET filters `host_id`, `mismatch`, `result`; POST `{results: [...]}` (up to 500; each fails on its own, returned under `errors` by index) |
+| DELETE | `/probes/{id}` | drop one measurement |
+| GET | `/probe-targets` | `src`: what that host should test |
+| POST | `/import` | people only; `{kind: hosts\|openings\|port_usages, csv, dry_run}` |
+
+## Config export / import
+
+**Admin → Config transfer** carries regions, hosts (with their region and
+linked monitored server by name), firewall openings, recorded port usage and the
+platform-host setting, keyed by name so they land in another deployment. Probes
+and discovered usage are not exported (they describe one deployment). Rows the
+import creates are source `import`; a row verified in the file is verified by
+the importing admin, an unverified one stays unverified, and an unchanged row
+keeps its state.
 
 ## Not covered yet
 
-- A graph view of regions and openings (the overview has the matrix).
-- CSV bulk import from the company system's export.
-- Agents reporting live connection tests from the servers themselves.
-- The network map in the config export/import.
+- Syncing with the company firewall system (no API for it).
+- UDP probes.

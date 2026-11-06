@@ -617,9 +617,17 @@ class FirewallOpening(Base):
             "port_from >= 1 AND port_to <= 65535 AND port_from <= port_to",
             name="ck_firewall_openings_ports",
         ),
+        # One record per opening. src_key folds the two source columns into one
+        # non-null value ("host:<id>" / "cidr:<cidr>"), since NULLs never collide
+        # in a unique constraint.
+        UniqueConstraint(
+            "src_key", "dst_host_id", "protocol", "port_from", "port_to",
+            name="uq_firewall_openings_identity",
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    src_key = Column(String(80), nullable=False)
     src_host_id = Column(
         Integer, ForeignKey("network_hosts.id", ondelete="CASCADE"), nullable=True, index=True
     )
@@ -666,5 +674,41 @@ class PortUsage(Base):
     created_by = Column(String(255), nullable=True)
     verified_at = Column(UtcDateTime, nullable=True)
     verified_by = Column(String(255), nullable=True)
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+    updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class NetworkProbe(Base):
+    """The latest measured connection attempt from one host to another's port.
+
+    Reported by agents or the probe script running on the source host. ``result``
+    tells a firewall apart from a service: ``open`` (connected) and ``refused``
+    (the network let it through, nothing listens) both pass the firewall;
+    ``timeout`` is what a dropping firewall looks like; ``error`` is anything else.
+    One row per (source, destination, port, protocol): a new report replaces it.
+    """
+
+    __tablename__ = "network_probes"
+    __table_args__ = (
+        UniqueConstraint(
+            "src_host_id", "dst_host_id", "port", "protocol", name="uq_network_probes_path"
+        ),
+        CheckConstraint("port >= 1 AND port <= 65535", name="ck_network_probes_port"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    src_host_id = Column(
+        Integer, ForeignKey("network_hosts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    dst_host_id = Column(
+        Integer, ForeignKey("network_hosts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    port = Column(Integer, nullable=False)
+    protocol = Column(String(8), default="tcp", nullable=False, server_default="tcp")
+    result = Column(String(16), nullable=False)
+    latency_ms = Column(Float, nullable=True)
+    error = Column(String(255), default="", nullable=False, server_default="")
+    reported_by = Column(String(255), nullable=True)
+    observed_at = Column(UtcDateTime, nullable=False)
     created_at = Column(UtcDateTime, default=utcnow, nullable=False)
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)

@@ -31,6 +31,7 @@ from app.models import (
     MonitoredHost,
     MonitoredService,
     NetworkHost,
+    NetworkProbe,
     PortUsage,
     Region,
     S3Connection,
@@ -44,6 +45,9 @@ from app.schemas import (
     NetworkOverview,
     NetworkSettings,
     PortUsageResponse,
+    ProbeResponse,
+    ProbeSummary,
+    ProbeTarget,
     RegionLink,
     RegionResponse,
 )
@@ -126,9 +130,18 @@ class Snapshot:
     usages: list[PortUsage]
     monitored_names: dict[int, str]
     settings: NetworkSettings
+    probes: list[NetworkProbe] = field(default_factory=list)
     _region_nets: list[tuple[IPNetwork, int]] = field(default_factory=list)
+    # Lookups the per-request loops use, so they do not scan every row per row.
+    openings_by_dst: dict[int, list[FirewallOpening]] = field(default_factory=dict)
+    probes_by_dst: dict[tuple[int, str], list[NetworkProbe]] = field(default_factory=dict)
+    _mismatch: dict[int, str | None] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        for opening in self.openings:
+            self.openings_by_dst.setdefault(opening.dst_host_id, []).append(opening)
+        for probe in self.probes:
+            self.probes_by_dst.setdefault((probe.dst_host_id, probe.protocol), []).append(probe)
         nets: list[tuple[IPNetwork, int]] = []
         for region in self.regions.values():
             for cidr in region_cidrs(region):
@@ -216,6 +229,9 @@ async def load_snapshot(db: AsyncSession) -> Snapshot:
         (await db.execute(select(FirewallOpening).order_by(FirewallOpening.id))).scalars().all()
     )
     usages = list((await db.execute(select(PortUsage).order_by(PortUsage.id))).scalars().all())
+    probes = list(
+        (await db.execute(select(NetworkProbe).order_by(NetworkProbe.id))).scalars().all()
+    )
     monitored = (await db.execute(select(MonitoredHost.id, MonitoredHost.name))).all()
     settings = await load_settings(db)
     if settings.platform_host_id is not None and settings.platform_host_id not in hosts:
@@ -227,6 +243,7 @@ async def load_snapshot(db: AsyncSession) -> Snapshot:
         usages=usages,
         monitored_names={row[0]: row[1] for row in monitored},
         settings=settings,
+        probes=probes,
     )
 
 
@@ -290,6 +307,7 @@ def opening_response(
         u.host_id == opening.dst_host_id and _usage_in_range(u.port, u.protocol, opening)
         for u in usages
     )
+    last = opening_last_probe(snap, opening)
     return FirewallOpeningResponse(
         id=opening.id,
         src_host_id=opening.src_host_id,
@@ -311,6 +329,7 @@ def opening_response(
         requester=opening.requester or "",
         purpose=opening.purpose or "",
         in_use=in_use,
+        last_probe=probe_summary(snap, last) if last is not None else None,
         source=opening.source,
         created_by=opening.created_by,
         verified=opening.verified_at is not None,
@@ -556,7 +575,8 @@ def _decide(
 ) -> tuple[str, str, list[FirewallOpening]]:
     if src.region_id is not None and src.region_id == dst.region_id:
         return "open", "same_region", []
-    matching = [o for o in snap.openings if _opening_matches(o, src, dst, port, protocol)]
+    candidates = snap.openings_by_dst.get(dst.host.id, []) if dst.host is not None else []
+    matching = [o for o in candidates if _opening_matches(o, src, dst, port, protocol)]
     open_ones = [o for o in matching if o.status == "open"]
     if open_ones:
         return "open", "opening", open_ones
@@ -628,6 +648,16 @@ async def check_access(
         ]
     shown = redact_discovered(usages) if redact else usages
     src_view, dst_view = _endpoint_view(snap, src), _endpoint_view(snap, dst)
+    probe = None
+    if src.host is not None and dst.host is not None:
+        probe = next(
+            (
+                p for p in snap.probes
+                if p.src_host_id == src.host.id and p.dst_host_id == dst.host.id
+                and p.port == port and p.protocol == protocol
+            ),
+            None,
+        )
     return AccessCheckResponse(
         status=status,
         reason=reason,
@@ -641,6 +671,7 @@ async def check_access(
         request_draft=request_draft(src_view, dst_view, port, protocol)
         if status == "blocked"
         else None,
+        probe=probe_response(snap, probe) if probe is not None else None,
     )
 
 
@@ -688,6 +719,152 @@ async def overview(db: AsyncSession, snap: Snapshot) -> NetworkOverview:
         unverified_count=unverified,
         unused_openings=unused,
         unreachable_usages=sum(1 for u in usages if u.reachable_from_platform is False),
+        probe_mismatches=sum(1 for p in snap.probes if probe_mismatch(snap, p) is not None),
         platform_host_id=snap.settings.platform_host_id,
         auto_sources_failed=failed,
     )
+
+
+# ── Probes: measured connection attempts ────────────────────────────────────
+
+# A connection that got an answer passed the firewall, listener or not.
+PASSED_RESULTS = frozenset({"open", "refused"})
+
+
+def probe_expectation(snap: Snapshot, probe: NetworkProbe) -> tuple[str, str]:
+    src, dst = snap.hosts[probe.src_host_id], snap.hosts[probe.dst_host_id]
+    status, reason, _ = _decide(
+        snap, _endpoint_for_host(snap, src), _endpoint_for_host(snap, dst), probe.port, probe.protocol
+    )
+    return status, reason
+
+
+def probe_mismatch(snap: Snapshot, probe: NetworkProbe) -> str | None:
+    """Where the measurement contradicts the records, and how (memoized per snapshot)."""
+    if probe.id in snap._mismatch:
+        return snap._mismatch[probe.id]
+    expected, _reason = probe_expectation(snap, probe)
+    result: str | None = None
+    if expected == "open" and probe.result == "timeout":
+        result = "recorded_open_but_blocked"
+    elif expected == "blocked" and probe.result in PASSED_RESULTS:
+        result = "passes_without_opening"
+    if probe.id is not None:
+        snap._mismatch[probe.id] = result
+    return result
+
+
+def probe_response(snap: Snapshot, probe: NetworkProbe) -> ProbeResponse:
+    src, dst = snap.hosts[probe.src_host_id], snap.hosts[probe.dst_host_id]
+    expected, reason = probe_expectation(snap, probe)
+    mismatch = None
+    if expected == "open" and probe.result == "timeout":
+        mismatch = "recorded_open_but_blocked"
+    elif expected == "blocked" and probe.result in PASSED_RESULTS:
+        mismatch = "passes_without_opening"
+    return ProbeResponse(
+        id=probe.id,
+        src_host_id=src.id,
+        src_host_name=src.name,
+        src_host_ip=src.ip,
+        src_region_name=snap.region_name(src.region_id),
+        dst_host_id=dst.id,
+        dst_host_name=dst.name,
+        dst_host_ip=dst.ip,
+        dst_region_name=snap.region_name(dst.region_id),
+        port=probe.port,
+        protocol=probe.protocol,
+        result=probe.result,
+        latency_ms=probe.latency_ms,
+        error=probe.error or "",
+        reported_by=probe.reported_by,
+        observed_at=probe.observed_at,
+        expected=expected,
+        expected_reason=reason,
+        mismatch=mismatch,
+    )
+
+
+def probe_summary(snap: Snapshot, probe: NetworkProbe) -> ProbeSummary:
+    return ProbeSummary(
+        id=probe.id,
+        src_host_name=snap.hosts[probe.src_host_id].name,
+        port=probe.port,
+        result=probe.result,
+        observed_at=probe.observed_at,
+        mismatch=probe_mismatch(snap, probe),
+    )
+
+
+def _source_covers(snap: Snapshot, opening: FirewallOpening, host: NetworkHost) -> bool:
+    if opening.src_host_id is not None:
+        return opening.src_host_id == host.id
+    net = _network(opening.src_cidr or "")
+    addr = parse_ip(host.ip)
+    return net is not None and addr is not None and addr.version == net.version and addr in net
+
+
+def opening_last_probe(snap: Snapshot, opening: FirewallOpening) -> NetworkProbe | None:
+    """The most recent probe that went through this opening's path."""
+    best: NetworkProbe | None = None
+    for probe in snap.probes_by_dst.get((opening.dst_host_id, opening.protocol), []):
+        if not (opening.port_from <= probe.port <= opening.port_to):
+            continue
+        src = snap.hosts.get(probe.src_host_id)
+        if src is None or not _source_covers(snap, opening, src):
+            continue
+        if best is None or probe.observed_at > best.observed_at:
+            best = probe
+    return best
+
+
+# A range wider than this is probed on its first port and on ports with a
+# known service, not port by port.
+PROBE_RANGE_EXPAND_MAX = 16
+
+
+def probe_targets(
+    snap: Snapshot, src: NetworkHost, usages: list[PortUsageResponse]
+) -> list[ProbeTarget]:
+    """What ``src`` should test: every recorded opening whose source covers it
+    (closed ones too, to confirm they are closed)."""
+    seen: set[tuple[int, int, str]] = set()
+    out: list[ProbeTarget] = []
+    src_ep = _endpoint_for_host(snap, src)
+    for opening in snap.openings:
+        if opening.dst_host_id == src.id or not _source_covers(snap, opening, src):
+            continue
+        dst = snap.hosts.get(opening.dst_host_id)
+        if dst is None:
+            continue
+        if opening.port_to - opening.port_from < PROBE_RANGE_EXPAND_MAX:
+            ports = list(range(opening.port_from, opening.port_to + 1))
+        else:
+            ports = sorted(
+                {opening.port_from}
+                | {
+                    u.port for u in usages
+                    if u.host_id == dst.id and _usage_in_range(u.port, u.protocol, opening)
+                }
+            )
+        for port in ports:
+            key = (dst.id, port, opening.protocol)
+            if key in seen:
+                continue
+            seen.add(key)
+            expected, reason, _ = _decide(
+                snap, src_ep, _endpoint_for_host(snap, dst), port, opening.protocol
+            )
+            out.append(
+                ProbeTarget(
+                    dst_host_id=dst.id,
+                    dst_host_name=dst.name,
+                    dst_ip=dst.ip,
+                    port=port,
+                    protocol=opening.protocol,
+                    expected=expected,
+                    expected_reason=reason,
+                    opening_id=opening.id,
+                )
+            )
+    return out

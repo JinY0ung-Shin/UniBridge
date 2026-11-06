@@ -1982,6 +1982,8 @@ class FirewallOpeningResponse(BaseModel):
     purpose: str = ""
     # Whether any recorded or discovered service listens inside the port range.
     in_use: bool = False
+    # The latest probe through this opening (source matches, port in range).
+    last_probe: "ProbeSummary | None" = None
     source: str = "manual"
     created_by: str | None = None
     verified: bool = False
@@ -2087,6 +2089,8 @@ class AccessCheckResponse(BaseModel):
     usages: list[PortUsageResponse] = Field(default_factory=list)
     # When blocked: text to paste into the company's firewall request form.
     request_draft: str | None = None
+    # The latest measured attempt on exactly this path (both ends registered).
+    probe: "ProbeResponse | None" = None
 
 
 class RegionLink(BaseModel):
@@ -2108,6 +2112,8 @@ class NetworkOverview(BaseModel):
     unverified_count: int = 0
     unused_openings: int = 0
     unreachable_usages: int = 0
+    # Probes that disagree with the records (see ProbeResponse.mismatch).
+    probe_mismatches: int = 0
     platform_host_id: int | None = None
     # Discovery sources that could not be read this time (e.g. "gateway_upstream").
     auto_sources_failed: list[str] = Field(default_factory=list)
@@ -2123,3 +2129,134 @@ class MonitoredImportResult(BaseModel):
     created: list[str] = Field(default_factory=list)
     linked: list[str] = Field(default_factory=list)
     skipped: list[dict[str, str]] = Field(default_factory=list)
+
+
+# ── Network map: probes and CSV import ─────────────────────────────────────
+
+ProbeResultKind = Literal["open", "refused", "timeout", "error"]
+
+
+class ProbeReport(BaseModel):
+    """One measured connection attempt, from a registered host to another."""
+
+    src_host_id: int | None = None
+    src_host: str | None = Field(None, min_length=1, max_length=100)
+    dst_host_id: int | None = None
+    dst_host: str | None = Field(None, min_length=1, max_length=100)
+    port: int = Field(..., ge=1, le=65535)
+    protocol: NetworkProtocol = "tcp"
+    # open: connected · refused: reached, nothing listens (the firewall let it
+    # through) · timeout: no answer (what a dropping firewall looks like) · error
+    result: ProbeResultKind
+    latency_ms: float | None = Field(None, ge=0, le=3_600_000)
+    error: str = Field("", max_length=255)
+    # When it was measured; default now. Not in the future.
+    observed_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def check_refs(self) -> "ProbeReport":
+        _exactly_one(self, ("src_host_id", "src_host"), "source", required=True)
+        _exactly_one(self, ("dst_host_id", "dst_host"), "destination", required=True)
+        return self
+
+
+class ProbeBatch(BaseModel):
+    results: list[ProbeReport] = Field(..., min_length=1, max_length=500)
+
+
+class ProbeResponse(BaseModel):
+    id: int
+    src_host_id: int
+    src_host_name: str
+    src_host_ip: str
+    src_region_name: str | None = None
+    dst_host_id: int
+    dst_host_name: str
+    dst_host_ip: str
+    dst_region_name: str | None = None
+    port: int
+    protocol: str
+    result: str
+    latency_ms: float | None = None
+    error: str = ""
+    reported_by: str | None = None
+    observed_at: datetime
+    # What the records say about this path now (open | blocked | unknown).
+    expected: str
+    expected_reason: str
+    # recorded_open_but_blocked: the records say open, the probe timed out ·
+    # passes_without_opening: the records say blocked, the probe got through ·
+    # null: they agree (or the records cannot tell).
+    mismatch: str | None = None
+
+
+class ProbeSummary(BaseModel):
+    id: int
+    src_host_name: str
+    port: int
+    result: str
+    observed_at: datetime
+    mismatch: str | None = None
+
+
+class ProbeBatchError(BaseModel):
+    index: int
+    message: str
+
+
+class ProbeBatchResponse(BaseModel):
+    stored: list[ProbeResponse] = Field(default_factory=list)
+    errors: list[ProbeBatchError] = Field(default_factory=list)
+
+
+class ProbeTarget(BaseModel):
+    """A port the source host should test, with what the records expect."""
+
+    dst_host_id: int
+    dst_host_name: str
+    dst_ip: str
+    port: int
+    protocol: str
+    expected: str
+    expected_reason: str
+    opening_id: int | None = None
+
+
+class ProbeTargetsResponse(BaseModel):
+    src_host_id: int
+    src_host_name: str
+    src_ip: str
+    targets: list[ProbeTarget] = Field(default_factory=list)
+
+
+NetworkImportKind = Literal["hosts", "openings", "port_usages"]
+
+
+class NetworkImportRequest(BaseModel):
+    kind: NetworkImportKind
+    # CSV text with a header row (English or Korean column names, see docs).
+    csv: str = Field(..., min_length=1, max_length=2_000_000)
+    dry_run: bool = True
+
+
+class NetworkImportRow(BaseModel):
+    line: int
+    # create | skip (already recorded / not needed) | error
+    action: str
+    key: str = ""
+    message: str = ""
+
+
+class NetworkImportResponse(BaseModel):
+    kind: str
+    dry_run: bool
+    rows: list[NetworkImportRow] = Field(default_factory=list)
+    created: int = 0
+    skipped: int = 0
+    errors: int = 0
+
+
+# Forward references (ProbeSummary/ProbeResponse are defined after their users).
+FirewallOpeningResponse.model_rebuild()
+AccessCheckResponse.model_rebuild()
+NetworkHostDetail.model_rebuild()
