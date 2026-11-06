@@ -73,9 +73,15 @@ export function CsvImportModal({ kind, onClose }: CsvImportModalProps) {
   const [readError, setReadError] = useState<string | null>(null);
   const [preview, setPreview] = useState<NetworkImportResult | null>(null);
   const [applied, setApplied] = useState<NetworkImportResult | null>(null);
+  const [createMissing, setCreateMissing] = useState(false);
 
   const run = useMutation({
-    mutationFn: (dryRun: boolean) => importNetworkCsv({ kind, csv, dry_run: dryRun }),
+    mutationFn: (dryRun: boolean) => importNetworkCsv({
+      kind,
+      csv,
+      dry_run: dryRun,
+      ...(kind === 'openings' && createMissing ? { create_missing_destinations: true } : {}),
+    }),
     onSuccess: (result) => {
       if (result.dry_run) {
         setPreview(result);
@@ -134,6 +140,22 @@ export function CsvImportModal({ kind, onClose }: CsvImportModalProps) {
                 ))}
               </ul>
               {kind === 'openings' && <p className="network-sub">{t('network.import.openingsHint')}</p>}
+              {kind === 'hosts' && <p className="network-sub">{t('network.import.hostsKindHint')}</p>}
+              {kind === 'openings' && (
+                <label className="method-check">
+                  <input
+                    type="checkbox"
+                    checked={createMissing}
+                    onChange={(e) => {
+                      setCreateMissing(e.target.checked);
+                      // A preview only stands for the options it was made with.
+                      setPreview(null);
+                      run.reset();
+                    }}
+                  />
+                  {t('network.import.createMissing')}
+                </label>
+              )}
               <p className="network-sub">
                 {t('network.import.sampleHeader')} <code>{sampleHeader(kind, lang)}</code>
               </p>

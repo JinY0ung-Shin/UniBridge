@@ -12,6 +12,7 @@ import {
   type FirewallOpeningInput,
   type NetworkHost,
   type NetworkHostInput,
+  type NetworkHostKind,
   type NetworkProtocol,
   type OpeningStatus,
   type PortUsage,
@@ -88,10 +89,14 @@ export function OpeningFormModal({ opening, defaults, onClose }: OpeningFormModa
   const isEdit = opening != null;
 
   const [srcMode, setSrcMode] = useState<'host' | 'cidr'>(opening?.src_cidr ? 'cidr' : 'host');
+  // A new opening may name a destination IP no host has: the backend registers
+  // it as an external host (dst-<ip>). Editing keeps to registered hosts.
+  const [dstMode, setDstMode] = useState<'host' | 'ip'>('host');
   const [form, setForm] = useState({
     src_host_id: String(opening?.src_host_id ?? defaults?.src_host_id ?? ''),
     src_cidr: opening?.src_cidr ?? '',
     dst_host_id: String(opening?.dst_host_id ?? defaults?.dst_host_id ?? ''),
+    dst_ip: '',
     port_from: opening ? String(opening.port_from) : '',
     port_to: opening && opening.port_to !== opening.port_from ? String(opening.port_to) : '',
     protocol: (opening?.protocol ?? 'tcp') as NetworkProtocol,
@@ -112,7 +117,9 @@ export function OpeningFormModal({ opening, defaults, onClose }: OpeningFormModa
       ...(srcMode === 'cidr'
         ? { src_cidr: form.src_cidr.trim() }
         : { src_host_id: intOrUndefined(form.src_host_id) }),
-      dst_host_id: intOrUndefined(form.dst_host_id),
+      ...(dstMode === 'ip'
+        ? { dst_host: form.dst_ip.trim(), create_missing_destination: true }
+        : { dst_host_id: intOrUndefined(form.dst_host_id) }),
       port_from: portFrom,
       port_to: intOrUndefined(form.port_to) ?? portFrom,
       protocol: form.protocol,
@@ -173,18 +180,48 @@ export function OpeningFormModal({ opening, defaults, onClose }: OpeningFormModa
           />
         </div>
       )}
-      <div className="form-group form-group--full">
-        <label htmlFor="opening-dst-host">{t('network.openings.destination')}</label>
-        <select
-          id="opening-dst-host"
-          value={form.dst_host_id}
-          onChange={(e) => setForm({ ...form, dst_host_id: e.target.value })}
-          required
-        >
-          <option value="">{t('network.selectHost')}</option>
-          {hosts.map((h) => <option key={h.id} value={h.id}>{hostOptionLabel(h)}</option>)}
-        </select>
-      </div>
+      {!isEdit && (
+        <div className="form-group form-group--full" role="radiogroup" aria-label={t('network.openings.destinationType')}>
+          <label>{t('network.openings.destinationType')}</label>
+          <div className="network-inline">
+            <label className="method-check">
+              <input type="radio" name="opening-dst-mode" checked={dstMode === 'host'} onChange={() => setDstMode('host')} />
+              {t('network.openings.destinationHost')}
+            </label>
+            <label className="method-check">
+              <input type="radio" name="opening-dst-mode" checked={dstMode === 'ip'} onChange={() => setDstMode('ip')} />
+              {t('network.openings.destinationIp')}
+            </label>
+          </div>
+        </div>
+      )}
+      {dstMode === 'host' ? (
+        <div className="form-group form-group--full">
+          <label htmlFor="opening-dst-host">{t('network.openings.destination')}</label>
+          <select
+            id="opening-dst-host"
+            value={form.dst_host_id}
+            onChange={(e) => setForm({ ...form, dst_host_id: e.target.value })}
+            required
+          >
+            <option value="">{t('network.selectHost')}</option>
+            {hosts.map((h) => <option key={h.id} value={h.id}>{hostOptionLabel(h)}</option>)}
+          </select>
+        </div>
+      ) : (
+        <div className="form-group form-group--full">
+          <label htmlFor="opening-dst-ip">
+            {t('network.openings.destinationIp')} <span className="hint">{t('network.openings.destinationIpHint')}</span>
+          </label>
+          <input
+            id="opening-dst-ip"
+            value={form.dst_ip}
+            onChange={(e) => setForm({ ...form, dst_ip: e.target.value })}
+            placeholder="10.166.130.10"
+            required
+          />
+        </div>
+      )}
       <div className="form-group">
         <label htmlFor="opening-port-from">{t('network.openings.portFrom')}</label>
         <input
@@ -378,8 +415,10 @@ export function HostFormModal({ host, onClose }: HostFormModalProps) {
     region_id: host?.region_id != null ? String(host.region_id) : '',
     description: host?.description ?? '',
     owner: host?.owner ?? '',
+    kind: (host?.kind ?? 'managed') as NetworkHostKind,
     monitored_host_id: host?.monitored_host_id != null ? String(host.monitored_host_id) : '',
   });
+  const external = form.kind === 'external';
 
   const { mutation, error } = useFormSave(
     (body: NetworkHostInput) => (host ? updateNetworkHost(host.id, body) : createNetworkHost(body)),
@@ -387,13 +426,15 @@ export function HostFormModal({ host, onClose }: HostFormModalProps) {
   );
 
   function submit() {
-    const regionId = intOrUndefined(form.region_id);
+    // An external host has no region and no monitored link.
+    const regionId = external ? undefined : intOrUndefined(form.region_id);
     const body: NetworkHostInput = {
       name: form.name.trim(),
       ip: form.ip.trim(),
       description: form.description.trim(),
       owner: form.owner.trim(),
-      monitored_host_id: intOrUndefined(form.monitored_host_id) ?? null,
+      kind: form.kind,
+      monitored_host_id: external ? null : intOrUndefined(form.monitored_host_id) ?? null,
     };
     // New host without a region: the backend places it by the regions' CIDRs.
     // Editing to "none" sends an explicit null, which unassigns it.
@@ -420,27 +461,46 @@ export function HostFormModal({ host, onClose }: HostFormModalProps) {
         <input id="host-ip" value={form.ip} onChange={(e) => setForm({ ...form, ip: e.target.value })} placeholder="10.0.0.5" required />
       </div>
       <div className="form-group form-group--full">
-        <label htmlFor="host-region">{t('network.region')}</label>
-        <select id="host-region" value={form.region_id} onChange={(e) => setForm({ ...form, region_id: e.target.value })}>
-          <option value="">{isEdit ? t('network.hosts.regionNone') : t('network.hosts.regionAuto')}</option>
-          {regions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+        <label htmlFor="host-kind">{t('network.kind.label')}</label>
+        <select
+          id="host-kind"
+          value={form.kind}
+          onChange={(e) => setForm({ ...form, kind: e.target.value as NetworkHostKind })}
+        >
+          <option value="managed">{t('network.kind.managed')}</option>
+          <option value="external">{t('network.kind.external')}</option>
         </select>
-      </div>
-      <div className="form-group form-group--full">
-        <label htmlFor="host-monitored">{t('network.hosts.monitored')}</label>
-        {canSeeServers ? (
-          <select
-            id="host-monitored"
-            value={form.monitored_host_id}
-            onChange={(e) => setForm({ ...form, monitored_host_id: e.target.value })}
-          >
-            <option value="">{t('network.hosts.monitoredNone')}</option>
-            {(serversQuery.data ?? []).map((s) => <option key={s.id} value={s.id}>{`${s.name} (${s.address})`}</option>)}
-          </select>
-        ) : (
-          <input id="host-monitored" value={host?.monitored_host_name ?? ''} disabled />
+        {external && <div className="network-sub">{t('network.kind.externalHint')}</div>}
+        {external && form.monitored_host_id !== '' && (
+          <div className="network-note" role="note">{t('network.kind.unlinkNote')}</div>
         )}
       </div>
+      {!external && (
+        <>
+          <div className="form-group form-group--full">
+            <label htmlFor="host-region">{t('network.region')}</label>
+            <select id="host-region" value={form.region_id} onChange={(e) => setForm({ ...form, region_id: e.target.value })}>
+              <option value="">{isEdit ? t('network.hosts.regionNone') : t('network.hosts.regionAuto')}</option>
+              {regions.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+          </div>
+          <div className="form-group form-group--full">
+            <label htmlFor="host-monitored">{t('network.hosts.monitored')}</label>
+            {canSeeServers ? (
+              <select
+                id="host-monitored"
+                value={form.monitored_host_id}
+                onChange={(e) => setForm({ ...form, monitored_host_id: e.target.value })}
+              >
+                <option value="">{t('network.hosts.monitoredNone')}</option>
+                {(serversQuery.data ?? []).map((s) => <option key={s.id} value={s.id}>{`${s.name} (${s.address})`}</option>)}
+              </select>
+            ) : (
+              <input id="host-monitored" value={host?.monitored_host_name ?? ''} disabled />
+            )}
+          </div>
+        </>
+      )}
       <div className="form-group form-group--full">
         <label htmlFor="host-description">{t('network.description')}</label>
         <input id="host-description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />

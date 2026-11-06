@@ -24,9 +24,20 @@ export function HostLink({ id, name }: { id: number | null; name: string | null 
   return <Link to={`/network/hosts/${id}`}>{name}</Link>;
 }
 
-export function RegionName({ name }: { name: string | null }) {
+/** A region name; an external host has none by design, so it says so instead. */
+export function RegionName({ name, external = false }: { name: string | null; external?: boolean }) {
   const { t } = useTranslation();
+  if (external) return <ExternalBadge />;
   return name ? <>{name}</> : <span className="network-muted">{t('network.noRegion')}</span>;
+}
+
+export function ExternalBadge() {
+  const { t } = useTranslation();
+  return (
+    <span className="badge badge-unknown" title={t('network.kind.externalHint')}>
+      {t('network.kind.external')}
+    </span>
+  );
 }
 
 interface OpeningsTableProps {
@@ -76,7 +87,9 @@ export function OpeningsTable({ openings, label, onEdit }: OpeningsTableProps) {
                 <td>
                   <HostLink id={o.dst_host_id} name={o.dst_host_name} />
                   <div className="network-sub mono">{o.dst_host_ip}</div>
-                  <div className="network-sub"><RegionName name={o.dst_region_name} /></div>
+                  <div className="network-sub">
+                    <RegionName name={o.dst_region_name} external={o.dst_host_kind === 'external'} />
+                  </div>
                 </td>
                 <td className="mono">{openingPorts(o)}</td>
                 <td>

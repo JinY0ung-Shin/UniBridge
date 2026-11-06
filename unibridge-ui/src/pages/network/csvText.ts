@@ -61,6 +61,7 @@ export const CSV_COLUMNS: Record<'hosts' | 'openings' | 'port_usages', CsvColumn
     { field: 'region', required: false, en: ['region', 'zone'], ko: ['리전', '지역', '존', '망'] },
     { field: 'owner', required: false, en: ['owner', 'team'], ko: ['담당자', '담당', '담당팀', '팀'] },
     { field: 'description', required: false, en: ['description', 'desc', 'note'], ko: ['설명', '비고', '용도'] },
+    { field: 'kind', required: false, en: ['kind', 'hosttype'], ko: ['호스트구분', '호스트종류'] },
   ],
   openings: [
     { field: 'src', required: true, en: ['src', 'source', 'from', 'src ip', 'source ip'], ko: ['출발지', '출발', '출발지IP', '소스'] },

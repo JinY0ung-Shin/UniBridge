@@ -8,6 +8,9 @@ export type OpeningStatus = 'open' | 'closed';
  *  until a person confirms), import = created from a monitored server,
  *  auto = discovered from UniBridge's own config (port usages only, read-only). */
 export type RecordSource = 'manual' | 'agent' | 'import' | 'auto';
+/** managed = a server we run; external = someone else's, recorded only so
+ *  openings can name it (no region, no port finder, no monitored link). */
+export type NetworkHostKind = 'managed' | 'external';
 
 interface Provenance {
   source: RecordSource | string;
@@ -43,6 +46,7 @@ export interface NetworkHost extends Provenance {
   region_name: string | null;
   description: string;
   owner: string;
+  kind: NetworkHostKind;
   monitored_host_id: number | null;
   monitored_host_name: string | null;
 }
@@ -54,6 +58,7 @@ export interface NetworkHostInput {
   region_id?: number | null;
   description?: string;
   owner?: string;
+  kind?: NetworkHostKind;
   monitored_host_id?: number | null;
 }
 
@@ -68,6 +73,7 @@ export interface FirewallOpening extends Provenance {
   dst_host_id: number;
   dst_host_name: string;
   dst_host_ip: string;
+  dst_host_kind: NetworkHostKind;
   dst_region_id: number | null;
   dst_region_name: string | null;
   port_from: number;
@@ -87,6 +93,10 @@ export interface FirewallOpeningInput {
   src_host_id?: number;
   src_cidr?: string;
   dst_host_id?: number;
+  /** A destination by name or IP (instead of dst_host_id). */
+  dst_host?: string;
+  /** With dst_host an IP no host has: register it as an external host (dst-<ip>). */
+  create_missing_destination?: boolean;
   port_from?: number;
   port_to?: number | null;
   protocol?: NetworkProtocol;
@@ -146,7 +156,9 @@ export interface RegionLink {
 export interface NetworkOverview {
   regions: Region[];
   links: RegionLink[];
+  /** Hosts we run; external ones are counted apart. */
   host_count: number;
+  external_host_count: number;
   unassigned_hosts: number;
   opening_count: number;
   unverified_count: number;
@@ -249,6 +261,8 @@ export interface NetworkImportRequest {
   kind: NetworkImportKind;
   csv: string;
   dry_run: boolean;
+  /** Openings only: destination IPs no host has become external hosts. */
+  create_missing_destinations?: boolean;
 }
 
 export interface NetworkImportRow {
@@ -271,6 +285,7 @@ export interface HostFilters {
   region_id?: number;
   q?: string;
   unverified?: boolean;
+  kind?: NetworkHostKind;
 }
 
 export interface OpeningFilters {

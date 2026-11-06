@@ -1729,7 +1729,8 @@
       "edgeLabel": "{{src}} → {{dst}}: {{count}} open openings, {{unverified}} unverified {{ports}}",
       "viewHost": "By server",
       "hostTitle": "Server connection map",
-      "hostHint": "Pick a server to see only what reaches it (left), what it reaches (right) and its own region (below). Click a peer server to centre the map on it."
+      "hostHint": "Pick a server to see only what reaches it (left), what it reaches (right) and its own region (below). Click a peer server to centre the map on it.",
+      "externalHosts": "External hosts"
     },
     "regions": {
       "add": "Add region",
@@ -1765,7 +1766,14 @@
       "verifiedBy": "Verified by {{name}}",
       "probes": "Probes from / to this host",
       "allProbes": "Open in Probes tab",
-      "probesHint": "The latest measured connection attempt on each path where this host is the source or the destination."
+      "probesHint": "The latest measured connection attempt on each path where this host is the source or the destination.",
+      "select": "Select {{name}}",
+      "selectAll": "Select all",
+      "selectedCount": "{{count}} selected",
+      "markExternal": "Mark external",
+      "markManaged": "Mark managed",
+      "bulkDone": "Switched {{count}} hosts",
+      "bulkFailed": "{{count}} hosts could not be switched"
     },
     "openings": {
       "add": "Add opening",
@@ -1788,7 +1796,11 @@
       "unusedHint": "Open, but no recorded or discovered service listens on these ports.",
       "empty": "No firewall openings.",
       "hint": "One direction each: source → destination. Same-region pairs need no opening.",
-      "deleteConfirm": "Delete opening {{name}}?"
+      "deleteConfirm": "Delete opening {{name}}?",
+      "destinationType": "Destination type",
+      "destinationHost": "Registered host",
+      "destinationIp": "IP not on the map",
+      "destinationIpHint": "registered with it as an external host named dst-<IP>"
     },
     "usages": {
       "add": "Add port usage",
@@ -1822,7 +1834,8 @@
         "opening": "Open through a recorded firewall opening.",
         "opening_closed": "A firewall opening was recorded for this but is marked closed.",
         "no_opening": "Different regions and no firewall opening is recorded: request one.",
-        "unknown_region": "A host is not placed in a region, so access cannot be judged."
+        "unknown_region": "A host is not placed in a region, so access cannot be judged.",
+        "external_host": "An external host is involved and no open opening covers this, so access cannot be judged."
       },
       "requestDraft": "Firewall request draft",
       "copy": "Copy",
@@ -1891,7 +1904,7 @@
       "hint": "The first line is the header; English or Korean column names are accepted and unknown columns are ignored. Up to 5,000 lines. Lines already recorded are skipped. Imported records are marked as imported and verified.",
       "columns": "Columns (* required)",
       "required": "*",
-      "openingsHint": "src: a registered host (name or IP), a CIDR, or an IP. dst: a registered host. ports: 5432, 8000-8010, or several separated by commas or spaces (one opening each). status: open unless it says closed/expired/revoked.",
+      "openingsHint": "src: a registered host (name or IP), a CIDR, or an IP. dst: a registered host (or, with the option below, an IP not on the map, added as an external host). ports: 5432, 8000-8010, or several separated by commas or spaces (one opening each). status: open unless it says closed/expired/revoked.",
       "sampleHeader": "Sample header:",
       "file": "CSV file",
       "fileRead": "{{name}} read as {{encoding}}",
@@ -1914,7 +1927,9 @@
         "create": "Create",
         "skip": "Skip",
         "error": "Error"
-      }
+      },
+      "createMissing": "Add destination IPs no host has as external hosts (dst-<IP>)",
+      "hostsKindHint": "kind column: managed/external. Empty means managed; an external host cannot have a region."
     },
     "finder": {
       "hint": "Bringing up a new service: find the ports its client servers already reach today, without a firewall request. Same region means every port; across regions only the ports of recorded openings that nothing uses yet.",
@@ -1999,6 +2014,14 @@
       "legendUnverified": "has unverified",
       "legendMismatch": "probe mismatch",
       "legendClosed": "closed only"
+    },
+    "kind": {
+      "managed": "Managed host",
+      "external": "External host",
+      "label": "Kind",
+      "all": "All kinds",
+      "externalHint": "A server we do not run. It is in no region; only recorded firewall openings say what reaches it. Left out of the port finder and monitored-server links.",
+      "unlinkNote": "Saving removes this host's link to its monitored server."
     }
   }
 }

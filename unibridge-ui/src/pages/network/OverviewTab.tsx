@@ -129,6 +129,7 @@ function OverviewTab() {
       <div className="network-summary">
         <SummaryCard value={ov.host_count} label={t('network.overview.hosts')} />
         <SummaryCard value={ov.unassigned_hosts} label={t('network.overview.unassignedHosts')} tone="warn" />
+        <SummaryCard value={ov.external_host_count} label={t('network.overview.externalHosts')} />
         <SummaryCard value={ov.opening_count} label={t('network.overview.openings')} />
         <SummaryCard value={ov.unverified_count} label={t('network.overview.unverified')} tone="warn" />
         <SummaryCard value={ov.unused_openings} label={t('network.overview.unusedOpenings')} tone="warn" />

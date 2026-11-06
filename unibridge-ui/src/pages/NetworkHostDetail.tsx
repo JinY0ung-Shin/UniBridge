@@ -47,7 +47,7 @@ function NetworkHostDetail() {
           <h1>{host?.name ?? `#${rawId}`}</h1>
           {host && (
             <p className="page-subtitle">
-              <span className="mono">{host.ip}</span> · <RegionName name={host.region_name} />
+              <span className="mono">{host.ip}</span> · <RegionName name={host.region_name} external={host.kind === 'external'} />
             </p>
           )}
         </div>

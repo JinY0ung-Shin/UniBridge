@@ -41,6 +41,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   checkNetworkAccess,
   createFirewallOpening,
+  createNetworkHost,
   getFirewallOpenings,
   getNetworkHost,
   getNetworkHosts,
@@ -49,6 +50,7 @@ import {
   getNetworkProbes,
   getRegions,
   importNetworkCsv,
+  updateNetworkHost,
   verifyFirewallOpening,
   findPorts,
   type FirewallOpening,
@@ -77,6 +79,8 @@ const mocked = {
   probes: vi.mocked(getNetworkProbes),
   importCsv: vi.mocked(importNetworkCsv),
   findPorts: vi.mocked(findPorts),
+  createHost: vi.mocked(createNetworkHost),
+  updateHost: vi.mocked(updateNetworkHost),
 };
 
 const provenance = {
@@ -99,6 +103,7 @@ function makeHost(overrides: Partial<NetworkHost> = {}): NetworkHost {
     region_name: 'seoul',
     description: '',
     owner: 'team-a',
+    kind: 'managed',
     monitored_host_id: null,
     monitored_host_name: null,
     ...overrides,
@@ -118,6 +123,7 @@ function makeOpening(overrides: Partial<FirewallOpening> = {}): FirewallOpening 
     dst_host_id: 2,
     dst_host_name: 'db-1',
     dst_host_ip: '10.2.0.9',
+    dst_host_kind: 'managed',
     dst_region_id: 2,
     dst_region_name: 'busan',
     port_from: 5432,
@@ -185,6 +191,7 @@ describe('Network page', () => {
         { src_region_id: null, dst_region_id: 1, openings: 1, open_openings: 1, unverified: 0, ports: ['tcp/22'] },
       ],
       host_count: 7,
+      external_host_count: 0,
       unassigned_hosts: 2,
       opening_count: 5,
       unverified_count: 1,
@@ -452,6 +459,7 @@ function makeOverview(overrides: Partial<NetworkOverview> = {}): NetworkOverview
     regions: REGIONS,
     links: [],
     host_count: 4,
+    external_host_count: 0,
     unassigned_hosts: 0,
     opening_count: 0,
     unverified_count: 0,
@@ -947,5 +955,137 @@ describe('Network port finder', () => {
     await user.click(screen.getByRole('button', { name: 'Find' }));
     expect(await screen.findByText(/No open port on this server reaches from every source/)).toBeInTheDocument();
     expect(mocked.findPorts.mock.calls[0][0]).toMatchObject({ src: ['app-1'], dst: 'db-1' });
+  });
+});
+
+describe('Network external hosts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocked.hosts.mockResolvedValue(HOSTS);
+    mocked.regions.mockResolvedValue(REGIONS);
+    mocked.openings.mockResolvedValue([]);
+    mocked.usages.mockResolvedValue([]);
+  });
+
+  it('records an opening to an IP not on the map as a new external destination', async () => {
+    mocked.createOpening.mockResolvedValue(makeOpening({ dst_host_kind: 'external' }));
+    const user = userEvent.setup();
+    renderNetwork('/network?tab=openings');
+
+    await user.click(await screen.findByRole('button', { name: 'Add opening' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add opening' });
+    await waitFor(() => expect(within(dialog).getAllByRole('option', { name: /app-1/ })).not.toHaveLength(0));
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Source' }), '1');
+    await user.click(within(dialog).getByRole('radio', { name: 'IP not on the map' }));
+    expect(within(dialog).queryByRole('combobox', { name: 'Destination' })).not.toBeInTheDocument();
+    await user.type(within(dialog).getByRole('textbox', { name: /^IP not on the map/ }), ' 172.20.0.5 ');
+    await user.type(within(dialog).getByRole('spinbutton', { name: 'Port' }), '443');
+    await user.click(within(dialog).getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(mocked.createOpening).toHaveBeenCalledWith(expect.objectContaining({
+      src_host_id: 1, dst_host: '172.20.0.5', create_missing_destination: true, port_from: 443,
+    })));
+    expect(mocked.createOpening.mock.calls[0][0]).not.toHaveProperty('dst_host_id');
+  });
+
+  it('editing an opening offers no new-IP destination', async () => {
+    mocked.openings.mockResolvedValue([makeOpening()]);
+    const user = userEvent.setup();
+    renderNetwork('/network?tab=openings');
+    await user.click(await screen.findByRole('button', { name: /^Edit / }));
+    const dialog = screen.getByRole('dialog', { name: 'Edit opening' });
+    expect(within(dialog).queryByRole('radio', { name: 'IP not on the map' })).not.toBeInTheDocument();
+  });
+
+  it('shows external hosts as such and switches selected hosts in bulk', async () => {
+    mocked.hosts.mockResolvedValue([
+      ...HOSTS,
+      makeHost({ id: 3, name: 'knox', ip: '172.20.0.5', region_id: null, region_name: null, kind: 'external' }),
+    ]);
+    mocked.updateHost
+      .mockResolvedValueOnce(makeHost({ kind: 'external' }))
+      .mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 422, data: { detail: 'A host linked to a monitored server is ours' } },
+      });
+    const user = userEvent.setup();
+    renderNetwork('/network?tab=hosts');
+
+    const table = await screen.findByRole('table', { name: 'Hosts' });
+    expect(within(table).getByText('External host')).toBeInTheDocument();
+    expect(within(table).queryByText('No region')).not.toBeInTheDocument();
+
+    await user.click(within(table).getByRole('checkbox', { name: 'Select app-1' }));
+    await user.click(within(table).getByRole('checkbox', { name: 'Select db-1' }));
+    await user.click(within(table).getByRole('checkbox', { name: 'Select knox' }));
+    await user.click(screen.getByRole('button', { name: 'Mark external' }));
+
+    // knox is external already: only the other two are sent.
+    await waitFor(() => expect(mocked.updateHost).toHaveBeenCalledTimes(2));
+    expect(mocked.updateHost).toHaveBeenCalledWith(1, { kind: 'external' });
+    expect(mocked.updateHost).toHaveBeenCalledWith(2, { kind: 'external' });
+    expect(await screen.findByText('1 hosts could not be switched')).toBeInTheDocument();
+    expect(screen.getByText(/db-1: A host linked to a monitored server is ours/)).toBeInTheDocument();
+    // The refused host stays selected for another try.
+    expect(within(table).getByRole('checkbox', { name: 'Select db-1' })).toBeChecked();
+    expect(within(table).getByRole('checkbox', { name: 'Select app-1' })).not.toBeChecked();
+  });
+
+  it('an external host in the form has no region or monitored link', async () => {
+    mocked.createHost.mockResolvedValue(makeHost({ kind: 'external' }));
+    const user = userEvent.setup();
+    renderNetwork('/network?tab=hosts');
+
+    await user.click(await screen.findByRole('button', { name: 'Add host' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add host' });
+    expect(within(dialog).getByRole('combobox', { name: 'Region' })).toBeInTheDocument();
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Kind' }), 'external');
+    expect(within(dialog).queryByRole('combobox', { name: 'Region' })).not.toBeInTheDocument();
+    await user.type(within(dialog).getByRole('textbox', { name: 'Name' }), 'knox');
+    await user.type(within(dialog).getByRole('textbox', { name: 'IP' }), '172.20.0.5');
+    await user.click(within(dialog).getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(mocked.createHost).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'knox', ip: '172.20.0.5', kind: 'external', monitored_host_id: null,
+    })));
+    expect(mocked.createHost.mock.calls[0][0]).not.toHaveProperty('region_id');
+  });
+
+  it('the openings CSV import can add missing destinations', async () => {
+    const csv = 'src,dst,ports\na1,172.20.0.5,443';
+    mocked.importCsv.mockResolvedValue({
+      kind: 'openings', dry_run: true, created: 1, skipped: 0, errors: 0,
+      rows: [{ line: 2, action: 'create', key: 'a1 → dst-172.20.0.5 tcp/443', message: 'open · adds external host dst-172.20.0.5' }],
+    });
+    const user = userEvent.setup();
+    renderNetwork('/network?tab=openings');
+
+    await user.click(await screen.findByRole('button', { name: 'Import CSV' }));
+    const dialog = screen.getByRole('dialog', { name: /from CSV/ });
+    await user.click(within(dialog).getByRole('textbox', { name: 'Or paste CSV text' }));
+    await user.paste(csv);
+    await user.click(within(dialog).getByRole('checkbox', { name: /^Add destination IPs no host has/ }));
+    await user.click(within(dialog).getByRole('button', { name: 'Preview (dry run)' }));
+
+    await waitFor(() => expect(mocked.importCsv).toHaveBeenCalledWith({
+      kind: 'openings', csv, dry_run: true, create_missing_destinations: true,
+    }));
+    expect(await within(dialog).findByText(/adds external host dst-172.20.0.5/)).toBeInTheDocument();
+  });
+
+  it('says why access to an external host cannot be judged', async () => {
+    mocked.check.mockResolvedValue({
+      status: 'unknown', reason: 'external_host', message: '',
+      src: { input: 'app-1', host_id: 1, host_name: 'app-1', ip: '10.1.0.5', region_id: 1, region_name: 'seoul' },
+      dst: { input: 'knox', host_id: 3, host_name: 'knox', ip: '172.20.0.5', region_id: null, region_name: null },
+      port: 25, protocol: 'tcp', openings: [], usages: [], request_draft: null, probe: null,
+    });
+    const user = userEvent.setup();
+    renderNetwork('/network?tab=check', READ);
+    await user.type(await screen.findByRole('combobox', { name: 'Source' }), 'app-1');
+    await user.type(screen.getByRole('combobox', { name: 'Destination' }), 'knox');
+    await user.type(screen.getByRole('spinbutton', { name: 'Port' }), '25');
+    await user.click(screen.getByRole('button', { name: 'Check' }));
+    expect(await screen.findByText(/An external host is involved/)).toBeInTheDocument();
   });
 });
