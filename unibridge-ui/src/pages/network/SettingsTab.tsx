@@ -11,6 +11,7 @@ function SettingsForm({ settings }: { settings: NetworkSettings }) {
   const { addToast } = useToast();
   const hosts = useAllNetworkHosts().data ?? [];
   const [platformHost, setPlatformHost] = useState(settings.platform_host_id != null ? String(settings.platform_host_id) : '');
+  const [mainHost, setMainHost] = useState(settings.main_host_id != null ? String(settings.main_host_id) : '');
   const save = useNetworkMutation(updateNetworkSettings, 'network.saveFailed', () =>
     addToast({ type: 'success', title: t('network.settings.saved') }),
   );
@@ -20,7 +21,10 @@ function SettingsForm({ settings }: { settings: NetworkSettings }) {
       className="network-settings"
       onSubmit={(e) => {
         e.preventDefault();
-        save.mutate({ platform_host_id: intOrUndefined(platformHost) ?? null });
+        save.mutate({
+          platform_host_id: intOrUndefined(platformHost) ?? null,
+          main_host_id: intOrUndefined(mainHost) ?? null,
+        });
       }}
     >
       <div className="form-group">
@@ -35,6 +39,21 @@ function SettingsForm({ settings }: { settings: NetworkSettings }) {
           aria-describedby="network-platform-host-hint"
         >
           <option value="">{t('network.settings.platformHostNone')}</option>
+          {hosts.map((h) => <option key={h.id} value={h.id}>{`${h.name} (${h.ip})`}</option>)}
+        </select>
+      </div>
+      <div className="form-group">
+        <label htmlFor="network-main-host">
+          {t('network.settings.mainHost')}{' '}
+          <span id="network-main-host-hint" className="hint">{t('network.settings.mainHostHint')}</span>
+        </label>
+        <select
+          id="network-main-host"
+          value={mainHost}
+          onChange={(e) => setMainHost(e.target.value)}
+          aria-describedby="network-main-host-hint"
+        >
+          <option value="">{t('network.settings.mainHostNone')}</option>
           {hosts.map((h) => <option key={h.id} value={h.id}>{`${h.name} (${h.ip})`}</option>)}
         </select>
       </div>
@@ -56,7 +75,8 @@ function SettingsTab() {
     return <div className="error-banner" role="alert">{t('common.errorOccurred')}</div>;
   }
   // Keyed so a refetched value resets the form instead of syncing state in an effect.
-  return <SettingsForm key={String(settingsQuery.data.platform_host_id)} settings={settingsQuery.data} />;
+  const { platform_host_id: platform, main_host_id: main } = settingsQuery.data;
+  return <SettingsForm key={`${platform}:${main}`} settings={settingsQuery.data} />;
 }
 
 export default SettingsTab;

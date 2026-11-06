@@ -1,8 +1,14 @@
-import { useId, useState, type KeyboardEvent } from 'react';
+import { useId, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { getNetworkHost, type FirewallOpening, type NetworkHost, type NetworkHostDetail } from '../../api/network';
+import {
+  getNetworkHost,
+  type FirewallOpening,
+  type NetworkHost,
+  type NetworkHostDetail,
+  type PortUsage,
+} from '../../api/network';
 import { NETWORK_KEY, openingPorts } from './networkUtils';
 import { OpeningsTable } from './NetworkTables';
 
@@ -100,6 +106,39 @@ function portsText(openings: FirewallOpening[], max = 20): string {
   return text;
 }
 
+/** What listens on one opening's ports at its destination. */
+interface OpeningPortInfo {
+  opening: FirewallOpening;
+  /** Recorded or discovered services inside the opening's ports. */
+  services: PortUsage[];
+  /** Ports of the opening with no service on record. */
+  freeCount: number;
+}
+
+/** Services on the destination of each opening (one entry per opening, by port). */
+function portInfo(openings: FirewallOpening[], usages: PortUsage[]): OpeningPortInfo[] {
+  return [...openings]
+    .sort((a, b) => a.port_from - b.port_from || a.port_to - b.port_to || a.id - b.id)
+    .map((opening) => {
+      const services = usages
+        .filter((u) => u.host_id === opening.dst_host_id && u.protocol === opening.protocol
+          && u.port >= opening.port_from && u.port <= opening.port_to)
+        .sort((a, b) => a.port - b.port || a.service_name.localeCompare(b.service_name));
+      const used = new Set(services.map((u) => u.port)).size;
+      return { opening, services, freeCount: opening.port_to - opening.port_from + 1 - used };
+    });
+}
+
+const TIP_MAX_OPENINGS = 8;
+const TIP_MAX_SERVICES = 6;
+const TIP_W = 320;
+
+interface EdgeTip {
+  key: string;
+  x: number;
+  y: number;
+}
+
 function textWidth(text: string): number {
   let w = 0;
   for (const ch of text) w += ch.charCodeAt(0) >= 0x1100 ? 12 : 6.6;
@@ -124,12 +163,16 @@ interface HostConnectionMapProps {
 function HostConnectionMap({ hostId, onRecenter, showActions = true }: HostConnectionMapProps) {
   const { t } = useTranslation();
   const markerId = `host-map-arrow-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  const tipId = `host-map-tip-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  const boxRef = useRef<HTMLDivElement>(null);
   const [selected, setSelected] = useState<Selection | null>(null);
+  const [tip, setTip] = useState<EdgeTip | null>(null);
   const [selectedFor, setSelectedFor] = useState(hostId);
   // A new centre starts with nothing selected.
   if (selectedFor !== hostId) {
     setSelectedFor(hostId);
     setSelected(null);
+    setTip(null);
   }
 
   const query = useQuery({
@@ -188,6 +231,93 @@ function HostConnectionMap({ hostId, onRecenter, showActions = true }: HostConne
     ? [...inbound, ...outbound].find((p) => p.key === selected.key) ?? null
     : null;
 
+  /** Inbound edges end at this host; outbound ones at the peer. */
+  function servicesFor(peer: Peer): PortUsage[] {
+    return peer.side === 'in' ? detail.usages : detail.outbound_usages ?? [];
+  }
+
+  /** The tooltip sits at the pointer (or under the edge's label on focus),
+   *  inside the map box and flipped to stay in it. */
+  function placeTip(key: string, clientX: number, clientY: number) {
+    const box = boxRef.current?.getBoundingClientRect();
+    if (!box) return;
+    let x = clientX - box.left + 14;
+    if (x + TIP_W > box.width) x = Math.max(0, clientX - box.left - TIP_W - 14);
+    setTip({ key, x, y: clientY - box.top + 14 });
+  }
+
+  function onEdgeMouse(event: MouseEvent<SVGGElement>, key: string) {
+    placeTip(key, event.clientX, event.clientY);
+  }
+
+  function onEdgeFocus(event: FocusEvent<SVGGElement>, key: string) {
+    const label = event.currentTarget.querySelector('rect.host-map__label-bg') ?? event.currentTarget;
+    const r = label.getBoundingClientRect();
+    placeTip(key, r.left, r.bottom - 8);
+  }
+
+  const tipPeer = tip ? [...shownIn, ...shownOut].find((p) => p.key === tip.key) ?? null : null;
+
+  function probeNote(o: FirewallOpening): string | null {
+    const probe = o.last_probe;
+    if (!probe || o.port_from !== o.port_to) return null;
+    return t(`network.hostMap.tipProbe.${probe.result}`, { defaultValue: '' }) || null;
+  }
+
+  function renderTip(peer: Peer) {
+    const dstName = peer.side === 'in' ? detail.name : peer.name;
+    const infos = portInfo(peer.openings, servicesFor(peer));
+    return (
+      <div
+        id={tipId}
+        role="tooltip"
+        className="host-map__tip"
+        style={{ left: tip!.x, top: tip!.y, width: TIP_W }}
+      >
+        <div className="host-map__tip-title">
+          {peer.side === 'in' ? `${peer.name} → ${detail.name}` : `${detail.name} → ${peer.name}`}
+        </div>
+        <div className="host-map__tip-sub">{t('network.hostMap.tipServicesOn', { host: dstName })}</div>
+        <ul className="host-map__tip-list">
+          {infos.slice(0, TIP_MAX_OPENINGS).map(({ opening: o, services, freeCount }) => {
+            const single = o.port_from === o.port_to;
+            const note = probeNote(o);
+            return (
+              <li key={o.id} className={o.status === 'closed' ? 'host-map__tip-item--closed' : undefined}>
+                <div className="host-map__tip-head">
+                  <span className="mono">{openingPorts(o)}</span>
+                  {o.status === 'closed' && <span className="badge badge-unknown">{t('network.status.closed')}</span>}
+                  {!o.verified && <span className="badge badge-warn">{t('network.unverified')}</span>}
+                </div>
+                {services.slice(0, TIP_MAX_SERVICES).map((u, i) => (
+                  <div key={`${u.port}-${u.service_name}-${i}`} className="host-map__tip-svc">
+                    <span className="mono host-map__tip-port">{u.port}</span>
+                    <span>{u.service_name || t('network.hostMap.tipUnnamed')}</span>
+                    {u.source === 'auto' && <span className="network-sub">{t('network.hostMap.tipDiscovered')}</span>}
+                  </div>
+                ))}
+                {services.length > TIP_MAX_SERVICES && (
+                  <div className="network-sub">{t('network.hostMap.tipMoreServices', { count: services.length - TIP_MAX_SERVICES })}</div>
+                )}
+                {services.length === 0 ? (
+                  <div className="host-map__tip-free">
+                    {single ? t('network.hostMap.tipFree') : t('network.hostMap.tipAllFree', { count: freeCount })}
+                  </div>
+                ) : freeCount > 0 && (
+                  <div className="host-map__tip-free">{t('network.hostMap.tipRestFree', { count: freeCount })}</div>
+                )}
+                {note && <div className="network-sub">{note}</div>}
+              </li>
+            );
+          })}
+        </ul>
+        {infos.length > TIP_MAX_OPENINGS && (
+          <div className="network-sub">{t('network.hostMap.tipMoreOpenings', { count: infos.length - TIP_MAX_OPENINGS })}</div>
+        )}
+      </div>
+    );
+  }
+
   function renderPeer(peer: Peer, i: number, count: number) {
     const x = peer.side === 'in' ? leftX : rightX;
     const y = columnY(count, i);
@@ -221,10 +351,15 @@ function HostConnectionMap({ hostId, onRecenter, showActions = true }: HostConne
           tabIndex={0}
           aria-pressed={isSelected}
           aria-label={label}
+          aria-describedby={tip?.key === peer.key ? tipId : undefined}
           onClick={() => toggle({ kind: 'peer', key: peer.key })}
           onKeyDown={(e) => onKey(e, () => toggle({ kind: 'peer', key: peer.key }))}
+          onMouseEnter={(e) => onEdgeMouse(e, peer.key)}
+          onMouseMove={(e) => onEdgeMouse(e, peer.key)}
+          onMouseLeave={() => setTip((cur) => (cur?.key === peer.key ? null : cur))}
+          onFocus={(e) => onEdgeFocus(e, peer.key)}
+          onBlur={() => setTip((cur) => (cur?.key === peer.key ? null : cur))}
         >
-          <title>{label}</title>
           <path className="host-map__hit" d={d} />
           <path className="host-map__line" d={d} markerEnd={`url(#${markerId}-${isSelected ? 'selected' : tone})`} />
           <rect className="host-map__label-bg" x={boxX} y={ly - 10} width={boxW} height={20} rx={10} />
@@ -257,7 +392,7 @@ function HostConnectionMap({ hostId, onRecenter, showActions = true }: HostConne
   const regionSelected = selected?.kind === 'region';
 
   return (
-    <div className="host-map">
+    <div className="host-map" ref={boxRef}>
       <div className="host-map__legend" aria-hidden="true">
         <span><i className="host-map__swatch host-map__swatch--open" />{t('network.hostMap.legendOpen')}</span>
         <span><i className="host-map__swatch host-map__swatch--warn" />{t('network.hostMap.legendUnverified')}</span>
@@ -355,6 +490,7 @@ function HostConnectionMap({ hostId, onRecenter, showActions = true }: HostConne
           </g>
         </svg>
       </div>
+      {tipPeer && renderTip(tipPeer)}
 
       {(inbound.length > PEER_MAX || outbound.length > PEER_MAX) && (
         <div className="network-note">{t('network.hostMap.tooMany', { max: PEER_MAX })}</div>

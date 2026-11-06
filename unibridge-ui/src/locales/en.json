@@ -1729,7 +1729,7 @@
       "edgeLabel": "{{src}} → {{dst}}: {{count}} open openings, {{unverified}} unverified {{ports}}",
       "viewHost": "By server",
       "hostTitle": "Server connection map",
-      "hostHint": "Pick a server to see only what reaches it (left), what it reaches (right) and its own region (below). Click a peer server to centre the map on it.",
+      "hostHint": "One server with what reaches it (left), what it reaches (right) and its own region (below); it opens on the main server. Hover an edge for the service on each port or whether it is free; click a peer server to centre the map on it.",
       "externalHosts": "External hosts"
     },
     "regions": {
@@ -1851,7 +1851,10 @@
       "platformHost": "Platform host",
       "platformHostNone": "Not set",
       "platformHostHint": "The host UniBridge (service, APISIX, Prometheus) runs on; discovered usages are checked for reachability from it.",
-      "saved": "Network settings saved"
+      "saved": "Network settings saved",
+      "mainHost": "Main server",
+      "mainHostNone": "Not set (use the platform host)",
+      "mainHostHint": "The server the overview’s server-centred map opens on."
     },
     "probes": {
       "result": {
@@ -1984,7 +1987,7 @@
     },
     "hostMap": {
       "section": "Connection map",
-      "hint": "Left: openings into this server; right: openings out of it; below: its own region, open on every port. Click an edge for its openings, a server to centre on it.",
+      "hint": "Left: openings into this server; right: openings out of it; below: its own region, open on every port. Hover an edge for the service on each port (or that it is free), click it for its openings, click a server to centre on it.",
       "title": "Connection map of {{name}}",
       "pick": "Centre server",
       "pickFirst": "Pick a server to centre the map on.",
@@ -2013,7 +2016,27 @@
       "legendOpen": "open",
       "legendUnverified": "has unverified",
       "legendMismatch": "probe mismatch",
-      "legendClosed": "closed only"
+      "legendClosed": "closed only",
+      "mainTag": "main",
+      "isMain": "Main server",
+      "backToMain": "Back to {{name}}",
+      "setMain": "Set as main server",
+      "noMain": "No main server is set: an admin can pick one so this view opens on it.",
+      "noMainWriter": "Pick a server and choose “Set as main server” (or set it on the Settings tab) so this view opens on it.",
+      "tipServicesOn": "Services on {{host}}",
+      "tipUnnamed": "(unnamed)",
+      "tipDiscovered": "discovered",
+      "tipMoreServices": "+{{count}} more services",
+      "tipFree": "Free port: no service on record",
+      "tipAllFree": "All {{count}} ports free: no service on record",
+      "tipRestFree": "Other {{count}} ports free",
+      "tipMoreOpenings": "+{{count}} more openings (click the edge for all)",
+      "tipProbe": {
+        "open": "Last probe connected: something listens even if not recorded",
+        "refused": "Last probe refused: nothing listens",
+        "timeout": "Last probe timed out: blocked on the way",
+        "error": "Last probe failed to measure"
+      }
     },
     "kind": {
       "managed": "Managed host",

@@ -139,6 +139,9 @@ export interface NetworkHostDetail extends NetworkHost {
   /** Openings whose source is a network range this host's IP falls in. */
   outbound_via_cidr: FirewallOpening[];
   usages: PortUsage[];
+  /** Services on the destinations of outbound / outbound_via_cidr openings,
+   *  inside those openings' ports (what each outbound edge leads to). */
+  outbound_usages: PortUsage[];
   /** Same region: reachable both ways on every port, no opening needed. */
   same_region_hosts: NetworkHost[];
 }
@@ -167,11 +170,14 @@ export interface NetworkOverview {
   /** Probes that disagree with the records (see Probe.mismatch). */
   probe_mismatches: number;
   platform_host_id: number | null;
+  /** The server the server-centred map opens on (unset = the platform host). */
+  main_host_id: number | null;
   auto_sources_failed: string[];
 }
 
 export interface NetworkSettings {
   platform_host_id: number | null;
+  main_host_id: number | null;
 }
 
 export interface AccessEndpoint {
@@ -320,7 +326,8 @@ export async function getNetworkSettings(): Promise<NetworkSettings> {
   return data;
 }
 
-export async function updateNetworkSettings(body: NetworkSettings): Promise<NetworkSettings> {
+/** A field left out keeps its value. */
+export async function updateNetworkSettings(body: Partial<NetworkSettings>): Promise<NetworkSettings> {
   const { data } = await client.put('/network/settings', body);
   return data;
 }

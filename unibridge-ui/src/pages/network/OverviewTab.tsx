@@ -2,12 +2,19 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { getFirewallOpenings, getNetworkOverview, type NetworkHost, type RegionLink } from '../../api/network';
+import {
+  getFirewallOpenings,
+  getNetworkOverview,
+  updateNetworkSettings,
+  type NetworkHost,
+  type RegionLink,
+} from '../../api/network';
+import { useCanWrite } from '../../components/useCanWrite';
 import { NETWORK_KEY, regionKey } from './networkUtils';
 import { OpeningsTable } from './NetworkTables';
 import RegionGraph from './RegionGraph';
 import HostConnectionMap from './HostConnectionMap';
-import { useAllNetworkHosts } from './useNetworkActions';
+import { useAllNetworkHosts, useNetworkMutation } from './useNetworkActions';
 
 interface Axis {
   id: number | null;
@@ -41,28 +48,71 @@ function SummaryCard({ value, label, tone, onClick }: SummaryCardProps) {
   return <div className={className}>{body}</div>;
 }
 
+/** The server-centred map is the default view (no `view` in the URL). */
 const VIEWS = ['host', 'matrix', 'graph'] as const;
 type MapView = (typeof VIEWS)[number];
+const DEFAULT_VIEW: MapView = 'host';
+
+interface HostPickerProps {
+  hosts: NetworkHost[];
+  value: number | null;
+  onChange: (id: number) => void;
+  /** The main server (settings), marked in the list and one click away. */
+  mainId: number | null;
+  canWrite: boolean;
+}
 
 /** Host picker grouped by region, for the server-centred map. */
-function HostPicker({ hosts, value, onChange }: { hosts: NetworkHost[]; value: number | null; onChange: (id: number) => void }) {
+function HostPicker({ hosts, value, onChange, mainId, canWrite }: HostPickerProps) {
   const { t } = useTranslation();
+  const setMain = useNetworkMutation(
+    (id: number) => updateNetworkSettings({ main_host_id: id }),
+    'network.saveFailed',
+  );
   const groups = new Map<string, NetworkHost[]>();
   for (const h of [...hosts].sort((a, b) => a.name.localeCompare(b.name))) {
     const key = h.region_name ?? t('network.noRegion');
     groups.set(key, [...(groups.get(key) ?? []), h]);
   }
+  const main = mainId != null ? hosts.find((h) => h.id === mainId) ?? null : null;
   return (
-    <div className="form-group host-map__picker">
-      <label htmlFor="host-map-picker">{t('network.hostMap.pick')}</label>
-      <select id="host-map-picker" value={value ?? ''} onChange={(e) => e.target.value && onChange(Number(e.target.value))}>
-        <option value="">{t('network.selectHost')}</option>
-        {[...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([region, list]) => (
-          <optgroup key={region} label={region}>
-            {list.map((h) => <option key={h.id} value={h.id}>{`${h.name} (${h.ip})`}</option>)}
-          </optgroup>
-        ))}
-      </select>
+    <div className="host-map__picker-row">
+      <div className="form-group host-map__picker">
+        <label htmlFor="host-map-picker">{t('network.hostMap.pick')}</label>
+        <select id="host-map-picker" value={value ?? ''} onChange={(e) => e.target.value && onChange(Number(e.target.value))}>
+          <option value="">{t('network.selectHost')}</option>
+          {[...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([region, list]) => (
+            <optgroup key={region} label={region}>
+              {list.map((h) => (
+                <option key={h.id} value={h.id}>
+                  {`${h.name} (${h.ip})${h.id === mainId ? ` · ${t('network.hostMap.mainTag')}` : ''}`}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+      <div className="host-map__picker-actions">
+        {value != null && value === mainId && (
+          <span className="badge badge-info">{t('network.hostMap.isMain')}</span>
+        )}
+        {main && value !== mainId && (
+          <button type="button" className="btn btn-sm btn-secondary" onClick={() => onChange(main.id)}>
+            {t('network.hostMap.backToMain', { name: main.name })}
+          </button>
+        )}
+        {canWrite && value != null && value !== mainId && (
+          <button
+            type="button"
+            className="btn btn-sm btn-secondary"
+            disabled={setMain.isPending}
+            aria-busy={setMain.isPending}
+            onClick={() => setMain.mutate(value)}
+          >
+            {t('network.hostMap.setMain')}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -71,15 +121,16 @@ function OverviewTab() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const [selected, setSelected] = useState<{ src: number | null; dst: number | null } | null>(null);
+  const canWrite = useCanWrite('network.write');
   const requestedView = searchParams.get('view');
-  const view: MapView = (VIEWS as readonly string[]).includes(requestedView ?? '') ? (requestedView as MapView) : 'matrix';
+  const view: MapView = (VIEWS as readonly string[]).includes(requestedView ?? '') ? (requestedView as MapView) : DEFAULT_VIEW;
   const centerParam = Number(searchParams.get('host'));
-  const centerId = Number.isInteger(centerParam) && centerParam > 0 ? centerParam : null;
+  const pickedId = Number.isInteger(centerParam) && centerParam > 0 ? centerParam : null;
   const allHosts = useAllNetworkHosts();
 
-  function setView(next: MapView, host: number | null = centerId) {
+  function setView(next: MapView, host: number | null = pickedId) {
     const params: Record<string, string> = {};
-    if (next !== 'matrix') params.view = next;
+    if (next !== DEFAULT_VIEW) params.view = next;
     if (next === 'host' && host != null) params.host = String(host);
     setSearchParams(params, { replace: true });
   }
@@ -99,6 +150,9 @@ function OverviewTab() {
     return <div className="error-banner" role="alert">{t('common.errorOccurred')}</div>;
   }
   const ov = overviewQuery.data;
+  // No server in the URL: open on the main server, else the platform host.
+  const mainId = ov.main_host_id ?? null;
+  const centerId = pickedId ?? mainId ?? ov.platform_host_id ?? null;
 
   const links = new Map<string, RegionLink>(
     ov.links.map((l) => [`${regionKey(l.src_region_id)}:${regionKey(l.dst_region_id)}`, l]),
@@ -163,11 +217,20 @@ function OverviewTab() {
       <p className="page-subtitle">{t(`network.overview.${view}Hint`)}</p>
       {view === 'host' ? (
         <>
-          <HostPicker hosts={allHosts.data ?? []} value={centerId} onChange={(id) => setView('host', id)} />
+          <HostPicker
+            hosts={allHosts.data ?? []}
+            value={centerId}
+            onChange={(id) => setView('host', id)}
+            mainId={mainId}
+            canWrite={canWrite}
+          />
           {centerId != null ? (
             <HostConnectionMap hostId={centerId} onRecenter={(id) => setView('host', id)} />
           ) : (
-            <div className="empty-state"><p>{t('network.hostMap.pickFirst')}</p></div>
+            <div className="empty-state">
+              <p>{t('network.hostMap.pickFirst')}</p>
+              <p className="network-muted">{t(canWrite ? 'network.hostMap.noMainWriter' : 'network.hostMap.noMain')}</p>
+            </div>
           )}
         </>
       ) : rows.length === 0 ? (

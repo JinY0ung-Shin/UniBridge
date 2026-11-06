@@ -794,3 +794,50 @@ button.finder-chip:focus-visible { outline: 2px solid var(--accent-blue); outlin
 .host-map__peer-list li { display: flex; gap: 8px; align-items: baseline; }
 
 .host-map__actions { display: flex; gap: 16px; margin-top: 10px; }
+
+.host-map { position: relative; }
+
+.host-map__picker-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+  margin: 4px 0 12px;
+}
+
+.host-map__picker-row .host-map__picker { flex: 1 1 260px; margin: 0; }
+.host-map__picker-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 4px; }
+
+/* Edge tooltip: services behind each port of the connection, or free. */
+.host-map__tip {
+  position: absolute;
+  z-index: 20;
+  max-width: calc(100% - 8px);
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.18);
+  color: var(--text-primary);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.host-map__tip-title { font-weight: 700; font-size: 13px; }
+.host-map__tip-sub { color: var(--text-tertiary); margin-bottom: 6px; }
+
+.host-map__tip-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.host-map__tip-list li { padding-top: 6px; border-top: 1px solid var(--border-default); }
+.host-map__tip-list li:first-child { padding-top: 0; border-top: 0; }
+.host-map__tip-item--closed { opacity: 0.7; }
+.host-map__tip-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-weight: 600; }
+.host-map__tip-svc { display: flex; align-items: baseline; gap: 8px; margin-top: 2px; }
+.host-map__tip-port { min-width: 44px; color: var(--text-secondary); }
+.host-map__tip-free { margin-top: 2px; color: var(--accent-green); }

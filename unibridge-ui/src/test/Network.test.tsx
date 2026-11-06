@@ -47,6 +47,7 @@ import {
   getNetworkHosts,
   getNetworkOverview,
   getPortUsages,
+  updateNetworkSettings,
   getNetworkProbes,
   getRegions,
   importNetworkCsv,
@@ -81,6 +82,7 @@ const mocked = {
   findPorts: vi.mocked(findPorts),
   createHost: vi.mocked(createNetworkHost),
   updateHost: vi.mocked(updateNetworkHost),
+  updateSettings: vi.mocked(updateNetworkSettings),
 };
 
 const provenance = {
@@ -199,6 +201,7 @@ describe('Network page', () => {
       unreachable_usages: 0,
       probe_mismatches: 0,
       platform_host_id: 1,
+      main_host_id: null,
       auto_sources_failed: ['gateway_upstream'],
     });
     mocked.openings.mockResolvedValue([
@@ -206,7 +209,7 @@ describe('Network page', () => {
       makeOpening({ id: 11, src_region_id: 2, src_region_name: 'busan', dst_region_id: 1, dst_region_name: 'seoul', dst_host_name: 'web-9' }),
     ]);
     const user = userEvent.setup();
-    renderNetwork('/network', READ);
+    renderNetwork('/network?view=matrix', READ);
 
     const matrix = await screen.findByRole('table', { name: 'Region × region openings' });
     expect(screen.getByText('7')).toBeInTheDocument();
@@ -430,6 +433,7 @@ describe('Network host detail', () => {
       outbound: [],
       outbound_via_cidr: [],
       usages: [makeUsage({ id: null, source: 'auto', auto_kind: 'db', reachable_from_platform: false })],
+      outbound_usages: [],
       same_region_hosts: [],
     });
     renderWithProviders(
@@ -466,7 +470,8 @@ function makeOverview(overrides: Partial<NetworkOverview> = {}): NetworkOverview
     unused_openings: 0,
     unreachable_usages: 0,
     probe_mismatches: 0,
-    platform_host_id: 1,
+    platform_host_id: null,
+    main_host_id: null,
     auto_sources_failed: [],
     ...overrides,
   };
@@ -521,7 +526,8 @@ describe('Network region map', () => {
     renderNetwork('/network', READ);
 
     const toggle = await screen.findByRole('group', { name: 'View' });
-    expect(within(toggle).getByRole('button', { name: 'Matrix' })).toHaveAttribute('aria-pressed', 'true');
+    // The server-centred map is the default view.
+    expect(within(toggle).getByRole('button', { name: 'By server' })).toHaveAttribute('aria-pressed', 'true');
     await user.click(within(toggle).getByRole('button', { name: 'Map' }));
 
     expect(screen.queryByRole('table', { name: 'Region × region openings' })).not.toBeInTheDocument();
@@ -778,6 +784,7 @@ describe('Network probes', () => {
       outbound: [],
       outbound_via_cidr: [],
       usages: [],
+      outbound_usages: [],
       same_region_hosts: [],
     });
     mocked.probes.mockResolvedValue([makeProbe({ result: 'refused' })]);
@@ -808,6 +815,7 @@ describe('Network server-centred map', () => {
       makeOpening({ id: 14, src_host_id: null, src_cidr: '10.2.0.0/16', dst_host_id: 3, dst_host_name: 'gpu-1', dst_host_ip: '10.3.0.1', dst_region_name: 'cloud', port_from: 9400, port_to: 9400, last_probe: { id: 1, src_host_name: 'db-1', port: 9400, result: 'timeout', observed_at: '2026-11-01T00:00:00Z', mismatch: 'recorded_open_but_blocked' } }),
     ],
     usages: [makeUsage()],
+    outbound_usages: [makeUsage({ id: 101, host_id: 3, host_name: 'gpu-1', host_ip: '10.3.0.1', port: 9400, service_name: 'dcgm-exporter' })],
     same_region_hosts: [makeHost({ id: 5, name: 'db-2', ip: '10.2.0.10', region_id: 2, region_name: 'busan' })],
   };
 
@@ -818,7 +826,7 @@ describe('Network server-centred map', () => {
     mocked.probes.mockResolvedValue([]);
     mocked.overview.mockResolvedValue(makeOverview());
     mocked.host.mockImplementation(async (id: number) =>
-      id === 2 ? center : { ...center, ...makeHost({ id, name: `host-${id}` }), inbound: [], outbound_via_cidr: [], same_region_hosts: [] },
+      id === 2 ? center : { ...center, ...makeHost({ id, name: `host-${id}` }), inbound: [], outbound_via_cidr: [], outbound_usages: [], same_region_hosts: [] },
     );
   });
 
@@ -846,15 +854,82 @@ describe('Network server-centred map', () => {
 
   });
 
-  it('picks the centre from the overview and the host page shows the same map', async () => {
+  it('picks the centre from the overview when no main server is set', async () => {
     const user = userEvent.setup();
     renderNetwork('/network', READ);
-    const toggle = await screen.findByRole('group', { name: 'View' });
-    await user.click(within(toggle).getByRole('button', { name: 'By server' }));
-    expect(screen.getByText('Pick a server to centre the map on.')).toBeInTheDocument();
+    // The default view, with nothing to centre on yet.
+    expect(await screen.findByText('Pick a server to centre the map on.')).toBeInTheDocument();
+    expect(mocked.host).not.toHaveBeenCalled();
     await user.selectOptions(screen.getByLabelText('Centre server'), '2');
     expect(await screen.findByRole('group', { name: 'Connection map of db-1' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Find free ports on this server' })).toHaveAttribute('href', '/network?tab=finder&dst=db-1');
+  });
+
+  it('opens straight on the main server, and a writer can make another server the main one', async () => {
+    mocked.overview.mockResolvedValue(makeOverview({ platform_host_id: 1, main_host_id: 2 }));
+    mocked.updateSettings.mockResolvedValue({ platform_host_id: 1, main_host_id: 1 });
+    const user = userEvent.setup();
+    renderNetwork('/network', WRITE);
+
+    expect(await screen.findByRole('group', { name: 'Connection map of db-1' })).toBeInTheDocument();
+    expect(screen.getByText('Main server')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Set as main server' })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'db-1 (10.2.0.9) · main' })).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('Centre server'), '1');
+    expect(await screen.findByRole('group', { name: 'Connection map of host-1' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Set as main server' }));
+    await waitFor(() => expect(mocked.updateSettings).toHaveBeenCalledWith({ main_host_id: 1 }));
+    await user.click(screen.getByRole('button', { name: 'Back to db-1' }));
+    expect(await screen.findByRole('group', { name: 'Connection map of db-1' })).toBeInTheDocument();
+  });
+
+  it('a reader sees the main server but cannot change it', async () => {
+    mocked.overview.mockResolvedValue(makeOverview({ main_host_id: 2 }));
+    renderNetwork('/network', READ);
+    expect(await screen.findByRole('group', { name: 'Connection map of db-1' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Set as main server' })).not.toBeInTheDocument();
+  });
+
+  it('falls back to the platform host without a main server', async () => {
+    mocked.overview.mockResolvedValue(makeOverview({ platform_host_id: 2 }));
+    renderNetwork('/network', READ);
+    expect(await screen.findByRole('group', { name: 'Connection map of db-1' })).toBeInTheDocument();
+  });
+
+  it('hovering an edge shows the service on each port or that the port is free', async () => {
+    const user = userEvent.setup();
+    renderNetwork('/network?host=2', READ);
+    const map = await screen.findByRole('group', { name: 'Connection map of db-1' });
+
+    const fromApp = within(map).getByRole('button', { name: 'app-1 → db-1: tcp/5432, tcp/8000-8010' });
+    await user.hover(fromApp);
+    let tip = await screen.findByRole('tooltip');
+    expect(fromApp).toHaveAttribute('aria-describedby', tip.id);
+    expect(tip).toHaveTextContent('Services on db-1');
+    const [single, range] = within(tip).getAllByRole('listitem');
+    expect(single).toHaveTextContent('tcp/5432');
+    expect(single).toHaveTextContent('postgres');
+    expect(single).not.toHaveTextContent('Free port');
+    expect(range).toHaveTextContent('tcp/8000-8010');
+    expect(range).toHaveTextContent('All 11 ports free');
+    expect(range).toHaveTextContent('Unverified');
+
+    await user.unhover(fromApp);
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+    // Outbound: the services are the peer's, through a range the host is in.
+    await user.hover(within(map).getByRole('button', { name: 'db-1 → gpu-1: tcp/9400' }));
+    tip = await screen.findByRole('tooltip');
+    expect(tip).toHaveTextContent('Services on gpu-1');
+    expect(tip).toHaveTextContent('dcgm-exporter');
+    expect(tip).toHaveTextContent('Last probe timed out');
+
+    // A closed opening with nothing on record.
+    await user.hover(within(map).getByRole('button', { name: /^172\.16\.0\.0\/16 → db-1/ }));
+    tip = await screen.findByRole('tooltip');
+    expect(tip).toHaveTextContent('Closed');
+    expect(tip).toHaveTextContent('Free port: no service on record');
   });
 });
 
