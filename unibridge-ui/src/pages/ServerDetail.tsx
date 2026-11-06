@@ -20,9 +20,14 @@ const DURATIONS: Array<{ key: string; step: string; seconds: number }> = [
   { key: '24h', step: '300s', seconds: 24 * 3600 },
 ];
 
+/** The metrics endpoint's 502 detail when every Prometheus query failed. */
+const PROMETHEUS_DOWN_DETAIL = 'Prometheus is unreachable';
+
 interface ChartWindow {
   spanSeconds: number;
   stepSeconds: number;
+  /** When the data was fetched (epoch seconds): the window's end. */
+  endSeconds: number;
 }
 
 const METRIC_COLORS: Record<string, 'blue' | 'green' | 'yellow'> = {
@@ -167,7 +172,7 @@ function buildChartPanel(
   return {
     metric,
     lines,
-    data: withGaps(
+    data: onStepGrid(
       Array.from(dataByTimestamp.values()).sort((a, b) => a.timestamp - b.timestamp),
       lines.map((line) => line.key),
       win,
@@ -176,29 +181,44 @@ function buildChartPanel(
 }
 
 /**
- * Make missing samples visible: Prometheus omits the steps where a series had
- * no data (host down, exporter not scraped), so drawing the remaining points
- * joined up would hide an outage. Every row gets an explicit null for each line
- * it lacks, and a null row is inserted one step into every hole, so the lines
- * break there (the chart does not connect nulls).
+ * Lay the samples on the full step grid of the window, from its start to its
+ * end, with a null row for every step that has no sample. Prometheus omits
+ * the steps where a series had no data (host down, exporter not scraped), and
+ * the X axis is categorical, so without the grid an outage would be joined up
+ * (or, at the start or end of the window, simply missing) and a 6h hole in a
+ * 24h chart would take one slot. The chart does not connect nulls, so every
+ * missing step shows as a break of its real width.
+ *
+ * The grid is anchored on a sample, so rows line up with Prometheus' own
+ * evaluation times. If the browser clock is far off the server's, the window
+ * edges are dropped and only the holes between samples are filled.
  */
-function withGaps(rows: ChartDatum[], keys: string[], win: ChartWindow): ChartDatum[] {
+function onStepGrid(rows: ChartDatum[], keys: string[], win: ChartWindow): ChartDatum[] {
+  if (rows.length === 0) return rows;
+  const step = win.stepSeconds;
+  const anchor = rows[0].timestamp;
+  const slotOf = (ts: number) => Math.round((ts - anchor) / step);
+  const bySlot = new Map<number, ChartDatum>();
+  for (const row of rows) bySlot.set(slotOf(row.timestamp), row);
+  const lastSampleSlot = slotOf(rows[rows.length - 1].timestamp);
+  let first = Math.min(0, Math.ceil((win.endSeconds - win.spanSeconds - anchor) / step));
+  let last = Math.max(lastSampleSlot, Math.floor((win.endSeconds - anchor) / step));
+  if (last - first + 1 > 2 * (win.spanSeconds / step + 1)) {
+    first = 0;
+    last = lastSampleSlot;
+  }
   const out: ChartDatum[] = [];
-  const blank = (timestamp: number): ChartDatum => {
-    const row: ChartDatum = { timestamp, time: formatChartTimestamp(timestamp, win.spanSeconds) };
-    for (const key of keys) row[key] = null;
-    return row;
-  };
-  rows.forEach((row, i) => {
-    const previous = rows[i - 1];
-    if (previous && row.timestamp - previous.timestamp > win.stepSeconds * 1.5) {
-      out.push(blank(previous.timestamp + win.stepSeconds));
+  for (let slot = first; slot <= last; slot += 1) {
+    let row = bySlot.get(slot);
+    if (!row) {
+      const timestamp = anchor + slot * step;
+      row = { timestamp, time: formatChartTimestamp(timestamp, win.spanSeconds) };
     }
     for (const key of keys) {
       if (!(key in row)) row[key] = null;
     }
     out.push(row);
-  });
+  }
   return out;
 }
 
@@ -224,11 +244,15 @@ function ServerDetail() {
   const chartWindow: ChartWindow = {
     spanSeconds: duration.seconds,
     stepSeconds: stepSeconds(duration.step),
+    // When the data arrived (0 only while there is none, so no grid is built).
+    endSeconds: metricsQuery.dataUpdatedAt / 1000,
   };
   const chartPanels = METRIC_ORDER
     .map((metric) => buildChartPanel(metric, series.filter((s) => s.metric === metric), theme, chartWindow))
     .filter((panel) => panel.lines.length > 0);
-  const prometheusDown = metricsQuery.error instanceof AxiosError && metricsQuery.error.response?.status === 502;
+  const prometheusDown = metricsQuery.error instanceof AxiosError
+    && metricsQuery.error.response?.status === 502
+    && (metricsQuery.error.response.data as { detail?: unknown } | undefined)?.detail === PROMETHEUS_DOWN_DETAIL;
 
   return (
     <div className="connections">

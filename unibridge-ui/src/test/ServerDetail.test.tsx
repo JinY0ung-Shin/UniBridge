@@ -151,7 +151,7 @@ describe('ServerDetail page', () => {
     mockGetServerMetrics.mockResolvedValue([
       {
         metric: 'cpu',
-        points: [{ t: 2, v: 20 }, { t: 1, v: 10 }],
+        points: [{ t: 120, v: 20 }, { t: 60, v: 10 }],
       },
       {
         metric: 'mem',
@@ -182,7 +182,7 @@ describe('ServerDetail page', () => {
     expect(screen.getAllByTestId('chart-line').map((line) => line.textContent)).toEqual(['cpu', 'mem', '/', '/data']);
     expect(screen.getByLabelText('Disk capacity')).toHaveTextContent('/: 512 B / 1.0 KiB');
     expect(screen.getByLabelText('Disk capacity')).toHaveTextContent('/data: total 2.0 KiB');
-    expect(rechartsCapture.chartData[0].map((point) => (point as { timestamp: number }).timestamp)).toEqual([1, 2]);
+    expect(rechartsCapture.chartData[0].map((point) => (point as { timestamp: number }).timestamp)).toEqual([60, 120]);
   });
 
   it('renders one line per GPU and lists each GPU model once', async () => {
@@ -246,19 +246,47 @@ describe('ServerDetail page', () => {
     expect(screen.queryByText('10.0.0.7:39100')).not.toBeInTheDocument();
   });
 
-  it('breaks the line where samples are missing and labels times in KST', async () => {
-    mockGetServers.mockResolvedValue([server]);
-    // 1h window, 60s step: 00:00, 00:01, then nothing until 00:10 UTC (an outage).
-    mockGetServerMetrics.mockResolvedValue([
-      { metric: 'cpu', points: [{ t: 0, v: 10 }, { t: 60, v: 11 }, { t: 600, v: 12 }] },
-    ]);
-    renderWithProviders(<ServerDetail />);
-    await screen.findByRole('heading', { name: 'CPU usage (%)' });
+  type GridRow = { timestamp: number; time: string; value_0: number | null };
 
-    const rows = rechartsCapture.chartData.at(-1) as Array<{ timestamp: number; time: string; value_0: number | null }>;
-    expect(rows.map((row) => [row.timestamp, row.value_0])).toEqual([[0, 10], [60, 11], [120, null], [600, 12]]);
+  async function renderCpuAt(nowSeconds: number, points: Array<{ t: number; v: number }>) {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(nowSeconds * 1000);
+    try {
+      mockGetServers.mockResolvedValue([server]);
+      mockGetServerMetrics.mockResolvedValue([{ metric: 'cpu', points }]);
+      renderWithProviders(<ServerDetail />);
+      await screen.findByRole('heading', { name: 'CPU usage (%)' });
+      return rechartsCapture.chartData.at(-1) as GridRow[];
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('puts every step of the window on the axis, with nulls where samples are missing', async () => {
+    // 1h window ending at 01:00 UTC, 60s step: samples only at 00:00, 00:01, 00:10.
+    const rows = await renderCpuAt(3600, [{ t: 0, v: 10 }, { t: 60, v: 11 }, { t: 600, v: 12 }]);
+
+    expect(rows).toHaveLength(61); // 00:00 … 01:00, one row per step
+    expect(rows.map((row) => row.timestamp)).toEqual(Array.from({ length: 61 }, (_, i) => i * 60));
+    expect(rows.slice(0, 3).map((row) => row.value_0)).toEqual([10, 11, null]);
+    expect(rows[10].value_0).toBe(12);
+    // Down since 00:11: the end of the window is empty, not cut off.
+    expect(rows.slice(11).every((row) => row.value_0 === null)).toBe(true);
     expect(rows[0].time).toBe('09:00'); // epoch 0 = 09:00 KST, whatever the browser's zone
     expect(screen.getByTestId('chart-line')).toHaveAttribute('data-connect-nulls', 'false');
+  });
+
+  it('shows an outage at the start of the window', async () => {
+    // Host came back at 00:50; the window starts at 00:00.
+    const rows = await renderCpuAt(3600, [{ t: 3000, v: 5 }, { t: 3060, v: 6 }]);
+    expect(rows[0].timestamp).toBe(0);
+    expect(rows).toHaveLength(61);
+    expect(rows.filter((row) => row.value_0 !== null)).toHaveLength(2);
+  });
+
+  it('fills only the holes between samples when the browser clock is far off', async () => {
+    const rows = await renderCpuAt(10 * 86400, [{ t: 0, v: 1 }, { t: 180, v: 2 }]);
+    expect(rows.map((row) => [row.timestamp, row.value_0])).toEqual([[0, 1], [60, null], [120, null], [180, 2]]);
   });
 
   it('gives each of eight GPUs its own colour', async () => {
@@ -292,5 +320,17 @@ describe('ServerDetail page', () => {
     expect(await screen.findByRole('alert', {}, { timeout: 5000 })).toHaveTextContent(
       'Prometheus is unreachable, so metrics could not be loaded.',
     );
+  });
+
+  it('keeps the generic error for any other 502 (e.g. from a proxy)', async () => {
+    const { AxiosError } = await import('axios');
+    mockGetServers.mockResolvedValue([server]);
+    mockGetServerMetrics.mockRejectedValue(
+      new AxiosError('Bad Gateway', 'ERR_BAD_RESPONSE', undefined, undefined, {
+        status: 502, data: '<html>502 Bad Gateway</html>',
+      } as never),
+    );
+    renderWithProviders(<ServerDetail />);
+    expect(await screen.findByRole('alert', {}, { timeout: 5000 })).toHaveTextContent('An error occurred');
   });
 });
