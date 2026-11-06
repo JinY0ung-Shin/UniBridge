@@ -134,6 +134,21 @@ The server detail disk chart keeps the same mountpoint scope but displays each
 returned `mountpoint` label as a separate line. Alerts still use the worst
 selected filesystem per host so existing warning/critical behavior stays stable.
 
+If a host is up but **no** filesystem matches its mountpoints (a typo such as
+`/Data`, or a containerised node_exporter that reports `/rootfs/...`), disk
+alerting would otherwise stop without a word, so `server_disk` fires as a
+warning naming the mountpoints until a filesystem matches. Set both disk
+thresholds to 0 to switch disk alerting off for such a host instead.
+
+Custom `labels` (API / config import only) must be valid Prometheus label names
+and may not use `host`, `job`, `instance`, `mode`, `mountpoint`, `fstype`,
+`device`, `gpu`, `modelName`, `UUID` or a `__` prefix: a target label overrides
+the scraped one, so these would break the host's own queries.
+
+The active instance rewrites the Prometheus targets files from the database on
+every check cycle (only when they changed), so a lost or overwritten write is
+repaired within one interval.
+
 ## Signals & thresholds
 
 | alert_type             | Fires when                                              | Severity |
@@ -157,7 +172,10 @@ resolved on the next check cycle (with the normal resolve notification),
 bypassing recovery damping.
 
 `server_disk` escalates: a warning re-fires as critical when usage crosses the
-crit threshold. Set **Re-notify every N cycles** (`repeat_alert_after_cycles`)
+crit threshold. Each severity is announced once per incident — usage hovering
+around the crit threshold does not mail "critical" again on every crossing.
+A failed escalation mail is not retried, so the incident's recovery mail is
+still sent. Set **Re-notify every N cycles** (`repeat_alert_after_cycles`)
 to re-send a still-firing alert every N check cycles (0 = notify once per
 transition).
 
