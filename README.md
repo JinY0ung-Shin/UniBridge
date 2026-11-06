@@ -484,7 +484,7 @@ http_headers = { apikey = "<API_KEY>" }
   | Read-only SQL | `run_query` | `query-api` |
   | S3 | `s3_list_connections`, `s3_list_buckets`, `s3_list_objects`, `s3_get_object_metadata`, `s3_read_object` | `s3-api` |
   | NAS | `nas_list_connections`, `nas_list_entries`, `nas_get_metadata`, `nas_read_file` | `nas-api` |
-  | Network map | `network_overview`, `network_list_regions`, `network_find_hosts`, `network_get_host`, `network_check_access`, `network_list_openings`, `network_list_port_usages`, `network_list_probes`, `network_probe_targets` | `network-api` |
+  | Network map | `network_overview`, `network_list_regions`, `network_find_hosts`, `network_get_host`, `network_check_access`, `network_find_ports`, `network_list_openings`, `network_list_port_usages`, `network_list_probes`, `network_probe_targets` | `network-api` |
   | Network map (record) | `network_register_host`, `network_update_host`, `network_record_opening`, `network_update_opening`, `network_delete_opening`, `network_record_port_usage`, `network_delete_port_usage`, `network_report_probes` | `network-api` and `network-write-api` |
   | Gateway APIs | `search_apis`, `call_api` | each offered route's own grant |
 
@@ -1214,6 +1214,12 @@ firewall opening is requested through the company system by whoever needs it.
 - **Access check** answers "can A reach B:port?": same region → open; across
   regions → open only through a recorded opening, otherwise blocked with a
   request draft to paste into the company form.
+- **Free ports** answers "where can a new service listen so these servers reach
+  it without a firewall request?": ports every client already reaches on a
+  server (or on every server, best first), minus those in use or measured
+  blocked, with suggested ports — probe-verified ones first.
+- The **By server** map centres on one server: what reaches it, what it
+  reaches (with ports and state) and its region; click a server to move on.
 - Port usage UniBridge already knows (database connections, S3 endpoints,
   node_exporter/dcgm-exporter targets, external-service metrics, APISIX upstream
   nodes) is listed automatically. Set the **platform host** (the server

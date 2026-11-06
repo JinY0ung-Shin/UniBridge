@@ -123,6 +123,32 @@ async def test_check_access_explains_and_drafts_a_request(client, seeded_db, adm
     assert gateway.calls[-1] == ("network-api", "GET", "/api/network/check")
 
 
+async def test_find_ports_places_a_service_where_sources_already_get_through(
+    client, seeded_db, admin_token, gateway
+):
+    ids = await _map(client, admin_token)
+    h = auth_header(admin_token)
+    await client.post("/network/openings", headers=h, json={
+        "src_host": "a1", "dst_host": "b1", "port_from": 8000, "port_to": 8002,
+    })
+    await client.post("/network/port-usages", headers=h, json={"host": "b1", "port": 8000, "service_name": "x"})
+    key = await _create_api_key(seeded_db, "reader", routes=["mcp-api", "network-api"])
+
+    one = _json(await _call(client, key, "network_find_ports", {"sources": ["a1"], "dst": "b1"}))
+    assert [s["port"] for s in one["hosts"][0]["suggestions"]] == [8001, 8002]
+    assert gateway.calls[-1] == ("network-api", "GET", "/api/network/port-finder")
+
+    ranked = _json(await _call(client, key, "network_find_ports", {"sources": ["a1"], "limit": 5}))
+    assert [r["host"]["name"] for r in ranked["hosts"]] == ["a2", "b1"]  # same region first
+    region = _json(await _call(client, key, "network_find_ports", {"source_region_ids": [ids["A"]]}))
+    assert region["hosts"] == []  # a2 is in A too and has no opening to b1
+    both = _json(await _call(client, key, "network_find_ports", {"sources": ["a1", "a2"], "port": 8001}))
+    assert both["hosts"] == []  # a2 has no opening to b1
+
+    nothing = await _call(client, key, "network_find_ports", {})
+    assert nothing["isError"] is True and "sources" in _text(nothing)
+
+
 async def test_write_tools_go_out_on_network_write_api_and_stay_unverified(
     client, seeded_db, admin_token, gateway
 ):

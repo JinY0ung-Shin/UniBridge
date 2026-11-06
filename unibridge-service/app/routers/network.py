@@ -49,6 +49,7 @@ from app.schemas import (
     NetworkOverview,
     NetworkProtocol,
     NetworkSettings,
+    PortFinderResponse,
     PortUsageCreate,
     PortUsageResponse,
     PortUsageUpdate,
@@ -226,6 +227,47 @@ async def check_access(
     try:
         return await network_map.check_access(
             db, snap, src, dst, port, protocol, redact=not actor.sees_config
+        )
+    except NetworkMapError as exc:
+        _raise(exc)
+        raise  # unreachable
+
+
+@router.get("/port-finder", response_model=PortFinderResponse)
+async def find_ports(
+    src: list[str] = Query(
+        default_factory=list,
+        max_length=50,
+        description="Source host names or IPs that must reach the service (repeatable)",
+    ),
+    src_region: list[int] = Query(
+        default_factory=list, max_length=20, description="Every host of these regions is a source"
+    ),
+    dst: str | None = Query(
+        None, max_length=100, description="Destination host; omitted = every host, best first"
+    ),
+    dst_region: int | None = Query(None, description="Only destination hosts in this region (ignored with dst)"),
+    port: int | None = Query(None, ge=1, le=65535, description="The port you would like"),
+    protocol: NetworkProtocol = Query("tcp"),
+    actor: Actor = Depends(network_reader),
+    db: AsyncSession = Depends(get_db),
+) -> PortFinderResponse:
+    """Ports every source already reaches on a destination and nothing uses yet:
+    where a new service can listen without a firewall request."""
+    if any(len(ref) > 100 or not ref.strip() for ref in src):
+        raise HTTPException(status_code=422, detail="Each src is a host name or IP (1-100 chars)")
+    snap = await _snapshot(db)
+    try:
+        return await network_map.find_ports(
+            db,
+            snap,
+            src_refs=[ref.strip() for ref in src],
+            src_region_ids=src_region,
+            dst_ref=dst.strip() if dst and dst.strip() else None,
+            dst_region_id=dst_region,
+            protocol=protocol,
+            port=port,
+            redact=not actor.sees_config,
         )
     except NetworkMapError as exc:
         _raise(exc)
@@ -416,10 +458,22 @@ async def get_host(
             for o in snap.openings
             if o.src_host_id == host_id
         ],
+        outbound_via_cidr=[
+            network_map.opening_response(snap, o, usages)
+            for o in snap.openings
+            if o.src_host_id is None
+            and o.dst_host_id != host_id
+            and network_map.source_covers_host(o, host)
+        ],
         usages=sorted(
             _shown(actor, [u for u in usages if u.host_id == host_id]),
             key=lambda u: (u.port, u.service_name),
         ),
+        same_region_hosts=[
+            network_map.host_response(snap, h)
+            for h in sorted(snap.hosts.values(), key=lambda h: h.name)
+            if host.region_id is not None and h.region_id == host.region_id and h.id != host_id
+        ],
     )
 
 

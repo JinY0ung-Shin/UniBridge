@@ -2062,8 +2062,13 @@ class PortUsageResponse(BaseModel):
 
 class NetworkHostDetail(NetworkHostResponse):
     inbound: list[FirewallOpeningResponse] = Field(default_factory=list)
+    # Openings whose source is this host by name.
     outbound: list[FirewallOpeningResponse] = Field(default_factory=list)
+    # Openings whose source is a network range this host's IP falls in.
+    outbound_via_cidr: list[FirewallOpeningResponse] = Field(default_factory=list)
     usages: list[PortUsageResponse] = Field(default_factory=list)
+    # Hosts in the same region: reachable both ways on every port, no opening needed.
+    same_region_hosts: list[NetworkHostResponse] = Field(default_factory=list)
 
 
 class AccessEndpoint(BaseModel):
@@ -2227,6 +2232,69 @@ class ProbeTargetsResponse(BaseModel):
     src_host_name: str
     src_ip: str
     targets: list[ProbeTarget] = Field(default_factory=list)
+
+
+# ── Port finder: which ports the given sources can already reach ────────────
+
+
+class PortSpan(BaseModel):
+    port_from: int
+    port_to: int
+
+
+class FinderUsedPort(BaseModel):
+    port: int
+    service_name: str
+    # recorded (port usage) | auto (UniBridge connects there) | listening (a
+    # probe got through to a listener nobody recorded)
+    kind: str
+    auto_kind: str | None = None
+
+
+class FinderBlockedPort(BaseModel):
+    """A recorded-open port a source's probe timed out on."""
+
+    port: int
+    src_host_name: str
+    observed_at: datetime
+
+
+class PortSuggestion(BaseModel):
+    port: int
+    # probed_free: a probe from one of the sources was refused (it passed the
+    # firewall and nothing listens); recorded: inside an open opening, not measured.
+    evidence: str
+    probed_from: list[str] = Field(default_factory=list)
+
+
+class PortFinderHost(BaseModel):
+    host: NetworkHostResponse
+    # Every source shares the host's region: any port not in use works.
+    any_port: bool
+    reachable: list[PortSpan] = Field(default_factory=list)
+    reachable_count: int = 0
+    free: list[PortSpan] = Field(default_factory=list)
+    free_count: int = 0
+    # free was cut to the first spans (count stays exact).
+    free_truncated: bool = False
+    used: list[FinderUsedPort] = Field(default_factory=list)
+    blocked: list[FinderBlockedPort] = Field(default_factory=list)
+    suggestions: list[PortSuggestion] = Field(default_factory=list)
+    # With ?port=: free | used | blocked | unreachable
+    requested_port: str | None = None
+
+
+class PortFinderResponse(BaseModel):
+    protocol: str
+    port: int | None = None
+    sources: list[AccessEndpoint] = Field(default_factory=list)
+    # Sources in no region: only openings that name them count for them.
+    unplaced_sources: list[str] = Field(default_factory=list)
+    # Without dst: hosts in no region that no source reaches by an opening
+    # (left out of hosts; same-region reach cannot apply to them).
+    unplaced_destinations: list[str] = Field(default_factory=list)
+    hosts: list[PortFinderHost] = Field(default_factory=list)
+    truncated: bool = False
 
 
 NetworkImportKind = Literal["hosts", "openings", "port_usages"]

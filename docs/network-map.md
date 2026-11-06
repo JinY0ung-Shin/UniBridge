@@ -6,11 +6,20 @@ whoever needs it — so nobody has the whole picture of what is open. The networ
 map is that picture: one shared record of regions, hosts, the openings between
 regions and the services listening on each port, kept by people and by agents.
 
-UI: **Network / Firewall** (tabs Overview, Regions, Hosts, Firewall openings,
-Port usage, Probes, Access check, Settings) and a page per host
-(`/network/hosts/:id`). The overview shows the regions as a matrix or as a map
-(regions as nodes, open openings as directed edges; click a cell or an edge for
-its openings).
+UI: **Network / Firewall** (tabs Overview, Free ports, Regions, Hosts, Firewall
+openings, Port usage, Probes, Access check, Settings) and a page per host
+(`/network/hosts/:id`). The overview has three views:
+
+- **By server** — one server in the middle, what reaches it on the left
+  (inbound openings, from hosts or CIDR ranges), what it reaches on the right
+  (outbound openings, its own and those of a range its IP is in) and its own
+  region below (every port, both ways). Edges carry their ports and are
+  coloured by state (open, has unverified, probe mismatch, closed only); click
+  an edge for its openings and a server to centre the map on it
+  (`/network?view=host&host=<id>`). The host page shows the same map.
+- **Matrix** and **Map** — regions against regions (as a table, or regions as
+  nodes and open openings as directed edges); click a cell or an edge for its
+  openings.
 API: `/_api/network/*` for the UI, `/api/network/*` through the gateway for API
 keys, and the MCP `network` tool group.
 
@@ -50,6 +59,38 @@ recorded on that port.
 Records are not proof: an opening marked open may have expired in the company
 system, and one nobody recorded may exist. Keep the map current — mark expired
 or revoked openings **closed** rather than deleting them, so their history stays.
+
+## Free ports
+
+"I am bringing up a service these servers must reach: which ports work today,
+without a firewall request?" — **Free ports** tab, `GET /network/port-finder`,
+MCP `network_find_ports`.
+
+Give the client servers (`src`, repeatable: host names or IPs; `src_region`:
+every host of a region) and optionally the destination (`dst`), a wanted
+`port` and `protocol`. For each destination host:
+
+| Field | Meaning |
+|---|---|
+| `any_port` | Every source is in the host's region: any port not in use works. |
+| `reachable` | Port spans **every** source reaches (same region, or an open opening covering that source); the intersection across sources. |
+| `free` / `free_count` | `reachable` minus ports in use and ports measured blocked. |
+| `used` | `recorded` (port usage), `auto` (UniBridge connects there) or `listening` (a probe got an answer from a service nobody recorded). |
+| `blocked` | Ports recorded open that a source's probe timed out on: excluded from `free`, check the firewall. |
+| `suggestions` | Up to 8 free ports: `probed_free` first (a source's probe was refused: it passed the firewall and nothing listens), then the lowest free ports, or the ones nearest `port` when given. Same-region hosts get none: any port works. |
+| `requested_port` | With `port`: `free`, `used`, `blocked` or `unreachable`. |
+
+Without `dst` every other host is checked (optionally only `dst_region`) and
+the ones with a free port are listed, same-region hosts first, then by measured
+free ports and room; with `port`, only hosts where that port is free. A source
+in no region counts only openings that name it or its range
+(`unplaced_sources`); a destination host in no region that no source reaches
+through an opening is left out and named in `unplaced_destinations`.
+`dst_region` applies only without `dst`. A probe timeout older than the latest
+change to the opening that covers it does not count as blocked. When nothing fits, the access check drafts the request.
+
+The **Find free ports on this server** link on a host fills in the destination
+(`/network?tab=finder&dst=<name>`; `src=` can be added the same way).
 
 ## Setup
 
@@ -207,7 +248,7 @@ switched off in MCP settings), a key with `network-api` gets the read tools and
 one that also has `network-write-api` the write tools:
 
 - read: `network_overview`, `network_list_regions`, `network_find_hosts`,
-  `network_get_host`, `network_check_access`, `network_list_openings`,
+  `network_get_host`, `network_check_access`, `network_find_ports`, `network_list_openings`,
   `network_list_port_usages`, `network_list_probes`, `network_probe_targets`
 - write: `network_register_host`, `network_update_host`,
   `network_record_opening`, `network_update_opening`, `network_delete_opening`,
@@ -235,10 +276,11 @@ All under `/network` (`/_api/network` from the UI, `/api/network` with a key).
 | GET | `/overview` | counts, region links, `auto_sources_failed` |
 | GET / PUT | `/settings` | `platform_host_id`; PUT people only |
 | GET | `/check` | `src`, `dst`, `port`, `protocol` |
+| GET | `/port-finder` | `src` (repeatable), `src_region` (repeatable), `dst`, `dst_region`, `port`, `protocol`: see [Free ports](#free-ports) |
 | GET / POST | `/regions` | POST people only |
 | PUT / DELETE | `/regions/{id}` | people only; a region with hosts cannot be deleted |
 | GET / POST | `/hosts` | GET filters `region_id`, `q`, `unverified`; POST takes `region_id` or `region` (name) |
-| GET / PUT / DELETE | `/hosts/{id}` | GET adds inbound and outbound openings and port usage; DELETE removes its openings, port usage and probes too |
+| GET / PUT / DELETE | `/hosts/{id}` | GET adds inbound and outbound openings (`outbound_via_cidr`: those whose source range contains its IP), port usage and `same_region_hosts`; DELETE removes its openings, port usage and probes too |
 | POST | `/hosts/{id}/verify` | people only |
 | POST | `/hosts/import-monitored` | people only |
 | GET / POST | `/openings` | GET filters `host_id`, `region_id`, `status`, `port`, `unverified`; POST takes `src_host_id`/`src_host`/`src_cidr` and `dst_host_id`/`dst_host` (name or IP); a duplicate answers 409 with the existing `id` |

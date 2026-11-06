@@ -87,7 +87,8 @@ SERVER_INSTRUCTIONS = (
     "For whether one server can reach another, call network_check_access: hosts "
     "in one region reach each other on every port, other regions only through a "
     "recorded firewall opening, and a blocked answer carries a request_draft for "
-    "the company firewall request system. "
+    "the company firewall request system. To place a new service where its "
+    "clients already get through, call network_find_ports. "
     "Results are capped: "
     "truncated=true means rows or bytes were cut, so narrow the query."
 )
@@ -1136,6 +1137,28 @@ async def _network_check_access(ctx: ToolContext, args: dict[str, Any]) -> Any:
     return response.json()
 
 
+async def _network_find_ports(ctx: ToolContext, args: dict[str, Any]) -> Any:
+    sources = [str(ref).strip() for ref in args.get("sources") or [] if str(ref).strip()]
+    region_ids = [int(r) for r in args.get("source_region_ids") or []]
+    if not sources and not region_ids:
+        raise ToolError("Give sources (host names or IPs) or source_region_ids")
+    params: dict[str, Any] = {"protocol": args.get("protocol") or "tcp"}
+    if sources:
+        params["src"] = sources
+    if region_ids:
+        params["src_region"] = region_ids
+    for arg, param in (("dst", "dst"), ("dst_region_id", "dst_region"), ("port", "port")):
+        if args.get(arg) not in (None, ""):
+            params[param] = args[arg]
+    body = (await _gateway(ctx, "GET", "/api/network/port-finder", params=params)).json()
+    limit = int(args.get("limit") or _NETWORK_LIST_DEFAULT)
+    hosts = body.get("hosts", [])
+    if len(hosts) > limit:
+        body["hosts"] = hosts[:limit]
+        body["truncated"] = True
+    return body
+
+
 async def _network_list_openings(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     host = args.get("host")
     response = await _gateway(
@@ -1425,6 +1448,47 @@ NETWORK_READ_TOOLS = (
             ("src", "dst", "port"),
         ),
         handler=_network_check_access,
+    ),
+    Tool(
+        name="network_find_ports",
+        title="Find ports a new service can use",
+        description=(
+            "Where can a new service listen so that the given sources reach it "
+            "without a new firewall request? For each destination host (dst, or every "
+            "host ranked best first): reachable = ports every source already reaches "
+            "(any_port=true when all sources share its region), free = those minus "
+            "ports in use (recorded, discovered, or a listener a probe found), "
+            "suggestions = concrete free ports, probed_free ones measured as passing "
+            "the firewall with nothing listening. blocked lists recorded-open ports a "
+            "source's probe timed out on. With port, requested_port says whether that "
+            "port is free, used, blocked or unreachable, and without dst only hosts "
+            "where it is free are listed. When nothing fits, use network_check_access "
+            "for the request_draft."
+        ),
+        group="network",
+        input_schema=_object_schema(
+            {
+                "sources": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "maxItems": 50,
+                    "description": "Hosts (names or IPs) that must reach the service",
+                },
+                "source_region_ids": {
+                    "type": "array",
+                    "items": {"type": "integer", "minimum": 1},
+                    "maxItems": 20,
+                    "description": "Every host of these regions must reach it",
+                },
+                "dst": {"type": "string", "description": "Destination host; omit to rank every host"},
+                "dst_region_id": _REGION_ID_ARG,
+                "port": _PORT_ARG,
+                "protocol": _PROTOCOL_ARG,
+                "limit": _LIST_LIMIT_ARG,
+            },
+            (),
+        ),
+        handler=_network_find_ports,
     ),
     Tool(
         name="network_list_openings",
