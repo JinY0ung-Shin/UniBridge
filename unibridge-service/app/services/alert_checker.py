@@ -1028,20 +1028,30 @@ async def _handle_dispatch_result(
 
     ``result`` is tri-state (see :func:`dispatch_alert`): True = delivered,
     None = nothing to deliver to (a skip, not a failure), False = a delivery was
-    attempted and failed. Only a failed *first* trigger is re-armed, so the next
-    cycle re-announces it. A failed re-announcement (severity escalation or the
-    repeat cadence) of an incident recipients were already paged for is not:
-    re-arming would mark it unannounced, and its recovery would then be withheld
-    — the same rule the mute path follows. A failed *recovery* is deliberately left alone — the target
-    is healthy again, so a missed recovery is self-correcting and re-arming would
-    only risk a spurious re-trigger — but it is logged.
+    attempted and failed.
+
+    A delivered (or recipient-less) trigger records its severity as announced,
+    which is what stops an escalation from re-firing.
+
+    Only a failed *first* trigger is re-armed, so the next cycle re-announces
+    it. A failed re-announcement of an incident recipients were already paged
+    for is not: re-arming would mark it unannounced, and its recovery would then
+    be withheld — the same rule the mute path follows. A failed *escalation*
+    still retries on its own: its severity stays above the announced one, so the
+    state machine re-fires it every cycle until one is delivered. A failed
+    *recovery* is deliberately left alone — the target is healthy again, so a
+    missed recovery is self-correcting and re-arming would only risk a spurious
+    re-trigger — but it is logged.
     """
     if result is not False:
+        if outbound == "triggered" and state.mark_announced(rule_type, target):
+            await _persist_state_safely(state, rule_type, target)
         return
     if outbound == "triggered" and announced:
         logger.warning(
             "Re-announcement of %s/%s failed to deliver — not re-arming "
-            "(the incident was already announced; its recovery must still go out)",
+            "(the incident was already announced; its recovery must still go out, "
+            "and an escalation retries next cycle)",
             rule_type, target,
         )
     elif outbound == "triggered":

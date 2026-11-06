@@ -54,6 +54,7 @@ def test_disk_hovering_at_critical_mails_critical_once_per_incident():
     kw = dict(trigger_after_failures=1)
     assert state.update("server_disk", "web1", is_healthy=False, severity="warning", **kw) == "triggered"
     assert state.update("server_disk", "web1", is_healthy=False, severity="critical", **kw) == "triggered"
+    assert state.mark_announced("server_disk", "web1") is True  # the critical mail went out
     for _ in range(3):
         assert state.update("server_disk", "web1", is_healthy=False, severity="warning", **kw) is None
         assert state.update("server_disk", "web1", is_healthy=False, severity="critical", **kw) is None
@@ -117,6 +118,73 @@ async def test_failed_reannouncement_keeps_the_recovery(monkeypatch):
         await alert_checker._process_host_signal(
             state, _disk_signal(True, None), mutes=MuteIndex(), **_CYCLE)
     assert d.await_args.kwargs["alert_type"] == "resolved"
+
+
+async def _cycle(state, healthy, severity, *, delivered=True, mutes=None):
+    dispatch = AsyncMock(return_value=delivered)
+    with patch.object(alert_checker, "dispatch_alert", dispatch):
+        await alert_checker._process_host_signal(
+            state, _disk_signal(healthy, severity), mutes=mutes or MuteIndex(), **_CYCLE)
+    return [c.kwargs["alert_type"] for c in dispatch.await_args_list]
+
+
+def _muted_web1() -> MuteIndex:
+    from datetime import datetime, timedelta, timezone
+
+    return MuteIndex(targets={("server", "web1"): datetime.now(timezone.utc) + timedelta(hours=1)})
+
+
+@pytest.mark.asyncio
+async def test_failed_escalation_is_retried_until_delivered(monkeypatch):
+    """warning announced → the critical mail fails → critical must still go out,
+    on the next critical cycle or the next crossing, without losing the recovery."""
+    monkeypatch.setattr(alert_checker, "_persist_state_safely", AsyncMock())
+    state = AlertStateManager()
+    assert await _cycle(state, False, "warning") == ["triggered"]
+    assert await _cycle(state, False, "critical", delivered=False) == ["triggered"]
+    assert state.get_pending_notify("server_disk", "web1") is False
+    # Still critical: retried.
+    assert await _cycle(state, False, "critical", delivered=False) == ["triggered"]
+    # Dipped and re-crossed: retried again, now delivered.
+    assert await _cycle(state, False, "warning") == []
+    assert await _cycle(state, False, "critical") == ["triggered"]
+    # Delivered once: further crossings stay quiet.
+    assert await _cycle(state, False, "warning") == []
+    assert await _cycle(state, False, "critical") == []
+    assert await _cycle(state, True, None) == ["resolved"]
+
+
+@pytest.mark.asyncio
+async def test_escalation_withheld_by_a_mute_fires_after_it_expires(monkeypatch):
+    monkeypatch.setattr(alert_checker, "_persist_state_safely", AsyncMock())
+    state = AlertStateManager()
+    assert await _cycle(state, False, "warning") == ["triggered"]
+    assert await _cycle(state, False, "critical", mutes=_muted_web1()) == []
+    assert await _cycle(state, False, "warning", mutes=_muted_web1()) == []
+    # Mute over; usage re-crosses critical → the escalation is announced now.
+    assert await _cycle(state, False, "critical") == ["triggered"]
+    assert await _cycle(state, False, "critical") == []
+    assert state.get_pending_notify("server_disk", "web1") is False
+
+
+@pytest.mark.asyncio
+async def test_escalation_withheld_by_a_mute_fires_when_still_critical(monkeypatch):
+    monkeypatch.setattr(alert_checker, "_persist_state_safely", AsyncMock())
+    state = AlertStateManager()
+    assert await _cycle(state, False, "warning") == ["triggered"]
+    assert await _cycle(state, False, "critical", mutes=_muted_web1()) == []
+    assert await _cycle(state, False, "critical") == ["triggered"]
+
+
+def test_legacy_row_without_a_peak_treats_its_severity_as_announced():
+    state = AlertStateManager()
+    state.set_entry("server_disk", "web1", status="alert", since="2026-11-01T00:00:00+00:00",
+                    fail_count=1, severity="warning", details={})
+    kw = dict(trigger_after_failures=1)
+    assert state.update("server_disk", "web1", is_healthy=False, severity="warning", **kw) is None
+    assert state.update("server_disk", "web1", is_healthy=False, severity="critical", **kw) == "triggered"
+    # Not delivered yet → still re-fires.
+    assert state.update("server_disk", "web1", is_healthy=False, severity="critical", **kw) == "triggered"
 
 
 @pytest.mark.asyncio
@@ -226,6 +294,40 @@ async def test_unmatched_mountpoints_raise_a_disk_warning():
     disk = next(s for s in signals if s.alert_type == "server_disk")
     assert (disk.is_healthy, disk.severity, disk.value) == (False, "warning", None)
     assert "/Data" in disk.message
+
+
+@pytest.mark.asyncio
+async def test_unmatched_mountpoints_use_critical_on_a_crit_only_host():
+    with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+        q.side_effect = _queries({'up{job="nodes"}': [_series("web1", 1)]})
+        signals = await evaluate_hosts(
+            [_host("web1", disk_warn_pct=0, disk_crit_pct=90)], ServerThresholds(forecast_hours=0)
+        )
+    disk = next(s for s in signals if s.alert_type == "server_disk")
+    assert (disk.is_healthy, disk.severity) == (False, "critical")
+
+
+@pytest.mark.asyncio
+async def test_fixed_mountpoints_refresh_the_stored_observation(monkeypatch):
+    """Fixed whitelist, usage still above warn: the alert stays open, but its
+    current observation must describe the real usage, not the old mismatch."""
+    monkeypatch.setattr(alert_checker, "_persist_state_safely", AsyncMock())
+    state = AlertStateManager()
+    host = _host("web1", disk_mountpoints="/Data")
+    for disk_series in ([], [_series("web1", 85)]):
+        with patch.object(server_monitor.prometheus_client, "instant_query") as q:
+            q.side_effect = _queries({
+                'up{job="nodes"}': [_series("web1", 1)],
+                "node_filesystem_avail_bytes": disk_series,
+            })
+            signals = await evaluate_hosts([host], ServerThresholds(forecast_hours=0))
+        disk = next(s for s in signals if s.alert_type == "server_disk")
+        with patch.object(alert_checker, "dispatch_alert", AsyncMock(return_value=True)):
+            await alert_checker._process_host_signal(state, disk, mutes=MuteIndex(), **_CYCLE)
+    entry = state.get_entry("server_disk", "web1")
+    assert entry["status"] == "alert"
+    assert "85.0%" in entry["details"]["current"]["message"]
+    assert "no filesystem" in entry["details"]["incident"]["message"]
 
 
 @pytest.mark.asyncio

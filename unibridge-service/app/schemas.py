@@ -1358,6 +1358,15 @@ RESERVED_HOST_LABELS = frozenset({
 })
 
 
+def host_label_allowed(key: str) -> bool:
+    """Whether ``key`` may be a user label on a monitored host."""
+    return (
+        bool(_LABEL_NAME_RE.fullmatch(key))
+        and not key.startswith("__")
+        and key not in RESERVED_HOST_LABELS
+    )
+
+
 def _validate_host_labels(value: dict[str, str] | None) -> dict[str, str] | None:
     if value is None:
         return None

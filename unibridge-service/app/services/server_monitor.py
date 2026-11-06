@@ -275,7 +275,8 @@ async def _sync_targets_locked(db) -> None:
 
     from app.models import MonitoredHost
 
-    result = await db.execute(select(MonitoredHost))
+    # Ordered, so an unchanged registry renders byte-identical files.
+    result = await db.execute(select(MonitoredHost).order_by(MonitoredHost.name))
     hosts = result.scalars().all()
     try:
         await write_targets_file(hosts)
@@ -727,7 +728,8 @@ async def evaluate_hosts(
             # a mountpoint typo, or an exporter that reports paths under another
             # root (a containerised node_exporter's /rootfs/...). Left alone
             # that would switch disk alerting off without a word, so it is
-            # raised as a warning on the disk signal until a filesystem matches.
+            # raised on the disk signal, at the lowest severity the host alerts at
+            # (critical on a crit-only host), until a filesystem matches.
             mounts = _mountpoint_values(
                 getattr(host, "disk_mountpoints", None)
                 or (settings.NODE_EXPORTER_DISK_MOUNTPOINTS or "")
@@ -741,7 +743,7 @@ async def evaluate_hosts(
                 target=name,
                 display=display,
                 is_healthy=False,
-                severity="warning",
+                severity="warning" if disk_warn > 0 else "critical",
                 value=None,
                 threshold=None,
                 message=(
@@ -983,7 +985,7 @@ async def _sync_service_targets_locked(db) -> None:
 
     from app.models import MonitoredService
 
-    result = await db.execute(select(MonitoredService))
+    result = await db.execute(select(MonitoredService).order_by(MonitoredService.name))
     services = result.scalars().all()
     try:
         await write_service_targets_file(services)

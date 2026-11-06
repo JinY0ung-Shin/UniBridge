@@ -558,6 +558,23 @@ class TestDryRun:
         async with factory_for(seeded_db)() as db:
             assert (await db.execute(select(MonitoredHost))).scalars().all() == []
 
+    async def test_old_export_with_reserved_labels_imports_without_them(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        """An export from before label names were checked must stay importable."""
+        doc = export_doc(monitored_hosts=[{
+            "name": "web1", "address": "10.0.0.5:9100", "enabled": True,
+            "labels": {"host": "old", "job": "x", "a-b": "y", "env": "prod"},
+        }])
+        resp = await do_import(client, admin_token, dry_run=False, sections=["monitored_hosts"], doc=doc)
+        assert resp.status_code == 200, resp.text
+        row = rows_for(resp.json(), "monitored_hosts")[0]
+        assert row["action"] == "create"
+        assert row["reason"] == "dropped labels not allowed on a monitored host: a-b, host, job"
+        async with factory_for(seeded_db)() as db:
+            host = (await db.execute(select(MonitoredHost))).scalar_one()
+            assert json.loads(host.labels) == {"env": "prod"}
+
 
 # ── Import: apply ───────────────────────────────────────────────────────────
 

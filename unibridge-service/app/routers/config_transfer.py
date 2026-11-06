@@ -89,6 +89,7 @@ from app.schemas import (
     RoleCreate,
     S3ConnectionUpdate,
     SystemConfigUpdate,
+    host_label_allowed,
 )
 from app.services import apisix_client, network_map, node_path_prefix, server_monitor
 from app.services.apisix_system_resources import (
@@ -1442,6 +1443,19 @@ async def _import_query_templates(ctx: _ImportContext, raw: Any) -> None:
 async def _apply_monitored_host(
     ctx: _ImportContext, name: str, item: dict[str, Any]
 ) -> tuple[str, str | None]:
+    # An export from before label names were checked may carry ones the API now
+    # refuses (e.g. "host", which the scrape config always ignored). Dropping them
+    # keeps the host importable; the item's reason says which were dropped.
+    labels = item.get("labels")
+    dropped: list[str] = []
+    if isinstance(labels, dict):
+        dropped = sorted(str(key) for key in labels if not host_label_allowed(str(key)))
+        if dropped:
+            item = {
+                **item,
+                "labels": {k: v for k, v in labels.items() if host_label_allowed(str(k))} or None,
+            }
+    note = f"dropped labels not allowed on a monitored host: {', '.join(dropped)}" if dropped else None
     body = MonitoredHostCreate.model_validate({**item, "name": name})
     await servers_router._validate_effective_disk_thresholds(
         ctx.db, warn=body.disk_warn_pct, crit=body.disk_crit_pct
@@ -1450,7 +1464,7 @@ async def _apply_monitored_host(
     host = result.scalar_one_or_none()
     action = "update" if host is not None else "create"
     if ctx.dry_run:
-        return action, None
+        return action, note
 
     before = servers_router._audit_snapshot(host) if host is not None else None
     had_gpu = bool(host.gpu_address) if host is not None else False
@@ -1490,7 +1504,7 @@ async def _apply_monitored_host(
         before=before,
         after=servers_router._audit_snapshot(host),
     )
-    return action, None
+    return action, note
 
 
 async def _import_monitored_hosts(ctx: _ImportContext, raw: Any) -> None:

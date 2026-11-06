@@ -243,24 +243,27 @@ class AlertStateManager:
         entry["fail_count"] = entry.get("fail_count", 0) + 1
         if entry["status"] == "alert":
             entry["fail_count"] = min(entry["fail_count"], trigger_after_failures)
-            # Severity escalation: a rise past anything this incident has already
-            # announced re-fires immediately; a fall is recorded silently. Rising
-            # back to a level that was announced before stays silent too, or a
-            # value hovering at the critical threshold would mail "critical"
+            # Severity escalation: a severity above the highest one this incident
+            # has *delivered* re-fires, and keeps re-firing every cycle until a
+            # notification for it actually goes out (a mute or a failed send
+            # does not count — see mark_announced). A fall is recorded silently,
+            # and rising back to a level already delivered stays silent too, or
+            # a value hovering at the critical threshold would mail "critical"
             # every other cycle (the repeat cadence below still reminds).
-            if severity is not None and _severity_rank(severity) != _severity_rank(entry.get("severity")):
+            if severity is not None:
                 details = entry.setdefault("details", {})
-                peak = details.get(PEAK_SEVERITY_KEY) or entry.get("severity")
-                escalated = _severity_rank(severity) > _severity_rank(peak)
+                if PEAK_SEVERITY_KEY not in details:
+                    # A row saved before peaks were tracked: its last severity
+                    # was announced (that is what escalations did then).
+                    details[PEAK_SEVERITY_KEY] = entry.get("severity")
+                rose = _severity_rank(severity) > _severity_rank(entry.get("severity"))
                 entry["severity"] = severity
-                if escalated:
-                    details[PEAK_SEVERITY_KEY] = severity
-                    entry["since"] = now
+                if _severity_rank(severity) > _severity_rank(details[PEAK_SEVERITY_KEY]):
+                    if rose:
+                        entry["since"] = now
                     entry["cycles_in_alert"] = 0
                     logger.info("Alert state %s/%s escalated to %s", alert_type, target, severity)
                     return "triggered"
-                if _severity_rank(severity) > _severity_rank(details.get(PEAK_SEVERITY_KEY)):
-                    details[PEAK_SEVERITY_KEY] = severity
             # Re-notification cadence while still firing.
             if repeat_after_cycles and repeat_after_cycles > 0:
                 entry["cycles_in_alert"] = entry.get("cycles_in_alert", 0) + 1
@@ -273,11 +276,10 @@ class AlertStateManager:
             entry["status"] = "alert"
             entry["since"] = now
             entry["severity"] = severity
-            details = entry.setdefault("details", {})
-            if severity is not None:
-                details[PEAK_SEVERITY_KEY] = severity
-            else:
-                details.pop(PEAK_SEVERITY_KEY, None)
+            # The opening announcement is tracked by pending_notify (a mute or a
+            # failed send re-announces it later at the then-current severity), so
+            # its severity counts as announced from the start.
+            entry.setdefault("details", {})[PEAK_SEVERITY_KEY] = severity
             entry["cycles_in_alert"] = 0
             logger.info(
                 "Alert state %s/%s: ok → alert (fail_count=%d, threshold=%d)",
@@ -285,6 +287,23 @@ class AlertStateManager:
             )
             return "triggered"
         return None
+
+    def mark_announced(self, alert_type: str, target: str) -> bool:
+        """Record that a notification at the entry's current severity went out.
+
+        Called once a "triggered" notification was actually delivered, so an
+        escalation that a mute withheld or a failed send lost keeps re-firing
+        until one is. Returns True when the stored peak changed (persist it).
+        """
+        entry = self._states.get((alert_type, target))
+        if entry is None or entry["status"] != "alert":
+            return False
+        severity = entry.get("severity")
+        details = entry.setdefault("details", {})
+        if severity is None or _severity_rank(severity) <= _severity_rank(details.get(PEAK_SEVERITY_KEY)):
+            return False
+        details[PEAK_SEVERITY_KEY] = severity
+        return True
 
     def get_entries(
         self,

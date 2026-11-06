@@ -174,8 +174,9 @@ bypassing recovery damping.
 `server_disk` escalates: a warning re-fires as critical when usage crosses the
 crit threshold. Each severity is announced once per incident — usage hovering
 around the crit threshold does not mail "critical" again on every crossing.
-A failed escalation mail is not retried, so the incident's recovery mail is
-still sent. Set **Re-notify every N cycles** (`repeat_alert_after_cycles`)
+Only a delivered mail counts: an escalation that a mute withheld or a failed
+send lost fires again on the next cycle at that severity, and the incident's
+recovery mail is still sent either way. Set **Re-notify every N cycles** (`repeat_alert_after_cycles`)
 to re-send a still-firing alert every N check cycles (0 = notify once per
 transition).
 
