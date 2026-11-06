@@ -43,6 +43,11 @@ const SECTION_LABEL_KEYS: Record<string, string> = {
   alert_settings: 'configTransfer.sectionAlertSettings',
   alert_channels: 'configTransfer.sectionAlertChannels',
   alert_recipients: 'configTransfer.sectionAlertRecipients',
+  network_regions: 'configTransfer.sectionNetworkRegions',
+  network_hosts: 'configTransfer.sectionNetworkHosts',
+  firewall_openings: 'configTransfer.sectionFirewallOpenings',
+  port_usages: 'configTransfer.sectionPortUsages',
+  network_settings: 'configTransfer.sectionNetworkSettings',
   system_settings: 'configTransfer.sectionSystemSettings',
 };
 

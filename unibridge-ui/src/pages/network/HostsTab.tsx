@@ -7,6 +7,7 @@ import { useToast } from '../../components/useToast';
 import { NETWORK_KEY, intOrUndefined } from './networkUtils';
 import { HostLink, ProvenanceBadges, RegionName } from './NetworkTables';
 import { HostFormModal } from './NetworkForms';
+import { CsvImportButton } from './CsvImportModal';
 import { useNetworkMutation, useNetworkRowActions, useRegions } from './useNetworkActions';
 
 function HostsTab() {
@@ -72,6 +73,7 @@ function HostsTab() {
             >
               {t('network.hosts.import')}
             </button>
+            <CsvImportButton kind="hosts" />
             <button type="button" className="btn btn-primary" onClick={() => setEditing('new')}>{t('network.hosts.add')}</button>
           </div>
         )}

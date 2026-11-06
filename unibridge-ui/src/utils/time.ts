@@ -139,3 +139,33 @@ export function kstLocalToUtcIso(local: string): string | undefined {
   const epoch = kstLocalToEpoch(local);
   return Number.isNaN(epoch) ? undefined : new Date(epoch * 1000).toISOString();
 }
+
+const RELATIVE_STEPS: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+  ['second', 60],
+  ['minute', 60],
+  ['hour', 24],
+  ['day', 30],
+  ['month', 12],
+  ['year', Number.POSITIVE_INFINITY],
+];
+
+/**
+ * A timestamp relative to now in the given locale ("5 minutes ago", "3분 전").
+ * Returns '—' for empty or unparseable input.
+ */
+export function formatRelativeTime(
+  value: string | Date | null | undefined,
+  locale: string,
+  now: number = Date.now(),
+): string {
+  if (!value) return '—';
+  const d = typeof value === 'string' ? new Date(value) : value;
+  if (Number.isNaN(d.getTime())) return '—';
+  let amount = (d.getTime() - now) / 1000;
+  const fmt = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+  for (const [unit, size] of RELATIVE_STEPS) {
+    if (Math.abs(amount) < size) return fmt.format(Math.round(amount), unit);
+    amount /= size;
+  }
+  return fmt.format(Math.round(amount), 'year');
+}

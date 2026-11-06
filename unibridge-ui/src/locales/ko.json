@@ -1380,6 +1380,11 @@
     "sectionAlertSettings": "알림 설정",
     "sectionAlertChannels": "알림 채널",
     "sectionAlertRecipients": "알림 수신자",
+    "sectionNetworkRegions": "네트워크 리전",
+    "sectionNetworkHosts": "네트워크 호스트",
+    "sectionFirewallOpenings": "방화벽 오픈",
+    "sectionPortUsages": "포트 사용",
+    "sectionNetworkSettings": "네트워크 설정",
     "sectionSystemSettings": "시스템 설정"
   },
   "mcp": {
@@ -1642,6 +1647,7 @@
       "hosts": "호스트",
       "openings": "방화벽 오픈",
       "usages": "포트 사용",
+      "probes": "실측",
       "check": "접근 확인",
       "settings": "설정"
     },
@@ -1703,7 +1709,17 @@
       "ofTotal": "전체 {{count}}개",
       "unverifiedCount": "미확인 {{count}}",
       "noRegions": "리전이 없습니다. 리전을 먼저 추가한 뒤 호스트와 오픈을 등록하세요.",
-      "selectedTitle": "{{src}} → {{dst}} 오픈"
+      "selectedTitle": "{{src}} → {{dst}} 오픈",
+      "probeMismatches": "기록과 다른 실측 결과",
+      "viewLabel": "보기 방식",
+      "viewMatrix": "행렬",
+      "viewGraph": "지도",
+      "graphTitle": "리전 지도",
+      "graphHint": "상자는 리전, 화살표는 출발 리전에서 도착 리전 방향입니다. 숫자는 열려 있는 방화벽 오픈 수이며(미확인은 노란색, 점선은 닫힌 오픈만 있음), 마우스를 올리면 포트, 클릭하면 목록이 나옵니다.",
+      "graphOutside": "CIDR / 리전 밖",
+      "graphOutsideSub": "CIDR · 미지정",
+      "graphHosts": "호스트 {{count}}대",
+      "edgeLabel": "{{src}} → {{dst}}: 열린 오픈 {{count}}개, 미확인 {{unverified}}개 {{ports}}"
     },
     "regions": {
       "add": "리전 추가",
@@ -1736,7 +1752,10 @@
       "inbound": "인바운드 오픈",
       "outbound": "아웃바운드 오픈",
       "recordedBy": "기록자",
-      "verifiedBy": "{{name}} 확인"
+      "verifiedBy": "{{name}} 확인",
+      "probes": "이 호스트 출발·도착 실측",
+      "allProbes": "실측 탭에서 보기",
+      "probesHint": "이 호스트가 출발지 또는 목적지인 경로마다 가장 최근에 측정한 연결 시도입니다."
     },
     "openings": {
       "add": "오픈 추가",
@@ -1800,13 +1819,92 @@
       "copied": "클립보드에 복사했습니다",
       "copyFailed": "복사하지 못했습니다",
       "matchingOpenings": "해당 오픈",
-      "usagesOnPort": "이 포트의 사용 서비스"
+      "usagesOnPort": "이 포트의 사용 서비스",
+      "probe": "실측",
+      "probeBy": "보고: {{name}}",
+      "noProbe": "이 경로의 실측 결과가 아직 없습니다"
     },
     "settings": {
       "platformHost": "플랫폼 호스트",
       "platformHostNone": "설정 안 함",
       "platformHostHint": "UniBridge(서비스, APISIX, Prometheus)가 동작하는 호스트입니다. 자동 탐지 항목의 접근 가능 여부를 이 호스트 기준으로 판단합니다.",
       "saved": "네트워크 설정을 저장했습니다"
+    },
+    "probes": {
+      "result": {
+        "open": "연결됨",
+        "refused": "거부됨",
+        "timeout": "시간 초과",
+        "error": "오류"
+      },
+      "resultHint": {
+        "open": "연결 성공: 경로가 열려 있고 서비스가 응답합니다.",
+        "refused": "경로는 통과, 서비스 없음",
+        "timeout": "응답 없음: 패킷을 버리는 방화벽에서 보이는 결과입니다.",
+        "error": "측정 자체가 실패했습니다(DNS, 경로 없음 등)."
+      },
+      "mismatch": {
+        "recorded_open_but_blocked": "기록상 열림·실측 차단",
+        "passes_without_opening": "기록 없음·실측 통과"
+      },
+      "mismatchHint": {
+        "recorded_open_but_blocked": "기록상 열려 있는 경로인데 실측은 시간 초과입니다. 오픈이 만료됐거나 실제로 반영되지 않았을 수 있습니다.",
+        "passes_without_opening": "기록상 막혀 있는 경로인데 실측은 통과했습니다. 기록되지 않은 오픈이 있을 가능성이 높으니 기록하세요."
+      },
+      "lastProbe": "실측: {{result}} {{time}}",
+      "lastProbeTitle": "{{src}}에서 {{port}} 포트로 마지막 실측: {{time}}",
+      "empty": "보고된 실측 결과가 없습니다.",
+      "path": "경로",
+      "resultColumn": "결과",
+      "expected": "기록상 판단",
+      "mismatchColumn": "불일치",
+      "latency": "지연",
+      "observedAt": "측정 시각",
+      "reportedBy": "보고자",
+      "allResults": "전체 결과",
+      "onlyMismatch": "불일치만",
+      "helpTitle": "실측 결과는 어떻게 들어오나요",
+      "helpIntro": "실측은 출발지 서버에서 직접 해 본 연결 시도입니다. 경로마다 가장 최근 결과 하나만 남고, 그 경로에 대한 기록상 판단과 비교됩니다.",
+      "helpResults": "연결됨 = 접속 성공. 거부됨 = 네트워크는 통과했지만 포트에서 듣는 서비스가 없음. 시간 초과 = 응답 없음(패킷을 버리는 방화벽의 모습). 오류 = 측정 자체 실패.",
+      "helpMismatch": "불일치는 두 가지입니다: 열림으로 기록된 오픈인데 실측이 시간 초과인 경우, 기록상 막힌 경로인데 실측이 통과한 경우.",
+      "helpAgents": "에이전트는 MCP network 도구나 POST /api/network/probes로 보고합니다. API 키에 network-api와 network-write-api가 필요합니다.",
+      "helpScript": "또는 그런 키로 출발지 서버에서 scripts/network_probe.py(파이썬 표준 라이브러리만 사용)를 실행하세요. UniBridge에 시험할 포트를 물어 각각 접속해 보고 결과를 보고합니다. cron으로 돌리면 지도를 계속 맞게 유지할 수 있습니다."
+    },
+    "import": {
+      "button": "CSV 가져오기",
+      "title": "CSV로 {{kind}} 가져오기",
+      "kinds": {
+        "hosts": "호스트",
+        "openings": "방화벽 오픈",
+        "port_usages": "포트 사용"
+      },
+      "hint": "첫 줄은 머리글입니다. 열 이름은 영어나 한국어 모두 되고, 모르는 열은 무시합니다. 최대 5,000줄. 이미 기록된 줄은 건너뜁니다. 가져온 기록은 출처 \"가져옴\"·확인됨으로 저장됩니다.",
+      "columns": "열 (* 필수)",
+      "required": "*",
+      "openingsHint": "src: 등록된 호스트(이름 또는 IP), CIDR, 또는 IP. dst: 등록된 호스트. ports: 5432, 8000-8010, 여러 개는 쉼표나 공백으로 구분(각각 오픈 하나). status: 닫힘/만료/해제 등이 아니면 열림.",
+      "sampleHeader": "머리글 예시:",
+      "file": "CSV 파일",
+      "fileRead": "{{name}} ({{encoding}}로 읽음)",
+      "text": "또는 CSV 텍스트 붙여넣기",
+      "preview": "미리보기 (dry run)",
+      "apply": "가져오기 실행",
+      "previewTitle": "미리보기: 줄마다 할 일",
+      "done": "가져오기 완료: {{count}}건 생성.",
+      "failed": "가져오기에 실패했습니다",
+      "readFailed": "파일을 읽지 못했습니다",
+      "countCreate": "생성 {{count}}",
+      "countSkip": "건너뜀 {{count}}",
+      "countError": "오류 {{count}}",
+      "rowsLabel": "가져오기 줄",
+      "line": "줄",
+      "action": "처리",
+      "key": "기록",
+      "message": "메시지",
+      "actions": {
+        "create": "생성",
+        "skip": "건너뜀",
+        "error": "오류"
+      }
     }
   }
 }

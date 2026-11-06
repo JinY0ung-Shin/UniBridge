@@ -6,6 +6,7 @@ import { useCanWrite } from '../../components/useCanWrite';
 import { NETWORK_KEY, intOrUndefined } from './networkUtils';
 import { UsagesTable } from './NetworkTables';
 import { UsageFormModal } from './NetworkForms';
+import { CsvImportButton } from './CsvImportModal';
 import { useAllNetworkHosts } from './useNetworkActions';
 
 type SourceFilter = '' | NonNullable<UsageFilters['source']>;
@@ -66,7 +67,10 @@ function UsagesTab() {
           </label>
         </div>
         {canWrite && (
-          <button type="button" className="btn btn-primary" onClick={() => setEditing('new')}>{t('network.usages.add')}</button>
+          <div className="network-filters">
+            <CsvImportButton kind="port_usages" />
+            <button type="button" className="btn btn-primary" onClick={() => setEditing('new')}>{t('network.usages.add')}</button>
+          </div>
         )}
       </div>
       <p className="page-subtitle">{t('network.usages.hint')}</p>

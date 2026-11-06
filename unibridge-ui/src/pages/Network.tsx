@@ -7,6 +7,7 @@ import RegionsTab from './network/RegionsTab';
 import HostsTab from './network/HostsTab';
 import OpeningsTab from './network/OpeningsTab';
 import UsagesTab from './network/UsagesTab';
+import ProbesTab from './network/ProbesTab';
 import AccessCheckTab from './network/AccessCheckTab';
 import SettingsTab from './network/SettingsTab';
 import './Connections.css';
@@ -18,6 +19,7 @@ const TABS = [
   { key: 'hosts', Component: HostsTab },
   { key: 'openings', Component: OpeningsTab },
   { key: 'usages', Component: UsagesTab },
+  { key: 'probes', Component: ProbesTab },
   { key: 'check', Component: AccessCheckTab },
   // People with network.write only: the platform host drives reachability flags.
   { key: 'settings', Component: SettingsTab, writeOnly: true },

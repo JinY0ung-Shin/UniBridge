@@ -6,6 +6,7 @@ import { useToast } from '../../components/useToast';
 import { intOrUndefined, networkErrorMessage } from './networkUtils';
 import { OpeningsTable, UsagesTable } from './NetworkTables';
 import { useAllNetworkHosts } from './useNetworkActions';
+import { MismatchBadge, ProbeResultBadge, ProbeTime } from './ProbeBadges';
 
 const STATUS_BADGE: Record<string, string> = {
   open: 'badge-ok',
@@ -130,6 +131,29 @@ function AccessCheckTab() {
             <span className="network-arrow" aria-hidden="true">→</span>
             <EndpointSummary label={t('network.check.dst')} endpoint={result.dst} />
             <span className="mono">{`${result.protocol}/${result.port}`}</span>
+          </div>
+
+          <div className="network-check-probe" aria-label={t('network.check.probe')} role="group">
+            <span className="network-sub">{t('network.check.probe')}</span>
+            {result.probe ? (
+              <>
+                <ProbeResultBadge result={result.probe.result} error={result.probe.error} />
+                <ProbeTime value={result.probe.observed_at} inline />
+                {result.probe.reported_by && (
+                  <span className="network-sub">{t('network.check.probeBy', { name: result.probe.reported_by })}</span>
+                )}
+                {result.probe.mismatch && (
+                  <>
+                    <MismatchBadge mismatch={result.probe.mismatch} />
+                    <span className="network-sub">
+                      {t(`network.probes.mismatchHint.${result.probe.mismatch}`, { defaultValue: '' })}
+                    </span>
+                  </>
+                )}
+              </>
+            ) : (
+              <span className="network-muted">{t('network.check.noProbe')}</span>
+            )}
           </div>
 
           {result.request_draft && (

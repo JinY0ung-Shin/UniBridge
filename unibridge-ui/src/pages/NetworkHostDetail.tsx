@@ -2,12 +2,13 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { getNetworkHost, type FirewallOpening, type PortUsage } from '../api/network';
+import { getNetworkHost, getNetworkProbes, type FirewallOpening, type PortUsage } from '../api/network';
 import { useCanWrite } from '../components/useCanWrite';
 import { NETWORK_KEY } from './network/networkUtils';
 import { OpeningsTable, ProvenanceBadges, RegionName, UsagesTable } from './network/NetworkTables';
 import { HostFormModal, OpeningFormModal, UsageFormModal } from './network/NetworkForms';
 import { useNetworkRowActions } from './network/useNetworkActions';
+import { ProbesTable } from './network/ProbeViews';
 import './Connections.css';
 import './Network.css';
 
@@ -30,6 +31,11 @@ function NetworkHostDetail() {
     enabled: Number.isInteger(id),
   });
   const host = hostQuery.data;
+  const probesQuery = useQuery({
+    queryKey: [...NETWORK_KEY, 'probes', { host_id: id }],
+    queryFn: () => getNetworkProbes({ host_id: id }),
+    enabled: Number.isInteger(id),
+  });
 
   return (
     <div className="connections network-page">
@@ -143,6 +149,17 @@ function NetworkHostDetail() {
               showHost={false}
               onEdit={(u) => setEditing({ kind: 'usage', usage: u })}
             />
+          </section>
+
+          <section className="network-section" aria-labelledby="host-probes-title">
+            <div className="network-toolbar">
+              <h2 id="host-probes-title" className="section-title">{t('network.hosts.probes')}</h2>
+              <Link className="link-button" to={`/network?tab=probes&host_id=${host.id}`}>{t('network.hosts.allProbes')}</Link>
+            </div>
+            <p className="page-subtitle">{t('network.hosts.probesHint')}</p>
+            {probesQuery.isLoading && <div className="loading-message" role="status">{t('common.loading')}</div>}
+            {probesQuery.isError && <div className="error-banner" role="alert">{t('common.errorOccurred')}</div>}
+            {probesQuery.isSuccess && <ProbesTable probes={probesQuery.data} label={t('network.hosts.probes')} />}
           </section>
 
           {editing?.kind === 'host' && <HostFormModal host={host} onClose={() => setEditing(null)} />}

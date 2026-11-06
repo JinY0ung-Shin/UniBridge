@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { FirewallOpening, PortUsage } from '../../api/network';
 import { useCanWrite } from '../../components/useCanWrite';
 import { openingPorts, openingSource } from './networkUtils';
+import { LastProbeBadge } from './ProbeBadges';
 import { useNetworkRowActions } from './useNetworkActions';
 
 /** Where a record came from, plus "unverified" while no person has confirmed it. */
@@ -97,6 +98,7 @@ export function OpeningsTable({ openings, label, onEdit }: OpeningsTableProps) {
                       <span className="badge badge-ok">{t('network.openings.inUse')}</span>
                     )}
                     <ProvenanceBadges source={o.source} verified={o.verified} />
+                    {o.last_probe && <LastProbeBadge probe={o.last_probe} />}
                   </span>
                 </td>
                 {canWrite && (

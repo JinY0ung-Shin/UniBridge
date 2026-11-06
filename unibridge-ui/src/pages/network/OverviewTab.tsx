@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { getFirewallOpenings, getNetworkOverview, type RegionLink } from '../../api/network';
 import { NETWORK_KEY, regionKey } from './networkUtils';
 import { OpeningsTable } from './NetworkTables';
+import RegionGraph from './RegionGraph';
 
 interface Axis {
   id: number | null;
@@ -14,21 +16,36 @@ interface SummaryCardProps {
   value: number;
   label: string;
   tone?: 'warn' | 'alert';
+  /** Makes the card a button (e.g. to open the matching list). */
+  onClick?: () => void;
 }
 
-function SummaryCard({ value, label, tone }: SummaryCardProps) {
+function SummaryCard({ value, label, tone, onClick }: SummaryCardProps) {
   const active = tone && value > 0;
-  return (
-    <div className={`network-summary-card${active ? ` network-summary-card--${tone}` : ''}`}>
+  const className = `network-summary-card${active ? ` network-summary-card--${tone}` : ''}`;
+  const body = (
+    <>
       <div className="network-summary-card__value">{value}</div>
       <div className="network-summary-card__label">{label}</div>
-    </div>
+    </>
   );
+  if (onClick) {
+    return (
+      <button type="button" className={`${className} network-summary-card--link`} onClick={onClick}>
+        {body}
+      </button>
+    );
+  }
+  return <div className={className}>{body}</div>;
 }
+
+type MapView = 'matrix' | 'graph';
 
 function OverviewTab() {
   const { t } = useTranslation();
+  const [, setSearchParams] = useSearchParams();
   const [selected, setSelected] = useState<{ src: number | null; dst: number | null } | null>(null);
+  const [view, setView] = useState<MapView>('matrix');
 
   const overviewQuery = useQuery({
     queryKey: [...NETWORK_KEY, 'overview'],
@@ -79,12 +96,45 @@ function OverviewTab() {
         <SummaryCard value={ov.unverified_count} label={t('network.overview.unverified')} tone="warn" />
         <SummaryCard value={ov.unused_openings} label={t('network.overview.unusedOpenings')} tone="warn" />
         <SummaryCard value={ov.unreachable_usages} label={t('network.overview.unreachableUsages')} tone="alert" />
+        <SummaryCard
+          value={ov.probe_mismatches}
+          label={t('network.overview.probeMismatches')}
+          tone="warn"
+          onClick={() => setSearchParams({ tab: 'probes', mismatch: '1' }, { replace: true })}
+        />
       </div>
 
-      <h2 className="section-title">{t('network.overview.matrixTitle')}</h2>
-      <p className="page-subtitle">{t('network.overview.matrixHint')}</p>
+      <div className="network-toolbar">
+        <h2 className="section-title">
+          {view === 'matrix' ? t('network.overview.matrixTitle') : t('network.overview.graphTitle')}
+        </h2>
+        <div className="network-segmented" role="group" aria-label={t('network.overview.viewLabel')}>
+          {(['matrix', 'graph'] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              className={`network-segmented__btn${view === v ? ' network-segmented__btn--active' : ''}`}
+              aria-pressed={view === v}
+              onClick={() => setView(v)}
+            >
+              {t(v === 'matrix' ? 'network.overview.viewMatrix' : 'network.overview.viewGraph')}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="page-subtitle">
+        {view === 'matrix' ? t('network.overview.matrixHint') : t('network.overview.graphHint')}
+      </p>
       {rows.length === 0 ? (
         <div className="empty-state"><p>{t('network.overview.noRegions')}</p></div>
+      ) : view === 'graph' ? (
+        <RegionGraph
+          regions={ov.regions}
+          links={ov.links}
+          outsideName={t('network.overview.graphOutside')}
+          selected={selected}
+          onSelect={setSelected}
+        />
       ) : (
         <div className="table-container">
           <table className="data-table network-matrix" aria-label={t('network.overview.matrixTitle')}>

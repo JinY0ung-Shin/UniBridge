@@ -1380,6 +1380,11 @@
     "sectionAlertSettings": "Alert settings",
     "sectionAlertChannels": "Alert channels",
     "sectionAlertRecipients": "Alert recipients",
+    "sectionNetworkRegions": "Network regions",
+    "sectionNetworkHosts": "Network hosts",
+    "sectionFirewallOpenings": "Firewall openings",
+    "sectionPortUsages": "Port usage",
+    "sectionNetworkSettings": "Network settings",
     "sectionSystemSettings": "System settings"
   },
   "mcp": {
@@ -1642,6 +1647,7 @@
       "hosts": "Hosts",
       "openings": "Firewall openings",
       "usages": "Port usage",
+      "probes": "Probes",
       "check": "Access check",
       "settings": "Settings"
     },
@@ -1703,7 +1709,17 @@
       "ofTotal": "of {{count}}",
       "unverifiedCount": "{{count}} unverified",
       "noRegions": "No regions yet. Add regions first, then hosts and openings.",
-      "selectedTitle": "Openings {{src}} → {{dst}}"
+      "selectedTitle": "Openings {{src}} → {{dst}}",
+      "probeMismatches": "Probes contradicting the records",
+      "viewLabel": "View",
+      "viewMatrix": "Matrix",
+      "viewGraph": "Map",
+      "graphTitle": "Region map",
+      "graphHint": "Boxes are regions, arrows point from source to destination region. The number counts open firewall openings (unverified ones in yellow, dashed = closed only); hover for ports, click to list them.",
+      "graphOutside": "CIDR / outside regions",
+      "graphOutsideSub": "CIDR · unassigned",
+      "graphHosts": "{{count}} hosts",
+      "edgeLabel": "{{src}} → {{dst}}: {{count}} open openings, {{unverified}} unverified {{ports}}"
     },
     "regions": {
       "add": "Add region",
@@ -1736,7 +1752,10 @@
       "inbound": "Inbound openings",
       "outbound": "Outbound openings",
       "recordedBy": "Recorded by",
-      "verifiedBy": "Verified by {{name}}"
+      "verifiedBy": "Verified by {{name}}",
+      "probes": "Probes from / to this host",
+      "allProbes": "Open in Probes tab",
+      "probesHint": "The latest measured connection attempt on each path where this host is the source or the destination."
     },
     "openings": {
       "add": "Add opening",
@@ -1800,13 +1819,92 @@
       "copied": "Copied to clipboard",
       "copyFailed": "Could not copy",
       "matchingOpenings": "Matching openings",
-      "usagesOnPort": "Usage on this port"
+      "usagesOnPort": "Usage on this port",
+      "probe": "Measured",
+      "probeBy": "reported by {{name}}",
+      "noProbe": "No probe on this path yet"
     },
     "settings": {
       "platformHost": "Platform host",
       "platformHostNone": "Not set",
       "platformHostHint": "The host UniBridge (service, APISIX, Prometheus) runs on; discovered usages are checked for reachability from it.",
       "saved": "Network settings saved"
+    },
+    "probes": {
+      "result": {
+        "open": "Open",
+        "refused": "Refused",
+        "timeout": "Timeout",
+        "error": "Error"
+      },
+      "resultHint": {
+        "open": "Connected: the path is open and a service answers.",
+        "refused": "Path passes, no service listening",
+        "timeout": "No answer: what a firewall that drops the packets looks like.",
+        "error": "The test itself failed (DNS, no route, ...)."
+      },
+      "mismatch": {
+        "recorded_open_but_blocked": "Recorded open · probe blocked",
+        "passes_without_opening": "Not recorded · probe passes"
+      },
+      "mismatchHint": {
+        "recorded_open_but_blocked": "The records say this path is open, but the probe timed out: the opening may have expired or never been applied.",
+        "passes_without_opening": "The records say this path is blocked, but the probe got through: an opening nobody recorded probably exists. Record it."
+      },
+      "lastProbe": "Probe: {{result}} {{time}}",
+      "lastProbeTitle": "Latest probe from {{src}} to port {{port}} at {{time}}",
+      "empty": "No probes reported.",
+      "path": "Path",
+      "resultColumn": "Result",
+      "expected": "Records say",
+      "mismatchColumn": "Mismatch",
+      "latency": "Latency",
+      "observedAt": "Measured at",
+      "reportedBy": "Reported by",
+      "allResults": "All results",
+      "onlyMismatch": "Mismatches only",
+      "helpTitle": "How probes get here",
+      "helpIntro": "A probe is a real connection attempt made from the source server. Each path keeps only its latest result, and it is compared with what the records say about that path.",
+      "helpResults": "Open = connected. Refused = the network let it through but nothing listens on the port. Timeout = no answer, which is what a firewall that drops packets looks like. Error = the test itself failed.",
+      "helpMismatch": "A mismatch is either an opening recorded as open whose probe timed out, or a path the records call blocked that the probe got through.",
+      "helpAgents": "Agents report through the MCP network tools or POST /api/network/probes with an API key holding network-api and network-write-api.",
+      "helpScript": "Or run scripts/network_probe.py (Python standard library only) on the source server with such a key: it asks UniBridge which ports to test, tries each one and reports the results. Schedule it with cron to keep the map honest."
+    },
+    "import": {
+      "button": "Import CSV",
+      "title": "Import {{kind}} from CSV",
+      "kinds": {
+        "hosts": "hosts",
+        "openings": "firewall openings",
+        "port_usages": "port usage"
+      },
+      "hint": "The first line is the header; English or Korean column names are accepted and unknown columns are ignored. Up to 5,000 lines. Lines already recorded are skipped. Imported records are marked as imported and verified.",
+      "columns": "Columns (* required)",
+      "required": "*",
+      "openingsHint": "src: a registered host (name or IP), a CIDR, or an IP. dst: a registered host. ports: 5432, 8000-8010, or several separated by commas or spaces (one opening each). status: open unless it says closed/expired/revoked.",
+      "sampleHeader": "Sample header:",
+      "file": "CSV file",
+      "fileRead": "{{name}} read as {{encoding}}",
+      "text": "Or paste CSV text",
+      "preview": "Preview (dry run)",
+      "apply": "Run import",
+      "previewTitle": "Preview: what each line would do",
+      "done": "Import finished: {{count}} created.",
+      "failed": "Import failed",
+      "readFailed": "Could not read the file",
+      "countCreate": "Create {{count}}",
+      "countSkip": "Skip {{count}}",
+      "countError": "Error {{count}}",
+      "rowsLabel": "Import lines",
+      "line": "Line",
+      "action": "Action",
+      "key": "Record",
+      "message": "Message",
+      "actions": {
+        "create": "Create",
+        "skip": "Skip",
+        "error": "Error"
+      }
     }
   }
 }

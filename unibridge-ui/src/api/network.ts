@@ -79,6 +79,8 @@ export interface FirewallOpening extends Provenance {
   purpose: string;
   /** Whether any recorded or discovered service listens inside the port range. */
   in_use: boolean;
+  /** The latest probe through this opening (source matches, port in range). */
+  last_probe: ProbeSummary | null;
 }
 
 export interface FirewallOpeningInput {
@@ -145,6 +147,8 @@ export interface NetworkOverview {
   unverified_count: number;
   unused_openings: number;
   unreachable_usages: number;
+  /** Probes that disagree with the records (see Probe.mismatch). */
+  probe_mismatches: number;
   platform_host_id: number | null;
   auto_sources_failed: string[];
 }
@@ -173,12 +177,89 @@ export interface AccessCheckResult {
   openings: FirewallOpening[];
   usages: PortUsage[];
   request_draft: string | null;
+  /** The latest measured attempt on exactly this path (both ends registered). */
+  probe: Probe | null;
 }
 
 export interface MonitoredImportResult {
   created: string[];
   linked: string[];
   skipped: Array<{ name: string; reason: string }>;
+}
+
+/* ── Probes: measured connection attempts reported from the source host ── */
+
+/** open: connected · refused: reached, nothing listens (the network let it
+ *  through) · timeout: no answer (what a dropping firewall looks like) · error */
+export type ProbeResult = 'open' | 'refused' | 'timeout' | 'error';
+/** recorded_open_but_blocked: the records say open, the probe timed out ·
+ *  passes_without_opening: the records say blocked, the probe got through. */
+export type ProbeMismatch = 'recorded_open_but_blocked' | 'passes_without_opening';
+
+export interface Probe {
+  id: number;
+  src_host_id: number;
+  src_host_name: string;
+  src_host_ip: string;
+  src_region_name: string | null;
+  dst_host_id: number;
+  dst_host_name: string;
+  dst_host_ip: string;
+  dst_region_name: string | null;
+  port: number;
+  protocol: NetworkProtocol;
+  result: ProbeResult | string;
+  latency_ms: number | null;
+  error: string;
+  reported_by: string | null;
+  observed_at: string;
+  /** What the records say about this path now. */
+  expected: 'open' | 'blocked' | 'unknown' | string;
+  /** Same codes as the access check's reason. */
+  expected_reason: string;
+  mismatch: ProbeMismatch | string | null;
+}
+
+export interface ProbeSummary {
+  id: number;
+  src_host_name: string;
+  port: number;
+  result: ProbeResult | string;
+  observed_at: string;
+  mismatch: ProbeMismatch | string | null;
+}
+
+export interface ProbeFilters {
+  /** Source or destination host. */
+  host_id?: number;
+  mismatch?: boolean;
+  result?: ProbeResult;
+}
+
+/* ── CSV import (people only) ── */
+
+export type NetworkImportKind = 'hosts' | 'openings' | 'port_usages';
+
+export interface NetworkImportRequest {
+  kind: NetworkImportKind;
+  csv: string;
+  dry_run: boolean;
+}
+
+export interface NetworkImportRow {
+  line: number;
+  action: 'create' | 'skip' | 'error' | string;
+  key: string;
+  message: string;
+}
+
+export interface NetworkImportResult {
+  kind: NetworkImportKind;
+  dry_run: boolean;
+  rows: NetworkImportRow[];
+  created: number;
+  skipped: number;
+  errors: number;
 }
 
 export interface HostFilters {
@@ -332,5 +413,15 @@ export async function deletePortUsage(id: number): Promise<void> {
 
 export async function verifyPortUsage(id: number): Promise<PortUsage> {
   const { data } = await client.post(`/network/port-usages/${id}/verify`);
+  return data;
+}
+
+export async function getNetworkProbes(filters: ProbeFilters = {}): Promise<Probe[]> {
+  const { data } = await client.get('/network/probes', { params: params(filters) });
+  return data;
+}
+
+export async function importNetworkCsv(body: NetworkImportRequest): Promise<NetworkImportResult> {
+  const { data } = await client.post('/network/import', body);
   return data;
 }

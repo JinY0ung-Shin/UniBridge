@@ -6,6 +6,7 @@ import { useCanWrite } from '../../components/useCanWrite';
 import { NETWORK_KEY, intOrUndefined } from './networkUtils';
 import { OpeningsTable } from './NetworkTables';
 import { OpeningFormModal } from './NetworkForms';
+import { CsvImportButton } from './CsvImportModal';
 import { useAllNetworkHosts, useRegions } from './useNetworkActions';
 
 function OpeningsTab() {
@@ -70,7 +71,10 @@ function OpeningsTab() {
           </label>
         </div>
         {canWrite && (
-          <button type="button" className="btn btn-primary" onClick={() => setEditing('new')}>{t('network.openings.add')}</button>
+          <div className="network-filters">
+            <CsvImportButton kind="openings" />
+            <button type="button" className="btn btn-primary" onClick={() => setEditing('new')}>{t('network.openings.add')}</button>
+          </div>
         )}
       </div>
       <p className="page-subtitle">{t('network.openings.hint')}</p>
