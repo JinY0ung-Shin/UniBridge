@@ -2,10 +2,12 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { getFirewallOpenings, getNetworkOverview, type RegionLink } from '../../api/network';
+import { getFirewallOpenings, getNetworkOverview, type NetworkHost, type RegionLink } from '../../api/network';
 import { NETWORK_KEY, regionKey } from './networkUtils';
 import { OpeningsTable } from './NetworkTables';
 import RegionGraph from './RegionGraph';
+import HostConnectionMap from './HostConnectionMap';
+import { useAllNetworkHosts } from './useNetworkActions';
 
 interface Axis {
   id: number | null;
@@ -39,13 +41,48 @@ function SummaryCard({ value, label, tone, onClick }: SummaryCardProps) {
   return <div className={className}>{body}</div>;
 }
 
-type MapView = 'matrix' | 'graph';
+const VIEWS = ['host', 'matrix', 'graph'] as const;
+type MapView = (typeof VIEWS)[number];
+
+/** Host picker grouped by region, for the server-centred map. */
+function HostPicker({ hosts, value, onChange }: { hosts: NetworkHost[]; value: number | null; onChange: (id: number) => void }) {
+  const { t } = useTranslation();
+  const groups = new Map<string, NetworkHost[]>();
+  for (const h of [...hosts].sort((a, b) => a.name.localeCompare(b.name))) {
+    const key = h.region_name ?? t('network.noRegion');
+    groups.set(key, [...(groups.get(key) ?? []), h]);
+  }
+  return (
+    <div className="form-group host-map__picker">
+      <label htmlFor="host-map-picker">{t('network.hostMap.pick')}</label>
+      <select id="host-map-picker" value={value ?? ''} onChange={(e) => e.target.value && onChange(Number(e.target.value))}>
+        <option value="">{t('network.selectHost')}</option>
+        {[...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([region, list]) => (
+          <optgroup key={region} label={region}>
+            {list.map((h) => <option key={h.id} value={h.id}>{`${h.name} (${h.ip})`}</option>)}
+          </optgroup>
+        ))}
+      </select>
+    </div>
+  );
+}
 
 function OverviewTab() {
   const { t } = useTranslation();
-  const [, setSearchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [selected, setSelected] = useState<{ src: number | null; dst: number | null } | null>(null);
-  const [view, setView] = useState<MapView>('matrix');
+  const requestedView = searchParams.get('view');
+  const view: MapView = (VIEWS as readonly string[]).includes(requestedView ?? '') ? (requestedView as MapView) : 'matrix';
+  const centerParam = Number(searchParams.get('host'));
+  const centerId = Number.isInteger(centerParam) && centerParam > 0 ? centerParam : null;
+  const allHosts = useAllNetworkHosts();
+
+  function setView(next: MapView, host: number | null = centerId) {
+    const params: Record<string, string> = {};
+    if (next !== 'matrix') params.view = next;
+    if (next === 'host' && host != null) params.host = String(host);
+    setSearchParams(params, { replace: true });
+  }
 
   const overviewQuery = useQuery({
     queryKey: [...NETWORK_KEY, 'overview'],
@@ -106,10 +143,10 @@ function OverviewTab() {
 
       <div className="network-toolbar">
         <h2 className="section-title">
-          {view === 'matrix' ? t('network.overview.matrixTitle') : t('network.overview.graphTitle')}
+          {t(`network.overview.${view}Title`)}
         </h2>
         <div className="network-segmented" role="group" aria-label={t('network.overview.viewLabel')}>
-          {(['matrix', 'graph'] as const).map((v) => (
+          {VIEWS.map((v) => (
             <button
               key={v}
               type="button"
@@ -117,15 +154,22 @@ function OverviewTab() {
               aria-pressed={view === v}
               onClick={() => setView(v)}
             >
-              {t(v === 'matrix' ? 'network.overview.viewMatrix' : 'network.overview.viewGraph')}
+              {t(`network.overview.view${v[0].toUpperCase()}${v.slice(1)}`)}
             </button>
           ))}
         </div>
       </div>
-      <p className="page-subtitle">
-        {view === 'matrix' ? t('network.overview.matrixHint') : t('network.overview.graphHint')}
-      </p>
-      {rows.length === 0 ? (
+      <p className="page-subtitle">{t(`network.overview.${view}Hint`)}</p>
+      {view === 'host' ? (
+        <>
+          <HostPicker hosts={allHosts.data ?? []} value={centerId} onChange={(id) => setView('host', id)} />
+          {centerId != null ? (
+            <HostConnectionMap hostId={centerId} onRecenter={(id) => setView('host', id)} />
+          ) : (
+            <div className="empty-state"><p>{t('network.hostMap.pickFirst')}</p></div>
+          )}
+        </>
+      ) : rows.length === 0 ? (
         <div className="empty-state"><p>{t('network.overview.noRegions')}</p></div>
       ) : view === 'graph' ? (
         <RegionGraph
@@ -190,7 +234,7 @@ function OverviewTab() {
         </div>
       )}
 
-      {selected && (
+      {selected && view !== 'host' && (
         <section className="network-section" aria-labelledby="network-selected-title">
           <h2 id="network-selected-title" className="section-title">
             {t('network.overview.selectedTitle', { src: axisName(selected.src), dst: axisName(selected.dst) })}

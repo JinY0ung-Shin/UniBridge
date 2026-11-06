@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { getNetworkHost, getNetworkProbes, type FirewallOpening, type PortUsage } from '../api/network';
 import { useCanWrite } from '../components/useCanWrite';
@@ -9,6 +9,7 @@ import { OpeningsTable, ProvenanceBadges, RegionName, UsagesTable } from './netw
 import { HostFormModal, OpeningFormModal, UsageFormModal } from './network/NetworkForms';
 import { useNetworkRowActions } from './network/useNetworkActions';
 import { ProbesTable } from './network/ProbeViews';
+import HostConnectionMap from './network/HostConnectionMap';
 import './Connections.css';
 import './Network.css';
 
@@ -24,6 +25,7 @@ function NetworkHostDetail() {
   const canWrite = useCanWrite('network.write');
   const [editing, setEditing] = useState<Editing | null>(null);
   const { verifyHost } = useNetworkRowActions();
+  const navigate = useNavigate();
 
   const hostQuery = useQuery({
     queryKey: [...NETWORK_KEY, 'host', id],
@@ -93,6 +95,17 @@ function NetworkHostDetail() {
               </dd>
             </div>
           </dl>
+
+          <section className="network-section" aria-labelledby="host-map-title">
+            <div className="network-toolbar">
+              <h2 id="host-map-title" className="section-title">{t('network.hostMap.section')}</h2>
+              <Link className="btn btn-sm btn-secondary" to={`/network?tab=finder&dst=${encodeURIComponent(host.name)}`}>
+                {t('network.hostMap.findPorts')}
+              </Link>
+            </div>
+            <p className="page-subtitle">{t('network.hostMap.hint')}</p>
+            <HostConnectionMap hostId={host.id} showActions={false} onRecenter={(next) => navigate(`/network/hosts/${next}`)} />
+          </section>
 
           <section className="network-section" aria-labelledby="host-inbound-title">
             <div className="network-toolbar">

@@ -124,8 +124,13 @@ export interface PortUsageInput {
 
 export interface NetworkHostDetail extends NetworkHost {
   inbound: FirewallOpening[];
+  /** Openings whose source is this host by name. */
   outbound: FirewallOpening[];
+  /** Openings whose source is a network range this host's IP falls in. */
+  outbound_via_cidr: FirewallOpening[];
   usages: PortUsage[];
+  /** Same region: reachable both ways on every port, no opening needed. */
+  same_region_hosts: NetworkHost[];
 }
 
 export interface RegionLink {
@@ -423,5 +428,82 @@ export async function getNetworkProbes(filters: ProbeFilters = {}): Promise<Prob
 
 export async function importNetworkCsv(body: NetworkImportRequest): Promise<NetworkImportResult> {
   const { data } = await client.post('/network/import', body);
+  return data;
+}
+
+// ── Port finder ─────────────────────────────────────────────────────────────
+
+export interface PortSpan {
+  port_from: number;
+  port_to: number;
+}
+
+export interface FinderUsedPort {
+  port: number;
+  service_name: string;
+  /** recorded | auto | listening (a probe found a listener nobody recorded) */
+  kind: 'recorded' | 'auto' | 'listening' | string;
+  auto_kind: string | null;
+}
+
+export interface FinderBlockedPort {
+  port: number;
+  src_host_name: string;
+  observed_at: string;
+}
+
+export interface PortSuggestion {
+  port: number;
+  /** probed_free: a source's probe passed the firewall and nothing listens. */
+  evidence: 'probed_free' | 'recorded' | string;
+  probed_from: string[];
+}
+
+export type RequestedPortStatus = 'free' | 'used' | 'blocked' | 'unreachable';
+
+export interface PortFinderHost {
+  host: NetworkHost;
+  any_port: boolean;
+  reachable: PortSpan[];
+  reachable_count: number;
+  free: PortSpan[];
+  free_count: number;
+  free_truncated: boolean;
+  used: FinderUsedPort[];
+  blocked: FinderBlockedPort[];
+  suggestions: PortSuggestion[];
+  requested_port: RequestedPortStatus | null;
+}
+
+export interface PortFinderResult {
+  protocol: NetworkProtocol;
+  port: number | null;
+  sources: AccessEndpoint[];
+  unplaced_sources: string[];
+  /** Without dst: hosts in no region no source reaches through an opening. */
+  unplaced_destinations: string[];
+  hosts: PortFinderHost[];
+  truncated: boolean;
+}
+
+export interface PortFinderQuery {
+  src: string[];
+  srcRegions: number[];
+  dst?: string;
+  dstRegion?: number;
+  port?: number;
+  protocol: NetworkProtocol;
+}
+
+export async function findPorts(query: PortFinderQuery): Promise<PortFinderResult> {
+  // Repeated keys (src=a&src=b), which FastAPI reads as a list.
+  const qs = new URLSearchParams();
+  query.src.forEach((s) => qs.append('src', s));
+  query.srcRegions.forEach((r) => qs.append('src_region', String(r)));
+  if (query.dst) qs.set('dst', query.dst);
+  if (query.dstRegion != null) qs.set('dst_region', String(query.dstRegion));
+  if (query.port != null) qs.set('port', String(query.port));
+  qs.set('protocol', query.protocol);
+  const { data } = await client.get(`/network/port-finder?${qs.toString()}`);
   return data;
 }

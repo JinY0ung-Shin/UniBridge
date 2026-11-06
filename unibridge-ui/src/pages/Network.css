@@ -488,3 +488,309 @@
 @media (max-width: 640px) {
   .network-import { padding: 16px; }
 }
+
+.network-note--warn {
+  border-color: color-mix(in srgb, var(--accent-yellow) 45%, transparent);
+  background: color-mix(in srgb, var(--accent-yellow) 8%, transparent);
+  color: var(--text-primary);
+}
+
+/* ── Port finder ─────────────────────────────────────────────────────────── */
+
+.finder-form {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 20px;
+}
+
+.finder-form__sources { grid-column: 1 / -1; }
+
+.finder-chip-input {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+}
+
+.finder-chip-input:focus-within { border-color: var(--accent-blue); }
+
+.finder-chip-input input {
+  flex: 1 1 180px;
+  min-width: 120px;
+  border: none;
+  outline: none;
+  padding: 4px 2px;
+  background: transparent;
+  color: var(--text-primary);
+}
+
+.finder-form__region-add { margin-top: 8px; max-width: 280px; }
+
+.finder-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.finder-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+button.finder-chip { cursor: pointer; }
+button.finder-chip:hover { border-color: var(--border-hover); }
+button.finder-chip:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 1px; }
+
+.finder-chip--region { border-style: dashed; }
+
+.finder-chip__remove {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  color: var(--text-tertiary);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.finder-chip__remove:hover { color: var(--text-primary); }
+
+.finder-chip--probed {
+  border-color: color-mix(in srgb, var(--accent-green) 55%, transparent);
+  background: color-mix(in srgb, var(--accent-green) 10%, var(--bg-primary));
+}
+
+.finder-chip--probed span:last-child { color: var(--text-secondary); font-size: 12px; }
+
+.finder-chip--recorded { background: var(--bg-primary); }
+
+.finder-chip--used { background: var(--bg-tertiary); }
+.finder-chip--listening { border-style: dashed; }
+
+.finder-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.finder-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+
+.finder-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.finder-card__title { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
+
+.finder-card__stats {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  text-align: right;
+}
+
+.finder-card__count { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.finder-suggestions,
+.finder-used { display: flex; flex-direction: column; gap: 6px; }
+
+.finder-strips { display: flex; flex-direction: column; gap: 10px; }
+
+/* One reachable span. */
+.port-strip__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.port-strip__cells {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 16px);
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.port-strip__cell {
+  position: relative;
+  height: 18px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent-green) 55%, var(--bg-primary));
+}
+
+.port-strip__cell--used { background: var(--text-tertiary); }
+.port-strip__cell--blocked {
+  background: repeating-linear-gradient(135deg, var(--accent-red) 0 3px, transparent 3px 6px);
+  box-shadow: inset 0 0 0 1px var(--accent-red);
+}
+/* Suggested ports carry a dot, so the cell keeps its free colour. */
+.port-strip__cell--suggested::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--bg-primary);
+}
+
+.port-strip__bar {
+  position: relative;
+  height: 16px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent-green) 55%, var(--bg-primary));
+}
+
+.port-strip__tick {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 3px;
+  margin-left: -1px;
+  border-radius: 2px;
+  background: var(--text-tertiary);
+}
+
+.port-strip__tick--blocked { background: var(--accent-red); }
+
+/* ── Server-centred connection map ───────────────────────────────────────── */
+
+.host-map__picker { max-width: 360px; margin: 4px 0 12px; }
+
+.host-map__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.host-map__legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+.host-map__swatch {
+  display: inline-block;
+  width: 20px;
+  height: 0;
+  border-top: 2px solid var(--text-tertiary);
+}
+
+.host-map__swatch--open { border-top-color: var(--accent-green); }
+.host-map__swatch--warn { border-top-color: var(--accent-yellow); }
+.host-map__swatch--mismatch { border-top-color: var(--accent-red); }
+.host-map__swatch--closed { border-top-style: dashed; }
+
+.host-map__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 0 auto;
+  font-family: var(--font-sans);
+}
+
+.host-map__column { fill: var(--text-tertiary); font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
+.host-map__empty { fill: var(--text-tertiary); font-size: 13px; }
+
+.host-map__node rect,
+.host-map__region rect {
+  fill: var(--bg-primary);
+  stroke: var(--border-hover);
+  stroke-width: 1.2;
+}
+
+.host-map__node { outline: none; }
+.host-map__node--link { cursor: pointer; }
+.host-map__node--cidr { cursor: pointer; }
+.host-map__node--cidr rect { stroke-dasharray: 5 4; }
+.host-map__node:hover rect,
+.host-map__node:focus-visible rect { stroke: var(--text-primary); }
+.host-map__node:focus-visible rect,
+.host-map__node--selected rect { stroke: var(--accent-blue); stroke-width: 2; }
+
+.host-map__center rect {
+  fill: color-mix(in srgb, var(--accent-blue) 8%, var(--bg-primary));
+  stroke: var(--accent-blue);
+  stroke-width: 2;
+}
+
+.host-map__name { fill: var(--text-primary); font-size: 13px; font-weight: 600; }
+.host-map__center-name { fill: var(--text-primary); font-size: 15px; font-weight: 700; }
+.host-map__sub { fill: var(--text-tertiary); font-size: 11.5px; }
+.host-map__port { fill: var(--text-secondary); font-size: 12px; }
+.host-map__port-num { fill: var(--text-primary); font-family: var(--font-mono); font-weight: 600; }
+
+.host-map__edge { cursor: pointer; outline: none; }
+.host-map__hit { fill: none; stroke: transparent; stroke-width: 14; }
+.host-map__line { fill: none; stroke: var(--accent-green); stroke-width: 2; }
+.host-map__edge--warn .host-map__line { stroke: var(--accent-yellow); }
+.host-map__edge--mismatch .host-map__line { stroke: var(--accent-red); }
+.host-map__edge--closed .host-map__line { stroke: var(--text-tertiary); stroke-dasharray: 6 5; }
+.host-map__edge:hover .host-map__line { stroke-width: 3; }
+.host-map__edge--selected .host-map__line { stroke: var(--accent-blue); stroke-width: 3; }
+
+.host-map__label-bg { fill: var(--bg-primary); stroke: var(--border-default); }
+.host-map__edge:focus-visible .host-map__label-bg,
+.host-map__edge--selected .host-map__label-bg { stroke: var(--accent-blue); stroke-width: 1.5; }
+.host-map__label { fill: var(--text-primary); font-family: var(--font-mono); font-size: 11.5px; }
+
+.host-map__arrow path { fill: var(--accent-green); }
+.host-map__arrow--warn path { fill: var(--accent-yellow); }
+.host-map__arrow--mismatch path { fill: var(--accent-red); }
+.host-map__arrow--closed path { fill: var(--text-tertiary); }
+.host-map__arrow--selected path { fill: var(--accent-blue); }
+
+.host-map__region { cursor: pointer; outline: none; }
+.host-map__region rect { stroke-dasharray: 4 3; }
+.host-map__region:hover rect,
+.host-map__region:focus-visible rect,
+.host-map__region--selected rect { stroke: var(--accent-blue); stroke-width: 2; }
+.host-map__region-line { stroke: var(--text-tertiary); stroke-width: 2; stroke-dasharray: 2 4; }
+
+.host-map__peer-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 6px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.host-map__peer-list li { display: flex; gap: 8px; align-items: baseline; }
+
+.host-map__actions { display: flex; gap: 16px; margin-top: 10px; }

@@ -31,6 +31,7 @@ vi.mock('../api/network', () => ({
   verifyPortUsage: vi.fn(),
   getNetworkProbes: vi.fn(),
   importNetworkCsv: vi.fn(),
+  findPorts: vi.fn(),
 }));
 
 import { screen, waitFor, within } from '@testing-library/react';
@@ -49,6 +50,7 @@ import {
   getRegions,
   importNetworkCsv,
   verifyFirewallOpening,
+  findPorts,
   type FirewallOpening,
   type NetworkHost,
   type NetworkOverview,
@@ -74,6 +76,7 @@ const mocked = {
   check: vi.mocked(checkNetworkAccess),
   probes: vi.mocked(getNetworkProbes),
   importCsv: vi.mocked(importNetworkCsv),
+  findPorts: vi.mocked(findPorts),
 };
 
 const provenance = {
@@ -418,7 +421,9 @@ describe('Network host detail', () => {
       ...makeHost({ id: 2, name: 'db-1', ip: '10.2.0.9', region_id: 2, region_name: 'busan' }),
       inbound: [makeOpening()],
       outbound: [],
+      outbound_via_cidr: [],
       usages: [makeUsage({ id: null, source: 'auto', auto_kind: 'db', reachable_from_platform: false })],
+      same_region_hosts: [],
     });
     renderWithProviders(
       <Routes><Route path="/network/hosts/:id" element={<NetworkHostDetail />} /></Routes>,
@@ -763,7 +768,9 @@ describe('Network probes', () => {
       ...makeHost({ id: 2, name: 'db-1', ip: '10.2.0.9', region_id: 2, region_name: 'busan' }),
       inbound: [],
       outbound: [],
+      outbound_via_cidr: [],
       usages: [],
+      same_region_hosts: [],
     });
     mocked.probes.mockResolvedValue([makeProbe({ result: 'refused' })]);
     renderWithProviders(
@@ -775,5 +782,170 @@ describe('Network probes', () => {
     expect(mocked.probes).toHaveBeenCalledWith({ host_id: 2 });
     expect(within(table).getByText('Refused')).toHaveClass('badge-info');
     expect(screen.getByRole('link', { name: 'Open in Probes tab' })).toHaveAttribute('href', '/network?tab=probes&host_id=2');
+  });
+});
+
+/* ── Server-centred map and port finder ── */
+
+describe('Network server-centred map', () => {
+  const center = {
+    ...makeHost({ id: 2, name: 'db-1', ip: '10.2.0.9', region_id: 2, region_name: 'busan' }),
+    inbound: [
+      makeOpening(),
+      makeOpening({ id: 12, port_from: 8000, port_to: 8010, verified: false }),
+      makeOpening({ id: 13, src_host_id: null, src_host_name: null, src_host_ip: null, src_cidr: '172.16.0.0/16', src_region_id: null, src_region_name: null, port_from: 22, port_to: 22, status: 'closed' }),
+    ],
+    outbound: [],
+    outbound_via_cidr: [
+      makeOpening({ id: 14, src_host_id: null, src_cidr: '10.2.0.0/16', dst_host_id: 3, dst_host_name: 'gpu-1', dst_host_ip: '10.3.0.1', dst_region_name: 'cloud', port_from: 9400, port_to: 9400, last_probe: { id: 1, src_host_name: 'db-1', port: 9400, result: 'timeout', observed_at: '2026-11-01T00:00:00Z', mismatch: 'recorded_open_but_blocked' } }),
+    ],
+    usages: [makeUsage()],
+    same_region_hosts: [makeHost({ id: 5, name: 'db-2', ip: '10.2.0.10', region_id: 2, region_name: 'busan' })],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocked.hosts.mockResolvedValue(HOSTS);
+    mocked.regions.mockResolvedValue([]);
+    mocked.probes.mockResolvedValue([]);
+    mocked.overview.mockResolvedValue(makeOverview());
+    mocked.host.mockImplementation(async (id: number) =>
+      id === 2 ? center : { ...center, ...makeHost({ id, name: `host-${id}` }), inbound: [], outbound_via_cidr: [], same_region_hosts: [] },
+    );
+  });
+
+  it('draws one host with what reaches it, what it reaches and its region, and re-centres on click', async () => {
+    const user = userEvent.setup();
+    renderNetwork('/network?view=host&host=2', READ);
+
+    const map = await screen.findByRole('group', { name: 'Connection map of db-1' });
+    // One edge per peer: app-1 (two openings merged) and the CIDR range; gpu-1 via a range.
+    const fromApp = within(map).getByRole('button', { name: 'app-1 → db-1: tcp/5432, tcp/8000-8010' });
+    expect(fromApp).toHaveClass('host-map__edge--warn');
+    expect(within(map).getByRole('button', { name: /^172\.16\.0\.0\/16 → db-1: tcp\/22 \(Closed\)/ })).toHaveClass('host-map__edge--closed');
+    expect(within(map).getByRole('button', { name: 'db-1 → gpu-1: tcp/9400' })).toHaveClass('host-map__edge--mismatch');
+    expect(within(map).getByText(/via range/)).toBeInTheDocument();
+    expect(within(map).getByText('postgres')).toBeInTheDocument();
+
+    await user.click(fromApp);
+    const list = await screen.findByRole('table', { name: 'Openings of the selected connection' });
+    expect(within(list).getAllByText('app-1')).toHaveLength(2);
+
+    await user.click(within(map).getByRole('button', { name: /^Same region busan: 1 hosts/ }));
+    await user.click(screen.getByRole('button', { name: 'db-2' }));
+    await waitFor(() => expect(mocked.host).toHaveBeenCalledWith(5));
+    expect(await screen.findByRole('group', { name: 'Connection map of host-5' })).toBeInTheDocument();
+
+  });
+
+  it('picks the centre from the overview and the host page shows the same map', async () => {
+    const user = userEvent.setup();
+    renderNetwork('/network', READ);
+    const toggle = await screen.findByRole('group', { name: 'View' });
+    await user.click(within(toggle).getByRole('button', { name: 'By server' }));
+    expect(screen.getByText('Pick a server to centre the map on.')).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText('Centre server'), '2');
+    expect(await screen.findByRole('group', { name: 'Connection map of db-1' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Find free ports on this server' })).toHaveAttribute('href', '/network?tab=finder&dst=db-1');
+  });
+});
+
+describe('Network port finder', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocked.hosts.mockResolvedValue(HOSTS);
+    mocked.regions.mockResolvedValue(REGIONS);
+    mocked.probes.mockResolvedValue([]);
+  });
+
+  it('sends hosts and regions as sources and shows suggestions, the port strip and same-region hosts', async () => {
+    mocked.findPorts.mockResolvedValue({
+      protocol: 'tcp',
+      port: 8005,
+      sources: [
+        { input: 'app-1', host_id: 1, host_name: 'app-1', ip: '10.1.0.5', region_id: 1, region_name: 'seoul' },
+      ],
+      unplaced_sources: [],
+      unplaced_destinations: [],
+      truncated: false,
+      hosts: [
+        {
+          host: makeHost({ id: 2, name: 'db-1', ip: '10.2.0.9', region_id: 2, region_name: 'busan' }),
+          any_port: false,
+          reachable: [{ port_from: 8000, port_to: 8007 }],
+          reachable_count: 8,
+          free: [{ port_from: 8000, port_to: 8000 }, { port_from: 8003, port_to: 8007 }],
+          free_count: 6,
+          free_truncated: false,
+          used: [
+            { port: 8001, service_name: 'api', kind: 'recorded', auto_kind: null },
+            { port: 8002, service_name: '', kind: 'listening', auto_kind: null },
+          ],
+          blocked: [],
+          suggestions: [
+            { port: 8005, evidence: 'probed_free', probed_from: ['app-1'] },
+            { port: 8000, evidence: 'recorded', probed_from: [] },
+          ],
+          requested_port: 'free',
+        },
+        {
+          host: makeHost({ id: 7, name: 'app-2', ip: '10.1.0.6' }),
+          any_port: true,
+          reachable: [{ port_from: 1, port_to: 65535 }],
+          reachable_count: 65535,
+          free: [{ port_from: 1, port_to: 65535 }],
+          free_count: 65535,
+          free_truncated: false,
+          used: [],
+          blocked: [],
+          suggestions: [],
+          requested_port: 'free',
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderNetwork('/network?tab=finder', READ);
+
+    const src = await screen.findByLabelText('Client servers');
+    await user.type(src, 'app-1{Enter}');
+    await waitFor(() => expect(screen.getByRole('option', { name: 'seoul (3 hosts)' })).toBeInTheDocument());
+    await user.selectOptions(screen.getByRole('combobox', { name: '+ Add a whole region' }), '1');
+    expect(screen.getByText('All of region seoul')).toBeInTheDocument();
+    await user.type(screen.getByLabelText('Wanted port'), '8005');
+    await user.click(screen.getByRole('button', { name: 'Find' }));
+
+    await waitFor(() => expect(mocked.findPorts).toHaveBeenCalled());
+    expect(mocked.findPorts.mock.calls[0][0]).toEqual({
+      src: ['app-1'], srcRegions: [1], dst: undefined, dstRegion: undefined, port: 8005, protocol: 'tcp',
+    });
+
+    const card = await screen.findByRole('article', { name: 'db-1' });
+    expect(within(card).getByText('8005 is free')).toHaveClass('badge-ok');
+    expect(within(card).getByText('6 free ports')).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'Copy port 8005' })).toHaveClass('finder-chip--probed');
+    const cells = within(card).getByRole('list', { name: 'Range 8000-8007, 6/8 free' });
+    expect(within(cells).getByLabelText('8001: in use (api)')).toHaveClass('port-strip__cell--used');
+    expect(within(cells).getByLabelText('8002: an unrecorded service answers')).toBeInTheDocument();
+    expect(within(cells).getByLabelText('8005: free')).toHaveClass('port-strip__cell--suggested');
+
+    const same = screen.getByRole('table', { name: '1 server(s) in the same region: no request needed' });
+    expect(within(same).getByText('app-2')).toBeInTheDocument();
+  });
+
+  it('takes the destination from the URL and says when nothing is open', async () => {
+    mocked.findPorts.mockResolvedValue({
+      protocol: 'tcp', port: null, sources: [], unplaced_sources: [], unplaced_destinations: [], truncated: false,
+      hosts: [{
+        host: makeHost({ id: 2, name: 'db-1' }), any_port: false, reachable: [], reachable_count: 0,
+        free: [], free_count: 0, free_truncated: false, used: [], blocked: [], suggestions: [], requested_port: null,
+      }],
+    });
+    const user = userEvent.setup();
+    renderNetwork('/network?tab=finder&dst=db-1&src=app-1&src=APP-1', READ);
+    expect(await screen.findByLabelText('Server for the service')).toHaveValue('db-1');
+    expect(screen.getByText('app-1')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Find' }));
+    expect(await screen.findByText(/No open port on this server reaches from every source/)).toBeInTheDocument();
+    expect(mocked.findPorts.mock.calls[0][0]).toMatchObject({ src: ['app-1'], dst: 'db-1' });
   });
 });

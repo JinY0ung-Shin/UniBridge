@@ -9,12 +9,14 @@ import OpeningsTab from './network/OpeningsTab';
 import UsagesTab from './network/UsagesTab';
 import ProbesTab from './network/ProbesTab';
 import AccessCheckTab from './network/AccessCheckTab';
+import PortFinderTab from './network/PortFinderTab';
 import SettingsTab from './network/SettingsTab';
 import './Connections.css';
 import './Network.css';
 
 const TABS = [
   { key: 'overview', Component: OverviewTab },
+  { key: 'finder', Component: PortFinderTab },
   { key: 'regions', Component: RegionsTab },
   { key: 'hosts', Component: HostsTab },
   { key: 'openings', Component: OpeningsTab },
