@@ -1111,6 +1111,7 @@ async def _network_find_hosts(ctx: ToolContext, args: dict[str, Any]) -> dict[st
             "q": args.get("query"),
             "region_id": args.get("region_id"),
             "unverified": "true" if args.get("unverified") else None,
+            "kind": args.get("kind"),
         },
     )
     limit = args.get("limit") or _NETWORK_LIST_DEFAULT
@@ -1357,6 +1358,14 @@ _HOST_FIELDS: dict[str, Any] = {
     "region_id": _REGION_ID_ARG,
     "description": {"type": "string"},
     "owner": {"type": "string", "description": "Owner or team"},
+    "kind": {
+        "type": "string",
+        "enum": ["managed", "external"],
+        "description": (
+            "managed (default): a server we run. external: someone else's server, "
+            "recorded only so openings can name it; it has no region"
+        ),
+    },
 }
 
 _PROBE_RESULT_ARG = {
@@ -1398,7 +1407,8 @@ NETWORK_READ_TOOLS = (
         title="Find network hosts",
         description=(
             "Find registered hosts: query matches part of the name, IP or description. "
-            "Each result gives the host's id, IP, region and whether a person verified it."
+            "Each result gives the host's id, IP, region, kind (managed = ours, external = "
+            "someone else's) and whether a person verified it."
         ),
         group="network",
         input_schema=_object_schema(
@@ -1406,6 +1416,11 @@ NETWORK_READ_TOOLS = (
                 "query": {"type": "string", "description": "Part of a name, IP or description"},
                 "region_id": _REGION_ID_ARG,
                 "unverified": _UNVERIFIED_ARG,
+                "kind": {
+                    "type": "string",
+                    "enum": ["managed", "external"],
+                    "description": "Only hosts we run (managed) or only external ones",
+                },
                 "limit": _LIST_LIMIT_ARG,
             }
         ),
@@ -1617,7 +1632,19 @@ NETWORK_WRITE_TOOLS = (
             + _AGENT_RECORD_NOTE
         ),
         group="network",
-        input_schema=_object_schema(_OPENING_FIELDS, ("dst_host", "port_from")),
+        input_schema=_object_schema(
+            {
+                **_OPENING_FIELDS,
+                "create_missing_destination": {
+                    "type": "boolean",
+                    "description": (
+                        "When dst_host is an IP no host has, register it as an external "
+                        "host named dst-<ip> instead of failing"
+                    ),
+                },
+            },
+            ("dst_host", "port_from"),
+        ),
         handler=_network_record_opening,
         read_only=False,
     ),

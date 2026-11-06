@@ -594,6 +594,9 @@ class NetworkHost(Base):
     )
     description = Column(String(255), default="", nullable=False, server_default="")
     owner = Column(String(255), default="", nullable=False, server_default="")
+    # managed = a server we run (placed in a region, port finder, monitoring);
+    # external = someone else's server, kept only so openings can name it.
+    kind = Column(String(16), default="managed", nullable=False, server_default="managed")
     monitored_host_id = Column(
         Integer, ForeignKey("monitored_hosts.id", ondelete="SET NULL"), nullable=True, unique=True
     )

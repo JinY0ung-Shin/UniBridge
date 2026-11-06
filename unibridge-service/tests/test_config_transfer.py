@@ -1521,7 +1521,8 @@ class TestNetworkMap:
         hosts = {h["name"]: h for h in sections["network_hosts"]}
         assert hosts["app1"] == {
             "name": "app1", "ip": "10.1.0.10", "region": "seoul", "description": "",
-            "owner": "team-a", "monitored_host": "web1", "source": "manual", "verified": True,
+            "owner": "team-a", "kind": "managed", "monitored_host": "web1", "source": "manual",
+            "verified": True,
         }
         assert hosts["db.internal"]["verified"] is False
         assert hosts["db.internal"]["source"] == "agent"
@@ -1635,6 +1636,49 @@ class TestNetworkMap:
         rows = await network_rows(seeded_db)
         assert sorted(h.name for h in rows["hosts"]) == ["app1", "db1"]
         assert len(rows["openings"]) == 2 and len(rows["usages"]) == 1
+
+    async def test_host_kind_travels_and_external_hosts_are_not_placed(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        doc = network_doc()
+        doc["sections"]["network_hosts"] += [
+            # Inside busan's CIDR, but someone else's: stays out of the region.
+            {"name": "knox", "ip": "10.2.0.99", "kind": "external"},
+            {"name": "bad-ext", "ip": "10.9.0.2", "kind": "external", "region": "seoul"},
+            # Refused on a dry run too, even when the server is one this file would create.
+            {"name": "ext-mon", "ip": "10.9.0.3", "kind": "external", "monitored_host": "web9"},
+        ]
+        doc["sections"]["firewall_openings"].append(
+            {"src_host": "app1", "dst_host": "knox", "port_from": 25}
+        )
+        dry = await do_import(client, admin_token, dry_run=True, sections=NETWORK_SECTIONS, doc=doc)
+        dry_outcome = {(r["section"], r["name"]): r["action"] for r in dry.json()["results"]}
+        assert dry_outcome[("network_hosts", "ext-mon")] == "error"
+        resp = await do_import(client, admin_token, dry_run=False, sections=NETWORK_SECTIONS, doc=doc)
+        assert resp.status_code == 200, resp.text
+        outcome = {(r["section"], r["name"]): r["action"] for r in resp.json()["results"]}
+        assert outcome[("network_hosts", "knox")] == "create"
+        assert outcome[("network_hosts", "bad-ext")] == "error"
+        assert outcome[("network_hosts", "ext-mon")] == "error"
+        rows = await network_rows(seeded_db)
+        hosts = {h.name: h for h in rows["hosts"]}
+        assert hosts["knox"].kind == "external" and hosts["knox"].region_id is None
+        assert hosts["app1"].kind == "managed"
+        assert any(o.dst_host_id == hosts["knox"].id for o in rows["openings"])
+
+        # An older export without kinds leaves a host's kind alone.
+        older = network_doc(network_hosts=[{"name": "knox", "ip": "10.2.0.99"}])
+        resp = await do_import(
+            client, admin_token, dry_run=False, sections=["network_hosts"], doc=older
+        )
+        assert resp.status_code == 200, resp.text
+        rows = await network_rows(seeded_db)
+        knox = next(h for h in rows["hosts"] if h.name == "knox")
+        assert knox.kind == "external" and knox.region_id is None
+
+        exported = (await client.get("/admin/config/export", headers=auth_header(admin_token))).json()
+        kinds = {h["name"]: h["kind"] for h in exported["sections"]["network_hosts"]}
+        assert kinds["knox"] == "external" and kinds["app1"] == "managed"
 
     async def test_dry_run_reports_what_the_apply_does(
         self, client, admin_token, seeded_db, apisix_state

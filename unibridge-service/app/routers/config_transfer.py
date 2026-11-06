@@ -532,6 +532,7 @@ async def _export_network(db: AsyncSession) -> dict[str, Any]:
             "region": snap.region_name(host.region_id),
             "description": host.description or "",
             "owner": host.owner or "",
+            "kind": host.kind or "managed",
             "monitored_host": (
                 snap.monitored_names.get(host.monitored_host_id)
                 if host.monitored_host_id is not None
@@ -2055,13 +2056,17 @@ async def _apply_network_host(
     ctx: _ImportContext, name: str, item: dict[str, Any]
 ) -> tuple[str, str | None]:
     region_name = item.get("region")
+    plan = await _network_plan(ctx)
+    existing = plan.host_by_name(name)
+    # An export without kinds (older) leaves a host's kind as it is here.
+    kind = item.get("kind") or (existing.kind if existing is not None else None) or "managed"
     body = NetworkHostCreate.model_validate({
         **_present(item, "ip", "description", "owner"),
         "name": name,
         "region": region_name if isinstance(region_name, str) and region_name else None,
+        "kind": kind,
     })
-    plan = await _network_plan(ctx)
-    existing = plan.host_by_name(body.name)
+    external = body.kind == network_map.EXTERNAL
     holder = plan.snap.find_host(body.ip)
     if holder is not None and (existing is None or holder.id != existing.id):
         raise HTTPException(
@@ -2079,10 +2084,26 @@ async def _apply_network_host(
                 ),
             )
         region_id: int | None = region.id
+    elif external:
+        region_id = None
     else:
         # As when a host is added without a region: placed by the CIDRs.
         region_id = plan.snap.region_for_ip(body.ip)
     relink, monitored_id, reason = _monitored_link(ctx, plan, item, existing)
+    if external and (
+        item.get("monitored_host")
+        or monitored_id is not None
+        or (not relink and existing is not None and existing.monitored_host_id is not None)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="An external host cannot be linked to a monitored server",
+        )
+    if external and plan.snap.settings.platform_host_id is not None and existing is not None \
+            and existing.id == plan.snap.settings.platform_host_id:
+        raise HTTPException(
+            status_code=422, detail="The platform host is ours: it cannot be an external host"
+        )
     action = "update" if existing is not None else "create"
     verified = _item_verified(item)
 
@@ -2092,6 +2113,7 @@ async def _apply_network_host(
         )
         planned.ip = body.ip
         planned.region_id = region_id
+        planned.kind = body.kind
         if relink:
             planned.monitored_host_id = monitored_id
         plan.put_host(planned)
@@ -2104,6 +2126,7 @@ async def _apply_network_host(
         ctx.db.add(host)
     host.ip = body.ip
     host.region_id = region_id
+    host.kind = body.kind
     host.description = body.description
     host.owner = body.owner
     if relink:
@@ -2357,6 +2380,10 @@ async def _apply_network_settings(
         if host is None:
             return "skip", (
                 f"platform host '{name}' is not registered — setting left unchanged"
+            )
+        if network_map.is_external(host):
+            return "skip", (
+                f"platform host '{name}' is an external host — setting left unchanged"
             )
         host_id = host.id
     if ctx.dry_run:

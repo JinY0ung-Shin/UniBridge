@@ -45,6 +45,7 @@ from app.schemas import (
     NetworkHostCreate,
     NetworkHostDetail,
     NetworkHostResponse,
+    NetworkHostKind,
     NetworkHostUpdate,
     NetworkOverview,
     NetworkProtocol,
@@ -203,8 +204,14 @@ async def put_settings(
     actor: Actor = Depends(network_person_writer),
     db: AsyncSession = Depends(get_db),
 ) -> NetworkSettings:
-    if body.platform_host_id is not None and await db.get(NetworkHost, body.platform_host_id) is None:
-        raise HTTPException(status_code=422, detail="platform_host_id is not a registered host")
+    if body.platform_host_id is not None:
+        platform = await db.get(NetworkHost, body.platform_host_id)
+        if platform is None:
+            raise HTTPException(status_code=422, detail="platform_host_id is not a registered host")
+        if network_map.is_external(platform):
+            raise HTTPException(
+                status_code=422, detail="The platform host is ours: it cannot be an external host"
+            )
     before = await network_map.load_settings(db)
     await network_map.save_settings(db, body)
     await log_admin_action(
@@ -377,6 +384,7 @@ def _host_snapshot(host: NetworkHost) -> dict[str, Any]:
         "region_id": host.region_id,
         "description": host.description,
         "owner": host.owner,
+        "kind": host.kind,
         "monitored_host_id": host.monitored_host_id,
         "verified": host.verified_at is not None,
     }
@@ -405,6 +413,26 @@ def _check_name_free(snap: Snapshot, name: str, *, host_id: int | None = None) -
         raise HTTPException(status_code=409, detail=f"A host named {name!r} already exists")
 
 
+def _check_may_be_external(
+    snap: Snapshot, host: NetworkHost, *, region_given: bool, monitored: int | None
+) -> None:
+    """What an external host (in no region, someone else's) cannot be."""
+    if region_given:
+        raise HTTPException(
+            status_code=422,
+            detail="An external host is in no region: make it managed to place it in one",
+        )
+    if monitored is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="A host linked to a monitored server is ours: unlink it first to make it external",
+        )
+    if snap.settings.platform_host_id == host.id:
+        raise HTTPException(
+            status_code=422, detail="The platform host is ours: it cannot be an external host"
+        )
+
+
 async def _check_monitored(db: AsyncSession, monitored_host_id: int | None) -> None:
     if monitored_host_id is not None and await db.get(MonitoredHost, monitored_host_id) is None:
         raise HTTPException(status_code=422, detail="monitored_host_id is not a monitored server")
@@ -415,6 +443,7 @@ async def list_hosts(
     region_id: int | None = Query(None),
     q: str | None = Query(None, max_length=100, description="Name, IP or description contains"),
     unverified: bool = Query(False),
+    kind: NetworkHostKind | None = Query(None, description="managed (ours) or external"),
     _actor: Actor = Depends(network_reader),
     db: AsyncSession = Depends(get_db),
 ) -> list[NetworkHostResponse]:
@@ -423,6 +452,8 @@ async def list_hosts(
     out = []
     for host in sorted(snap.hosts.values(), key=lambda h: h.name):
         if region_id is not None and host.region_id != region_id:
+            continue
+        if kind is not None and host.kind != kind:
             continue
         if unverified and host.verified_at is not None:
             continue
@@ -486,7 +517,9 @@ async def create_host(
     snap = await _snapshot(db)
     _check_name_free(snap, body.name)
     region_id = await _region_id_for(db, snap, region_id=body.region_id, region=body.region)
-    if region_id is None:
+    # An external host is never placed: its IP may sit in one of our ranges
+    # without being reachable the way our hosts there are.
+    if region_id is None and body.kind != network_map.EXTERNAL:
         region_id = snap.region_for_ip(body.ip)
     await _check_monitored(db, body.monitored_host_id)
     host = NetworkHost(
@@ -495,6 +528,7 @@ async def create_host(
         region_id=region_id,
         description=body.description,
         owner=body.owner,
+        kind=body.kind,
         monitored_host_id=body.monitored_host_id,
     )
     _stamp(host, actor, created=True)
@@ -538,6 +572,18 @@ async def update_host(
         new_region = None  # explicit null: unassign
     else:
         new_region = host.region_id
+    new_kind = body.kind or host.kind
+    if new_kind == network_map.EXTERNAL:
+        _check_may_be_external(
+            snap,
+            host,
+            region_given=body.region is not None or body.region_id is not None,
+            monitored=body.monitored_host_id
+            if "monitored_host_id" in fields
+            else host.monitored_host_id,
+        )
+        new_region = None
+    host.kind = new_kind
     host.region_id = new_region
     for name in ("name", "ip", "description", "owner"):
         value = getattr(body, name)
@@ -630,7 +676,14 @@ async def import_monitored_hosts(
             continue
         existing = snap.find_host(str(ip))
         if existing is not None:
-            if existing.monitored_host_id is None:
+            if network_map.is_external(existing):
+                result.skipped.append(
+                    {
+                        "name": mon.name,
+                        "reason": f"IP is external host {existing.name}: make it managed to link",
+                    }
+                )
+            elif existing.monitored_host_id is None:
                 existing.monitored_host_id = mon.id
                 result.linked.append(f"{mon.name} → {existing.name}")
             else:
@@ -726,12 +779,20 @@ async def _commit_opening(db: AsyncSession, opening: FirewallOpening) -> None:
 
 
 def _validate_opening(
-    snap: Snapshot, opening: FirewallOpening, *, endpoints_changed: bool = True
+    snap: Snapshot,
+    opening: FirewallOpening,
+    *,
+    endpoints_changed: bool = True,
+    dst: NetworkHost | None = None,
 ) -> None:
     """``endpoints_changed=False`` (an edit that keeps src/dst) skips the region
     rule: a host or region moved since may have made the pair one region, and
-    the record must still be editable (e.g. to mark it closed)."""
-    dst = snap.hosts[opening.dst_host_id]
+    the record must still be editable (e.g. to mark it closed).
+
+    ``dst`` is the destination when it is not saved yet (a new external host,
+    so ``opening.dst_host_id`` is still unset)."""
+    if dst is None:
+        dst = snap.hosts[opening.dst_host_id]
     if opening.src_host_id is not None:
         if opening.src_host_id == opening.dst_host_id:
             raise HTTPException(status_code=422, detail="Source and destination are the same host")
@@ -814,7 +875,26 @@ async def create_opening(
         if body.src_cidr is not None
         else _resolve_host(snap, host_id=body.src_host_id, ref=body.src_host, what="source")
     )
-    dst = _resolve_host(snap, host_id=body.dst_host_id, ref=body.dst_host, what="destination")
+    new_dst: NetworkHost | None = None
+    if body.dst_host is not None and body.dst_host_id is None and snap.find_host(body.dst_host) is None:
+        if not body.create_missing_destination:
+            hint = (
+                " (set create_missing_destination to record it as an external host)"
+                if network_map.parse_ip(body.dst_host) is not None
+                else ""
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=f"The destination host {body.dst_host!r} is not registered{hint}",
+            )
+        try:
+            new_dst = network_map.new_external_host(snap, body.dst_host)
+        except NetworkMapError as exc:
+            _raise(exc)
+            raise  # unreachable
+    dst = new_dst or _resolve_host(
+        snap, host_id=body.dst_host_id, ref=body.dst_host, what="destination"
+    )
     opening = FirewallOpening(
         src_host_id=src.id if src is not None else None,
         src_cidr=body.src_cidr,
@@ -827,12 +907,31 @@ async def create_opening(
         requester=body.requester,
         purpose=body.purpose,
     )
-    _validate_opening(snap, opening)
+    _validate_opening(snap, opening, dst=new_dst)
+    if new_dst is not None:
+        _stamp(new_dst, actor, created=True)
+        db.add(new_dst)
+        try:
+            await db.flush()
+        except IntegrityError:
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="A host with this IP or name was just registered; try again",
+            )
+        opening.dst_host_id = new_dst.id
     _stamp(opening, actor, created=True)
     set_src_key(opening)
     db.add(opening)
     await _commit_opening(db, opening)
     await db.refresh(opening)
+    if new_dst is not None:
+        await db.refresh(new_dst)
+        await log_admin_action(
+            db, actor=actor.name, action="create", resource_type="network_host",
+            resource_id=new_dst.name, summary=f"{new_dst.ip} (external, with an opening)",
+            before=None, after=_host_snapshot(new_dst),
+        )
     await log_admin_action(
         db, actor=actor.name, action="create", resource_type="firewall_opening",
         resource_id=str(opening.id), summary=f"{dst.name} {_opening_snapshot(opening)['ports']}",

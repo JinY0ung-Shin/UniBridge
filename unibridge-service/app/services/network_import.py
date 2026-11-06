@@ -7,9 +7,13 @@ verdict — ``create``, ``skip`` (already recorded, or not needed such as an
 opening inside one region) or ``error`` — so a dry run shows exactly what an
 import would do. The valid lines are written in one transaction.
 
+Hosts: an optional ``kind`` column says ``managed`` (ours, the default) or
+``external`` (someone else's: never placed in a region).
+
 Openings: ``src`` is a registered host (name or IP), a CIDR, or an IP no host
-has (recorded as that ``/32`` or ``/128``); ``dst`` must be a registered host;
-``ports`` is ``5432``, ``8000-8010`` (or ``~``), or several separated by
+has (recorded as that ``/32`` or ``/128``); ``dst`` must be a registered host,
+or — with ``create_missing_destinations`` — an IP no host has, which becomes
+an external host named ``dst-<ip>``; ``ports`` is ``5432``, ``8000-8010`` (or ``~``), or several separated by
 commas or spaces (one opening each).
 """
 from __future__ import annotations
@@ -50,6 +54,9 @@ HEADER_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
         "region": ("region", "zone", "리전", "지역", "존", "망"),
         "owner": ("owner", "team", "담당자", "담당", "담당팀", "팀"),
         "description": ("description", "desc", "note", "설명", "비고", "용도"),
+        # Only unambiguous names: a sheet's own "구분"/"type" column (WEB, DB, …)
+        # must keep being ignored as before.
+        "kind": ("kind", "hostkind", "hosttype", "호스트구분", "호스트종류"),
     },
     "openings": {
         "src": ("src", "source", "from", "srcip", "sourceip", "출발지", "출발", "출발지ip", "소스", "source주소"),
@@ -76,6 +83,8 @@ REQUIRED: dict[str, tuple[str, ...]] = {
     "port_usages": ("host", "port", "service_name"),
 }
 _OPEN_WORDS = {"", "open", "opened", "allow", "allowed", "active", "approved", "열림", "허용", "개방", "승인", "완료", "사용"}
+_MANAGED_WORDS = {"", "managed", "internal", "ours", "관리", "내부", "자사"}
+_EXTERNAL_WORDS = {"external", "thirdparty", "외부", "타사", "대외"}
 _CLOSED_WORDS = {"closed", "close", "revoked", "expired", "deleted", "deny", "닫힘", "해제", "폐기", "만료", "삭제", "차단", "반납"}
 
 
@@ -162,6 +171,15 @@ def parse_status(value: str) -> str:
     raise ValueError(f"unknown status {value!r} (use open/closed, 열림/해제)")
 
 
+def parse_kind(value: str) -> str:
+    word = _norm(value)
+    if word in _MANAGED_WORDS:
+        return "managed"
+    if word in _EXTERNAL_WORDS:
+        return network_map.EXTERNAL
+    raise ValueError(f"unknown kind {value!r} (use managed/external, 관리/외부)")
+
+
 def parse_protocol(value: str) -> str:
     word = value.strip().lower() or "tcp"
     if word not in ("tcp", "udp"):
@@ -179,8 +197,13 @@ class _Run:
     snap: Snapshot
     actor: str
     dry_run: bool
+    create_missing_destinations: bool = False
     rows: list[NetworkImportRow] = field(default_factory=list)
     pending: list[Any] = field(default_factory=list)
+    # External hosts this import adds for unregistered destination IPs (by IP),
+    # and the openings that point at each until it has an id.
+    new_hosts: dict[str, NetworkHost] = field(default_factory=dict)
+    new_host_openings: list[tuple[FirewallOpening, NetworkHost]] = field(default_factory=list)
 
     def add(self, line: int, action: str, key: str, message: str = "") -> None:
         self.rows.append(NetworkImportRow(line=line, action=action, key=key, message=message))
@@ -204,9 +227,13 @@ def _import_hosts(run: _Run, rows: list[tuple[int, dict[str, str]]]) -> None:
                 ip=row.get("ip", ""),
                 description=row.get("description", ""),
                 owner=row.get("owner", ""),
+                kind=parse_kind(row.get("kind", "")),
             )
         except ValidationError as exc:
             run.add(line, "error", key, _validation_message(exc))
+            continue
+        except ValueError as exc:
+            run.add(line, "error", key, str(exc))
             continue
         if body.name.lower() in names:
             run.add(line, "skip", body.name, "a host with this name is already registered")
@@ -215,22 +242,26 @@ def _import_hosts(run: _Run, rows: list[tuple[int, dict[str, str]]]) -> None:
             run.add(line, "skip", body.name, f"IP {body.ip} is already registered")
             continue
         region_name = row.get("region", "").strip()
+        external = body.kind == network_map.EXTERNAL
+        if region_name and external:
+            run.add(line, "error", body.name, "an external host is in no region: leave region empty")
+            continue
         if region_name:
             region_id = regions.get(region_name.lower())
             if region_id is None:
                 run.add(line, "error", body.name, f"unknown region {region_name!r}: define it first")
                 continue
         else:
-            region_id = run.snap.region_for_ip(body.ip)
+            region_id = None if external else run.snap.region_for_ip(body.ip)
         host = NetworkHost(
             name=body.name, ip=body.ip, region_id=region_id,
-            description=body.description, owner=body.owner,
+            description=body.description, owner=body.owner, kind=body.kind,
         )
         run.stamp(host)
         run.pending.append(host)
         names.add(body.name.lower())
         ips.add(network_map.parse_ip(body.ip))
-        where = run.snap.region_name(region_id) or "no region"
+        where = "external" if external else run.snap.region_name(region_id) or "no region"
         run.add(line, "create", body.name, f"{body.ip} · {where}")
 
 
@@ -251,6 +282,28 @@ def _source_for(run: _Run, ref: str) -> tuple[int | None, str | None]:
     return None, str(ipaddress.ip_network(addr))
 
 
+def _destination_for(run: _Run, ref: str) -> tuple[NetworkHost, bool]:
+    """(host, whether this import adds it) for an opening's destination."""
+    host = run.snap.find_host(ref)
+    if host is not None:
+        return host, False
+    addr = network_map.parse_ip(ref)
+    if addr is not None and str(addr) in run.new_hosts:
+        return run.new_hosts[str(addr)], True
+    if not run.create_missing_destinations:
+        hint = " (or let the import add missing destinations)" if addr is not None else ""
+        raise ValueError(
+            f"destination {ref!r} is not a registered host: import or add it first{hint}"
+        )
+    try:
+        host = network_map.new_external_host(run.snap, ref)
+    except network_map.NetworkMapError as exc:
+        raise ValueError(str(exc.detail)) from exc
+    if any(h.name.lower() == host.name.lower() for h in run.new_hosts.values()):
+        raise ValueError(f"a host named {host.name!r} is already added by this import")
+    return host, True
+
+
 def _import_openings(run: _Run, rows: list[tuple[int, dict[str, str]]]) -> None:
     from app.routers.network import _validate_opening, set_src_key  # shared rules
 
@@ -261,21 +314,20 @@ def _import_openings(run: _Run, rows: list[tuple[int, dict[str, str]]]) -> None:
         label = f"{row.get('src', '')} → {row.get('dst', '')}:{row.get('ports', '')}"
         try:
             src_host_id, src_cidr = _source_for(run, row.get("src", ""))
-            dst = run.snap.find_host(row.get("dst", ""))
-            if dst is None:
-                raise ValueError(
-                    f"destination {row.get('dst', '')!r} is not a registered host: import or add it first"
-                )
             spans = parse_ports(row.get("ports", ""))
             protocol = parse_protocol(row.get("protocol", ""))
             status = parse_status(row.get("status", ""))
+            dst, dst_is_new = _destination_for(run, row.get("dst", "").strip())
         except ValueError as exc:
             run.add(line, "error", label, str(exc))
             continue
+        # Until the import saves a new host its openings key on its IP.
+        dst_key: Any = ("new", dst.ip) if dst_is_new else dst.id
         for low, high in spans:
             key = f"{row.get('src', '')} → {dst.name} {network_map.port_label(protocol, low, high)}"
             opening = FirewallOpening(
-                src_host_id=src_host_id, src_cidr=src_cidr, dst_host_id=dst.id,
+                src_host_id=src_host_id, src_cidr=src_cidr,
+                dst_host_id=None if dst_is_new else dst.id,
                 port_from=low, port_to=high, protocol=protocol, status=status,
                 ticket_no=row.get("ticket_no", "")[:100],
                 requester=row.get("requester", "")[:100],
@@ -285,12 +337,12 @@ def _import_openings(run: _Run, rows: list[tuple[int, dict[str, str]]]) -> None:
             if len(run.pending) >= MAX_CREATED:
                 run.add(line, "error", key, f"at most {MAX_CREATED} openings per import")
                 continue
-            identity = (opening.src_key, dst.id, protocol, low, high)
+            identity = (opening.src_key, dst_key, protocol, low, high)
             if identity in taken:
                 run.add(line, "skip", key, "already recorded")
                 continue
             try:
-                _validate_opening(run.snap, opening)
+                _validate_opening(run.snap, opening, dst=dst if dst_is_new else None)
             except HTTPException as exc:
                 detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
                 same_region = "same region" in detail
@@ -300,7 +352,14 @@ def _import_openings(run: _Run, rows: list[tuple[int, dict[str, str]]]) -> None:
             run.stamp(opening)
             run.pending.append(opening)
             taken.add(identity)
-            run.add(line, "create", key, status)
+            message = status
+            if dst_is_new:
+                if dst.ip not in run.new_hosts:
+                    run.stamp(dst)
+                    run.new_hosts[dst.ip] = dst
+                    message += f" · adds external host {dst.name}"
+                run.new_host_openings.append((opening, dst))
+            run.add(line, "create", key, message)
 
 
 def _import_port_usages(run: _Run, rows: list[tuple[int, dict[str, str]]]) -> None:
@@ -345,13 +404,24 @@ async def run_import(
         rows = parse_rows(body.kind, body.csv)
     except ImportFormatError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    run = _Run(db=db, snap=await network_map.load_snapshot(db), actor=actor_name, dry_run=body.dry_run)
+    run = _Run(
+        db=db,
+        snap=await network_map.load_snapshot(db),
+        actor=actor_name,
+        dry_run=body.dry_run,
+        create_missing_destinations=body.kind == "openings" and body.create_missing_destinations,
+    )
     {"hosts": _import_hosts, "openings": _import_openings, "port_usages": _import_port_usages}[
         body.kind
     ](run, rows)
     if not body.dry_run and run.pending:
-        db.add_all(run.pending)
         try:
+            if run.new_hosts:
+                db.add_all(run.new_hosts.values())
+                await db.flush()
+                for opening, host in run.new_host_openings:
+                    opening.dst_host_id = host.id
+            db.add_all(run.pending)
             await db.commit()
         except IntegrityError as exc:
             await db.rollback()

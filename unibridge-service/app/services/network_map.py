@@ -62,6 +62,7 @@ from app.services import apisix_client
 logger = logging.getLogger(__name__)
 
 SETTINGS_KEY = "network_settings"
+EXTERNAL = "external"
 # Discovery reads APISIX's upstream list; a slow gateway must not stall the page.
 GATEWAY_DISCOVERY_TIMEOUT_SECONDS = 5.0
 
@@ -123,6 +124,43 @@ def split_host_port(address: str | None) -> tuple[str, int | None] | None:
 
 def port_label(protocol: str, port_from: int, port_to: int) -> str:
     return f"{protocol}/{port_from}" if port_from == port_to else f"{protocol}/{port_from}-{port_to}"
+
+
+def is_external(host: NetworkHost | None) -> bool:
+    return host is not None and host.kind == EXTERNAL
+
+
+def external_host_name(ip: str) -> str:
+    """``dst-<ip>``, the name people already gave such placeholders (an IPv6
+    address with its colons as dashes, which a host name cannot hold)."""
+    return f"dst-{ip.replace(':', '-')}"
+
+
+def new_external_host(snap: "Snapshot", ref: str) -> NetworkHost:
+    """An unsaved external host for a destination IP no host has (``dst-<ip>``).
+
+    Raises :class:`NetworkMapError` when ``ref`` is not an IP address or the
+    name is taken by a host with another IP.
+    """
+    addr = parse_ip(ref)
+    if addr is None:
+        raise NetworkMapError(
+            422,
+            f"The destination host {ref!r} is not registered; only an IP address can be "
+            "added as an external host",
+        )
+    ip = str(addr)
+    name = external_host_name(ip)
+    if any(h.name.lower() == name.lower() for h in snap.hosts.values()):
+        raise NetworkMapError(
+            409,
+            f"A host named {name!r} already exists with another IP: register the "
+            "destination yourself",
+        )
+    return NetworkHost(
+        name=name, ip=ip, kind=EXTERNAL, region_id=None,
+        description="Added with a firewall opening", owner="",
+    )
 
 
 # ── Snapshot ────────────────────────────────────────────────────────────────
@@ -277,6 +315,7 @@ def host_response(snap: Snapshot, host: NetworkHost) -> NetworkHostResponse:
         region_name=snap.region_name(host.region_id),
         description=host.description or "",
         owner=host.owner or "",
+        kind=host.kind or "managed",
         # A link whose monitored server is gone (where the database does not
         # enforce ON DELETE SET NULL) reads as no link.
         monitored_host_id=host.monitored_host_id
@@ -325,6 +364,7 @@ def opening_response(
         dst_host_id=dst.id,
         dst_host_name=dst.name,
         dst_host_ip=dst.ip,
+        dst_host_kind=dst.kind or "managed",
         dst_region_id=dst.region_id,
         dst_region_name=snap.region_name(dst.region_id),
         port_from=opening.port_from,
@@ -590,6 +630,9 @@ def _decide(
     open_ones = [o for o in matching if o.status == "open"]
     if open_ones:
         return "open", "opening", open_ones
+    # Someone else's server: only a recorded opening speaks for it.
+    if is_external(src.host) or is_external(dst.host):
+        return "unknown", "external_host", matching
     # Without both regions, "no opening" does not prove it is blocked.
     if src.region_id is None or dst.region_id is None:
         return "unknown", "unknown_region", matching
@@ -633,6 +676,10 @@ _MESSAGES = {
     "opening_closed": "A firewall opening was recorded for this but is marked closed.",
     "no_opening": "Different regions and no firewall opening is recorded: request one.",
     "unknown_region": "A host is not placed in a region, so access cannot be judged.",
+    "external_host": (
+        "An external host (not ours) is involved and no open opening covers this: "
+        "the map cannot tell whether it is reachable."
+    ),
 }
 
 
@@ -723,8 +770,11 @@ async def overview(db: AsyncSession, snap: Snapshot) -> NetworkOverview:
             links.values(),
             key=lambda link: (link.src_region_id or 0, link.dst_region_id or 0),
         ),
-        host_count=len(snap.hosts),
-        unassigned_hosts=sum(1 for h in snap.hosts.values() if h.region_id is None),
+        host_count=sum(1 for h in snap.hosts.values() if not is_external(h)),
+        external_host_count=sum(1 for h in snap.hosts.values() if is_external(h)),
+        unassigned_hosts=sum(
+            1 for h in snap.hosts.values() if h.region_id is None and not is_external(h)
+        ),
         opening_count=len(snap.openings),
         unverified_count=unverified,
         unused_openings=unused,
@@ -1157,12 +1207,19 @@ async def find_ports(
         dst_ep = resolve_endpoint(snap, dst_ref)
         if dst_ep.host is None:
             raise NetworkMapError(404, f"Destination {dst_ref!r} is not a registered host")
+        if is_external(dst_ep.host):
+            raise NetworkMapError(
+                422,
+                f"Destination {dst_ref!r} is an external host: the port finder only "
+                "suggests ports on servers we run",
+            )
         candidates = [dst_ep.host]
     else:
         candidates = sorted(
             (
                 h for h in snap.hosts.values()
                 if h.id not in source_host_ids
+                and not is_external(h)
                 and (dst_region_id is None or h.region_id == dst_region_id)
             ),
             key=lambda h: h.name,
@@ -1201,7 +1258,10 @@ async def find_ports(
         protocol=protocol,
         port=port,
         sources=[_endpoint_view(snap, s) for s in sources],
-        unplaced_sources=[s.input for s in sources if s.region_id is None],
+        # An external source is in no region by design, not waiting to be placed.
+        unplaced_sources=[
+            s.input for s in sources if s.region_id is None and not is_external(s.host)
+        ],
         unplaced_destinations=unplaced_destinations[:FINDER_MAX_HOSTS],
         hosts=results[:FINDER_MAX_HOSTS],
         truncated=len(results) > FINDER_MAX_HOSTS,

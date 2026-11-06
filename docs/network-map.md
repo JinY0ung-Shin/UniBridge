@@ -28,7 +28,7 @@ keys, and the MCP `network` tool group.
 | Record | Fields | Notes |
 |---|---|---|
 | Region | name, description, CIDRs | A host (or a raw IP in an access check) inside a CIDR belongs to that region; the most specific CIDR wins. |
-| Host | name, IP, region, owner, description, linked monitored server | Without a region it is placed by the CIDRs; with none matching it stays unassigned. A name must not be an IP address, and names are unique ignoring case. |
+| Host | name, IP, kind, region, owner, description, linked monitored server | Without a region it is placed by the CIDRs; with none matching it stays unassigned. A name must not be an IP address, and names are unique ignoring case. Kind is `managed` (ours, the default) or `external` (see [External hosts](#external-hosts)). |
 | Firewall opening | source (registered host **or** CIDR) → destination host, port or port range, tcp/udp, open/closed, ticket no., requester, purpose | One direction each: a two-way opening is two records, and the same opening (source, destination, protocol, ports) is recorded once. Expiry is not tracked here; it stays in the company system. Openings inside one region are refused (everything is open there). |
 | Port usage | host, port, tcp/udp, service, description, owner | Recorded by people or agents, plus what UniBridge discovers itself (below). |
 | Probe | source host → destination host, port, tcp/udp, result, latency, when | The latest measured connection attempt on that path, reported from the source host (see [Probes](#probes)). |
@@ -50,6 +50,7 @@ any IP (placed by the region CIDRs).
 | blocked | `opening_closed` | Only **closed** openings match. |
 | blocked | `no_opening` | Different regions and nothing matches. |
 | unknown | `unknown_region` | A region is missing on either end and no open opening matches. |
+| unknown | `external_host` | Either end is an [external host](#external-hosts) and no open opening matches. |
 
 A blocked answer carries a `request_draft`: the source, destination (with IPs
 and regions), protocol/port and direction, ready to paste into the company
@@ -59,6 +60,42 @@ recorded on that port.
 Records are not proof: an opening marked open may have expired in the company
 system, and one nobody recorded may exist. Keep the map current — mark expired
 or revoked openings **closed** rather than deleting them, so their history stays.
+
+## External hosts
+
+Many openings go to servers we do not run (a partner's mail server, a NAS, a
+colleague's PC). Such a destination is still a host row, so its openings have
+something to point at, but with `kind: external`:
+
+- It is in **no region**, never placed by the CIDRs (its IP may sit inside one
+  of our ranges without being reachable the way our hosts there are). Only
+  recorded openings say what reaches it; without an open one the access check
+  answers `unknown` / `external_host`, never `blocked` with a request draft.
+- It is left out of the free-port finder as a destination (asking for one by
+  name answers 422), of the overview's host and unassigned counts (counted as
+  `external_host_count` instead), of the monitored-server import (a server with
+  its IP is skipped), and it cannot be linked to a monitored server or be the
+  platform host.
+- Its openings, port usage, probes and host page work as for any host.
+
+Recording an opening to an IP no host has: `POST /network/openings` with
+`dst_host: "<ip>"` and `create_missing_destination: true` (UI: destination type
+**IP not on the map**; MCP: `network_record_opening` with the same flag; CSV:
+**Add destination IPs no host has as external hosts**) registers an external
+host named `dst-<ip>` (an IPv6 address with its colons as dashes) along with the
+opening. Without the flag an unregistered destination is still a 422. Only an
+IP is accepted that way, and a `dst-<ip>` name already taken by a host with
+another IP is a 409: register that destination yourself.
+
+Switch a host with `kind` on `PUT /network/hosts/{id}` (UI: the host form, or
+select rows on the Hosts tab and **Mark external** / **Mark managed**); going
+external drops its region and is refused while it is linked to a monitored
+server or is the platform host. The upgrade to this version marked the
+`dst-<ip>` placeholders that are in no region, linked to no monitored server
+and not the platform host as external; review the rest by hand.
+
+Deleting a host still deletes its openings: switch a host you no longer run to
+external instead of deleting it, to keep its firewall history.
 
 ## Free ports
 
@@ -145,13 +182,15 @@ spaces and `_` ignored; other columns are ignored):
 
 | Kind | Columns (required in bold) |
 |---|---|
-| hosts | **name** (서버명, 호스트명), **ip** (IP 주소), region (리전, 지역), owner (담당자), description (설명, 비고) |
+| hosts | **name** (서버명, 호스트명), **ip** (IP 주소), region (리전, 지역), owner (담당자), description (설명, 비고), kind (호스트구분, host_type: managed/external, 관리/외부; empty = managed) |
 | openings | **src** (출발지), **dst** (목적지), **ports** (포트), protocol (프로토콜), status (상태), ticket_no (신청번호), requester (신청자), purpose (용도, 목적) |
 | port_usages | **host** (호스트), **port** (포트), **service_name** (서비스), protocol, owner, description |
 
 For openings, `src` is a registered host (name or IP), a CIDR, or an IP no host
 has (recorded as that single address); `dst` must be a registered host, so
-import hosts first. `ports` takes `5432`, `8000-8010` or `8000~8010`, or several
+import hosts first — or turn on `create_missing_destinations`, which adds a
+destination IP no host has as an external host (`dst-<ip>`, see
+[External hosts](#external-hosts)). `ports` takes `5432`, `8000-8010` or `8000~8010`, or several
 separated by commas or spaces (one opening each; at most 64 per cell and 5000
 openings per import). `status` reads open/closed and
 열림/허용/승인 or 해제/만료/폐기/차단; empty means open. Hosts without a region

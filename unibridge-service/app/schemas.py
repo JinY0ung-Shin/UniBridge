@@ -1775,6 +1775,9 @@ class ConfigImportResponse(BaseModel):
 
 NetworkProtocol = Literal["tcp", "udp"]
 OpeningStatus = Literal["open", "closed"]
+# managed = a server we run; external = someone else's, recorded only so that
+# openings can name it (no region, no port finder, no monitoring link).
+NetworkHostKind = Literal["managed", "external"]
 NETWORK_PROTOCOLS: tuple[str, ...] = ("tcp", "udp")
 _REGION_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f/\\]{1,64}$")
 
@@ -1876,6 +1879,15 @@ def _validate_network_host_name(name: str) -> str:
     raise ValueError("a host name must not be an IP address (put the address in ip)")
 
 
+def _check_external_host(model: BaseModel) -> None:
+    if getattr(model, "region_id") is not None or getattr(model, "region") is not None:
+        raise ValueError(
+            "an external host is in no region: only recorded openings say what reaches it"
+        )
+    if getattr(model, "monitored_host_id") is not None:
+        raise ValueError("an external host cannot be linked to a monitored server")
+
+
 class NetworkHostCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     ip: str = Field(..., min_length=1, max_length=64)
@@ -1885,6 +1897,7 @@ class NetworkHostCreate(BaseModel):
     description: str = Field("", max_length=255)
     owner: str = Field("", max_length=255)
     monitored_host_id: int | None = None
+    kind: NetworkHostKind = "managed"
 
     @field_validator("name")
     @classmethod
@@ -1899,6 +1912,8 @@ class NetworkHostCreate(BaseModel):
     @model_validator(mode="after")
     def one_region(self) -> "NetworkHostCreate":
         _exactly_one(self, ("region_id", "region"), "region", required=False)
+        if self.kind == "external":
+            _check_external_host(self)
         return self
 
 
@@ -1911,6 +1926,8 @@ class NetworkHostUpdate(BaseModel):
     description: str | None = Field(None, max_length=255)
     owner: str | None = Field(None, max_length=255)
     monitored_host_id: int | None = None
+    # Switching to external takes the host out of its region.
+    kind: NetworkHostKind | None = None
 
     @field_validator("name")
     @classmethod
@@ -1925,6 +1942,8 @@ class NetworkHostUpdate(BaseModel):
     @model_validator(mode="after")
     def one_region(self) -> "NetworkHostUpdate":
         _exactly_one(self, ("region_id", "region"), "region", required=False)
+        if self.kind == "external":
+            _check_external_host(self)
         return self
 
 
@@ -1936,6 +1955,7 @@ class NetworkHostResponse(BaseModel):
     region_name: str | None = None
     description: str = ""
     owner: str = ""
+    kind: str = "managed"
     monitored_host_id: int | None = None
     monitored_host_name: str | None = None
     source: str = "manual"
@@ -1955,6 +1975,9 @@ class FirewallOpeningCreate(BaseModel):
     # Destination: a registered host (id, or name/IP).
     dst_host_id: int | None = None
     dst_host: str | None = Field(None, min_length=1, max_length=100)
+    # When dst_host is an IP no host has: register it as an external host
+    # named dst-<ip> instead of refusing (422).
+    create_missing_destination: bool = False
     port_from: int = Field(..., ge=1, le=65535)
     port_to: int | None = Field(None, ge=1, le=65535)  # null = single port
     protocol: NetworkProtocol = "tcp"
@@ -2016,6 +2039,7 @@ class FirewallOpeningResponse(BaseModel):
     dst_host_id: int
     dst_host_name: str
     dst_host_ip: str
+    dst_host_kind: str = "managed"
     dst_region_id: int | None = None
     dst_region_name: str | None = None
     port_from: int
@@ -2128,7 +2152,7 @@ class AccessEndpoint(BaseModel):
 class AccessCheckResponse(BaseModel):
     # open | blocked | unknown
     status: str
-    # same_region | opening | opening_closed | no_opening | unknown_region
+    # same_region | opening | opening_closed | no_opening | unknown_region | external_host
     reason: str
     message: str
     src: AccessEndpoint
@@ -2156,7 +2180,9 @@ class RegionLink(BaseModel):
 class NetworkOverview(BaseModel):
     regions: list[RegionResponse] = Field(default_factory=list)
     links: list[RegionLink] = Field(default_factory=list)
+    # Hosts we run; external destinations are counted on their own.
     host_count: int = 0
+    external_host_count: int = 0
     unassigned_hosts: int = 0
     opening_count: int = 0
     unverified_count: int = 0
@@ -2350,6 +2376,9 @@ class NetworkImportRequest(BaseModel):
     # CSV text with a header row (English or Korean column names, see docs).
     csv: str = Field(..., min_length=1, max_length=2_000_000)
     dry_run: bool = True
+    # Openings only: a destination IP no host has becomes an external host
+    # (dst-<ip>) instead of an error line.
+    create_missing_destinations: bool = False
 
 
 class NetworkImportRow(BaseModel):
