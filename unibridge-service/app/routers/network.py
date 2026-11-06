@@ -195,7 +195,13 @@ async def get_overview(
 async def get_settings(
     _actor: Actor = Depends(network_reader), db: AsyncSession = Depends(get_db)
 ) -> NetworkSettings:
-    return await network_map.load_settings(db)
+    settings = await network_map.load_settings(db)
+    # A deleted host drops out, as in the snapshot.
+    for field in ("platform_host_id", "main_host_id"):
+        host_id = getattr(settings, field)
+        if host_id is not None and await db.get(NetworkHost, host_id) is None:
+            settings = settings.model_copy(update={field: None})
+    return settings
 
 
 @router.put("/settings", response_model=NetworkSettings)
@@ -212,13 +218,17 @@ async def put_settings(
             raise HTTPException(
                 status_code=422, detail="The platform host is ours: it cannot be an external host"
             )
+    if body.main_host_id is not None and await db.get(NetworkHost, body.main_host_id) is None:
+        raise HTTPException(status_code=422, detail="main_host_id is not a registered host")
     before = await network_map.load_settings(db)
-    await network_map.save_settings(db, body)
+    # A field left out keeps its value, so setting one never clears the other.
+    after = before.model_copy(update=body.model_dump(exclude_unset=True))
+    await network_map.save_settings(db, after)
     await log_admin_action(
         db, actor=actor.name, action="update", resource_type="network_settings",
-        resource_id="network", before=before.model_dump(), after=body.model_dump(),
+        resource_id="network", before=before.model_dump(), after=after.model_dump(),
     )
-    return body
+    return after
 
 
 @router.get("/check", response_model=AccessCheckResponse)
@@ -477,6 +487,14 @@ async def get_host(
         raise HTTPException(status_code=404, detail="Host not found")
     usages, _failed = await network_map.all_usages(db, snap)
     base = network_map.host_response(snap, host)
+    outbound = [o for o in snap.openings if o.src_host_id == host_id]
+    outbound_via_cidr = [
+        o for o in snap.openings
+        if o.src_host_id is None
+        and o.dst_host_id != host_id
+        and network_map.source_covers_host(o, host)
+    ]
+    reached = [*outbound, *outbound_via_cidr]
     return NetworkHostDetail(
         **base.model_dump(),
         inbound=[
@@ -484,21 +502,24 @@ async def get_host(
             for o in snap.openings
             if o.dst_host_id == host_id
         ],
-        outbound=[
-            network_map.opening_response(snap, o, usages)
-            for o in snap.openings
-            if o.src_host_id == host_id
-        ],
+        outbound=[network_map.opening_response(snap, o, usages) for o in outbound],
         outbound_via_cidr=[
-            network_map.opening_response(snap, o, usages)
-            for o in snap.openings
-            if o.src_host_id is None
-            and o.dst_host_id != host_id
-            and network_map.source_covers_host(o, host)
+            network_map.opening_response(snap, o, usages) for o in outbound_via_cidr
         ],
         usages=sorted(
             _shown(actor, [u for u in usages if u.host_id == host_id]),
             key=lambda u: (u.port, u.service_name),
+        ),
+        outbound_usages=sorted(
+            _shown(actor, [
+                u for u in usages
+                if any(
+                    u.host_id == o.dst_host_id and u.protocol == o.protocol
+                    and o.port_from <= u.port <= o.port_to
+                    for o in reached
+                )
+            ]),
+            key=lambda u: (u.host_name, u.port, u.service_name),
         ),
         same_region_hosts=[
             network_map.host_response(snap, h)

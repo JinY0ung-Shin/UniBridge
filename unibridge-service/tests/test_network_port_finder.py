@@ -288,3 +288,44 @@ async def test_host_detail_lists_cidr_outbound_and_same_region_hosts(client, adm
     c1 = (await client.get(f"/network/hosts/{ids['c1']}", headers=h)).json()
     assert c1["outbound_via_cidr"] == []  # its own inbound CIDR opening is not outbound
     assert [o["src_cidr"] for o in c1["inbound"]] == ["10.1.0.0/16"]
+
+
+async def test_host_detail_lists_services_behind_outbound_openings(client, admin_token):
+    h = auth_header(admin_token)
+    ids = await _setup(client, h)
+    for host, port, name in (
+        ("b1", 8006, "api"),      # inside a2's 8005-8020
+        ("b1", 8003, "old-api"),  # only a1's 8000-8010 covers it
+        ("b1", 9999, "other"),    # outside every opening
+        ("c1", 7001, "cache"),    # through a2's CIDR opening
+        ("a1", 8006, "local"),    # not a destination at all
+    ):
+        resp = await client.post(
+            "/network/port-usages", headers=h, json={"host": host, "port": port, "service_name": name}
+        )
+        assert resp.status_code == 201, resp.text
+    a2 = (await client.get(f"/network/hosts/{ids['a2']}", headers=h)).json()
+    assert [(u["host_name"], u["port"], u["service_name"]) for u in a2["outbound_usages"]] == [
+        ("b1", 8006, "api"), ("c1", 7001, "cache"),
+    ]
+    b1 = (await client.get(f"/network/hosts/{ids['b1']}", headers=h)).json()
+    assert b1["outbound_usages"] == []
+
+
+async def test_main_host_setting(client, admin_token):
+    h = auth_header(admin_token)
+    ids = await _setup(client, h)
+    put = await client.put("/network/settings", headers=h, json={"platform_host_id": ids["a1"]})
+    assert put.json() == {"platform_host_id": ids["a1"], "main_host_id": None}
+    # Setting one field leaves the other alone.
+    put = await client.put("/network/settings", headers=h, json={"main_host_id": ids["b1"]})
+    assert put.json() == {"platform_host_id": ids["a1"], "main_host_id": ids["b1"]}
+    overview = (await client.get("/network/overview", headers=h)).json()
+    assert overview["main_host_id"] == ids["b1"] and overview["platform_host_id"] == ids["a1"]
+    assert (await client.put("/network/settings", headers=h, json={"main_host_id": 999})).status_code == 422
+
+    # A deleted main host drops out, the platform host stays.
+    assert (await client.delete(f"/network/hosts/{ids['b1']}", headers=h)).status_code in (200, 204)
+    settings = (await client.get("/network/settings", headers=h)).json()
+    assert settings == {"platform_host_id": ids["a1"], "main_host_id": None}
+    assert (await client.get("/network/overview", headers=h)).json()["main_host_id"] is None

@@ -1537,7 +1537,7 @@ class TestNetworkMap:
         assert [(u["host"], u["service_name"]) for u in sections["port_usages"]] == [
             ("db.internal", "postgres")
         ]
-        assert sections["network_settings"] == {"platform_host": "app1"}
+        assert sections["network_settings"] == {"platform_host": "app1", "main_host": None}
         # Nothing the export carries is a row id.
         serialized = json.dumps({k: sections[k] for k in NETWORK_SECTIONS})
         assert "_id" not in serialized
@@ -1754,6 +1754,26 @@ class TestNetworkMap:
         resp = await do_import(client, admin_token, dry_run=False, sections=["network_hosts"], doc=doc2)
         row = resp.json()["results"][0]
         assert row["action"] == "create" and "already linked to host 'app1'" in row["reason"]
+
+    async def test_main_host_imports_by_name_on_its_own(
+        self, client, admin_token, seeded_db, apisix_state
+    ):
+        # An unknown platform host is skipped without holding back the main host.
+        doc = network_doc(network_settings={"platform_host": "nobody", "main_host": "db1"})
+        resp = await do_import(client, admin_token, dry_run=False, sections=NETWORK_SECTIONS, doc=doc)
+        row = {(r["section"], r["name"]): r for r in resp.json()["results"]}[("network_settings", "global")]
+        assert row["action"] == "update" and "nobody" in row["reason"]
+        rows = await network_rows(seeded_db)
+        hosts = {h.name: h for h in rows["hosts"]}
+        assert rows["settings"].main_host_id == hosts["db1"].id
+        assert rows["settings"].platform_host_id is None
+
+        # A file without main_host (an older export) leaves it set.
+        doc = network_doc(network_settings={"platform_host": "app1"})
+        await do_import(client, admin_token, dry_run=False, sections=["network_settings"], doc=doc)
+        rows = await network_rows(seeded_db)
+        assert rows["settings"].main_host_id == hosts["db1"].id
+        assert rows["settings"].platform_host_id == hosts["app1"].id
 
     async def test_hosts_without_their_regions_section_fail_per_item(
         self, client, admin_token, seeded_db, apisix_state

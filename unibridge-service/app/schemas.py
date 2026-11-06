@@ -2136,6 +2136,9 @@ class NetworkHostDetail(NetworkHostResponse):
     # Openings whose source is a network range this host's IP falls in.
     outbound_via_cidr: list[FirewallOpeningResponse] = Field(default_factory=list)
     usages: list[PortUsageResponse] = Field(default_factory=list)
+    # Services on the destinations of outbound openings (both lists) inside those
+    # openings' ports: what each outbound edge of the map leads to.
+    outbound_usages: list[PortUsageResponse] = Field(default_factory=list)
     # Hosts in the same region: reachable both ways on every port, no opening needed.
     same_region_hosts: list[NetworkHostResponse] = Field(default_factory=list)
 
@@ -2191,6 +2194,9 @@ class NetworkOverview(BaseModel):
     # Probes that disagree with the records (see ProbeResponse.mismatch).
     probe_mismatches: int = 0
     platform_host_id: int | None = None
+    # The server the overview's server-centred map opens on (falls back to the
+    # platform host in the UI).
+    main_host_id: int | None = None
     # Discovery sources that could not be read this time (e.g. "gateway_upstream").
     auto_sources_failed: list[str] = Field(default_factory=list)
 
@@ -2199,6 +2205,8 @@ class NetworkSettings(BaseModel):
     # The host UniBridge (service, APISIX, Prometheus) runs on: the client of
     # every discovered usage, so its reachability can be checked.
     platform_host_id: int | None = None
+    # The server the overview's server-centred map opens on. Display only.
+    main_host_id: int | None = None
 
 
 class MonitoredImportResult(BaseModel):

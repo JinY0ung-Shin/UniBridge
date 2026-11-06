@@ -81,7 +81,6 @@ from app.schemas import (
     MonitoredServiceCreate,
     NasConnectionCreate,
     NetworkHostCreate,
-    NetworkSettings,
     PermissionCreate,
     PortUsageCreate,
     QueryTemplateCreate,
@@ -581,13 +580,16 @@ async def _export_network(db: AsyncSession) -> dict[str, Any]:
     ]
     usages.sort(key=lambda u: (u["host"] or "", u["port"], u["protocol"], u["service_name"]))
     platform = snap.platform_host
+    main_id = snap.settings.main_host_id
+    main = snap.hosts.get(main_id) if main_id is not None else None
     return {
         SECTION_NETWORK_REGIONS: regions,
         SECTION_NETWORK_HOSTS: hosts,
         SECTION_FIREWALL_OPENINGS: openings,
         SECTION_PORT_USAGES: usages,
         SECTION_NETWORK_SETTINGS: {
-            "platform_host": platform.name if platform is not None else None
+            "platform_host": platform.name if platform is not None else None,
+            "main_host": main.name if main is not None else None,
         },
     }
 
@@ -2367,40 +2369,52 @@ async def _import_port_usages(ctx: _ImportContext, raw: Any) -> None:
         )
 
 
+# File key → settings field. A key left out of the file leaves its setting alone.
+_NETWORK_SETTING_KEYS = {"platform_host": "platform_host_id", "main_host": "main_host_id"}
+
+
 async def _apply_network_settings(
     ctx: _ImportContext, item: dict[str, Any]
 ) -> tuple[str, str | None]:
-    if "platform_host" not in item:
-        return "skip", "no platform_host in the file"
-    name = item.get("platform_host")
+    present = [key for key in _NETWORK_SETTING_KEYS if key in item]
+    if not present:
+        return "skip", "no platform_host or main_host in the file"
     plan = await _network_plan(ctx)
-    host_id: int | None = None
-    if name:
+    updates: dict[str, int | None] = {}
+    skipped: list[str] = []
+    for key in present:
+        name = item.get(key)
+        label = key.replace("_", " ")
+        if not name:
+            updates[_NETWORK_SETTING_KEYS[key]] = None
+            continue
         host = plan.host_by_name(str(name))
         if host is None:
-            return "skip", (
-                f"platform host '{name}' is not registered — setting left unchanged"
-            )
-        if network_map.is_external(host):
-            return "skip", (
-                f"platform host '{name}' is an external host — setting left unchanged"
-            )
-        host_id = host.id
+            skipped.append(f"{label} '{name}' is not registered — setting left unchanged")
+            continue
+        if key == "platform_host" and network_map.is_external(host):
+            skipped.append(f"{label} '{name}' is an external host — setting left unchanged")
+            continue
+        updates[_NETWORK_SETTING_KEYS[key]] = host.id
+    reason = "; ".join(skipped) or None
+    if not updates:
+        return "skip", reason
     if ctx.dry_run:
-        return "update", None
+        return "update", reason
 
     before = await network_map.load_settings(ctx.db)
-    after = NetworkSettings(platform_host_id=host_id)
+    after = before.model_copy(update=updates)
     await network_map.save_settings(ctx.db, after)
+    names = [str(item[key]) for key in present if item.get(key)]
     await ctx.audit(
         action="update",
         resource_type="network_settings",
         resource_id="network",
-        summary=str(name) if name else None,
+        summary=", ".join(names) or None,
         before=before.model_dump(),
         after=after.model_dump(),
     )
-    return "update", None
+    return "update", reason
 
 
 async def _import_network_settings(ctx: _ImportContext, raw: Any) -> None:

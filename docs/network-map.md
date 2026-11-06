@@ -10,13 +10,17 @@ UI: **Network / Firewall** (tabs Overview, Free ports, Regions, Hosts, Firewall
 openings, Port usage, Probes, Access check, Settings) and a page per host
 (`/network/hosts/:id`). The overview has three views:
 
-- **By server** — one server in the middle, what reaches it on the left
-  (inbound openings, from hosts or CIDR ranges), what it reaches on the right
-  (outbound openings, its own and those of a range its IP is in) and its own
-  region below (every port, both ways). Edges carry their ports and are
-  coloured by state (open, has unverified, probe mismatch, closed only); click
-  an edge for its openings and a server to centre the map on it
-  (`/network?view=host&host=<id>`). The host page shows the same map.
+- **By server** (the default) — one server in the middle, what reaches it on
+  the left (inbound openings, from hosts or CIDR ranges), what it reaches on
+  the right (outbound openings, its own and those of a range its IP is in) and
+  its own region below (every port, both ways). It opens on the **main server**
+  (Settings, or **Set as main server** next to the picker; unset = the platform
+  host). Edges carry their ports and are coloured by state (open, has
+  unverified, probe mismatch, closed only); hover an edge for the service on
+  each port at the destination (recorded or discovered) or that the port is
+  free, with the last probe of a single port; click it for its openings and a
+  server to centre the map on it (`/network?host=<id>`). The host page shows
+  the same map.
 - **Matrix** and **Map** — regions against regions (as a table, or regions as
   nodes and open openings as directed edges); click a cell or an edge for its
   openings.
@@ -139,7 +143,8 @@ The **Find free ports on this server** link on a host fills in the destination
    server. Add the rest by hand or let agents register them. Fix any host left
    **unassigned** (the overview counts them).
 3. **Platform host** — on the Settings tab, pick the host UniBridge runs on.
-   Discovered port usage is then checked for reachability from it.
+   Discovered port usage is then checked for reachability from it. The **main
+   server** there (optional) is where the overview's map opens.
 4. **Existing openings** — record the openings already approved (ticket no.,
    requester and purpose make them traceable): import them from a sheet
    ([CSV import](#csv-import)), or have an agent do it.
@@ -313,13 +318,13 @@ All under `/network` (`/_api/network` from the UI, `/api/network` with a key).
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/overview` | counts, region links, `auto_sources_failed` |
-| GET / PUT | `/settings` | `platform_host_id`; PUT people only |
+| GET / PUT | `/settings` | `platform_host_id`, `main_host_id`; PUT people only, a field left out keeps its value |
 | GET | `/check` | `src`, `dst`, `port`, `protocol` |
 | GET | `/port-finder` | `src` (repeatable), `src_region` (repeatable), `dst`, `dst_region`, `port`, `protocol`: see [Free ports](#free-ports) |
 | GET / POST | `/regions` | POST people only |
 | PUT / DELETE | `/regions/{id}` | people only; a region with hosts cannot be deleted |
 | GET / POST | `/hosts` | GET filters `region_id`, `q`, `unverified`; POST takes `region_id` or `region` (name) |
-| GET / PUT / DELETE | `/hosts/{id}` | GET adds inbound and outbound openings (`outbound_via_cidr`: those whose source range contains its IP), port usage and `same_region_hosts`; DELETE removes its openings, port usage and probes too |
+| GET / PUT / DELETE | `/hosts/{id}` | GET adds inbound and outbound openings (`outbound_via_cidr`: those whose source range contains its IP), port usage, `outbound_usages` (services on the destinations of its outbound openings, inside their ports) and `same_region_hosts`; DELETE removes its openings, port usage and probes too |
 | POST | `/hosts/{id}/verify` | people only |
 | POST | `/hosts/import-monitored` | people only |
 | GET / POST | `/openings` | GET filters `host_id`, `region_id`, `status`, `port`, `unverified`; POST takes `src_host_id`/`src_host`/`src_cidr` and `dst_host_id`/`dst_host` (name or IP); a duplicate answers 409 with the existing `id` |
@@ -337,7 +342,7 @@ All under `/network` (`/_api/network` from the UI, `/api/network` with a key).
 
 **Admin → Config transfer** carries regions, hosts (with their region and
 linked monitored server by name), firewall openings, recorded port usage and the
-platform-host setting, keyed by name so they land in another deployment. Probes
+platform-host and main-server settings, keyed by name so they land in another deployment. Probes
 and discovered usage are not exported (they describe one deployment). Rows the
 import creates are source `import`; a row verified in the file is verified by
 the importing admin, an unverified one stays unverified, and an unchanged row

@@ -278,8 +278,11 @@ async def load_snapshot(db: AsyncSession) -> Snapshot:
     )
     monitored = (await db.execute(select(MonitoredHost.id, MonitoredHost.name))).all()
     settings = await load_settings(db)
+    # A deleted host drops out of the settings (each field on its own).
     if settings.platform_host_id is not None and settings.platform_host_id not in hosts:
-        settings = NetworkSettings()
+        settings = settings.model_copy(update={"platform_host_id": None})
+    if settings.main_host_id is not None and settings.main_host_id not in hosts:
+        settings = settings.model_copy(update={"main_host_id": None})
     return Snapshot(
         regions=regions,
         hosts=hosts,
@@ -781,6 +784,7 @@ async def overview(db: AsyncSession, snap: Snapshot) -> NetworkOverview:
         unreachable_usages=sum(1 for u in usages if u.reachable_from_platform is False),
         probe_mismatches=sum(1 for p in snap.probes if probe_mismatch(snap, p) is not None),
         platform_host_id=snap.settings.platform_host_id,
+        main_host_id=snap.settings.main_host_id,
         auto_sources_failed=failed,
     )
 
