@@ -1224,7 +1224,8 @@ firewall opening is requested through the company system by whoever needs it.
   (see below). What they record is marked unverified until a person confirms it;
   regions and deleting confirmed records stay with people.
 
-Roles need `network.read` to view and `network.write` to edit.
+Roles need `network.read` to view and `network.write` to edit. Full guide:
+[`docs/network-map.md`](./docs/network-map.md).
 
 ### Infra alerting (Prometheus → Alertmanager)
 

@@ -137,6 +137,12 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   change with a README step, ahead of any deploy that relies on it:
   `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --force-recreate prometheus`
   (data volume stays). Grafana polls `grafana/dashboards/` every 30s and needs nothing.
+- **Network map** (`app/routers/network.py`, rules in `app/services/network_map.py`, guide
+  `docs/network-map.md`): same region = open, cross-region only through a recorded open
+  opening. API keys write through `network-write-api` and land as `source=agent`, unverified;
+  regions, verify, deleting a verified record, settings and import stay people-only
+  (`network_person_writer`) — keep new agent-reachable writes behind that review.
+  Discovered usages name UniBridge's own config, so non-master keys get them redacted.
 - **TZ=UTC everywhere**; timestamps stored UTC (legacy SQLite rows: `unibridge-service/scripts/backfill_utc_timestamps.py`).
 - `.omc/`, `docs/superpowers/`, `certs/`, `unibridge-service/data/` are gitignored — tooling
   artifacts / local state, not app code.
