@@ -6,9 +6,11 @@ whoever needs it — so nobody has the whole picture of what is open. The networ
 map is that picture: one shared record of regions, hosts, the openings between
 regions and the services listening on each port, kept by people and by agents.
 
-UI: **Network / Firewall** (tabs Overview, Free ports, Regions, Hosts, Firewall
-openings, Port usage, Probes, Access check, Settings) and a page per host
-(`/network/hosts/:id`). The overview has three views:
+UI: **Network / Firewall** and a page per host (`/network/hosts/:id`). Four tabs:
+**Map** (the overview), **Find & check** (Free ports, Access check), **Records**
+(Hosts, Regions, Firewall openings, Port usage, Probes) and **Settings**; the
+names in brackets are the sections inside a tab, and what the rest of this guide
+calls "the Hosts tab" and so on. The overview has three views:
 
 - **By server** (the default) — one server in the middle, what reaches it on
   the left (inbound openings, from hosts or CIDR ranges), what it reaches on

@@ -27,6 +27,39 @@
   border-bottom-color: var(--accent-blue);
 }
 
+/* Sections inside a top-level tab */
+.network-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -6px 0 18px;
+}
+
+.network-subtab {
+  padding: 5px 14px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, background-color 0.15s, border-color 0.15s;
+}
+
+.network-subtab:hover {
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}
+
+.network-subtab--active,
+.network-subtab--active:hover {
+  background: color-mix(in srgb, var(--accent-blue) 12%, var(--bg-primary));
+  border-color: color-mix(in srgb, var(--accent-blue) 35%, transparent);
+  color: var(--accent-blue);
+}
+
 .network-toolbar {
   display: flex;
   flex-wrap: wrap;

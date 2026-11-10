@@ -1647,6 +1647,12 @@
   "network": {
     "title": "Network / Firewall",
     "subtitle": "Regions, hosts, cross-region firewall openings and which service uses each port. Hosts in one region reach each other on every port; across regions only recorded openings are known.",
+    "groups": {
+      "map": "Map",
+      "tools": "Find & check",
+      "records": "Records",
+      "settings": "Settings"
+    },
     "tabs": {
       "overview": "Overview",
       "finder": "Free ports",

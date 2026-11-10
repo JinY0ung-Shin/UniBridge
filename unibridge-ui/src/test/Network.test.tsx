@@ -711,6 +711,23 @@ describe('Network probes', () => {
     await waitFor(() => expect(mocked.probes).toHaveBeenLastCalledWith({ host_id: undefined, result: 'timeout', mismatch: true }));
   });
 
+  it('groups the sections under four tabs and opens a group on its first section', async () => {
+    const user = userEvent.setup();
+    renderNetwork('/network?tab=usages');
+
+    const [groups, sections] = await screen.findAllByRole('tablist');
+    expect(within(groups).getAllByRole('tab').map((el) => el.textContent)).toEqual(['Map', 'Find & check', 'Records', 'Settings']);
+    expect(within(groups).getByRole('tab', { name: 'Records' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(sections).getAllByRole('tab').map((el) => el.textContent)).toEqual(['Hosts', 'Regions', 'Firewall openings', 'Port usage', 'Probes']);
+    expect(within(sections).getByRole('tab', { name: 'Port usage' })).toHaveAttribute('aria-selected', 'true');
+
+    await user.click(within(groups).getByRole('tab', { name: 'Find & check' }));
+    expect(await screen.findByRole('tab', { name: 'Free ports' })).toHaveAttribute('aria-selected', 'true');
+
+    await user.click(within(groups).getByRole('tab', { name: 'Map' }));
+    await waitFor(() => expect(screen.getAllByRole('tablist')).toHaveLength(1));
+  });
+
   it('the overview mismatch card opens the probes tab filtered to mismatches', async () => {
     mocked.overview.mockResolvedValue(makeOverview({ probe_mismatches: 2 }));
     const user = userEvent.setup();
