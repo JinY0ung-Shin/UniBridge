@@ -1,5 +1,5 @@
 .alert-settings {
-  max-width: 1000px;
+  max-width: var(--page-width);
 }
 
 .alert-settings .page-header {

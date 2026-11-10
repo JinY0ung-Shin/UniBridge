@@ -1,5 +1,5 @@
 .llm-monitoring {
-  max-width: 1100px;
+  max-width: var(--page-width);
 }
 
 .llm-monitoring .page-header {

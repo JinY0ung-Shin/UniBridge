@@ -1,4 +1,5 @@
 .s3-browser {
+  max-width: var(--page-width);
   padding: 0;
 }
 

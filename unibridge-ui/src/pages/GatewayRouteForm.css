@@ -1,5 +1,5 @@
 .route-form {
-  max-width: 720px;
+  max-width: var(--page-width-narrow);
 }
 
 .route-form .page-header {

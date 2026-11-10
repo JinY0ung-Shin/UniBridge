@@ -1,5 +1,5 @@
 .roles-page {
-  max-width: 1000px;
+  max-width: var(--page-width);
 }
 
 .roles-page .page-header {

@@ -1,5 +1,5 @@
 .connections {
-  max-width: 1000px;
+  max-width: var(--page-width);
 }
 
 .connections .page-header {

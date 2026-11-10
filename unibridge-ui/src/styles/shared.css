@@ -10,6 +10,11 @@
   --font-sans: 'Outfit', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 
+  /* Page widths: every page root takes one of these two (lists, tables and
+     charts the first; forms and reading pages the second). */
+  --page-width: 1440px;
+  --page-width-narrow: 880px;
+
   /* ── Dark theme (default) ── */
   --bg-root: #000000;
   --bg-primary: #0a0a0a;

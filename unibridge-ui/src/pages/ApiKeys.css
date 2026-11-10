@@ -1,5 +1,5 @@
 .api-keys {
-  max-width: 1200px;
+  max-width: var(--page-width);
 }
 
 .api-keys .page-header {

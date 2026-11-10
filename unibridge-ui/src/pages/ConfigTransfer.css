@@ -2,7 +2,7 @@
    from QuerySettings.css and .filter-select from AuditLogs.css. */
 
 .config-transfer {
-  max-width: 900px;
+  max-width: var(--page-width-narrow);
   display: flex;
   flex-direction: column;
   gap: 24px;

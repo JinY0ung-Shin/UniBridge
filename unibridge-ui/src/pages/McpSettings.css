@@ -1,5 +1,5 @@
 .mcp-settings {
-  max-width: 880px;
+  max-width: var(--page-width-narrow);
 }
 
 .mcp-sections {

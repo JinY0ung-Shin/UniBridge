@@ -1,5 +1,5 @@
 .gateway-routes {
-  max-width: none;
+  max-width: var(--page-width);
 }
 
 .gateway-routes .page-header {

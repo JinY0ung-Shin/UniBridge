@@ -1,5 +1,5 @@
 .metrics-guide {
-  max-width: 880px;
+  max-width: var(--page-width-narrow);
 }
 
 .metrics-guide .page-header {

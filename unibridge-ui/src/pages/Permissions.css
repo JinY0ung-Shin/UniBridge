@@ -1,5 +1,5 @@
 .permissions {
-  max-width: 1000px;
+  max-width: var(--page-width);
 }
 
 .permissions .page-header {

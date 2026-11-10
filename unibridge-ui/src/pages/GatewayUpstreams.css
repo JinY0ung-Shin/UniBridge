@@ -1,5 +1,5 @@
 .gateway-upstreams {
-  max-width: 1000px;
+  max-width: var(--page-width);
 }
 
 .gateway-upstreams .page-header {
