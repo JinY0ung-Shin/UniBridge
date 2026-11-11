@@ -141,6 +141,66 @@ class _Settings:
         return _float_env("CONVERTER_MODELS_STALE_MAX", 600.0)
 
     @property
+    def smg_providers(self) -> frozenset[str] | str | None:
+        """Which Bifrost providers are asked for worker metadata
+        (``CONVERTER_SMG_PROVIDERS``): ``None`` when unset, the default, which
+        makes no such request; ``"*"`` for every provider registered in
+        Bifrost; otherwise the provider names listed, comma-separated.
+
+        The URLs are not configured here. They are read from Bifrost's
+        ``GET /api/providers`` each time, so a provider that is added, moved or
+        removed there needs no change on this side."""
+        raw = os.getenv("CONVERTER_SMG_PROVIDERS", "").strip()
+        if not raw:
+            return None
+        names = frozenset(part.strip() for part in raw.split(",") if part.strip())
+        if "*" in names:
+            return "*"
+        return names or None
+
+    @property
+    def bifrost_admin_username(self) -> str:
+        """Login for Bifrost's management API (``BIFROST_ADMIN_USERNAME``), the
+        one the bifrost container itself runs with. Used for nothing but
+        reading the provider list."""
+        return os.getenv("BIFROST_ADMIN_USERNAME", "").strip() or "admin"
+
+    @property
+    def bifrost_admin_password(self) -> str:
+        """``BIFROST_ADMIN_PASSWORD``; empty leaves worker metadata off."""
+        return os.getenv("BIFROST_ADMIN_PASSWORD", "")
+
+    @property
+    def smg_api_key(self) -> str:
+        """Bearer token for an SMG whose ``GET /workers`` asks for one
+        (``CONVERTER_SMG_API_KEY``). Sent only to providers that
+        ``CONVERTER_SMG_PROVIDERS`` names: under ``*`` every registered
+        provider is asked, and a token must not go to whichever of them
+        happens to answer."""
+        return os.getenv("CONVERTER_SMG_API_KEY", "").strip()
+
+    @property
+    def smg_timeout(self) -> float:
+        """Deadline for one round of worker metadata — Bifrost's provider list,
+        then every provider's ``GET /workers`` at once
+        (``CONVERTER_SMG_TIMEOUT``, default 1.5s). The listing waits for it, so
+        it is also held to three quarters of :attr:`models_timeout`: a slow SMG
+        cannot use up a caller's wait. There is no unbounded setting; <= 0
+        keeps the default."""
+        value = _float_env("CONVERTER_SMG_TIMEOUT", 1.5)
+        if value <= 0:
+            value = 1.5
+        caller_wait = self.models_timeout
+        return min(value, caller_wait * 0.75) if caller_wait > 0 else value
+
+    @property
+    def smg_cache_ttl(self) -> float:
+        """Seconds worker metadata is used before the providers are asked
+        again (``CONVERTER_SMG_CACHE_TTL``, default 60). They are only ever
+        asked alongside a listing refresh, so <= 0 means on every one of those."""
+        return _float_env("CONVERTER_SMG_CACHE_TTL", 60.0)
+
+    @property
     def request_timeout(self) -> httpx.Timeout:
         return _get_timeout()
 

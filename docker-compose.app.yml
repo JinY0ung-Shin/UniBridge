@@ -215,6 +215,19 @@ services:
       # when a user/system message sits in between (Mistral Large 4's template 400s
       # on user -> tool). Same regex rules; empty = default (mistral-large-4).
       - CONVERTER_TOOL_NORM_MODEL_PATTERN=${CONVERTER_TOOL_NORM_MODEL_PATTERN:-}
+      # Context windows for GET /v1/models: where Bifrost lists a model without
+      # one, the converter asks the Shepherd Model Gateway behind that model's
+      # provider (GET <base URL>/workers). `*` = every provider registered in
+      # Bifrost, or a comma-separated list of provider names; empty = off, no
+      # request. The base URLs are not set here: they are read from Bifrost's
+      # management API, which is all the admin login below is used for. The
+      # token goes to named providers only. Timeout and cache TTL in seconds.
+      - CONVERTER_SMG_PROVIDERS=${CONVERTER_SMG_PROVIDERS:-}
+      - CONVERTER_SMG_API_KEY=${CONVERTER_SMG_API_KEY:-}
+      - CONVERTER_SMG_TIMEOUT=${CONVERTER_SMG_TIMEOUT:-1.5}
+      - CONVERTER_SMG_CACHE_TTL=${CONVERTER_SMG_CACHE_TTL:-60}
+      - BIFROST_ADMIN_USERNAME=${BIFROST_ADMIN_USERNAME:-admin}
+      - BIFROST_ADMIN_PASSWORD=${BIFROST_ADMIN_PASSWORD:-}
     expose:
       - "4001"
     volumes:

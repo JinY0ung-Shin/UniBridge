@@ -601,6 +601,49 @@ sets — including the `display_name` Claude Code requires — so either client'
 parser reads the same response. Set `CONVERTER_MODEL_ALIAS_PREFIX=""` to turn
 aliasing off entirely.
 
+**Context windows from SMG.** Bifrost lists a model served through a Shepherd
+Model Gateway (SMG) by id alone, so a client cannot read its context window
+from the listing. One line in `.env` makes the converter fill it in:
+
+```bash
+CONVERTER_SMG_PROVIDERS=*
+```
+
+The converter then reads from Bifrost where each provider is registered
+(`GET /api/providers`, with the Bifrost admin login already in `.env`), asks
+every one of those base URLs for `GET /workers`, and adds each model's
+`context_length` to the entries Bifrost sent without one. No SMG URL is written
+anywhere: a provider added, moved or removed in Bifrost is followed on the next
+round.
+
+- `*` asks every registered provider. One that is no SMG (a plain vLLM, a cloud
+  API) answers 404 and is skipped. To ask only some, list their Bifrost provider
+  names instead: `CONVERTER_SMG_PROVIDERS=smg-a,smg-b`.
+- A model is looked up at its own provider, under the exact id Bifrost sends
+  there (the key's alias when it has one, the public name otherwise). SMG's own
+  aliases, other spellings and checkpoint paths do not match.
+- A value from Bifrost is never replaced, and a `claude/` alias carries the
+  same value as its model.
+- Only workers SMG routes to count: healthy, `ready`, not stalled. When two of
+  them, or two providers serving one public name, report different limits, the
+  field is left out and the converter logs a warning, because any one value
+  could be more than the backend that gets the request accepts.
+- The providers are asked beside a listing refresh only, at most every
+  `CONVERTER_SMG_CACHE_TTL` (60s) and for `CONVERTER_SMG_TIMEOUT` (1.5s) at
+  most. When Bifrost or an SMG fails, the listing answers as before, with the
+  last good values for up to ten more minutes and without them after that.
+- An SMG started with an API key keeps `/workers` behind it. Put the key in
+  `CONVERTER_SMG_API_KEY` and name the providers: the token is sent to named
+  providers only, never under `*`. (Bifrost masks the provider keys it stores,
+  so it cannot be read from there.)
+- This gives the converter the Bifrost admin login, which it uses for that one
+  `GET`. Nothing but a provider's name and base URL, and a model's id and
+  `context_length`, is read from the answers.
+
+It takes a new converter container to apply: the line goes in `.env`, then a
+deploy (or `docker compose up -d llm-converter` on the single stack). Unset, the
+converter asks neither Bifrost's management API nor any provider.
+
 **Enabling it in Claude Code.** Discovery is opt-in and needs two environment
 variables:
 

@@ -78,6 +78,24 @@ Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
   after body parsing, before the request builders, so the mid-system model gate and the outbound
   body see the real deployment name. A model actually named `claude/...` upstream is shadowed by
   its own alias — don't register one that way.
+- `CONVERTER_SMG_PROVIDERS` (`*` | Bifrost provider names; empty = off, then no request) —
+  `/v1/models` entries Bifrost sent without a `context_length` get the one the Shepherd Model
+  Gateway behind the model's provider reports at `GET /workers` (`smg_workers.py` parses,
+  `main.py` fetches and caches). No SMG URL is configured: each round reads
+  `GET {bifrost}/api/providers` (name + `network_config.base_url`) with the Bifrost admin login
+  (`BIFROST_ADMIN_USERNAME`/`_PASSWORD`, passed by compose; a virtual key gets 401 there), then
+  asks every selected base URL at once. Under `*` a non-SMG provider's 404 is expected and
+  silent. Lookup is per provider under the id Bifrost sends it: the listing entry's `alias`
+  (set when the provider key maps the name), else the public id — exact, never SMG aliases.
+  Only routable workers count (`is_healthy`, `status` ready or absent, no `stalled`); workers
+  or providers that disagree → field omitted + one warning. `CONVERTER_SMG_API_KEY` goes to
+  named providers only, never under `*`. Runs only inside the shared listing fetch (never from
+  an inference route), cached apart from the listing (`CONVERTER_SMG_CACHE_TTL` 60s; a failing
+  provider keeps its last values `CONVERTER_MODELS_STALE_MAX` more; a failed provider list is
+  retried no sooner than 10s). `CONVERTER_SMG_TIMEOUT` (1.5s, the whole round) is held to 3/4
+  of `CONVERTER_MODELS_TIMEOUT`, since the listing waits for it. Applied per response, before
+  the alias clones. These are in both compose files; the `CONVERTER_MODELS_*` knobs and
+  `CONVERTER_MODEL_ALIAS_PREFIX` are not, so compose cannot set those.
 - `CONVERTER_REASONING_EFFORT_LEVELS` (default `low,medium,high`, `*` = passthrough) — the
   backend's effort vocabulary. Both bridges forward the client's effort verbatim, and
   vLLM/SGLang 400 on anything else, while Codex's ladder reaches `xhigh`/`max`/`ultra`.

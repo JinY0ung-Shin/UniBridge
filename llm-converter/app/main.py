@@ -24,7 +24,7 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 
@@ -49,6 +49,7 @@ from app.responses_bridge import (
     responses_request_to_chat_body,
 )
 from app.responses_state import conversation_store
+from app.smg_workers import MalformedWorkers, context_lengths
 from app.sse import (
     format_sse,
     forward_request_headers,
@@ -82,6 +83,30 @@ _ERROR_BODY_READ_TIMEOUT = 120.0
 # Bifrost asks every provider key live on each listing with no deadline of its
 # own, so a fetch may outlive its caller and still fill the cache for the next.
 _MODELS_FETCH_CEILING = 30.0
+
+# ``GET /workers`` of a large fleet is a few hundred KB. Anything past this is
+# not read: the body is parsed whole, in a 512m container.
+_WORKERS_BODY_MAX = 4 * 1024 * 1024
+
+# A provider list that could not be read is not asked for again sooner than
+# this, whatever the listing TTL: with the listing cache off, every call would
+# otherwise wait on it.
+_WORKERS_RETRY_FLOOR = 10.0
+
+# Most providers asked in one round under ``CONVERTER_SMG_PROVIDERS=*``.
+_WORKERS_PROVIDER_MAX = 32
+
+if settings.smg_providers is not None:
+    if not settings.bifrost_admin_password:
+        logger.warning(
+            "CONVERTER_SMG_PROVIDERS is set but BIFROST_ADMIN_PASSWORD is not: the provider "
+            "URLs cannot be read from Bifrost, so worker metadata is off"
+        )
+    elif settings.smg_providers == "*" and settings.smg_api_key:
+        logger.warning(
+            "CONVERTER_SMG_API_KEY is not sent under CONVERTER_SMG_PROVIDERS=*; "
+            "name the providers that need it"
+        )
 
 app = FastAPI(title="UniBridge LLM Converter")
 
@@ -542,6 +567,9 @@ class _ListingSnapshot:
     upstream_url: str
     body: dict  # the sanitized upstream listing, before per-request aliasing
     fetched_at: float  # _clock()
+    # public id -> [(provider, the id that provider serves it under)]: what the
+    # sanitized body no longer says, kept to look a model up at its provider.
+    sources: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -550,6 +578,7 @@ class _FetchOutcome:
     response to forward as it is, or an ``error`` (``timeout``/``unreachable``)."""
 
     listing: Optional[dict] = None
+    sources: Optional[dict] = None  # see _ListingSnapshot.sources
     status_code: int = 0
     content: bytes = b""
     headers: Optional[dict] = None
@@ -557,18 +586,47 @@ class _FetchOutcome:
     error: Optional[str] = None
 
 
+@dataclass
+class _ProviderWindows:
+    """What one provider's ``GET /workers`` last said about context windows."""
+
+    base_url: str
+    lengths: dict  # model id as the provider serves it -> context_length
+    conflicts: list  # model ids whose workers disagreed
+    fetched_at: float  # _clock()
+
+
+@dataclass
+class _WorkerMetadata:
+    upstream_url: str
+    selection: object  # the CONVERTER_SMG_PROVIDERS value it was read for
+    providers: dict  # Bifrost provider name -> _ProviderWindows
+    refreshed_at: float  # _clock() of the last round that got Bifrost's provider list
+
+
 _listing_snapshot: Optional[_ListingSnapshot] = None
 # (event loop, upstream url, task) of the fetch in flight. Concurrent
 # callers for the same upstream join it instead of each asking; a task is only
 # joinable from its own loop.
 _listing_fetch: Optional[tuple] = None
+# Cached apart from the listing: the listing changes when a model is registered,
+# this when a worker is replaced, and each has its own TTL.
+_worker_metadata: Optional[_WorkerMetadata] = None
+# (upstream url, _clock(), reason) of the last provider list that could not be read.
+_worker_metadata_failure: Optional[tuple] = None
+# provider name -> how its last ``GET /workers`` went, to log a change once.
+_provider_outcomes: dict = {}
 
 
 def reset_models_cache() -> None:
-    """Forget the cached listing and any fetch in flight (used by the tests)."""
-    global _listing_snapshot, _listing_fetch
+    """Forget the cached listing, the worker metadata and any fetch in flight
+    (used by the tests)."""
+    global _listing_snapshot, _listing_fetch, _worker_metadata, _worker_metadata_failure
     _listing_snapshot = None
     _listing_fetch = None
+    _worker_metadata = None
+    _worker_metadata_failure = None
+    _provider_outcomes.clear()
 
 
 def _public_model_id(model_id: object) -> object:
@@ -599,6 +657,28 @@ def _sanitize_listing(data: list) -> dict:
                 seen.add(item["id"])
         entries.append(item)
     return {"object": "list", "data": entries}
+
+
+def _listing_sources(data: list) -> dict:
+    """``{public id: [(provider, served id)]}`` for a Bifrost listing.
+
+    Bifrost lists ``<provider>/<public id>`` and, when the provider key maps
+    that name to another one, the id it really sends in ``alias``. Every
+    provider listing a public name is kept, the ones :func:`_sanitize_listing`
+    drops as duplicates included: any of them may get the request.
+    """
+    sources: dict = {}
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id")
+        if not isinstance(model_id, str) or "/" not in model_id:
+            continue
+        provider, public_id = model_id.split("/", 1)
+        alias = item.get("alias")
+        served_id = alias if isinstance(alias, str) and alias else public_id
+        sources.setdefault(public_id, []).append((provider, served_id))
+    return sources
 
 
 def _without_gateway_internals(body: dict) -> dict:
@@ -670,8 +750,9 @@ async def _fetch_listing(upstream_url: str, headers: dict) -> _FetchOutcome:
             and isinstance(parsed.get("data"), list)
         ):
             listing = _sanitize_listing(parsed["data"])
-            _listing_snapshot = _ListingSnapshot(upstream_url, listing, _clock())
-            return _FetchOutcome(listing=listing)
+            sources = _listing_sources(parsed["data"])
+            _listing_snapshot = _ListingSnapshot(upstream_url, listing, _clock(), sources)
+            return _FetchOutcome(listing=listing, sources=sources)
         resp_headers = forward_response_headers(upstream.headers.items())
         if isinstance(parsed, dict) and any(key in parsed for key in _GATEWAY_INTERNAL_FIELDS):
             content = json.dumps(_without_gateway_internals(parsed), ensure_ascii=False).encode(
@@ -688,6 +769,305 @@ async def _fetch_listing(upstream_url: str, headers: dict) -> _FetchOutcome:
         await client.aclose()
 
 
+# --- SMG worker metadata -----------------------------------------------------------
+# Bifrost's listing has no context window for a model served through a Shepherd
+# Model Gateway, but that SMG's own ``GET /workers`` does. Where the SMGs are is
+# not configured here: Bifrost's management API says which base URL each
+# provider is registered with, so the providers are read from there and each is
+# asked. All of it happens only while a listing refresh is under way, so it
+# shares that single flight and no request route ever starts it.
+
+
+class _WorkersUnavailable(Exception):
+    """A request gave nothing usable; the message is safe to log."""
+
+
+def _smg_selection() -> object:
+    """The providers to ask (``"*"`` or a set of names), ``None`` when off."""
+    selection = settings.smg_providers
+    if selection is None or not settings.bifrost_admin_password:
+        return None
+    return selection
+
+
+def _worker_metadata_due(upstream_url: str, selection: object) -> bool:
+    failure = _worker_metadata_failure
+    if (
+        failure is not None
+        and failure[0] == upstream_url
+        and _clock() - failure[1] < _WORKERS_RETRY_FLOOR
+    ):
+        return False
+    metadata = _worker_metadata
+    if (
+        metadata is None
+        or metadata.upstream_url != upstream_url
+        or metadata.selection != selection
+    ):
+        return True
+    ttl = settings.smg_cache_ttl
+    return ttl <= 0 or _clock() - metadata.refreshed_at >= ttl
+
+
+def _failure_reason(exc: BaseException) -> str:
+    if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException)):
+        return "timed out"
+    if isinstance(exc, (_WorkersUnavailable, MalformedWorkers)):
+        return str(exc)
+    # Only the type: an httpx error's text carries the URL, and a URL may carry
+    # credentials.
+    return type(exc).__name__
+
+
+async def _get_json(
+    client: httpx.AsyncClient, url: str, auth: Optional[httpx.Auth] = None, token: str = ""
+) -> object:
+    """The parsed JSON body of a 200 answer, read up to ``_WORKERS_BODY_MAX``.
+
+    The request carries what it is given and nothing of a caller's. Redirects
+    are not followed (httpx's default), so a credential goes to that host only.
+    """
+    headers = {"accept": "application/json"}
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    async with client.stream("GET", url, headers=headers, auth=auth) as resp:
+        if resp.status_code != 200:
+            raise _WorkersUnavailable(f"answered {resp.status_code}")
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in resp.aiter_bytes():
+            size += len(chunk)
+            if size > _WORKERS_BODY_MAX:
+                raise _WorkersUnavailable(f"body over {_WORKERS_BODY_MAX} bytes")
+            chunks.append(chunk)
+    try:
+        return json.loads(b"".join(chunks))
+    except ValueError:
+        raise _WorkersUnavailable("body is not JSON") from None
+
+
+async def _registered_providers(client: httpx.AsyncClient, upstream_url: str) -> dict:
+    """``{provider name: base URL}`` as registered in Bifrost.
+
+    The one use of the Bifrost admin login: virtual keys are refused on the
+    management API. Only the name and the base URL are read; key values come
+    back masked and are not looked at.
+    """
+    body = await _get_json(
+        client,
+        f"{upstream_url}/api/providers",
+        auth=httpx.BasicAuth(settings.bifrost_admin_username, settings.bifrost_admin_password),
+    )
+    providers = body.get("providers") if isinstance(body, dict) else None
+    if not isinstance(providers, list):
+        raise _WorkersUnavailable("answer has no providers list")
+    registered: dict = {}
+    for provider in providers:
+        if not isinstance(provider, dict):
+            continue
+        name = provider.get("name")
+        network = provider.get("network_config")
+        base_url = network.get("base_url") if isinstance(network, dict) else None
+        if not isinstance(name, str) or not name or not isinstance(base_url, str):
+            continue
+        base_url = base_url.strip().rstrip("/")
+        if base_url.lower().startswith(("http://", "https://")):
+            registered[name] = base_url
+    return registered
+
+
+async def _provider_windows(
+    client: httpx.AsyncClient, base_url: str, token: str, timeout: float
+) -> _ProviderWindows:
+    payload = await asyncio.wait_for(
+        _get_json(client, f"{base_url}/workers", token=token), timeout=timeout
+    )
+    lengths, conflicts = context_lengths(payload)
+    return _ProviderWindows(base_url, lengths, conflicts, _clock())
+
+
+def _note_provider(name: str, outcome: str, loud: bool) -> None:
+    """Remember how a provider's last round went; warn when it changed for the
+    worse and someone would want to know."""
+    if _provider_outcomes.get(name) == outcome:
+        return
+    _provider_outcomes[name] = outcome
+    if outcome != "ok" and loud:
+        logger.warning(
+            "converter models: no worker metadata from provider %r (%s)", name[:120], outcome
+        )
+
+
+async def _refresh_worker_metadata(upstream_url: str, selection: object) -> None:
+    """One round: Bifrost's provider list, then every selected provider's
+    ``GET /workers`` at once. Never raises: whatever is missing afterwards, the
+    listing goes out as the gateway sent it."""
+    try:
+        await _worker_metadata_round(upstream_url, selection)
+    except Exception as exc:  # noqa: BLE001 - the listing must still answer
+        logger.warning("converter models: worker metadata round failed (%s)", type(exc).__name__)
+
+
+async def _worker_metadata_round(upstream_url: str, selection: object) -> None:
+    global _worker_metadata, _worker_metadata_failure
+    timeout = settings.smg_timeout
+    started = time.monotonic()
+    client = _make_client(httpx.Timeout(timeout))
+    try:
+        try:
+            registered = await asyncio.wait_for(
+                _registered_providers(client, upstream_url), timeout=timeout
+            )
+        except Exception as exc:  # noqa: BLE001 - reported below, by its reason
+            reason = _failure_reason(exc)
+            last = _worker_metadata_failure
+            if last is None or last[0] != upstream_url or last[2] != reason:
+                logger.warning(
+                    "converter models: Bifrost's provider list is unavailable (%s); "
+                    "no context_length from workers",
+                    reason,
+                )
+            _worker_metadata_failure = (upstream_url, _clock(), reason)
+            return
+
+        explicit = selection != "*"
+        if explicit:
+            asked = {name: url for name, url in registered.items() if name in selection}
+            # A token is for the providers someone named, never for whichever
+            # registered URL answers.
+            token = settings.smg_api_key
+        else:
+            asked = dict(list(registered.items())[:_WORKERS_PROVIDER_MAX])
+            token = ""
+        # The whole round shares one deadline: what the provider list used up
+        # is not given to the workers again.
+        remaining = max(timeout - (time.monotonic() - started), 0.05)
+        results = await asyncio.gather(
+            *(_provider_windows(client, url, token, remaining) for url in asked.values()),
+            return_exceptions=True,
+        )
+    finally:
+        await client.aclose()
+
+    previous = _worker_metadata
+    if previous is not None and (
+        previous.upstream_url != upstream_url or previous.selection != selection
+    ):
+        previous = None
+    providers: dict = {}
+    for (name, base_url), result in zip(asked.items(), results):
+        before = previous.providers.get(name) if previous is not None else None
+        if before is not None and before.base_url != base_url:
+            before = None  # registered somewhere else now: its old answer is void
+        if isinstance(result, _ProviderWindows):
+            providers[name] = result
+            if result.conflicts and (before is None or before.conflicts != result.conflicts):
+                logger.warning(
+                    "converter models: workers of provider %r disagree on context_length for "
+                    "%d model(s), left out of the listing: %s",
+                    name[:120],
+                    len(result.conflicts),
+                    ", ".join(repr(model_id[:120]) for model_id in result.conflicts[:10]),
+                )
+            _note_provider(name, "ok", loud=False)
+            continue
+        if before is not None:
+            providers[name] = before  # ages out by its own fetched_at
+        # Under ``*`` most providers are no SMG at all, and a 404 from them is
+        # the expected answer; one that did answer before is worth a line.
+        was_smg = before is not None or _provider_outcomes.get(name) == "ok"
+        _note_provider(name, _failure_reason(result), loud=explicit or was_smg)
+    if explicit:
+        for name in sorted(selection - set(registered)):
+            _note_provider(name, "not registered in Bifrost with a base URL", loud=True)
+    elif len(registered) > _WORKERS_PROVIDER_MAX:
+        _note_provider("*", f"only the first {_WORKERS_PROVIDER_MAX} providers are asked", loud=True)
+    for name in [name for name in _provider_outcomes if name not in asked]:
+        if name != "*" and not (explicit and name in selection):
+            del _provider_outcomes[name]
+
+    _worker_metadata = _WorkerMetadata(upstream_url, selection, providers, _clock())
+    _worker_metadata_failure = None
+
+
+def _usable_provider_windows() -> dict:
+    """``{provider: _ProviderWindows}`` to fill in from right now.
+
+    An answer past its TTL keeps counting until the next listing refresh has
+    had its chance to replace it, and for ``CONVERTER_MODELS_STALE_MAX`` more
+    when the provider is failing — the same allowance the listing itself gets.
+    """
+    selection = _smg_selection()
+    metadata = _worker_metadata
+    if (
+        selection is None
+        or metadata is None
+        or metadata.upstream_url != settings.upstream_url
+        or metadata.selection != selection
+    ):
+        return {}
+    fresh = max(settings.smg_cache_ttl, settings.models_cache_ttl, 0.0)
+    oldest = _clock() - (fresh + max(settings.models_stale_max, 0.0))
+    return {
+        name: windows for name, windows in metadata.providers.items() if windows.fetched_at >= oldest
+    }
+
+
+def _agreed_length(model_sources: list, windows: dict) -> Optional[int]:
+    """The one context window every provider serving a model reports for it.
+
+    Each provider is looked up under the exact id Bifrost sends it — never a
+    similar name. Providers that say nothing are skipped; two that differ, or
+    one whose own workers differ, give no value: any single one could be more
+    than the backend that gets the request accepts.
+    """
+    lengths: set = set()
+    for provider, served_id in model_sources:
+        provider_windows = windows.get(provider)
+        if provider_windows is None:
+            continue
+        if served_id in provider_windows.conflicts:
+            return None
+        length = provider_windows.lengths.get(served_id)
+        if length is not None:
+            lengths.add(length)
+    return lengths.pop() if len(lengths) == 1 else None
+
+
+def _with_context_lengths(listing: dict, sources: Optional[dict]) -> dict:
+    """``listing`` with ``context_length`` filled in where the gateway sent
+    none and the model's provider reports one. A value from the gateway is
+    never replaced. Returns a copy; the snapshot stays as fetched."""
+    data = listing.get("data")
+    if not sources or not isinstance(data, list):
+        return listing
+    windows = _usable_provider_windows()
+    if not windows:
+        return listing
+    entries: list = []
+    for item in data:
+        if isinstance(item, dict) and item.get("context_length") is None:
+            model_id = item.get("id")
+            if isinstance(model_id, str):
+                length = _agreed_length(sources.get(model_id, ()), windows)
+                if length is not None:
+                    item = {**item, "context_length": length}
+        entries.append(item)
+    return {**listing, "data": entries}
+
+
+async def _refresh_listing(upstream_url: str, headers: dict) -> _FetchOutcome:
+    """One listing fetch, with the worker metadata refreshed beside it when
+    that is switched on and due."""
+    selection = _smg_selection()
+    if selection is None or not _worker_metadata_due(upstream_url, selection):
+        return await _fetch_listing(upstream_url, headers)
+    outcome, _ = await asyncio.gather(
+        _fetch_listing(upstream_url, headers), _refresh_worker_metadata(upstream_url, selection)
+    )
+    return outcome
+
+
 def _join_listing_fetch(upstream_url: str, headers: dict) -> asyncio.Task:
     """The fetch in flight on this loop, or a new one (single-flight)."""
     global _listing_fetch
@@ -696,7 +1076,7 @@ def _join_listing_fetch(upstream_url: str, headers: dict) -> asyncio.Task:
         fetch_loop, fetch_url, task = _listing_fetch
         if fetch_loop is loop and fetch_url == upstream_url and not task.done():
             return task
-    task = loop.create_task(_fetch_listing(upstream_url, headers))
+    task = loop.create_task(_refresh_listing(upstream_url, headers))
     _listing_fetch = (loop, upstream_url, task)
 
     def _finished(done: asyncio.Task) -> None:
@@ -712,8 +1092,11 @@ def _join_listing_fetch(upstream_url: str, headers: dict) -> asyncio.Task:
     return task
 
 
-def _listing_response(listing: dict) -> Response:
-    augmented = _augment_models_body(listing, settings.model_alias_prefix)
+def _listing_response(listing: dict, sources: Optional[dict] = None) -> Response:
+    # Filled in before the aliases are cloned, so an alias carries its model's value.
+    augmented = _augment_models_body(
+        _with_context_lengths(listing, sources), settings.model_alias_prefix
+    )
     return Response(
         content=json.dumps(augmented, ensure_ascii=False).encode("utf-8"),
         status_code=200,
@@ -748,6 +1131,9 @@ async def models(request: Request) -> Response:
     at most (2s): past
     that, or when upstream times out, is unreachable or answers 5xx, the last
     good listing answers while it is younger than ``CONVERTER_MODELS_STALE_MAX``.
+
+    With ``CONVERTER_SMG_PROVIDERS`` set, a model the gateway lists without a
+    ``context_length`` gets the one its provider's SMG workers report for it.
     """
     upstream_url = settings.upstream_url
     snapshot = _listing_snapshot
@@ -755,7 +1141,7 @@ async def models(request: Request) -> Response:
         snapshot = None
     ttl = settings.models_cache_ttl
     if snapshot is not None and ttl > 0 and _clock() - snapshot.fetched_at < ttl:
-        return _listing_response(snapshot.body)
+        return _listing_response(snapshot.body, snapshot.sources)
 
     task = _join_listing_fetch(upstream_url, _listing_credentials(request.headers))
     wait = settings.models_timeout
@@ -766,7 +1152,7 @@ async def models(request: Request) -> Response:
     except asyncio.TimeoutError:
         outcome = _FetchOutcome(error="timeout")
     if outcome.listing is not None:
-        return _listing_response(outcome.listing)
+        return _listing_response(outcome.listing, outcome.sources)
 
     transient = outcome.error is not None or outcome.status_code >= 500
     stale_max = settings.models_stale_max
@@ -778,7 +1164,7 @@ async def models(request: Request) -> Response:
                 outcome.error or f"answered {outcome.status_code}",
                 age,
             )
-            return _listing_response(snapshot.body)
+            return _listing_response(snapshot.body, snapshot.sources)
     if outcome.error == "timeout":
         return _models_error(504, "timeout", "upstream request timed out")
     if outcome.error == "unreachable":
