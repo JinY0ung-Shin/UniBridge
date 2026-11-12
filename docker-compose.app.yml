@@ -89,6 +89,14 @@ services:
       # Bearer token verifying the internal Alertmanager webhook receiver.
       # Empty = receiver disabled (503); set it to enable infra-alert email.
       - ALERTMANAGER_WEBHOOK_TOKEN=${ALERTMANAGER_WEBHOOK_TOKEN:-}
+      # Upload relay (app/routers/upload_relay.py): Noah users upload a file on
+      # /upload-relay and the Noah server collects it. The secret is shared
+      # with that Noah deployment; empty = the relay is off (503).
+      - UPLOAD_RELAY_SECRET=${UPLOAD_RELAY_SECRET:-}
+      - UPLOAD_RELAY_MAX_FILE_BYTES=${UPLOAD_RELAY_MAX_FILE_BYTES:-33554432}
+      - UPLOAD_RELAY_FILE_TTL_SECONDS=${UPLOAD_RELAY_FILE_TTL_SECONDS:-600}
+      - UPLOAD_RELAY_MAX_PENDING_BYTES=${UPLOAD_RELAY_MAX_PENDING_BYTES:-1073741824}
+      - UPLOAD_RELAY_MAX_PENDING_BYTES_PER_USER=${UPLOAD_RELAY_MAX_PENDING_BYTES_PER_USER:-268435456}
       - KEYCLOAK_ISSUER_URL=${KEYCLOAK_ISSUER_URL:-}
       - KEYCLOAK_JWKS_URL=${KEYCLOAK_JWKS_URL:-}
       - KEYCLOAK_JWT_AUDIENCE=${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}

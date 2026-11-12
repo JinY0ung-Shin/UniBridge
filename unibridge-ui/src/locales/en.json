@@ -232,6 +232,7 @@
     "resourceTypeUserRole": "User role",
     "resourceTypeConfigImport": "Config import",
     "resourceTypeBifrostSession": "Bifrost sign-in",
+    "resourceTypeUploadRelay": "Upload relay",
     "timestamp": "Timestamp",
     "resourceId": "Resource ID",
     "summary": "Summary",
@@ -2051,6 +2052,42 @@
       "all": "All kinds",
       "externalHint": "A server we do not run. It is in no region; only recorded firewall openings say what reaches it. Left out of the port finder and monitored-server links.",
       "unlinkNote": "Saving removes this host's link to its monitored server."
+    }
+  },
+  "uploadRelay": {
+    "title": "Upload files to Noah",
+    "recipient": "These files go to {{recipient}}'s Noah conversation",
+    "recipientAccount": "Noah account: {{user}}",
+    "recipientHint": "If that is not your own Noah conversation, do not upload anything and close this window.",
+    "dropHint": "Drop files here, or choose them with the button below.",
+    "choose": "Choose files",
+    "limits": "Accepted: {{types}} · up to {{size}} per file · up to {{count}} at a time",
+    "filesLabel": "Uploaded files",
+    "auditNote": "The name and size of each file and who uploaded it are recorded in both UniBridge and Noah. A file is deleted from UniBridge once Noah has collected it.",
+    "noTicket": "This page has to be opened from Noah.",
+    "pendingMessage": "A UniBridge administrator has to approve this account before it can send files to Noah. Once approved, press \"Check again\".",
+    "reopenHint": "Press the attach button in a Noah conversation to open this page again.",
+    "close": "Close window",
+    "status": {
+      "queued": "Waiting",
+      "uploading": "Uploading...",
+      "done": "Sent · check the Noah message box",
+      "refused": "Not uploaded: {{reason}}"
+    },
+    "problem": {
+      "invalidTicket": "The upload details are not valid. Press the attach button in Noah again.",
+      "expired": "The time for this upload has passed. Press the attach button in Noah again.",
+      "signedOut": "Your sign-in has expired. Close this window and open it again from Noah.",
+      "notApproved": "This account has not been approved for UniBridge yet.",
+      "type": "This type of file cannot be uploaded here.",
+      "empty": "The file is empty.",
+      "name": "The file name has characters that cannot be used, or it is too long.",
+      "tooLarge": "The file is too large.",
+      "tooMany": "That is more files than one upload takes at a time. Try again once Noah has collected the earlier ones.",
+      "userQuota": "Too many files are already waiting for this Noah user. Try again once Noah has collected the earlier ones.",
+      "unavailable": "Files cannot be received right now. Try again in a moment.",
+      "network": "Could not reach the server. Check your network and try again.",
+      "unknown": "The file could not be uploaded. Please try again."
     }
   }
 }

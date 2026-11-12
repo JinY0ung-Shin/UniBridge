@@ -262,7 +262,7 @@ describe('AdminAuditLogs', () => {
       'alert_channel', 'alert_mute', 'alert_settings', 'api_key', 'bifrost_session', 'config_import',
       'db_connection', 'monitored_host', 'monitored_service', 'nas_connection',
       'permission', 'query_template', 'resource_owner', 'role', 'route',
-      's3_connection', 'system_settings', 'upstream', 'user', 'user_role',
+      's3_connection', 'system_settings', 'upload_relay', 'upstream', 'user', 'user_role',
     ];
     for (const value of AUDITED_RESOURCE_TYPES) {
       expect(byValue).toHaveProperty(value);
@@ -274,6 +274,7 @@ describe('AdminAuditLogs', () => {
     expect(byValue.monitored_host).toBe('Server');
     expect(byValue.config_import).toBe('Config import');
     expect(byValue.bifrost_session).toBe('Bifrost sign-in');
+    expect(byValue.upload_relay).toBe('Upload relay');
     // recipients are audited as resource_owner, so there is no alert_recipient type
     expect(byValue).not.toHaveProperty('alert_recipient');
   });

@@ -232,6 +232,7 @@
     "resourceTypeUserRole": "사용자 역할",
     "resourceTypeConfigImport": "설정 가져오기",
     "resourceTypeBifrostSession": "Bifrost 로그인",
+    "resourceTypeUploadRelay": "업로드 중계",
     "timestamp": "시간",
     "resourceId": "리소스 ID",
     "summary": "요약",
@@ -2051,6 +2052,42 @@
       "all": "모든 종류",
       "externalHint": "우리가 운영하지 않는 서버입니다. 리전에 넣지 않고, 기록된 방화벽 오픈으로만 접근 여부를 판단합니다. 빈 포트 찾기·모니터링 서버 연결에서 빠집니다.",
       "unlinkNote": "저장하면 이 호스트의 모니터링 서버 연결이 해제됩니다."
+    }
+  },
+  "uploadRelay": {
+    "title": "Noah로 파일 올리기",
+    "recipient": "{{recipient}}님의 Noah 대화로 전송됩니다",
+    "recipientAccount": "Noah 계정: {{user}}",
+    "recipientHint": "본인의 Noah 대화가 아니라면 파일을 올리지 말고 이 창을 닫으세요.",
+    "dropHint": "여기에 파일을 끌어다 놓거나 아래 버튼으로 고르세요.",
+    "choose": "파일 선택",
+    "limits": "허용 형식: {{types}} · 파일당 최대 {{size}} · 한 번에 최대 {{count}}개",
+    "filesLabel": "올린 파일",
+    "auditNote": "올린 파일의 이름·크기와 올린 사람은 UniBridge와 Noah 양쪽에 기록됩니다. 파일은 Noah가 가져가면 UniBridge에서 삭제됩니다.",
+    "noTicket": "이 페이지는 Noah에서 열어야 합니다.",
+    "pendingMessage": "UniBridge 관리자가 이 계정을 승인해야 Noah로 파일을 보낼 수 있습니다. 승인을 받은 뒤 '다시 확인'을 누르세요.",
+    "reopenHint": "Noah 대화 입력창의 첨부 버튼을 누르면 이 페이지가 다시 열립니다.",
+    "close": "창 닫기",
+    "status": {
+      "queued": "대기 중",
+      "uploading": "올리는 중...",
+      "done": "전송됨 · Noah 입력창에서 확인하세요",
+      "refused": "올리지 못했습니다: {{reason}}"
+    },
+    "problem": {
+      "invalidTicket": "업로드 정보가 올바르지 않습니다. Noah에서 첨부 버튼을 다시 눌러 주세요.",
+      "expired": "업로드 시간이 지났습니다. Noah에서 첨부 버튼을 다시 눌러 주세요.",
+      "signedOut": "로그인이 만료되었습니다. 창을 닫고 Noah에서 다시 열어 주세요.",
+      "notApproved": "이 계정은 아직 UniBridge 승인을 받지 않았습니다.",
+      "type": "여기에 올릴 수 없는 파일 형식입니다.",
+      "empty": "빈 파일입니다.",
+      "name": "파일 이름에 사용할 수 없는 문자가 있거나 이름이 너무 깁니다.",
+      "tooLarge": "파일이 너무 큽니다.",
+      "tooMany": "한 번에 올릴 수 있는 파일 수를 넘었습니다. Noah가 앞의 파일을 가져간 뒤 다시 시도하세요.",
+      "userQuota": "이 Noah 사용자 앞으로 대기 중인 파일이 너무 많습니다. Noah가 앞의 파일을 가져간 뒤 다시 시도하세요.",
+      "unavailable": "지금은 파일을 받을 수 없습니다. 잠시 후 다시 시도하세요.",
+      "network": "서버에 연결하지 못했습니다. 네트워크를 확인하고 다시 시도하세요.",
+      "unknown": "파일을 올리지 못했습니다. 다시 시도해 주세요."
     }
   }
 }

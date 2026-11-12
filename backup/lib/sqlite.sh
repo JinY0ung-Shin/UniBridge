@@ -5,8 +5,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # Legacy unibridge-service metadata DB at /app/data/meta.db (SQLite)
 # VACUUM INTO produces a consistent snapshot even under concurrent writes.
 
+# backup_unibridge_meta_sqlite <out.db.gz> [table whose rows to leave out...]
 backup_unibridge_meta_sqlite() {
   local out="$1"
+  shift
+  local skip_data_tables="$*"
   local remote_tmp="/app/data/meta.backup.db"
 
   log "sqlite: VACUUM INTO on meta.db"
@@ -16,6 +19,7 @@ backup_unibridge_meta_sqlite() {
   app_compose exec -T \
     -e SRC="/app/data/meta.db" \
     -e DST="$remote_tmp" \
+    -e SKIP_DATA_TABLES="$skip_data_tables" \
     unibridge-service python - <<'PYEOF'
 import os
 import sqlite3
@@ -33,6 +37,22 @@ escaped = dst.replace("'", "''")
 conn = sqlite3.connect(src)
 conn.execute(f"VACUUM INTO '{escaped}'")
 conn.close()
+
+# Rows that must not be in a backup (see UNIBRIDGE_META_SKIP_DATA_TABLES in
+# meta.sh) are deleted from the COPY, never from the live database. The second
+# VACUUM rewrites the copy, so the deleted rows' bytes are not left behind in
+# free pages. Table names come from the script, not from user input; they are
+# still checked against the copy's own table list before use.
+skip = os.environ.get("SKIP_DATA_TABLES", "").split()
+if skip:
+    copy = sqlite3.connect(dst)
+    existing = {row[0] for row in copy.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for table in skip:
+        if table in existing:
+            copy.execute(f'DELETE FROM "{table}"')
+    copy.commit()
+    copy.execute("VACUUM")
+    copy.close()
 PYEOF
 
   local uncompressed="${out%.gz}"

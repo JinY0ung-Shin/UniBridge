@@ -4,7 +4,14 @@ See the repo-root `CLAUDE.md` for cross-service context. Served by nginx in prod
 (`nginx.conf`); `entrypoint.sh` injects runtime config.
 
 ## Layout (`src/`)
-- `main.tsx` / `App.tsx`     — entry + router (react-router 7).
+- `main.tsx` / `Root.tsx` / `App.tsx` — entry, app-or-relay switch, router (react-router 7).
+  `/upload-relay` (`pages/UploadRelay.tsx`, the popup the Noah app opens) renders OUTSIDE
+  `AuthProvider`/`Layout`: it is a popup that signs in on its own (same rule as the app:
+  an account without an app role gets its pending-approval state, never the file picker), uses
+  plain `fetch`, and
+  must move its `#t=` ticket to sessionStorage before `keycloak.init`. Noah reuses the popup, so
+  a new `#t=` arrives as a `hashchange` (store it, reload); the expiry countdown uses the
+  server's `expiresInSeconds`, never the PC clock.
 - `keycloak.ts`             — keycloak-js init (OIDC login/token).
 - `i18n.ts` + `locales/`    — i18next; keep both locale files in sync when adding strings.
 - `runtime-config.d.ts`     — types for runtime config injected at container start (not build time).

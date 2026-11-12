@@ -90,6 +90,20 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   back); drop the plugin from `config.yaml` instead. It reads APISIX internals: run
   `scripts/test-apisix-node-path-prefix.sh` after changing it or upgrading APISIX.
 - **Request routing**: UI nginx → `/_api/*` = unibridge-service, `/api/*` = APISIX gateway.
+- **Upload relay** (`app/routers/upload_relay.py`, page `/upload-relay`; README "Upload relay for
+  Noah"): Noah users upload on UniBridge's address and the Noah server PULLS the file; UniBridge
+  never calls Noah. The ticket and request-signature formats in `app/services/upload_relay.py` are
+  a wire contract with the Noah deployment (fixed vectors in `tests/test_upload_relay.py`): do not
+  change a prefix, encoding or field; additions only. The browser endpoints sit behind the
+  ordinary `get_current_user` (an APPROVED account, any app role; user decision 2026-11-12, the
+  earlier role-less allowance was withdrawn: do not bring it back), the Noah-server ones behind
+  the request signature. Auth first, then the ticket (header `X-Upload-Relay-Ticket`) is
+  verified BEFORE the body is read, and an attempt without a valid ticket is logged, never
+  audited. The limits are counted and inserted inside `relay.storing()` (asyncio lock + Postgres
+  advisory lock); a new limit goes in `_no_room_for`. Files wait in the meta DB
+  (`upload_relay_files`), never in process memory, so both colors serve them, and
+  `backup/lib/meta.sh` leaves that table's rows out of every backup. The page renders outside
+  `AuthProvider` (`unibridge-ui/src/Root.tsx`) and shows its own pending-approval state.
 - **Bifrost** (`bifrost`, `bifrost-tls`; identical in both compose layouts, tested) is the
   only LLM gateway: it serves `/api/llm` (next bullet). The old `/api/llm-bi` side-by-side
   routes are gone: every provisioning boot deletes the

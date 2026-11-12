@@ -679,6 +679,85 @@ def test_backup_uses_current_metadata_store_instead_of_sqlite_only() -> None:
     assert "backup_unibridge_meta_sqlite" in meta_lib
 
 
+def test_backup_leaves_upload_relay_file_rows_out_of_the_postgres_dump(tmp_path: Path) -> None:
+    """upload_relay_files holds decrypted user files for a few minutes; a
+    backup must not keep them for as long as the snapshot lives. The table is
+    still dumped (schema), only its rows are skipped, and only for the
+    metadata database: the generic helper adds nothing by itself."""
+    script = f"""
+set -euo pipefail
+source {shlex.quote(str(BACKUP_POSTGRES_LIB_FILE))}
+source {shlex.quote(str(BACKUP_META_LIB_FILE))}
+infra_compose() {{ printf '%s\\n' "$@" >> "$ARGS_FILE"; printf -- '-- dump\\n'; }}
+log() {{ :; }}
+unset META_DB_URL
+backup_unibridge_meta "$DEST"
+printf -- '---\\n' >> "$ARGS_FILE"
+backup_postgres keycloak-db keycloak keycloak "$DEST/keycloak-db.sql.gz"
+"""
+    args_file = tmp_path / "args"
+    env = {**os.environ, "ARGS_FILE": str(args_file), "DEST": str(tmp_path)}
+    env.pop("META_DB_URL", None)
+    result = subprocess.run(
+        ["bash", "-c", script], check=False, env=env, text=True, capture_output=True
+    )
+    assert result.returncode == 0, result.stderr
+
+    meta_args, keycloak_args = args_file.read_text(encoding="utf-8").split("---\n")
+    meta_args = meta_args.splitlines()
+    assert meta_args[:4] == ["exec", "-T", "unibridge-db", "pg_dump"]
+    assert "--exclude-table-data=upload_relay_files" in meta_args
+    # Rows only: excluding the table itself would drop it from the restore.
+    assert not any(arg.startswith(("--exclude-table=", "-T=", "--schema-only")) for arg in meta_args)
+    assert "--exclude-table-data" not in keycloak_args
+    assert (tmp_path / "unibridge-meta.sql.gz").stat().st_size > 0
+
+
+def test_backup_scrubs_upload_relay_file_rows_from_the_sqlite_copy(tmp_path: Path) -> None:
+    """Legacy SQLite metadata is copied whole with VACUUM INTO; the rows are
+    then deleted from the COPY and the copy rewritten, so the bytes are not
+    left in free pages either. The live database keeps its rows."""
+    sqlite_lib = (REPO_ROOT / "backup" / "lib" / "sqlite.sh").read_text(encoding="utf-8")
+    meta_lib = BACKUP_META_LIB_FILE.read_text(encoding="utf-8")
+    assert "UNIBRIDGE_META_SKIP_DATA_TABLES=(upload_relay_files)" in meta_lib
+    assert 'backup_unibridge_meta_sqlite "$dest/unibridge-meta.db.gz" \\\n' in meta_lib
+    assert '-e SKIP_DATA_TABLES="$skip_data_tables"' in sqlite_lib
+    program = sqlite_lib.split("<<'PYEOF'\n", 1)[1].split("\nPYEOF\n", 1)[0]
+
+    src, dst = tmp_path / "meta.db", tmp_path / "meta.backup.db"
+    marker = b"DECRYPTED-USER-FILE-" * 400
+    live = sqlite3.connect(src)
+    live.execute("CREATE TABLE upload_relay_files (id TEXT PRIMARY KEY, content BLOB)")
+    live.execute("CREATE TABLE api_keys (name TEXT)")
+    live.execute("INSERT INTO upload_relay_files VALUES ('f1', ?)", (marker,))
+    live.execute("INSERT INTO api_keys VALUES ('kept')")
+    live.commit()
+    live.close()
+
+    def run(skip: str) -> None:
+        result = subprocess.run(
+            [sys.executable, "-c", program],
+            env={**os.environ, "SRC": str(src), "DST": str(dst), "SKIP_DATA_TABLES": skip},
+            check=False, text=True, capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    run("upload_relay_files not_a_table")
+    copy = sqlite3.connect(dst)
+    assert copy.execute("SELECT count(*) FROM upload_relay_files").fetchone() == (0,)
+    assert copy.execute("SELECT name FROM api_keys").fetchall() == [("kept",)]
+    copy.close()
+    assert marker[:40] not in dst.read_bytes()
+    # The live database is untouched.
+    live = sqlite3.connect(src)
+    assert live.execute("SELECT count(*) FROM upload_relay_files").fetchone() == (1,)
+    live.close()
+
+    # Without the list (an older caller) the copy is complete, as before.
+    run("")
+    assert marker[:40] in dst.read_bytes()
+
+
 def test_backup_metadata_kind_matches_sqlalchemy_urls() -> None:
     cases = [
         (None, "postgres"),

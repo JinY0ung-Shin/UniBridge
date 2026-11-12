@@ -106,6 +106,7 @@ cp .env.example .env
 | `S3_LIST_ALL_MAX_CONCURRENT` | 2 | Process-wide cap on concurrent `all=true` listings. Extra requests queue in FIFO order within the time budget and get `429` + `Retry-After` only if no slot frees up in time |
 | `S3_LIST_ALL_TOKENLESS_MAX_KEYS` | 30000 | Size of the one larger page `all=true` requests when a backend truncates a listing without a continuation token (helps where the backend honours `MaxKeys` > 1000; ≤ 1000 disables). That page is parsed in one go: ~1.6 KB of memory per object, ~0.5 KB per folder |
 | `ALERTMANAGER_WEBHOOK_TOKEN` | empty | Bearer token Alertmanager uses to POST fired Prometheus rules into the app's alert pipeline. **Empty means infra alerts send no mail** — the receiver answers 503. See [Infra alerting](#infra-alerting-prometheus--alertmanager) |
+| `UPLOAD_RELAY_SECRET` | empty | Secret shared with the Noah deployment (≥ 32 chars) that turns on the [upload relay](#upload-relay-for-noah). Empty = off: every relay endpoint answers 503. Companions: `UPLOAD_RELAY_MAX_FILE_BYTES` (33554432), `UPLOAD_RELAY_FILE_TTL_SECONDS` (600), `UPLOAD_RELAY_MAX_PENDING_BYTES` (1073741824), `UPLOAD_RELAY_MAX_PENDING_BYTES_PER_USER` (268435456) |
 | `ALERTMANAGER_SMTP_HOST`, `ALERTMANAGER_SMTP_TO` | empty | Set both to add a direct-SMTP mail path for the service-down alerts, so that mail does not depend on the app being up. Empty = off. Companions: `ALERTMANAGER_SMTP_PORT` (25), `_FROM`, `_USERNAME`, `_PASSWORD`, `_REQUIRE_TLS` (true) |
 
 ### 3. TLS certificates
@@ -289,6 +290,81 @@ How it works (two realm settings, both applied by the helper):
 The helper authenticates as the Keycloak master admin (the service account lacks `manage-realm`), errors out clearly on zero/multiple container matches or auth failure (printing an admin-console fallback), and is safe to re-run.
 
 **To disable registration entirely:** set `registrationAllowed=false` (admin console → Realm settings → Login → *User registration*, or `kcadm.sh update realms/apihub -s registrationAllowed=false` inside the Keycloak container as master admin).
+
+### Upload relay for Noah
+
+Workstations here run a file-security agent that decrypts a protected file only
+when it is uploaded to a registered address. UniBridge's address is registered;
+the Noah app's is not. The relay lets a Noah user attach such a file anyway:
+
+1. Noah opens `https://<UniBridge>/upload-relay#t=<ticket>` in a popup. The
+   ticket is signed by Noah and says who the files are for, which types and
+   sizes are allowed and when it expires.
+2. The user signs in to Keycloak with an **approved UniBridge account** (any
+   app role) and picks the files. The page shows whose Noah conversation
+   receives them. An account still waiting for approval sees the
+   pending-approval state there instead of the file picker (with *Check again*
+   and *Logout*), and the backend answers it 401 like every other endpoint:
+   every Noah user who needs the relay needs an approved UniBridge account.
+   The login names the uploader; the ticket says for whom and what.
+3. UniBridge stores each file in the meta database (`upload_relay_files`) for
+   `UPLOAD_RELAY_FILE_TTL_SECONDS` (10 minutes). The Noah server lists the
+   ticket's files, downloads each and acknowledges it, which deletes it.
+   A file that was never acknowledged is deleted when it expires. **UniBridge
+   never connects to Noah**; the Noah server must be able to reach
+   `https://<UniBridge>/_api/upload-relay/...`.
+
+Set the same `UPLOAD_RELAY_SECRET` (32 characters or more) here and in Noah.
+It signs Noah's tickets and Noah's collect requests (HMAC-SHA256); with it
+empty the relay is off and every relay endpoint answers 503. The server
+endpoints take no Keycloak token and no API key, only that signature, so treat
+the secret like the other service secrets and rotate it on both sides together.
+
+**Use HTTPS between Noah and UniBridge.** The request signature covers the
+method, the path and a timestamp, not the body: it proves the caller is Noah,
+it does not protect the file bytes or the acknowledgement on the way. TLS does.
+The two servers' clocks must agree to within five minutes.
+
+Every upload, refusal, download by Noah, acknowledgement and expiry is in
+**Admin audit log** (resource type *Upload relay*) with the file name, size,
+SHA-256, the Keycloak uploader and the Noah user, and in the service log:
+
+| Action | Actor | Meaning |
+|---|---|---|
+| `upload` | Keycloak user | Stored (success), or refused under a valid ticket (error, with the reason) |
+| `collect` | `noah:<user>` | Noah downloaded the file for the first time: from here on Noah has the bytes |
+| `deliver` / `refuse` | `noah:<user>` | Noah acknowledged it: handed to the user's browser, or turned away (e.g. the file was still encrypted) |
+| `expire` | `system` | Deleted unacknowledged. The summary says whether Noah never collected it, or collected it and did not acknowledge |
+
+An upload attempt **without a valid ticket** (none, forged, expired) is not
+audited: every approved account can make one as often as it likes, so it only
+leaves a warning in the service log. For the same reason the ticket is
+verified before the request body is read. An attempt by an account that is not
+approved never reaches the relay at all (401 from the login check).
+
+Limits:
+
+- One file is at most the smaller of the ticket's limit and
+  `UPLOAD_RELAY_MAX_FILE_BYTES` (32 MiB; keep it under the proxies' 100 MB body
+  limit).
+- A ticket's `maxFiles` caps the files it **holds at one time**, not the files
+  it carries over its life: when Noah acknowledges one, its place is free again.
+- One Noah user's waiting files together are at most
+  `UPLOAD_RELAY_MAX_PENDING_BYTES_PER_USER` (256 MiB), beyond which that user's
+  uploads get 429. A ticket costs nothing to mint, so this, not `maxFiles`, is
+  what stops one user from filling the relay.
+- All waiting files together are at most `UPLOAD_RELAY_MAX_PENDING_BYTES`
+  (1 GiB), beyond which uploads get 503 until Noah collects or files expire.
+
+Files are held in the service's memory while they are received (the service
+container is limited to 512 MB), so raise the per-file limit with care.
+
+The waiting files are decrypted user documents, so **backups leave the rows of
+`upload_relay_files` out** (`backup/README.md`); a restore brings the table
+back empty.
+
+The Keycloak client `apihub-ui` must allow `/upload-relay` as a redirect URI.
+The default `KEYCLOAK_REDIRECT_URI` (`https://<HOST_IP>:<port>/*`) already does.
 
 ## Service Ports (default)
 

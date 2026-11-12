@@ -40,6 +40,7 @@ from app.routers import (
     roles,
     s3,
     servers,
+    upload_relay,
     usages,
     users,
 )
@@ -1135,6 +1136,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.bifrost_session_task = asyncio.create_task(run_revoke_loop())
 
+    # Upload relay (app/routers/upload_relay.py): delete the files the Noah
+    # server never collected once they have expired.
+    from app.services.upload_relay import run_purge_loop
+
+    app.state.upload_relay_task = asyncio.create_task(run_purge_loop())
+
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────
@@ -1168,6 +1175,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except asyncio.CancelledError:
             pass
         logger.info("Bifrost session logout loop stopped")
+
+    if hasattr(app.state, "upload_relay_task"):
+        app.state.upload_relay_task.cancel()
+        try:
+            await app.state.upload_relay_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Upload relay purge loop stopped")
 
     if hasattr(app.state, "meta_db_metrics_task"):
         app.state.meta_db_metrics_task.cancel()
@@ -1276,6 +1291,7 @@ app.include_router(nas.router)
 app.include_router(network.router)
 app.include_router(servers.router)
 app.include_router(roles.router)
+app.include_router(upload_relay.router)
 app.include_router(usages.router)
 app.include_router(users.router)
 

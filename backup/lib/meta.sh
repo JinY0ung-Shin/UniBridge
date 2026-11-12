@@ -10,6 +10,12 @@ UNIBRIDGE_META_PG_SERVICE="${UNIBRIDGE_META_PG_SERVICE:-unibridge-db}"
 UNIBRIDGE_META_PG_DB="${UNIBRIDGE_META_PG_DB:-unibridge}"
 UNIBRIDGE_META_PG_USER="${UNIBRIDGE_META_PG_USER:-unibridge}"
 
+# Tables whose ROWS never go into a backup (the table itself is still created
+# on restore, empty). upload_relay_files holds decrypted user files that wait
+# a few minutes for the Noah server (app/routers/upload_relay.py): a backup
+# must not turn them into copies that live as long as the snapshot.
+UNIBRIDGE_META_SKIP_DATA_TABLES=(upload_relay_files)
+
 unibridge_meta_kind() {
   local url="${META_DB_URL:-}"
   if [[ -z "$url" ]]; then
@@ -29,14 +35,21 @@ backup_unibridge_meta() {
 
   case "$(unibridge_meta_kind)" in
     sqlite)
-      backup_unibridge_meta_sqlite "$dest/unibridge-meta.db.gz"
+      backup_unibridge_meta_sqlite "$dest/unibridge-meta.db.gz" \
+        "${UNIBRIDGE_META_SKIP_DATA_TABLES[@]}"
       ;;
     postgres)
+      local table
+      local skip_data=()
+      for table in "${UNIBRIDGE_META_SKIP_DATA_TABLES[@]}"; do
+        skip_data+=("--exclude-table-data=$table")
+      done
       backup_postgres \
         "$UNIBRIDGE_META_PG_SERVICE" \
         "$UNIBRIDGE_META_PG_DB" \
         "$UNIBRIDGE_META_PG_USER" \
-        "$dest/unibridge-meta.sql.gz"
+        "$dest/unibridge-meta.sql.gz" \
+        "${skip_data[@]}"
       ;;
   esac
 }

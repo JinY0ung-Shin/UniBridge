@@ -6,11 +6,12 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import DeclarativeBase, relationship
+from sqlalchemy.orm import DeclarativeBase, deferred, relationship
 
 from app.db_types import UtcDateTime, utcnow
 
@@ -522,6 +523,36 @@ class BifrostSsoSession(Base):
     token_encrypted = Column(Text, nullable=False)
     expires_at = Column(UtcDateTime, nullable=False, index=True)
     created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+
+
+class UploadRelayFile(Base):
+    """A file waiting for the Noah server to collect it (app/routers/upload_relay.py).
+
+    A Noah user uploads it on UniBridge's /upload-relay page under a ticket
+    Noah signed; the Noah server lists the ticket's files, downloads each and
+    acknowledges it, which deletes the row. A row nobody acknowledged is
+    deleted once ``expires_at`` has passed; ``collected_at`` (the first time
+    Noah downloaded it) tells that audit row whether Noah ever had the bytes.
+    The table lives in the meta database so both blue/green colors see the
+    same files. ``content`` is deferred: listing and purging never load the
+    bytes. The backups leave this table's rows out (backup/lib/meta.sh): they
+    are decrypted user files that live for minutes.
+    """
+
+    __tablename__ = "upload_relay_files"
+
+    id = Column(String(32), primary_key=True)
+    ticket_id = Column(String(64), nullable=False, index=True)
+    noah_user = Column(String(200), nullable=False)
+    noah_name = Column(String(200), nullable=True)
+    uploader = Column(String(255), nullable=False)  # Keycloak username
+    filename = Column(String(255), nullable=False)
+    size = Column(Integer, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    content = deferred(Column(LargeBinary, nullable=False))
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+    expires_at = Column(UtcDateTime, nullable=False, index=True)
+    collected_at = Column(UtcDateTime, nullable=True)  # Noah's first download
 
 
 class McpRemoteServer(Base):

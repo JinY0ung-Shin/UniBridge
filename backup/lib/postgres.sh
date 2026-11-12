@@ -2,16 +2,19 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-# backup_postgres <service> <db> <user> <out.sql.gz>
+# backup_postgres <service> <db> <user> <out.sql.gz> [extra pg_dump args...]
+# Extra args are for what a caller must leave out of its dump, e.g.
+# --exclude-table-data=<table>: the table is still created on restore, empty.
 backup_postgres() {
   local service="$1"
   local db="$2"
   local user="$3"
   local out="$4"
+  shift 4
 
   log "postgres[$service]: pg_dump -> $out"
   infra_compose exec -T "$service" pg_dump -U "$user" -d "$db" \
-    --no-owner --clean --if-exists --quote-all-identifiers \
+    --no-owner --clean --if-exists --quote-all-identifiers "$@" \
     | gzip -9 > "$out"
   log "postgres[$service]: $(size_of "$out") bytes"
 }

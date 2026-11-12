@@ -1,0 +1,171 @@
+/* Upload relay popup (pages/UploadRelay.tsx): a single narrow card, outside
+   the app Layout. Sized for the ~520px popup Noah opens it in. */
+
+.upload-relay {
+  min-height: 100dvh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 24px 16px;
+  background: var(--bg-root);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+}
+
+.upload-relay-card {
+  width: 100%;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+}
+
+.upload-relay-card .error-banner {
+  margin-bottom: 0;
+}
+
+.upload-relay-title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/* Who gets the files: the one thing the user must read before uploading. */
+.upload-relay-recipient {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 35%, transparent);
+  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+  font-size: 13px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.upload-relay-recipient strong {
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+/* Signed in, but no app role yet: nothing can be sent until an admin approves. */
+.upload-relay-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--accent-yellow) 35%, transparent);
+  background: color-mix(in srgb, var(--accent-yellow) 8%, transparent);
+  font-size: 13px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.upload-relay-pending strong {
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+.upload-relay-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 16px;
+  border: 1px dashed var(--border-hover);
+  border-radius: var(--radius-md);
+  text-align: center;
+  color: var(--text-secondary);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.upload-relay-drop--over {
+  border-color: var(--accent-blue);
+  background: color-mix(in srgb, var(--accent-blue) 6%, transparent);
+}
+
+.upload-relay-pick {
+  min-height: 40px;
+  position: relative;
+}
+
+.upload-relay-pick:focus-within {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+.upload-relay-limits,
+.upload-relay-hint,
+.upload-relay-account {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.upload-relay-files {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.upload-relay-file {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  font-size: 13px;
+}
+
+.upload-relay-file-name {
+  overflow-wrap: anywhere;
+}
+
+.upload-relay-file-size {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.upload-relay-file-status {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.upload-relay-file--done .upload-relay-file-status {
+  color: var(--status-success);
+}
+
+.upload-relay-file--refused {
+  border-color: color-mix(in srgb, var(--accent-red) 30%, transparent);
+}
+
+.upload-relay-file--refused .upload-relay-file-status {
+  color: var(--accent-red);
+}
+
+.upload-relay-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.upload-relay-actions .btn {
+  min-height: 40px;
+}
+
+/* The last button (close) sits at the far end; the ones before it stay left. */
+.upload-relay-actions .btn:last-child {
+  margin-left: auto;
+}

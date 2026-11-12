@@ -1,6 +1,6 @@
 import logging
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -133,6 +133,30 @@ class Settings(BaseSettings):
     # Bifrost keeps its own sessions for 30 days; the service logs out each one
     # it handed to a browser this many hours after the sign-in.
     BIFROST_SSO_SESSION_HOURS: int = Field(8, ge=1, le=720)
+    # Upload relay (app/routers/upload_relay.py): a Noah user picks a file on
+    # UniBridge's /upload-relay page, UniBridge holds it for a few minutes and
+    # the Noah server collects it. The secret is shared with that Noah
+    # deployment: it signs Noah's upload tickets and Noah's collect requests.
+    # Empty = the relay is off (every relay endpoint answers 503).
+    UPLOAD_RELAY_SECRET: str = ""
+    # Largest file one upload may carry, whatever the ticket allows. Keep it
+    # below the proxies' client_max_body_size (100m).
+    UPLOAD_RELAY_MAX_FILE_BYTES: int = Field(32 * 1024 * 1024, ge=1, le=90 * 1024 * 1024)
+    # How long an uploaded file waits for Noah before it is deleted.
+    UPLOAD_RELAY_FILE_TTL_SECONDS: int = Field(600, ge=30, le=86400)
+    # Bytes waiting for Noah across all tickets; an upload beyond it gets 503.
+    UPLOAD_RELAY_MAX_PENDING_BYTES: int = Field(1024 * 1024 * 1024, ge=1)
+    # Bytes waiting for one Noah user, across all of that user's tickets; an
+    # upload beyond it gets 429. Keeps one user (a ticket is free to mint) from
+    # filling the shared budget above and shutting everyone else out.
+    UPLOAD_RELAY_MAX_PENDING_BYTES_PER_USER: int = Field(256 * 1024 * 1024, ge=1)
+
+    @field_validator("UPLOAD_RELAY_SECRET", mode="before")
+    @classmethod
+    def _strip_upload_relay_secret(cls, value: object) -> object:
+        # Noah trims its copy of the secret; a trailing newline or space in
+        # this .env would otherwise make every signature differ.
+        return value.strip() if isinstance(value, str) else value
     # The virtual key the /api/llm routes inject as x-bf-vk: the one credential
     # Bifrost accepts on inference, so it must be the value the bifrost container
     # runs with. The name is from the side-by-side test; production .env files
@@ -271,6 +295,13 @@ def validate_settings() -> None:
         raise RuntimeError(
             "APISIX_INTERNAL_PROXY_SECRET is not set. "
             "Generate a dedicated value with: "
+            "python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+        )
+    # Optional, but a short one is a guessable signing key for upload tickets.
+    if settings.UPLOAD_RELAY_SECRET and len(settings.UPLOAD_RELAY_SECRET) < 32:
+        raise RuntimeError(
+            "UPLOAD_RELAY_SECRET is shorter than 32 characters. Leave it empty to "
+            "keep the upload relay off, or generate one with: "
             "python -c \"import secrets; print(secrets.token_urlsafe(32))\""
         )
     if settings.APISIX_INTERNAL_PROXY_SECRET == settings.APISIX_ADMIN_KEY:

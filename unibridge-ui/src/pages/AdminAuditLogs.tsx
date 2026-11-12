@@ -29,6 +29,7 @@ const RESOURCE_TYPES = [
   'user_role',
   'config_import',
   'bifrost_session',
+  'upload_relay',
 ] as const;
 
 const RESOURCE_TYPE_LABEL_KEYS: Record<string, string> = {
@@ -52,6 +53,7 @@ const RESOURCE_TYPE_LABEL_KEYS: Record<string, string> = {
   user_role: 'adminAuditLogs.resourceTypeUserRole',
   config_import: 'adminAuditLogs.resourceTypeConfigImport',
   bifrost_session: 'adminAuditLogs.resourceTypeBifrostSession',
+  upload_relay: 'adminAuditLogs.resourceTypeUploadRelay',
 };
 
 /** Human label for a resource type; unknown types render as-is. */

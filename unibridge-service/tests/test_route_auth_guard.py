@@ -81,6 +81,14 @@ HANDLER_AUTH_ROUTES = {
     # credential is the one-time code (single use, 60 s) that an admin's own
     # authenticated POST /admin/bifrost/sso-handoff minted moments before.
     ("GET", "/bifrost/sso"): "_redeem_code",
+    # Upload relay, Noah-server side (app/routers/upload_relay.py): the caller
+    # is the Noah server collecting the files its users uploaded, never a
+    # browser. Each request carries an HMAC of method, path and timestamp
+    # under UPLOAD_RELAY_SECRET; 503 while that setting is empty. (The
+    # browser-side relay routes are ordinary get_current_user routes.)
+    ("GET", "/upload-relay/tickets/{tid}/files"): "_verify_noah_signature",
+    ("GET", "/upload-relay/files/{file_id}"): "_verify_noah_signature",
+    ("POST", "/upload-relay/files/{file_id}/ack"): "_verify_noah_signature",
 }
 
 
