@@ -197,12 +197,17 @@ export default function UploadRelay() {
   }
 
   const batch = rows.filter((row) => row.key >= batchStart);
-  const awaitingNoah =
+  const busy = rows.some((row) => row.state === 'queued' || row.state === 'uploading');
+  // The batch is still on its way to closing the window: nothing in it was
+  // turned away, and this page has not stopped asking Noah about it.
+  const onItsWay =
     phase.kind === 'ready' &&
     settledBatch !== batchStart &&
     batch.length > 0 &&
-    batch.every((row) => row.state === 'done') &&
-    !rows.some((row) => row.state === 'queued' || row.state === 'uploading');
+    batch.every((row) => row.state !== 'refused');
+  const awaitingNoah = onItsWay && !busy;
+  // What the page is doing between the pick and the close, said in one place.
+  const progress = busy ? 'uploading' : awaitingNoah ? 'sending' : delivered ? 'delivered' : null;
 
   // Every upload of the batch went through: ask until Noah has taken them all
   // (the ticket holds nothing), then close. Given up on quietly — the window
@@ -382,26 +387,34 @@ export default function UploadRelay() {
           </div>
         )}
 
-        {rows.length > 0 && (
-          <ul className="upload-relay-files" aria-live="polite" aria-label={t('uploadRelay.filesLabel')}>
-            {rows.map((row) => (
-              <li key={row.key} className={`upload-relay-file upload-relay-file--${row.state}`}>
-                <span className="upload-relay-file-name">{row.name}</span>
-                <span className="upload-relay-file-size">{formatBytes(row.size)}</span>
-                <span className="upload-relay-file-status">
-                  {row.state === 'refused'
-                    ? t('uploadRelay.status.refused', { reason: t(`uploadRelay.problem.${row.problem ?? 'unknown'}`) })
-                    : t(`uploadRelay.status.${row.state}`)}
-                </span>
-              </li>
-            ))}
-          </ul>
+        {progress && (
+          <div className={`upload-relay-progress upload-relay-progress--${progress}`} role="status" aria-live="polite">
+            {progress !== 'delivered' && <span className="page-status__spinner" aria-hidden="true" />}
+            <div className="upload-relay-progress-text">
+              <strong>{t(`uploadRelay.progress.${progress}`)}</strong>
+              {progress !== 'delivered' && onItsWay && <span>{t('uploadRelay.progress.autoClose')}</span>}
+            </div>
+          </div>
         )}
 
-        {(awaitingNoah || delivered) && (
-          <p className="upload-relay-hint" role="status" aria-live="polite">
-            {t(delivered ? 'uploadRelay.autoClose.delivered' : 'uploadRelay.autoClose.waiting')}
-          </p>
+        {rows.length > 0 && (
+          <ul className="upload-relay-files" aria-live="polite" aria-label={t('uploadRelay.filesLabel')}>
+            {rows.map((row) => {
+              // Uploaded here, and Noah is still being asked whether it has it.
+              const state = row.state === 'done' && onItsWay && row.key >= batchStart ? 'sending' : row.state;
+              return (
+                <li key={row.key} className={`upload-relay-file upload-relay-file--${state}`}>
+                  <span className="upload-relay-file-name">{row.name}</span>
+                  <span className="upload-relay-file-size">{formatBytes(row.size)}</span>
+                  <span className="upload-relay-file-status">
+                    {state === 'refused'
+                      ? t('uploadRelay.status.refused', { reason: t(`uploadRelay.problem.${row.problem ?? 'unknown'}`) })
+                      : t(`uploadRelay.status.${state}`)}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
         )}
 
         <p className="upload-relay-hint">{t('uploadRelay.auditNote')}</p>

@@ -220,7 +220,7 @@ describe('UploadRelay', () => {
     fireEvent.drop(drop, { dataTransfer: { files: [file('a.pdf')] } });
 
     expect(drop.className).not.toContain('upload-relay-drop--over');
-    expect(await screen.findByText('Sent · check the Noah message box')).toBeInTheDocument();
+    expect(await screen.findByText('Sending to Noah...')).toBeInTheDocument();
   });
 
   it('stops taking files once the upload has run out of time', async () => {
@@ -498,7 +498,8 @@ describe('UploadRelay', () => {
   describe('closing by itself once Noah has the files', () => {
     const STORED = { status: 201, body: { id: 'f1', name: 'a.pdf', size: 10, sha256: 'x' } };
     const holding = (files: number): Reply => ({ status: 200, body: { ...INFO, remainingFiles: INFO.maxFiles - files } });
-    const waiting = 'This window closes by itself once Noah has the files.';
+    const waiting = 'Sending to the Noah server...';
+    const autoClose = 'This window closes by itself when that is done.';
     const ticketCalls = (calls: { path: string }[]) => calls.filter((call) => call.path === '/_api/upload-relay/ticket').length;
 
     /** The page with fake timers on, so the once-a-second look can be stepped. */
@@ -523,6 +524,10 @@ describe('UploadRelay', () => {
       await userEvent.upload(picker(), [file('a.pdf'), file('b.png')]);
       expect(await screen.findByText(waiting)).toBeInTheDocument();
       expect(ticketCalls(calls)).toBe(1);
+      // Said once, with the promise to close, and on each file's own row.
+      expect(screen.getByRole('status')).toHaveTextContent(autoClose);
+      expect(screen.getAllByText('Sending to Noah...')).toHaveLength(2);
+      expect(screen.queryByText('Sent · check the Noah message box')).not.toBeInTheDocument();
 
       await tick(2);
       expect(close).not.toHaveBeenCalled();
@@ -531,8 +536,10 @@ describe('UploadRelay', () => {
       expect(ticketCalls(calls)).toBe(4);
 
       // A browser that kept the window open says the files arrived, and stops asking.
-      expect(screen.getByText('Noah has the files. You can close this window.')).toBeInTheDocument();
+      expect(screen.getByRole('status')).toHaveTextContent('Noah has the files. You can close this window.');
+      expect(screen.getByRole('status')).not.toHaveTextContent(autoClose);
       expect(screen.queryByText(waiting)).not.toBeInTheDocument();
+      expect(screen.getAllByText('Sent · check the Noah message box')).toHaveLength(2);
       await tick(3);
       expect(ticketCalls(calls)).toBe(4);
     });
@@ -554,6 +561,10 @@ describe('UploadRelay', () => {
 
       await userEvent.upload(picker(), [file('a.pdf'), file('b.png')]);
       await screen.findByText('Uploading...');
+      // Still uploading: the page says so, and the finished file is not called sent yet.
+      expect(screen.getByRole('status')).toHaveTextContent('Uploading your files...');
+      expect(screen.getByRole('status')).toHaveTextContent(autoClose);
+      expect(await screen.findByText('Sending to Noah...')).toBeInTheDocument();
       await tick(3);
       expect(ticketCalls(calls)).toBe(1);
       expect(close).not.toHaveBeenCalled();
@@ -574,6 +585,9 @@ describe('UploadRelay', () => {
       await tick(3);
 
       expect(screen.queryByText(waiting)).not.toBeInTheDocument();
+      expect(screen.queryByRole('status')).not.toBeInTheDocument();
+      expect(screen.queryByText(autoClose)).not.toBeInTheDocument();
+      expect(screen.getByText('Sent · check the Noah message box')).toBeInTheDocument();
       expect(ticketCalls(calls)).toBe(1);
       expect(close).not.toHaveBeenCalled();
     });

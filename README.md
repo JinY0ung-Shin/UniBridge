@@ -319,6 +319,8 @@ the Noah app's is not. The relay lets a Noah user attach such a file anyway:
    holds none — the acknowledgement in step 3 is what empties it. It stays
    open when a file of the batch was turned away (the reason is on the page)
    or when Noah does not collect in that time.
+   From the pick to the close the page says what it is doing: uploading,
+   then sending to the Noah server (each file's row says the same).
 
 Set the same `UPLOAD_RELAY_SECRET` (32 characters or more) here and in Noah.
 It signs Noah's tickets and Noah's collect requests (HMAC-SHA256); with it
