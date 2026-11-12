@@ -74,6 +74,8 @@ function picker(): HTMLInputElement {
 }
 
 describe('UploadRelay', () => {
+  let close: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     window.sessionStorage.clear();
     keycloakMock.init.mockReset().mockResolvedValue(true);
@@ -84,11 +86,14 @@ describe('UploadRelay', () => {
     keycloakMock.tokenParsed = { preferred_username: 'operator', roles: ['user'] };
     keycloakMock.onTokenExpired = undefined;
     vi.mocked(reloadPage).mockClear();
+    // jsdom's close() tears the window down; every test only observes it.
+    close = vi.spyOn(window, 'close').mockImplementation(() => {});
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
+    close.mockRestore();
   });
 
   it('moves the ticket out of the address bar before Keycloak starts', async () => {
@@ -483,12 +488,171 @@ describe('UploadRelay', () => {
   });
 
   it('closes the window from the close button', async () => {
-    const close = vi.spyOn(window, 'close').mockImplementation(() => {});
     await ready();
 
     await userEvent.click(screen.getByRole('button', { name: 'Close window' }));
 
     expect(close).toHaveBeenCalledTimes(1);
-    close.mockRestore();
+  });
+
+  describe('closing by itself once Noah has the files', () => {
+    const STORED = { status: 201, body: { id: 'f1', name: 'a.pdf', size: 10, sha256: 'x' } };
+    const holding = (files: number): Reply => ({ status: 200, body: { ...INFO, remainingFiles: INFO.maxFiles - files } });
+    const waiting = 'This window closes by itself once Noah has the files.';
+    const ticketCalls = (calls: { path: string }[]) => calls.filter((call) => call.path === '/_api/upload-relay/ticket').length;
+
+    /** The page with fake timers on, so the once-a-second look can be stepped. */
+    async function readyWithClock(replies: Record<string, Reply[]>) {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      return ready(replies);
+    }
+
+    async function tick(times = 1) {
+      for (let i = 0; i < times; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+      }
+    }
+
+    it('waits while the ticket still holds a file, and closes when it holds none', async () => {
+      const calls = await readyWithClock({
+        // Opening the page, then: both files there, one collected, both collected.
+        '/_api/upload-relay/ticket': [holding(0), holding(2), holding(1), holding(0)],
+        '/_api/upload-relay/files': [STORED],
+      });
+
+      await userEvent.upload(picker(), [file('a.pdf'), file('b.png')]);
+      expect(await screen.findByText(waiting)).toBeInTheDocument();
+      expect(ticketCalls(calls)).toBe(1);
+
+      await tick(2);
+      expect(close).not.toHaveBeenCalled();
+      await tick();
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(ticketCalls(calls)).toBe(4);
+
+      // A browser that kept the window open says the files arrived, and stops asking.
+      expect(screen.getByText('Noah has the files. You can close this window.')).toBeInTheDocument();
+      expect(screen.queryByText(waiting)).not.toBeInTheDocument();
+      await tick(3);
+      expect(ticketCalls(calls)).toBe(4);
+    });
+
+    it('does not ask before the last upload of the batch has finished', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const calls = await readyWithClock({ '/_api/upload-relay/ticket': [holding(0)] });
+      const fetchMock = vi.mocked(globalThis.fetch);
+      const answer = fetchMock.getMockImplementation()!;
+      let uploads = 0;
+      fetchMock.mockImplementation(async (input, init) => {
+        if (String(input) !== '/_api/upload-relay/files') return answer(input, init);
+        uploads += 1;
+        // The second file is still going up while Noah collects the first.
+        if (uploads === 2) await gate;
+        return new Response(JSON.stringify(STORED.body), { status: 201 });
+      });
+
+      await userEvent.upload(picker(), [file('a.pdf'), file('b.png')]);
+      await screen.findByText('Uploading...');
+      await tick(3);
+      expect(ticketCalls(calls)).toBe(1);
+      expect(close).not.toHaveBeenCalled();
+
+      release();
+      await screen.findByText(waiting);
+      await tick();
+      expect(close).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays open when a file of the batch was turned away', async () => {
+      const calls = await readyWithClock({
+        '/_api/upload-relay/files': [STORED, { status: 413, body: { detail: 'The file is larger than this upload allows' } }],
+      });
+
+      await userEvent.upload(picker(), [file('a.pdf'), file('b.png')]);
+      await screen.findByText('Not uploaded: The file is too large.');
+      await tick(3);
+
+      expect(screen.queryByText(waiting)).not.toBeInTheDocument();
+      expect(ticketCalls(calls)).toBe(1);
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    it('judges a later batch on its own, whatever an earlier one came to', async () => {
+      await readyWithClock({ '/_api/upload-relay/files': [STORED] });
+
+      fireEvent.change(picker(), { target: { files: [file('notes.txt')] } });
+      await screen.findByText('Not uploaded: This type of file cannot be uploaded here.');
+      await tick(2);
+      expect(close).not.toHaveBeenCalled();
+
+      fireEvent.change(picker(), { target: { files: [file('a.pdf')] } });
+      await screen.findByText(waiting);
+      await tick();
+      expect(close).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives up quietly when Noah does not come for the files', async () => {
+      const calls = await readyWithClock({
+        '/_api/upload-relay/ticket': [holding(0), holding(1)],
+        '/_api/upload-relay/files': [STORED],
+      });
+
+      await userEvent.upload(picker(), file('a.pdf'));
+      await screen.findByText(waiting);
+      await tick(40);
+
+      expect(close).not.toHaveBeenCalled();
+      expect(ticketCalls(calls)).toBe(31);
+      expect(screen.queryByText(waiting)).not.toBeInTheDocument();
+      expect(screen.getByText('Sent · check the Noah message box')).toBeInTheDocument();
+    });
+
+    it('keeps asking through a network blip', async () => {
+      await readyWithClock({
+        '/_api/upload-relay/ticket': [holding(0), new TypeError('Failed to fetch'), holding(0)],
+        '/_api/upload-relay/files': [STORED],
+      });
+
+      await userEvent.upload(picker(), file('a.pdf'));
+      await screen.findByText(waiting);
+      await tick();
+      expect(close).not.toHaveBeenCalled();
+      await tick();
+      expect(close).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [410, 'This upload ticket has expired'],
+      [401, 'Token missing username or valid role'],
+    ])('stops asking once the ticket or the sign-in is gone (%i)', async (status, detail) => {
+      const calls = await readyWithClock({
+        '/_api/upload-relay/ticket': [holding(0), { status, body: { detail } }],
+        '/_api/upload-relay/files': [STORED],
+      });
+
+      await userEvent.upload(picker(), file('a.pdf'));
+      await screen.findByText(waiting);
+      await tick(4);
+
+      expect(ticketCalls(calls)).toBe(2);
+      expect(close).not.toHaveBeenCalled();
+      expect(screen.queryByText(waiting)).not.toBeInTheDocument();
+    });
+
+    it('stops asking when the page goes away', async () => {
+      const calls = await readyWithClock({
+        '/_api/upload-relay/ticket': [holding(0), holding(1)],
+        '/_api/upload-relay/files': [STORED],
+      });
+
+      await userEvent.upload(picker(), file('a.pdf'));
+      await screen.findByText(waiting);
+      await tick();
+      cleanup();
+      await tick(3);
+
+      expect(ticketCalls(calls)).toBe(2);
+    });
   });
 });

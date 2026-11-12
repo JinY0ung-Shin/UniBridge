@@ -2068,6 +2068,10 @@
     "pendingMessage": "A UniBridge administrator has to approve this account before it can send files to Noah. Once approved, press \"Check again\".",
     "reopenHint": "Press the attach button in a Noah conversation to open this page again.",
     "close": "Close window",
+    "autoClose": {
+      "waiting": "This window closes by itself once Noah has the files.",
+      "delivered": "Noah has the files. You can close this window."
+    },
     "status": {
       "queued": "Waiting",
       "uploading": "Uploading...",

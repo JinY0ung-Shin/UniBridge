@@ -313,6 +313,12 @@ the Noah app's is not. The relay lets a Noah user attach such a file anyway:
    A file that was never acknowledged is deleted when it expires. **UniBridge
    never connects to Noah**; the Noah server must be able to reach
    `https://<UniBridge>/_api/upload-relay/...`.
+4. The popup closes itself once Noah has the files: when every file of the
+   batch the user picked has been uploaded, the page asks once a second (for
+   up to 30 seconds) whether the ticket still holds a file, and closes when it
+   holds none — the acknowledgement in step 3 is what empties it. It stays
+   open when a file of the batch was turned away (the reason is on the page)
+   or when Noah does not collect in that time.
 
 Set the same `UPLOAD_RELAY_SECRET` (32 characters or more) here and in Noah.
 It signs Noah's tickets and Noah's collect requests (HMAC-SHA256); with it

@@ -11,7 +11,9 @@ See the repo-root `CLAUDE.md` for cross-service context. Served by nginx in prod
   plain `fetch`, and
   must move its `#t=` ticket to sessionStorage before `keycloak.init`. Noah reuses the popup, so
   a new `#t=` arrives as a `hashchange` (store it, reload); the expiry countdown uses the
-  server's `expiresInSeconds`, never the PC clock.
+  server's `expiresInSeconds`, never the PC clock. It closes itself once a batch is fully
+  uploaded AND the ticket holds no file (`remainingFiles` back at `maxFiles`: Noah's ack deletes
+  a file) — judged per batch, never while an upload is queued, never after a refused file.
 - `keycloak.ts`             — keycloak-js init (OIDC login/token).
 - `i18n.ts` + `locales/`    — i18next; keep both locale files in sync when adding strings.
 - `runtime-config.d.ts`     — types for runtime config injected at container start (not build time).

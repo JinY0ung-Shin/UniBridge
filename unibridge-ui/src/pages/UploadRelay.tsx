@@ -28,7 +28,25 @@ import './UploadRelay.css';
  * an app role sees the pending-approval state here and gets a 401 from the
  * backend. The login names the uploader; Noah's signed ticket says for whom.
  * It never touches window.opener.
+ *
+ * The window closes itself once Noah has the files. Only this page knows when
+ * a batch is complete (files go up one at a time, and Noah may collect the
+ * first while the second is still uploading), and the backend deletes a file
+ * when Noah acknowledges it, so "every upload of the batch succeeded and the
+ * ticket holds no file any more" means they all arrived. A batch with a file
+ * that was turned away stays open: its reason is on this page.
  */
+
+/** After a batch's last upload: how often, and how many times, the page asks whether Noah took the files. */
+const AUTO_CLOSE_POLL_MS = 1000;
+const AUTO_CLOSE_MAX_LOOKS = 30;
+/** Answers after which asking again is pointless: the ticket or the sign-in is gone. */
+const AUTO_CLOSE_FINAL_PROBLEMS: ReadonlySet<RelayProblem> = new Set([
+  'invalidTicket',
+  'expired',
+  'signedOut',
+  'notApproved',
+]);
 
 type Phase =
   | { kind: 'signingIn' }
@@ -86,6 +104,15 @@ export default function UploadRelay() {
   const [expired, setExpired] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [rechecking, setRechecking] = useState(false);
+  // The batch being judged for closing the window: the rows from this key on.
+  // A new batch starts with the first file added while nothing is uploading.
+  const [batchStart, setBatchStart] = useState(0);
+  // The batch this page has stopped asking Noah about (taken, or given up on).
+  const [settledBatch, setSettledBatch] = useState<number | null>(null);
+  // Noah took every file of the last batch (the window was told to close).
+  const [delivered, setDelivered] = useState(false);
+  // Uploads queued or running: read when files are added, so not state.
+  const uploading = useRef(0);
   const initCalled = useRef(false);
   const nextKey = useRef(1);
   // Files go up one at a time: the backend holds each in memory as it arrives.
@@ -140,11 +167,16 @@ export default function UploadRelay() {
     if (phase.kind !== 'ready' || expired || !ticket || !files.length) return;
     const { info } = phase;
     const added: FileRow[] = [];
+    if (uploading.current === 0) {
+      setBatchStart(nextKey.current);
+      setDelivered(false);
+    }
     for (const file of files) {
       const key = nextKey.current++;
       const problem = localProblem(file, info);
       added.push({ key, name: file.name, size: file.size, state: problem ? 'refused' : 'queued', problem: problem ?? undefined });
       if (problem) continue;
+      uploading.current += 1;
       queue.current = queue.current.then(async () => {
         patchRow(key, { state: 'uploading' });
         try {
@@ -156,11 +188,60 @@ export default function UploadRelay() {
           if (failure === 'expired') setExpired(true);
           // The role was taken away (or never was there) since the page opened.
           if (failure === 'notApproved') setPhase({ kind: 'pending' });
+        } finally {
+          uploading.current -= 1;
         }
       });
     }
     setRows((current) => [...current, ...added]);
   }
+
+  const batch = rows.filter((row) => row.key >= batchStart);
+  const awaitingNoah =
+    phase.kind === 'ready' &&
+    settledBatch !== batchStart &&
+    batch.length > 0 &&
+    batch.every((row) => row.state === 'done') &&
+    !rows.some((row) => row.state === 'queued' || row.state === 'uploading');
+
+  // Every upload of the batch went through: ask until Noah has taken them all
+  // (the ticket holds nothing), then close. Given up on quietly — the window
+  // just stays, as it did before — when Noah does not come for them.
+  useEffect(() => {
+    if (!awaitingNoah || !ticket) return;
+    let stopped = false;
+    let timer: number | undefined;
+    let looks = 0;
+    const look = async () => {
+      looks += 1;
+      try {
+        const info = await describeTicket(ticket, await freshToken());
+        if (stopped) return;
+        if (info.remainingFiles >= info.maxFiles) {
+          setDelivered(true);
+          setSettledBatch(batchStart);
+          window.close();
+          return;
+        }
+      } catch (error) {
+        if (stopped) return;
+        if (AUTO_CLOSE_FINAL_PROBLEMS.has(problemOf(error))) {
+          setSettledBatch(batchStart);
+          return;
+        }
+      }
+      if (looks >= AUTO_CLOSE_MAX_LOOKS) {
+        setSettledBatch(batchStart);
+        return;
+      }
+      timer = window.setTimeout(() => { void look(); }, AUTO_CLOSE_POLL_MS);
+    };
+    timer = window.setTimeout(() => { void look(); }, AUTO_CLOSE_POLL_MS);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [awaitingNoah, ticket, batchStart]);
 
   function onPick(event: ChangeEvent<HTMLInputElement>) {
     addFiles(Array.from(event.currentTarget.files ?? []));
@@ -315,6 +396,12 @@ export default function UploadRelay() {
               </li>
             ))}
           </ul>
+        )}
+
+        {(awaitingNoah || delivered) && (
+          <p className="upload-relay-hint" role="status" aria-live="polite">
+            {t(delivered ? 'uploadRelay.autoClose.delivered' : 'uploadRelay.autoClose.waiting')}
+          </p>
         )}
 
         <p className="upload-relay-hint">{t('uploadRelay.auditNote')}</p>
