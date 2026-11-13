@@ -64,12 +64,17 @@ const defaultSettings: McpSettings = {
     nas: true,
     network: true,
     apis: true,
+    artifacts: true,
     external: true,
   },
   excluded_templates: [],
   exposed_routes: [],
   max_rows: 200,
   max_result_bytes: 65536,
+  artifact_max_mb: 32,
+  artifact_ttl_seconds: 900,
+  artifact_key_mb: 256,
+  artifact_total_mb: 1024,
 };
 
 function makeKey(name: string): ApiKey {
@@ -97,6 +102,7 @@ const preview: McpPreview = {
     { group: 's3', enabled: true, granted: false, required_route: 's3-api' },
     { group: 'nas', enabled: false, granted: false, required_route: 'nas-api' },
     { group: 'apis', enabled: true, granted: true, required_route: '' },
+    { group: 'artifacts', enabled: true, granted: true, required_route: '' },
   ],
   tools: [
     { name: 'list_databases', title: 'List databases', description: 'Databases this key may query.', group: 'db_explore' },
@@ -258,12 +264,17 @@ describe('McpSettingsPage', () => {
         nas: true,
         network: true,
         apis: true,
+        artifacts: true,
         external: true,
       },
       excluded_templates: [],
       exposed_routes: [],
       max_rows: 50,
       max_result_bytes: 65536,
+      artifact_max_mb: 32,
+      artifact_ttl_seconds: 900,
+      artifact_key_mb: 256,
+      artifact_total_mb: 1024,
     });
     // The result shows in the bar, which stays in the window to report it.
     const saved = await screen.findByText('MCP settings saved.');
@@ -383,6 +394,70 @@ describe('McpSettingsPage', () => {
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
+  it('switches file artifacts off and saves their limits', async () => {
+    renderWithProviders(<McpSettingsPage />, { permissions: WRITE_PERMISSIONS });
+
+    const artifacts = await screen.findByRole('checkbox', {
+      name: 'File artifacts (download_artifact · upload_staged_artifacts)',
+    });
+    expect(artifacts).toBeChecked();
+    expect(screen.getByRole('spinbutton', { name: 'Max artifact size (MiB)' })).toHaveValue(32);
+    expect(screen.getByRole('spinbutton', { name: 'Keep a staged artifact for (seconds)' })).toHaveValue(900);
+    expect(screen.getByRole('spinbutton', { name: 'Max staged per API key (MiB)' })).toHaveValue(256);
+    expect(screen.getByRole('spinbutton', { name: 'Max staged in total (MiB)' })).toHaveValue(1024);
+
+    await userEvent.click(artifacts);
+    expect(screen.getByText('The File artifacts group is off, so MCP stages no files.')).toBeInTheDocument();
+    const changes: [string, string][] = [
+      ['Max artifact size (MiB)', '8'],
+      ['Keep a staged artifact for (seconds)', '300'],
+      ['Max staged per API key (MiB)', '64'],
+      ['Max staged in total (MiB)', '512'],
+    ];
+    for (const [name, value] of changes) {
+      const input = screen.getByRole('spinbutton', { name });
+      await userEvent.clear(input);
+      await userEvent.type(input, value);
+    }
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(mockedUpdateMcpSettings).toHaveBeenCalledTimes(1);
+    });
+    expect(mockedUpdateMcpSettings.mock.calls[0][0]).toEqual({
+      ...defaultSettings,
+      tool_groups: { ...defaultSettings.tool_groups, artifacts: false },
+      artifact_max_mb: 8,
+      artifact_ttl_seconds: 300,
+      artifact_key_mb: 64,
+      artifact_total_mb: 512,
+    });
+  });
+
+  it.each([
+    ['Max artifact size (MiB)', '91', 'Enter a whole number between 1 and 90.'],
+    ['Keep a staged artifact for (seconds)', '59', 'Enter a whole number between 60 and 86400.'],
+    ['Max staged per API key (MiB)', '4097', 'Enter a whole number between 1 and 4096.'],
+    ['Max staged in total (MiB)', '0', 'Enter a whole number between 1 and 16384.'],
+  ])('blocks saving when %s is out of range', async (name, value, message) => {
+    renderWithProviders(<McpSettingsPage />, { permissions: WRITE_PERMISSIONS });
+
+    const input = await screen.findByRole('spinbutton', { name });
+    await userEvent.clear(input);
+    await userEvent.type(input, value);
+
+    expect(screen.getByText(message)).toBeInTheDocument();
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(mockedUpdateMcpSettings).not.toHaveBeenCalled();
+
+    // Back in range: the hint returns and the change can be saved.
+    await userEvent.clear(input);
+    await userEvent.type(input, '70');
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+  });
+
   it('hides saving and disables inputs without admin.config.write', async () => {
     renderWithProviders(<McpSettingsPage />, { permissions: READ_PERMISSIONS });
 
@@ -410,6 +485,10 @@ describe('McpSettingsPage', () => {
     const groups = screen.getByRole('table', { name: 'Tool groups for this key' });
     expect(groups).toHaveTextContent('s3-api');
     expect(groups).toHaveTextContent("That route's grant");
+    // File artifacts have no route of their own: the row names the sources' grants.
+    const artifactsRow = within(groups).getByRole('row', { name: /File artifacts/ });
+    expect(artifactsRow).toHaveTextContent("The source's grant (s3-api, nas-api or an offered route)");
+    expect(artifactsRow.querySelector('code')).toBeNull();
     expect(screen.getByRole('table', { name: 'APIs for this key' })).toHaveTextContent('/api/orders/*');
     expect(screen.queryByText('This key lacks the mcp-api grant, so /api/mcp rejects it.')).not.toBeInTheDocument();
   });

@@ -439,6 +439,7 @@ export type McpToolGroup =
   | 'nas'
   | 'network'
   | 'apis'
+  | 'artifacts'
   | 'external';
 
 /** A gateway route offered through search_apis/call_api. */
@@ -457,6 +458,14 @@ export interface McpSettings {
   exposed_routes: McpExposedRoute[];
   max_rows: number;
   max_result_bytes: number;
+  /** Largest single artifact, MiB (download_artifact, POST /api/mcp/artifacts). */
+  artifact_max_mb: number;
+  /** How long a staged artifact is kept. */
+  artifact_ttl_seconds: number;
+  /** MiB one API key may hold staged at a time. */
+  artifact_key_mb: number;
+  /** MiB staged across all keys. */
+  artifact_total_mb: number;
 }
 
 export interface McpPreviewGroup {

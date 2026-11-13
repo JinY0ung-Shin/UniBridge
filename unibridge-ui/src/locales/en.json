@@ -1433,6 +1433,10 @@
         "label": "Gateway APIs (search_apis · call_api)",
         "hint": "Calls the gateway routes chosen below with GET or POST, for keys that hold each route's grant."
       },
+      "artifacts": {
+        "label": "File artifacts (download_artifact · upload_staged_artifacts)",
+        "hint": "Stages an S3 object, a NAS file or a gateway API's binary response on UniBridge for a short time and returns only its id, size, SHA-256 and type. The MCP host fetches the bytes from /api/mcp/artifacts/<id> with the same key, and can stage a local file there. Staged files can be posted as multipart/form-data to the gateway APIs chosen below. It has no grant of its own: each source needs its usual one (s3-api, nas-api or the offered route)."
+      },
       "external": {
         "label": "External MCP servers",
         "hint": "Approved tools of the external servers below, as <server>__<tool>, for keys that hold that server's mcp-ext-<name> grant."
@@ -1463,6 +1467,7 @@
     "apiDescription": "Notes for the model (optional)",
     "apiDescriptionPlaceholder": "e.g. what the API does, its main paths, where its docs are",
     "perRouteGrant": "That route's grant",
+    "artifactsSourceGrant": "The source's grant (s3-api, nas-api or an offered route)",
     "previewApisFailed": "The gateway routes could not be read, so the key's APIs are unknown.",
     "previewApiCount": "APIs for this key ({{count}})",
     "previewApisTable": "APIs for this key",
@@ -1480,6 +1485,17 @@
     "maxRowsHint": "1–10,000. Larger results are cut and marked truncated.",
     "maxResultBytes": "Max result size (bytes)",
     "maxResultBytesHint": "1,024–1,048,576. Applies to query results and file reads.",
+    "artifactLimitsSection": "File artifact limits",
+    "artifactLimitsHint": "Staged files stay on UniBridge until they expire. These limits bound how much is held at a time.",
+    "artifactsGroupOff": "The File artifacts group is off, so MCP stages no files.",
+    "artifactMaxMb": "Max artifact size (MiB)",
+    "artifactMaxMbHint": "1–90. A larger file is refused, never cut. The ceiling stays under the proxies' 100 MB request body limit.",
+    "artifactTtlSeconds": "Keep a staged artifact for (seconds)",
+    "artifactTtlSecondsHint": "60–86,400. After that the artifact is deleted and its id stops working.",
+    "artifactKeyMb": "Max staged per API key (MiB)",
+    "artifactKeyMbHint": "1–4,096. What one key may hold at a time. Beyond it, new artifacts are refused until older ones expire.",
+    "artifactTotalMb": "Max staged in total (MiB)",
+    "artifactTotalMbHint": "1–16,384. The sum across all keys.",
     "invalidRange": "Enter a whole number between {{min}} and {{max}}.",
     "unsavedChanges": "Unsaved MCP changes",
     "noChanges": "No MCP changes",
@@ -1494,7 +1510,7 @@
     "copy": "Copy",
     "copied": "Copied",
     "copyFailed": "Failed to copy to the clipboard.",
-    "grantNote": "Replace <API_KEY> with the key. The key needs the mcp-api route grant (API Key Management) plus the grant behind each tool group: query-api and the database for templates, DB exploration and SQL; s3-api for S3; nas-api for NAS; network-api for the network map (plus network-write-api to record); each offered route's own grant for gateway APIs; mcp-ext-<name> for an external MCP server's tools. Each tool call goes back out through the gateway on its REST route and is counted there (mcp-api is left out of counts); it uses two requests of the key's per-minute limit.",
+    "grantNote": "Replace <API_KEY> with the key. The key needs the mcp-api route grant (API Key Management) plus the grant behind each tool group: query-api and the database for templates, DB exploration and SQL; s3-api for S3; nas-api for NAS; network-api for the network map (plus network-write-api to record); each offered route's own grant for gateway APIs; the source's grant (s3-api, nas-api or the offered route) for file artifacts; mcp-ext-<name> for an external MCP server's tools. Each tool call goes back out through the gateway on its REST route and is counted there (mcp-api is left out of counts); it uses two requests of the key's per-minute limit.",
     "previewSection": "Tool preview",
     "previewHint": "See which tools an API key would get, and why a group is missing.",
     "previewKey": "API key",

@@ -29,13 +29,73 @@ const MCP_TOOL_GROUPS: McpToolGroup[] = [
   'nas',
   'network',
   'apis',
+  'artifacts',
   'external',
 ];
 
 const MAX_ROWS_RANGE = { min: 1, max: 10000 };
 const MAX_RESULT_BYTES_RANGE = { min: 1024, max: 1048576 };
+// One artifact stays under the proxies' 100m request body limit.
+const ARTIFACT_MAX_MB_RANGE = { min: 1, max: 90 };
+const ARTIFACT_TTL_SECONDS_RANGE = { min: 60, max: 86400 };
+const ARTIFACT_KEY_MB_RANGE = { min: 1, max: 4096 };
+const ARTIFACT_TOTAL_MB_RANGE = { min: 1, max: 16384 };
 
-function inRange(value: number, range: { min: number; max: number }): boolean {
+type Range = { min: number; max: number };
+type ArtifactLimit =
+  | 'artifact_max_mb'
+  | 'artifact_ttl_seconds'
+  | 'artifact_key_mb'
+  | 'artifact_total_mb';
+
+// Label and hint keys are spelled out so the locale files can be searched for them.
+const ARTIFACT_LIMITS: {
+  field: ArtifactLimit;
+  id: string;
+  range: Range;
+  label: string;
+  hint: string;
+}[] = [
+  {
+    field: 'artifact_max_mb',
+    id: 'mcp-artifact-max-mb',
+    range: ARTIFACT_MAX_MB_RANGE,
+    label: 'mcp.artifactMaxMb',
+    hint: 'mcp.artifactMaxMbHint',
+  },
+  {
+    field: 'artifact_ttl_seconds',
+    id: 'mcp-artifact-ttl-seconds',
+    range: ARTIFACT_TTL_SECONDS_RANGE,
+    label: 'mcp.artifactTtlSeconds',
+    hint: 'mcp.artifactTtlSecondsHint',
+  },
+  {
+    field: 'artifact_key_mb',
+    id: 'mcp-artifact-key-mb',
+    range: ARTIFACT_KEY_MB_RANGE,
+    label: 'mcp.artifactKeyMb',
+    hint: 'mcp.artifactKeyMbHint',
+  },
+  {
+    field: 'artifact_total_mb',
+    id: 'mcp-artifact-total-mb',
+    range: ARTIFACT_TOTAL_MB_RANGE,
+    label: 'mcp.artifactTotalMb',
+    hint: 'mcp.artifactTotalMbHint',
+  },
+];
+
+function artifactLimitsOf(settings: McpSettings): Record<ArtifactLimit, number> {
+  return {
+    artifact_max_mb: settings.artifact_max_mb,
+    artifact_ttl_seconds: settings.artifact_ttl_seconds,
+    artifact_key_mb: settings.artifact_key_mb,
+    artifact_total_mb: settings.artifact_total_mb,
+  };
+}
+
+function inRange(value: number, range: Range): boolean {
   return Number.isInteger(value) && value >= range.min && value <= range.max;
 }
 
@@ -49,6 +109,7 @@ function settingsKey(settings: McpSettings): string {
     ),
     settings.max_rows,
     settings.max_result_bytes,
+    ...ARTIFACT_LIMITS.map(({ field }) => settings[field]),
   ].join(':');
 }
 
@@ -428,6 +489,7 @@ function McpSettingsForm({ settings }: { settings: McpSettings }) {
   const [exposedRoutes, setExposedRoutes] = useState(settings.exposed_routes);
   const [maxRows, setMaxRows] = useState(settings.max_rows);
   const [maxResultBytes, setMaxResultBytes] = useState(settings.max_result_bytes);
+  const [artifactLimits, setArtifactLimits] = useState(() => artifactLimitsOf(settings));
 
   const draft: McpSettings = {
     enabled,
@@ -436,11 +498,15 @@ function McpSettingsForm({ settings }: { settings: McpSettings }) {
     exposed_routes: exposedRoutes,
     max_rows: maxRows,
     max_result_bytes: maxResultBytes,
+    ...artifactLimits,
   };
   const hasChanges = settingsKey(draft) !== settingsKey(settings);
   const maxRowsValid = inRange(maxRows, MAX_ROWS_RANGE);
   const maxResultBytesValid = inRange(maxResultBytes, MAX_RESULT_BYTES_RANGE);
-  const isValid = maxRowsValid && maxResultBytesValid;
+  const artifactLimitsValid = ARTIFACT_LIMITS.every(({ field, range }) =>
+    inRange(artifactLimits[field], range),
+  );
+  const isValid = maxRowsValid && maxResultBytesValid && artifactLimitsValid;
 
   function applySettings(next: McpSettings) {
     setEnabled(next.enabled);
@@ -449,6 +515,7 @@ function McpSettingsForm({ settings }: { settings: McpSettings }) {
     setExposedRoutes(next.exposed_routes);
     setMaxRows(next.max_rows);
     setMaxResultBytes(next.max_result_bytes);
+    setArtifactLimits(artifactLimitsOf(next));
   }
 
   const updateMut = useMutation({
@@ -568,6 +635,37 @@ function McpSettingsForm({ settings }: { settings: McpSettings }) {
             {maxResultBytesValid ? t('mcp.maxResultBytesHint') : t('mcp.invalidRange', MAX_RESULT_BYTES_RANGE)}
           </span>
         </div>
+      </div>
+
+      <div className="settings-card">
+        <h3>{t('mcp.artifactLimitsSection')}</h3>
+        <p className="form-hint mcp-section-hint">
+          {toolGroups.artifacts ? t('mcp.artifactLimitsHint') : t('mcp.artifactsGroupOff')}
+        </p>
+        {ARTIFACT_LIMITS.map(({ field, id, range, label, hint }) => {
+          const valid = inRange(artifactLimits[field], range);
+          return (
+            <div key={field} className="form-group">
+              <label htmlFor={id}>{t(label)}</label>
+              <input
+                id={id}
+                type="number"
+                min={range.min}
+                max={range.max}
+                value={artifactLimits[field]}
+                aria-invalid={!valid}
+                aria-describedby={`${id}-hint`}
+                onChange={(e) =>
+                  setArtifactLimits({ ...artifactLimits, [field]: Number(e.target.value) })
+                }
+                disabled={!canWrite}
+              />
+              <span id={`${id}-hint`} className={valid ? 'form-hint' : 'form-hint mcp-invalid'}>
+                {valid ? t(hint) : t('mcp.invalidRange', range)}
+              </span>
+            </div>
+          );
+        })}
       </div>
 
       {/* The form is several screens long and the page goes on below it with
@@ -794,9 +892,13 @@ function McpToolPreview() {
                     <td><YesNo value={group.enabled} /></td>
                     <td><YesNo value={group.granted} /></td>
                     <td>
-                      {group.group === 'apis'
-                        ? t('mcp.perRouteGrant')
-                        : <code>{group.required_route}</code>}
+                      {group.group === 'apis' ? (
+                        t('mcp.perRouteGrant')
+                      ) : group.group === 'artifacts' ? (
+                        t('mcp.artifactsSourceGrant')
+                      ) : (
+                        <code>{group.required_route}</code>
+                      )}
                     </td>
                   </tr>
                 ))}
