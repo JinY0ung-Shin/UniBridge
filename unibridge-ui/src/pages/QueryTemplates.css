@@ -144,9 +144,18 @@
   white-space: nowrap;
 }
 
+/* Two pills no longer fit beside the run count in a 280px list, so the count
+   sits on its own line under them. */
 .template-row-side {
   display: flex;
   flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.template-row-pills {
+  display: flex;
   align-items: center;
   gap: 6px;
 }
@@ -168,6 +177,10 @@
   color: var(--accent-red);
 }
 
+.template-detail-header .template-usage-summary--warning {
+  color: var(--accent-yellow);
+}
+
 .status-pill {
   flex: 0 0 auto;
   padding: 3px 7px;
@@ -186,6 +199,16 @@
   background: var(--bg-tertiary);
 }
 
+.status-pill--warning {
+  color: var(--accent-yellow);
+  background: color-mix(in srgb, var(--accent-yellow) 12%, transparent);
+}
+
+.status-pill--error {
+  color: var(--accent-red);
+  background: color-mix(in srgb, var(--accent-red) 12%, transparent);
+}
+
 .template-form {
   display: flex;
   flex-direction: column;
@@ -199,6 +222,7 @@
 }
 
 .template-sql-editor,
+.template-sample-editor,
 .template-run-panel textarea {
   width: 100%;
   padding: 12px;
@@ -213,9 +237,16 @@
 }
 
 .template-sql-editor:focus,
+.template-sample-editor:focus,
 .template-run-panel textarea:focus {
   outline: none;
   border-color: var(--accent-blue);
+}
+
+.template-field-error {
+  margin: 6px 0 0;
+  color: var(--accent-red);
+  font-size: 12px;
 }
 
 .template-parameter-help {

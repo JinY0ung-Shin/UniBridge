@@ -6,12 +6,14 @@ import {
   deleteQueryTemplate,
   executeQueryTemplate,
   getDatabases,
+  getQueryTemplateHealth,
   getQueryTemplates,
   getQueryTemplateUsage,
   updateQueryTemplate,
   type QueryResult,
   type QueryTemplate,
   type QueryTemplateCreate,
+  type QueryTemplateHealth,
   type QueryTemplateUpdate,
 } from '../api/client';
 import { usePermissions } from '../components/usePermissions';
@@ -28,7 +30,15 @@ interface TemplateFormState {
   default_limit: string;
   timeout: string;
   enabled: boolean;
+  /** JSON text; empty = no sample. */
+  sample_params: string;
+  monitor_enabled: boolean;
 }
+
+type SampleParams = Record<string, unknown>;
+
+/** What the run panel starts with for a template that has no sample. */
+const DEFAULT_RUN_PARAMS = '{\n  "id": 1\n}';
 
 const emptyForm: TemplateFormState = {
   path: '',
@@ -39,12 +49,16 @@ const emptyForm: TemplateFormState = {
   default_limit: '100',
   timeout: '',
   enabled: true,
+  sample_params: '',
+  monitor_enabled: true,
 };
 
 function errorMessage(err: unknown, fallback: string): string {
   if (err && typeof err === 'object' && 'response' in err) {
-    const axiosErr = err as { response?: { data?: { detail?: string } } };
-    return axiosErr.response?.data?.detail ?? fallback;
+    // A 422 carries a list of field errors, not a sentence: nothing to render as text.
+    const axiosErr = err as { response?: { data?: { detail?: unknown } } };
+    const detail = axiosErr.response?.data?.detail;
+    return typeof detail === 'string' && detail ? detail : fallback;
   }
   if (err instanceof Error) {
     return err.message;
@@ -62,7 +76,29 @@ function templateToForm(template: QueryTemplate): TemplateFormState {
     default_limit: template.default_limit ? String(template.default_limit) : '',
     timeout: template.timeout ? String(template.timeout) : '',
     enabled: template.enabled,
+    sample_params: formatSampleParams(template.sample_params),
+    monitor_enabled: template.monitor_enabled ?? true,
   };
+}
+
+function formatSampleParams(sample: SampleParams | null | undefined): string {
+  return sample == null ? '' : JSON.stringify(sample, null, 2);
+}
+
+/**
+ * The sample typed into the form: an object, null for an empty box, or
+ * undefined when the text is not a JSON object.
+ */
+function parseSampleParams(text: string): SampleParams | null | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') return undefined;
+    return parsed as SampleParams;
+  } catch {
+    return undefined;
+  }
 }
 
 function toNumberOrNull(value: string): number | null {
@@ -70,7 +106,7 @@ function toNumberOrNull(value: string): number | null {
   return trimmed ? Number(trimmed) : null;
 }
 
-function toCreatePayload(form: TemplateFormState): QueryTemplateCreate {
+function toCreatePayload(form: TemplateFormState, sample: SampleParams | null): QueryTemplateCreate {
   return {
     path: form.path.trim(),
     name: form.name.trim(),
@@ -80,10 +116,13 @@ function toCreatePayload(form: TemplateFormState): QueryTemplateCreate {
     default_limit: toNumberOrNull(form.default_limit),
     timeout: toNumberOrNull(form.timeout),
     enabled: form.enabled,
+    sample_params: sample,
+    monitor_enabled: form.monitor_enabled,
   };
 }
 
-function toUpdatePayload(form: TemplateFormState): QueryTemplateUpdate {
+// The sample always goes along on an edit: null is how an emptied box removes it.
+function toUpdatePayload(form: TemplateFormState, sample: SampleParams | null): QueryTemplateUpdate {
   return {
     name: form.name.trim(),
     description: form.description.trim(),
@@ -92,8 +131,19 @@ function toUpdatePayload(form: TemplateFormState): QueryTemplateUpdate {
     default_limit: toNumberOrNull(form.default_limit),
     timeout: toNumberOrNull(form.timeout),
     enabled: form.enabled,
+    sample_params: sample,
+    monitor_enabled: form.monitor_enabled,
   };
 }
+
+type SampleCheckState =
+  | { kind: 'noSample' }
+  | { kind: 'monitorOff' }
+  | { kind: 'loading' }
+  | { kind: 'unavailable' }
+  | { kind: 'periodicOff' }
+  | { kind: 'unchecked' }
+  | { kind: 'checked'; health: QueryTemplateHealth };
 
 function ResultTable({ result }: { result: QueryResult }) {
   const { t } = useTranslation();
@@ -159,7 +209,10 @@ function QueryTemplates() {
   const [form, setForm] = useState<TemplateFormState>(emptyForm);
   const [editingPath, setEditingPath] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [paramsText, setParamsText] = useState('{\n  "id": 1\n}');
+  const [sampleError, setSampleError] = useState(false);
+  // What the user typed into the run panel, kept only while the template it
+  // was typed for stays selected: a newly selected template starts from its sample.
+  const [paramsDraft, setParamsDraft] = useState<{ path: string; text: string } | null>(null);
   const [limit, setLimit] = useState('');
   const [timeout, setTimeoutValue] = useState('');
   const [result, setResult] = useState<QueryResult | null>(null);
@@ -183,6 +236,13 @@ function QueryTemplates() {
     staleTime: 60_000,
     enabled: canSeeUsage,
   });
+  const healthQuery = useQuery({
+    queryKey: ['query-template-health'],
+    queryFn: getQueryTemplateHealth,
+    refetchInterval: 60_000,
+  });
+  const periodicChecksOff = healthQuery.data?.interval_minutes === 0;
+
   const usageDays = usageQuery.data?.window_days ?? 7;
   const retentionDays = usageQuery.data?.retention_days ?? 0;
 
@@ -207,13 +267,19 @@ function QueryTemplates() {
     () => templates.find((template) => template.path === selectedPath) ?? templates[0],
     [selectedPath, templates],
   );
+  const paramsText =
+    selectedTemplate && paramsDraft?.path === selectedTemplate.path
+      ? paramsDraft.text
+      : selectedTemplate?.sample_params != null
+        ? formatSampleParams(selectedTemplate.sample_params)
+        : DEFAULT_RUN_PARAMS;
 
   const saveMutation = useMutation({
-    mutationFn: (payload: { path: string | null; form: TemplateFormState }) => {
+    mutationFn: (payload: { path: string | null; form: TemplateFormState; sample: SampleParams | null }) => {
       if (payload.path) {
-        return updateQueryTemplate(payload.path, toUpdatePayload(payload.form));
+        return updateQueryTemplate(payload.path, toUpdatePayload(payload.form, payload.sample));
       }
-      return createQueryTemplate(toCreatePayload(payload.form));
+      return createQueryTemplate(toCreatePayload(payload.form, payload.sample));
     },
     onSuccess: (saved) => {
       queryClient.setQueryData<QueryTemplate[]>(['query-templates'], (current) => {
@@ -222,15 +288,17 @@ function QueryTemplates() {
         if (existingIndex === -1) return [saved, ...templates];
         return templates.map((template, index) => (index === existingIndex ? saved : template));
       });
-      setSelectedPath(saved.path);
+      selectTemplate(saved.path);
       setEditingPath(null);
       setForm(emptyForm);
+      queryClient.invalidateQueries({ queryKey: ['query-template-health'] });
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: deleteQueryTemplate,
     onSuccess: async (_data, deletedPath) => {
+      queryClient.invalidateQueries({ queryKey: ['query-template-health'] });
       await queryClient.invalidateQueries({ queryKey: ['query-templates'] });
       if (selectedPath === deletedPath) {
         setSelectedPath(null);
@@ -276,6 +344,12 @@ function QueryTemplates() {
     },
   });
 
+  function selectTemplate(path: string) {
+    setSelectedPath(path);
+    // Typed run params belong to the template they were typed for.
+    setParamsDraft((draft) => (draft?.path === path ? draft : null));
+  }
+
   function updateForm<K extends keyof TemplateFormState>(key: K, value: TemplateFormState[K]) {
     setForm((current) => ({ ...current, [key]: value }));
   }
@@ -283,17 +357,24 @@ function QueryTemplates() {
   function handleEdit(template: QueryTemplate) {
     setEditingPath(template.path);
     setForm(templateToForm(template));
+    setSampleError(false);
   }
 
   function handleCancelEdit() {
     setEditingPath(null);
     setForm(emptyForm);
+    setSampleError(false);
   }
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!canWrite) return;
-    saveMutation.mutate({ path: editingPath, form });
+    const sample = parseSampleParams(form.sample_params);
+    if (sample === undefined) {
+      setSampleError(true);
+      return;
+    }
+    saveMutation.mutate({ path: editingPath, form, sample });
   }
 
   function handleDelete(template: QueryTemplate) {
@@ -329,6 +410,115 @@ function QueryTemplates() {
             })
           : t('queryTemplates.usageNone', { days: usageDays })}
         {truncated && ` ${t('queryTemplates.usageRetentionNote', { days: retentionDays })}`}
+      </p>
+    );
+  }
+
+  function sampleCheckState(template: QueryTemplate): SampleCheckState {
+    if (template.sample_params == null) return { kind: 'noSample' };
+    if (template.monitor_enabled === false) return { kind: 'monitorOff' };
+    if (healthQuery.isPending) return { kind: 'loading' };
+    if (!healthQuery.data) return { kind: 'unavailable' };
+    const health = healthQuery.data.templates[template.path];
+    if (health) return { kind: 'checked', health };
+    return periodicChecksOff ? { kind: 'periodicOff' } : { kind: 'unchecked' };
+  }
+
+  function renderHealthBadge(template: QueryTemplate) {
+    const state = sampleCheckState(template);
+    let tone = 'disabled';
+    let label: string;
+    let title: string;
+    switch (state.kind) {
+      case 'noSample':
+        label = t('queryTemplates.healthNoSample');
+        title = t('queryTemplates.healthNoSampleTitle');
+        break;
+      case 'monitorOff':
+        label = t('queryTemplates.healthOff');
+        title = t('queryTemplates.healthMonitorOffTitle');
+        break;
+      case 'loading':
+        label = '\u2026';
+        title = t('queryTemplates.healthLabel');
+        break;
+      case 'unavailable':
+        label = '\u2014';
+        title = t('queryTemplates.healthLoadFailed');
+        break;
+      case 'periodicOff':
+        label = t('queryTemplates.healthOff');
+        title = t('queryTemplates.healthPeriodicOffTitle');
+        break;
+      case 'unchecked':
+        label = t('queryTemplates.healthUnchecked');
+        title = t('queryTemplates.healthUncheckedTitle');
+        break;
+      case 'checked':
+        title = state.health.message;
+        if (state.health.level === 'ok') {
+          tone = 'active';
+          label = t('queryTemplates.healthOk');
+        } else if (state.health.level === 'warning') {
+          tone = 'warning';
+          label = state.health.reason === 'no_rows'
+            ? t('queryTemplates.healthNoRows')
+            : t('queryTemplates.healthWarning');
+        } else {
+          tone = 'error';
+          label = t('queryTemplates.healthError');
+        }
+        break;
+    }
+    return (
+      <span className={`status-pill status-pill--${tone} template-health-pill`} title={title}>
+        {label}
+      </span>
+    );
+  }
+
+  function renderHealthSummary(template: QueryTemplate) {
+    const state = sampleCheckState(template);
+    if (state.kind === 'loading') return null;
+    if (state.kind === 'unavailable') {
+      return (
+        <p className="template-usage-summary template-usage-summary--error">
+          {t('queryTemplates.healthLoadFailed')}
+        </p>
+      );
+    }
+    let tone = '';
+    let text: string;
+    if (state.kind === 'noSample') {
+      text = t('queryTemplates.healthSummaryNoSample');
+    } else if (state.kind === 'monitorOff') {
+      text = t('queryTemplates.healthSummaryMonitorOff');
+    } else if (state.kind === 'checked') {
+      const { health } = state;
+      if (health.level !== 'ok') tone = ` template-usage-summary--${health.level}`;
+      const levelKey = {
+        ok: 'queryTemplates.healthLevelOk',
+        warning: 'queryTemplates.healthLevelWarning',
+        error: 'queryTemplates.healthLevelError',
+      }[health.level];
+      text = [
+        t('queryTemplates.healthSummaryLevel', { level: levelKey ? t(levelKey) : health.level }),
+        health.message,
+        health.error,
+        health.row_count != null
+          && t('queryTemplates.healthSummaryRows', { formatted: health.row_count.toLocaleString() }),
+        health.elapsed_ms != null && `${health.elapsed_ms.toLocaleString()}ms`,
+        t('queryTemplates.healthSummaryChecked', { time: formatKST(health.checked_at) }),
+        health.alerting && t('queryTemplates.healthSummaryAlerting', { time: formatKST(health.since) }),
+      ].filter(Boolean).join(' \u00b7 ');
+    } else {
+      text = t('queryTemplates.healthSummaryUnchecked');
+    }
+    const periodicNote = periodicChecksOff && state.kind !== 'noSample' && state.kind !== 'monitorOff';
+    return (
+      <p className={`template-usage-summary${tone}`}>
+        {text}
+        {periodicNote && ` ${t('queryTemplates.healthSummaryPeriodicOff')}`}
       </p>
     );
   }
@@ -385,6 +575,7 @@ function QueryTemplates() {
               title={t('queryTemplates.refreshTemplates')}
               onClick={() => {
                 templatesQuery.refetch();
+                healthQuery.refetch();
                 if (canSeeUsage) usageQuery.refetch();
               }}
             >
@@ -410,13 +601,19 @@ function QueryTemplates() {
                   type="button"
                   className={`template-row ${selectedTemplate?.path === template.path ? 'template-row--active' : ''}`}
                   aria-pressed={selectedTemplate?.path === template.path}
-                  onClick={() => setSelectedPath(template.path)}
+                  onClick={() => selectTemplate(template.path)}
                 >
                   <span className="template-row-main">
                     <span className="template-row-name">{template.name}</span>
                     <span className="template-row-path">/api/query/templates/{template.path}</span>
                   </span>
                   <span className="template-row-side">
+                    <span className="template-row-pills">
+                      {renderHealthBadge(template)}
+                      <span className={`status-pill ${template.enabled ? 'status-pill--active' : 'status-pill--disabled'}`}>
+                        {template.enabled ? t('common.active') : t('common.disabled')}
+                      </span>
+                    </span>
                     {canSeeUsage && (
                       <span
                         className="template-usage-count"
@@ -425,9 +622,6 @@ function QueryTemplates() {
                         {renderRunCount(template.path)}
                       </span>
                     )}
-                    <span className={`status-pill ${template.enabled ? 'status-pill--active' : 'status-pill--disabled'}`}>
-                      {template.enabled ? t('common.active') : t('common.disabled')}
-                    </span>
                   </span>
                 </button>
               ))}
@@ -555,6 +749,30 @@ function QueryTemplates() {
               </div>
             </div>
 
+            <div className="form-group">
+              <label htmlFor="template-sample-params">{t('queryTemplates.sampleParams')}</label>
+              <textarea
+                id="template-sample-params"
+                className="template-sample-editor"
+                value={form.sample_params}
+                onChange={(event) => {
+                  updateForm('sample_params', event.target.value);
+                  setSampleError(false);
+                }}
+                rows={4}
+                spellCheck={false}
+                placeholder={'{"id": 1}'}
+                aria-invalid={sampleError}
+                aria-describedby="template-sample-params-help"
+              />
+              {sampleError && (
+                <p className="template-field-error" role="alert">{t('queryTemplates.sampleParamsInvalid')}</p>
+              )}
+              <div id="template-sample-params-help" className="template-parameter-help">
+                <p>{t('queryTemplates.sampleParamsHelp')}</p>
+              </div>
+            </div>
+
             <label className="template-toggle">
               <input
                 type="checkbox"
@@ -562,6 +780,15 @@ function QueryTemplates() {
                 onChange={(event) => updateForm('enabled', event.target.checked)}
               />
               <span>{t('queryTemplates.enabled')}</span>
+            </label>
+
+            <label className="template-toggle">
+              <input
+                type="checkbox"
+                checked={form.monitor_enabled}
+                onChange={(event) => updateForm('monitor_enabled', event.target.checked)}
+              />
+              <span>{t('queryTemplates.monitorEnabled')}</span>
             </label>
 
             <div className="template-form-actions">
@@ -592,6 +819,7 @@ function QueryTemplates() {
               <h2>{selectedTemplate.name}</h2>
               <span>/api/query/templates/{selectedTemplate.path}</span>
               {canSeeUsage && renderUsageSummary(selectedTemplate.path)}
+              {renderHealthSummary(selectedTemplate)}
             </div>
             <div className="template-detail-actions">
               <button
@@ -637,7 +865,7 @@ function QueryTemplates() {
                 <textarea
                   id="template-run-params"
                   value={paramsText}
-                  onChange={(event) => setParamsText(event.target.value)}
+                  onChange={(event) => setParamsDraft({ path: selectedTemplate.path, text: event.target.value })}
                   rows={7}
                   spellCheck={false}
                   aria-describedby="template-run-params-help"

@@ -5,12 +5,13 @@ vi.mock('../api/client', () => ({
   executeQueryTemplate: vi.fn(),
   getDatabases: vi.fn(),
   getQueryTemplateGuide: vi.fn(),
+  getQueryTemplateHealth: vi.fn(),
   getQueryTemplates: vi.fn(),
   getQueryTemplateUsage: vi.fn(),
   updateQueryTemplate: vi.fn(),
 }));
 
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
@@ -19,9 +20,11 @@ import {
   executeQueryTemplate,
   getDatabases,
   getQueryTemplateGuide,
+  getQueryTemplateHealth,
   getQueryTemplates,
   getQueryTemplateUsage,
   updateQueryTemplate,
+  type QueryTemplateHealth,
 } from '../api/client';
 import QueryTemplates from '../pages/QueryTemplates';
 import { ADMIN_PERMISSIONS, makeDatabase, renderWithProviders } from './helpers';
@@ -31,6 +34,7 @@ const mockedDeleteQueryTemplate = vi.mocked(deleteQueryTemplate);
 const mockedExecuteQueryTemplate = vi.mocked(executeQueryTemplate);
 const mockedGetDatabases = vi.mocked(getDatabases);
 const mockedGetQueryTemplateGuide = vi.mocked(getQueryTemplateGuide);
+const mockedGetQueryTemplateHealth = vi.mocked(getQueryTemplateHealth);
 const mockedGetQueryTemplates = vi.mocked(getQueryTemplates);
 const mockedGetQueryTemplateUsage = vi.mocked(getQueryTemplateUsage);
 const mockedUpdateQueryTemplate = vi.mocked(updateQueryTemplate);
@@ -45,9 +49,34 @@ const template = {
   default_limit: 50,
   timeout: null,
   enabled: true,
+  sample_params: null as Record<string, unknown> | null,
+  monitor_enabled: true,
   created_at: null,
   updated_at: null,
 };
+
+function makeHealth(overrides: Partial<QueryTemplateHealth> = {}): QueryTemplateHealth {
+  return {
+    level: 'ok',
+    reason: null,
+    message: 'Sample returned rows',
+    error: null,
+    row_count: 3,
+    elapsed_ms: 12,
+    checked_at: '2026-11-13T01:02:03Z',
+    alerting: false,
+    since: null,
+    ...overrides,
+  };
+}
+
+function listRow(path: string): HTMLElement {
+  return screen.getByRole('button', { name: new RegExp(`templates/${path}`) });
+}
+
+function healthPill(path: string): HTMLElement {
+  return listRow(path).querySelector('.template-health-pill') as HTMLElement;
+}
 
 type QueryResultFixture = {
   columns: string[];
@@ -63,6 +92,7 @@ describe('QueryTemplates', () => {
     mockedGetDatabases.mockResolvedValue([makeDatabase({ alias: 'maindb' })]);
     mockedGetQueryTemplates.mockResolvedValue([template]);
     mockedGetQueryTemplateUsage.mockResolvedValue({ window_days: 7, retention_days: 0, templates: {} });
+    mockedGetQueryTemplateHealth.mockResolvedValue({ interval_minutes: 10, templates: {} });
     mockedCreateQueryTemplate.mockResolvedValue(template);
     mockedUpdateQueryTemplate.mockResolvedValue(template);
     mockedDeleteQueryTemplate.mockResolvedValue(undefined);
@@ -314,6 +344,13 @@ describe('QueryTemplates', () => {
     const templatesUrl = `${window.location.origin}/api/query/templates`;
     expect(curlText).toContain(`curl -k -X PATCH \\`);
     expect(curlText).toContain(`"expected_updated_at": "<UPDATED_AT>"`);
+    // Create and edit both carry a sample.
+    expect(curlText).toContain(`"sample_params": {"since": "2026-01-01T00:00:00Z"}}'`);
+    expect(curlText).toContain(`"sample_params": {"since": "2026-06-01T00:00:00Z"}, "expected_updated_at"`);
+    expect(within(dialog).getByText(/"sample_params": null removes the sample/)).toBeInTheDocument();
+    expect(within(dialog).getByRole('row', { name: /GET \/api\/query\/templates / })).toHaveTextContent(
+      'sample_params',
+    );
     expect(curlText).toContain(`curl -k -X DELETE -H 'apikey: <YOUR_API_KEY>' \\\n  '${templatesUrl}/reports/new-users?expected_updated_at=<UPDATED_AT>'`);
     expect(within(dialog).getByRole('button', { name: 'cURL command copied' })).toHaveTextContent('Copied');
 
@@ -406,9 +443,311 @@ describe('QueryTemplates', () => {
           name: 'Orders report',
           database: 'maindb',
           enabled: true,
+          sample_params: null,
+          monitor_enabled: true,
         }),
       );
     });
+  });
+
+  it('sends the sample and the monitoring switch when creating a template', async () => {
+    const user = userEvent.setup();
+    mockedGetQueryTemplates.mockResolvedValue([]);
+
+    renderWithProviders(<QueryTemplates />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: 'maindb' })).toBeInTheDocument();
+    });
+    const sampleBox = screen.getByLabelText('Sample params (JSON)');
+    expect(sampleBox).toHaveValue('');
+    expect(sampleBox).toHaveAttribute('aria-describedby', 'template-sample-params-help');
+    expect(document.getElementById('template-sample-params-help')).toHaveTextContent(
+      'it must return at least one row',
+    );
+    expect(screen.getByLabelText('Monitor with sample')).toBeChecked();
+
+    await user.type(screen.getByLabelText('Path'), 'reports/orders');
+    await user.type(screen.getByLabelText('Name'), 'Orders report');
+    await user.selectOptions(screen.getByLabelText('Database'), 'maindb');
+    fireEvent.change(sampleBox, { target: { value: '{"id": 7, "tags": ["a"]}' } });
+    await user.click(screen.getByLabelText('Monitor with sample'));
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(mockedCreateQueryTemplate).toHaveBeenCalledTimes(1));
+    expect(mockedCreateQueryTemplate.mock.calls[0][0]).toEqual({
+      path: 'reports/orders',
+      name: 'Orders report',
+      description: '',
+      database: 'maindb',
+      sql: 'SELECT * FROM users WHERE id = :id',
+      default_limit: 100,
+      timeout: null,
+      enabled: true,
+      sample_params: { id: 7, tags: ['a'] },
+      monitor_enabled: false,
+    });
+    // A saved sample is checked right away, so the badges are fetched again.
+    await waitFor(() => expect(mockedGetQueryTemplateHealth).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not submit a sample that is not a JSON object', async () => {
+    const user = userEvent.setup();
+    mockedGetQueryTemplates.mockResolvedValue([]);
+
+    renderWithProviders(<QueryTemplates />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: 'maindb' })).toBeInTheDocument();
+    });
+    await user.type(screen.getByLabelText('Path'), 'reports/orders');
+    await user.type(screen.getByLabelText('Name'), 'Orders report');
+    await user.selectOptions(screen.getByLabelText('Database'), 'maindb');
+    const sampleBox = screen.getByLabelText('Sample params (JSON)');
+
+    for (const invalid of ['{"id": ', '[1, 2]', '"text"', 'null']) {
+      fireEvent.change(sampleBox, { target: { value: invalid } });
+      await user.click(screen.getByRole('button', { name: 'Create' }));
+      expect(screen.getByRole('alert')).toHaveTextContent('Sample params must be a JSON object');
+      expect(sampleBox).toHaveAttribute('aria-invalid', 'true');
+    }
+    expect(mockedCreateQueryTemplate).not.toHaveBeenCalled();
+
+    // Editing the box takes the message away; `{}` is a sample for a template without parameters.
+    fireEvent.change(sampleBox, { target: { value: '{}' } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(mockedCreateQueryTemplate).toHaveBeenCalledWith(expect.objectContaining({ sample_params: {} }));
+    });
+  });
+
+  it('shows why the backend refused a sample', async () => {
+    const user = userEvent.setup();
+    mockedGetQueryTemplates.mockResolvedValue([]);
+    mockedCreateQueryTemplate.mockRejectedValueOnce({
+      response: { data: { detail: 'The sample returned no rows' } },
+    });
+
+    renderWithProviders(<QueryTemplates />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: 'maindb' })).toBeInTheDocument();
+    });
+    await user.type(screen.getByLabelText('Path'), 'reports/orders');
+    await user.type(screen.getByLabelText('Name'), 'Orders report');
+    await user.selectOptions(screen.getByLabelText('Database'), 'maindb');
+    fireEvent.change(screen.getByLabelText('Sample params (JSON)'), { target: { value: '{"id": 0}' } });
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The sample returned no rows');
+    // The form keeps what was typed so the sample can be corrected.
+    expect(screen.getByLabelText('Sample params (JSON)')).toHaveValue('{"id": 0}');
+  });
+
+  it('loads the saved sample into the edit form and removes it when the box is emptied', async () => {
+    const user = userEvent.setup();
+    const sampled = { ...template, sample_params: { id: 42 }, monitor_enabled: false };
+    mockedGetQueryTemplates.mockResolvedValue([sampled]);
+    mockedUpdateQueryTemplate.mockResolvedValueOnce(sampled);
+
+    renderWithProviders(<QueryTemplates />);
+
+    await user.click(await screen.findByRole('button', { name: 'Edit query template "Users report"' }));
+    const sampleBox = screen.getByLabelText('Sample params (JSON)');
+    expect(sampleBox).toHaveValue('{\n  "id": 42\n}');
+    expect(screen.getByLabelText('Monitor with sample')).not.toBeChecked();
+
+    await user.click(screen.getByRole('button', { name: 'Update' }));
+    await waitFor(() => {
+      expect(mockedUpdateQueryTemplate).toHaveBeenLastCalledWith(
+        'reports/users',
+        expect.objectContaining({ sample_params: { id: 42 }, monitor_enabled: false }),
+      );
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Edit query template "Users report"' }));
+    await user.clear(screen.getByLabelText('Sample params (JSON)'));
+    await user.click(screen.getByLabelText('Monitor with sample'));
+    await user.click(screen.getByRole('button', { name: 'Update' }));
+
+    await waitFor(() => expect(mockedUpdateQueryTemplate).toHaveBeenCalledTimes(2));
+    expect(mockedUpdateQueryTemplate.mock.calls[1][1]).toEqual({
+      name: 'Users report',
+      description: 'Active users',
+      database: 'maindb',
+      sql: 'SELECT id, name FROM users WHERE id = :id',
+      default_limit: 50,
+      timeout: null,
+      enabled: true,
+      sample_params: null,
+      monitor_enabled: true,
+    });
+  });
+
+  it('shows a sample check badge per template and a summary for the selected one', async () => {
+    const user = userEvent.setup();
+    const sampled = { ...template, sample_params: { id: 1 } };
+    mockedGetQueryTemplates.mockResolvedValue([
+      { ...sampled, path: 'reports/ok', name: 'Ok report' },
+      { ...sampled, id: 2, path: 'reports/empty', name: 'Empty report' },
+      { ...sampled, id: 3, path: 'reports/broken', name: 'Broken report' },
+      { ...template, id: 4, path: 'reports/plain', name: 'Plain report' },
+      { ...sampled, id: 5, path: 'reports/new', name: 'New report' },
+      { ...sampled, id: 6, path: 'reports/paused', name: 'Paused report', monitor_enabled: false },
+    ]);
+    mockedGetQueryTemplateHealth.mockResolvedValue({
+      interval_minutes: 10,
+      templates: {
+        'reports/ok': makeHealth(),
+        'reports/empty': makeHealth({
+          level: 'warning',
+          reason: 'no_rows',
+          message: 'The sample returned no rows',
+          row_count: 0,
+          alerting: true,
+          since: '2026-11-13T00:00:00Z',
+        }),
+        'reports/broken': makeHealth({
+          level: 'error',
+          reason: 'query_error',
+          message: 'The sample run failed',
+          error: 'relation "users" does not exist',
+          row_count: null,
+          elapsed_ms: null,
+        }),
+        // A result left over from before monitoring was switched off.
+        'reports/paused': makeHealth({ level: 'error', reason: 'timeout', message: 'Timed out' }),
+      },
+    });
+
+    renderWithProviders(<QueryTemplates />);
+
+    await waitFor(() => expect(healthPill('reports/ok')).toHaveTextContent('Sample OK'));
+    expect(healthPill('reports/ok')).toHaveClass('status-pill--active');
+    expect(healthPill('reports/empty')).toHaveTextContent('0 rows');
+    expect(healthPill('reports/empty')).toHaveClass('status-pill--warning');
+    expect(healthPill('reports/empty')).toHaveAttribute('title', 'The sample returned no rows');
+    expect(healthPill('reports/broken')).toHaveTextContent('Sample error');
+    expect(healthPill('reports/broken')).toHaveClass('status-pill--error');
+    expect(healthPill('reports/plain')).toHaveTextContent('No sample');
+    expect(healthPill('reports/plain')).toHaveClass('status-pill--disabled');
+    expect(healthPill('reports/new')).toHaveTextContent('Not checked');
+    expect(healthPill('reports/paused')).toHaveTextContent('Check off');
+    expect(healthPill('reports/paused')).toHaveClass('status-pill--disabled');
+
+    const detail = document.querySelector('.template-detail-panel') as HTMLElement;
+    expect(
+      within(detail).getByText(/^Sample check: OK · Sample returned rows · 3 row\(s\) · 12ms · last checked 2026/),
+    ).toBeInTheDocument();
+
+    await user.click(listRow('reports/empty'));
+    const emptySummary = within(detail).getByText(/^Sample check: Warning · The sample returned no rows · 0 row/);
+    expect(emptySummary).toHaveTextContent(/alert open since 2026/);
+    expect(emptySummary).toHaveClass('template-usage-summary--warning');
+
+    await user.click(listRow('reports/broken'));
+    const brokenSummary = within(detail).getByText(/^Sample check: Error · The sample run failed/);
+    expect(brokenSummary).toHaveTextContent('relation "users" does not exist · last checked');
+    expect(brokenSummary).toHaveClass('template-usage-summary--error');
+
+    await user.click(listRow('reports/plain'));
+    expect(within(detail).getByText(/^Sample check: no sample is saved/)).toBeInTheDocument();
+
+    await user.click(listRow('reports/new'));
+    expect(within(detail).getByText('Sample check: not checked yet.')).toBeInTheDocument();
+
+    await user.click(listRow('reports/paused'));
+    expect(within(detail).getByText(/^Sample check: monitoring is switched off/)).toBeInTheDocument();
+  });
+
+  it('says so when periodic sample checks are switched off', async () => {
+    const user = userEvent.setup();
+    const sampled = { ...template, sample_params: { id: 1 } };
+    mockedGetQueryTemplates.mockResolvedValue([
+      { ...sampled, path: 'reports/ok', name: 'Ok report' },
+      { ...sampled, id: 2, path: 'reports/new', name: 'New report' },
+    ]);
+    mockedGetQueryTemplateHealth.mockResolvedValue({
+      interval_minutes: 0,
+      templates: { 'reports/ok': makeHealth() },
+    });
+
+    renderWithProviders(<QueryTemplates />);
+
+    // The last result stays on show; a template that was never checked is not "pending".
+    await waitFor(() => expect(healthPill('reports/ok')).toHaveTextContent('Sample OK'));
+    expect(healthPill('reports/new')).toHaveTextContent('Check off');
+    const detail = document.querySelector('.template-detail-panel') as HTMLElement;
+    expect(within(detail).getByText(/^Sample check: OK/)).toHaveTextContent(/Periodic checks are off\.$/);
+
+    await user.click(listRow('reports/new'));
+    expect(
+      within(detail).getByText('Sample check: not checked yet. Periodic checks are off.'),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps the page working when the sample check results cannot be loaded', async () => {
+    const user = userEvent.setup();
+    mockedGetQueryTemplates.mockResolvedValue([
+      { ...template, sample_params: { id: 1 } },
+      { ...template, id: 2, path: 'reports/plain', name: 'Plain report' },
+    ]);
+    mockedGetQueryTemplateHealth.mockRejectedValue(new Error('boom'));
+
+    renderWithProviders(<QueryTemplates />);
+
+    await waitFor(() => expect(healthPill('reports/users')).toHaveTextContent('—'));
+    // Whether a sample exists does not depend on the failed request.
+    expect(healthPill('reports/plain')).toHaveTextContent('No sample');
+    expect(screen.getByText('Could not load sample check results.')).toBeInTheDocument();
+    expect(screen.queryByText('Failed to load query templates.')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Run' }));
+    expect(await screen.findByText('Alice')).toBeInTheDocument();
+  });
+
+  it('prefills the run panel from the selected template sample without clobbering typed params', async () => {
+    const user = userEvent.setup();
+    mockedGetQueryTemplates.mockResolvedValue([
+      { ...template, sample_params: { id: 42, active: true } },
+      { ...template, id: 2, path: 'reports/orders', name: 'Orders report', sample_params: {} },
+      { ...template, id: 3, path: 'reports/plain', name: 'Plain report' },
+    ]);
+
+    renderWithProviders(<QueryTemplates />);
+
+    const paramsBox = await screen.findByRole('textbox', { name: 'Params JSON' });
+    expect(paramsBox).toHaveValue('{\n  "id": 42,\n  "active": true\n}');
+
+    await user.click(screen.getByRole('button', { name: 'Run' }));
+    await waitFor(() => {
+      expect(mockedExecuteQueryTemplate).toHaveBeenCalledWith('reports/users', {
+        params: { id: 42, active: true },
+        limit: undefined,
+        timeout: undefined,
+      });
+    });
+
+    await user.click(listRow('reports/orders'));
+    expect(paramsBox).toHaveValue('{}');
+    await user.click(listRow('reports/plain'));
+    expect(paramsBox).toHaveValue('{\n  "id": 1\n}');
+
+    // Typed params survive a refetch of the same template...
+    await user.click(listRow('reports/users'));
+    fireEvent.change(paramsBox, { target: { value: '{"id": 7}' } });
+    await user.click(screen.getByRole('button', { name: 'Refresh query templates' }));
+    await waitFor(() => expect(mockedGetQueryTemplates).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockedGetQueryTemplateHealth).toHaveBeenCalledTimes(2));
+    expect(paramsBox).toHaveValue('{"id": 7}');
+
+    // ...and another template starts from its own sample again.
+    await user.click(listRow('reports/orders'));
+    expect(paramsBox).toHaveValue('{}');
+    await user.click(listRow('reports/users'));
+    expect(paramsBox).toHaveValue('{\n  "id": 42,\n  "active": true\n}');
   });
 
   it('edits and deletes an existing template', async () => {

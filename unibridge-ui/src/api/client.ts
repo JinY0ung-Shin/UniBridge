@@ -237,6 +237,14 @@ export interface QueryTemplate {
   default_limit?: number | null;
   timeout?: number | null;
   enabled: boolean;
+  /**
+   * The params the template is run with when it is saved and by the periodic
+   * sample check. Null = no sample; `{}` is a sample for a template without
+   * parameters.
+   */
+  sample_params?: Record<string, unknown> | null;
+  /** False keeps the sample but leaves the template out of the periodic check. */
+  monitor_enabled?: boolean;
   created_at?: string | null;
   updated_at?: string | null;
 }
@@ -250,6 +258,8 @@ export interface QueryTemplateCreate {
   default_limit?: number | null;
   timeout?: number | null;
   enabled?: boolean;
+  sample_params?: Record<string, unknown> | null;
+  monitor_enabled?: boolean;
 }
 
 export interface QueryTemplateUpdate {
@@ -260,6 +270,9 @@ export interface QueryTemplateUpdate {
   default_limit?: number | null;
   timeout?: number | null;
   enabled?: boolean;
+  /** An object sets the sample, null removes it, leaving it out keeps it. */
+  sample_params?: Record<string, unknown> | null;
+  monitor_enabled?: boolean;
 }
 
 export interface QueryTemplateExecuteRequest {
@@ -704,6 +717,36 @@ export interface QueryTemplateUsageResponse {
 
 export async function getQueryTemplateUsage(): Promise<QueryTemplateUsageResponse> {
   const { data } = await client.get('/admin/query/template-usage');
+  return data;
+}
+
+export type QueryTemplateHealthLevel = 'ok' | 'warning' | 'error';
+
+/** Latest sample check of one template (`/admin/query/template-health`). */
+export interface QueryTemplateHealth {
+  level: QueryTemplateHealthLevel;
+  /** 'no_rows' | 'timeout' | 'query_error' | 'blocked', or null when the check passed. */
+  reason: string | null;
+  message: string;
+  /** Database error text for `query_error`. */
+  error: string | null;
+  row_count: number | null;
+  elapsed_ms: number | null;
+  checked_at: string | null;
+  /** An alert is open for this template. */
+  alerting: boolean;
+  since: string | null;
+}
+
+export interface QueryTemplateHealthResponse {
+  /** Minutes between periodic checks; 0 = switched off. */
+  interval_minutes: number;
+  /** Keyed by template path; templates that were never checked are absent. */
+  templates: Record<string, QueryTemplateHealth>;
+}
+
+export async function getQueryTemplateHealth(): Promise<QueryTemplateHealthResponse> {
+  const { data } = await client.get('/admin/query/template-health');
   return data;
 }
 
@@ -1408,6 +1451,8 @@ export interface AlertSettings {
   server_gpu_util_target_pct?: number;
   server_disk_forecast_hours?: number;
   repeat_alert_after_cycles?: number;
+  /** Minutes between query template sample checks; 0 switches them off. */
+  template_check_interval_minutes?: number;
   updated_at?: string | null;
 }
 

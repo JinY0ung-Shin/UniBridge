@@ -321,6 +321,11 @@
   color: var(--accent-red);
 }
 
+.rule-type-badge--template_health {
+  background: color-mix(in srgb, var(--accent-yellow) 12%, transparent);
+  color: var(--accent-yellow);
+}
+
 /* ── Modal form overrides ──────────────────────────────────────────────────── */
 
 .form-textarea {

@@ -218,7 +218,8 @@ describe('AlertHistory page', () => {
     const ruleSelect = screen.getByRole('combobox', { name: /Rule|규칙/i });
     expect(ruleSelect).toHaveAttribute('id', 'alert-history-rule-filter');
     // every rule identifier is offered, plus the "all" option
-    expect(ruleSelect.querySelectorAll('option')).toHaveLength(16);
+    expect(ruleSelect.querySelectorAll('option')).toHaveLength(17);
+    expect(within(ruleSelect).getByRole('option', { name: 'Template sample check' })).toHaveValue('template_health');
 
     fireEvent.change(ruleSelect, { target: { value: 'server_disk_forecast' } });
     fireEvent.click(screen.getByRole('button', { name: /Search|검색/i }));

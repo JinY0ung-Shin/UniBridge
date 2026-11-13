@@ -77,14 +77,14 @@ function AgentApiModal({ onClose }: { onClose: () => void }) {
     `  -H 'Content-Type: application/json' \\`,
     `  -H 'apikey: <YOUR_API_KEY>' \\`,
     `  '${base}/reports/new-users' \\`,
-    `  -d '{"name": "New users report", "database": "<DATABASE>", "sql": "SELECT id, name FROM users WHERE created_at >= :since"}'`,
+    `  -d '{"name": "New users report", "database": "<DATABASE>", "sql": "SELECT id, name FROM users WHERE created_at >= CAST(:since AS timestamptz)", "sample_params": {"since": "2026-01-01T00:00:00Z"}}'`,
     ``,
     `# ${t('queryTemplates.agentApiOpEdit')}`,
     `curl -k -X PATCH \\`,
     `  -H 'Content-Type: application/json' \\`,
     `  -H 'apikey: <YOUR_API_KEY>' \\`,
     `  '${base}/reports/new-users' \\`,
-    `  -d '{"description": "Users created since :since", "expected_updated_at": "<UPDATED_AT>"}'`,
+    `  -d '{"description": "Users created since :since", "sample_params": {"since": "2026-06-01T00:00:00Z"}, "expected_updated_at": "<UPDATED_AT>"}'`,
     ``,
     `# ${t('queryTemplates.agentApiOpDelete')}`,
     `curl -k -X DELETE -H 'apikey: <YOUR_API_KEY>' \\`,
@@ -207,6 +207,7 @@ function AgentApiModal({ onClose }: { onClose: () => void }) {
             </table>
           </div>
           <p className="agent-api-hint">{t('queryTemplates.agentApiConcurrencyNote')}</p>
+          <p className="agent-api-hint">{t('queryTemplates.agentApiSampleNote')}</p>
           <p className="agent-api-hint">{t('queryTemplates.agentApiDisabledNote')}</p>
         </section>
 

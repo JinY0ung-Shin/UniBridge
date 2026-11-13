@@ -36,6 +36,7 @@ const defaultSettings: AlertSettings = {
   server_gpu_util_target_pct: 0,
   server_disk_forecast_hours: 24,
   repeat_alert_after_cycles: 0,
+  template_check_interval_minutes: 1440,
 };
 
 type ServerSettingKey =
@@ -240,6 +241,7 @@ export default function AlertDeliveryPanel() {
       server_gpu_util_target_pct: settingsForm.server_gpu_util_target_pct,
       server_disk_forecast_hours: settingsForm.server_disk_forecast_hours,
       repeat_alert_after_cycles: settingsForm.repeat_alert_after_cycles,
+      template_check_interval_minutes: settingsForm.template_check_interval_minutes,
     });
   }
 
@@ -376,6 +378,26 @@ export default function AlertDeliveryPanel() {
               aria-describedby="resolve-after-successes-help"
             />
             <p id="resolve-after-successes-help" className="form-hint">{t('alerts.resolveAfterSuccessesHelp')}</p>
+          </div>
+          <div className="form-group">
+            <label htmlFor="template-check-interval">{t('alerts.templateCheckInterval')}</label>
+            <input
+              id="template-check-interval"
+              type="number"
+              min={0}
+              max={10080}
+              step={1}
+              value={settingsForm.template_check_interval_minutes}
+              disabled={!hasSettings || !canWrite}
+              onChange={(e) =>
+                setSettingsDraft((prev) => ({
+                  ...prev,
+                  template_check_interval_minutes: Number(e.target.value),
+                }))
+              }
+              aria-describedby="template-check-interval-help"
+            />
+            <p id="template-check-interval-help" className="form-hint">{t('alerts.templateCheckIntervalHelp')}</p>
           </div>
         </div>
 

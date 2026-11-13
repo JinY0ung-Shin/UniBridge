@@ -343,6 +343,30 @@ describe('AlertSettings page', () => {
     );
   });
 
+  it('delivery tab saves the template sample check interval', async () => {
+    mocks.getSettings.mockResolvedValue({ ...settingsFixture, template_check_interval_minutes: 15 });
+    renderWithProviders(<AlertSettings />);
+    goToDeliveryTab();
+    const intervalInput = await screen.findByLabelText(
+      /Template sample check interval \(minutes\)|템플릿 샘플 점검 주기 \(분\)/,
+    );
+    await waitFor(() => expect(intervalInput).toHaveValue(15));
+    expect(intervalInput).toHaveAttribute('min', '0');
+    expect(intervalInput).toHaveAttribute('max', '10080');
+    expect(intervalInput).toHaveAttribute('aria-describedby', 'template-check-interval-help');
+    expect(document.getElementById('template-check-interval-help')).toHaveTextContent(/0 = off|0 = 끔/);
+
+    await userEvent.clear(intervalInput);
+    await userEvent.type(intervalInput, '0');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Save Settings$|^설정 저장$/i }));
+
+    await waitFor(() => expect(mocks.updateSettings).toHaveBeenCalled());
+    expect(mocks.updateSettings.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ template_check_interval_minutes: 0 }),
+    );
+  });
+
   it('delivery tab saves the global GPU target utilization', async () => {
     renderWithProviders(<AlertSettings />);
     goToDeliveryTab();

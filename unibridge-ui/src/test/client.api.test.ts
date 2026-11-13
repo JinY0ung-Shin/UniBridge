@@ -201,6 +201,7 @@ describe('api client API helpers', () => {
     await mod.deleteQueryTemplate('reports/users');
     await mod.executeQueryTemplate('reports/users', { params: { active: true } });
     await mod.getQueryTemplateGuide();
+    await mod.getQueryTemplateHealth();
 
     expect(calls).toEqual([
       { method: 'get', url: '/admin/query/templates' },
@@ -209,6 +210,7 @@ describe('api client API helpers', () => {
       { method: 'delete', url: '/admin/query/templates/reports/users' },
       { method: 'post', url: '/query/templates/reports/users' },
       { method: 'get', url: '/query/templates/guide' },
+      { method: 'get', url: '/admin/query/template-health' },
     ]);
   });
 

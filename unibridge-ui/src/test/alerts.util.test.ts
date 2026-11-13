@@ -205,6 +205,11 @@ describe('ruleTypeLabel', () => {
     }
   });
 
+  it('offers the query template sample check as a rule filter', () => {
+    expect(RULE_TYPES).toContain('template_health');
+    expect(ruleTypeLabel(t, 'template_health')).toBe('alerts.typeTemplateHealth');
+  });
+
   it('falls back to the raw identifier for unknown rules', () => {
     expect(ruleTypeLabel(t, 'brand_new_rule')).toBe('brand_new_rule');
   });

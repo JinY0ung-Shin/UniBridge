@@ -45,6 +45,11 @@
   color: var(--accent-orange, #f59e0b);
 }
 
+.alert-status .rule-type-badge--template_health {
+  background: color-mix(in srgb, var(--accent-yellow) 12%, transparent);
+  color: var(--accent-yellow);
+}
+
 .severity-badge {
   display: inline-block;
   margin-left: 6px;
