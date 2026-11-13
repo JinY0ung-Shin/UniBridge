@@ -105,10 +105,14 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   `backup/lib/meta.sh` leaves that table's rows out of every backup. The page renders outside
   `AuthProvider` (`unibridge-ui/src/Root.tsx`) and shows its own pending-approval state.
 - **MCP artifacts** (`app/services/mcp_artifacts.py`; README "MCP server", File artifacts):
-  binary files never ride in tool JSON. `download_artifact` stages a copy in the meta DB
-  (`mcp_artifacts`, both colors serve it; `backup/lib/meta.sh` skips its rows) and returns an
-  id; the bytes cross on `/api/mcp/artifacts`, extra paths of the `mcp-api` route (a route
-  without them makes the deploy re-provision). Keep it that way round: sources are read through
+  `download_artifact` stages a copy in the meta DB (`mcp_artifacts`, both colors serve it;
+  `backup/lib/meta.sh` skips its rows) and returns an id; the bytes cross on
+  `/api/mcp/artifacts`, extra paths of the `mcp-api` route (a route without them makes the
+  deploy re-provision). `return_mode=resource` instead returns a small file (unstaged) as a
+  standard MCP `EmbeddedResource`; its shape (`artifact://<sha256>/<name>`, `mimeType`,
+  `blob`, `_meta.size`/`_meta.sha256`) is what pi-gateway saves into a sandbox, so change it
+  only together with that host. Only that block is standard MCP: staging by id and
+  `upload_staged_artifacts` are UniBridge extensions, and docs must keep saying so. Keep it that way round: sources are read through
   the gateway REST routes as the caller and destinations are paths on an exposed route
   (`mcp_tools._resolve_api_call`), never a URL or a local path; an id answers only its own
   key, and every miss is the same 404. Limits live in the MCP settings, not env.

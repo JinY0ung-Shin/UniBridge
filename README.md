@@ -659,13 +659,42 @@ http_headers = { apikey = "<API_KEY>" }
 - Text reads (`s3_read_object`, `nas_read_file`) return UTF-8 text only, up to
   `max_result_bytes`; binary files are refused, and so are NAS files over the
   share's download limit.
-- Binary and whole files go by reference, never inside a tool result
-  (**File artifacts**). `download_artifact` reads one file as the caller — an
-  S3 object, a NAS file, or the answer to a GET on an offered gateway API —
-  keeps a copy for a few minutes and returns only `artifact_id`, `filename`,
-  `size`, `sha256`, `mime` and `expires_at`. The MCP host then fetches the
-  bytes on the same route and with the same key and saves them where its agent
-  can read them:
+- Binary and whole files have their own tools (**File artifacts**).
+  What is MCP's own and what is UniBridge's: a file coming back as an
+  **embedded resource** (`return_mode: "resource"`, below) is the protocol's
+  standard representation, and any MCP host that stores resource blocks
+  handles it. MCP defines no file upload and no transfer by reference, so
+  staging by `artifact_id`, the `/api/mcp/artifacts` paths and
+  `upload_staged_artifacts` are **UniBridge extensions**: tools and HTTP
+  paths a host has to know about, not protocol-standard file transfer.
+- `download_artifact` reads one file as the caller — an S3 object, a NAS
+  file, or the answer to a GET on an offered gateway API. For a small file,
+  `return_mode: "resource"` returns it in the tool result itself as an MCP
+  `EmbeddedResource` holding `BlobResourceContents`:
+
+  ```json
+  {"type": "resource",
+   "resource": {"uri": "artifact://<sha256>/report.pdf", "mimeType": "application/pdf",
+                "blob": "<base64>", "_meta": {"size": 12345, "sha256": "<hex>"}}}
+  ```
+
+  The last URI segment is the file's name (percent-encoded, never a path, cut
+  to 200 UTF-8 bytes with its extension kept, as hosts name the saved file
+  after it; the text item beside the block has the full name);
+  `_meta.size` and `_meta.sha256` are those of the bytes that were encoded,
+  for the host to check what it decoded. The host saves it into the agent's
+  workspace with no further request and no credential in the agent's hands.
+  A host that does not store resource blocks only gets the base64 in the
+  result, so use this mode with one that does.
+  Nothing is staged for this mode. It carries files up to the inline limit
+  (default 4 MiB, at most 8; `0` switches it off): one HTTP request, a batch
+  included, returns that much in all, a larger file is refused with a pointer
+  to the reference mode, and `max_result_bytes` does not cut it.
+- By reference (the default `return_mode`, for large files and for files to
+  upload again) `download_artifact` keeps a copy for a few minutes and returns
+  only `artifact_id`, `filename`, `size`, `sha256`, `mime` and `expires_at`.
+  The MCP host then fetches the bytes on the same route and with the same key
+  and saves them where its agent can read them:
 
   ```bash
   curl -H "apikey: $UNIBRIDGE_API_KEY" -o report.pdf \
@@ -707,13 +736,19 @@ http_headers = { apikey = "<API_KEY>" }
   - An upload sends nothing unless every artifact is there and intact, carries
     at most one artifact-limit of files, and leaves the artifacts staged (a
     refused upload can be sent again). After a timeout the API may still have
-    processed it; the result says so. A binary answer is left out of the
-    result; the status alone says whether the upload worked.
+    processed it; the result says so. Do not blindly repeat an upload that
+    has side effects: check first, or send the same idempotency key again
+    where the API takes one as a field or query parameter. A binary answer is
+    left out of the result; the status alone says whether the upload worked.
+  - Multipart is all an upload can be. A large JSON or base64 request body
+    (a model or batch API that takes its input inline) cannot be built from
+    an artifact reference: that is not covered.
   - Limits are on the **MCP** page: one artifact's size (default 32 MiB, at
     most 90: it crosses the proxies' `client_max_body_size 100m` in one
     body), lifetime (default 15 minutes), bytes staged per key (256 MiB) and
-    in total (1 GiB). Where they disagree the smaller one wins (an artifact
-    is never larger than a key may hold). Each transfer holds its file in
+    in total (1 GiB), and the inline limit above. Where they disagree the
+    smaller one wins (an artifact is never larger than a key may hold, an
+    inline file never larger than an artifact). Each transfer holds its file in
     memory, so a process runs only as many at a time as keep size limit ×
     transfers within 96 MiB (`TRANSFER_BUDGET_BYTES`, sized against the
     container's 512m): three at the default, one from 49 MiB up, at most four,

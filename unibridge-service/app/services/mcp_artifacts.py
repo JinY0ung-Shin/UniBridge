@@ -8,6 +8,9 @@ named by an opaque id.
   through the gateway as the caller, stages it and answers with the id, size,
   SHA-256 and MIME type. The MCP host then fetches the bytes with
   ``GET /api/mcp/artifacts/<id>`` and saves them where its agent can read them.
+  A small file can instead come back in the result itself as a standard MCP
+  embedded resource (``return_mode=resource``, up to ``Limits.inline_bytes``);
+  that one is not staged at all.
 - The other way round, the host stages a workspace file with
   ``POST /api/mcp/artifacts`` and ``upload_staged_artifacts`` sends staged
   artifacts on to a gateway API as multipart/form-data.
@@ -32,6 +35,7 @@ artifacts, and are deleted once expired (``purge_expired``).
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import logging
 import re
@@ -100,6 +104,8 @@ class Limits:
     ttl_seconds: int
     key_bytes: int
     total_bytes: int
+    # Largest file returned inline as an embedded resource; 0 = that mode is off.
+    inline_bytes: int
 
     @classmethod
     def of(cls, cfg: McpSettings) -> "Limits":
@@ -108,11 +114,13 @@ class Limits:
         # the smaller setting wins, so a refusal names the limit that applies.
         total_bytes = cfg.artifact_total_mb * MIB
         key_bytes = min(cfg.artifact_key_mb * MIB, total_bytes)
+        max_bytes = min(cfg.artifact_max_mb * MIB, key_bytes)
         return cls(
-            max_bytes=min(cfg.artifact_max_mb * MIB, key_bytes),
+            max_bytes=max_bytes,
             ttl_seconds=cfg.artifact_ttl_seconds,
             key_bytes=key_bytes,
             total_bytes=total_bytes,
+            inline_bytes=min(cfg.artifact_resource_max_mb * MIB, max_bytes),
         )
 
     @property
@@ -200,6 +208,12 @@ async def sha256_hex(content: bytes) -> str:
     if len(content) < _HASH_INLINE_BYTES:
         return hashlib.sha256(content).hexdigest()
     return await asyncio.to_thread(lambda: hashlib.sha256(content).hexdigest())
+
+
+async def base64_text(content: bytes) -> str:
+    if len(content) < _HASH_INLINE_BYTES:
+        return base64.b64encode(content).decode("ascii")
+    return await asyncio.to_thread(lambda: base64.b64encode(content).decode("ascii"))
 
 
 async def collect(chunks: AsyncIterator[bytes], limit: int) -> bytes | None:

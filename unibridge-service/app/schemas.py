@@ -506,6 +506,12 @@ class McpSettings(BaseModel):
     # MiB one API key may hold staged at a time, and all keys together.
     artifact_key_mb: int = Field(256, ge=1, le=4_096)
     artifact_total_mb: int = Field(1_024, ge=1, le=16_384)
+    # Largest file download_artifact returns inside its result, as a standard
+    # MCP embedded resource (return_mode=resource), in MiB; 0 switches that
+    # mode off. The file rides in the JSON answer as base64, so this stays
+    # small: larger files go by reference. Encoding and sending one takes
+    # several times its size in memory, outside the transfer budget.
+    artifact_resource_max_mb: int = Field(4, ge=0, le=8)
 
     @field_validator("excluded_templates")
     @classmethod

@@ -16,8 +16,12 @@ servers' approved tools come in as ``<server>__<tool>``, offered to keys holding
 the server's relay route and relayed by :mod:`app.services.mcp_remote`.
 Binary files go through staging (:mod:`app.services.mcp_artifacts`):
 ``download_artifact`` fetches one from S3, NAS or an exposed API as the caller
-and returns a reference instead of bytes; ``upload_staged_artifacts`` posts
-staged ones to an exposed API as multipart/form-data.
+and returns a reference instead of bytes, or, for a small file, the file
+itself as a standard MCP embedded resource; ``upload_staged_artifacts`` posts
+staged ones to an exposed API as multipart/form-data. Only that embedded
+resource is MCP's own file representation: staging by id, the
+/api/mcp/artifacts transfer and the multipart upload are UniBridge's
+extensions (MCP defines no upload).
 Discovery — tools/list, ``list_databases``, ``search_templates``,
 ``*_list_connections`` — touches no backend and is answered here.
 
@@ -89,9 +93,11 @@ SERVER_INSTRUCTIONS = (
     "administrator offers are found with search_apis and called with call_api. "
     "Tools named <server>__<tool> belong to external MCP servers the "
     "administrator connected. "
-    "A binary file does not fit in a tool result: download_artifact stages it "
-    "and returns its id, size and SHA-256, and the MCP host fetches the bytes "
-    "with GET /api/mcp/artifacts/<id> and the same API key; "
+    "For a binary or whole file call download_artifact: it is staged and the "
+    "result gives its id, size and SHA-256, the bytes being fetched with "
+    "GET /api/mcp/artifacts/<id> and the same API key; where the tool offers "
+    "return_mode=resource, a small file instead comes back as a standard "
+    "embedded resource, for an MCP host that saves those into the workspace. "
     "upload_staged_artifacts sends staged artifacts to a gateway API as "
     "multipart/form-data. "
     "For whether one server can reach another, call network_check_access: hosts "
@@ -129,6 +135,9 @@ class ToolContext:
     # External server name → the end user's token the client sent for it
     # (X-MCP-Auth-<name>); "" when the header came more than once.
     user_tokens: dict[str, str] = field(default_factory=dict, repr=False)
+    # File bytes this HTTP request has already returned inline (embedded
+    # resources): the messages of a batch share one allowance.
+    inline_bytes_sent: int = 0
 
 
 @dataclass
@@ -139,6 +148,36 @@ class TextFile:
     text: str
     # An answer worth showing that still failed (call_api's HTTP errors).
     is_error: bool = False
+
+
+@dataclass
+class ResourceFile:
+    """A file returned inline: metadata as JSON plus an MCP embedded resource.
+
+    The block is the protocol's own ``EmbeddedResource`` holding
+    ``BlobResourceContents``, so a host stores it like any other server's
+    file. ``_meta`` carries the size and SHA-256 of the bytes that were
+    encoded, for the host to check what it decoded. Not cut to
+    ``max_result_bytes``: its size is bounded where the file is read.
+    """
+
+    meta: dict[str, Any]
+    uri: str
+    content_type: str
+    blob: str  # base64
+    size: int
+    sha256: str
+
+    def block(self) -> dict[str, Any]:
+        return {
+            "type": "resource",
+            "resource": {
+                "uri": self.uri,
+                "mimeType": self.content_type,
+                "blob": self.blob,
+                "_meta": {"size": self.size, "sha256": self.sha256},
+            },
+        }
 
 
 Handler = Callable[[ToolContext, dict[str, Any]], Awaitable[Any]]
@@ -435,6 +474,9 @@ async def call_tool(ctx: ToolContext, tool: Tool, arguments: dict[str, Any]) -> 
     max_bytes = ctx.settings.max_result_bytes
     if tool.passthrough:
         return _capped_call_result(result, max_bytes)
+    if isinstance(result, ResourceFile):
+        content = [{"type": "text", "text": _dumps(result.meta)}, result.block()]
+        return {"content": content, "isError": False}
     if isinstance(result, TextFile):
         meta = _dumps(result.meta)
         if result.meta.get("truncated") is False and _utf8_len(result.text) > max_bytes - _utf8_len(meta):
@@ -2238,6 +2280,14 @@ _SOURCE_ARGS: dict[str, tuple[str, ...]] = {
     "api": ("api",),
 }
 _SOURCE_OPTIONAL_ARGS: dict[str, tuple[str, ...]] = {"api": ("path", "query")}
+# How download_artifact answers: a reference to the staged copy, or the file
+# itself as an embedded resource.
+RETURN_MODES = ("reference", "resource")
+# A host names the saved file after the last segment of the resource URI and
+# may refuse a long one (pi-gateway: over 200 UTF-8 bytes becomes artifact.bin,
+# losing the extension), so the name in the URI is kept within this.
+_RESOURCE_NAME_MAX_BYTES = 200
+_RESOURCE_EXTENSION_MAX_BYTES = 32
 _SOURCE_HELP = {
     "s3": "s3 = an S3 object, named by connection, bucket and key",
     "nas": "nas = a file on a NAS share, named by connection and path",
@@ -2300,12 +2350,13 @@ async def _fetch_file(
     params: dict[str, Any],
     headers: dict[str, str],
     deadline: float,
-    limits: mcp_artifacts.Limits,
+    max_bytes: int,
+    too_large: str,
 ) -> tuple[bytes, httpx.Headers]:
     """GET ``path`` through the gateway and return the whole body with its headers.
 
-    Whole or not at all: any answer but 200, a body over the artifact size
-    limit, one shorter than announced, a broken connection and a transfer past
+    Whole or not at all: any answer but 200, a body over ``max_bytes`` (refused
+    with ``too_large``), one shorter than announced, a broken connection and a transfer past
     ``deadline`` all raise, so nothing partial is ever staged. A redirect is
     not a file and is not followed: its target is a URL nobody offered.
     """
@@ -2325,30 +2376,30 @@ async def _fetch_file(
             if 300 <= response.status_code < 400:
                 raise ToolError(
                     f"{response.status_code}: the answer is a redirect, which is not "
-                    "followed; nothing was staged"
+                    "followed; nothing was kept"
                 )
             if response.status_code != 200:
                 raise ToolError(
-                    f"{response.status_code}: the answer carries no whole file; nothing was staged"
+                    f"{response.status_code}: the answer carries no whole file; nothing was kept"
                 )
             declared = _declared_length(response.headers)
-            if declared is not None and declared > limits.max_bytes:
-                raise ToolError(mcp_artifacts.too_large(limits).detail)
-            data = await mcp_artifacts.collect(response.aiter_bytes(), limits.max_bytes)
+            if declared is not None and declared > max_bytes:
+                raise ToolError(too_large)
+            data = await mcp_artifacts.collect(response.aiter_bytes(), max_bytes)
             if data is None:
-                raise ToolError(mcp_artifacts.too_large(limits).detail)
+                raise ToolError(too_large)
             if declared is not None and declared != len(data):
                 raise ToolError(
-                    f"The transfer was cut short ({len(data)} of {declared} bytes); nothing was staged"
+                    f"The transfer was cut short ({len(data)} of {declared} bytes); nothing was kept"
                 )
             return data, response.headers
     except TimeoutError as exc:
         raise ToolError(
-            f"The file did not arrive within {deadline:.0f}s; nothing was staged"
+            f"The file did not arrive within {deadline:.0f}s; nothing was kept"
         ) from exc
     except httpx.HTTPError as exc:
         logger.warning("MCP download_artifact GET %s failed: %s", path, exc)
-        raise ToolError("The transfer was interrupted; nothing was staged") from exc
+        raise ToolError("The transfer was interrupted; nothing was kept") from exc
 
 
 _DISPOSITION_EXTENDED = re.compile(r"filename\*\s*=\s*utf-8''([^;]+)", re.IGNORECASE)
@@ -2376,15 +2427,32 @@ def _response_filename(headers: httpx.Headers, fallback: str) -> str:
     return mcp_artifacts.FALLBACK_FILENAME
 
 
+def _resource_name(filename: str) -> str:
+    """``filename`` as the resource URI carries it: shortened to fit, extension kept."""
+    if _utf8_len(filename) <= _RESOURCE_NAME_MAX_BYTES:
+        return filename
+    dot = filename.rfind(".")
+    extension = filename[dot:] if dot > 0 else ""
+    if _utf8_len(extension) > _RESOURCE_EXTENSION_MAX_BYTES:
+        extension = ""
+    stem = filename[: len(filename) - len(extension)]
+    # Cut on a character boundary; a name must not end in a space or a dot.
+    stem = _cut_utf8(stem, _RESOURCE_NAME_MAX_BYTES - _utf8_len(extension)).rstrip(" .")
+    return (stem or mcp_artifacts.FALLBACK_FILENAME) + extension
+
+
 async def _download_artifact(
     ctx: ToolContext, args: dict[str, Any], sources: tuple[str, ...]
-) -> dict[str, Any]:
+) -> Any:
     if not ctx.api_key:
         raise ToolError("Tool calls need the API key in the apikey header (call /api/mcp)")
     source = args["source"]
     if source not in sources:
         raise ToolError(f"source must be one of: {', '.join(sources)}")
-    given = {name for name, value in args.items() if value is not None} - {"source"}
+    mode = args.get("return_mode") or RETURN_MODES[0]
+    if mode not in RETURN_MODES:
+        raise ToolError(f"return_mode must be one of: {', '.join(RETURN_MODES)}")
+    given = {name for name, value in args.items() if value is not None} - {"source", "return_mode"}
     missing = [name for name in _SOURCE_ARGS[source] if name not in given]
     if missing:
         raise ToolError(f"source={source} needs: {', '.join(missing)}")
@@ -2414,30 +2482,91 @@ async def _download_artifact(
 
     limits = mcp_artifacts.Limits.of(ctx.settings)
     consumer = ctx.user.consumer_name
+    inline = mode == "resource"
+    if inline:
+        if not limits.inline_bytes:
+            raise ToolError(
+                "return_mode=resource is switched off by the administrator; "
+                "call again with return_mode=reference"
+            )
+        # One HTTP request (a batch of calls) returns one allowance in all.
+        max_bytes = limits.inline_bytes - ctx.inline_bytes_sent
+        if max_bytes <= 0:
+            raise ToolError(
+                "This request already returns as much inline file data as one request "
+                f"may ({limits.inline_bytes // mcp_artifacts.MIB} MiB); call again on its own "
+                "or with return_mode=reference"
+            )
+        too_large = (
+            "Larger than a file returned inline may be "
+            f"({limits.inline_bytes // mcp_artifacts.MIB} MiB per request); "
+            "call again with return_mode=reference"
+        )
+    else:
+        max_bytes, too_large = limits.max_bytes, mcp_artifacts.too_large(limits).detail
     try:
         with mcp_artifacts.transfer_slot(consumer, limits):
             data, response_headers = await _fetch_file(
-                ctx, path, params=params, headers=headers, deadline=deadline, limits=limits
+                ctx,
+                path,
+                params=params,
+                headers=headers,
+                deadline=deadline,
+                max_bytes=max_bytes,
+                too_large=too_large,
             )
-            artifact, cached = await mcp_artifacts.stage(
-                ctx.db,
-                consumer=consumer,
-                source=source,
-                filename=_response_filename(response_headers, name_hint),
-                content_type=mcp_artifacts.clean_content_type(response_headers.get("content-type")),
-                content=data,
-                limits=limits,
-            )
+            filename = _response_filename(response_headers, name_hint)
+            content_type = mcp_artifacts.clean_content_type(response_headers.get("content-type"))
+            if inline:
+                # Not staged: the bytes leave in this answer. Size and SHA-256
+                # are those of the bytes encoded, for the host to check.
+                size, digest = len(data), await mcp_artifacts.sha256_hex(data)
+                blob = await mcp_artifacts.base64_text(data)
+            else:
+                artifact, cached = await mcp_artifacts.stage(
+                    ctx.db,
+                    consumer=consumer,
+                    source=source,
+                    filename=filename,
+                    content_type=content_type,
+                    content=data,
+                    limits=limits,
+                )
     except mcp_artifacts.ArtifactError as exc:
         raise ToolError(exc.detail) from exc
-    return {**artifact.describe(), "cached": cached}
+    if not inline:
+        return {**artifact.describe(), "cached": cached}
+    ctx.inline_bytes_sent += size
+    logger.info(
+        "MCP artifact returned inline: consumer=%s source=%s size=%s sha256=%s",
+        consumer,
+        source,
+        size,
+        digest,
+    )
+    return ResourceFile(
+        meta={"filename": filename, "size": size, "sha256": digest, "mime": content_type, "return_mode": mode},
+        # The last segment is the file name a host saves under; the content's
+        # own checksum stands in for an id, as nothing is staged.
+        uri=f"artifact://{digest}/{quote(_resource_name(filename), safe='')}",
+        content_type=content_type,
+        blob=blob,
+        size=size,
+        sha256=digest,
+    )
 
 
-def _download_artifact_tool(sources: tuple[str, ...]) -> Tool:
-    """download_artifact for the sources this key can read."""
+def _download_artifact_tool(sources: tuple[str, ...], inline_bytes: int) -> Tool:
+    """download_artifact for the sources this key can read.
 
-    async def handler(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    ``inline_bytes`` is the largest file return_mode=resource carries; with 0
+    the tool offers references only.
+    """
+
+    async def handler(ctx: ToolContext, args: dict[str, Any]) -> Any:
         return await _download_artifact(ctx, args, sources)
+
+    inline_mib = inline_bytes // mcp_artifacts.MIB
 
     properties: dict[str, Any] = {
         "source": {"type": "string", "enum": list(sources), "description": "Where the file is"}
@@ -2460,19 +2589,42 @@ def _download_artifact_tool(sources: tuple[str, ...]) -> Tool:
     if "api" in sources:
         properties["api"] = {"type": "string", "minLength": 1, "description": "API id or exact name"}
         properties["query"] = {"type": "object", "description": "URL query parameters (api)"}
+    # Listed even when only one mode is on, so a client that asks for the
+    # other is told why instead of "unknown argument".
+    properties["return_mode"] = {
+        "type": "string",
+        "enum": list(RETURN_MODES) if inline_bytes else [RETURN_MODES[0]],
+        "description": (
+            "reference (default): stage the file and return its id. resource: return "
+            f"the file itself as an embedded resource, up to {inline_mib} MiB"
+            if inline_bytes
+            else "reference: stage the file and return its id (the only mode switched on)"
+        ),
+    }
+    inline_help = (
+        f" With return_mode=resource a file of up to {inline_mib} MiB comes back in the "
+        "result itself, as a standard MCP embedded resource (base64 blob, with its size "
+        "and sha256 in _meta). Use it when your MCP host saves embedded resources into "
+        "your workspace (it then reports the saved path, with no further request); on a "
+        "host that does not, the base64 only fills this result."
+        if inline_bytes
+        else ""
+    )
     return Tool(
         name="download_artifact",
         title="Download file as artifact",
         description=(
-            "Stage a whole file, binary or text, for the MCP host to fetch: "
+            "Fetch a whole file, binary or text: "
             + "; ".join(_SOURCE_HELP[source] for source in sources)
-            + ". The result holds no bytes: it gives artifact_id, filename, size, sha256, "
-            "mime and expires_at. The MCP host downloads the bytes with "
-            "GET /api/mcp/artifacts/<artifact_id> and the same API key, checks them "
-            "against size and sha256 and saves them where you can read them; the file "
-            "is in your workspace only once the host reports its saved path. A file "
-            "over the administrator's size limit is refused, never cut. Staging the "
-            "same content again returns the same artifact (cached=true)."
+            + "."
+            + inline_help
+            + " By reference (the default) the file is staged and the result holds no "
+            "bytes: it gives artifact_id, filename, size, sha256, mime and expires_at. "
+            "The bytes are then downloaded with GET /api/mcp/artifacts/<artifact_id> and "
+            "the same API key and checked against size and sha256; that staged copy is "
+            "also what upload_staged_artifacts sends on. A file over the size limit is "
+            "refused, never cut. Staging the same content again returns the same "
+            "artifact (cached=true)."
         ),
         group="artifacts",
         input_schema=_object_schema(properties, ("source",)),
@@ -2627,8 +2779,9 @@ UPLOAD_STAGED_ARTIFACTS_TOOL = Tool(
         "response text like call_api (a binary answer is left out; the status says "
         "whether the upload worked), plus the artifacts sent. Artifacts stay staged "
         "until they expire, so a refused upload can be sent again; after a timeout "
-        "the API may still have processed it. The POST can change data on the other "
-        "system."
+        "the API may still have processed it, so do not simply send it again: check "
+        "first, or repeat it with the same idempotency key where the API takes one "
+        "as a field or query parameter. The POST can change data on the other system."
     ),
     group="artifacts",
     input_schema=_object_schema(
@@ -2809,7 +2962,8 @@ async def build_tools(ctx: ToolContext) -> list[Tool]:
         # No grant of their own: each follows the source or destination it uses.
         sources = _artifact_sources(ctx, offers_api)
         if sources:
-            tools.append(_download_artifact_tool(sources))
+            inline_bytes = mcp_artifacts.Limits.of(ctx.settings).inline_bytes
+            tools.append(_download_artifact_tool(sources, inline_bytes))
         if offers_api:
             tools.append(UPLOAD_STAGED_ARTIFACTS_TOOL)
     if groups.external:
