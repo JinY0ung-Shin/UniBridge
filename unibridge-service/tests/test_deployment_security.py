@@ -707,6 +707,8 @@ backup_postgres keycloak-db keycloak keycloak "$DEST/keycloak-db.sql.gz"
     meta_args = meta_args.splitlines()
     assert meta_args[:4] == ["exec", "-T", "unibridge-db", "pg_dump"]
     assert "--exclude-table-data=upload_relay_files" in meta_args
+    # MCP artifacts are the same kind of row: file copies that live for minutes.
+    assert "--exclude-table-data=mcp_artifacts" in meta_args
     # Rows only: excluding the table itself would drop it from the restore.
     assert not any(arg.startswith(("--exclude-table=", "-T=", "--schema-only")) for arg in meta_args)
     assert "--exclude-table-data" not in keycloak_args
@@ -719,7 +721,7 @@ def test_backup_scrubs_upload_relay_file_rows_from_the_sqlite_copy(tmp_path: Pat
     left in free pages either. The live database keeps its rows."""
     sqlite_lib = (REPO_ROOT / "backup" / "lib" / "sqlite.sh").read_text(encoding="utf-8")
     meta_lib = BACKUP_META_LIB_FILE.read_text(encoding="utf-8")
-    assert "UNIBRIDGE_META_SKIP_DATA_TABLES=(upload_relay_files)" in meta_lib
+    assert "UNIBRIDGE_META_SKIP_DATA_TABLES=(upload_relay_files mcp_artifacts)" in meta_lib
     assert 'backup_unibridge_meta_sqlite "$dest/unibridge-meta.db.gz" \\\n' in meta_lib
     assert '-e SKIP_DATA_TABLES="$skip_data_tables"' in sqlite_lib
     program = sqlite_lib.split("<<'PYEOF'\n", 1)[1].split("\nPYEOF\n", 1)[0]
@@ -2122,7 +2124,11 @@ _DEPLOY_CORE_ROUTES = {
         f"routes/{route_id}": {
             "plugins": {"proxy-rewrite": {"headers": {"set": {"X-UniBridge-Internal-Proxy": "s"}}}}
         }
-        for route_id in ("s3-api", "nas-api", "usages-api", "mcp-api")
+        for route_id in ("s3-api", "nas-api", "usages-api")
+    },
+    "routes/mcp-api": {
+        "uris": ["/api/mcp", "/api/mcp/artifacts", "/api/mcp/artifacts/*"],
+        "plugins": {"proxy-rewrite": {"headers": {"set": {"X-UniBridge-Internal-Proxy": "s"}}}},
     },
     "routes/network-api": {
         "uri": "/api/network/*",
@@ -2203,6 +2209,28 @@ def test_deploy_reprovisions_when_the_mcp_route_is_missing(tmp_path: Path) -> No
     assert not _deploy_has_core_routes(
         tmp_path / "missing", {**retired, "routes/mcp-api": None}, BIFROST_TEST_VK=BIFROST_VK
     )
+
+
+def test_deploy_reprovisions_when_the_mcp_route_lacks_the_artifact_paths(tmp_path: Path) -> None:
+    # /api/mcp/artifacts joined mcp-api after the route first shipped. A deploy
+    # that boots with provisioning off would leave the old route in place and
+    # the staged files unreachable, so the old shape forces re-provisioning.
+    before_artifacts = {
+        "uri": "/api/mcp",
+        "plugins": {
+            "proxy-rewrite": {
+                "uri": "/mcp",
+                "headers": {"set": {"X-UniBridge-Internal-Proxy": "s"}},
+            }
+        },
+    }
+    assert not _deploy_has_core_routes(
+        tmp_path, {**_llm_bi_retired(), "routes/mcp-api": before_artifacts}, BIFROST_TEST_VK=BIFROST_VK
+    )
+    # What the check looks for is what provisioning writes.
+    main_py = (REPO_ROOT / "unibridge-service" / "app" / "main.py").read_text(encoding="utf-8")
+    assert '"uris": ["/api/mcp", "/api/mcp/artifacts", "/api/mcp/artifacts/*"]' in main_py
+    assert '"regex_uri": ["^/api/mcp(.*)", "/mcp$1"]' in main_py
 
 
 def test_deploy_reprovisions_when_the_network_routes_are_missing_or_stale(

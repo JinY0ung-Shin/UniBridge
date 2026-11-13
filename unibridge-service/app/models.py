@@ -555,6 +555,34 @@ class UploadRelayFile(Base):
     collected_at = Column(UtcDateTime, nullable=True)  # Noah's first download
 
 
+class McpArtifact(Base):
+    """A file staged for one API key on the MCP surface (app/services/mcp_artifacts.py).
+
+    ``download_artifact`` stages a source file here and answers with this id,
+    size, checksum and MIME type only; the MCP host fetches the bytes from
+    ``/api/mcp/artifacts/<id>``. A host stages a workspace file the same way
+    (``POST /api/mcp/artifacts``) for ``upload_staged_artifacts`` to send on.
+    Only the key that staged a row (``consumer``) can read, use or delete it,
+    and it is deleted once ``expires_at`` has passed. In the meta database so
+    both blue/green colors serve the same artifacts. ``content`` is deferred:
+    counting and purging never load the bytes. The backups leave this table's
+    rows out (backup/lib/meta.sh): they are copies that live for minutes.
+    """
+
+    __tablename__ = "mcp_artifacts"
+
+    id = Column(String(32), primary_key=True)
+    consumer = Column(String(100), nullable=False, index=True)  # API key name
+    source = Column(String(16), nullable=False)  # s3 | nas | api | upload
+    filename = Column(String(255), nullable=False)
+    content_type = Column(String(255), nullable=False)
+    size = Column(Integer, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    content = deferred(Column(LargeBinary, nullable=False))
+    created_at = Column(UtcDateTime, default=utcnow, nullable=False)
+    expires_at = Column(UtcDateTime, nullable=False, index=True)
+
+
 class McpRemoteServer(Base):
     """An external MCP server whose tools /api/mcp offers (app/services/mcp_remote.py).
 

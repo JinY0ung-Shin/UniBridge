@@ -604,6 +604,9 @@ apisix_has_core_routes() {
 
   mcp_route="$(apisix_get "routes/mcp-api")" || return 1
   route_has_internal_proxy_header "$mcp_route" || return 1
+  # /api/mcp/artifacts (staged files, app/services/mcp_artifacts.py) joined the
+  # route after it first shipped: a route from before that has no such path.
+  [[ "${mcp_route//[[:space:]]/}" == *'"/api/mcp/artifacts/*"'* ]] || return 1
 
   network_route="$(apisix_get "routes/network-api")" || return 1
   route_has_internal_proxy_header "$network_route" || return 1

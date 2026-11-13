@@ -6,13 +6,17 @@ through the gateway's REST routes with the same key. The server is
 stateless: no ``Mcp-Session-Id``, JSON responses only, no server-initiated
 stream (``GET`` answers 405). Blue/green colors can therefore serve any request
 of a session. Tools come from :mod:`app.services.mcp_tools`.
+
+Binary files never travel in a JSON-RPC message: they are staged
+(:mod:`app.services.mcp_artifacts`) and their bytes cross on plain HTTP under
+``/api/mcp/artifacts``, on the same route and with the same key.
 """
 from __future__ import annotations
 
 import json
 import logging
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, Response
@@ -46,7 +50,7 @@ from app.schemas import (
     McpSettings,
     McpTemplateInfo,
 )
-from app.services import mcp_remote, mcp_tools
+from app.services import mcp_artifacts, mcp_remote, mcp_tools
 from app.services.apisix_system_resources import MCP_API_ROUTE_ID
 from app.services.audit import log_admin_action
 
@@ -225,6 +229,139 @@ async def mcp_no_stream(
     return Response(status_code=status.HTTP_405_METHOD_NOT_ALLOWED, headers={"Allow": "POST"})
 
 
+# ── Staged artifacts ────────────────────────────────────────────────────────
+
+ARTIFACT_FILENAME_HEADER = "X-Artifact-Filename"
+ARTIFACT_SHA256_HEADER = "X-Artifact-Sha256"
+
+
+async def _require_artifacts(
+    auth: tuple[ApiKeyUser, McpSettings] = Depends(_require_mcp_key),
+) -> tuple[ApiKeyUser, McpSettings]:
+    if not auth[1].tool_groups.artifacts:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="MCP artifacts are switched off by the administrator",
+        )
+    return auth
+
+
+@router.post("/mcp/artifacts", include_in_schema=False)
+async def stage_artifact(
+    request: Request,
+    auth: tuple[ApiKeyUser, McpSettings] = Depends(_require_artifacts),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Stage the request body as an artifact of the calling key.
+
+    The body is the file itself. ``X-Artifact-Filename`` carries its name
+    (percent-encoded UTF-8), ``Content-Type`` its MIME type and
+    ``X-Artifact-Sha256`` the SHA-256 the sender computed: bytes that do not
+    hash to it are refused, so a cut or altered transfer is never staged.
+    Everything is judged before the body is read except the checksum.
+    """
+    user, mcp_settings = auth
+    limits = mcp_artifacts.Limits.of(mcp_settings)
+    declared = request.headers.get(ARTIFACT_SHA256_HEADER, "").strip().lower()
+    if not mcp_artifacts.SHA256_HEX.fullmatch(declared):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{ARTIFACT_SHA256_HEADER} must carry the file's SHA-256 as 64 hex characters",
+        )
+    try:
+        filename = mcp_artifacts.clean_filename(
+            unquote(request.headers.get(ARTIFACT_FILENAME_HEADER, ""), errors="strict")
+        )
+    except UnicodeDecodeError:
+        filename = None
+    if filename is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{ARTIFACT_FILENAME_HEADER} must carry a usable file name (percent-encoded UTF-8)",
+        )
+    length = request.headers.get("content-length", "")
+    if length.isdigit() and int(length) > limits.max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=mcp_artifacts.too_large(limits).detail,
+        )
+    # Reading the body can take a while: hand the meta-store connection back.
+    await db.rollback()
+    try:
+        with mcp_artifacts.transfer_slot(user.consumer_name, limits):
+            content = await mcp_artifacts.collect(request.stream(), limits.max_bytes)
+            if content is None:
+                raise mcp_artifacts.too_large(limits)
+            if await mcp_artifacts.sha256_hex(content) != declared:
+                raise mcp_artifacts.ArtifactError(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"The bytes received do not hash to {ARTIFACT_SHA256_HEADER}",
+                )
+            artifact, cached = await mcp_artifacts.stage(
+                db,
+                consumer=user.consumer_name,
+                source="upload",
+                filename=filename,
+                content_type=mcp_artifacts.clean_content_type(request.headers.get("content-type")),
+                content=content,
+                limits=limits,
+            )
+    except mcp_artifacts.ArtifactError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
+    return JSONResponse(
+        {**artifact.describe(), "cached": cached},
+        status_code=status.HTTP_200_OK if cached else status.HTTP_201_CREATED,
+    )
+
+
+@router.get("/mcp/artifacts/{artifact_id}", include_in_schema=False)
+async def fetch_artifact(
+    artifact_id: str,
+    auth: tuple[ApiKeyUser, McpSettings] = Depends(_require_artifacts),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """The bytes of an artifact the calling key staged."""
+    user, mcp_settings = auth
+    try:
+        with mcp_artifacts.transfer_slot(user.consumer_name, mcp_artifacts.Limits.of(mcp_settings)):
+            artifact, content = await mcp_artifacts.read(db, user.consumer_name, artifact_id)
+    except mcp_artifacts.ArtifactError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
+    finally:
+        # The session is closed only after the response has gone out: do not
+        # keep its connection in a transaction while the bytes are sent.
+        await db.rollback()
+    return Response(
+        content=content,
+        media_type=artifact.content_type,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(artifact.filename)}",
+            # Staged from sources nobody vouches for: never rendered, never sniffed.
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+            ARTIFACT_SHA256_HEADER: artifact.sha256,
+        },
+    )
+
+
+@router.delete(
+    "/mcp/artifacts/{artifact_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    include_in_schema=False,
+)
+async def delete_artifact(
+    artifact_id: str,
+    auth: tuple[ApiKeyUser, McpSettings] = Depends(_require_artifacts),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Drop an artifact of the calling key before it expires."""
+    user, _ = auth
+    if not await mcp_artifacts.delete(db, user.consumer_name, artifact_id):
+        error = mcp_artifacts.not_found()
+        raise HTTPException(status_code=error.status_code, detail=error.detail)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 # ── Admin ───────────────────────────────────────────────────────────────────
 
 
@@ -335,7 +472,14 @@ async def preview_mcp_tools(
                 enabled=mcp_settings.tool_groups.apis,
                 granted=bool(mcp_tools.offered_route_ids(ctx)),
                 required_route="",
-            )
+            ),
+            # Granted through its sources: S3, NAS or an exposed route.
+            McpPreviewGroup(
+                group="artifacts",
+                enabled=mcp_settings.tool_groups.artifacts,
+                granted=mcp_tools.holds_an_artifact_source(ctx),
+                required_route="",
+            ),
         ]
         + [
             # One row per external server: its relay route is the grant.

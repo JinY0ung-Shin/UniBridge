@@ -790,6 +790,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 # query/S3/NAS surfaces (app/routers/mcp.py). Inline deny-all
                 # like nas-api until the consumer-restriction replay; its tool
                 # calls wait on query-api, so the read timeout follows query-api's.
+                # /api/mcp/artifacts carries the bytes of staged artifacts
+                # (app/services/mcp_artifacts.py) on the same grant; the deploy
+                # script re-provisions while the route lacks those paths.
                 await apisix_client.put_resource(
                     "routes",
                     MCP_API_ROUTE_ID,
@@ -798,7 +801,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         {
                             "name": MCP_API_ROUTE_ID,
                             "desc": "MCP server (Streamable HTTP): query templates, databases, S3, NAS",
-                            "uri": "/api/mcp",
+                            "uris": ["/api/mcp", "/api/mcp/artifacts", "/api/mcp/artifacts/*"],
                             "methods": ["GET", "POST", "DELETE"],
                             "upstream_id": "unibridge-service",
                             "timeout": {
@@ -814,7 +817,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                                 "key-auth": {"hide_credentials": False},
                                 "consumer-restriction": {"whitelist": [api_keys.DENY_ALL_CONSUMER]},
                                 "proxy-rewrite": {
-                                    "uri": "/mcp",
+                                    "regex_uri": ["^/api/mcp(.*)", "/mcp$1"],
                                     "headers": _internal_proxy_headers(),
                                 },
                             },
@@ -1142,6 +1145,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.upload_relay_task = asyncio.create_task(run_purge_loop())
 
+    # MCP artifacts (app/services/mcp_artifacts.py): delete the staged files
+    # nobody fetched once they have expired.
+    from app.services import mcp_artifacts
+
+    app.state.mcp_artifact_task = asyncio.create_task(mcp_artifacts.run_purge_loop())
+
     yield
 
     # ── Shutdown ─────────────────────────────────────────────────────────
@@ -1183,6 +1192,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except asyncio.CancelledError:
             pass
         logger.info("Upload relay purge loop stopped")
+
+    if hasattr(app.state, "mcp_artifact_task"):
+        app.state.mcp_artifact_task.cancel()
+        try:
+            await app.state.mcp_artifact_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("MCP artifact purge loop stopped")
 
     if hasattr(app.state, "meta_db_metrics_task"):
         app.state.meta_db_metrics_task.cancel()

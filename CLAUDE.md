@@ -104,6 +104,14 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   (`upload_relay_files`), never in process memory, so both colors serve them, and
   `backup/lib/meta.sh` leaves that table's rows out of every backup. The page renders outside
   `AuthProvider` (`unibridge-ui/src/Root.tsx`) and shows its own pending-approval state.
+- **MCP artifacts** (`app/services/mcp_artifacts.py`; README "MCP server", File artifacts):
+  binary files never ride in tool JSON. `download_artifact` stages a copy in the meta DB
+  (`mcp_artifacts`, both colors serve it; `backup/lib/meta.sh` skips its rows) and returns an
+  id; the bytes cross on `/api/mcp/artifacts`, extra paths of the `mcp-api` route (a route
+  without them makes the deploy re-provision). Keep it that way round: sources are read through
+  the gateway REST routes as the caller and destinations are paths on an exposed route
+  (`mcp_tools._resolve_api_call`), never a URL or a local path; an id answers only its own
+  key, and every miss is the same 404. Limits live in the MCP settings, not env.
 - **Bifrost** (`bifrost`, `bifrost-tls`; identical in both compose layouts, tested) is the
   only LLM gateway: it serves `/api/llm` (next bullet). The old `/api/llm-bi` side-by-side
   routes are gone: every provisioning boot deletes the

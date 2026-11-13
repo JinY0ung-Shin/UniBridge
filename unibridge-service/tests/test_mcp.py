@@ -322,9 +322,12 @@ async def test_tools_follow_route_grants_and_groups(client, seeded_db, admin_tok
         names = await _tool_names(client, full)
         assert names[:4] == ["list_databases", "list_tables", "describe_table", "run_query"]
         assert "s3_read_object" in names and "nas_read_file" in names
-        # One search tool and one run tool, however many templates there are.
-        assert names[-2:] == ["search_templates", "run_template"]
-        assert all(name.startswith("s3_") for name in await _tool_names(client, s3_only))
+        # One search tool and one run tool, however many templates there are;
+        # then the artifact download, offered through the S3 and NAS grants.
+        assert names[-3:] == ["search_templates", "run_template", "download_artifact"]
+        s3_names = await _tool_names(client, s3_only)
+        assert s3_names[-1] == "download_artifact"
+        assert all(name.startswith("s3_") for name in s3_names[:-1])
 
         await _put_settings(client, admin_token, run_query=False, templates=False, nas=False)
         names = await _tool_names(client, full)
@@ -843,7 +846,8 @@ async def test_admin_preview_shows_what_a_key_would_get(client, admin_token, see
     groups = {group["group"]: group for group in preview["groups"]}
     assert groups["nas"] == {"group": "nas", "enabled": True, "granted": False, "required_route": "nas-api", "server": None}
     tool_groups = {tool["group"] for tool in preview["tools"]}
-    assert tool_groups == {"db_explore", "run_query", "s3", "templates"}
+    assert tool_groups == {"db_explore", "run_query", "s3", "templates", "artifacts"}
+    assert groups["artifacts"] == {"group": "artifacts", "enabled": True, "granted": True, "required_route": "", "server": None}
     assert preview["templates"] == [
         {"path": "reports/users", "name": "Users report", "database": "maindb", "enabled": True}
     ]
@@ -926,7 +930,7 @@ async def test_api_tools_need_an_exposed_and_granted_route(client, seeded_db, ad
         listing.assert_not_awaited()
         await _expose(client, admin_token, "orders")
         names = await _tool_names(client, granted)
-        assert names[-2:] == ["search_apis", "call_api"]
+        assert names[-4:] == ["search_apis", "call_api", "download_artifact", "upload_staged_artifacts"]
         assert "search_apis" not in await _tool_names(client, ungranted)
         await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], apis=False)
         assert "search_apis" not in await _tool_names(client, granted)

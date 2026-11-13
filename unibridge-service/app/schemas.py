@@ -458,7 +458,7 @@ class SystemConfigUpdate(BaseModel):
 # ── MCP ─────────────────────────────────────────────────────────────────────
 
 McpToolGroup = Literal[
-    "templates", "db_explore", "run_query", "s3", "nas", "network", "apis", "external"
+    "templates", "db_explore", "run_query", "s3", "nas", "network", "apis", "artifacts", "external"
 ]
 
 
@@ -470,6 +470,8 @@ class McpToolGroups(BaseModel):
     nas: bool = True
     network: bool = True
     apis: bool = True
+    # download_artifact / upload_staged_artifacts (app/services/mcp_artifacts.py).
+    artifacts: bool = True
     external: bool = True
 
 
@@ -495,6 +497,15 @@ class McpSettings(BaseModel):
     exposed_routes: list[McpExposedRoute] = Field(default_factory=list, max_length=1_000)
     max_rows: int = Field(200, ge=1, le=10_000)
     max_result_bytes: int = Field(65_536, ge=1_024, le=1_048_576)
+    # Staged artifacts (app/services/mcp_artifacts.py). One artifact's size, in
+    # MiB: it crosses the proxies in one request body, so it stays below their
+    # client_max_body_size (100m).
+    artifact_max_mb: int = Field(32, ge=1, le=90)
+    # How long an artifact stays staged before it is deleted.
+    artifact_ttl_seconds: int = Field(900, ge=60, le=86_400)
+    # MiB one API key may hold staged at a time, and all keys together.
+    artifact_key_mb: int = Field(256, ge=1, le=4_096)
+    artifact_total_mb: int = Field(1_024, ge=1, le=16_384)
 
     @field_validator("excluded_templates")
     @classmethod

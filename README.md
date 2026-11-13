@@ -571,6 +571,7 @@ http_headers = { apikey = "<API_KEY>" }
   | Network map | `network_overview`, `network_list_regions`, `network_find_hosts`, `network_get_host`, `network_check_access`, `network_find_ports`, `network_list_openings`, `network_list_port_usages`, `network_list_probes`, `network_probe_targets` | `network-api` |
   | Network map (record) | `network_register_host`, `network_update_host`, `network_record_opening`, `network_update_opening`, `network_delete_opening`, `network_record_port_usage`, `network_delete_port_usage`, `network_report_probes` | `network-api` and `network-write-api` |
   | Gateway APIs | `search_apis`, `call_api` | each offered route's own grant |
+  | File artifacts | `download_artifact`, `upload_staged_artifacts` | none of their own: the source's grant (`s3-api`, `nas-api` or an offered route) and, to upload, an offered route |
 
 - Each tool call that reaches a database, S3 or NAS goes back out through the
   gateway as the matching REST request, with the caller's own key
@@ -658,6 +659,72 @@ http_headers = { apikey = "<API_KEY>" }
 - Text reads (`s3_read_object`, `nas_read_file`) return UTF-8 text only, up to
   `max_result_bytes`; binary files are refused, and so are NAS files over the
   share's download limit.
+- Binary and whole files go by reference, never inside a tool result
+  (**File artifacts**). `download_artifact` reads one file as the caller — an
+  S3 object, a NAS file, or the answer to a GET on an offered gateway API —
+  keeps a copy for a few minutes and returns only `artifact_id`, `filename`,
+  `size`, `sha256`, `mime` and `expires_at`. The MCP host then fetches the
+  bytes on the same route and with the same key and saves them where its agent
+  can read them:
+
+  ```bash
+  curl -H "apikey: $UNIBRIDGE_API_KEY" -o report.pdf \
+    "https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/mcp/artifacts/<artifact_id>"   # X-Artifact-Sha256 carries the checksum
+  ```
+
+  The other way round, the host stages a local file and
+  `upload_staged_artifacts` posts staged artifacts to an offered gateway API
+  as one `multipart/form-data` request (`destination` = API and path,
+  `artifacts` = id, form field and optional file name each, `fields` = text
+  parts):
+
+  ```bash
+  curl -X POST -H "apikey: $UNIBRIDGE_API_KEY" -H "Content-Type: application/pdf" \
+    -H "X-Artifact-Filename: report.pdf" \
+    -H "X-Artifact-Sha256: $(sha256sum report.pdf | cut -d' ' -f1)" \
+    --data-binary @report.pdf "https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/mcp/artifacts"
+  ```
+
+  `X-Artifact-Filename` is percent-encoded UTF-8; bytes that do not hash to
+  `X-Artifact-Sha256` are refused. `DELETE /api/mcp/artifacts/<id>` drops an
+  artifact early. What holds for all of it:
+  - A source is read with the REST request a direct call would send (so the
+    key's connections, the bucket allow-list, the share root and the route
+    grant decide, and the read is counted on `s3-api`/`nas-api`/the route);
+    a destination is a path under an offered route, checked like `call_api`.
+    Neither is ever a URL or a server-side file path.
+  - An artifact belongs to the key that staged it. Another key, an unknown id,
+    a malformed one and an expired one all get the same `404`.
+  - Whole or not at all: a file over the size limit, a transfer shorter than
+    announced or interrupted, and any answer but `200` stage nothing; nothing
+    is cut to fit. A redirect is not followed (its target is a URL nobody
+    offered), so an API that answers a download with one cannot be a source.
+    Size and SHA-256 are taken from the bytes received and checked again each
+    time the bytes are read back.
+  - The same content staged again by the same key (same name and type) is the
+    same artifact with a fresh lifetime (`cached: true`); the source is still
+    read each time, so a changed file is a new artifact.
+  - An upload sends nothing unless every artifact is there and intact, carries
+    at most one artifact-limit of files, and leaves the artifacts staged (a
+    refused upload can be sent again). After a timeout the API may still have
+    processed it; the result says so. A binary answer is left out of the
+    result; the status alone says whether the upload worked.
+  - Limits are on the **MCP** page: one artifact's size (default 32 MiB, at
+    most 90: it crosses the proxies' `client_max_body_size 100m` in one
+    body), lifetime (default 15 minutes), bytes staged per key (256 MiB) and
+    in total (1 GiB). Where they disagree the smaller one wins (an artifact
+    is never larger than a key may hold). Each transfer holds its file in
+    memory, so a process runs only as many at a time as keep size limit ×
+    transfers within 96 MiB (`TRANSFER_BUDGET_BYTES`, sized against the
+    container's 512m): three at the default, one from 49 MiB up, at most four,
+    and at most two for one key; beyond that `429`, try again.
+  - The copies wait in the meta database (`mcp_artifacts`, so both blue/green
+    colors serve them) and the backups leave that table's rows out
+    (`backup/README.md`).
+
+  `mcp-api` gained the `/api/mcp/artifacts` paths with this release:
+  `scripts/deploy-bluegreen.sh` sees the older route and re-provisions on the
+  first deploy, nothing to do by hand.
 - `list_tables`/`describe_table` use `GET /api/query/databases/{alias}/tables[/{table}]`,
   open to API keys and to users who may query the database (same table scope).
 - The gateway read timeout follows `query-api`'s (Query Settings).

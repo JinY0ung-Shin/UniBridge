@@ -14,6 +14,10 @@ lists in ``exposed_routes``, each offered only to keys holding its grant;
 ``call_api`` sends GET or POST only, on the route itself. External MCP
 servers' approved tools come in as ``<server>__<tool>``, offered to keys holding
 the server's relay route and relayed by :mod:`app.services.mcp_remote`.
+Binary files go through staging (:mod:`app.services.mcp_artifacts`):
+``download_artifact`` fetches one from S3, NAS or an exposed API as the caller
+and returns a reference instead of bytes; ``upload_staged_artifacts`` posts
+staged ones to an exposed API as multipart/form-data.
 Discovery — tools/list, ``list_databases``, ``search_templates``,
 ``*_list_connections`` — touches no backend and is answered here.
 
@@ -33,6 +37,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 import json
 import logging
+import re
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -46,7 +51,7 @@ from app.models import McpRemoteServer, SystemConfig
 from app.routers import gateway as gateway_router
 from app.routers import query as query_router
 from app.schemas import McpRouteInfo, McpSettings, McpToolGroup, QueryTemplateResponse
-from app.services import apisix_client, mcp_remote
+from app.services import apisix_client, mcp_artifacts, mcp_remote
 from app.services.apisix_system_resources import (
     NETWORK_API_ROUTE_ID,
     NETWORK_WRITE_ROUTE_ID,
@@ -84,6 +89,11 @@ SERVER_INSTRUCTIONS = (
     "administrator offers are found with search_apis and called with call_api. "
     "Tools named <server>__<tool> belong to external MCP servers the "
     "administrator connected. "
+    "A binary file does not fit in a tool result: download_artifact stages it "
+    "and returns its id, size and SHA-256, and the MCP host fetches the bytes "
+    "with GET /api/mcp/artifacts/<id> and the same API key; "
+    "upload_staged_artifacts sends staged artifacts to a gateway API as "
+    "multipart/form-data. "
     "For whether one server can reach another, call network_check_access: hosts "
     "in one region reach each other on every port, other regions only through a "
     "recorded firewall opening, and a blocked answer carries a request_draft for "
@@ -228,6 +238,10 @@ def _error_detail(response: httpx.Response) -> str:
         body = response.json()
     except ValueError:
         return response.text[:500] or response.reason_phrase
+    return _json_error_detail(body)
+
+
+def _json_error_detail(body: Any) -> str:
     if isinstance(body, dict):
         # FastAPI says "detail"; APISIX plugins (key-auth, limit-count, ...)
         # say "message" or "error_msg".
@@ -2040,15 +2054,34 @@ def _query_value(value: Any) -> Any:
     return "true" if value is True else "false" if value is False else value
 
 
-async def _call_api(ctx: ToolContext, args: dict[str, Any]) -> TextFile:
+@dataclass(frozen=True)
+class _ApiCall:
+    """A request to an exposed gateway API, checked and ready to send."""
+
+    api: McpRouteInfo
+    method: str
+    path: str
+    query: dict[str, Any]
+    # The caller's key, for a key-auth route only.
+    headers: dict[str, str]
+    deadline: float
+
+    @property
+    def params(self) -> dict[str, Any]:
+        return {name: _query_value(value) for name, value in self.query.items()}
+
+
+async def _resolve_api_call(
+    ctx: ToolContext, wanted: str, method: str, path: str | None, query: dict[str, Any]
+) -> _ApiCall:
+    """Check that ``method path`` is a call ``ctx`` may make on the API ``wanted``."""
     if not ctx.api_key:
         raise ToolError("Tool calls need the API key in the apikey header (call /api/mcp)")
     routes = await gateway_routes()
-    api = _find_api(await exposed_apis(ctx, routes), args["api"])
-    method = args["method"].upper()
+    api = _find_api(await exposed_apis(ctx, routes), wanted)
+    method = method.upper()
     if method not in api.methods:
         raise ToolError(f"{api.name} accepts {', '.join(api.methods)} over MCP, not {method}")
-    path = args.get("path")
     if path is None:
         exact = [p for p in api.paths if not p.endswith("*")]
         if len(api.paths) != 1 or not exact:
@@ -2061,34 +2094,49 @@ async def _call_api(ctx: ToolContext, args: dict[str, Any]) -> TextFile:
     if not _surely_served_by(routes, route, method, matched):
         # A route as or more specific might answer: one nobody offered.
         raise ToolError(f"{method} {path} may be served by another gateway route, not {api.name}")
-    query = args.get("query") or {}
     _check_query(query)
-    body = args.get("body")
-    if body is not None and method != "POST":
-        raise ToolError("body is sent with POST only")
-
     # A key-auth route's upstream gets the key as on a direct call (APISIX
     # removes it only with hide_credentials, which routes leave off); an open
     # route's upstream, which no key unlocks, never sees it.
     headers = {"apikey": ctx.api_key} if api.key_auth else {}
+    return _ApiCall(api, method, path, query, headers, _route_timeout(route))
+
+
+async def _send_api_call(
+    ctx: ToolContext,
+    call: _ApiCall,
+    *,
+    json_body: Any = None,
+    form: dict[str, Any] | None = None,
+    files: list[tuple[str, tuple[str, bytes, str]]] | None = None,
+    no_answer: str = "",
+    binary_is_error: bool = True,
+) -> TextFile:
+    """Send ``call`` and return the answer as text, cut at the result cap.
+
+    A binary answer is never returned. To call_api that is a failed read
+    (``binary_is_error``); where the request itself was the point, the status
+    alone says whether it worked.
+    """
     await ctx.db.rollback()  # see _gateway: free the meta-store connection first
     max_bytes = ctx.settings.max_result_bytes
-    deadline = _route_timeout(route)
     try:
         # The read timeout is per chunk; the deadline bounds a trickling answer.
-        async with asyncio.timeout(deadline), _gateway_client().stream(
-            method,
-            path,
-            params={name: _query_value(value) for name, value in query.items()},
-            json=body if method == "POST" and body is not None else None,
-            headers=headers,
-            timeout=httpx.Timeout(deadline, connect=10),
+        async with asyncio.timeout(call.deadline), _gateway_client().stream(
+            call.method,
+            call.path,
+            params=call.params,
+            json=json_body,
+            data=form,
+            files=files,
+            headers=call.headers,
+            timeout=httpx.Timeout(call.deadline, connect=10),
         ) as response:
             content_type = response.headers.get("content-type", "")
             meta: dict[str, Any] = {
-                "api": api.route_id,
-                "method": method,
-                "path": path,
+                "api": call.api.route_id,
+                "method": call.method,
+                "path": call.path,
                 "status": response.status_code,
                 "content_type": content_type or None,
             }
@@ -2097,15 +2145,17 @@ async def _call_api(ctx: ToolContext, args: dict[str, Any]) -> TextFile:
                 return TextFile(
                     meta=meta,
                     text=f"[binary response not returned: {content_type}]",
-                    is_error=True,
+                    is_error=binary_is_error or response.status_code >= 400,
                 )
             data, truncated = await _read_capped(response, max_bytes)
             encoding = response.charset_encoding or "utf-8"
     except TimeoutError as exc:
-        raise ToolError(f"{api.name} did not answer within {deadline:.0f}s") from exc
+        raise ToolError(
+            f"{call.api.name} did not answer within {call.deadline:.0f}s{no_answer}"
+        ) from exc
     except httpx.HTTPError as exc:
-        logger.warning("MCP call_api %s %s failed: %s", method, path, exc)
-        raise ToolError("The UniBridge gateway did not answer") from exc
+        logger.warning("MCP call_api %s %s failed: %s", call.method, call.path, exc)
+        raise ToolError(f"The UniBridge gateway did not answer{no_answer}") from exc
     try:
         decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
     except LookupError:
@@ -2116,6 +2166,16 @@ async def _call_api(ctx: ToolContext, args: dict[str, Any]) -> TextFile:
         text=decoder.decode(data, final=not truncated),
         is_error=meta["status"] >= 400,
     )
+
+
+async def _call_api(ctx: ToolContext, args: dict[str, Any]) -> TextFile:
+    call = await _resolve_api_call(
+        ctx, args["api"], args["method"], args.get("path"), args.get("query") or {}
+    )
+    body = args.get("body")
+    if body is not None and call.method != "POST":
+        raise ToolError("body is sent with POST only")
+    return await _send_api_call(ctx, call, json_body=body)
 
 
 API_TOOLS = (
@@ -2142,7 +2202,8 @@ API_TOOLS = (
             "path is the full request path and must fall under one of the API's "
             "paths; query holds URL parameters; body is sent as JSON with POST. "
             "Returns the HTTP status, content type and response text, cut at the "
-            "result size cap (truncated=true). Binary responses are not returned. "
+            "result size cap (truncated=true). Binary responses are not returned "
+            "(download_artifact stages a GET's binary answer as a file). "
             "POST can change data on the other system."
         ),
         group="apis",
@@ -2164,6 +2225,454 @@ API_TOOLS = (
         read_only=False,
         open_world=True,
     ),
+)
+
+
+# ── Artifacts ───────────────────────────────────────────────────────────────
+
+# Where download_artifact reads from, and what each source is named by.
+ARTIFACT_SOURCES = ("s3", "nas", "api")
+_SOURCE_ARGS: dict[str, tuple[str, ...]] = {
+    "s3": ("connection", "bucket", "key"),
+    "nas": ("connection", "path"),
+    "api": ("api",),
+}
+_SOURCE_OPTIONAL_ARGS: dict[str, tuple[str, ...]] = {"api": ("path", "query")}
+_SOURCE_HELP = {
+    "s3": "s3 = an S3 object, named by connection, bucket and key",
+    "nas": "nas = a file on a NAS share, named by connection and path",
+    "api": (
+        "api = the answer to a GET on a gateway API from search_apis, named by api "
+        "and path (plus query)"
+    ),
+}
+# How much of a failed fetch's body is read for the error text.
+_ERROR_BODY_BYTES = 2_000
+# What one upload_staged_artifacts call may carry.
+_UPLOAD_MAX_ARTIFACTS = 10
+_UPLOAD_MAX_FIELDS = 64
+_UPLOAD_MAX_FIELD_BYTES = 256 * 1024
+_FORM_NAME_MAX_CHARS = 200
+_DEFAULT_FILE_FIELD = "file"
+_UNKNOWN_OUTCOME = "; whether it processed the upload is not known"
+
+
+def holds_an_artifact_source(ctx: ToolContext) -> bool:
+    """Whether the key holds a grant download_artifact could read through."""
+    return (
+        has_route(ctx.user, GROUP_ROUTES["s3"])
+        or has_route(ctx.user, GROUP_ROUTES["nas"])
+        or bool(offered_route_ids(ctx))
+    )
+
+
+def _artifact_sources(ctx: ToolContext, offers_api: bool) -> tuple[str, ...]:
+    """The sources this key can read: each follows its own group and grant."""
+    groups = ctx.settings.tool_groups
+    available = {
+        "s3": groups.s3 and has_route(ctx.user, GROUP_ROUTES["s3"]),
+        "nas": groups.nas and has_route(ctx.user, GROUP_ROUTES["nas"]),
+        "api": offers_api,
+    }
+    return tuple(source for source in ARTIFACT_SOURCES if available[source])
+
+
+def _error_text(data: bytes) -> str:
+    text = data.decode("utf-8", errors="replace")
+    try:
+        return _json_error_detail(json.loads(text))
+    except ValueError:
+        return text[:500] or "no detail"
+
+
+def _declared_length(headers: httpx.Headers) -> int | None:
+    """The body length the sender announced, if it says one about these bytes."""
+    if headers.get("content-encoding"):
+        return None  # the length of the encoded form, not of what we read
+    value = headers.get("content-length", "")
+    return int(value) if value.isdigit() else None
+
+
+async def _fetch_file(
+    ctx: ToolContext,
+    path: str,
+    *,
+    params: dict[str, Any],
+    headers: dict[str, str],
+    deadline: float,
+    limits: mcp_artifacts.Limits,
+) -> tuple[bytes, httpx.Headers]:
+    """GET ``path`` through the gateway and return the whole body with its headers.
+
+    Whole or not at all: any answer but 200, a body over the artifact size
+    limit, one shorter than announced, a broken connection and a transfer past
+    ``deadline`` all raise, so nothing partial is ever staged. A redirect is
+    not a file and is not followed: its target is a URL nobody offered.
+    """
+    await ctx.db.rollback()  # see _gateway: free the meta-store connection first
+    try:
+        async with asyncio.timeout(deadline), _gateway_client().stream(
+            "GET",
+            path,
+            params=params,
+            # Byte counts are checked below: ask for the bytes as they are.
+            headers={**headers, "accept-encoding": "identity"},
+            timeout=httpx.Timeout(deadline, connect=10),
+        ) as response:
+            if response.status_code >= 400:
+                detail, _ = await _read_capped(response, _ERROR_BODY_BYTES)
+                raise ToolError(f"{response.status_code}: {_error_text(detail)}")
+            if 300 <= response.status_code < 400:
+                raise ToolError(
+                    f"{response.status_code}: the answer is a redirect, which is not "
+                    "followed; nothing was staged"
+                )
+            if response.status_code != 200:
+                raise ToolError(
+                    f"{response.status_code}: the answer carries no whole file; nothing was staged"
+                )
+            declared = _declared_length(response.headers)
+            if declared is not None and declared > limits.max_bytes:
+                raise ToolError(mcp_artifacts.too_large(limits).detail)
+            data = await mcp_artifacts.collect(response.aiter_bytes(), limits.max_bytes)
+            if data is None:
+                raise ToolError(mcp_artifacts.too_large(limits).detail)
+            if declared is not None and declared != len(data):
+                raise ToolError(
+                    f"The transfer was cut short ({len(data)} of {declared} bytes); nothing was staged"
+                )
+            return data, response.headers
+    except TimeoutError as exc:
+        raise ToolError(
+            f"The file did not arrive within {deadline:.0f}s; nothing was staged"
+        ) from exc
+    except httpx.HTTPError as exc:
+        logger.warning("MCP download_artifact GET %s failed: %s", path, exc)
+        raise ToolError("The transfer was interrupted; nothing was staged") from exc
+
+
+_DISPOSITION_EXTENDED = re.compile(r"filename\*\s*=\s*utf-8''([^;]+)", re.IGNORECASE)
+_DISPOSITION_QUOTED = re.compile(r'filename\s*=\s*"((?:[^"\\]|\\.)*)"', re.IGNORECASE)
+_DISPOSITION_TOKEN = re.compile(r"filename\s*=\s*([^;\s\"]+)", re.IGNORECASE)
+
+
+def _response_filename(headers: httpx.Headers, fallback: str) -> str:
+    """The file name a response gives itself, else the last segment of ``fallback``."""
+    disposition = headers.get("content-disposition", "")
+    candidates: list[str] = []
+    if match := _DISPOSITION_EXTENDED.search(disposition):
+        try:
+            candidates.append(unquote(match.group(1).strip(), errors="strict"))
+        except UnicodeDecodeError:
+            pass
+    if match := _DISPOSITION_QUOTED.search(disposition):
+        candidates.append(re.sub(r"\\(.)", r"\1", match.group(1)))
+    elif match := _DISPOSITION_TOKEN.search(disposition):
+        candidates.append(match.group(1))
+    candidates.append(fallback)
+    for candidate in candidates:
+        if name := mcp_artifacts.clean_filename(candidate):
+            return name
+    return mcp_artifacts.FALLBACK_FILENAME
+
+
+async def _download_artifact(
+    ctx: ToolContext, args: dict[str, Any], sources: tuple[str, ...]
+) -> dict[str, Any]:
+    if not ctx.api_key:
+        raise ToolError("Tool calls need the API key in the apikey header (call /api/mcp)")
+    source = args["source"]
+    if source not in sources:
+        raise ToolError(f"source must be one of: {', '.join(sources)}")
+    given = {name for name, value in args.items() if value is not None} - {"source"}
+    missing = [name for name in _SOURCE_ARGS[source] if name not in given]
+    if missing:
+        raise ToolError(f"source={source} needs: {', '.join(missing)}")
+    extra = sorted(given - {*_SOURCE_ARGS[source], *_SOURCE_OPTIONAL_ARGS.get(source, ())})
+    if extra:
+        raise ToolError(f"source={source} does not take: {', '.join(extra)}")
+
+    # Each source is read with the REST request a direct caller would send, so
+    # the route's own checks decide: the key's connections, the bucket
+    # allow-list, the share root (paths are resolved there), the route grant.
+    own_key = {"apikey": ctx.api_key}
+    deadline = float(settings_manager.query_route_timeout + _GATEWAY_TIMEOUT_MARGIN_SECONDS)
+    if source == "s3":
+        _require_s3(ctx.user, args["connection"])
+        path = f"/api/s3/{_segment(args['connection'])}/objects/download"
+        params: dict[str, Any] = {"bucket": args["bucket"], "key": args["key"]}
+        headers, name_hint = own_key, args["key"]
+    elif source == "nas":
+        _require_nas(ctx.user, args["connection"])
+        path = f"/api/nas/{_segment(args['connection'])}/download"
+        params = {"path": args["path"]}
+        headers, name_hint = own_key, args["path"]
+    else:
+        call = await _resolve_api_call(ctx, args["api"], "GET", args.get("path"), args.get("query") or {})
+        path, params, headers, deadline = call.path, call.params, call.headers, call.deadline
+        name_hint = call.path
+
+    limits = mcp_artifacts.Limits.of(ctx.settings)
+    consumer = ctx.user.consumer_name
+    try:
+        with mcp_artifacts.transfer_slot(consumer, limits):
+            data, response_headers = await _fetch_file(
+                ctx, path, params=params, headers=headers, deadline=deadline, limits=limits
+            )
+            artifact, cached = await mcp_artifacts.stage(
+                ctx.db,
+                consumer=consumer,
+                source=source,
+                filename=_response_filename(response_headers, name_hint),
+                content_type=mcp_artifacts.clean_content_type(response_headers.get("content-type")),
+                content=data,
+                limits=limits,
+            )
+    except mcp_artifacts.ArtifactError as exc:
+        raise ToolError(exc.detail) from exc
+    return {**artifact.describe(), "cached": cached}
+
+
+def _download_artifact_tool(sources: tuple[str, ...]) -> Tool:
+    """download_artifact for the sources this key can read."""
+
+    async def handler(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+        return await _download_artifact(ctx, args, sources)
+
+    properties: dict[str, Any] = {
+        "source": {"type": "string", "enum": list(sources), "description": "Where the file is"}
+    }
+    if "s3" in sources or "nas" in sources:
+        properties["connection"] = _CONNECTION_ARG
+    if "s3" in sources:
+        properties["bucket"] = _BUCKET_ARG
+        properties["key"] = _KEY_ARG
+    if "nas" in sources or "api" in sources:
+        places = [
+            text
+            for source, text in (
+                ("nas", "nas: path relative to the share root"),
+                ("api", "api: request path, optional for a single exact path"),
+            )
+            if source in sources
+        ]
+        properties["path"] = {"type": "string", "minLength": 1, "description": "; ".join(places)}
+    if "api" in sources:
+        properties["api"] = {"type": "string", "minLength": 1, "description": "API id or exact name"}
+        properties["query"] = {"type": "object", "description": "URL query parameters (api)"}
+    return Tool(
+        name="download_artifact",
+        title="Download file as artifact",
+        description=(
+            "Stage a whole file, binary or text, for the MCP host to fetch: "
+            + "; ".join(_SOURCE_HELP[source] for source in sources)
+            + ". The result holds no bytes: it gives artifact_id, filename, size, sha256, "
+            "mime and expires_at. The MCP host downloads the bytes with "
+            "GET /api/mcp/artifacts/<artifact_id> and the same API key, checks them "
+            "against size and sha256 and saves them where you can read them; the file "
+            "is in your workspace only once the host reports its saved path. A file "
+            "over the administrator's size limit is refused, never cut. Staging the "
+            "same content again returns the same artifact (cached=true)."
+        ),
+        group="artifacts",
+        input_schema=_object_schema(properties, ("source",)),
+        handler=handler,
+    )
+
+
+def _form_name(name: Any, what: str) -> str:
+    if (
+        not isinstance(name, str)
+        or not 1 <= len(name) <= _FORM_NAME_MAX_CHARS
+        or not mcp_artifacts.upload_relay.storable_text(name)
+    ):
+        raise ToolError(
+            f"{what} must be a form field name: 1 to {_FORM_NAME_MAX_CHARS} characters, "
+            "no control characters"
+        )
+    return name
+
+
+def _form_fields(fields: dict[str, Any]) -> dict[str, str | list[str]]:
+    """The text parts of the upload, each value rendered as a form sends it."""
+    if len(fields) > _UPLOAD_MAX_FIELDS:
+        raise ToolError(f"fields holds at most {_UPLOAD_MAX_FIELDS} entries")
+    form: dict[str, str | list[str]] = {}
+    used = 0
+    for name, value in fields.items():
+        _form_name(name, f"fields key {name!r}")
+        values = value if isinstance(value, list) else [value]
+        if not values or not all(isinstance(item, (str, int, float)) for item in values):
+            raise ToolError(
+                f"fields.{name} must be a string, number, boolean or a non-empty list of them"
+            )
+        texts = [
+            "true" if item is True else "false" if item is False else str(item) for item in values
+        ]
+        try:
+            used += sum(len(name.encode()) + len(item.encode()) for item in texts)
+        except UnicodeEncodeError as exc:
+            raise ToolError(f"fields.{name} is not valid Unicode text") from exc
+        form[name] = texts if isinstance(value, list) else texts[0]
+    if used > _UPLOAD_MAX_FIELD_BYTES:
+        raise ToolError(f"fields holds at most {_UPLOAD_MAX_FIELD_BYTES} bytes in all")
+    return form
+
+
+def _artifact_parts(items: list[Any]) -> list[tuple[str, str, str | None]]:
+    """(form field, artifact id, file name override) for each file part."""
+    if not 1 <= len(items) <= _UPLOAD_MAX_ARTIFACTS:
+        raise ToolError(f"artifacts holds 1 to {_UPLOAD_MAX_ARTIFACTS} entries")
+    parts: list[tuple[str, str, str | None]] = []
+    for index, item in enumerate(items):
+        where = f"artifacts[{index}]"
+        if not isinstance(item, dict) or not isinstance(item.get("artifact_id"), str):
+            raise ToolError(f"{where} must be an object with an artifact_id")
+        unknown = sorted(set(item) - {"artifact_id", "field", "filename"})
+        if unknown:
+            raise ToolError(f"{where} does not take: {', '.join(unknown)}")
+        field_name = item.get("field")
+        field_name = (
+            _DEFAULT_FILE_FIELD if field_name is None else _form_name(field_name, f"{where}.field")
+        )
+        filename = item.get("filename")
+        if filename is not None:
+            filename = mcp_artifacts.clean_filename(filename)
+            if filename is None:
+                raise ToolError(f"{where}.filename is not a usable file name")
+        parts.append((field_name, item["artifact_id"], filename))
+    return parts
+
+
+async def _upload_staged_artifacts(ctx: ToolContext, args: dict[str, Any]) -> TextFile:
+    destination = args["destination"]
+    unknown = sorted(set(destination) - {"api", "path", "query"})
+    if unknown:
+        raise ToolError(f"destination does not take: {', '.join(unknown)}")
+    api, path, query = destination.get("api"), destination.get("path"), destination.get("query")
+    if not isinstance(api, str) or not api:
+        raise ToolError("destination.api must name an API from search_apis")
+    if path is not None and (not isinstance(path, str) or not path):
+        raise ToolError("destination.path must be a request path")
+    if query is not None and not isinstance(query, dict):
+        raise ToolError("destination.query must be an object")
+    # The destination is a path on an API the administrator offered and this
+    # key holds: never a URL, never a route nobody offered.
+    call = await _resolve_api_call(ctx, api, "POST", path, query or {})
+    form = _form_fields(args.get("fields") or {})
+    parts = _artifact_parts(args["artifacts"])
+
+    limits = mcp_artifacts.Limits.of(ctx.settings)
+    consumer = ctx.user.consumer_name
+    files: list[tuple[str, tuple[str, bytes, str]]] = []
+    sent: list[dict[str, Any]] = []
+    try:
+        with mcp_artifacts.transfer_slot(consumer, limits):
+            # Every artifact is read back and checked before the first byte
+            # leaves: one that is missing, expired or damaged sends nothing.
+            total = 0
+            for index, (field_name, artifact_id, filename) in enumerate(parts):
+                try:
+                    artifact, content = await mcp_artifacts.read(ctx.db, consumer, artifact_id)
+                except mcp_artifacts.ArtifactError as exc:
+                    raise ToolError(f"artifacts[{index}]: {exc.detail}; nothing was sent") from exc
+                total += artifact.size
+                if total > limits.max_bytes:
+                    raise ToolError(
+                        "One upload carries at most "
+                        f"{limits.max_bytes // mcp_artifacts.MIB} MiB of artifacts; nothing was sent"
+                    )
+                name = filename or artifact.filename
+                files.append((field_name, (name, content, artifact.content_type)))
+                sent.append(
+                    {
+                        "field": field_name,
+                        "artifact_id": artifact.id,
+                        "filename": name,
+                        "size": artifact.size,
+                        "sha256": artifact.sha256,
+                    }
+                )
+            # The upload happened whatever the answer looks like: a binary
+            # answer to a 2xx is left out, not reported as a failure the model
+            # would answer by sending everything again.
+            result = await _send_api_call(
+                ctx, call, form=form, files=files, no_answer=_UNKNOWN_OUTCOME, binary_is_error=False
+            )
+    except mcp_artifacts.ArtifactError as exc:
+        raise ToolError(exc.detail) from exc
+    result.meta["artifacts"] = sent
+    logger.info(
+        "MCP artifacts uploaded: consumer=%s api=%s status=%s artifacts=%s",
+        consumer,
+        call.api.route_id,
+        result.meta["status"],
+        ",".join(item["artifact_id"] for item in sent),
+    )
+    return result
+
+
+UPLOAD_STAGED_ARTIFACTS_TOOL = Tool(
+    name="upload_staged_artifacts",
+    title="Upload staged artifacts",
+    description=(
+        "Send staged artifacts to a gateway API from search_apis as one "
+        "multipart/form-data POST. Each entry of artifacts goes out as a file part: "
+        "artifact_id (from download_artifact, or from the MCP host staging a "
+        "workspace file with POST /api/mcp/artifacts), the form field it is sent in "
+        '(default "file") and optionally another filename. fields are the text '
+        "parts. Only artifacts this API key staged can be sent, and each is checked "
+        "against its recorded size and SHA-256 first: if one is missing, expired or "
+        "damaged, nothing is sent. Returns the HTTP status, content type and "
+        "response text like call_api (a binary answer is left out; the status says "
+        "whether the upload worked), plus the artifacts sent. Artifacts stay staged "
+        "until they expire, so a refused upload can be sent again; after a timeout "
+        "the API may still have processed it. The POST can change data on the other "
+        "system."
+    ),
+    group="artifacts",
+    input_schema=_object_schema(
+        {
+            "destination": {
+                "type": "object",
+                "description": "Where to post",
+                "properties": {
+                    "api": {"type": "string", "description": "API id or exact name"},
+                    "path": {
+                        "type": "string",
+                        "description": "Request path under the API's paths (optional for a single exact path)",
+                    },
+                    "query": {"type": "object", "description": "URL query parameters"},
+                },
+                "required": ["api"],
+                "additionalProperties": False,
+            },
+            "artifacts": {
+                "type": "array",
+                "description": f"File parts, 1 to {_UPLOAD_MAX_ARTIFACTS}",
+                "minItems": 1,
+                "maxItems": _UPLOAD_MAX_ARTIFACTS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "artifact_id": {"type": "string", "description": "Staged artifact id"},
+                        "field": {"type": "string", "description": 'Form field name (default "file")'},
+                        "filename": {"type": "string", "description": "File name to send instead of the staged one"},
+                    },
+                    "required": ["artifact_id"],
+                    "additionalProperties": False,
+                },
+            },
+            "fields": {
+                "type": "object",
+                "description": "Text form fields: name → string, number, boolean or a list of them",
+            },
+        },
+        ("destination", "artifacts"),
+    ),
+    handler=_upload_staged_artifacts,
+    read_only=False,
+    open_world=True,
 )
 
 
@@ -2293,8 +2802,16 @@ async def build_tools(ctx: ToolContext) -> list[Tool]:
         tools.extend(NETWORK_READ_TOOLS)
         if has_route(user, NETWORK_WRITE_ROUTE_ID):
             tools.extend(NETWORK_WRITE_TOOLS)
-    if groups.apis and await _offers_an_api(ctx):
+    offers_api = groups.apis and await _offers_an_api(ctx)
+    if offers_api:
         tools.extend(API_TOOLS)
+    if groups.artifacts:
+        # No grant of their own: each follows the source or destination it uses.
+        sources = _artifact_sources(ctx, offers_api)
+        if sources:
+            tools.append(_download_artifact_tool(sources))
+        if offers_api:
+            tools.append(UPLOAD_STAGED_ARTIFACTS_TOOL)
     if groups.external:
         tools.extend(await external_tools(ctx))
     return tools

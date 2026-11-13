@@ -12,9 +12,11 @@ UNIBRIDGE_META_PG_USER="${UNIBRIDGE_META_PG_USER:-unibridge}"
 
 # Tables whose ROWS never go into a backup (the table itself is still created
 # on restore, empty). upload_relay_files holds decrypted user files that wait
-# a few minutes for the Noah server (app/routers/upload_relay.py): a backup
-# must not turn them into copies that live as long as the snapshot.
-UNIBRIDGE_META_SKIP_DATA_TABLES=(upload_relay_files)
+# a few minutes for the Noah server (app/routers/upload_relay.py), and
+# mcp_artifacts copies of S3/NAS/API files staged for an MCP host for minutes
+# (app/services/mcp_artifacts.py): a backup must not turn either into copies
+# that live as long as the snapshot.
+UNIBRIDGE_META_SKIP_DATA_TABLES=(upload_relay_files mcp_artifacts)
 
 unibridge_meta_kind() {
   local url="${META_DB_URL:-}"
