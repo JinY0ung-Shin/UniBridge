@@ -7,12 +7,15 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import case, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import CurrentUser, require_permission
 from app.database import get_db
 from app.models import (
     AdminAuditLog,
+    AlertSettings,
+    AlertState,
     AuditLog,
     DBConnection,
     Permission,
@@ -20,9 +23,15 @@ from app.models import (
     Role,
 )
 from app.routers.query import (
+    TEMPLATE_HEALTH_RULE,
+    _encode_sample_params,
     _template_audit_snapshot,
     _to_template_response,
     _validate_read_only_template_sql,
+    _validate_sample_params,
+    decode_sample_params,
+    _reload_template,
+    verify_template_sample,
 )
 from app.schemas import (
     AdminAuditLogResponse,
@@ -33,6 +42,8 @@ from app.schemas import (
     PermissionCreate,
     PermissionResponse,
     QueryTemplateCreate,
+    QueryTemplateHealth,
+    QueryTemplateHealthResponse,
     QueryTemplateResponse,
     QueryTemplateUpdate,
     QueryTemplateUsage,
@@ -715,6 +726,52 @@ async def query_template_usage(
     )
 
 
+@router.get("/admin/query/template-health", response_model=QueryTemplateHealthResponse)
+async def query_template_health(
+    _admin: CurrentUser = Depends(require_permission("query.settings.read")),
+    db: AsyncSession = Depends(get_db),
+) -> QueryTemplateHealthResponse:
+    """Latest sample run of every checked template, as the alert checker saved it.
+
+    Read from the persisted alert state, so both blue/green colors answer the
+    same thing although only the active one runs the checks. A template that
+    has not been checked yet (no sample, monitoring off, or the first round
+    still to come) is absent.
+    """
+    interval = (
+        await db.execute(
+            select(AlertSettings.template_check_interval_minutes).where(AlertSettings.id == 1)
+        )
+    ).scalar_one_or_none()
+    rows = (
+        await db.execute(select(AlertState).where(AlertState.alert_type == TEMPLATE_HEALTH_RULE))
+    ).scalars().all()
+    templates: dict[str, QueryTemplateHealth] = {}
+    for row in rows:
+        try:
+            current = (json.loads(row.details) if row.details else {}).get("current")
+        except (TypeError, ValueError):
+            current = None
+        if not isinstance(current, dict) or current.get("level") not in ("ok", "warning", "error"):
+            continue
+        alerting = row.status == "alert"
+        templates[row.target] = QueryTemplateHealth(
+            level=current["level"],
+            reason=current.get("reason"),
+            message=current.get("message") or "",
+            error=current.get("error"),
+            row_count=current.get("row_count"),
+            elapsed_ms=current.get("elapsed_ms"),
+            checked_at=current.get("checked_at"),
+            alerting=alerting,
+            since=row.since if alerting else None,
+        )
+    return QueryTemplateHealthResponse(
+        interval_minutes=1440 if interval is None else interval,
+        templates=templates,
+    )
+
+
 @router.post(
     "/admin/query/templates",
     response_model=QueryTemplateResponse,
@@ -737,6 +794,11 @@ async def create_query_template(
 
     connection = await _get_database_or_404(db, body.database)
     _validate_read_only_template_sql(body.sql, connection.db_type)
+    _validate_sample_params(body.sample_params, body.sql, connection.db_type)
+    await verify_template_sample(
+        db, _admin, database=body.database, sql=body.sql,
+        sample_params=body.sample_params, timeout=body.timeout,
+    )
 
     template = QueryTemplate(
         path=body.path,
@@ -747,9 +809,19 @@ async def create_query_template(
         default_limit=body.default_limit,
         timeout=body.timeout,
         enabled=body.enabled,
+        sample_params=_encode_sample_params(body.sample_params),
+        monitor_enabled=body.monitor_enabled,
     )
     db.add(template)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # Somebody took the path meanwhile (the sample run takes a moment).
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Query template path '{body.path}' already exists",
+        ) from exc
     await db.refresh(template)
 
     await log_admin_action(
@@ -792,9 +864,28 @@ async def update_query_template(
 
     new_database = body.database if body.database is not None else template.db_alias
     new_sql = body.sql if body.sql is not None else template.sql
-    if body.database is not None or body.sql is not None:
+    sample_changed = "sample_params" in body.model_fields_set
+    old_sample = decode_sample_params(template.sample_params)
+    new_sample = body.sample_params if sample_changed else old_sample
+    if body.database is not None or body.sql is not None or sample_changed:
         connection = await _get_database_or_404(db, new_database)
         _validate_read_only_template_sql(new_sql, connection.db_type)
+        # The sample follows the SQL and the database: its names are checked
+        # against the result, and it is run when any of the three is different.
+        # Not otherwise: the page sends the whole template back, and a
+        # description must stay editable while the sample finds nothing.
+        _validate_sample_params(new_sample, new_sql, connection.db_type)
+        if (
+            new_sample != old_sample
+            or new_sql != template.sql
+            or new_database != template.db_alias
+        ):
+            template_id = template.id
+            await verify_template_sample(
+                db, _admin, database=new_database, sql=new_sql, sample_params=new_sample,
+                timeout=body.timeout if "timeout" in body.model_fields_set else template.timeout,
+            )
+            template = await _reload_template(db, template_id, normalized_path)
 
     if body.name is not None:
         template.name = body.name
@@ -810,6 +901,10 @@ async def update_query_template(
         template.timeout = body.timeout
     if body.enabled is not None:
         template.enabled = body.enabled
+    if sample_changed:
+        template.sample_params = _encode_sample_params(new_sample)
+    if body.monitor_enabled is not None:
+        template.monitor_enabled = body.monitor_enabled
 
     await db.commit()
     await db.refresh(template)

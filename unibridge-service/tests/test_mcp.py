@@ -608,6 +608,54 @@ async def test_clickhouse_template_params_reach_run_template(client, seeded_db, 
     assert "Missing template param(s): pairs" in _text(result)
 
 
+async def test_neo4j_template_params_reach_run_template(client, seeded_db, gateway):
+    # Cypher binds are $name; a (:Label) or [:TYPE] is not one. Both used to be
+    # misread, so run_template refused every parameterized Neo4j template.
+    await _create_template(
+        seeded_db,
+        path="graph/friends",
+        sql="MATCH (:Person {id: $id})-[:KNOWS]->(f) RETURN f.name AS name",
+    )
+    headers = await _create_api_key(seeded_db)
+    with _postgres(db_type="neo4j"), patch(
+        "app.routers.query.connection_manager.get_neo4j_driver", return_value=MagicMock()
+    ), patch(
+        "app.routers.query.connection_manager.get_database_name", return_value="neo4j"
+    ), patch(
+        "app.routers.query.execute_neo4j_query",
+        new_callable=AsyncMock,
+        return_value=_query_response([["bob"]]),
+    ) as execute_neo4j:
+        result = await _call(client, headers, "search_templates", {"query": "friends"})
+        assert json.loads(_text(result))["templates"][0]["params"] == ["id"]
+        result = await _call(
+            client, headers, "run_template", {"template": "graph/friends", "params": {"id": 7}}
+        )
+        assert result["isError"] is False, result
+        assert execute_neo4j.await_args.kwargs["params"] == {"id": 7}
+        result = await _call(client, headers, "run_template", {"template": "graph/friends"})
+    assert "Missing template param(s): id" in _text(result)
+
+
+async def test_search_templates_shows_a_saved_sample(client, seeded_db, gateway):
+    await _create_template(seeded_db)
+    await _create_template(seeded_db, path="reports/all", sql="SELECT id FROM users")
+    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as db:
+        template = (
+            await db.execute(select(QueryTemplate).where(QueryTemplate.path == "reports/users"))
+        ).scalar_one()
+        template.sample_params = '{"id": 7}'
+        await db.commit()
+    headers = await _create_api_key(seeded_db)
+    with _postgres():
+        result = await _call(client, headers, "search_templates", {})
+    found = {t["template"]: t for t in json.loads(_text(result))["templates"]}
+    # An example call known to return rows; absent when the template has none.
+    assert found["reports/users"]["sample_params"] == {"id": 7}
+    assert "sample_params" not in found["reports/all"]
+
+
 async def test_run_template_asks_for_a_path_when_names_collide(client, seeded_db, gateway):
     await _create_template(seeded_db, path="a/users")
     await _create_template(seeded_db, path="b/users")

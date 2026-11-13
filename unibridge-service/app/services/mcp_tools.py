@@ -684,18 +684,31 @@ def _template_matches(template: QueryTemplateResponse, terms: list[str]) -> bool
     return all(term in haystack for term in terms)
 
 
+def _template_params(template: QueryTemplateResponse) -> list[str]:
+    # The engine decides the placeholder syntax: $name on Neo4j, where a
+    # :Label would otherwise read as a :name bind.
+    return extract_template_params(
+        template.sql, connection_manager.get_db_type(template.database)
+    )
+
+
 def _template_summary(template: QueryTemplateResponse) -> dict[str, Any]:
     sql = template.sql
     if len(sql) > _TEMPLATE_SQL_PREVIEW:
         sql = sql[:_TEMPLATE_SQL_PREVIEW] + " …"
-    return {
+    summary = {
         "template": template.path,
         "name": template.name,
         "description": template.description,
         "database": template.database,
-        "params": extract_template_params(template.sql),
+        "params": _template_params(template),
         "sql": sql,
     }
+    # A saved sample is a call known to return rows: an example of the values
+    # each param takes.
+    if template.sample_params is not None:
+        summary["sample_params"] = template.sample_params
+    return summary
 
 
 async def _search_templates(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -741,7 +754,7 @@ def _find_template(
 
 async def _run_template(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     template = _find_template(await accessible_templates(ctx), args["template"])
-    expected = extract_template_params(template.sql)
+    expected = _template_params(template)
     given: dict[str, Any] = args.get("params") or {}
     missing = [name for name in expected if name not in given]
     if missing:
@@ -768,7 +781,8 @@ TEMPLATE_TOOLS = (
             "Find saved query templates this API key may run. Every word of query "
             "must appear in the template's path, name or description; leave it out "
             "to list them all. Each result gives the template id to pass to "
-            "run_template, its database, its params and its SQL."
+            "run_template, its database, its params and its SQL, and "
+            "sample_params when the template has a saved example call."
         ),
         group="templates",
         input_schema=_object_schema(
@@ -808,7 +822,10 @@ TEMPLATE_TOOLS = (
                 },
                 "params": {
                     "type": "object",
-                    "description": "Values for the template's :name params",
+                    "description": (
+                        "Values for the template's params, by the names in the "
+                        "params field from search_templates"
+                    ),
                 },
                 "row_limit": {
                     "type": "integer",

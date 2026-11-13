@@ -1790,3 +1790,71 @@ class TestNetworkMap:
         # app1 never got planned, so its opening cannot be either.
         openings = [r for r in results if r["section"] == "firewall_openings"]
         assert [r["action"] for r in openings] == ["error", "create"]
+
+
+# ── Query template samples ──────────────────────────────────────────────────
+
+
+async def test_template_sample_round_trips_and_old_files_keep_it(
+    client, admin_token, seeded_db, apisix_state
+):
+    await seed_full_config(seeded_db)
+    async with factory_for(seeded_db)() as db:
+        template = (await db.execute(select(QueryTemplate))).scalar_one()
+        template.sql = "SELECT * FROM orders WHERE day = :day"
+        template.sample_params = '{"day": "2026-11-01"}'
+        template.monitor_enabled = False
+        await db.commit()
+
+    exported = await client.get("/admin/config/export", headers=auth_header(admin_token))
+    item = exported.json()["sections"]["query_templates"][0]
+    assert item["sample_params"] == {"day": "2026-11-01"}
+    assert item["monitor_enabled"] is False
+
+    # A file exported before samples existed carries neither key: the import
+    # updates the template and leaves the target's sample alone.
+    old_item = {k: v for k, v in item.items() if k not in ("sample_params", "monitor_enabled")}
+    with patch("app.routers.query.execute_query", new_callable=AsyncMock) as execute_query:
+        resp = await do_import(
+            client, admin_token, dry_run=False, sections=["query_templates"],
+            doc=export_doc(query_templates=[{**old_item, "name": "Renamed"}]),
+        )
+        assert resp.json()["summary"]["error"] == 0, resp.text
+        async with factory_for(seeded_db)() as db:
+            template = (await db.execute(select(QueryTemplate))).scalar_one()
+            assert template.name == "Renamed"
+            assert json.loads(template.sample_params) == {"day": "2026-11-01"}
+            assert template.monitor_enabled is False
+
+        # With the keys the file decides, and the sample is stored without a run.
+        resp = await do_import(
+            client, admin_token, dry_run=False, sections=["query_templates"],
+            doc=export_doc(query_templates=[
+                {**item, "sample_params": {"day": "2026-12-01"}, "monitor_enabled": True}
+            ]),
+        )
+        assert resp.json()["summary"]["error"] == 0, resp.text
+        execute_query.assert_not_awaited()
+    async with factory_for(seeded_db)() as db:
+        template = (await db.execute(select(QueryTemplate))).scalar_one()
+        assert json.loads(template.sample_params) == {"day": "2026-12-01"}
+        assert template.monitor_enabled is True
+
+    # An old file that changes the SQL's params would leave the kept sample
+    # without a value to bind: refused rather than installed broken.
+    resp = await do_import(
+        client, admin_token, dry_run=False, sections=["query_templates"],
+        doc=export_doc(query_templates=[
+            {**old_item, "sql": "SELECT * FROM orders WHERE region = :region"}
+        ]),
+    )
+    row = rows_for(resp.json(), "query_templates")[0]
+    assert row["action"] == "error" and "region" in row["reason"]
+
+    # A sample that does not name the template's params is refused like the API does.
+    resp = await do_import(
+        client, admin_token, dry_run=False, sections=["query_templates"],
+        doc=export_doc(query_templates=[{**item, "sample_params": {"other": 1}}]),
+    )
+    row = rows_for(resp.json(), "query_templates")[0]
+    assert row["action"] == "error" and "sample_params" in row["reason"]

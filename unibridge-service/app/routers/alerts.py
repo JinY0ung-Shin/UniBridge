@@ -122,6 +122,7 @@ def _build_settings_response(settings: AlertSettings) -> AlertSettingsResponse:
         server_gpu_util_target_pct=settings.server_gpu_util_target_pct,
         server_disk_forecast_hours=settings.server_disk_forecast_hours,
         repeat_alert_after_cycles=settings.repeat_alert_after_cycles,
+        template_check_interval_minutes=settings.template_check_interval_minutes,
         updated_at=settings.updated_at,
     )
 
@@ -144,6 +145,7 @@ def _settings_audit_snapshot(settings: AlertSettings) -> dict[str, Any]:
         "server_gpu_util_target_pct": settings.server_gpu_util_target_pct,
         "server_disk_forecast_hours": settings.server_disk_forecast_hours,
         "repeat_alert_after_cycles": settings.repeat_alert_after_cycles,
+        "template_check_interval_minutes": settings.template_check_interval_minutes,
     }
 
 
@@ -364,6 +366,8 @@ async def update_alert_settings(
         settings.server_disk_forecast_hours = body.server_disk_forecast_hours
     if body.repeat_alert_after_cycles is not None:
         settings.repeat_alert_after_cycles = body.repeat_alert_after_cycles
+    if body.template_check_interval_minutes is not None:
+        settings.template_check_interval_minutes = body.template_check_interval_minutes
     _validate_settings_disk_thresholds(settings)
     await db.commit()
     await db.refresh(settings)
@@ -1019,6 +1023,11 @@ async def alert_status(
 
     settings_row = (await db.execute(select(AlertSettings).where(AlertSettings.id == 1))).scalar_one_or_none()
     interval = settings_row.check_interval_seconds if settings_row else 60
+    # Template samples run on their own cadence; judged by the health cycle's
+    # they would read as stale between any two rounds.
+    template_interval = (
+        settings_row.template_check_interval_minutes if settings_row else 1440
+    ) * 60
     recovery_count = settings_row.resolve_after_successes if settings_row else 5
     trigger_count = settings_row.trigger_after_failures if settings_row else 2
     items: list[AlertStatusResponse] = []
@@ -1034,7 +1043,8 @@ async def alert_status(
         details = entry.get("details", {})
         current = details.get("current")
         checked_at = datetime.fromisoformat(current["checked_at"]) if current else None
-        stale = checked_at is None or (datetime.now(timezone.utc) - checked_at).total_seconds() > interval * 2
+        entry_interval = max(interval, template_interval) if rule_type == "template_health" else interval
+        stale = checked_at is None or (datetime.now(timezone.utc) - checked_at).total_seconds() > entry_interval * 2
         items.append(AlertStatusResponse(
             current=current,
             incident=details.get("incident"),
@@ -1043,9 +1053,10 @@ async def alert_status(
             stale=stale,
             success_count=entry.get("success_count", 0),
             fail_count=entry.get("fail_count", 0),
-            resolve_after_successes=recovery_count,
+            # Template recoveries are not damped (see run_template_checks).
+            resolve_after_successes=1 if rule_type == "template_health" else recovery_count,
             trigger_after_failures=trigger_count,
-            check_interval_seconds=interval,
+            check_interval_seconds=entry_interval,
             # ``target`` stays the friendly label for backwards compatibility;
             # resource_type/resource_id carry the addressable mute key.
             target=entry["display_target"],

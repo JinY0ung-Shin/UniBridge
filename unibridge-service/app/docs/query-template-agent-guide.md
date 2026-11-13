@@ -25,7 +25,8 @@ apikey: <API_KEY>
 ```
 
 The response contains enabled templates that the key can execute. Each item
-includes its stable `path`, SQL, database, limits, and `updated_at` value.
+includes its stable `path`, SQL, database, limits, `updated_at` value, and
+`sample_params`: a saved example call that returns rows, or `null`.
 
 ## Execute a template
 
@@ -236,13 +237,15 @@ apikey: <API_KEY>
   "name": "New users report",
   "description": "List recently created users",
   "database": "maindb",
-  "sql": "SELECT id, name FROM users WHERE created_at >= :since",
+  "sql": "SELECT id, name FROM users WHERE created_at >= CAST(:since AS timestamptz)",
   "default_limit": 50,
-  "timeout": 30
+  "timeout": 30,
+  "sample_params": {"since": "2026-01-01T00:00:00Z"}
 }
 ```
 
-`name`, `database`, and `sql` are required. New agent-created templates are
+`name`, `database`, and `sql` are required. Send `sample_params` with every
+template you create (see "Sample params"). New agent-created templates are
 always enabled. The path must not already exist, and the database, SQL, and
 referenced tables must be within the API key's access scope. Slash separates
 path segments; each segment may contain letters, digits, `.`, `_`, and `-`, and
@@ -271,6 +274,7 @@ The editable fields are:
 - `description`
 - `default_limit` (`null` clears it)
 - `timeout` (`null` clears it)
+- `sample_params` (`null` removes the sample; see "Sample params")
 
 At least one editable field is required. `path`, `name`, `database`, and
 `enabled` cannot be changed through PATCH. Extra fields are rejected.
@@ -283,6 +287,49 @@ When another user or agent changed the template after discovery, the API returns
 Edited SQL must remain read-only (`SELECT` or safe `EXPLAIN`) and may reference
 only databases and tables allowed by the editing key. These restrictions are
 also enforced again when the template is executed.
+
+## Sample params
+
+`sample_params` is one working call of the template: an Object with a value
+for every parameter in its SQL, using the value formats above, or `{}` for a
+template without parameters. Discovery returns it with each template, so it
+also shows other agents how to call the template.
+
+UniBridge uses the sample to check that the template keeps working:
+
+- When a template is created or edited with a sample, UniBridge runs it once
+  before saving. The request is refused with `400` when the sample's names do
+  not match the SQL's parameters (missing or extra), when the run fails, or
+  when it **returns no rows**.
+- That run is your key's own query: the key needs the `query-api` grant as
+  well as the write grant (otherwise `403`), and the run is recorded and
+  limited like any query the key executes. A key without `query-api` can
+  still create and edit templates, only without a sample.
+- Afterwards the sample is run periodically. A run that fails raises an alert
+  for the administrators; a run that returns no rows raises a warning.
+
+So choose values that return at least one row now and will keep returning
+rows: an id that is not going to be deleted, a wide or old date range rather
+than "today". Do not use values whose result is expected to become empty.
+
+When you change `sql` so that its parameters change, send the matching
+`sample_params` in the same PATCH; a stored sample that no longer fits the new
+SQL is refused. To add a sample to an existing template, PATCH only
+`sample_params`:
+
+```http
+PATCH /api/query/templates/reports/users
+Content-Type: application/json
+apikey: <API_KEY>
+
+{
+  "sample_params": {"id": 1}
+}
+```
+
+A sample is optional, but a template without one is not checked. Whether a
+saved sample is checked periodically is an administrator's switch; it cannot be
+set through this API.
 
 ## Delete a template
 
@@ -305,8 +352,10 @@ template; there is no agent undo endpoint.
 - `200`: request succeeded.
 - `201`: template created.
 - `204`: template deleted.
-- `400`: SQL is not a read-only template or the path is invalid.
-- `403`: required route, database, or table access is missing.
+- `400`: SQL is not a read-only template, the path is invalid, or the sample
+  does not fit the SQL, failed to run, or returned no rows.
+- `403`: required route, database, or table access is missing (a sample also
+  needs `query-api`).
 - `404`: template or database does not exist.
 - `409`: the create path already exists or `expected_updated_at` is stale.
 - `422`: request fields are missing, invalid, or not editable by an agent.

@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import Any, get_args
 
-from app.schemas import QUERY_RENDER_DESCRIPTION, QueryRender
+from app.schemas import QUERY_RENDER_DESCRIPTION, SAMPLE_PARAMS_DESCRIPTION, QueryRender
 from app.services.apisix_system_resources import (
     LLM_BI_NOT_FOUND_ROUTE_ID,
     LLM_NOT_FOUND_ROUTE_ID,
@@ -44,12 +44,23 @@ _ALLOWED_OPERATIONS = {"get", "put", "post", "delete", "options", "head", "patch
 
 # Named bind parameters in template SQL, in either style the executors pass
 # ``params`` to: ``:name`` (SQLAlchemy) and ClickHouse's server-side
-# ``{name:Type}``. The ``:name`` lookbehind skips Postgres-style casts (``::int``)
-# and already-matched binds. A ClickHouse type never contains braces, so
+# ``{name:Type}``. The ``:name`` lookbehind skips Postgres-style casts (``::int``),
+# already-matched binds, SQLAlchemy's escaped colon (``\:``) and ClickHouse's
+# JSON subcolumn type (``data.id.:Int64``). A ClickHouse type never contains braces, so
 # ``[^{}]*`` spans nested types such as ``{a:Array(Tuple(p1 String, p2 Int64))}``.
 _BIND_PARAM_RE = re.compile(
     r"\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*:[^{}]*\}"
-    r"|(?<![:\w]):([A-Za-z_][A-Za-z0-9_]*)"
+    r"|(?<![:\w.\\]):([A-Za-z_][A-Za-z0-9_]*)"
+)
+
+# Cypher parameters are ``$name``. A label or relationship type (``(:Person)``,
+# ``[:KNOWS]``) reads as a ``:name`` bind, so Neo4j has its own pattern. The
+# first alternatives consume string literals, quoted names and comments, so a
+# ``$`` inside them is not a parameter.
+_CYPHER_PARAM_RE = re.compile(
+    r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`[^`]*`|//[^\n]*|/\*.*?\*/"
+    r"|\$([A-Za-z_][A-Za-z0-9_]*)",
+    re.DOTALL,
 )
 
 _WILDCARD_PARAM = {
@@ -139,20 +150,28 @@ def _route_operation(route: dict[str, Any], method: str, has_wildcard: bool) -> 
     return operation
 
 
-def extract_template_params(sql: str) -> list[str]:
-    """Bind parameter names (``:name``, ``{name:Type}``) in first-seen order."""
-    seen: list[str] = []
-    # One alternation, so the ``:Type`` inside a ClickHouse placeholder is
-    # consumed with it and never read as a ``:name`` bind.
-    for clickhouse_name, named in _BIND_PARAM_RE.findall(sql or ""):
-        name = clickhouse_name or named
-        if name not in seen:
-            seen.append(name)
-    return seen
+def extract_template_params(sql: str, db_type: str | None = None) -> list[str]:
+    """Bind parameter names in first-seen order.
+
+    ``:name`` and ``{name:Type}`` for the SQL engines (and when ``db_type`` is
+    not known), ``$name`` for Neo4j, none for GraphDB (SPARQL takes no binds).
+    """
+    if db_type == "graphdb":
+        return []
+    if db_type == "neo4j":
+        names = [name for name in _CYPHER_PARAM_RE.findall(sql or "") if name]
+    else:
+        # One alternation, so the ``:Type`` inside a ClickHouse placeholder is
+        # consumed with it and never read as a ``:name`` bind.
+        names = [
+            clickhouse_name or named
+            for clickhouse_name, named in _BIND_PARAM_RE.findall(sql or "")
+        ]
+    return list(dict.fromkeys(names))
 
 
-def _template_request_body(template: Any) -> dict[str, Any]:
-    param_names = extract_template_params(template.sql)
+def _template_request_body(template: Any, db_type: str | None = None) -> dict[str, Any]:
+    param_names = extract_template_params(template.sql, db_type)
     params_schema: dict[str, Any] = {
         "type": "object",
         "description": "Named bind parameters for the stored query.",
@@ -192,7 +211,7 @@ def _template_request_body(template: Any) -> dict[str, Any]:
     }
 
 
-def _template_operation(template: Any) -> dict[str, Any]:
+def _template_operation(template: Any, db_type: str | None = None) -> dict[str, Any]:
     description = template.description or ""
     db_note = f"Runs against database '{template.db_alias}'."
     operation: dict[str, Any] = {
@@ -201,7 +220,7 @@ def _template_operation(template: Any) -> dict[str, Any]:
         "operationId": f"post-query-template-{template.path}".replace("/", "-"),
         "tags": [TAG_QUERY_TEMPLATE],
         "security": [{SECURITY_SCHEME_NAME: []}],
-        "requestBody": _template_request_body(template),
+        "requestBody": _template_request_body(template, db_type),
         "responses": {
             "200": {
                 "description": "Query result rows.",
@@ -265,6 +284,14 @@ def _template_create_operation() -> dict[str, Any]:
                                 "maximum": 300,
                                 "nullable": True,
                             },
+                            "sample_params": {
+                                "type": "object",
+                                "nullable": True,
+                                "additionalProperties": True,
+                                "description": SAMPLE_PARAMS_DESCRIPTION
+                                + " The sample is run before the template is saved; "
+                                "the request is refused if it fails or returns no rows.",
+                            },
                         },
                     }
                 }
@@ -272,6 +299,7 @@ def _template_create_operation() -> dict[str, Any]:
         },
         "responses": {
             "201": {"description": "Created query template."},
+            "400": {"description": "Not read-only, or the sample failed or returned no rows."},
             "403": {"description": "Write route, database, or table access is missing."},
             "409": {"description": "The requested template path already exists."},
         },
@@ -279,7 +307,7 @@ def _template_create_operation() -> dict[str, Any]:
 
 
 def _template_update_operation(template: Any | None = None) -> dict[str, Any]:
-    editable_fields = ("sql", "description", "default_limit", "timeout")
+    editable_fields = ("sql", "description", "default_limit", "timeout", "sample_params")
     operation = {
         "summary": f"Edit {template.name}" if template is not None else "Edit a query template",
         "description": (
@@ -319,6 +347,14 @@ def _template_update_operation(template: Any | None = None) -> dict[str, Any]:
                                 "minimum": 1,
                                 "maximum": 300,
                                 "nullable": True,
+                            },
+                            "sample_params": {
+                                "type": "object",
+                                "nullable": True,
+                                "additionalProperties": True,
+                                "description": SAMPLE_PARAMS_DESCRIPTION
+                                + " The sample is run before the template is saved; "
+                                "the request is refused if it fails or returns no rows.",
                             },
                             "expected_updated_at": {
                                 "type": "string",
@@ -385,13 +421,17 @@ def build_openapi_spec(
     *,
     server_url: str,
     version: str = "unknown",
+    db_types: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build an OpenAPI 3.0 document from APISIX routes and query templates.
 
     ``templates`` accepts ``QueryTemplate`` ORM rows (or any objects exposing
     ``path``, ``name``, ``description``, ``db_alias``, ``sql``,
-    ``default_limit``, ``timeout`` and ``enabled``).
+    ``default_limit``, ``timeout`` and ``enabled``). ``db_types`` maps a
+    database alias to its engine, which decides the template's parameter
+    syntax (see :func:`extract_template_params`).
     """
+    db_types = db_types or {}
     paths: dict[str, dict[str, Any]] = {}
 
     for route in routes:
@@ -431,7 +471,7 @@ def build_openapi_spec(
             continue
         path = f"{QUERY_TEMPLATE_PUBLIC_PREFIX}/{template.path}"
         path_item = paths.setdefault(path, {})
-        path_item["post"] = _template_operation(template)
+        path_item["post"] = _template_operation(template, db_types.get(template.db_alias))
         if "patch" in template_write_methods:
             path_item["patch"] = _template_update_operation(template)
         if "delete" in template_write_methods:

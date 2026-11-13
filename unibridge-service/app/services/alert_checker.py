@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -1401,6 +1402,328 @@ async def run_single_check(
         )
 
 
+# ── Query template samples ──────────────────────────────────────────────────
+#
+# Every enabled template that has a sample is run with it (see
+# ``app.routers.query.run_template_sample``): an error or a timeout is a
+# critical ``template_health`` alert, a run without rows a warning. These are
+# real queries on the registered databases, so they keep their own, slow
+# cadence (AlertSettings.template_check_interval_minutes, a day by default,
+# 0 = off) and run as a task beside the health cycle rather than inside it: a
+# slow template must not hold up the DB, route and server checks.
+#
+# The runs sit on a clock, not on "so long after the last one": the interval
+# is laid out from 08:00 KST, so the default of a day means every morning at
+# 08:00 KST (12 hours: 08:00 and 20:00; a week: Monday 08:00). A template is
+# due when such a moment has passed since its last check, as the persisted
+# state records it — a restart or a blue/green switch does not run them all
+# again. Four things run sooner: a template never checked (a new sample), one
+# edited since its last check (so a fix closes its alert within a minute), one
+# that failed without alerting yet, which is run once more minutes later so
+# that the mail does not wait for tomorrow's run to confirm it, and one whose
+# alert is open, which is run every half hour until it returns rows again.
+
+TEMPLATE_HEALTH_RULE = "template_health"
+_TEMPLATE_MONITOR_LABEL = "쿼리 템플릿 샘플 점검"
+_TEMPLATE_CHECK_DEFAULT_MINUTES = 1440
+_TEMPLATE_CHECK_MAX_MINUTES = 10080
+# Failing but not yet alerting: the wait before the run that confirms it.
+_TEMPLATE_CONFIRM_MINUTES = 10
+# Alerting: how often to look whether it has been fixed.
+_TEMPLATE_RECHECK_MINUTES = 30
+# Where the interval is laid out from: a Monday, 08:00 KST.
+_TEMPLATE_SCHEDULE_ANCHOR = datetime(2026, 1, 5, 8, 0, tzinfo=timezone(timedelta(hours=9)))
+# alert_state / alert_history.display_target are String(200).
+_DISPLAY_TARGET_MAX_CHARS = 200
+_MAX_CONCURRENT_TEMPLATE_CHECKS = 2
+
+_template_round_task: asyncio.Task | None = None
+
+
+async def _get_template_check_interval_minutes() -> int | None:
+    """Minutes between rounds, 0 = off; None when the setting cannot be read.
+
+    Unreadable is not "use the default": without the meta DB neither the
+    templates nor an administrator's "off" can be read, so the cycle is skipped.
+    """
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(AlertSettings.template_check_interval_minutes).where(AlertSettings.id == 1)
+            )
+            value = result.scalar_one_or_none()
+    except Exception as exc:
+        logger.warning("Failed to load the template check interval: %s", exc)
+        return None
+    if value is None:
+        return _TEMPLATE_CHECK_DEFAULT_MINUTES
+    return min(_TEMPLATE_CHECK_MAX_MINUTES, max(0, int(value)))
+
+
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def _template_schedule_slot(moment: datetime, interval_minutes: int) -> int:
+    """Number of the interval ``moment`` falls in, counted from the anchor."""
+    return int((moment - _TEMPLATE_SCHEDULE_ANCHOR).total_seconds() // (interval_minutes * 60))
+
+
+def _template_check_due(
+    entry: dict[str, Any] | None,
+    interval_minutes: int,
+    now: datetime,
+    updated_at: datetime | None = None,
+) -> bool:
+    """Whether a template's next sample run has come (see the schedule above)."""
+    if entry is None:
+        return True
+    current = (entry.get("details") or {}).get("current") or {}
+    try:
+        checked_at = _utc(datetime.fromisoformat(current["checked_at"]))
+    except (KeyError, TypeError, ValueError):
+        return True
+    if updated_at is not None and _utc(updated_at) > checked_at:
+        return True
+    if entry["status"] == "alert":
+        sooner = _TEMPLATE_RECHECK_MINUTES
+    elif entry.get("fail_count", 0) > 0:
+        sooner = _TEMPLATE_CONFIRM_MINUTES
+    else:
+        sooner = None
+    if (
+        sooner is not None
+        and (now - checked_at).total_seconds() >= min(sooner, interval_minutes) * 60
+    ):
+        return True
+    return _template_schedule_slot(now, interval_minutes) > _template_schedule_slot(
+        checked_at, interval_minutes
+    )
+
+
+async def _forget_unchecked_template_states(state: AlertStateManager, checked: set[str]) -> None:
+    """Drop the state of templates that are no longer checked.
+
+    Deleted, disabled, sample removed, monitoring switched off, or the whole
+    check switched off: an alert nobody is watching any more must not stay
+    open. One that recipients were told about is closed with a notice first,
+    mute or not — the rule every recovery follows — so nobody is left with an
+    incident that never ends. This is the only place template state is
+    dropped; the template routes leave it to the next cycle for that reason.
+    """
+    for entry in state.get_entries(alert_type=TEMPLATE_HEALTH_RULE):
+        path = entry["target"]
+        if path in checked:
+            continue
+        if entry["status"] == "alert" and not entry["pending_notify"]:
+            database = (entry["details"].get("current") or {}).get("database")
+            try:
+                await dispatch_alert(
+                    resource_type="template", resource_id=path,
+                    alert_type="resolved", rule_type=TEMPLATE_HEALTH_RULE,
+                    target=path,
+                    message=(
+                        f"Query template '{path}' is no longer checked (it was deleted or "
+                        "disabled, or its sample check was switched off). Its open alert "
+                        "is closed."
+                    ),
+                    display_target=entry["display_target"],
+                    monitor_label=_TEMPLATE_MONITOR_LABEL,
+                    assignee_refs=[("db", database)] if database else None,
+                )
+            except Exception:
+                logger.exception("Could not announce the closed alert of template '%s'", path)
+        await _discard_state_safely(state, TEMPLATE_HEALTH_RULE, path)
+
+
+def _template_alert_message(path: str, database: str, outbound: str, result: Any) -> str:
+    if outbound == "resolved":
+        return f"Query template '{path}' sample run returns rows again."
+    if result.reason == "no_rows":
+        return (
+            f"Query template '{path}' sample run returned no rows on database "
+            f"'{database}'. The template still runs; its sample no longer finds data."
+        )
+    if result.reason == "timeout":
+        return f"Query template '{path}' sample run timed out on database '{database}'."
+    if result.reason == "blocked":
+        return f"Query template '{path}' can no longer run: {result.message}"
+    detail = f" Database error: {result.error}" if result.error else ""
+    return f"Query template '{path}' sample run failed on database '{database}'.{detail}"
+
+
+async def run_template_checks(
+    state: AlertStateManager,
+    *,
+    trigger_after_failures: int,
+    mutes: MuteIndex | None = None,
+    interval_minutes: int | None = None,
+    now: datetime | None = None,
+) -> None:
+    """One round: run the monitored templates whose sample run is due.
+
+    ``interval_minutes`` is the schedule (:func:`_template_check_due`, judged
+    at ``now``); without it every monitored template is run.
+
+    A template whose database is not connected in this process, or already
+    has an open ``db_health`` alert, is skipped with its state left as it was:
+    the database alert covers it, and one mail per template would bury it.
+
+    Recovery is not damped (``resolve_after_successes=1``): a run that
+    returned rows is direct evidence, and at this cadence the shared setting
+    would keep a fixed template in alert for days.
+    """
+    from app.models import QueryTemplate
+    from app.routers import query as query_router
+    from app.services.connection_manager import connection_manager
+
+    if mutes is None:
+        mutes = await load_mute_index()
+
+    async with async_session() as db:
+        rows = (
+            await db.execute(
+                select(
+                    QueryTemplate.path, QueryTemplate.name, QueryTemplate.db_alias,
+                    QueryTemplate.sql, QueryTemplate.sample_params, QueryTemplate.timeout,
+                    QueryTemplate.updated_at,
+                )
+                .where(
+                    QueryTemplate.enabled.is_(True),
+                    QueryTemplate.monitor_enabled.is_(True),
+                    QueryTemplate.sample_params.is_not(None),
+                )
+                .order_by(QueryTemplate.path.asc())
+            )
+        ).all()
+
+    await _forget_unchecked_template_states(state, {row.path for row in rows})
+
+    limiter = asyncio.Semaphore(_MAX_CONCURRENT_TEMPLATE_CHECKS)
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    async def _one(row: Any) -> Any:
+        if interval_minutes is not None and not _template_check_due(
+            state.get_entry(TEMPLATE_HEALTH_RULE, row.path), interval_minutes, now,
+            row.updated_at,
+        ):
+            return None
+        db_type = connection_manager.get_db_type(row.db_alias)
+        if db_type == "unknown" or state.get_status("db_health", row.db_alias) == "alert":
+            return None
+        sample = query_router.decode_sample_params(row.sample_params)
+        if sample is None:
+            return None
+        async with limiter:
+            try:
+                return await query_router.run_template_sample(
+                    database=row.db_alias, db_type=db_type, sql=row.sql,
+                    sample_params=sample, timeout=row.timeout,
+                )
+            except Exception:
+                logger.exception("Sample check of query template '%s' crashed", row.path)
+                return None
+
+    results = await asyncio.gather(*(_one(row) for row in rows))
+
+    for row, result in zip(rows, results):
+        if result is None:
+            continue
+        path = row.path
+        display = f"{row.name} ({path})"
+        if len(display) > _DISPLAY_TARGET_MAX_CHARS:
+            # Name (100) plus path (200) can outgrow the column; Postgres would
+            # refuse the state row, and the alert would re-fire after a restart.
+            display = path
+        is_healthy = result.level == "ok"
+        severity = None if is_healthy else ("warning" if result.level == "warning" else "critical")
+        was_alerting = state.get_status(TEMPLATE_HEALTH_RULE, path) == "alert"
+        transition = state.update(
+            TEMPLATE_HEALTH_RULE, path,
+            is_healthy=is_healthy,
+            observation={
+                "message": result.message, "reason": result.reason, "level": result.level,
+                "error": result.error, "row_count": result.row_count,
+                "elapsed_ms": result.elapsed_ms, "database": row.db_alias,
+            },
+            display_target=display,
+            severity=severity,
+            trigger_after_failures=trigger_after_failures,
+            resolve_after_successes=1,
+        )
+        announced = _is_announced(state, TEMPLATE_HEALTH_RULE, path, was_alerting)
+        outbound = _outbound_alert_type(
+            state, mutes,
+            rule_type=TEMPLATE_HEALTH_RULE, target=path, transition=transition,
+            resource_type="template", resource_id=path,
+            was_alerting=was_alerting,
+        )
+        await _persist_state_safely(state, TEMPLATE_HEALTH_RULE, path)
+        if outbound:
+            # A template has no assignees of its own; the people who own its
+            # database hear about it, next to the administrators.
+            dispatched = await dispatch_alert(
+                resource_type="template", resource_id=path,
+                alert_type=outbound, rule_type=TEMPLATE_HEALTH_RULE,
+                target=path,
+                message=_template_alert_message(path, row.db_alias, outbound, result),
+                display_target=display, monitor_label=_TEMPLATE_MONITOR_LABEL,
+                severity=severity,
+                assignee_refs=[("db", row.db_alias)],
+            )
+            await _handle_dispatch_result(
+                state, outbound=outbound, result=dispatched,
+                rule_type=TEMPLATE_HEALTH_RULE, target=path, announced=announced,
+            )
+
+
+async def _template_round(
+    state: AlertStateManager, trigger_after_failures: int, interval_minutes: int
+) -> None:
+    try:
+        await run_template_checks(
+            state, trigger_after_failures=trigger_after_failures,
+            interval_minutes=interval_minutes,
+        )
+    except Exception:
+        logger.exception("Query template sample check round failed")
+
+
+async def _maybe_start_template_checks(
+    state: AlertStateManager, trigger_after_failures: int
+) -> None:
+    """Start a round unless one is still running; it runs only what is due.
+
+    Every cycle, because due is per template: most rounds read the template
+    list, find nothing to run and end.
+    """
+    global _template_round_task
+    interval_minutes = await _get_template_check_interval_minutes()
+    if interval_minutes is None:
+        return
+    if interval_minutes <= 0:
+        await _forget_unchecked_template_states(state, set())
+        return
+    if _template_round_task is not None and not _template_round_task.done():
+        return
+    _template_round_task = asyncio.create_task(
+        _template_round(state, trigger_after_failures, interval_minutes)
+    )
+
+
+async def stop_template_checks() -> None:
+    """Cancel a round in flight; shutdown disposes the engines it is querying."""
+    task = _template_round_task
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except BaseException:  # noqa: BLE001 - CancelledError included; nothing to do with either
+        pass
+
+
 async def _reload_state_on_activation(state: AlertStateManager) -> bool:
     """Replace the in-memory alert state with the persisted rows; False on failure."""
     try:
@@ -1466,6 +1789,15 @@ async def start_checker(state: AlertStateManager) -> asyncio.Task:
                     await server_monitor.reconcile_scrape_targets()
                 except Exception:
                     logger.exception("Scrape-target reconcile failed")
+                # Query template samples: their own cadence, in their own task.
+                try:
+                    await _maybe_start_template_checks(state, trigger_after_failures)
+                except Exception:
+                    logger.exception("Could not start the query template sample checks")
+            else:
+                # A demoted color must not go on querying, persisting state and
+                # mailing next to the new active one.
+                await stop_template_checks()
             elapsed = _monotonic() - cycle_start
             await asyncio.sleep(max(0.0, check_interval - elapsed))
 

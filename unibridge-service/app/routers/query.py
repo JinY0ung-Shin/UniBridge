@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Coroutine
+from dataclasses import dataclass
 from datetime import datetime
 import json
 import logging
@@ -40,6 +41,7 @@ from app.services.apisix_system_resources import (
 )
 from app.services.audit import log_admin_action, log_query
 from app.services.connection_manager import connection_manager
+from app.services.openapi_export import extract_template_params
 from app.services.query_executor import (
     RenderedQueryResult,
     check_permission,
@@ -494,29 +496,13 @@ async def _run_query(
                     detail=f"Role '{user.role}' is not allowed to execute {statement_type.upper()} on '{req.database}'",
                 )
 
-    # 2b. SQL keyword blacklist check. For SPARQL, keep the operator-defined
-    # deny-list but skip SQL parser/default keyword rules that are SQL-specific.
-    if db_type == "graphdb":
-        blocked_error = _extra_blocked_keyword_error(
-            strip_sparql_strings_and_comments(req.sql),
-            settings_manager.blocked_sql_keywords,
+    # 2b. SQL keyword blacklist check.
+    blocked_error = _blocked_sql_error(req.sql, db_type)
+    if blocked_error:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=blocked_error,
         )
-        if blocked_error:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=blocked_error,
-            )
-    else:
-        blocked_error = validate_sql(
-            req.sql,
-            extra_blocked=settings_manager.blocked_sql_keywords,
-            db_type=db_type,
-        )
-        if blocked_error:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=blocked_error,
-            )
 
     # 2c. Table-level access check (API keys and JWT non-admin users), applied
     # to every statement type — extract_tables covers FROM/JOIN/INTO/UPDATE.
@@ -558,58 +544,7 @@ async def _run_query(
     # 4. Execute the query
     query_started_at = time.monotonic()
     try:
-        if db_type == "clickhouse":
-            ch_client = connection_manager.get_clickhouse_client(req.database)
-            ch_lock = connection_manager.get_clickhouse_lock(req.database)
-            if (
-                req.render == "database"
-                and statement_type in ("select", "explain")
-                and clickhouse_can_render_json(ch_client)
-            ):
-                response = await execute_clickhouse_json(
-                    client=ch_client, sql=req.sql, params=req.params,
-                    limit=req.limit, timeout=req.timeout, lock=ch_lock,
-                )
-            else:
-                response = await execute_clickhouse_query(
-                    client=ch_client, sql=req.sql, params=req.params,
-                    limit=req.limit, timeout=req.timeout, lock=ch_lock,
-                )
-        elif db_type == "neo4j":
-            neo4j_driver = connection_manager.get_neo4j_driver(req.database)
-            response = await execute_neo4j_query(
-                driver=neo4j_driver,
-                database=connection_manager.get_database_name(req.database),
-                query=req.sql,
-                params=req.params,
-                limit=req.limit,
-                timeout=req.timeout,
-                readonly=statement_type == "select",
-            )
-        elif db_type == "graphdb":
-            graphdb_client = connection_manager.get_graphdb_client(req.database)
-            repo = connection_manager.get_database_name(req.database)
-            # Re-derive the raw SPARQL form (select/ask/construct/describe) for
-            # the executor; statement_type was normalized to "select" by
-            # _detect_statement_type so the upstream gates pass uniformly.
-            raw_form = detect_sparql_statement_type(req.sql)
-            effective_limit = min(
-                req.limit or settings_manager.default_row_limit, settings.MAX_ROW_LIMIT
-            )
-            response = await execute_graphdb_query(
-                client=graphdb_client,
-                repo=repo,
-                sparql=req.sql,
-                statement_type=raw_form,
-                limit=effective_limit,
-                timeout=req.timeout,
-            )
-        else:
-            engine = connection_manager.get_engine(req.database)
-            response = await execute_query(
-                engine=engine, sql=req.sql, params=req.params,
-                limit=req.limit, timeout=req.timeout, db_type=db_type,
-            )
+        response = await _execute_request(req, db_type, statement_type)
     except asyncio.TimeoutError:
         metrics.record_query(
             db_alias=req.database,
@@ -694,6 +629,82 @@ async def _run_query(
     return response
 
 
+def _blocked_sql_error(sql: str, db_type: str) -> str | None:
+    """The SQL keyword/function deny-list, or None when the statement may run.
+
+    For SPARQL, keep the operator-defined deny-list but skip SQL parser/default
+    keyword rules that are SQL-specific.
+    """
+    if db_type == "graphdb":
+        return _extra_blocked_keyword_error(
+            strip_sparql_strings_and_comments(sql),
+            settings_manager.blocked_sql_keywords,
+        )
+    return validate_sql(
+        sql,
+        extra_blocked=settings_manager.blocked_sql_keywords,
+        db_type=db_type,
+    )
+
+
+async def _execute_request(
+    req: QueryRequest, db_type: str, statement_type: str
+) -> QueryResponse | RenderedQueryResult:
+    """Run an already authorized request on the executor of its database type."""
+    if db_type == "clickhouse":
+        ch_client = connection_manager.get_clickhouse_client(req.database)
+        ch_lock = connection_manager.get_clickhouse_lock(req.database)
+        if (
+            req.render == "database"
+            and statement_type in ("select", "explain")
+            and clickhouse_can_render_json(ch_client)
+        ):
+            return await execute_clickhouse_json(
+                client=ch_client, sql=req.sql, params=req.params,
+                limit=req.limit, timeout=req.timeout, lock=ch_lock,
+            )
+        else:
+            return await execute_clickhouse_query(
+                client=ch_client, sql=req.sql, params=req.params,
+                limit=req.limit, timeout=req.timeout, lock=ch_lock,
+            )
+    elif db_type == "neo4j":
+        neo4j_driver = connection_manager.get_neo4j_driver(req.database)
+        return await execute_neo4j_query(
+            driver=neo4j_driver,
+            database=connection_manager.get_database_name(req.database),
+            query=req.sql,
+            params=req.params,
+            limit=req.limit,
+            timeout=req.timeout,
+            readonly=statement_type == "select",
+        )
+    elif db_type == "graphdb":
+        graphdb_client = connection_manager.get_graphdb_client(req.database)
+        repo = connection_manager.get_database_name(req.database)
+        # Re-derive the raw SPARQL form (select/ask/construct/describe) for
+        # the executor; statement_type was normalized to "select" by
+        # _detect_statement_type so the upstream gates pass uniformly.
+        raw_form = detect_sparql_statement_type(req.sql)
+        effective_limit = min(
+            req.limit or settings_manager.default_row_limit, settings.MAX_ROW_LIMIT
+        )
+        return await execute_graphdb_query(
+            client=graphdb_client,
+            repo=repo,
+            sparql=req.sql,
+            statement_type=raw_form,
+            limit=effective_limit,
+            timeout=req.timeout,
+        )
+    else:
+        engine = connection_manager.get_engine(req.database)
+        return await execute_query(
+            engine=engine, sql=req.sql, params=req.params,
+            limit=req.limit, timeout=req.timeout, db_type=db_type,
+        )
+
+
 def _validate_read_only_template_sql(sql: str, db_type: str) -> None:
     """Reject any template SQL that is not a read-only SELECT/EXPLAIN.
 
@@ -714,6 +725,219 @@ def _validate_read_only_template_sql(sql: str, db_type: str) -> None:
         )
 
 
+# ── Template samples ────────────────────────────────────────────────────────
+#
+# A sample is the params one call of the template takes. It is run when the
+# template is saved and then by the alert checker (rule ``template_health``),
+# as the service itself: no API key, no rate limit, no audit row and no query
+# metric, so the checks never show up as somebody's usage.
+
+# AlertState.alert_type of the periodic check; alert_checker has the same name.
+TEMPLATE_HEALTH_RULE = "template_health"
+
+_SAMPLE_ERROR_MAX_CHARS = 300
+
+
+@dataclass(frozen=True)
+class TemplateSampleResult:
+    """Outcome of one sample run.
+
+    ``level`` is ``ok`` (at least one row), ``warning`` (ran, no rows) or
+    ``error`` (did not run to the end); ``reason`` names the cause of the
+    last two: ``no_rows``, ``timeout``, ``query_error`` or ``blocked``.
+    """
+
+    level: str
+    message: str
+    reason: str | None = None
+    error: str | None = None
+    row_count: int | None = None
+    elapsed_ms: int | None = None
+
+
+def decode_sample_params(value: str | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring a query template sample that is not valid JSON")
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def _encode_sample_params(value: dict[str, Any] | None) -> str | None:
+    return None if value is None else json.dumps(value, ensure_ascii=False)
+
+
+def _validate_sample_params(sample: dict[str, Any] | None, sql: str, db_type: str) -> None:
+    """A sample names exactly the template's parameters, no more and no fewer."""
+    if sample is None:
+        return
+    expected = extract_template_params(sql, db_type)
+    missing = [name for name in expected if name not in sample]
+    unknown = sorted(set(sample) - set(expected))
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"sample_params is missing a value for: {', '.join(missing)}",
+        )
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "sample_params has value(s) the template does not use: "
+                f"{', '.join(unknown)}"
+            ),
+        )
+
+
+def _sample_error_text(exc: BaseException) -> str:
+    """First line of a driver error: the database's message, without the
+    statement and bound values SQLAlchemy appends on the following lines."""
+    lines = str(exc).strip().splitlines()
+    text = lines[0].strip() if lines else ""
+    return (text or type(exc).__name__)[:_SAMPLE_ERROR_MAX_CHARS]
+
+
+async def run_template_sample(
+    *,
+    database: str,
+    db_type: str,
+    sql: str,
+    sample_params: dict[str, Any],
+    timeout: int | None,
+) -> TemplateSampleResult:
+    """Run a template once with its sample, asking for a single row.
+
+    Applies what a caller's run would meet after authorization — the read-only
+    rule and the keyword/function deny-list — so a template that an
+    administrator's later setting blocks is reported as broken too.
+    """
+    try:
+        _validate_read_only_template_sql(sql, db_type)
+        statement_type = _detect_statement_type(sql, db_type)
+    except HTTPException as exc:
+        return TemplateSampleResult("error", str(exc.detail), reason="blocked")
+    blocked_error = _blocked_sql_error(sql, db_type)
+    if blocked_error:
+        return TemplateSampleResult("error", blocked_error, reason="blocked")
+
+    request = QueryRequest(
+        database=database,
+        sql=sql,
+        params=sample_params or None,
+        limit=1,
+        timeout=timeout,
+    )
+    started = time.monotonic()
+    try:
+        response = await _execute_request(request, db_type, statement_type)
+    except asyncio.TimeoutError:
+        return TemplateSampleResult("error", "Sample run timed out", reason="timeout")
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_504_GATEWAY_TIMEOUT:
+            return TemplateSampleResult("error", "Sample run timed out", reason="timeout")
+        return TemplateSampleResult(
+            "error", "Sample run failed", reason="query_error",
+            error=str(exc.detail)[:_SAMPLE_ERROR_MAX_CHARS],
+        )
+    except Exception as exc:
+        logger.warning("Query template sample run failed on '%s': %s", database, exc)
+        return TemplateSampleResult(
+            "error", "Sample run failed", reason="query_error", error=_sample_error_text(exc),
+        )
+    finally:
+        connection_manager.update_pool_metrics(database)
+
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    row_count = response.row_count
+    if not _sample_found_data(response):
+        return TemplateSampleResult(
+            "warning", "Sample run returned no rows", reason="no_rows",
+            row_count=0, elapsed_ms=elapsed_ms,
+        )
+    return TemplateSampleResult(
+        "ok", "Sample run returned rows", row_count=row_count, elapsed_ms=elapsed_ms,
+    )
+
+
+def _sample_found_data(response: Any) -> bool:
+    """Rows, or the graph a SPARQL CONSTRUCT/DESCRIBE returns in their place."""
+    return bool(response.row_count) or bool(getattr(response, "graph", None))
+
+
+async def verify_template_sample(
+    db: AsyncSession,
+    user: CurrentUser | ApiKeyUser,
+    *,
+    database: str,
+    sql: str,
+    sample_params: dict[str, Any] | None,
+    timeout: int | None,
+) -> None:
+    """Refuse a save whose sample does not return a row.
+
+    The run is the caller's own query, through :func:`_run_query`: their
+    permissions, rate and concurrency limits, audit row and metrics. Whoever
+    attaches a sample must therefore be allowed to run the template —
+    otherwise saving one would have the service run queries, unrecorded, for
+    a key that may not query at all, and answer "rows / no rows" each time.
+
+    ``_run_query`` rolls the request session back to free its meta-DB
+    connection for the length of the run, which expires every ORM object
+    loaded before this call: reload what is used afterwards
+    (:func:`_reload_template`).
+
+    A database this process is not connected to cannot be asked, so the save
+    goes through and the periodic check reports the sample instead.
+    """
+    if sample_params is None:
+        return
+    if connection_manager.get_db_type(database) == "unknown":
+        return
+    request = QueryRequest(
+        database=database, sql=sql, params=sample_params or None, limit=1, timeout=timeout,
+    )
+    try:
+        response = await _run_query(request, user=user, db=db)
+    except HTTPException as exc:
+        # Not allowed or over a limit stays what it is; anything else is the
+        # sample's fault as far as this request goes.
+        refused = exc.status_code in (
+            status.HTTP_403_FORBIDDEN, status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+        raise HTTPException(
+            status_code=exc.status_code if refused else status.HTTP_400_BAD_REQUEST,
+            detail=f"sample_params could not be run: {exc.detail}",
+            headers=exc.headers if refused else None,
+        ) from exc
+    if not _sample_found_data(response):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "sample_params returned no rows; use values the template returns "
+                "at least one row for"
+            ),
+        )
+
+
+async def _reload_template(db: AsyncSession, template_id: int, path: str) -> QueryTemplate:
+    """The template again, after :func:`verify_template_sample` expired it."""
+    result = await db.execute(
+        select(QueryTemplate)
+        .where(QueryTemplate.id == template_id)
+        .execution_options(populate_existing=True)
+    )
+    template = result.scalar_one_or_none()
+    if template is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Query template path '{path}' not found",
+        )
+    return template
+
+
 def _template_audit_snapshot(template: QueryTemplate) -> dict:
     return {
         "path": template.path,
@@ -724,6 +948,8 @@ def _template_audit_snapshot(template: QueryTemplate) -> dict:
         "default_limit": template.default_limit,
         "timeout": template.timeout,
         "enabled": template.enabled,
+        "sample_params": decode_sample_params(template.sample_params),
+        "monitor_enabled": template.monitor_enabled,
     }
 
 
@@ -738,6 +964,8 @@ def _to_template_response(template: QueryTemplate) -> QueryTemplateResponse:
         default_limit=template.default_limit,
         timeout=template.timeout,
         enabled=template.enabled,
+        sample_params=decode_sample_params(template.sample_params),
+        monitor_enabled=template.monitor_enabled,
         created_at=template.created_at,
         updated_at=template.updated_at,
     )
@@ -968,6 +1196,11 @@ async def create_query_template_as_agent(
         db_type=connection.db_type,
         sql=body.sql,
     )
+    _validate_sample_params(body.sample_params, body.sql, connection.db_type)
+    await verify_template_sample(
+        db, user, database=body.database, sql=body.sql,
+        sample_params=body.sample_params, timeout=body.timeout,
+    )
     template = QueryTemplate(
         path=normalized_path,
         name=body.name,
@@ -977,6 +1210,7 @@ async def create_query_template_as_agent(
         default_limit=body.default_limit,
         timeout=body.timeout,
         enabled=True,
+        sample_params=_encode_sample_params(body.sample_params),
     )
     db.add(template)
     try:
@@ -1046,21 +1280,63 @@ async def update_query_template_as_agent(
             detail=f"Database '{template.db_alias}' not found",
         )
 
+    # The key must be allowed to use the template as it stands, not only the
+    # SQL it sends: otherwise a table-limited key could replace the SQL of a
+    # template it can neither list, run nor delete.
+    _ensure_api_key_template_scope(
+        user,
+        database=template.db_alias,
+        db_type=connection.db_type,
+        sql=template.sql,
+    )
+
     new_sql = template.sql
     if "sql" in body.model_fields_set:
         assert body.sql is not None
         new_sql = body.sql
         _validate_read_only_template_sql(new_sql, connection.db_type)
+        _ensure_api_key_template_scope(
+            user,
+            database=template.db_alias,
+            db_type=connection.db_type,
+            sql=new_sql,
+        )
 
-    _ensure_api_key_template_scope(
-        user,
-        database=template.db_alias,
-        db_type=connection.db_type,
-        sql=new_sql,
-    )
+    # The sample follows the SQL: new SQL with other parameters needs a new
+    # sample in the same request, and either change is run before it is saved.
+    sample_changed = "sample_params" in body.model_fields_set
+    old_sample = decode_sample_params(template.sample_params)
+    new_sample = body.sample_params if sample_changed else old_sample
+    if sample_changed or "sql" in body.model_fields_set:
+        _validate_sample_params(new_sample, new_sql, connection.db_type)
+    # Run it only when what runs is different: a client that sends the whole
+    # template back must still be able to fix a description while the sample
+    # finds nothing or the database is away.
+    if new_sample != old_sample or new_sql != template.sql:
+        # A stale version is refused before anything is run for it; the
+        # UPDATE below still decides a race.
+        if (
+            body.expected_updated_at is not None
+            and body.expected_updated_at.tzinfo is not None
+            and template.updated_at is not None
+            and template.updated_at.tzinfo is not None
+            and template.updated_at != body.expected_updated_at
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Query template changed since it was discovered; fetch it again before editing",
+            )
+        template_id = template.id
+        await verify_template_sample(
+            db, user, database=template.db_alias, sql=new_sql, sample_params=new_sample,
+            timeout=body.timeout if "timeout" in body.model_fields_set else template.timeout,
+        )
+        template = await _reload_template(db, template_id, normalized_path)
 
     before_snapshot = _template_audit_snapshot(template)
     changes: dict[str, object] = {}
+    if sample_changed:
+        changes["sample_params"] = _encode_sample_params(new_sample)
     if "sql" in body.model_fields_set:
         changes["sql"] = new_sql
     if "description" in body.model_fields_set:

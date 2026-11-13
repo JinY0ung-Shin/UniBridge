@@ -1215,6 +1215,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await app.state.alert_task
         except asyncio.CancelledError:
             pass
+        from app.services.alert_checker import stop_template_checks
+        await stop_template_checks()
         logger.info("Alert checker stopped")
 
     logger.info("Disposing all database engines...")

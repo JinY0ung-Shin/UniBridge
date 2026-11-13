@@ -79,6 +79,30 @@ def normalize_query_template_path(value: str) -> str:
     return path
 
 
+# A sample is one call's params, not data: far below this in practice.
+QUERY_TEMPLATE_SAMPLE_MAX_BYTES = 16_384
+
+SAMPLE_PARAMS_DESCRIPTION = (
+    "Params the template is run with to check that it still works: one value per "
+    "template parameter ({} for a template without parameters). The run must "
+    "return at least one row. null = no sample."
+)
+
+
+def _check_sample_params_size(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    try:
+        encoded = json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("sample_params must be plain JSON values") from exc
+    if len(encoded.encode("utf-8")) > QUERY_TEMPLATE_SAMPLE_MAX_BYTES:
+        raise ValueError(
+            f"sample_params must be {QUERY_TEMPLATE_SAMPLE_MAX_BYTES} bytes or fewer as JSON"
+        )
+    return value
+
+
 class QueryTemplateCreate(BaseModel):
     path: str = Field(..., min_length=1, max_length=200)
     name: str = Field(..., min_length=1, max_length=100)
@@ -88,6 +112,10 @@ class QueryTemplateCreate(BaseModel):
     default_limit: int | None = Field(None, ge=1, le=1_000_000)
     timeout: int | None = Field(None, ge=1, le=300)
     enabled: bool = True
+    sample_params: dict[str, Any] | None = Field(None, description=SAMPLE_PARAMS_DESCRIPTION)
+    monitor_enabled: bool = True
+
+    _sample_size = field_validator("sample_params")(_check_sample_params_size)
 
     @field_validator("path")
     @classmethod
@@ -108,6 +136,11 @@ class QueryTemplateUpdate(BaseModel):
     default_limit: int | None = Field(None, ge=1, le=1_000_000)
     timeout: int | None = Field(None, ge=1, le=300)
     enabled: bool | None = None
+    # Left out = unchanged; null removes the sample.
+    sample_params: dict[str, Any] | None = Field(None, description=SAMPLE_PARAMS_DESCRIPTION)
+    monitor_enabled: bool | None = None
+
+    _sample_size = field_validator("sample_params")(_check_sample_params_size)
 
     @field_validator("name", "description", "database", "sql")
     @classmethod
@@ -124,8 +157,11 @@ class QueryTemplateAgentCreate(BaseModel):
     sql: str = Field(..., min_length=1)
     default_limit: int | None = Field(None, ge=1, le=1_000_000)
     timeout: int | None = Field(None, ge=1, le=300)
+    sample_params: dict[str, Any] | None = Field(None, description=SAMPLE_PARAMS_DESCRIPTION)
 
     model_config = {"extra": "forbid"}
+
+    _sample_size = field_validator("sample_params")(_check_sample_params_size)
 
     @field_validator("name", "description", "database", "sql")
     @classmethod
@@ -147,9 +183,13 @@ class QueryTemplateAgentUpdate(BaseModel):
     description: str | None = Field(None, max_length=255)
     default_limit: int | None = Field(None, ge=1, le=1_000_000)
     timeout: int | None = Field(None, ge=1, le=300)
+    # Left out = unchanged; null removes the sample.
+    sample_params: dict[str, Any] | None = Field(None, description=SAMPLE_PARAMS_DESCRIPTION)
     expected_updated_at: datetime | None = None
 
     model_config = {"extra": "forbid"}
+
+    _sample_size = field_validator("sample_params")(_check_sample_params_size)
 
     @field_validator("sql", "description")
     @classmethod
@@ -158,7 +198,7 @@ class QueryTemplateAgentUpdate(BaseModel):
 
     @model_validator(mode="after")
     def require_edit_field(self) -> "QueryTemplateAgentUpdate":
-        editable_fields = {"sql", "description", "default_limit", "timeout"}
+        editable_fields = {"sql", "description", "default_limit", "timeout", "sample_params"}
         provided = editable_fields.intersection(self.model_fields_set)
         if not provided:
             raise ValueError("At least one editable query template field is required")
@@ -179,8 +219,29 @@ class QueryTemplateResponse(BaseModel):
     default_limit: int | None = None
     timeout: int | None = None
     enabled: bool
+    sample_params: dict[str, Any] | None = None
+    monitor_enabled: bool = True
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class QueryTemplateHealth(BaseModel):
+    """Latest sample run of one template, as the checker recorded it."""
+
+    level: Literal["ok", "warning", "error"]
+    reason: str | None = None  # no_rows / timeout / query_error / blocked
+    message: str
+    error: str | None = None  # database error text of a query_error
+    row_count: int | None = None
+    elapsed_ms: int | None = None
+    checked_at: datetime | None = None
+    alerting: bool = False
+    since: datetime | None = None  # start of the open alert
+
+
+class QueryTemplateHealthResponse(BaseModel):
+    interval_minutes: int  # 0 = the periodic check is off
+    templates: dict[str, QueryTemplateHealth]  # keyed by template path; unchecked = absent
 
 
 class QueryTemplateUsage(BaseModel):
@@ -1074,6 +1135,7 @@ class AlertSettingsResponse(BaseModel):
     server_gpu_util_target_pct: float
     server_disk_forecast_hours: float
     repeat_alert_after_cycles: int
+    template_check_interval_minutes: int
     updated_at: datetime | None = None
 
 
@@ -1098,6 +1160,8 @@ class AlertSettingsUpdate(BaseModel):
     server_gpu_util_target_pct: float | None = Field(None, ge=0, le=100)
     server_disk_forecast_hours: float | None = Field(None, ge=0, le=720)
     repeat_alert_after_cycles: int | None = Field(None, ge=0, le=1000)
+    # Minutes between runs of the query template samples; 0 switches them off.
+    template_check_interval_minutes: int | None = Field(None, ge=0, le=10080)
 
     @field_validator("admin_emails")
     @classmethod
@@ -1122,6 +1186,7 @@ class AlertSettingsUpdate(BaseModel):
             "server_gpu_util_target_pct",
             "server_disk_forecast_hours",
             "repeat_alert_after_cycles",
+            "template_check_interval_minutes",
         ):
             if field_name in self.model_fields_set and getattr(self, field_name) is None:
                 raise ValueError(f"{field_name} cannot be null")

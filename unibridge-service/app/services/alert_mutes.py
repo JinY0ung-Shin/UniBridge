@@ -30,7 +30,7 @@ GLOBAL_MUTE_TYPE = "global"
 # ``resource_type`` the alert checker dispatches with. Kept in sync with the
 # ``dispatch_alert(resource_type=...)`` call sites in ``alert_checker``.
 MUTE_RESOURCE_TYPES = frozenset(
-    {GLOBAL_MUTE_TYPE, "db", "s3", "nas", "upstream", "route", "server", "service"}
+    {GLOBAL_MUTE_TYPE, "db", "s3", "nas", "upstream", "route", "server", "service", "template"}
 )
 
 # Longest mute a caller may request. A mute is an operational escape hatch, not
@@ -45,6 +45,7 @@ _RULE_TO_RESOURCE_TYPE = {
     "nas_health": "nas",
     "upstream_health": "upstream",
     "route_error_rate": "route",
+    "template_health": "template",
 }
 
 

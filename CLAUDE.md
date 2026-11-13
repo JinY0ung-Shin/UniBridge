@@ -116,6 +116,21 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   the gateway REST routes as the caller and destinations are paths on an exposed route
   (`mcp_tools._resolve_api_call`), never a URL or a local path; an id answers only its own
   key, and every miss is the same 404. Limits live in the MCP settings, not env.
+- **Template samples** (`query_templates.sample_params`; README "Query template sample
+  checks"): run once on save (`query.verify_template_sample`: refused on a failed run or
+  0 rows) as the CALLER, through `_run_query` — never as the service, or a key without
+  `query-api` gets a query oracle; `_run_query` rolls the session back, so reload ORM rows
+  after it (`_reload_template`). Then the alert checker runs them as rule
+  `template_health`, its own task on its own interval (`template_check_interval_minutes`,
+  0 = off; laid out from 08:00 KST, so the default 1440 = daily at 08:00 KST; due per
+  template from the persisted `checked_at`: `_template_check_due`), never inside the
+  health cycle. Those runs go through
+  `query.run_template_sample` as the service itself: no audit row, no query metric, or
+  they would count as the template's usage. Template alert state is dropped only by the
+  checker (`_forget_unchecked_template_states`, which mails the closing notice), not by
+  the template routes. The param names a sample
+  must carry come from `openapi_export.extract_template_params(sql, db_type)`, the same
+  call MCP `run_template` checks with: a new placeholder syntax goes there.
 - **Bifrost** (`bifrost`, `bifrost-tls`; identical in both compose layouts, tested) is the
   only LLM gateway: it serves `/api/llm` (next bullet). The old `/api/llm-bi` side-by-side
   routes are gone: every provisioning boot deletes the

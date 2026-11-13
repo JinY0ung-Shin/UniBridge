@@ -659,6 +659,30 @@ async def test_agent_template_edit_enforces_read_only_and_table_scope(
     assert allowed.json()["sql"] == "SELECT id FROM users"
 
 
+async def test_agent_template_edit_cannot_replace_sql_outside_table_scope(
+    client, admin_token, seeded_db
+):
+    # A key limited to `users` can neither list, run nor delete this template,
+    # so it must not replace its SQL either (it used to: only the new SQL was checked).
+    await _create_database(client, admin_token)
+    await _create_template(
+        client, admin_token, path="reports/orders", sql="SELECT * FROM orders"
+    )
+    await _create_api_key(
+        seeded_db, name="users-editor", allowed_databases=["maindb"],
+        allowed_routes=["query-api", "query-template-write-api"], allowed_tables=["users"],
+    )
+    headers = {"X-Consumer-Username": "users-editor"}
+    replaced = await client.patch(
+        "/query/templates/reports/orders", json={"sql": "SELECT id FROM users"},
+        headers=headers,
+    )
+    assert replaced.status_code == 403
+    assert replaced.json()["detail"] == "Access denied to table(s): orders"
+    templates = await client.get("/admin/query/templates", headers=auth_header(admin_token))
+    assert [t["sql"] for t in templates.json()] == ["SELECT * FROM orders"]
+
+
 async def test_agent_template_edit_enforces_database_scope(client, admin_token, seeded_db):
     await _create_database(client, admin_token, alias="maindb")
     await _create_template(client, admin_token, database="maindb")

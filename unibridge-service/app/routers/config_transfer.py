@@ -1391,11 +1391,21 @@ async def _apply_query_template(
     # so an import can never install a template the admin API would reject.
     connection = await admin_router._get_database_or_404(ctx.db, body.database)
     query_router._validate_read_only_template_sql(body.sql, connection.db_type)
+    # The sample's names are checked, but it is not run: the target may hold
+    # other data, and its own periodic check reports a sample that finds nothing.
+    query_router._validate_sample_params(body.sample_params, body.sql, connection.db_type)
 
     result = await ctx.db.execute(
         select(QueryTemplate).where(QueryTemplate.path == body.path)
     )
     template = result.scalar_one_or_none()
+    if template is not None and "sample_params" not in item:
+        # The target's sample stays (see below), so it has to fit the SQL
+        # that is about to replace its own.
+        query_router._validate_sample_params(
+            query_router.decode_sample_params(template.sample_params),
+            body.sql, connection.db_type,
+        )
     action = "update" if template is not None else "create"
     if ctx.dry_run:
         return action, None
@@ -1413,6 +1423,12 @@ async def _apply_query_template(
     template.default_limit = body.default_limit
     template.timeout = body.timeout
     template.enabled = body.enabled
+    # A file exported before samples existed has neither key: keep what the
+    # target already has rather than wiping it.
+    if "sample_params" in item:
+        template.sample_params = query_router._encode_sample_params(body.sample_params)
+    if "monitor_enabled" in item:
+        template.monitor_enabled = body.monitor_enabled
     await ctx.db.commit()
     await ctx.db.refresh(template)
 

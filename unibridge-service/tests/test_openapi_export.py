@@ -231,6 +231,16 @@ class TestTemplateMapping:
         op = _build(templates=[template])["paths"]["/api/query/templates/reports/users"]["post"]
         assert op["requestBody"]["required"] is False
 
+    def test_neo4j_template_params_follow_the_database_type(self):
+        template = _template(db_alias="graph", sql="MATCH (n:User) WHERE n.id = $id RETURN n")
+        spec = build_openapi_spec(
+            [], [template], server_url="https://gw.example:3000", db_types={"graph": "neo4j"}
+        )
+        body = spec["paths"]["/api/query/templates/reports/users"]["post"]["requestBody"]
+        params = body["content"]["application/json"]["schema"]["properties"]["params"]
+        assert params["required"] == ["id"]
+        assert set(params["properties"]) == {"id"}
+
     def test_template_lifecycle_requires_separate_write_route(self):
         template_path = "/api/query/templates/reports/users"
         without_write = _build(
@@ -253,7 +263,8 @@ class TestTemplateMapping:
         assert operation["security"] == [{SECURITY_SCHEME_NAME: []}]
         assert "query-template-write-api" in operation["description"]
         assert set(schema["properties"]) == {
-            "sql", "description", "default_limit", "timeout", "expected_updated_at"
+            "sql", "description", "default_limit", "timeout", "sample_params",
+            "expected_updated_at",
         }
         assert schema["additionalProperties"] is False
         delete_operation = with_write["paths"][template_path]["delete"]
@@ -289,6 +300,31 @@ class TestExtractTemplateParams:
 
     def test_both_styles_in_first_seen_order(self):
         assert extract_template_params("SELECT :x, {y:String}, :x, {z:Int8}") == ["x", "y", "z"]
+
+    def test_escaped_colon_and_clickhouse_json_type_are_not_params(self):
+        # SQLAlchemy takes "\\:" for a literal colon; ".:Type" reads a JSON subcolumn.
+        assert extract_template_params(r"""SELECT '{"k"\:true}' WHERE b = :b""") == ["b"]
+        assert extract_template_params("SELECT data.user.id.:Int64 FROM t WHERE a = :a") == ["a"]
+
+    def test_neo4j_params_are_dollar_names_not_labels(self):
+        cypher = (
+            "MATCH (:Person {id: $id})-[:KNOWS]->(f:Person) "
+            "WHERE f.age > $min_age AND f.id <> $id RETURN f"
+        )
+        assert extract_template_params(cypher, "neo4j") == ["id", "min_age"]
+        # Without the engine the labels read as :name binds.
+        assert {"Person", "KNOWS"} <= set(extract_template_params(cypher))
+
+    def test_neo4j_ignores_dollars_in_literals_and_comments(self):
+        cypher = (
+            "MATCH (n) WHERE n.note = 'costs $usd' AND n.tag = \"$tag\" // $skipped\n"
+            "/* $also_skipped */ AND n.`$odd` = $real RETURN n"
+        )
+        assert extract_template_params(cypher, "neo4j") == ["real"]
+
+    def test_graphdb_has_no_params(self):
+        sparql = "PREFIX : <http://example.org/> SELECT ?s WHERE { ?s :name ?o }"
+        assert extract_template_params(sparql, "graphdb") == []
 
 
 # ---------------------------------------------------------------------------

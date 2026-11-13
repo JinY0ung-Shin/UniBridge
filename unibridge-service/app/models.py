@@ -103,11 +103,19 @@ class QueryTemplate(Base):
     default_limit = Column(Integer, nullable=True)
     timeout = Column(Integer, nullable=True)
     enabled = Column(Boolean, default=True, nullable=False, server_default="true")
+    # The params the template is run with to check that it still works: a JSON
+    # object ("{}" for a template without params), NULL = no sample. Run when
+    # the template is saved and then by the alert checker (template_health).
+    sample_params = Column(Text, nullable=True)
+    # False keeps the sample (agents still read it as an example call) but
+    # leaves the template out of the periodic check.
+    monitor_enabled = Column(Boolean, default=True, nullable=False, server_default="true")
     created_at = Column(UtcDateTime, default=utcnow)
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow)
 
     def __init__(self, **kwargs):
         kwargs.setdefault("enabled", True)
+        kwargs.setdefault("monitor_enabled", True)
         super().__init__(**kwargs)
 
 
@@ -332,6 +340,12 @@ class AlertSettings(Base):
     # Re-notify cadence for a still-firing alert: 0 = notify once per transition;
     # N = re-dispatch every N check cycles while the alert persists. Applies to all alert types.
     repeat_alert_after_cycles = Column(Integer, default=0, nullable=False, server_default="0")
+    # How often the checker runs every query template that has a sample
+    # (template_health). Its own cadence, not check_interval_seconds: these are
+    # real queries against the registered databases. A day by default; 0 = off.
+    template_check_interval_minutes = Column(
+        Integer, default=1440, nullable=False, server_default="1440"
+    )
     updated_at = Column(UtcDateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
     __table_args__ = (
@@ -359,7 +373,7 @@ class AlertHistory(Base):
     # ``alert_type`` above, which carries the transition. Nullable: rows written
     # before this column existed have no rule attribution.
     rule_type = Column(String(30), nullable=True)
-    target = Column(String(100), nullable=False)  # stable key/id (route_id, alias, …) — used for filtering
+    target = Column(String(200), nullable=False)  # stable key/id (route_id, alias, template path, …) — used for filtering
     display_target = Column(String(200), nullable=True)  # human-friendly label (e.g. "route-name (id)"); falls back to target
     severity = Column(String(20), nullable=True)  # "warning" / "critical" (host signals); null for binary types
     message = Column(Text, nullable=False)

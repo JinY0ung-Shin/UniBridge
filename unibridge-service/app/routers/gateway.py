@@ -24,7 +24,7 @@ from app.auth import (
 )
 from app.config import settings
 from app.database import get_db
-from app.models import ApiKeyAccess, QueryTemplate
+from app.models import ApiKeyAccess, DBConnection, QueryTemplate
 from app.routers.api_keys import apply_master_consumer_restriction, list_master_consumer_names
 from app.services import apisix_client
 from app.services import node_path_prefix
@@ -1059,11 +1059,13 @@ async def gateway_openapi(
     templates_result = await db.execute(
         select(QueryTemplate).order_by(QueryTemplate.path.asc())
     )
+    db_types_result = await db.execute(select(DBConnection.alias, DBConnection.db_type))
     return openapi_export.build_openapi_spec(
         result.get("items", []),  # type: ignore[possibly-undefined]
         list(templates_result.scalars().all()),
         server_url=f"https://{settings.HOST_IP}:{settings.UNIBRIDGE_UI_PORT}",
         version=settings.APP_VERSION,
+        db_types={alias: db_type for alias, db_type in db_types_result.all()},
     )
 
 

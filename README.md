@@ -591,8 +591,9 @@ http_headers = { apikey = "<API_KEY>" }
 - Templates are two tools, not one per template, so `tools/list` stays small:
   `search_templates` finds the enabled templates the key may run (every word
   of `query` must appear in the path, name or description; optional
-  `database`) and returns each one's path, params and SQL; `run_template`
-  runs one by path, or by exact name when only one template has it, with its
+  `database`) and returns each one's path, params and SQL, plus its saved
+  `sample_params` (an example call known to return rows) when it has one;
+  `run_template` runs one by path, or by exact name when only one template has it, with its
   bind parameters in `params`.
 - Gateway APIs are opt-in: only the routes an administrator checks on the
   **MCP** page are offered, and each only to keys holding that route's grant.
@@ -1412,6 +1413,54 @@ job whenever any of its targets is up and fall back to `unibridge-service` only
 on single-stack hosts (`_gated` in
 [`unibridge-service/app/routers/query_metrics.py`](./unibridge-service/app/routers/query_metrics.py));
 never sum the two jobs.
+
+### Query template sample checks
+
+A query template can carry a **sample**: the params of one call that is known
+to return rows (`{}` for a template without parameters). It is set in the
+template form on the **Query Templates** page, or by an agent as
+`sample_params` when it creates (`PUT`) or edits (`PATCH`) a template; the
+agent guide at `/api/query/templates/guide` tells agents to send one.
+
+- **On save** the sample is run once, for a single row. The save is refused
+  when the sample's names do not match the SQL's parameters, when the run
+  fails, or when it returns no rows, so a sample that finds nothing never gets
+  in. The run is the saver's own query: it needs their permission to query
+  that database (an API key needs `query-api` next to
+  `query-template-write-api`), counts against their limits and shows in the
+  query history, where the database's error text of a failed run is. A save
+  that changes neither the SQL, the database nor the sample runs nothing.
+  Only when the database is not connected at that moment is the sample saved
+  unrun. A config import stores samples without running them.
+- **Afterwards** the alert checker runs every enabled template that has a
+  sample once per `Template sample check interval` (**Alerts** settings, in
+  minutes, `0` = off). The interval is laid out from 08:00 KST, so the
+  default of 1440 means every day at 08:00 KST (720: 08:00 and 20:00; 10080:
+  Monday 08:00). A failed or timed-out run is a **critical**
+  `template_health` alert, a run without rows a **warning**; a warning that
+  turns into a failure is announced again.
+- Four runs do not wait for that clock: a new sample is checked within a
+  minute; a template edited since its last check is checked again within a
+  minute, so fixing its SQL or sample closes its alert right away; a first
+  failure is repeated 10 minutes later, so with the default "trigger after
+  failures" of 2 the alert goes out that morning rather than after the next
+  day's run; and a template whose alert is open is run every 30 minutes
+  until a run returns rows, which closes the alert — so a fix made outside
+  the template (restored data, a recreated table) is noticed within half an
+  hour. Healthy templates are only run on the clock. Mail goes to the administrators and to the assignees of the template's
+  database; a template can be muted on the **Alert Status** page. A template
+  that stops being checked while its alert is open (deleted, disabled, sample
+  removed, monitoring or the whole check switched off) gets a closing mail on
+  the next cycle.
+- The Query Templates page shows each template's last result. Unchecking
+  "monitor with sample" keeps the sample (agents still see it) without the
+  periodic run.
+
+The periodic runs are real queries on the registered databases, made by the
+service itself: they count neither as a template's run count nor in the query
+metrics, and write no query audit row. Templates on a database that is down are not
+run; its own `db_health` alert covers them. Give a heavy template a cheap
+sample or leave it unmonitored.
 
 ### Server (host) monitoring
 
