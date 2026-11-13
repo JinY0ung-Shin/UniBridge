@@ -217,6 +217,8 @@ describe('McpSettingsPage', () => {
     expect(screen.getByRole('spinbutton', { name: 'Max result size (bytes)' })).toHaveValue(65536);
     expect(screen.getByText('No MCP changes')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    // Nothing to save: the bar rests where the form ends.
+    expect(screen.getByText('No MCP changes').parentElement).not.toHaveClass('mcp-save-bar--pinned');
 
     const endpoint = `${window.location.origin}/api/mcp`;
     expect(screen.getByText(endpoint)).toBeInTheDocument();
@@ -239,7 +241,8 @@ describe('McpSettingsPage', () => {
     await userEvent.clear(maxRows);
     await userEvent.type(maxRows, '50');
 
-    expect(screen.getByText('Unsaved MCP changes')).toBeInTheDocument();
+    // The form is screens long: the bar follows the window once there is something to save.
+    expect(screen.getByText('Unsaved MCP changes').parentElement).toHaveClass('mcp-save-bar--pinned');
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => {
@@ -262,7 +265,10 @@ describe('McpSettingsPage', () => {
       max_rows: 50,
       max_result_bytes: 65536,
     });
-    expect(await screen.findByText('MCP settings saved.')).toBeInTheDocument();
+    // The result shows in the bar, which stays in the window to report it.
+    const saved = await screen.findByText('MCP settings saved.');
+    expect(saved.parentElement).toHaveClass('mcp-save-bar--pinned');
+    expect(screen.queryByText('No MCP changes')).not.toBeInTheDocument();
   });
 
   it('hides chosen templates from MCP', async () => {

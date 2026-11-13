@@ -570,11 +570,26 @@ function McpSettingsForm({ settings }: { settings: McpSettings }) {
         </div>
       </div>
 
+      {/* The form is several screens long and the page goes on below it with
+          sections that save by themselves: once there is something to save or
+          to report, the bar follows the bottom of the window. */}
       {canWrite && (
-        <div className="settings-save-bar">
-          <span className={hasChanges ? 'settings-save-status settings-save-status--changed' : 'settings-save-status'}>
-            {hasChanges ? t('mcp.unsavedChanges') : t('mcp.noChanges')}
-          </span>
+        <div
+          className={[
+            'settings-save-bar mcp-save-bar',
+            hasChanges || !updateMut.isIdle ? 'mcp-save-bar--pinned' : '',
+            hasChanges ? 'mcp-save-bar--changed' : '',
+          ].filter(Boolean).join(' ')}
+        >
+          {updateMut.isError ? (
+            <span className="save-error" role="alert">{t('mcp.saveFailed')}</span>
+          ) : updateMut.isSuccess && !hasChanges ? (
+            <span className="save-success" role="status">{t('mcp.saved')}</span>
+          ) : (
+            <span className={hasChanges ? 'settings-save-status settings-save-status--changed' : 'settings-save-status'}>
+              {hasChanges ? t('mcp.unsavedChanges') : t('mcp.noChanges')}
+            </span>
+          )}
           <div className="settings-save-actions">
             <button
               className="btn btn-secondary"
@@ -595,13 +610,6 @@ function McpSettingsForm({ settings }: { settings: McpSettings }) {
             </button>
           </div>
         </div>
-      )}
-
-      {updateMut.isSuccess && !hasChanges && (
-        <span className="save-success" role="status">{t('mcp.saved')}</span>
-      )}
-      {updateMut.isError && (
-        <span className="save-error" role="alert">{t('mcp.saveFailed')}</span>
       )}
     </div>
   );

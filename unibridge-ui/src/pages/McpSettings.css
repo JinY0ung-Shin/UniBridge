@@ -37,6 +37,32 @@
   color: var(--accent-red);
 }
 
+/* The settings form's footer: a card where the form ends. */
+.mcp-save-bar {
+  padding: 12px 20px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-primary);
+}
+
+/* With something to save or to report it follows the bottom of the window
+   for as long as the form is on screen. Sticky keeps its place in the flow,
+   so pinning moves nothing. */
+.mcp-save-bar--pinned {
+  position: sticky;
+  bottom: 16px;
+  z-index: 5;
+  /* The first shadow covers the strip under the pinned bar, where the page
+     would show through; the second fades what scrolls in from above. */
+  box-shadow:
+    0 24px 0 var(--bg-root),
+    0 -8px 16px color-mix(in srgb, var(--bg-root) 88%, transparent);
+}
+
+.mcp-save-bar--changed {
+  border-color: var(--accent-blue);
+}
+
 .mcp-snippet + .mcp-snippet {
   margin-top: 16px;
 }
