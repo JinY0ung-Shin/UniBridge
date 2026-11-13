@@ -276,6 +276,8 @@ describe('GatewayRoutes', () => {
     expect(screen.getByRole('button', { name: 'Show cURL for route test-route' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Edit route test-route' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete route test-route' })).toBeInTheDocument();
+    // The four buttons get the wide actions column (one line).
+    expect(screen.getByRole('table')).not.toHaveClass('data-table--read-only');
   });
 
   it('opens cURL modal as an accessible dialog', async () => {
@@ -456,6 +458,8 @@ describe('GatewayRoutes', () => {
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Test route test-route' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Show cURL for route test-route' })).toBeInTheDocument();
+    // Two buttons a row: the actions column is the narrow one.
+    expect(screen.getByRole('table')).toHaveClass('data-table--read-only');
   });
 
   it('calls deleteGatewayRoute after confirmation', async () => {

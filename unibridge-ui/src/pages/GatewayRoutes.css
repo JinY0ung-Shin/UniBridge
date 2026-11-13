@@ -75,21 +75,26 @@
   min-width: 0;
 }
 
+/* The header name is what gives way: the value is always the same short word. */
 .service-key-cell-name {
-  flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-secondary);
 }
 
 .service-key-cell-value {
+  flex-shrink: 0;
   color: var(--text-tertiary);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: nowrap;
   font-style: italic;
 }
 
 .gateway-routes .data-table {
   table-layout: fixed;
+  /* Narrower than this the columns are unreadable: the container scrolls. */
+  min-width: 800px;
 }
 
 .gateway-routes .data-table th,
@@ -97,32 +102,39 @@
   white-space: normal;
 }
 
+/* Columns whose content has a fixed size (method badges, status, buttons) are
+   sized in px; the rest share the table, and the URI takes what is left. */
 .gateway-routes .data-table th:nth-child(1) {
   width: 15%;
 }
 
-.gateway-routes .data-table th:nth-child(2) {
-  width: 24%;
-}
-
+/* Two method badges side by side. */
 .gateway-routes .data-table th:nth-child(3) {
-  width: 11%;
+  width: 116px;
 }
 
 .gateway-routes .data-table th:nth-child(4) {
-  width: 16%;
+  width: 13%;
 }
 
 .gateway-routes .data-table th:nth-child(5) {
-  width: 14%;
+  width: 13%;
 }
 
 .gateway-routes .data-table th:nth-child(6) {
-  width: 9%;
+  width: 90px;
 }
 
+/* What the buttons need on ONE line (four of them: test, cURL, edit, delete).
+   A share of the table left them a column they could only fit in by stacking,
+   which made every row several lines tall. */
 .gateway-routes .data-table th:nth-child(7) {
-  width: 11%;
+  width: 250px;
+}
+
+/* Without write access a row has test and cURL only. */
+.gateway-routes .data-table--read-only th:nth-child(7) {
+  width: 144px;
 }
 
 .gateway-routes .data-table td:nth-child(4) {
@@ -131,8 +143,16 @@
   white-space: nowrap;
 }
 
+/* A longer label (a delete in progress) wraps instead of leaving the cell. */
 .gateway-routes .action-buttons {
   flex-wrap: wrap;
+}
+
+/* Not enough room for one line and a readable URI: two rows of two. */
+@media (max-width: 1359px) {
+  .gateway-routes .data-table th:nth-child(7) {
+    width: 144px;
+  }
 }
 
 .status-cell {

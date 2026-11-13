@@ -228,7 +228,7 @@ function GatewayRoutes() {
 
       {routes.length > 0 && filteredRoutes.length > 0 && (
         <div className="table-container">
-          <table className="data-table">
+          <table className={canWrite ? 'data-table' : 'data-table data-table--read-only'}>
             <thead>
               <tr>
                 <th scope="col">{t('common.name')}</th>
@@ -249,7 +249,7 @@ function GatewayRoutes() {
                     {route.name || '—'}
                     {route.system && <span className="badge badge-system">System</span>}
                   </td>
-                  <td className="cell-uri">{routeUriLabel(route)}</td>
+                  <td className="cell-uri" title={routeUriLabel(route)}>{routeUriLabel(route)}</td>
                   <td>
                     <div className="method-badges">
                       {(route.methods || ['ALL']).map((m) => (
@@ -259,13 +259,13 @@ function GatewayRoutes() {
                       ))}
                     </div>
                   </td>
-                  <td>{route.upstream_id || '—'}</td>
+                  <td title={route.upstream_id || undefined}>{route.upstream_id || '—'}</td>
                   <td className="cell-service-key">
                     {routeServiceKeys(route).length > 0 ? (
                       <div className="service-key-cell">
                         {routeServiceKeys(route).map((sk) => (
                           <div key={sk.header_name} className="service-key-cell-item">
-                            <span className="service-key-cell-name">{sk.header_name}</span>
+                            <span className="service-key-cell-name" title={sk.header_name}>{sk.header_name}</span>
                             <span className="service-key-cell-value" title={t('gatewayRoutes.serviceKeyHidden')}>
                               {t('gatewayRoutes.serviceKeyHidden')}
                             </span>
