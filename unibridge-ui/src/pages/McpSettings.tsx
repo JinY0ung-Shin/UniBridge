@@ -40,13 +40,16 @@ const ARTIFACT_MAX_MB_RANGE = { min: 1, max: 90 };
 const ARTIFACT_TTL_SECONDS_RANGE = { min: 60, max: 86400 };
 const ARTIFACT_KEY_MB_RANGE = { min: 1, max: 4096 };
 const ARTIFACT_TOTAL_MB_RANGE = { min: 1, max: 16384 };
+// Inline files ride as base64 in the JSON answer; 0 switches the mode off.
+const ARTIFACT_RESOURCE_MAX_MB_RANGE = { min: 0, max: 8 };
 
 type Range = { min: number; max: number };
 type ArtifactLimit =
   | 'artifact_max_mb'
   | 'artifact_ttl_seconds'
   | 'artifact_key_mb'
-  | 'artifact_total_mb';
+  | 'artifact_total_mb'
+  | 'artifact_resource_max_mb';
 
 // Label and hint keys are spelled out so the locale files can be searched for them.
 const ARTIFACT_LIMITS: {
@@ -84,6 +87,13 @@ const ARTIFACT_LIMITS: {
     label: 'mcp.artifactTotalMb',
     hint: 'mcp.artifactTotalMbHint',
   },
+  {
+    field: 'artifact_resource_max_mb',
+    id: 'mcp-artifact-resource-max-mb',
+    range: ARTIFACT_RESOURCE_MAX_MB_RANGE,
+    label: 'mcp.artifactResourceMaxMb',
+    hint: 'mcp.artifactResourceMaxMbHint',
+  },
 ];
 
 function artifactLimitsOf(settings: McpSettings): Record<ArtifactLimit, number> {
@@ -92,6 +102,7 @@ function artifactLimitsOf(settings: McpSettings): Record<ArtifactLimit, number> 
     artifact_ttl_seconds: settings.artifact_ttl_seconds,
     artifact_key_mb: settings.artifact_key_mb,
     artifact_total_mb: settings.artifact_total_mb,
+    artifact_resource_max_mb: settings.artifact_resource_max_mb,
   };
 }
 

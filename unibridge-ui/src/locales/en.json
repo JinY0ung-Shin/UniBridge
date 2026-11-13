@@ -1435,7 +1435,7 @@
       },
       "artifacts": {
         "label": "File artifacts (download_artifact · upload_staged_artifacts)",
-        "hint": "Stages an S3 object, a NAS file or a gateway API's binary response on UniBridge for a short time and returns only its id, size, SHA-256 and type. The MCP host fetches the bytes from /api/mcp/artifacts/<id> with the same key, and can stage a local file there. Staged files can be posted as multipart/form-data to the gateway APIs chosen below. It has no grant of its own: each source needs its usual one (s3-api, nas-api or the offered route)."
+        "hint": "Stages an S3 object, a NAS file or a gateway API's binary response on UniBridge for a short time and returns only its id, size, SHA-256 and type. The MCP host fetches the bytes from /api/mcp/artifacts/<id> with the same key, and can stage a local file there. A small file can instead come back in the result itself as a standard MCP embedded resource (return_mode=resource). Staged files can be posted as multipart/form-data to the gateway APIs chosen below. It has no grant of its own: each source needs its usual one (s3-api, nas-api or the offered route)."
       },
       "external": {
         "label": "External MCP servers",
@@ -1496,6 +1496,8 @@
     "artifactKeyMbHint": "1–4,096. What one key may hold at a time. Beyond it, new artifacts are refused until older ones expire.",
     "artifactTotalMb": "Max staged in total (MiB)",
     "artifactTotalMbHint": "1–16,384. The sum across all keys.",
+    "artifactResourceMaxMb": "Max file returned inline (MiB)",
+    "artifactResourceMaxMbHint": "0–8. With return_mode=resource, download_artifact returns a file up to this size inside its result as a standard MCP embedded resource, which an MCP host that stores such resources saves by itself; such a file is not staged. Larger files go by reference. 0 switches inline return off.",
     "invalidRange": "Enter a whole number between {{min}} and {{max}}.",
     "unsavedChanges": "Unsaved MCP changes",
     "noChanges": "No MCP changes",

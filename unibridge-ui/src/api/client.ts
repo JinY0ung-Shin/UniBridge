@@ -466,6 +466,8 @@ export interface McpSettings {
   artifact_key_mb: number;
   /** MiB staged across all keys. */
   artifact_total_mb: number;
+  /** Largest file returned inline as an MCP embedded resource, in MiB; 0 = off. */
+  artifact_resource_max_mb: number;
 }
 
 export interface McpPreviewGroup {

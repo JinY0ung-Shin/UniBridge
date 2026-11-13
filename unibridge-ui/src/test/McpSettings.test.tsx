@@ -75,6 +75,7 @@ const defaultSettings: McpSettings = {
   artifact_ttl_seconds: 900,
   artifact_key_mb: 256,
   artifact_total_mb: 1024,
+  artifact_resource_max_mb: 4,
 };
 
 function makeKey(name: string): ApiKey {
@@ -275,6 +276,7 @@ describe('McpSettingsPage', () => {
       artifact_ttl_seconds: 900,
       artifact_key_mb: 256,
       artifact_total_mb: 1024,
+      artifact_resource_max_mb: 4,
     });
     // The result shows in the bar, which stays in the window to report it.
     const saved = await screen.findByText('MCP settings saved.');
@@ -413,6 +415,8 @@ describe('McpSettingsPage', () => {
       ['Keep a staged artifact for (seconds)', '300'],
       ['Max staged per API key (MiB)', '64'],
       ['Max staged in total (MiB)', '512'],
+      // 0 is in range here: it switches inline return off.
+      ['Max file returned inline (MiB)', '0'],
     ];
     for (const [name, value] of changes) {
       const input = screen.getByRole('spinbutton', { name });
@@ -431,15 +435,17 @@ describe('McpSettingsPage', () => {
       artifact_ttl_seconds: 300,
       artifact_key_mb: 64,
       artifact_total_mb: 512,
+      artifact_resource_max_mb: 0,
     });
   });
 
   it.each([
-    ['Max artifact size (MiB)', '91', 'Enter a whole number between 1 and 90.'],
-    ['Keep a staged artifact for (seconds)', '59', 'Enter a whole number between 60 and 86400.'],
-    ['Max staged per API key (MiB)', '4097', 'Enter a whole number between 1 and 4096.'],
-    ['Max staged in total (MiB)', '0', 'Enter a whole number between 1 and 16384.'],
-  ])('blocks saving when %s is out of range', async (name, value, message) => {
+    ['Max artifact size (MiB)', '91', '70', 'Enter a whole number between 1 and 90.'],
+    ['Keep a staged artifact for (seconds)', '59', '70', 'Enter a whole number between 60 and 86400.'],
+    ['Max staged per API key (MiB)', '4097', '70', 'Enter a whole number between 1 and 4096.'],
+    ['Max staged in total (MiB)', '0', '70', 'Enter a whole number between 1 and 16384.'],
+    ['Max file returned inline (MiB)', '9', '8', 'Enter a whole number between 0 and 8.'],
+  ])('blocks saving when %s is out of range', async (name, value, valid, message) => {
     renderWithProviders(<McpSettingsPage />, { permissions: WRITE_PERMISSIONS });
 
     const input = await screen.findByRole('spinbutton', { name });
@@ -453,7 +459,7 @@ describe('McpSettingsPage', () => {
 
     // Back in range: the hint returns and the change can be saved.
     await userEvent.clear(input);
-    await userEvent.type(input, '70');
+    await userEvent.type(input, valid);
     expect(screen.queryByText(message)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
   });
