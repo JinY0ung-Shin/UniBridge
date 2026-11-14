@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import AsyncIterator, Iterable, List
-
 from app.responses_bridge import (
     _input_to_messages,
     _usage_to_responses,
@@ -15,15 +13,7 @@ from app.responses_bridge import (
     resolve_length_as_completed,
     responses_request_to_chat_body,
 )
-
-
-async def _as_async(items: Iterable[dict]) -> AsyncIterator[dict]:
-    for it in items:
-        yield it
-
-
-async def _collect(aiter) -> List[dict]:
-    return [e async for e in aiter]
+from tests.helpers import as_async, collect
 
 
 # ---------------------------------------------------------------------------
@@ -338,9 +328,9 @@ def test_assistant_message_from_chat():
 
 async def _run_stream(chunks, request_body=None, *, length_as_completed=False, namespace_map=None):
     holder: dict = {}
-    events = await _collect(
+    events = await collect(
         chat_stream_to_responses_events(
-            _as_async(chunks), response_id="resp_S", request_body=request_body or {"model": "m"},
+            as_async(chunks), response_id="resp_S", request_body=request_body or {"model": "m"},
             holder=holder, emit_reasoning=True, length_as_completed=length_as_completed,
             namespace_map=namespace_map,
         )
@@ -758,7 +748,7 @@ async def test_stream_text_then_refusal_not_blended_in_persisted_content():
 
 async def test_stream_index_reuse_then_disconnect_persists_each_call_once():
     # Disconnect (GeneratorExit) after an index-0 reuse must not persist the
-    # still-open second call twice (index reuse leaves it twice in tool_order).
+    # still-open second call twice (both calls were opened on the same index).
     async def gen():
         yield {"choices": [{"delta": {"tool_calls": [
             {"index": 0, "id": "call_a", "type": "function",

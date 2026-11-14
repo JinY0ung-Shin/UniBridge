@@ -42,11 +42,30 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+_TRUTHY = frozenset({"true", "1", "yes", "on"})
+_FALSY = frozenset({"false", "0", "no", "off"})
+
+
 def _bool_env(name: str, default: bool) -> bool:
+    """Unset or blank → *default*; otherwise true only for a ``_TRUTHY``
+    value, so anything unrecognized reads as false."""
     raw = os.getenv(name)
     if raw is None or not raw.strip():
         return default
-    return raw.strip().lower() in {"true", "1", "yes", "on"}
+    return raw.strip().lower() in _TRUTHY
+
+
+def _regex_env(name: str, default: str) -> re.Pattern[str]:
+    """A case-insensitive pattern from the environment. Unset, blank or
+    unparseable → *default*, silently: a typo in compose must not fail every
+    request."""
+    raw = os.getenv(name, "").strip()
+    if raw:
+        try:
+            return re.compile(raw, re.IGNORECASE)
+        except re.error:
+            pass
+    return re.compile(default, re.IGNORECASE)
 
 
 _MID_SYSTEM_POLICIES = frozenset({"user", "hoist", "asis"})
@@ -69,9 +88,6 @@ _DEFAULT_TOOL_NORM_MODEL_PATTERN = r"mistral-large-4"
 # clients send is wider (see ``reasoning_effort.EFFORT_LADDER``), and an
 # out-of-vocabulary value is a hard 400, not a silent downgrade.
 _DEFAULT_REASONING_EFFORT_LEVELS = frozenset({"low", "medium", "high"})
-
-_TRUTHY = frozenset({"true", "1", "yes", "on"})
-_FALSY = frozenset({"false", "0", "no", "off"})
 
 # Vendor prefix the model listing advertises aliases under. Claude Code discovers
 # models by asking for the list and keeping the ones that look like Claude models,
@@ -124,13 +140,7 @@ class _Settings:
         listing (or a 504) by then. The fetch carries on in the background, up to
         a fixed 30s ceiling, and fills the cache for the next caller; <= 0 waits
         up to that ceiling."""
-        raw = os.getenv("CONVERTER_MODELS_TIMEOUT", "").strip()
-        if not raw:
-            return 2.0
-        try:
-            return float(raw)
-        except ValueError:
-            return 2.0
+        return _float_env("CONVERTER_MODELS_TIMEOUT", 2.0)
 
     @property
     def models_stale_max(self) -> float:
@@ -289,8 +299,8 @@ class _Settings:
         ``role: "system"`` reminders on nearly every non-trivial turn: the
         alternative default (``asis``) breaks that client outright, while
         ``hoist`` silently relocates a reminder away from the turn it belongs to.
-        Missing, empty, or unrecognized values fall back silently, matching
-        ``_int_env``/``_bool_env``."""
+        Missing, empty, or unrecognized values fall back to ``user`` silently,
+        matching ``_int_env``."""
         raw = os.getenv("CONVERTER_MID_SYSTEM_POLICY", "").strip().lower()
         return raw if raw in _MID_SYSTEM_POLICIES else "user"
 
@@ -306,23 +316,18 @@ class _Settings:
         The gate exists because normalization is not free of consequence: it
         role-swaps or relocates a system turn, so a backend whose template
         tolerates mid-history system messages should keep receiving the client's
-        original shape. The default ``qwen3\\.\\d`` covers the strict dotted
-        Qwen3.5 / 3.6 / 3.8 generations while deliberately NOT matching the
-        tolerant 2025-line ``qwen3-8b`` naming. Set ``.*`` to restore
-        normalize-for-every-model.
+        original shape. The default ``qwen3\\.\\d|mistral-large-4`` covers the
+        strict dotted Qwen3.5 / 3.6 / 3.8 generations while deliberately NOT
+        matching the tolerant 2025-line ``qwen3-8b`` naming, plus Mistral Large
+        4, whose template rejects a system turn after an assistant or tool turn.
+        Set ``.*`` to restore normalize-for-every-model.
 
         An unparseable regex falls back to the default silently, matching
         ``_int_env``/:attr:`mid_system_policy` — a typo in compose must not fail
         every request. Re-compiling per access is cheap (``re.compile`` hits its
         own module-level cache), so this stays a plain re-reading property like
         the rest."""
-        raw = os.getenv("CONVERTER_MID_SYSTEM_MODEL_PATTERN", "").strip()
-        if raw:
-            try:
-                return re.compile(raw, re.IGNORECASE)
-            except re.error:
-                pass
-        return re.compile(_DEFAULT_MID_SYSTEM_MODEL_PATTERN, re.IGNORECASE)
+        return _regex_env("CONVERTER_MID_SYSTEM_MODEL_PATTERN", _DEFAULT_MID_SYSTEM_MODEL_PATTERN)
 
     @property
     def tool_norm_model_regex(self) -> re.Pattern[str]:
@@ -335,13 +340,7 @@ class _Settings:
         sits between an assistant's ``tool_calls`` and its ``tool`` results;
         :func:`app.tool_norm.normalize_tool_messages` moves the results up. Set
         ``.*`` for every model. An unparseable regex falls back to the default."""
-        raw = os.getenv("CONVERTER_TOOL_NORM_MODEL_PATTERN", "").strip()
-        if raw:
-            try:
-                return re.compile(raw, re.IGNORECASE)
-            except re.error:
-                pass
-        return re.compile(_DEFAULT_TOOL_NORM_MODEL_PATTERN, re.IGNORECASE)
+        return _regex_env("CONVERTER_TOOL_NORM_MODEL_PATTERN", _DEFAULT_TOOL_NORM_MODEL_PATTERN)
 
     @property
     def model_alias_prefix(self) -> str:
@@ -442,8 +441,8 @@ class _Settings:
         cannot dispatch the call back to the client-side tool. When false the old
         drop behaviour is restored.
 
-        Missing, empty, or unrecognized values fall back to the default, matching
-        ``_bool_env``."""
+        Missing or empty keeps the default; any other value that is not one of
+        ``true``/``1``/``yes``/``on`` turns it off (``_bool_env``)."""
         return _bool_env("CONVERTER_FLATTEN_NAMESPACE_TOOLS", True)
 
 

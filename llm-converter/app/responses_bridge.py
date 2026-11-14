@@ -22,10 +22,15 @@ import time
 import uuid
 from typing import Any, AsyncIterator, Optional
 
+from .chat_completions import (
+    StreamedToolCall,
+    ToolCallAccumulator,
+    merge_chat_usage,
+    normalize_for_model,
+    read_chat_usage,
+)
 from .config import settings
 from .reasoning_effort import clamp_reasoning_effort
-from .system_norm import normalize_system_messages
-from .tool_norm import normalize_tool_messages
 
 # ---------------------------------------------------------------------------
 # ID generation
@@ -367,19 +372,7 @@ def responses_request_to_chat_body(
     elif body.get("instructions"):
         messages.append({"role": "system", "content": body["instructions"]})
     messages.extend(_input_to_messages(body.get("input", [])))
-    # Then pull tool results up next to their ``tool_calls`` turn: a demoted
-    # reminder (or a separate user turn) wedged in between is ``user → tool``,
-    # which Mistral Large 4's template rejects. Gated by model like the above.
-    out["messages"] = normalize_tool_messages(
-        normalize_system_messages(
-            messages,
-            settings.mid_system_policy,
-            model=out.get("model"),
-            model_pattern=settings.mid_system_model_regex,
-        ),
-        model=out.get("model"),
-        model_pattern=settings.tool_norm_model_regex,
-    )
+    out["messages"] = normalize_for_model(messages, out.get("model"))
 
     if "max_output_tokens" in body and body["max_output_tokens"] is not None:
         out["max_completion_tokens"] = body["max_output_tokens"]
@@ -438,53 +431,31 @@ def responses_request_to_chat_body(
 # ---------------------------------------------------------------------------
 
 
-def _as_int(value: Any, default: int = 0) -> int:
-    """Coerce an upstream token counter to int; null/garbage -> default."""
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        try:
-            return int(value)
-        except (ValueError, OverflowError):  # NaN / inf
-            return default
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except ValueError:
-            return default
-    return default
-
-
 def _usage_to_responses(usage: Any) -> Optional[dict]:
     """Map chat-completions ``usage`` to the Responses usage shape.
 
-    Every emitted counter goes through :func:`_as_int`: strict clients
-    deserialize these as *required* integers — Codex CLI reads
-    ``input_tokens``/``output_tokens``/``total_tokens`` always, and
+    Every emitted counter is an int, read by
+    :func:`app.chat_completions.read_chat_usage` (the reader ``/v1/messages``
+    uses too): strict clients deserialize these as *required* integers — Codex
+    CLI reads ``input_tokens``/``output_tokens``/``total_tokens`` always, and
     ``cached_tokens``/``reasoning_tokens`` whenever their ``*_details`` object
     is present — so an upstream ``null`` (some OpenAI-compatible backends emit
     one) kills the whole turn with "invalid type: null, expected i64" after any
     tool call has already executed. Both the non-streaming path
     (:func:`chat_response_to_responses_body`) and the streaming path
-    (:func:`chat_stream_to_responses_events`) build usage here, so this is the
-    single place the coercion is needed.
+    (:func:`chat_stream_to_responses_events`) build usage here.
+    ``input_tokens`` stays inclusive of the cached tokens, as in
+    chat/completions.
     """
     if not isinstance(usage, dict):
         return None
-    pd = usage.get("prompt_tokens_details") or {}
-    cd = usage.get("completion_tokens_details") or {}
+    read = read_chat_usage(usage)
     return {
-        "input_tokens": _as_int(usage.get("prompt_tokens")),
-        "input_tokens_details": {
-            "cached_tokens": _as_int(pd.get("cached_tokens")) if isinstance(pd, dict) else 0
-        },
-        "output_tokens": _as_int(usage.get("completion_tokens")),
-        "output_tokens_details": {
-            "reasoning_tokens": _as_int(cd.get("reasoning_tokens")) if isinstance(cd, dict) else 0
-        },
-        "total_tokens": _as_int(usage.get("total_tokens")),
+        "input_tokens": read.prompt_tokens,
+        "input_tokens_details": {"cached_tokens": read.cache_read_tokens},
+        "output_tokens": read.completion_tokens,
+        "output_tokens_details": {"reasoning_tokens": read.reasoning_tokens},
+        "total_tokens": read.total_tokens,
     }
 
 
@@ -729,19 +700,23 @@ def _upstream_error_to_responses(err: Any) -> dict:
 class _StreamState:
     __slots__ = (
         "seq", "next_oi", "output", "usage", "finish",
-        "reasoning", "text", "tools", "tool_order",
+        "reasoning", "text", "tool_calls", "tools",
     )
 
     def __init__(self) -> None:
         self.seq = 0
         self.next_oi = 0
         self.output: list[dict] = []
+        # The chunks' chat usage, merged field by field; None until one has usage.
         self.usage: Optional[dict] = None
         self.finish: Optional[str] = None
         self.reasoning: Optional[dict] = None  # {id, oi, buf}
         self.text: Optional[dict] = None        # {id, oi, buf}
-        self.tools: dict[int, dict] = {}         # upstream tool index -> {id, oi, call_id, upstream_id, name, namespace, buf}
-        self.tool_order: list[int] = []
+        # Each argument fragment goes to the client as it arrives and cannot be
+        # taken back, so a restatement is only dropped when identical.
+        self.tool_calls = ToolCallAccumulator(replace_restated=False)
+        # The function_call items still open, in open order: call -> {id, oi, call_id}.
+        self.tools: dict[StreamedToolCall, dict] = {}
 
 
 async def chat_stream_to_responses_events(
@@ -860,33 +835,34 @@ async def chat_stream_to_responses_events(
         s.text = None
         return evs
 
-    def close_tool(idx: int) -> list[dict]:
-        t = s.tools.get(idx)
-        if t is None:
-            return []
-        args = "".join(t["buf"])
+    def close_tool(call: StreamedToolCall) -> list[dict]:
+        t = s.tools.pop(call)
+        args = call.arguments
         item = {
             "id": t["id"], "type": "function_call", "status": item_status(),
-            "call_id": t["call_id"], "name": t["name"], "arguments": args,
+            "call_id": t["call_id"], "name": call.name, "arguments": args,
         }
-        # Re-stamp the namespace (resolved when the name became known) so the
-        # done item — and the terminal output[] built from it — routes back.
-        if t.get("namespace"):
-            item["namespace"] = t["namespace"]
+        # Re-stamp the namespace so the done item — and the terminal output[]
+        # built from it — routes back. Resolved from the name the call ended
+        # with, so a name that arrived on a later fragment counts too.
+        namespace = ns_for(call.name)
+        if namespace:
+            item["namespace"] = namespace
         evs = [
             bump({"type": "response.function_call_arguments.done", "item_id": t["id"],
-                  "output_index": t["oi"], "name": t["name"], "arguments": args}),
+                  "output_index": t["oi"], "name": call.name, "arguments": args}),
             bump({"type": "response.output_item.done", "output_index": t["oi"], "item": item}),
         ]
         s.output.append((t["oi"], item))
-        del s.tools[idx]
         return evs
 
     def close_all_tools() -> list[dict]:
-        """Close every still-open tool item (in open order)."""
+        """Close every still-open tool item (in open order). A later fragment
+        then opens a new call, even on an index seen before."""
         evs: list[dict] = []
-        for idx in list(s.tool_order):
-            evs.extend(close_tool(idx))
+        for call in list(s.tools):
+            evs.extend(close_tool(call))
+        s.tool_calls.take()
         return evs
 
     def finalize_holder(items: list[dict], status: str) -> None:
@@ -944,7 +920,8 @@ async def chat_stream_to_responses_events(
                             request_body=request_body, model=model, created_at=created_at,
                             response_id=response_id, status="failed",
                             output=[it for _, it in sorted(s.output, key=lambda x: x[0])],
-                            usage=s.usage, error=_upstream_error_to_responses(err),
+                            usage=_usage_to_responses(s.usage),
+                            error=_upstream_error_to_responses(err),
                         ),
                     }
                 )
@@ -952,7 +929,11 @@ async def chat_stream_to_responses_events(
 
             usage = chunk.get("usage")
             if isinstance(usage, dict):
-                s.usage = _usage_to_responses(usage)
+                # Merged, not replaced: a later usage chunk without
+                # ``prompt_tokens`` must not zero ``input_tokens``.
+                if s.usage is None:
+                    s.usage = {}
+                merge_chat_usage(s.usage, usage)
 
             choices = chunk.get("choices") or []
             if not choices:
@@ -1024,78 +1005,43 @@ async def chat_stream_to_responses_events(
                 yield bump({"type": "response.refusal.delta", "item_id": s.text["id"],
                             "output_index": s.text["oi"], "content_index": 0, "delta": refusal})
 
-            # Tool calls.
+            # Tool calls. The upstream dialects (index-less fragments, a reused
+            # index, restated arguments) are handled by the shared accumulator.
             for tc in delta.get("tool_calls") or []:
                 if not isinstance(tc, dict):
                     continue
-                tci = tc.get("index")
-                if not isinstance(tci, int):
-                    continue
-                fn = tc.get("function") or {}
-                incoming_id = tc.get("id")
-                has_incoming_id = isinstance(incoming_id, str) and bool(incoming_id)
-                existing = s.tools.get(tci)
-                # Some non-conformant upstreams reuse a single index for distinct
-                # sequential tool calls. A delta carrying a NON-EMPTY id that
-                # differs from the id the open item was given upstream is a new
-                # call, not a continuation — close the current item and open a
-                # fresh one so the second call's id/name/arguments are not merged
-                # into the first (which would corrupt args into e.g.
-                # {"a":1}{"b":2}).
-                #
-                # The comparison is against ``upstream_id`` — the id the upstream
-                # actually supplied, ``None`` until one arrives — never the emitted
-                # ``call_id``, which is synthesized when the opening delta carried
-                # no id. A real id arriving on a later fragment of that SAME call
-                # can never match a synthesized ``call_...`` and would split one
-                # call into two.
-                is_new_call = (
-                    existing is not None
-                    and existing["upstream_id"] is not None
-                    and has_incoming_id
-                    and incoming_id != existing["upstream_id"]
-                )
-                if existing is None or is_new_call:
-                    if is_new_call:
-                        for e in close_tool(tci):
+                fragment = s.tool_calls.add(tc)
+                call = fragment.call
+                if fragment.opened:
+                    # Another call took this index over; the one that held it
+                    # is complete. Closed first so item lifecycles never nest.
+                    if fragment.superseded is not None:
+                        for e in close_tool(fragment.superseded):
                             yield e
                     # reasoning/text precede tool calls — close them first.
                     for e in close_reasoning():
                         yield e
                     for e in close_text():
                         yield e
-                    name = fn.get("name") or ""
+                    # ``call_id`` goes out on output_item.added and the client
+                    # answers with it, so it is fixed here: synthesized when the
+                    # opening fragment had no id, and a real id arriving later
+                    # stays the accumulator's (only used to tell calls apart).
                     t = {"id": _new_fc_id(), "oi": s.next_oi,
-                         "call_id": incoming_id if has_incoming_id else f"call_{uuid.uuid4().hex[:16]}",
-                         "upstream_id": incoming_id if has_incoming_id else None,
-                         "name": name, "namespace": ns_for(name), "buf": []}
+                         "call_id": call.upstream_id or f"call_{uuid.uuid4().hex[:16]}"}
                     s.next_oi += 1
-                    s.tools[tci] = t
-                    s.tool_order.append(tci)
+                    s.tools[call] = t
                     added_item = {"id": t["id"], "type": "function_call", "status": "in_progress",
-                                  "call_id": t["call_id"], "name": t["name"], "arguments": ""}
-                    if t["namespace"]:
-                        added_item["namespace"] = t["namespace"]
+                                  "call_id": t["call_id"], "name": call.name, "arguments": ""}
+                    namespace = ns_for(call.name)
+                    if namespace:
+                        added_item["namespace"] = namespace
                     yield bump({"type": "response.output_item.added", "output_index": t["oi"],
                                 "item": added_item})
-                else:
-                    t = s.tools[tci]
-                    # A real id on a call opened without one is metadata for THIS
-                    # call. Only ``upstream_id`` adopts it: ``call_id`` already
-                    # went out on output_item.added, and the client correlates its
-                    # function_call_output against that value.
-                    if t["upstream_id"] is None and has_incoming_id:
-                        t["upstream_id"] = incoming_id
-                    if not t["name"] and fn.get("name"):
-                        t["name"] = fn["name"]
-                        # Name arrived on a later fragment — resolve its namespace
-                        # now so the done item (and terminal output) can stamp it.
-                        t["namespace"] = ns_for(t["name"])
-                args_frag = fn.get("arguments")
-                if isinstance(args_frag, str) and args_frag:
-                    t["buf"].append(args_frag)
+                if fragment.arguments is not None:
+                    t = s.tools[call]
                     yield bump({"type": "response.function_call_arguments.delta", "item_id": t["id"],
-                                "output_index": t["oi"], "delta": args_frag})
+                                "output_index": t["oi"], "delta": fragment.arguments})
 
             fr = choice.get("finish_reason")
             if isinstance(fr, str) and fr:
@@ -1106,9 +1052,8 @@ async def chat_stream_to_responses_events(
             yield e
         for e in close_text():
             yield e
-        for idx in list(s.tool_order):
-            for e in close_tool(idx):
-                yield e
+        for e in close_all_tools():
+            yield e
 
         final_output = [it for _, it in sorted(s.output, key=lambda x: x[0])]
         status, incomplete = _finish_to_status(s.finish, length_as_completed=length_as_completed)
@@ -1118,7 +1063,9 @@ async def chat_stream_to_responses_events(
         finalize_holder(final_output, status)
 
         terminal_type = "response.incomplete" if status == "incomplete" else "response.completed"
-        yield lifecycle(terminal_type, status, final_output, s.usage, incomplete)
+        yield lifecycle(
+            terminal_type, status, final_output, _usage_to_responses(s.usage), incomplete
+        )
     finally:
         # On client cancellation (GeneratorExit) the try-block above may not run
         # its close_* pass, so still-open items never reach s.output. Synthesize
@@ -1135,24 +1082,19 @@ async def chat_stream_to_responses_events(
                     else {"type": "output_text", "text": txt, "annotations": []}
                 )
                 pairs.append((s.text["oi"], {"type": "message", "content": [part]}))
-            # dict.fromkeys dedupes: an index reused for a new call (close_tool +
-            # reopen) leaves it twice in tool_order, and unlike the close_* loop
-            # this path has no idempotency guard — without dedup a still-open
-            # reused call would be appended (and persisted) twice.
-            for idx in dict.fromkeys(s.tool_order):
-                t = s.tools.get(idx)
-                if t is not None:
-                    pairs.append(
-                        (
-                            t["oi"],
-                            {
-                                "type": "function_call",
-                                "call_id": t["call_id"],
-                                "name": t["name"],
-                                "arguments": "".join(t["buf"]),
-                            },
-                        )
+            # Each still-open call once, even when it reused another's index.
+            for call, t in s.tools.items():
+                pairs.append(
+                    (
+                        t["oi"],
+                        {
+                            "type": "function_call",
+                            "call_id": t["call_id"],
+                            "name": call.name,
+                            "arguments": call.arguments,
+                        },
                     )
+                )
             partial = [it for _, it in sorted(pairs, key=lambda x: x[0])]
             finalize_holder(partial, holder.get("status") or "incomplete")
 

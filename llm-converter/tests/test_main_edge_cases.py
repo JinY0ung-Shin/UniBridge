@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator
 
 import httpx
 import pytest
@@ -13,9 +12,7 @@ from fastapi.testclient import TestClient
 
 import app.main as converter_main
 from app.responses_state import conversation_store
-
-
-REAL_MAKE_CLIENT = converter_main._make_client
+from tests.helpers import as_async, mock_upstream, openai_sse, parse_sse
 
 
 @pytest.fixture(autouse=True)
@@ -25,33 +22,6 @@ def _clean_runtime(monkeypatch):
     conversation_store.clear()
     yield
     conversation_store.clear()
-
-
-def _install_factory(monkeypatch, handler) -> list[httpx.AsyncClient]:
-    transport = httpx.MockTransport(handler)
-    clients: list[httpx.AsyncClient] = []
-
-    def factory(timeout):
-        client = httpx.AsyncClient(transport=transport, timeout=timeout)
-        clients.append(client)
-        return client
-
-    monkeypatch.setattr(converter_main, "_make_client", factory)
-    return clients
-
-
-def _openai_sse(chunks: Iterable[dict]) -> bytes:
-    frames = [f"data: {json.dumps(chunk)}\n\n" for chunk in chunks]
-    frames.append("data: [DONE]\n\n")
-    return "".join(frames).encode()
-
-
-def _parse_sse(raw: str) -> list[dict]:
-    return [
-        json.loads(line[5:].lstrip())
-        for line in raw.splitlines()
-        if line.startswith("data:")
-    ]
 
 
 @pytest.mark.parametrize(
@@ -71,7 +41,7 @@ def test_streaming_non_sse_error_is_forwarded_and_resources_close(
             content=b'{"error":"limited"}',
         )
 
-    clients = _install_factory(monkeypatch, handler)
+    clients = mock_upstream(monkeypatch, handler)
     response = TestClient(converter_main.app).post(path, json=body)
 
     assert response.status_code == 429
@@ -112,7 +82,7 @@ def test_streaming_non_sse_body_read_timeout_returns_504_and_closes(
         )
 
     monkeypatch.setattr(converter_main, "_ERROR_BODY_READ_TIMEOUT", 0.001)
-    clients = _install_factory(monkeypatch, handler)
+    clients = mock_upstream(monkeypatch, handler)
     response = TestClient(converter_main.app).post(path, json=body)
 
     assert response.status_code == 504
@@ -132,7 +102,7 @@ def test_streaming_connect_failure_closes_client(monkeypatch, path, body):
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("cannot connect", request=request)
 
-    clients = _install_factory(monkeypatch, handler)
+    clients = mock_upstream(monkeypatch, handler)
     with pytest.raises(httpx.ConnectError, match="cannot connect"):
         TestClient(converter_main.app).post(path, json=body)
     assert clients[0].is_closed
@@ -149,7 +119,7 @@ def test_responses_nonstream_timeout_returns_504_and_closes(monkeypatch):
         await asyncio.sleep(1)
         return httpx.Response(200, json={"choices": []})
 
-    clients = _install_factory(monkeypatch, handler)
+    clients = mock_upstream(monkeypatch, handler)
     response = TestClient(converter_main.app).post(
         "/v1/responses", json={"model": "m", "input": "hi"}
     )
@@ -170,7 +140,7 @@ def test_nonstream_transport_failure_still_closes_client(monkeypatch, path, body
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadError("upstream reset", request=request)
 
-    clients = _install_factory(monkeypatch, handler)
+    clients = mock_upstream(monkeypatch, handler)
     with pytest.raises(httpx.ReadError, match="upstream reset"):
         TestClient(converter_main.app).post(path, json=body)
     assert clients[0].is_closed
@@ -191,7 +161,7 @@ def test_nonstream_invalid_json_from_successful_upstream_is_forwarded(
             200, headers={"content-type": "application/json"}, content=b"{broken"
         )
 
-    _install_factory(monkeypatch, handler)
+    mock_upstream(monkeypatch, handler)
     response = TestClient(converter_main.app).post(path, json=body)
     assert response.status_code == 200
     assert response.content == b"{broken"
@@ -203,7 +173,7 @@ def test_messages_structurally_invalid_success_body_is_forwarded(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, headers={"content-type": "application/json"}, json=raw)
 
-    _install_factory(monkeypatch, handler)
+    mock_upstream(monkeypatch, handler)
     response = TestClient(converter_main.app).post(
         "/v1/messages", json={"model": "m", "messages": []}
     )
@@ -213,7 +183,7 @@ def test_messages_structurally_invalid_success_body_is_forwarded(monkeypatch):
 
 @pytest.mark.parametrize("path", ["/v1/messages", "/v1/responses"])
 def test_request_body_must_be_a_json_object(monkeypatch, path):
-    _install_factory(monkeypatch, lambda request: httpx.Response(200))
+    mock_upstream(monkeypatch, lambda request: httpx.Response(200))
     response = TestClient(converter_main.app).post(
         path, content=b"[]", headers={"content-type": "application/json"}
     )
@@ -222,7 +192,7 @@ def test_request_body_must_be_a_json_object(monkeypatch, path):
 
 
 def test_responses_invalid_json_returns_400(monkeypatch):
-    _install_factory(monkeypatch, lambda request: httpx.Response(200))
+    mock_upstream(monkeypatch, lambda request: httpx.Response(200))
     response = TestClient(converter_main.app).post(
         "/v1/responses",
         content=b"{bad",
@@ -236,7 +206,7 @@ def test_streaming_completion_supersedes_parent_before_terminal_event(monkeypatc
     parent = [{"role": "user", "content": "old"}]
     conversation_store.put("resp_parent", parent)
     monkeypatch.setattr(converter_main, "new_response_id", lambda: "resp_child")
-    body = _openai_sse(
+    body = openai_sse(
         [
             {"choices": [{"delta": {"content": "answer"}}]},
             {"choices": [{"delta": {}, "finish_reason": "stop"}]},
@@ -248,7 +218,7 @@ def test_streaming_completion_supersedes_parent_before_terminal_event(monkeypatc
             200, headers={"content-type": "text/event-stream"}, content=body
         )
 
-    _install_factory(monkeypatch, handler)
+    mock_upstream(monkeypatch, handler)
     response = TestClient(converter_main.app).post(
         "/v1/responses",
         json={
@@ -260,7 +230,7 @@ def test_streaming_completion_supersedes_parent_before_terminal_event(monkeypatc
     )
 
     assert response.status_code == 200
-    assert _parse_sse(response.text)[-1]["type"] == "response.completed"
+    assert parse_sse(response.text)[-1]["type"] == "response.completed"
     assert conversation_store.get("resp_parent") is None
     assert conversation_store.get("resp_child")[-1]["content"] == "answer"
 
@@ -282,7 +252,7 @@ def test_streaming_fallback_persists_complete_holder_and_supersedes_parent(monke
             content=b"data: [DONE]\n\n",
         )
 
-    _install_factory(monkeypatch, handler)
+    mock_upstream(monkeypatch, handler)
     response = TestClient(converter_main.app).post(
         "/v1/responses",
         json={
@@ -296,11 +266,6 @@ def test_streaming_fallback_persists_complete_holder_and_supersedes_parent(monke
     assert response.status_code == 200
     assert conversation_store.get("resp_parent") is None
     assert conversation_store.get("resp_fallback")[-1]["content"] == "partial"
-
-
-async def _as_async(items) -> AsyncIterator[dict]:
-    for item in items:
-        yield item
 
 
 async def test_real_client_factory_builds_a_plain_client(monkeypatch):
@@ -318,7 +283,7 @@ async def test_real_client_factory_builds_a_plain_client(monkeypatch):
 
     monkeypatch.setattr(converter_main.httpx, "AsyncClient", fake_async_client)
 
-    client = REAL_MAKE_CLIENT(timeout=None)
+    client = converter_main._make_client(timeout=None)
     assert captured == {"timeout": None, "verify": converter_main._SSL_CONTEXT}
     await client.aclose()
     assert client.is_closed
@@ -326,9 +291,9 @@ async def test_real_client_factory_builds_a_plain_client(monkeypatch):
 
 def test_trace_helpers_validate_json_and_summarize_tool_calls(monkeypatch):
     monkeypatch.setattr(converter_main, "_TRACE_ARGS_MAX", 3)
-    assert converter_main._is_json(None) is False
-    assert converter_main._is_json("not json") is False
-    assert converter_main._is_json('{"ok": true}') is True
+    assert converter_main.is_complete_json(None) is False
+    assert converter_main.is_complete_json("not json") is False
+    assert converter_main.is_complete_json('{"ok": true}') is True
     assert converter_main._summarize_tool_calls("bad") is None
     assert converter_main._summarize_tool_calls([None]) is None
     assert converter_main._summarize_tool_calls(
@@ -402,7 +367,7 @@ async def test_upstream_trace_is_passthrough_and_logs_decisive_shapes(caplog):
     result = [
         item
         async for item in converter_main._trace_upstream_chunks(
-            _as_async(chunks), "model-a"
+            as_async(chunks), "model-a"
         )
     ]
     assert result == chunks
@@ -423,7 +388,7 @@ async def test_upstream_trace_is_passthrough_and_logs_decisive_shapes(caplog):
     assert [
         item
         async for item in converter_main._trace_upstream_chunks(
-            _as_async(no_tool), "model-b"
+            as_async(no_tool), "model-b"
         )
     ] == no_tool
     assert "ERROR chunk" in caplog.text
@@ -452,7 +417,7 @@ async def test_downstream_trace_reconstructs_tool_arguments_and_fails_soft(caplo
     result = [
         event
         async for event in converter_main._trace_downstream_events(
-            _as_async(events), "model"
+            as_async(events), "model"
         )
     ]
     assert result == events
@@ -465,7 +430,7 @@ async def test_downstream_trace_reconstructs_tool_arguments_and_fails_soft(caplo
 def test_messages_route_enables_both_trace_wrappers(monkeypatch, caplog):
     monkeypatch.setenv("CONVERTER_TRACE", "true")
     caplog.set_level(logging.INFO, logger="app.main")
-    body = _openai_sse(
+    body = openai_sse(
         [
             {"choices": [{"delta": {"content": "answer"}}]},
             {"choices": [{"delta": {}, "finish_reason": "stop"}]},
@@ -477,14 +442,14 @@ def test_messages_route_enables_both_trace_wrappers(monkeypatch, caplog):
             200, headers={"content-type": "text/event-stream"}, content=body
         )
 
-    _install_factory(monkeypatch, handler)
+    mock_upstream(monkeypatch, handler)
     response = TestClient(converter_main.app).post(
         "/v1/messages",
         json={"model": "trace-model", "stream": True, "messages": []},
     )
 
     assert response.status_code == 200
-    assert _parse_sse(response.text)[-1]["type"] == "message_stop"
+    assert parse_sse(response.text)[-1]["type"] == "message_stop"
     assert "upstream[trace-model] END" in caplog.text
     assert "downstream[trace-model]: message_delta" in caplog.text
 
@@ -499,7 +464,7 @@ def test_messages_route_enables_both_trace_wrappers(monkeypatch, caplog):
 def test_body_over_the_cap_is_refused_before_upstream(monkeypatch, path, anthropic, caplog):
     monkeypatch.setenv("CONVERTER_MAX_BODY_BYTES", "1024")
     calls: list[httpx.Request] = []
-    _install_factory(monkeypatch, lambda request: calls.append(request) or httpx.Response(500))
+    mock_upstream(monkeypatch, lambda request: calls.append(request) or httpx.Response(500))
     body = {"model": "m", "messages": [{"role": "user", "content": "x" * 2000}], "input": "hi"}
 
     with caplog.at_level(logging.WARNING, logger="app.main"):

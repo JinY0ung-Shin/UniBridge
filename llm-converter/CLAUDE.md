@@ -3,7 +3,9 @@
 See the repo-root `CLAUDE.md` for cross-service context. Tiny service that sits
 between APISIX and the LLM gateway, Bifrost, and translates two API shapes into
 chat/completions.
-Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
+Deps: fastapi + uvicorn + httpx (starlette pinned as a security floor). Test: `pytest`
+(in `tests/`; shared helpers in `tests/helpers.py`, the `make_app` fixture in `conftest.py`
+— patch the upstream client only through `monkeypatch`, or the conftest guard fails the test).
 
 ## What it does
 - `POST /v1/messages`  — Anthropic Messages API ↔ chat/completions (`messages_bridge.py`).
@@ -37,6 +39,11 @@ Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
 - Non-2xx JSON error bodies on `/v1/messages` and `/v1/responses` are forwarded with their
   status but without Bifrost's top-level `extra_fields` (provider, key name, backend model id);
   non-JSON bodies pass unchanged.
+- `chat_completions.py` — the chat/completions side both bridges share, kept in one copy so
+  they cannot drift: the model-gated request normalization, the usage reader (one int
+  coercion, cache aliases, field-by-field merge of stream usage chunks) and the streamed
+  tool-call accumulator (index-less fragments, a reused index, restated arguments — the
+  vLLM/GLM and sglang dialects). A fix to either bridge's reading of upstream output goes here.
 - Streaming: `sse.py` (SSE framing, header filters) + `stream_sanitizer.py` (cleans/normalizes
   upstream chunks).
 - `config.py` — upstream gateway URL + knobs; `main.py` — app + routes.
@@ -46,8 +53,7 @@ Deps: fastapi + httpx only. Test: `pytest` (in `tests/`).
   Bifrost`. Live coverage lives in repo-root `e2e/` (runs only when `LLM_API_KEY`
   is set), not here.
 - Upstream is `CONVERTER_BIFROST_URL` (default `http://bifrost:8080`, plain HTTP, so no TLS
-  settings: `LITELLM_URL` and `CONVERTER_TLS_*` are gone). The converter reads no `LLM_GATEWAY` (compose still passes `bifrost` for one release, for
-  older images on rollback). `sse.py` `forward_request_headers` passes only
+  settings: `LITELLM_URL` and `CONVERTER_TLS_*` are gone). `sse.py` `forward_request_headers` passes only
   `x-bf-vk`/`x-bf-dim-consumer`/`x-bf-lh-consumer` of the `x-bf-*` headers (raw capture,
   passthrough, cache, MCP, stored-key selectors stay out), no
   `Authorization`/`x-api-key`/`api-key`/`x-goog-api-key` (Bifrost reads them as virtual keys)

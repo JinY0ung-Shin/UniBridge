@@ -9,25 +9,17 @@ spec-conforming one. The canonical bug it fixes is LiteLLM's
 
 from __future__ import annotations
 
-from typing import AsyncIterator, Iterable, List
+from typing import List
 
 import pytest
 
 from app.stream_sanitizer import DELTA_COMPATIBLE_BLOCKS, sanitize_events
+from tests.helpers import as_async, collect
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-async def _as_async(events: Iterable[dict]) -> AsyncIterator[dict]:
-    for e in events:
-        yield e
-
-
-async def _collect(aiter: AsyncIterator[dict]) -> List[dict]:
-    return [e async for e in aiter]
 
 
 def assert_spec_conforming(events: List[dict]) -> None:
@@ -94,7 +86,7 @@ class TestSanitizerSpecCompliance:
             {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert_spec_conforming(out)
         # No structural splits needed → same length and type sequence.
         assert [e["type"] for e in out] == [e["type"] for e in events]
@@ -115,7 +107,7 @@ class TestSanitizerSpecCompliance:
             {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert_spec_conforming(out)
         types = [e["type"] for e in out]
         # Expected structure: text-start (empty, immediately closed) → thinking → text → stop → end
@@ -151,7 +143,7 @@ class TestSanitizerSpecCompliance:
             {"type": "content_block_stop", "index": 0},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert_spec_conforming(out)
         assert sum(1 for e in out if e["type"] == "message_start") == 1
 
@@ -162,7 +154,7 @@ class TestSanitizerSpecCompliance:
             {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert_spec_conforming(out)
         starts = [e for e in out if e["type"] == "content_block_start"]
         assert len(starts) == 1
@@ -181,7 +173,7 @@ class TestSanitizerSpecCompliance:
             # NO content_block_stop here
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert_spec_conforming(out)
         types = [e["type"] for e in out]
         assert types[-2:] == ["content_block_stop", "message_stop"]
@@ -198,7 +190,7 @@ class TestSanitizerSpecCompliance:
             {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert_spec_conforming(out)
         # message_delta must be preceded by a content_block_stop.
         idx = next(i for i, e in enumerate(out) if e["type"] == "message_delta")
@@ -218,7 +210,7 @@ class TestSanitizerSpecCompliance:
             {"type": "content_block_stop", "index": 0},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert_spec_conforming(out)
         starts = [e for e in out if e["type"] == "content_block_start"]
         assert [s["content_block"]["type"] for s in starts] == ["text", "tool_use"]
@@ -236,7 +228,7 @@ class TestSanitizerSpecCompliance:
             {"type": "content_block_stop", "index": 0},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert any(e["type"] == "ping" for e in out)
         assert_spec_conforming(out)
 
@@ -264,7 +256,7 @@ class TestSanitizerSpecCompliance:
             {"type": "content_block_stop", "index": 0},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert_spec_conforming(out)
         starts = [e for e in out if e["type"] == "content_block_start"]
         # Exactly one block, the original server_tool_use — no synthetic split.
@@ -293,7 +285,7 @@ class TestSanitizerSpecCompliance:
             {"type": "content_block_stop", "index": 0},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert_spec_conforming(out)
         starts = [e for e in out if e["type"] == "content_block_start"]
         # Exactly two blocks: the original empty text, then one thinking block.
@@ -328,7 +320,7 @@ class TestSanitizerSpecCompliance:
             {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert_spec_conforming(out)
         starts = [e for e in out if e["type"] == "content_block_start"]
         block_types = [s["content_block"]["type"] for s in starts]
@@ -350,7 +342,7 @@ class TestSanitizerSpecCompliance:
             {"type": "content_block_stop", "index": 0},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert_spec_conforming(out)
         text_deltas = [e for e in out if e.get("delta", {}).get("type") == "text_delta"]
         assert len(text_deltas) == 2
@@ -366,7 +358,7 @@ class TestSanitizerSpecCompliance:
             {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hi"}},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         types = [e["type"] for e in out]
         assert types == [
             "message_start",
@@ -390,7 +382,7 @@ class TestSanitizerSpecCompliance:
              "delta": {"type": "citations_delta", "citation": {"x": 1}}},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert_spec_conforming(out)
         assert [e["type"] for e in out] == ["message_start", "message_stop"]
 
@@ -406,7 +398,7 @@ class TestSanitizerSpecCompliance:
             {"type": "content_block_stop", "index": 0},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert_spec_conforming(out)
         citation_deltas = [e for e in out if e.get("delta", {}).get("type") == "citations_delta"]
         assert len(citation_deltas) == 1
@@ -433,7 +425,7 @@ class TestSanitizerSpecCompliance:
             {"type": "content_block_stop", "index": 1},
             {"type": "message_stop"},
         ]
-        out = await _collect(sanitize_events(_as_async(events)))
+        out = await collect(sanitize_events(as_async(events)))
         assert_spec_conforming(out)
         starts = [e for e in out if e["type"] == "content_block_start"]
         assert [s["content_block"]["type"] for s in starts] == ["text", "thinking", "text"]

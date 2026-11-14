@@ -9,27 +9,14 @@ so all tests work on plain Python dicts — no HTTP, no SSE encoding.
 from __future__ import annotations
 
 import json
-from typing import AsyncIterator, Iterable, List
+from typing import List
 
 from app.messages_bridge import (
     anthropic_request_to_openai_body,
     openai_response_to_anthropic_body,
     openai_stream_to_anthropic_events,
 )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-async def _as_async(items: Iterable[dict]) -> AsyncIterator[dict]:
-    for it in items:
-        yield it
-
-
-async def _collect(aiter: AsyncIterator[dict]) -> List[dict]:
-    return [e async for e in aiter]
+from tests.helpers import as_async, collect
 
 
 # ---------------------------------------------------------------------------
@@ -772,8 +759,8 @@ class TestStreamConversion:
             {"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 30}},
         ]
 
-        out = await _collect(
-            openai_stream_to_anthropic_events(_as_async(chunks), model="m")
+        out = await collect(
+            openai_stream_to_anthropic_events(as_async(chunks), model="m")
         )
         types = [e["type"] for e in out]
 
@@ -818,7 +805,7 @@ class TestStreamConversion:
             {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
             {"choices": [{"delta": {}, "finish_reason": "stop"}]},
         ]
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         md = next(e for e in out if e["type"] == "message_delta")
         assert md["delta"]["stop_reason"] == "end_turn"
 
@@ -827,7 +814,7 @@ class TestStreamConversion:
             {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
             {"choices": [{"delta": {}, "finish_reason": "length"}]},
         ]
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         md = next(e for e in out if e["type"] == "message_delta")
         assert md["delta"]["stop_reason"] == "max_tokens"
 
@@ -839,7 +826,7 @@ class TestStreamConversion:
             {"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]},
             {"choices": [{"delta": {}, "finish_reason": "content_filter"}]},
         ]
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         md = next(e for e in out if e["type"] == "message_delta")
         assert md["delta"]["stop_reason"] == "end_turn"
         assert md["delta"]["stop_sequence"] is None
@@ -851,7 +838,7 @@ class TestStreamConversion:
             {"choices": [{"delta": {"content": "partial"}}]},
             {"error": {"type": "rate_limit_error", "message": "slow down"}},
         ]
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         assert out[-1] == {
             "type": "error",
             "error": {"type": "rate_limit_error", "message": "slow down"},
@@ -866,7 +853,7 @@ class TestStreamConversion:
             # include_usage delivers token counts only on the terminal chunk.
             {"choices": [], "usage": {"prompt_tokens": 42, "completion_tokens": 7}},
         ]
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         md = next(e for e in out if e["type"] == "message_delta")
         assert md["usage"]["input_tokens"] == 42
         assert md["usage"]["output_tokens"] == 7
@@ -881,7 +868,7 @@ class TestStreamConversion:
             {"choices": [{"delta": {"reasoning_content": "b"}}]},
             {"choices": [{"delta": {}, "finish_reason": "stop"}]},
         ]
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         starts = [e for e in out if e["type"] == "content_block_start"]
         # Only one thinking block — empty content was a no-op.
         assert [s["content_block"]["type"] for s in starts] == ["thinking"]
@@ -889,7 +876,7 @@ class TestStreamConversion:
     async def test_empty_stream_still_emits_valid_frame(self):
         """A completely empty upstream stream must still produce a structurally
         valid Anthropic response so the downstream SDK can finalize cleanly."""
-        out = await _collect(openai_stream_to_anthropic_events(_as_async([]), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async([]), model="m"))
         types = [e["type"] for e in out]
         assert types == ["message_start", "message_delta", "message_stop"]
 
@@ -938,7 +925,7 @@ class TestStreamConversion:
                 ]
             },
         ]
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         starts = [e for e in out if e["type"] == "content_block_start"]
         assert len(starts) == 2
         assert starts[0]["content_block"]["name"] == "ToolA"
@@ -995,7 +982,7 @@ class TestStreamConversion:
             },
         ]
 
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         starts = [e for e in out if e["type"] == "content_block_start"]
         assert [s["content_block"]["id"] for s in starts] == ["call_a", "call_b"]
         assert [s["content_block"]["name"] for s in starts] == ["ToolA", "ToolB"]
@@ -1033,7 +1020,7 @@ class TestStreamConversion:
         # vLLM/GLM dialect (#31437): the tool parser emits the COMPLETE call in
         # one delta, then the finish chunk re-emits the SAME full arguments.
         # Naively appending duplicates the JSON ('{...}{...}') and the SDK can't
-        # parse the tool input — add_arguments must treat the restatement as a
+        # parse the tool input — the restatement must be treated as a
         # replacement, not a continuation.
         full = '{"path":"skills/foo/SKILL.md","content":"hi"}'
         chunks = [
@@ -1070,7 +1057,7 @@ class TestStreamConversion:
                 ]
             },
         ]
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         args = self._tool_args(out)
         assert args == {"call_1": full}
         assert json.loads(args["call_1"]) == {
@@ -1116,7 +1103,7 @@ class TestStreamConversion:
                 ]
             },
         ]
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         starts = [e for e in out if e["type"] == "content_block_start"]
         tool_start = next(s for s in starts if s["content_block"]["type"] == "tool_use")
         assert tool_start["content_block"]["id"] == "call_x"
@@ -1158,7 +1145,7 @@ class TestStreamConversion:
                 ]
             },
         ]
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         args = self._tool_args(out)
         assert args == {"call_1": '{"command":"ls -la"}'}
         assert json.loads(args["call_1"]) == {"command": "ls -la"}
@@ -1166,7 +1153,7 @@ class TestStreamConversion:
     async def test_tool_index_reuse_with_distinct_ids_splits_calls(self):
         # Non-conformant upstreams (vLLM/GLM dialect, #31437) reuse ONE index for
         # two distinct sequential calls. Bucketing by index alone overwrote the
-        # first call's metadata and — via add_arguments' both-complete replace
+        # first call's metadata and — via the both-complete restatement replace
         # rule — dropped its arguments, so the first tool_use disappeared and the
         # client silently never ran that tool. Both must survive, in order.
         chunks = [
@@ -1206,7 +1193,7 @@ class TestStreamConversion:
             },
         ]
 
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         starts = [e for e in out if e["type"] == "content_block_start"]
         assert [s["content_block"]["id"] for s in starts] == ["call_a", "call_b"]
         assert [s["content_block"]["name"] for s in starts] == ["Read", "Bash"]
@@ -1258,7 +1245,7 @@ class TestStreamConversion:
             },
         ]
 
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         starts = [e for e in out if e["type"] == "content_block_start"]
         assert [s["content_block"]["type"] for s in starts] == ["tool_use", "text", "tool_use"]
         assert [s["content_block"].get("id") for s in starts] == ["call_a", None, "call_b"]
@@ -1303,7 +1290,7 @@ class TestStreamConversion:
             },
         ]
 
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         tool_starts = [
             e
             for e in out
@@ -1359,7 +1346,7 @@ class TestStreamConversion:
             },
         ]
 
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         starts = [e for e in out if e["type"] == "content_block_start"]
         assert len(starts) == 1
         args = self._tool_args(out)
@@ -1401,7 +1388,7 @@ class TestStreamConversion:
             },
         ]
 
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         starts = [e for e in out if e["type"] == "content_block_start"]
         assert len(starts) == 1
         assert starts[0]["content_block"]["id"] == "call_1"
@@ -1445,7 +1432,7 @@ class TestStreamConversion:
             },
         ]
 
-        out = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), model="m"))
+        out = await collect(openai_stream_to_anthropic_events(as_async(chunks), model="m"))
         starts = [e for e in out if e["type"] == "content_block_start"]
         assert len(starts) == 1
         args = self._tool_args(out)

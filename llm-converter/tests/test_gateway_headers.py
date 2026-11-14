@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 import app.main as converter_main
 from app.sse import forward_request_headers, forward_response_headers
+from tests.helpers import mock_upstream
 
 # What APISIX sets on llm-messages / llm-responses / llm-models.
 APISIX_HEADERS = {
@@ -96,12 +97,7 @@ def capture(monkeypatch):
             seen["body"] = json.loads(request.content) if request.content else None
             return response
 
-        transport = httpx.MockTransport(handler)
-        monkeypatch.setattr(
-            converter_main,
-            "_make_client",
-            lambda timeout: httpx.AsyncClient(transport=transport, timeout=timeout),
-        )
+        mock_upstream(monkeypatch, handler)
         return seen
 
     return install

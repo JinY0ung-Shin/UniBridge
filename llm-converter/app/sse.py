@@ -1,8 +1,8 @@
 """SSE parsing/serialization and header-filtering helpers for the converter.
 
-Extracted from the upstream proxy route so the conversion-direction logic
-(OpenAI ``/v1/chat/completions`` SSE → Anthropic Messages SSE) and the HTTP
-plumbing stay testable in isolation.
+Extracted from the routes so the HTTP plumbing both bridges share — reading
+the upstream chat/completions SSE, writing the Anthropic Messages or Responses
+SSE back, filtering headers both ways — stays testable in isolation.
 """
 
 from __future__ import annotations
@@ -158,7 +158,8 @@ def forward_response_headers(items) -> Dict[str, str]:
 
 
 def format_sse(evt: Dict[str, Any]) -> bytes:
-    """Serialize an Anthropic event dict back into an SSE frame."""
+    """Serialize an event dict (Anthropic Messages or Responses) into an SSE
+    frame named after its ``type``."""
     etype = evt.get("type", "message")
     data = json.dumps(evt, separators=(",", ":"), ensure_ascii=False)
     return f"event: {etype}\ndata: {data}\n\n".encode("utf-8")

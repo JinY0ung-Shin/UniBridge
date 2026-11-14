@@ -32,6 +32,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import Response, StreamingResponse
 
+from app.chat_completions import is_complete_json
 from app.config import settings
 from app.messages_bridge import (
     anthropic_request_to_openai_body,
@@ -111,10 +112,12 @@ if settings.smg_providers is not None:
 app = FastAPI(title="UniBridge LLM Converter")
 
 
-# One system-CA context for every client: a client is made per request, and
-# building the context from the certifi bundle each time costs ~10ms of blocked
-# event loop. The Bifrost hop is plain HTTP by default, so it is only used when
-# CONVERTER_BIFROST_URL points at https.
+# One TLS context for every client: a client is made per request, and building
+# the context from the CA bundle each time costs ~10ms of blocked event loop. It
+# trusts httpx's default bundle, certifi's (or SSL_CERT_FILE / SSL_CERT_DIR when
+# set). The Bifrost hop is plain HTTP by default, so it only comes into play for
+# an https CONVERTER_BIFROST_URL or an SMG provider registered in Bifrost at an
+# https base URL (its ``GET /workers``).
 _SSL_CONTEXT = httpx.create_ssl_context()
 
 
@@ -135,6 +138,16 @@ async def _conversation_store_delete(resp_id: str) -> None:
     await asyncio.to_thread(conversation_store.delete, resp_id)
 
 
+async def _persist_turn(response_id: str, messages: list[dict], prev_id: Optional[str]) -> None:
+    """Store this turn's transcript under *response_id*; once it is stored, drop
+    the one it chained off. A linear chain only needs the latest transcript, so
+    superseding the parent keeps total memory O(N) not O(N^2) (and trades away
+    branching twice off one ``previous_response_id``)."""
+    stored = await _conversation_store_put(response_id, messages)
+    if stored and prev_id is not None:
+        await _conversation_store_delete(prev_id)
+
+
 # Cap the full-body trace so a giant request (huge system prompt + many tool
 # schemas) can't blow up a single log line; the diff-relevant prefix survives.
 _TRACE_BODY_MAX = 200_000
@@ -142,17 +155,6 @@ _TRACE_BODY_MAX = 200_000
 # Cap each logged tool-call argument fragment / reconstructed args blob so a
 # huge tool input can't blow up a log line, while still showing the shape.
 _TRACE_ARGS_MAX = 4_000
-
-
-def _is_json(s: object) -> bool:
-    """True when ``s`` is a string that parses as a whole JSON value."""
-    if not isinstance(s, str):
-        return False
-    try:
-        json.loads(s)
-        return True
-    except (json.JSONDecodeError, ValueError):
-        return False
 
 
 def _summarize_tool_calls(tool_calls: object) -> object:
@@ -373,7 +375,7 @@ async def _trace_downstream_events(
                         tag,
                         idx,
                         names.pop(idx, None),
-                        _is_json(joined),
+                        is_complete_json(joined),
                         len(joined),
                         joined[:_TRACE_ARGS_MAX],
                     )
@@ -681,8 +683,13 @@ def _listing_sources(data: list) -> dict:
     return sources
 
 
-def _without_gateway_internals(body: dict) -> dict:
-    return {key: value for key, value in body.items() if key not in _GATEWAY_INTERNAL_FIELDS}
+def _strip_gateway_internals(parsed: object) -> Optional[bytes]:
+    """*parsed* re-encoded without the gateway's routing fields, or ``None`` when
+    it is not an object or has none of them (forward the body as it came)."""
+    if not isinstance(parsed, dict) or not any(key in parsed for key in _GATEWAY_INTERNAL_FIELDS):
+        return None
+    kept = {key: value for key, value in parsed.items() if key not in _GATEWAY_INTERNAL_FIELDS}
+    return json.dumps(kept, ensure_ascii=False).encode("utf-8")
 
 
 # The one request header a listing fetch carries: the virtual key APISIX
@@ -711,9 +718,8 @@ def _scrub_upstream_error(
         parsed = json.loads(content)
     except ValueError:
         return content
-    if not isinstance(parsed, dict) or not any(key in parsed for key in _GATEWAY_INTERNAL_FIELDS):
-        return content
-    return json.dumps(_without_gateway_internals(parsed), ensure_ascii=False).encode("utf-8")
+    stripped = _strip_gateway_internals(parsed)
+    return content if stripped is None else stripped
 
 
 async def _fetch_listing(upstream_url: str, headers: dict) -> _FetchOutcome:
@@ -754,10 +760,9 @@ async def _fetch_listing(upstream_url: str, headers: dict) -> _FetchOutcome:
             _listing_snapshot = _ListingSnapshot(upstream_url, listing, _clock(), sources)
             return _FetchOutcome(listing=listing, sources=sources)
         resp_headers = forward_response_headers(upstream.headers.items())
-        if isinstance(parsed, dict) and any(key in parsed for key in _GATEWAY_INTERNAL_FIELDS):
-            content = json.dumps(_without_gateway_internals(parsed), ensure_ascii=False).encode(
-                "utf-8"
-            )
+        stripped = _strip_gateway_internals(parsed)
+        if stripped is not None:
+            content = stripped
             resp_headers.pop("content-length", None)
         return _FetchOutcome(
             status_code=upstream.status_code,
@@ -1465,7 +1470,8 @@ async def messages(request: Request) -> Response:
 async def responses(request: Request) -> Response:
     """Translate an OpenAI Responses request through the chat-completions route.
 
-    Resolves ``previous_response_id`` from the in-memory conversation store,
+    Resolves ``previous_response_id`` from the conversation store
+    (``responses_state``: SQLite in compose, in memory when no path is set),
     forwards to the gateway, translates the result back to the Responses shape, and
     (when ``store`` is not false) persists the accumulated transcript under a
     freshly minted ``resp_<id>`` so the next turn can chain off it.
@@ -1514,11 +1520,9 @@ async def responses(request: Request) -> Response:
             )
 
     chat_body = responses_request_to_chat_body(parsed, prior_messages)
+    # Explicit even when the client left it out (the builder copies it only
+    # when present); a stream also gets ``include_usage`` from the builder.
     chat_body["stream"] = is_stream
-    if is_stream:
-        stream_options = chat_body.get("stream_options") or {}
-        stream_options.setdefault("include_usage", True)
-        chat_body["stream_options"] = stream_options
     base_messages = chat_body["messages"]  # prior chain + this turn's input
     chat_bytes = json.dumps(chat_body, ensure_ascii=False).encode("utf-8")
 
@@ -1591,15 +1595,9 @@ async def responses(request: Request) -> Response:
                             # no tool_calls) — matches the streaming path, which
                             # only persists when there is real output.
                             if assistant.get("content") or assistant.get("tool_calls"):
-                                stored = await _conversation_store_put(
-                                    response_id, base_messages + [assistant]
+                                await _persist_turn(
+                                    response_id, base_messages + [assistant], prev_id
                                 )
-                                # Supersede the chained-from response: a linear
-                                # chain only needs the latest transcript, so drop
-                                # the parent to keep total memory O(N) not O(N^2).
-                                # (Trades away branching off a shared prev id.)
-                                if stored and prev_id is not None:
-                                    await _conversation_store_delete(prev_id)
                 except json.JSONDecodeError:
                     logger.warning(
                         "converter responses: upstream 2xx returned unparseable JSON; "
@@ -1692,13 +1690,9 @@ async def responses(request: Request) -> Response:
                     and payload.get("type") in ("response.completed", "response.incomplete")
                     and holder.get("assistant_message")
                 ):
-                    stored = await _conversation_store_put(
-                        response_id, base_messages + [holder["assistant_message"]]
+                    await _persist_turn(
+                        response_id, base_messages + [holder["assistant_message"]], prev_id
                     )
-                    # Supersede the parent (see non-stream branch) — linear chain
-                    # retains only the latest transcript.
-                    if stored and prev_id is not None:
-                        await _conversation_store_delete(prev_id)
                     persisted = True
                 yield format_sse(payload)
         except Exception:
@@ -1726,11 +1720,9 @@ async def responses(request: Request) -> Response:
             # Fallback persistence if the terminal event path didn't run but a
             # complete transcript is available; never persist after a bridge error.
             if not persisted and not failed and store_flag and holder.get("assistant_message"):
-                stored = await _conversation_store_put(
-                    response_id, base_messages + [holder["assistant_message"]]
+                await _persist_turn(
+                    response_id, base_messages + [holder["assistant_message"]], prev_id
                 )
-                if stored and prev_id is not None:
-                    await _conversation_store_delete(prev_id)
 
     resp_headers = forward_response_headers(upstream.headers.items())
     resp_headers["Cache-Control"] = "no-cache"

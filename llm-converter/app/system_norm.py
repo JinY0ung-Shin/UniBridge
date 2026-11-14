@@ -22,12 +22,14 @@ rewrites *placement* only — every instruction the client sent still reaches th
 model, just from a position the template accepts.
 
 The active policy comes from ``CONVERTER_MID_SYSTEM_POLICY``
-(:attr:`app.config._Settings.mid_system_policy`); the bridges call
-:func:`normalize_system_messages` as the last step of request translation, so
-one implementation covers both ``/v1/messages`` and ``/v1/responses``.
+(:attr:`app.config._Settings.mid_system_policy`); both bridges call
+:func:`normalize_system_messages` through
+:func:`app.chat_completions.normalize_for_model` as the last step of request
+translation, so one implementation covers both ``/v1/messages`` and
+``/v1/responses``.
 
 The rewrite is gated on the outbound model name, because only the strict
-templates need it: the bridges also pass the request's ``model`` plus the
+templates need it: the caller also passes the request's ``model`` plus the
 compiled :attr:`app.config._Settings.mid_system_model_regex`, and a model the
 pattern does not match is forwarded exactly as the client shaped it. This module
 stays pure — it never reads settings itself, so the gate is whatever its caller
@@ -46,28 +48,49 @@ from typing import Any
 _MERGE_SEPARATOR = "\n\n"
 
 
-def _content_text(content: Any) -> str:
-    """Extract the plain text of one chat message's ``content``.
+def flatten_text_blocks(content: Any, separator: str = "") -> str:
+    """The plain text of a ``content`` field: a string as it is, a block or part
+    array as the concatenation of its ``{type: "text"}`` texts.
 
-    Mirrors ``messages_bridge._flatten_text_blocks``: a plain string passes
-    through, a structured part array collapses to the concatenation of its
-    ``{type: "text"}`` parts, and anything else (``None``, a number, a dict)
-    yields ``""`` rather than a stringified repr — a junk content field must not
-    inject garbage into a merged system prompt.
+    Serves the Anthropic content arrays ``messages_bridge`` turns into the
+    single string chat/completions expects, and the chat content this module
+    merges (the two share the ``{type: "text", "text": ...}`` shape). Every
+    other block is dropped: ``thinking`` has no slot in a historical chat turn
+    (the model recomputes its reasoning anyway), and anything else (``None``,
+    a number, a dict) yields ``""`` rather than a stringified repr, so a junk
+    content field cannot inject garbage into a prompt.
+
+    *separator* joins the block texts. The default ``""`` is byte-faithful, which
+    is what conversational turns need — their blocks are fragments of one
+    continuous string. System prompts are the exception and pass ``"\\n\\n"``:
+    clients (Claude Code among them) split a system prompt into several
+    INDEPENDENT instruction blocks, and gluing those together bare runs the last
+    word of one into the first word of the next. A non-empty separator also drops
+    empty texts first, so a junk block cannot open a blank line in the middle of
+    the prompt.
     """
     if isinstance(content, str):
         return content
     if not isinstance(content, list):
         return ""
-    parts: list[str] = []
-    for part in content:
-        if not isinstance(part, dict):
+    texts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
             continue
-        if part.get("type") == "text":
-            text = part.get("text")
+        if block.get("type") == "text":
+            text = block.get("text")
             if isinstance(text, str):
-                parts.append(text)
-    return "".join(parts)
+                texts.append(text)
+    if separator:
+        return separator.join(text for text in texts if text)
+    return "".join(texts)
+
+
+def model_matches(model: Any, model_pattern: re.Pattern[str] | None) -> bool:
+    """The model gate both normalizers share: with a pattern, only a string
+    *model* the pattern searches successfully; ``None`` lets every model
+    through (how the direct unit tests exercise the rewrites)."""
+    return model_pattern is None or (isinstance(model, str) and bool(model_pattern.search(model)))
 
 
 def _merge_texts(texts: list[str]) -> str:
@@ -96,7 +119,7 @@ def _hoist(messages: list[dict]) -> list[dict]:
     rest: list[dict] = []
     for message in messages:
         if _is_system(message):
-            texts.append(_content_text(message.get("content")))
+            texts.append(flatten_text_blocks(message.get("content")))
         else:
             rest.append(message)
     if not texts:
@@ -133,7 +156,7 @@ def _demote_to_user(messages: list[dict]) -> list[dict]:
         # keys a caller attached (e.g. ``name``) survive the merge.
         head = dict(messages[0])
         head["content"] = _merge_texts(
-            [_content_text(message.get("content")) for message in messages[:head_run]]
+            [flatten_text_blocks(message.get("content")) for message in messages[:head_run]]
         )
         out.append(head)
     for message in tail:
@@ -154,9 +177,9 @@ def normalize_system_messages(
 ) -> list[dict]:
     """Rewrite *messages* so no system turn lands where a strict template 400s.
 
-    *model_pattern* gates the whole rewrite: when it is given, *messages* is
-    returned untouched unless *model* is a string the pattern searches
-    successfully. The bridges pass the outbound ``model`` and
+    *model_pattern* gates the whole rewrite (:func:`model_matches`): when it is
+    given, *messages* is returned untouched unless *model* is a string the
+    pattern searches successfully. The bridges pass the outbound ``model`` and
     :attr:`app.config._Settings.mid_system_model_regex`, so only the strict
     generations get reshaped. A missing or non-string *model* with a pattern set
     therefore also passes through — an unnamed model cannot be shown to need the
@@ -186,9 +209,7 @@ def normalize_system_messages(
     ``previous_response_id`` chaining, so every follow-up turn re-normalizes
     output this function already produced.
     """
-    if model_pattern is not None and not (
-        isinstance(model, str) and model_pattern.search(model)
-    ):
+    if not model_matches(model, model_pattern):
         return messages
     if policy == "asis" or not isinstance(messages, list) or not messages:
         return messages

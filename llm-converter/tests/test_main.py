@@ -10,56 +10,23 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Iterable
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 import app.main as converter_main
+from tests.helpers import openai_sse, parse_sse
 
 
-@pytest.fixture(autouse=True)
-def _env(monkeypatch):
-    monkeypatch.setenv("CONVERTER_BIFROST_URL", "http://upstream.test")
-    yield
-
-
-def _make_app(handler):
-    transport = httpx.MockTransport(handler)
-
-    def _factory(timeout):  # noqa: ARG001
-        return httpx.AsyncClient(transport=transport, timeout=timeout)
-
-    converter_main._make_client = _factory  # type: ignore[assignment]
-    return converter_main.app
-
-
-def _openai_sse(chunks: Iterable[dict]) -> bytes:
-    parts = [f"data: {json.dumps(c)}\n\n" for c in chunks]
-    parts.append("data: [DONE]\n\n")
-    return "".join(parts).encode("utf-8")
-
-
-def _parse_sse(raw: str) -> list[dict]:
-    events: list[dict] = []
-    for block in raw.split("\n\n"):
-        if not block.strip():
-            continue
-        for line in block.splitlines():
-            if line.startswith("data:"):
-                events.append(json.loads(line[5:].lstrip()))
-    return events
-
-
-def test_health():
-    client = TestClient(_make_app(lambda r: httpx.Response(200)))
+def test_health(make_app):
+    client = TestClient(make_app(lambda r: httpx.Response(200)))
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
 
 
-def test_streaming_translates_openai_to_anthropic():
+def test_streaming_translates_openai_to_anthropic(make_app):
     captured = {}
 
     chunks = [
@@ -79,7 +46,7 @@ def test_streaming_translates_openai_to_anthropic():
         {"choices": [{"delta": {}, "finish_reason": "tool_calls"}],
          "usage": {"prompt_tokens": 10, "completion_tokens": 5}},
     ]
-    body = _openai_sse(chunks)
+    body = openai_sse(chunks)
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
@@ -89,7 +56,7 @@ def test_streaming_translates_openai_to_anthropic():
             200, headers={"content-type": "text/event-stream"}, content=body
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post(
         "/v1/messages",
         headers={"x-bf-vk": "sk-bf-gatewaykey"},
@@ -112,7 +79,7 @@ def test_streaming_translates_openai_to_anthropic():
     assert captured["body"]["messages"][0] == {"role": "system", "content": "be terse"}
     assert captured["body"]["tools"][0]["type"] == "function"
 
-    events = _parse_sse(resp.text)
+    events = parse_sse(resp.text)
     types = [e["type"] for e in events]
     assert types[0] == "message_start"
     assert types[-1] == "message_stop"
@@ -130,7 +97,7 @@ def test_streaming_translates_openai_to_anthropic():
     assert delta["delta"]["stop_reason"] == "tool_use"
 
 
-def test_non_streaming_translates_openai_to_anthropic():
+def test_non_streaming_translates_openai_to_anthropic(make_app):
     openai_resp = {
         "id": "chatcmpl-1",
         "model": "GLM-4.6",
@@ -145,7 +112,7 @@ def test_non_streaming_translates_openai_to_anthropic():
             content=json.dumps(openai_resp).encode(),
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post(
         "/v1/messages",
         json={"model": "GLM-4.6", "messages": [{"role": "user", "content": "hi"}]},
@@ -163,7 +130,7 @@ def test_non_streaming_translates_openai_to_anthropic():
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_messages_route_preserves_cache_usage(stream):
+def test_messages_route_preserves_cache_usage(make_app, stream):
     usage = {
         "prompt_tokens": 1000, "completion_tokens": 50,
         "prompt_tokens_details": {"cached_tokens": 800, "cache_creation_tokens": 100},
@@ -174,7 +141,7 @@ def test_messages_route_preserves_cache_usage(stream):
         if stream:
             assert json.loads(request.content)["stream_options"]["include_usage"] is True
             return httpx.Response(200, headers={"content-type": "text/event-stream"},
-                                  content=_openai_sse([
+                                  content=openai_sse([
                                       {"choices": [{"delta": {"content": "OK"}}]},
                                       {"choices": [{"delta": {}, "finish_reason": "stop"}]},
                                       {"choices": [], "usage": usage},
@@ -184,14 +151,14 @@ def test_messages_route_preserves_cache_usage(stream):
             "usage": usage,
         })
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     response = client.post("/v1/messages", json={
         "model": "test", "stream": stream, "max_tokens": 100,
         "messages": [{"role": "user", "content": "hi"}],
     })
     assert response.status_code == 200
     if stream:
-        events = _parse_sse(response.text)
+        events = parse_sse(response.text)
         start = next(e for e in events if e["type"] == "message_start")
         assert start["message"]["usage"]["cache_read_input_tokens"] == 0
         actual = next(e for e in events if e["type"] == "message_delta")["usage"]
@@ -203,7 +170,7 @@ def test_messages_route_preserves_cache_usage(stream):
     }
 
 
-def test_messages_route_forwards_anthropic_image_as_openai_image_url():
+def test_messages_route_forwards_anthropic_image_as_openai_image_url(make_app):
     captured = {}
     openai_resp = {
         "id": "chatcmpl-1",
@@ -220,7 +187,7 @@ def test_messages_route_forwards_anthropic_image_as_openai_image_url():
             content=json.dumps(openai_resp).encode(),
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post(
         "/v1/messages",
         json={
@@ -259,7 +226,7 @@ def test_messages_route_forwards_anthropic_image_as_openai_image_url():
     ]
 
 
-def test_upstream_error_forwarded_verbatim():
+def test_upstream_error_forwarded_verbatim(make_app):
     err = {"error": {"message": "rate limited", "type": "rate_limit_error"}}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -268,7 +235,7 @@ def test_upstream_error_forwarded_verbatim():
             content=json.dumps(err).encode(),
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post(
         "/v1/messages",
         json={"model": "GLM-4.6", "messages": [{"role": "user", "content": "hi"}]},
@@ -278,7 +245,7 @@ def test_upstream_error_forwarded_verbatim():
     assert resp.json() == err
 
 
-def test_streaming_bridge_error_emits_terminal_error_event():
+def test_streaming_bridge_error_emits_terminal_error_event(make_app):
     # A malformed chunk arriving mid-stream — after message_start has already
     # reached the client — must terminate with an Anthropic ``error`` event,
     # not propagate and leave the client hanging on a truncated message.
@@ -289,10 +256,10 @@ def test_streaming_bridge_error_emits_terminal_error_event():
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, headers={"content-type": "text/event-stream"}, content=_openai_sse(chunks)
+            200, headers={"content-type": "text/event-stream"}, content=openai_sse(chunks)
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post(
         "/v1/messages",
         json={
@@ -303,17 +270,17 @@ def test_streaming_bridge_error_emits_terminal_error_event():
         },
     )
     assert resp.status_code == 200
-    events = _parse_sse(resp.text)
+    events = parse_sse(resp.text)
     types = [e["type"] for e in events]
     assert types[0] == "message_start"
     assert types[-1] == "error"
     assert events[-1]["error"]["type"] == "api_error"
 
 
-def test_streaming_upstream_error_chunk_becomes_error_event():
+def test_streaming_upstream_error_chunk_becomes_error_event(make_app):
     # Upstream streams a normal chunk then an error object; the client must see
     # a terminal Anthropic ``error`` event, not an empty successful stream.
-    body = _openai_sse(
+    body = openai_sse(
         [
             {"choices": [{"delta": {"content": "Hello"}}]},
             {"error": {"type": "rate_limit_error", "message": "slow down"}},
@@ -325,7 +292,7 @@ def test_streaming_upstream_error_chunk_becomes_error_event():
             200, headers={"content-type": "text/event-stream"}, content=body
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post(
         "/v1/messages",
         json={
@@ -336,13 +303,13 @@ def test_streaming_upstream_error_chunk_becomes_error_event():
         },
     )
     assert resp.status_code == 200
-    events = _parse_sse(resp.text)
+    events = parse_sse(resp.text)
     assert events[-1]["type"] == "error"
     assert events[-1]["error"]["type"] == "rate_limit_error"
     assert not any(e["type"] == "message_stop" for e in events)
 
 
-def test_non_streaming_200_error_body_forwarded_verbatim():
+def test_non_streaming_200_error_body_forwarded_verbatim(make_app):
     # Some OpenAI-compatible upstreams return HTTP 200 with an error-shaped body
     # (no ``choices``). It must NOT be translated into a successful-looking empty
     # message — the caller has to see the real failure.
@@ -354,7 +321,7 @@ def test_non_streaming_200_error_body_forwarded_verbatim():
             content=json.dumps(err).encode(),
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post(
         "/v1/messages",
         json={"model": "GLM-4.6", "messages": [{"role": "user", "content": "hi"}]},
@@ -365,7 +332,7 @@ def test_non_streaming_200_error_body_forwarded_verbatim():
     assert resp.json().get("type") != "message"
 
 
-def test_responses_200_error_body_forwarded_verbatim():
+def test_responses_200_error_body_forwarded_verbatim(make_app):
     err = {"error": {"message": "upstream exploded", "type": "api_error"}}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -374,7 +341,7 @@ def test_responses_200_error_body_forwarded_verbatim():
             content=json.dumps(err).encode(),
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post(
         "/v1/responses",
         json={"model": "GLM-4.6", "input": "hi"},
@@ -384,7 +351,7 @@ def test_responses_200_error_body_forwarded_verbatim():
     assert resp.json().get("object") != "response"
 
 
-def test_non_streaming_upstream_stall_times_out_504(monkeypatch):
+def test_non_streaming_upstream_stall_times_out_504(make_app, monkeypatch):
     # A non-streaming upstream that accepts the connection then stalls the body
     # must not pin the worker forever — the total non-stream deadline returns 504.
     monkeypatch.setattr(
@@ -400,7 +367,7 @@ def test_non_streaming_upstream_stall_times_out_504(monkeypatch):
             content=json.dumps({"choices": []}).encode(),
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post(
         "/v1/messages",
         json={"model": "GLM-4.6", "messages": [{"role": "user", "content": "hi"}]},
@@ -409,8 +376,8 @@ def test_non_streaming_upstream_stall_times_out_504(monkeypatch):
     assert resp.json()["error"]["type"] == "timeout"
 
 
-def test_invalid_json_body_returns_400():
-    client = TestClient(_make_app(lambda r: httpx.Response(200)))
+def test_invalid_json_body_returns_400(make_app):
+    client = TestClient(make_app(lambda r: httpx.Response(200)))
     resp = client.post(
         "/v1/messages",
         headers={"content-type": "application/json"},

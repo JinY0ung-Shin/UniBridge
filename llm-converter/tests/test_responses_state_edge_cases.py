@@ -54,29 +54,11 @@ def test_sqlite_store_drops_corrupt_json_row(tmp_path):
     store.close()
 
 
-def test_reset_builds_sqlite_store_then_closes_it_when_switching_to_memory(
-    monkeypatch, tmp_path
-):
-    # Keep reset() from replacing the process-global store used by route tests.
-    # monkeypatch restores the original module state after this test.
-    monkeypatch.setattr(
-        state,
-        "conversation_store",
-        ConversationStore(ttl_seconds=3600, max_entries=10),
-    )
-    monkeypatch.setenv("CONVERTER_RESPONSE_STORE_PATH", str(tmp_path / "reset.sqlite"))
-    state.reset()
-    sqlite_store = state.conversation_store
+def test_store_is_sqlite_with_a_path_and_in_memory_without(monkeypatch, tmp_path):
+    monkeypatch.setenv("CONVERTER_RESPONSE_STORE_PATH", str(tmp_path / "store.sqlite"))
+    sqlite_store = state._build_store()
     assert isinstance(sqlite_store, SQLiteConversationStore)
+    sqlite_store.close()
 
     monkeypatch.setenv("CONVERTER_RESPONSE_STORE_PATH", "")
-    state.reset()
-    assert isinstance(state.conversation_store, ConversationStore)
-
-    # reset() closed the replaced SQLite connection.
-    try:
-        sqlite_store._conn.execute("SELECT 1")
-    except Exception as exc:
-        assert "closed" in str(exc).lower()
-    else:  # pragma: no cover - sqlite must reject operations after close
-        raise AssertionError("replaced SQLite store was not closed")
+    assert isinstance(state._build_store(), ConversationStore)

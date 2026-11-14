@@ -19,6 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as converter_main
+from tests.helpers import mock_upstream
 
 BIFROST_LISTING = {
     "data": [
@@ -74,25 +75,13 @@ def upstream(monkeypatch):
         step = plan[min(len(calls), len(plan)) - 1]
         return step(request) if callable(step) else step
 
-    transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(
-        converter_main,
-        "_make_client",
-        lambda timeout: httpx.AsyncClient(transport=transport, timeout=timeout),
-    )
+    mock_upstream(monkeypatch, handler)
 
     def install(*steps):
         plan[:] = steps
         return calls
 
     return install
-
-
-@pytest.fixture
-def clock(monkeypatch):
-    now = [10_000.0]
-    monkeypatch.setattr(converter_main, "_clock", lambda: now[0])
-    return now
 
 
 @pytest.fixture(autouse=True)
@@ -314,12 +303,7 @@ def slow_upstream(monkeypatch):
             await asyncio.sleep(state["delay"])
         return _listing(*state["ids"])
 
-    transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(
-        converter_main,
-        "_make_client",
-        lambda timeout: httpx.AsyncClient(transport=transport, timeout=timeout),
-    )
+    mock_upstream(monkeypatch, handler)
     return state
 
 

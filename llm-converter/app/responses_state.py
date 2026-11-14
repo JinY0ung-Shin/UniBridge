@@ -312,16 +312,6 @@ def _build_store() -> ConversationStore | SQLiteConversationStore:
     )
 
 
-# Module-level singleton used by the route. Built lazily so tests can adjust env
-# first via reset().
+# Module-level singleton used by the route, built from the environment when the
+# module is first imported.
 conversation_store = _build_store()
-
-
-def reset() -> None:
-    """Rebuild the singleton from current env (test helper)."""
-    global conversation_store
-    old_store = conversation_store
-    close = getattr(old_store, "close", None)
-    if callable(close):
-        close()
-    conversation_store = _build_store()

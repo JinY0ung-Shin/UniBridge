@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable
-
 from app.messages_bridge import (
     anthropic_request_to_openai_body,
     openai_response_to_anthropic_body,
@@ -14,15 +12,7 @@ from app.responses_bridge import (
     chat_stream_to_responses_events,
     responses_request_to_chat_body,
 )
-
-
-async def _as_async(items: Iterable[dict]) -> AsyncIterator[dict]:
-    for item in items:
-        yield item
-
-
-async def _collect(items) -> list[dict]:
-    return [item async for item in items]
+from tests.helpers import as_async, collect
 
 
 def test_messages_request_rejects_malformed_content_without_crashing():
@@ -133,7 +123,7 @@ async def test_messages_stream_new_complete_restatement_replaces_old_arguments()
         },
     ]
 
-    events = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), "m"))
+    events = await collect(openai_stream_to_anthropic_events(as_async(chunks), "m"))
     start = next(
         event
         for event in events
@@ -150,8 +140,8 @@ async def test_messages_stream_new_complete_restatement_replaces_old_arguments()
 
 
 async def test_messages_error_and_nonstream_tool_junk_fall_back_safely():
-    stream_events = await _collect(
-        openai_stream_to_anthropic_events(_as_async([{"error": "bad"}]), "m")
+    stream_events = await collect(
+        openai_stream_to_anthropic_events(as_async([{"error": "bad"}]), "m")
     )
     assert stream_events == [
         {"type": "error", "error": {"type": "api_error", "message": "upstream error"}}
@@ -212,7 +202,7 @@ async def test_messages_stream_tolerates_malformed_chunks_and_flushes_before_new
         {"choices": [{"delta": {}, "finish_reason": "stop"}]},
     ]
 
-    events = await _collect(openai_stream_to_anthropic_events(_as_async(chunks), "m"))
+    events = await collect(openai_stream_to_anthropic_events(as_async(chunks), "m"))
     starts = [
         event["content_block"]["type"]
         for event in events
@@ -365,9 +355,9 @@ def test_responses_nonstream_reasoning_skips_junk_and_synthesizes_call_id():
 
 async def test_responses_stream_scalar_error_uses_safe_fallback():
     holder = {}
-    events = await _collect(
+    events = await collect(
         chat_stream_to_responses_events(
-            _as_async([{"error": "bad"}]),
+            as_async([{"error": "bad"}]),
             response_id="resp_error",
             request_body={"model": "m"},
             holder=holder,
@@ -415,9 +405,9 @@ async def test_responses_stream_tolerates_shape_junk_and_switches_output_kinds()
         {"choices": [{"delta": {"refusal": "after tool"}, "finish_reason": "stop"}]},
     ]
 
-    events = await _collect(
+    events = await collect(
         chat_stream_to_responses_events(
-            _as_async(chunks),
+            as_async(chunks),
             response_id="resp_1",
             request_body={"model": "m"},
             holder=holder,
@@ -451,9 +441,9 @@ async def test_responses_stream_closes_reasoning_before_tool_and_at_stream_end()
             ]
         },
     ]
-    events = await _collect(
+    events = await collect(
         chat_stream_to_responses_events(
-            _as_async(reasoning_then_tool),
+            as_async(reasoning_then_tool),
             response_id="resp_2",
             request_body={"model": "m"},
             holder=holder,
@@ -475,9 +465,9 @@ async def test_responses_stream_closes_reasoning_before_tool_and_at_stream_end()
 
     trailing_holder = {}
     trailing_reasoning = [{"choices": [{"delta": {"reasoning_content": "only"}}]}]
-    trailing_events = await _collect(
+    trailing_events = await collect(
         chat_stream_to_responses_events(
-            _as_async(trailing_reasoning),
+            as_async(trailing_reasoning),
             response_id="resp_3",
             request_body={"model": "m"},
             holder=trailing_holder,

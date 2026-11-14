@@ -21,6 +21,7 @@ from app.token_estimate import (
     estimate_input_tokens,
     text_tokens,
 )
+from tests.helpers import mock_upstream
 
 
 @pytest.fixture(autouse=True)
@@ -31,12 +32,7 @@ def _no_upstream(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
         raise AssertionError(f"count_tokens called upstream: {request.url}")
 
-    transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(
-        converter_main,
-        "_make_client",
-        lambda timeout: httpx.AsyncClient(transport=transport, timeout=timeout),
-    )
+    mock_upstream(monkeypatch, handler)
 
 
 def _count(body: object) -> httpx.Response:

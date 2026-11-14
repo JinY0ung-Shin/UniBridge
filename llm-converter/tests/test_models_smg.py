@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 import app.main as converter_main
 from app import config
 from app.smg_workers import MalformedWorkers, context_lengths
+from tests.helpers import mock_upstream
 
 ADMIN_PASSWORD = "bifrost-admin-pass-0000"
 SMG_TOKEN = "smg-admin-token-0000"
@@ -131,20 +132,8 @@ class Network:
 @pytest.fixture
 def network(monkeypatch):
     net = Network()
-    transport = httpx.MockTransport(net.handle)
-    monkeypatch.setattr(
-        converter_main,
-        "_make_client",
-        lambda timeout: httpx.AsyncClient(transport=transport, timeout=timeout),
-    )
+    mock_upstream(monkeypatch, net.handle)
     return net
-
-
-@pytest.fixture
-def clock(monkeypatch):
-    now = [10_000.0]
-    monkeypatch.setattr(converter_main, "_clock", lambda: now[0])
-    return now
 
 
 @pytest.fixture(autouse=True)
@@ -765,12 +754,7 @@ async def test_a_slow_round_is_cut_off_and_the_listing_answers(monkeypatch, ever
             return _workers(_worker(_model("a", 4096)))
         return _listing("smg/a")
 
-    transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(
-        converter_main,
-        "_make_client",
-        lambda timeout: httpx.AsyncClient(transport=transport, timeout=timeout),
-    )
+    mock_upstream(monkeypatch, handler)
     started = time.monotonic()
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=converter_main.app), base_url="http://converter"

@@ -12,26 +12,8 @@ from __future__ import annotations
 import json
 
 import httpx
-import pytest
 from fastapi.testclient import TestClient
 
-import app.main as converter_main
-
-
-@pytest.fixture(autouse=True)
-def _env(monkeypatch):
-    monkeypatch.setenv("CONVERTER_BIFROST_URL", "http://upstream.test")
-    yield
-
-
-def _make_app(handler):
-    transport = httpx.MockTransport(handler)
-
-    def _factory(timeout):  # noqa: ARG001
-        return httpx.AsyncClient(transport=transport, timeout=timeout)
-
-    converter_main._make_client = _factory  # type: ignore[assignment]
-    return converter_main.app
 
 
 def _listing(*entries: dict) -> httpx.Response:
@@ -47,7 +29,7 @@ def _ids(body: dict) -> list[str]:
 
 
 # --- Listing augmentation ----------------------------------------------------
-def test_originals_kept_and_aliases_appended():
+def test_originals_kept_and_aliases_appended(make_app):
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == "http://upstream.test/v1/models"
         return _listing(
@@ -55,7 +37,7 @@ def test_originals_kept_and_aliases_appended():
             {"id": "gpt-5.4-mini", "object": "model", "created": 1_700_000_001},
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.get("/v1/models")
 
     assert resp.status_code == 200
@@ -67,7 +49,7 @@ def test_originals_kept_and_aliases_appended():
     ]
 
 
-def test_model_already_named_like_the_vendor_gets_no_alias():
+def test_model_already_named_like_the_vendor_gets_no_alias(make_app):
     """A real Anthropic model proxied by the gateway must not become
     ``claude/claude-sonnet-4`` — it is already selectable as-is."""
 
@@ -80,7 +62,7 @@ def test_model_already_named_like_the_vendor_gets_no_alias():
             {"id": "qwen3.5-32b", "object": "model"},
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.get("/v1/models")
 
     assert _ids(resp.json()) == [
@@ -92,11 +74,11 @@ def test_model_already_named_like_the_vendor_gets_no_alias():
     ]
 
 
-def test_every_entry_carries_both_schemas():
+def test_every_entry_carries_both_schemas(make_app):
     def handler(request: httpx.Request) -> httpx.Response:
         return _listing({"id": "qwen3.5-32b", "created": 1_700_000_000})
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     body = client.get("/v1/models").json()
 
     for entry in body["data"]:
@@ -113,7 +95,7 @@ def test_every_entry_carries_both_schemas():
     assert body["data"][1]["display_name"] == "claude/qwen3.5-32b"
 
 
-def test_upstream_fields_are_never_overwritten():
+def test_upstream_fields_are_never_overwritten(make_app):
     def handler(request: httpx.Request) -> httpx.Response:
         return _listing(
             {
@@ -127,7 +109,7 @@ def test_upstream_fields_are_never_overwritten():
             }
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     entry = client.get("/v1/models").json()["data"][0]
 
     assert entry["object"] == "custom-object"
@@ -137,24 +119,24 @@ def test_upstream_fields_are_never_overwritten():
     assert entry["extra"] == {"kept": True}
 
 
-def test_missing_created_leaves_both_timestamps_absent():
+def test_missing_created_leaves_both_timestamps_absent(make_app):
     """A fabricated date would be worse than a missing optional field."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return _listing({"id": "qwen3.5-32b", "object": "model"})
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     entry = client.get("/v1/models").json()["data"][0]
 
     assert "created" not in entry
     assert "created_at" not in entry
 
 
-def test_top_level_carries_both_pagination_shapes():
+def test_top_level_carries_both_pagination_shapes(make_app):
     def handler(request: httpx.Request) -> httpx.Response:
         return _listing({"id": "a", "object": "model"}, {"id": "b", "object": "model"})
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     body = client.get("/v1/models").json()
 
     assert body["object"] == "list"
@@ -163,11 +145,11 @@ def test_top_level_carries_both_pagination_shapes():
     assert body["last_id"] == "claude/b"
 
 
-def test_empty_listing_reports_null_page_bounds():
+def test_empty_listing_reports_null_page_bounds(make_app):
     def handler(request: httpx.Request) -> httpx.Response:
         return _listing()
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     body = client.get("/v1/models").json()
 
     assert body["data"] == []
@@ -176,18 +158,18 @@ def test_empty_listing_reports_null_page_bounds():
     assert body["last_id"] is None
 
 
-def test_entries_that_are_not_objects_are_forwarded_untouched():
+def test_entries_that_are_not_objects_are_forwarded_untouched(make_app):
     def handler(request: httpx.Request) -> httpx.Response:
         return _listing("not-an-object", {"id": "qwen3.5-32b"})  # type: ignore[arg-type]
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     body = client.get("/v1/models").json()
 
     assert body["data"][0] == "not-an-object"
     assert [e["id"] for e in body["data"][1:]] == ["qwen3.5-32b", "claude/qwen3.5-32b"]
 
 
-def test_body_without_a_data_list_is_left_alone():
+def test_body_without_a_data_list_is_left_alone(make_app):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -195,13 +177,13 @@ def test_body_without_a_data_list_is_left_alone():
             content=json.dumps({"object": "list", "data": "not a list"}).encode("utf-8"),
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     body = client.get("/v1/models").json()
 
     assert body == {"object": "list", "data": "not a list"}
 
 
-def test_every_entry_has_id_and_display_name_from_a_minimal_upstream():
+def test_every_entry_has_id_and_display_name_from_a_minimal_upstream(make_app):
     """Claude Code's discovery reads Anthropic-native ``{"id", "display_name"}``
     and ignores everything else, so those two are the hard requirement — even
     when upstream sends nothing but an id."""
@@ -209,7 +191,7 @@ def test_every_entry_has_id_and_display_name_from_a_minimal_upstream():
     def handler(request: httpx.Request) -> httpx.Response:
         return _listing({"id": "qwen3.5-32b"})
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     entries = client.get("/v1/models").json()["data"]
 
     assert [(e["id"], e["display_name"]) for e in entries] == [
@@ -218,7 +200,7 @@ def test_every_entry_has_id_and_display_name_from_a_minimal_upstream():
     ]
 
 
-def test_unknown_query_params_are_tolerated_and_not_forwarded():
+def test_unknown_query_params_are_tolerated_and_not_forwarded(make_app):
     """Claude Code's discovery requests ``/v1/models?limit=1000``. That must not
     be an error, and the listing is one un-paginated page, so the param has
     nothing to do upstream."""
@@ -228,7 +210,7 @@ def test_unknown_query_params_are_tolerated_and_not_forwarded():
         captured["url"] = str(request.url)
         return _listing({"id": "qwen3.5-32b", "object": "model"})
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.get("/v1/models?limit=1000&unknown=x")
 
     assert resp.status_code == 200
@@ -236,7 +218,7 @@ def test_unknown_query_params_are_tolerated_and_not_forwarded():
     assert _ids(resp.json()) == ["qwen3.5-32b", "claude/qwen3.5-32b"]
 
 
-def test_discovery_without_an_anthropic_version_header_succeeds():
+def test_discovery_without_an_anthropic_version_header_succeeds(make_app):
     """Claude Code omits ``anthropic-version`` on discovery (it sends it only on
     Messages calls), so nothing on this path may require it."""
 
@@ -244,11 +226,11 @@ def test_discovery_without_an_anthropic_version_header_succeeds():
         assert request.headers.get("anthropic-version") is None
         return _listing({"id": "qwen3.5-32b", "object": "model"})
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     assert client.get("/v1/models").status_code == 200
 
 
-def test_virtual_key_header_is_forwarded():
+def test_virtual_key_header_is_forwarded(make_app):
     """APISIX injects the Bifrost virtual key; the converter must pass it on."""
     captured = {}
 
@@ -256,14 +238,14 @@ def test_virtual_key_header_is_forwarded():
         captured["auth"] = request.headers.get("x-bf-vk")
         return _listing({"id": "qwen3.5-32b"})
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     client.get("/v1/models", headers={"x-bf-vk": "sk-bf-gatewaykey"})
 
     assert captured["auth"] == "sk-bf-gatewaykey"
 
 
 # --- Upstream failures forwarded verbatim ------------------------------------
-def test_upstream_error_status_is_forwarded_verbatim():
+def test_upstream_error_status_is_forwarded_verbatim(make_app):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             500,
@@ -271,20 +253,20 @@ def test_upstream_error_status_is_forwarded_verbatim():
             content=b'{"error": {"message": "boom"}}',
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.get("/v1/models")
 
     assert resp.status_code == 500
     assert resp.json() == {"error": {"message": "boom"}}
 
 
-def test_non_json_upstream_is_forwarded_verbatim():
+def test_non_json_upstream_is_forwarded_verbatim(make_app):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200, headers={"content-type": "text/html"}, content=b"<html>nope</html>"
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.get("/v1/models")
 
     assert resp.status_code == 200
@@ -292,27 +274,27 @@ def test_non_json_upstream_is_forwarded_verbatim():
     assert resp.headers["content-type"].startswith("text/html")
 
 
-def test_json_content_type_with_unparseable_body_is_forwarded_verbatim():
+def test_json_content_type_with_unparseable_body_is_forwarded_verbatim(make_app):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200, headers={"content-type": "application/json"}, content=b"{ not json"
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.get("/v1/models")
 
     assert resp.status_code == 200
     assert resp.content == b"{ not json"
 
 
-def test_upstream_timeout_returns_504():
+def test_upstream_timeout_returns_504(make_app):
     async def _slow_send(self, *args, **kwargs):  # noqa: ANN001, ARG001
         raise TimeoutError
 
     def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
         return _listing()
 
-    app = _make_app(handler)
+    app = make_app(handler)
     # asyncio.wait_for surfaces the deadline as asyncio.TimeoutError, which is
     # TimeoutError on 3.11+; raising it from send() takes the same branch.
     original = httpx.AsyncClient.send
@@ -329,25 +311,25 @@ def test_upstream_timeout_returns_504():
 
 
 # --- Disabling the feature ---------------------------------------------------
-def test_empty_prefix_disables_aliasing(monkeypatch):
+def test_empty_prefix_disables_aliasing(make_app, monkeypatch):
     monkeypatch.setenv("CONVERTER_MODEL_ALIAS_PREFIX", "")
 
     def handler(request: httpx.Request) -> httpx.Response:
         return _listing({"id": "qwen3.5-32b", "object": "model"})
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     body = client.get("/v1/models").json()
 
     assert _ids(body) == ["qwen3.5-32b"]
 
 
-def test_custom_prefix_is_honored(monkeypatch):
+def test_custom_prefix_is_honored(make_app, monkeypatch):
     monkeypatch.setenv("CONVERTER_MODEL_ALIAS_PREFIX", "anthropic/")
 
     def handler(request: httpx.Request) -> httpx.Response:
         return _listing({"id": "qwen3.5-32b", "object": "model"})
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     body = client.get("/v1/models").json()
 
     assert _ids(body) == ["qwen3.5-32b", "anthropic/qwen3.5-32b"]
@@ -376,42 +358,42 @@ def _messages_body(model: object) -> dict:
     return {"model": model, "max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]}
 
 
-def _capture_upstream_model(payload: dict, path: str) -> object:
+def _capture_upstream_model(make_app, payload: dict, path: str) -> object:
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content)
         return _chat_response()
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post(path, json=payload)
     assert resp.status_code == 200, resp.content
     return captured["body"]["model"]
 
 
-def test_messages_strips_the_alias_prefix():
+def test_messages_strips_the_alias_prefix(make_app):
     assert (
-        _capture_upstream_model(_messages_body("claude/qwen3.5-32b"), "/v1/messages")
+        _capture_upstream_model(make_app, _messages_body("claude/qwen3.5-32b"), "/v1/messages")
         == "qwen3.5-32b"
     )
 
 
-def test_messages_leaves_an_unprefixed_model_alone():
+def test_messages_leaves_an_unprefixed_model_alone(make_app):
     assert (
-        _capture_upstream_model(_messages_body("qwen3.5-32b"), "/v1/messages")
+        _capture_upstream_model(make_app, _messages_body("qwen3.5-32b"), "/v1/messages")
         == "qwen3.5-32b"
     )
 
 
-def test_messages_strip_is_disabled_by_an_empty_prefix(monkeypatch):
+def test_messages_strip_is_disabled_by_an_empty_prefix(make_app, monkeypatch):
     monkeypatch.setenv("CONVERTER_MODEL_ALIAS_PREFIX", "")
     assert (
-        _capture_upstream_model(_messages_body("claude/qwen3.5-32b"), "/v1/messages")
+        _capture_upstream_model(make_app, _messages_body("claude/qwen3.5-32b"), "/v1/messages")
         == "claude/qwen3.5-32b"
     )
 
 
-def test_messages_non_string_model_does_not_crash():
+def test_messages_non_string_model_does_not_crash(make_app):
     """Every inbound field may be the wrong type; the strip must not be the
     thing that turns that into a 500."""
     captured = {}
@@ -420,14 +402,14 @@ def test_messages_non_string_model_does_not_crash():
         captured["body"] = json.loads(request.content)
         return _chat_response()
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post("/v1/messages", json=_messages_body({"not": "a string"}))
 
     assert resp.status_code == 200
     assert captured["body"]["model"] == {"not": "a string"}
 
 
-def test_messages_streaming_also_strips_the_prefix():
+def test_messages_streaming_also_strips_the_prefix(make_app):
     """The strip runs before the stream/non-stream branch, so SSE requests get
     the real model upstream — and the events echo it, matching what the
     non-streaming path already reports (it reads the model off the upstream
@@ -445,7 +427,7 @@ def test_messages_streaming_also_strips_the_prefix():
             200, headers={"content-type": "text/event-stream"}, content=sse
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     body = _messages_body("claude/qwen3.5-32b")
     body["stream"] = True
     with client.stream("POST", "/v1/messages", json=body) as resp:
@@ -455,10 +437,10 @@ def test_messages_streaming_also_strips_the_prefix():
     assert '"model":"qwen3.5-32b"' in raw.replace(" ", "")
 
 
-def test_strip_only_removes_a_leading_prefix():
+def test_strip_only_removes_a_leading_prefix(make_app):
     """``some/claude/x`` is not an alias — the prefix must be a prefix."""
     assert (
-        _capture_upstream_model(_messages_body("some/claude/x"), "/v1/messages")
+        _capture_upstream_model(make_app, _messages_body("some/claude/x"), "/v1/messages")
         == "some/claude/x"
     )
 
@@ -468,23 +450,23 @@ def _responses_body(model: object) -> dict:
     return {"model": model, "input": "hi", "store": False}
 
 
-def test_responses_strips_the_alias_prefix():
+def test_responses_strips_the_alias_prefix(make_app):
     assert (
-        _capture_upstream_model(_responses_body("claude/qwen3.5-32b"), "/v1/responses")
+        _capture_upstream_model(make_app, _responses_body("claude/qwen3.5-32b"), "/v1/responses")
         == "qwen3.5-32b"
     )
 
 
-def test_responses_leaves_an_unprefixed_model_alone():
+def test_responses_leaves_an_unprefixed_model_alone(make_app):
     assert (
-        _capture_upstream_model(_responses_body("qwen3.5-32b"), "/v1/responses")
+        _capture_upstream_model(make_app, _responses_body("qwen3.5-32b"), "/v1/responses")
         == "qwen3.5-32b"
     )
 
 
-def test_responses_strip_is_disabled_by_an_empty_prefix(monkeypatch):
+def test_responses_strip_is_disabled_by_an_empty_prefix(make_app, monkeypatch):
     monkeypatch.setenv("CONVERTER_MODEL_ALIAS_PREFIX", "")
     assert (
-        _capture_upstream_model(_responses_body("claude/qwen3.5-32b"), "/v1/responses")
+        _capture_upstream_model(make_app, _responses_body("claude/qwen3.5-32b"), "/v1/responses")
         == "claude/qwen3.5-32b"
     )

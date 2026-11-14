@@ -39,10 +39,16 @@ import json
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+from .chat_completions import (
+    StreamedToolCall,
+    ToolCallAccumulator,
+    merge_chat_usage,
+    normalize_for_model,
+    read_chat_usage,
+)
 from .config import settings
 from .reasoning_effort import clamp_reasoning_effort
-from .system_norm import normalize_system_messages
-from .tool_norm import normalize_tool_messages
+from .system_norm import flatten_text_blocks
 
 
 # ---------------------------------------------------------------------------
@@ -63,41 +69,6 @@ _FINISH_REASON_TO_STOP_REASON: Dict[str, str] = {
     # always-valid value.
     "content_filter": "end_turn",
 }
-
-
-def _flatten_text_blocks(content: Any, separator: str = "") -> str:
-    """Concatenate the ``text`` of every ``{type: 'text'}`` block.
-
-    Used to turn Anthropic-style structured content arrays into the single
-    string OpenAI expects. ``thinking`` blocks are intentionally dropped:
-    OpenAI's wire format has no slot for reasoning in historical assistant
-    turns, and the model will recompute its own chain-of-thought on the next
-    pass anyway.
-
-    *separator* joins the block texts. The default ``""`` is byte-faithful, which
-    is what conversational turns need — their blocks are fragments of one
-    continuous string. System prompts are the exception and pass ``"\\n\\n"``:
-    clients (Claude Code among them) split a system prompt into several
-    INDEPENDENT instruction blocks, and gluing those together bare runs the last
-    word of one into the first word of the next. A non-empty separator also drops
-    empty texts first, so a junk block cannot open a blank line in the middle of
-    the prompt.
-    """
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    out: List[str] = []
-    for block in content:
-        if not isinstance(block, dict):
-            continue
-        if block.get("type") == "text":
-            text = block.get("text")
-            if isinstance(text, str):
-                out.append(text)
-    if separator:
-        return separator.join(text for text in out if text)
-    return "".join(out)
 
 
 def _convert_image_block(block: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -355,7 +326,7 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
     system = body.get("system")
     if system:
         system_text = (
-            system if isinstance(system, str) else _flatten_text_blocks(system, separator="\n\n")
+            system if isinstance(system, str) else flatten_text_blocks(system, separator="\n\n")
         )
         if system_text:
             messages.append({"role": "system", "content": system_text})
@@ -373,26 +344,13 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
             # Some clients place additional ``system`` messages mid-history
             # (Anthropic disallows this, but be liberal in what we accept).
             messages.append(
-                {"role": "system", "content": _flatten_text_blocks(content, separator="\n\n")}
+                {"role": "system", "content": flatten_text_blocks(content, separator="\n\n")}
             )
 
     # Placement of those mid-history system turns (and of a multi-block system
-    # prompt) is what strict chat templates reject; fix it in one place, last, so
-    # the policy sees the fully assembled array — and only for the models whose
-    # template actually rejects it, hence the model gate.
-    # Then pull tool results up next to their ``tool_calls`` turn: a demoted
-    # reminder (or a separate user turn) wedged in between is ``user → tool``,
-    # which Mistral Large 4's template rejects. Gated by model like the above.
-    out["messages"] = normalize_tool_messages(
-        normalize_system_messages(
-            messages,
-            settings.mid_system_policy,
-            model=out.get("model"),
-            model_pattern=settings.mid_system_model_regex,
-        ),
-        model=out.get("model"),
-        model_pattern=settings.tool_norm_model_regex,
-    )
+    # prompt) is what strict chat templates reject; fixed last, on the fully
+    # assembled array, and only for the models whose template rejects it.
+    out["messages"] = normalize_for_model(messages, out.get("model"))
 
     tools = body.get("tools")
     if isinstance(tools, list) and tools:
@@ -446,49 +404,25 @@ def anthropic_request_to_openai_body(body: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _token_count(value: Any) -> Optional[int]:
-    if isinstance(value, int) and not isinstance(value, bool):
-        return max(0, value)
-    return None
-
-
 def _usage_to_anthropic(usage: Any) -> Dict[str, Any]:
     """Split chat/completions' inclusive prompt count into Anthropic's three buckets.
 
-    chat/completions ``prompt_tokens`` includes cache reads AND writes. Details
-    and top-level cache fields are aliases, not additional counts. Prefer
-    normalized details when available.
+    chat/completions ``prompt_tokens`` includes cache reads AND writes, so both
+    come off it for ``input_tokens``. The counters are read by
+    :func:`app.chat_completions.read_chat_usage`, the same reader
+    ``/v1/responses`` uses.
     """
-    usage = usage if isinstance(usage, dict) else {}
-    details = usage.get("prompt_tokens_details")
-    details = details if isinstance(details, dict) else {}
-
-    def first_count(*values: Any) -> int:
-        for value in values:
-            count = _token_count(value)
-            if count is not None:
-                return count
-        return 0
-
-    read = first_count(details.get("cached_tokens"), usage.get("cache_read_input_tokens"))
-    created = first_count(
-        details.get("cache_creation_tokens"), details.get("cache_write_tokens"),
-        usage.get("cache_creation_input_tokens"),
-    )
+    read = read_chat_usage(usage)
     result: Dict[str, Any] = {
-        "input_tokens": max(0, first_count(usage.get("prompt_tokens")) - read - created),
-        "output_tokens": first_count(usage.get("completion_tokens")),
-        "cache_read_input_tokens": read,
-        "cache_creation_input_tokens": created,
+        "input_tokens": max(
+            0, read.prompt_tokens - read.cache_read_tokens - read.cache_creation_tokens
+        ),
+        "output_tokens": read.completion_tokens,
+        "cache_read_input_tokens": read.cache_read_tokens,
+        "cache_creation_input_tokens": read.cache_creation_tokens,
     }
-    creation = details.get("cache_creation_token_details")
-    if not isinstance(creation, dict):
-        creation = usage.get("cache_creation")
-    if isinstance(creation, dict):
-        result["cache_creation"] = {
-            key: first_count(creation.get(key))
-            for key in ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
-        }
+    if read.cache_creation is not None:
+        result["cache_creation"] = read.cache_creation
     return result
 
 
@@ -504,14 +438,12 @@ class _StreamState:
     __slots__ = (
         "open_kind",
         "open_index",
-        "pending_tool_calls",
-        "current_tool_by_index",
+        "tool_calls",
         "model",
         "message_id",
         "usage",
         "finish_reason",
         "started",
-        "last_tool_index",
     )
 
     def __init__(self, model: str) -> None:
@@ -519,95 +451,15 @@ class _StreamState:
         self.open_index: int = -1
         # OpenAI may stream multiple tool calls in parallel, with argument
         # fragments interleaved by ``index``. Anthropic content blocks are
-        # contiguous, so we buffer each OpenAI tool call and flush it as one
-        # complete Anthropic block before ``message_delta``.
-        #
-        # Buffered calls live in an ORDERED LIST (emission order), not a dict
-        # keyed by ``index``: some upstreams reuse one index for two distinct
-        # sequential calls (vLLM/GLM dialect, #31437), and a dict would let the
-        # second call overwrite — and silently destroy — the first.
-        # ``current_tool_by_index`` maps an OpenAI ``index`` to the call its
-        # fragments are currently appending to.
-        self.pending_tool_calls: List[_PendingToolCall] = []
-        self.current_tool_by_index: Dict[int, _PendingToolCall] = {}
-        # Index of the most recent tool-call delta seen. Some upstreams omit
-        # ``index`` on continuation/finish chunks (sglang #5661, vLLM's
-        # stripped finish chunk #31437); we attribute an index-less fragment to
-        # this call rather than dropping it. ``None`` until the first tool call.
-        self.last_tool_index: Optional[int] = None
+        # contiguous, so each call is held until it is complete and flushed as
+        # one Anthropic block — which is also why a restatement with a
+        # different value can still replace the arguments.
+        self.tool_calls = ToolCallAccumulator(replace_restated=True)
         self.model = model
         self.message_id = f"msg_{uuid.uuid4().hex[:24]}"
         self.usage: Dict[str, Any] = {}
         self.finish_reason: Optional[str] = None
         self.started = False
-
-
-def _is_complete_json(s: str) -> bool:
-    """True when ``s`` parses as a whole JSON value on its own.
-
-    Used to tell a genuine *incremental* argument fragment (the OpenAI/sglang
-    canonical stream — e.g. ``{"command":`` then ``"ls"}``, neither of which
-    parses alone) apart from a *full restatement* of an already-complete call
-    (vLLM's dialect — the GLM tool parser emits the whole call at once and the
-    finish chunk re-emits the full arguments; see #31437). Only a complete
-    value triggers the replace-not-append path in :meth:`_PendingToolCall.add_arguments`.
-    """
-    try:
-        json.loads(s)
-        return True
-    except (json.JSONDecodeError, ValueError):
-        return False
-
-
-class _PendingToolCall:
-    __slots__ = ("id", "name", "argument_parts", "upstream_id")
-
-    def __init__(self, call_id: Optional[str], name: Optional[str]) -> None:
-        # ``id`` is what we emit (synthesized when the upstream never sends one);
-        # ``upstream_id`` remembers the *actual* id the upstream gave this call,
-        # staying ``None`` until one arrives. Only the latter may be compared
-        # against a later delta's id — a synthesized ``toolu_...`` would never
-        # match a real id and would split one call into two (see
-        # :func:`_record_tool_call_delta`).
-        has_upstream_id = isinstance(call_id, str) and bool(call_id)
-        self.upstream_id: Optional[str] = call_id if has_upstream_id else None
-        self.id = call_id or f"toolu_{uuid.uuid4().hex[:24]}"
-        self.name = name or ""
-        self.argument_parts: List[str] = []
-
-    def update_metadata(self, call_id: Optional[str], name: Optional[str]) -> None:
-        if call_id:
-            self.id = call_id
-            self.upstream_id = call_id
-        if name:
-            self.name = name
-
-    def add_arguments(self, arguments: str) -> None:
-        """Buffer an argument fragment, tolerant of two upstream dialects.
-
-        - OpenAI/sglang canonical: arguments stream as partial fragments that
-          only form valid JSON once concatenated. These always append.
-        - vLLM/GLM (#31437): the parser emits the *complete* arguments in one
-          delta, then the finish chunk re-emits the *same complete* arguments
-          (with ``id``/``name`` stripped). Appending that would duplicate the
-          JSON (``{...}{...}``) and the downstream SDK would fail to parse the
-          tool input. So when what we've buffered is ALREADY a complete JSON
-          value and this fragment is ALSO a complete JSON value, treat it as a
-          REPLACEMENT, not a continuation (and drop it outright if identical).
-
-        Incremental fragments never satisfy the both-complete condition (a
-        partial prefix like ``{"command":`` doesn't parse), so canonical
-        streaming is unaffected.
-        """
-        if not arguments:
-            return
-        buffered = "".join(self.argument_parts)
-        if buffered and _is_complete_json(buffered) and _is_complete_json(arguments):
-            if arguments == buffered:
-                return  # exact duplicate restatement — drop
-            self.argument_parts = [arguments]  # supersede with the restated value
-            return
-        self.argument_parts.append(arguments)
 
 
 def _message_start_event(state: _StreamState) -> Dict[str, Any]:
@@ -642,76 +494,32 @@ def _open_block(state: _StreamState, kind: str, content_block: Dict[str, Any]) -
     }
 
 
-def _record_tool_call_delta(
-    state: _StreamState,
-    tc_index: int,
-    call_id: Optional[str],
-    name: Optional[str],
-    arguments: Optional[str],
-) -> None:
-    existing = state.current_tool_by_index.get(tc_index)
-    # Some non-conformant upstreams (the vLLM/GLM dialect again, #31437) reuse a
-    # single ``index`` for two DISTINCT sequential tool calls. A delta whose
-    # ``id`` is non-empty and differs from the id the open call was given
-    # upstream is a NEW call, not a continuation: folding it into the open call
-    # would overwrite that call's id/name and — via ``add_arguments``' both-
-    # complete replace rule — throw its arguments away, so the FIRST tool_use
-    # vanished entirely and the client silently never ran that tool.
-    #
-    # The comparison is against ``upstream_id``, never the emitted ``id``: a
-    # call whose opening delta carried no id gets a synthesized ``toolu_...``
-    # id, and a real id arriving on a later fragment of that SAME call
-    # (edge case exercised by the "restatement" tests) must be adopted as
-    # metadata rather than mistaken for a second call.
-    is_new_call = (
-        existing is not None
-        and existing.upstream_id is not None
-        and isinstance(call_id, str)
-        and bool(call_id)
-        and call_id != existing.upstream_id
-    )
-    if existing is None or is_new_call:
-        # The superseded call stays in ``pending_tool_calls`` fully intact and
-        # is flushed as its own block, ahead of this one.
-        pending = _PendingToolCall(call_id, name)
-        state.pending_tool_calls.append(pending)
-        state.current_tool_by_index[tc_index] = pending
-    else:
-        pending = existing
-        pending.update_metadata(call_id, name)
-
-    if isinstance(arguments, str) and arguments:
-        pending.add_arguments(arguments)
-
-
 def _flush_tool_calls(state: _StreamState) -> List[Dict[str, Any]]:
-    """Emit buffered OpenAI tool calls as contiguous Anthropic blocks.
-
-    Buffered calls are emitted in arrival order, which for a conformant
-    upstream is index order, and which keeps two calls that shared one
-    ``index`` in the order the model asked for them.
-    """
-    if not state.pending_tool_calls:
+    """Emit the held tool calls as contiguous Anthropic blocks, in arrival order
+    (see :meth:`app.chat_completions.ToolCallAccumulator.take`)."""
+    calls: List[StreamedToolCall] = state.tool_calls.take()
+    if not calls:
         return []
 
     events: List[Dict[str, Any]] = []
     if state.open_kind is not None:
         events.append(_close_block(state))
 
-    for position, pending in enumerate(state.pending_tool_calls):
+    for position, call in enumerate(calls):
         events.append(
             _open_block(
                 state,
                 f"tool:{position}",
                 {
                     "type": "tool_use",
-                    "id": pending.id,
-                    "name": pending.name,
+                    # A call the upstream never gave an id gets one here.
+                    "id": call.upstream_id or f"toolu_{uuid.uuid4().hex[:24]}",
+                    "name": call.name,
                     "input": {},
                 },
             )
         )
-        for arguments in pending.argument_parts:
+        for arguments in call.argument_parts:
             events.append(
                 {
                     "type": "content_block_delta",
@@ -720,9 +528,6 @@ def _flush_tool_calls(state: _StreamState) -> List[Dict[str, Any]]:
                 }
             )
         events.append(_close_block(state))
-
-    state.pending_tool_calls.clear()
-    state.current_tool_by_index.clear()
     return events
 
 
@@ -769,17 +574,7 @@ async def openai_stream_to_anthropic_events(
         # alongside a regular delta — handle both.
         usage = chunk.get("usage")
         if isinstance(usage, dict):
-            # Counts are cumulative, not increments. Keep earlier fields when
-            # later usage chunks contain only output counts or null details.
-            for key, value in usage.items():
-                if isinstance(value, dict):
-                    previous = state.usage.get(key)
-                    state.usage[key] = {
-                        **(previous if isinstance(previous, dict) else {}),
-                        **{k: v for k, v in value.items() if v is not None},
-                    }
-                elif value is not None:
-                    state.usage[key] = value
+            merge_chat_usage(state.usage, usage)
 
         choices = chunk.get("choices") or []
         if not choices:
@@ -837,32 +632,11 @@ async def openai_stream_to_anthropic_events(
                 "delta": {"type": "text_delta", "text": content},
             }
 
-        # Tool calls. The OpenAI streaming protocol delivers each tool call
-        # as a series of deltas keyed by the call's own ``index`` field —
-        # the first occurrence carries ``id``/``name``, subsequent ones
-        # only append to ``arguments``. Track the open call per index because
-        # parallel calls can interleave argument chunks, while Anthropic blocks
-        # cannot — and buffer the calls themselves in arrival order, since an
-        # index may be reused for a second, distinct call.
-        tool_calls = delta.get("tool_calls") or []
-        for tc in tool_calls:
-            if not isinstance(tc, dict):
-                continue
-            tc_index = tc.get("index")
-            if not isinstance(tc_index, int):
-                # Some upstreams omit ``index`` on continuation/finish chunks
-                # (sglang #5661; vLLM's stripped finish chunk #31437). Dropping
-                # the fragment silently truncated the tool arguments, leaving the
-                # SDK with an unparseable tool_use. Attribute it to the most
-                # recent call instead (or the first, when none seen yet).
-                tc_index = state.last_tool_index if state.last_tool_index is not None else 0
-            state.last_tool_index = tc_index
-            fn = tc.get("function") or {}
-            tc_id = tc.get("id")
-            tc_name = fn.get("name") if isinstance(fn, dict) else None
-            tc_args = fn.get("arguments") if isinstance(fn, dict) else None
-
-            _record_tool_call_delta(state, tc_index, tc_id, tc_name, tc_args)
+        # Tool calls. Held until complete (see ``_StreamState.tool_calls``);
+        # the upstream dialects are handled by the shared accumulator.
+        for tc in delta.get("tool_calls") or []:
+            if isinstance(tc, dict):
+                state.tool_calls.add(tc)
 
         fr = choice.get("finish_reason")
         if isinstance(fr, str) and fr:

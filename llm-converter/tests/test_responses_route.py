@@ -8,26 +8,15 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-import app.main as converter_main
 from app.responses_state import conversation_store
+from tests.helpers import parse_sse
 
 
 @pytest.fixture(autouse=True)
-def _env(monkeypatch):
-    monkeypatch.setenv("CONVERTER_BIFROST_URL", "http://upstream.test")
+def _empty_store():
     conversation_store.clear()
     yield
     conversation_store.clear()
-
-
-def _make_app(handler):
-    transport = httpx.MockTransport(handler)
-
-    def _factory(timeout):  # noqa: ARG001
-        return httpx.AsyncClient(transport=transport, timeout=timeout)
-
-    converter_main._make_client = _factory  # type: ignore[assignment]
-    return converter_main.app
 
 
 def _chat_json(content="Hi there", tool_calls=None, finish="stop"):
@@ -41,16 +30,7 @@ def _chat_json(content="Hi there", tool_calls=None, finish="stop"):
     }
 
 
-def _parse_sse(raw: str) -> list[dict]:
-    events = []
-    for block in raw.split("\n\n"):
-        for line in block.splitlines():
-            if line.startswith("data:"):
-                events.append(json.loads(line[5:].lstrip()))
-    return events
-
-
-def test_non_streaming_translates_to_responses_object():
+def test_non_streaming_translates_to_responses_object(make_app):
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -60,7 +40,7 @@ def test_non_streaming_translates_to_responses_object():
         return httpx.Response(200, headers={"content-type": "application/json"},
                               content=json.dumps(_chat_json()).encode())
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post(
         "/v1/responses",
         headers={"x-bf-vk": "sk-bf-gatewaykey"},
@@ -79,7 +59,7 @@ def test_non_streaming_translates_to_responses_object():
     assert data["id"].startswith("resp_")
 
 
-def test_previous_response_id_chaining_prepends_history():
+def test_previous_response_id_chaining_prepends_history(make_app):
     bodies = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -89,7 +69,7 @@ def test_previous_response_id_chaining_prepends_history():
         return httpx.Response(200, headers={"content-type": "application/json"},
                               content=json.dumps(_chat_json(content=f"answer {n}")).encode())
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
 
     r1 = client.post("/v1/responses", json={"model": "m", "instructions": "sys", "input": "q1"})
     rid = r1.json()["id"]
@@ -106,7 +86,7 @@ def test_previous_response_id_chaining_prepends_history():
     assert msgs[3] == {"role": "user", "content": "q2"}
 
 
-def test_chained_turns_never_accumulate_a_second_system_message():
+def test_chained_turns_never_accumulate_a_second_system_message(make_app):
     bodies = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -114,7 +94,7 @@ def test_chained_turns_never_accumulate_a_second_system_message():
         return httpx.Response(200, headers={"content-type": "application/json"},
                               content=json.dumps(_chat_json(content=f"a{len(bodies)}")).encode())
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
 
     rid = client.post("/v1/responses",
                       json={"model": "qwen3.5-test", "instructions": "sys", "input": "q1"}).json()["id"]
@@ -138,23 +118,23 @@ def test_chained_turns_never_accumulate_a_second_system_message():
     assert {"role": "user", "content": "more 3"} in bodies[-1]["messages"]
 
 
-def test_unknown_previous_response_id_returns_400():
-    client = TestClient(_make_app(lambda r: httpx.Response(200)))
+def test_unknown_previous_response_id_returns_400(make_app):
+    client = TestClient(make_app(lambda r: httpx.Response(200)))
     resp = client.post("/v1/responses",
                        json={"model": "m", "input": "hi", "previous_response_id": "resp_nope"})
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "previous_response_not_found"
 
 
-def test_empty_previous_response_id_returns_400():
-    client = TestClient(_make_app(lambda r: httpx.Response(200)))
+def test_empty_previous_response_id_returns_400(make_app):
+    client = TestClient(make_app(lambda r: httpx.Response(200)))
     resp = client.post("/v1/responses",
                        json={"model": "m", "input": "hi", "previous_response_id": ""})
     assert resp.status_code == 400
 
 
-def test_store_false_is_not_persisted():
-    client = TestClient(_make_app(
+def test_store_false_is_not_persisted(make_app):
+    client = TestClient(make_app(
         lambda r: httpx.Response(200, headers={"content-type": "application/json"},
                                  content=json.dumps(_chat_json()).encode())))
     r1 = client.post("/v1/responses", json={"model": "m", "input": "q1", "store": False})
@@ -165,7 +145,7 @@ def test_store_false_is_not_persisted():
     assert r2.status_code == 400
 
 
-def test_streaming_emits_responses_events():
+def test_streaming_emits_responses_events(make_app):
     sse = (
         "data: " + json.dumps({"choices": [{"delta": {"content": "Hello"}}]}) + "\n\n"
         "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}],
@@ -177,12 +157,12 @@ def test_streaming_emits_responses_events():
         assert json.loads(request.content)["stream"] is True
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post("/v1/responses", json={"model": "m", "stream": True, "input": "hi"})
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
 
-    events = _parse_sse(resp.text)
+    events = parse_sse(resp.text)
     types = [e["type"] for e in events]
     assert types[0] == "response.created"
     assert types[-1] == "response.completed"
@@ -191,7 +171,7 @@ def test_streaming_emits_responses_events():
     assert final["output"][0]["content"][0]["text"] == "Hello"
 
 
-def test_streaming_upstream_error_chunk_emits_failed_and_is_not_persisted():
+def test_streaming_upstream_error_chunk_emits_failed_and_is_not_persisted(make_app):
     sse = (
         "data: " + json.dumps({"choices": [{"delta": {"content": "Hello"}}]}) + "\n\n"
         "data: " + json.dumps({"error": {"code": "rate_limit_exceeded", "message": "slow"}}) + "\n\n"
@@ -201,10 +181,10 @@ def test_streaming_upstream_error_chunk_emits_failed_and_is_not_persisted():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post("/v1/responses", json={"model": "m", "stream": True, "input": "hi"})
     assert resp.status_code == 200
-    events = _parse_sse(resp.text)
+    events = parse_sse(resp.text)
     assert events[-1]["type"] == "response.failed"
     assert events[-1]["response"]["error"]["code"] == "rate_limit_exceeded"
     # Every event (including the failure) carries a monotonic sequence_number.
@@ -216,7 +196,7 @@ def test_streaming_upstream_error_chunk_emits_failed_and_is_not_persisted():
     assert r2.status_code == 400
 
 
-def test_streaming_bridge_crash_failed_event_has_sequence_number():
+def test_streaming_bridge_crash_failed_event_has_sequence_number(make_app):
     # A malformed chunk (choices as a dict) makes the bridge raise; the route's
     # synthesized response.failed must continue the monotonic sequence series.
     sse = (
@@ -228,16 +208,16 @@ def test_streaming_bridge_crash_failed_event_has_sequence_number():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post("/v1/responses", json={"model": "m", "stream": True, "input": "hi"})
     assert resp.status_code == 200
-    events = _parse_sse(resp.text)
+    events = parse_sse(resp.text)
     assert events[-1]["type"] == "response.failed"
     assert "sequence_number" in events[-1]
     assert [e["sequence_number"] for e in events] == list(range(len(events)))
 
 
-def test_non_streaming_malformed_2xx_body_is_forwarded_not_500():
+def test_non_streaming_malformed_2xx_body_is_forwarded_not_500(make_app):
     # A 2xx JSON body that parses but is structurally unexpected (choices is a
     # dict, not a list) makes translation raise. The route must forward the raw
     # upstream body unchanged, not return a bare 500.
@@ -247,16 +227,16 @@ def test_non_streaming_malformed_2xx_body_is_forwarded_not_500():
         return httpx.Response(200, headers={"content-type": "application/json"},
                               content=json.dumps(raw).encode())
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post("/v1/responses", json={"model": "m", "input": "hi"})
     assert resp.status_code == 200
     assert resp.json() == raw  # forwarded verbatim, not translated, not 500
 
 
-def test_empty_assistant_turn_is_not_persisted():
+def test_empty_assistant_turn_is_not_persisted(make_app):
     # An empty assistant turn (no content, no tool_calls) must not be stored —
     # matching the streaming path — so chaining off its id 400s.
-    client = TestClient(_make_app(
+    client = TestClient(make_app(
         lambda r: httpx.Response(200, headers={"content-type": "application/json"},
                                  content=json.dumps(_chat_json(content="")).encode())))
     r1 = client.post("/v1/responses", json={"model": "m", "input": "hi"})
@@ -266,7 +246,7 @@ def test_empty_assistant_turn_is_not_persisted():
     assert r2.status_code == 400
 
 
-def test_chaining_supersedes_parent_so_reuse_400s():
+def test_chaining_supersedes_parent_so_reuse_400s(make_app):
     # Option C: a successful chain deletes the parent prev_id (linear chain keeps
     # only the latest transcript). Reusing the parent id then 400s; chaining off
     # the latest still works.
@@ -278,7 +258,7 @@ def test_chaining_supersedes_parent_so_reuse_400s():
         return httpx.Response(200, headers={"content-type": "application/json"},
                               content=json.dumps(_chat_json(content=f"a{n}")).encode())
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     rid1 = client.post("/v1/responses", json={"model": "m", "input": "q1"}).json()["id"]
     r2 = client.post("/v1/responses",
                      json={"model": "m", "input": "q2", "previous_response_id": rid1})
@@ -294,7 +274,7 @@ def test_chaining_supersedes_parent_so_reuse_400s():
     assert r4.status_code == 200
 
 
-def test_streaming_strips_upstream_cache_headers_so_route_values_win():
+def test_streaming_strips_upstream_cache_headers_so_route_values_win(make_app):
     sse = (
         "data: " + json.dumps({"choices": [{"delta": {"content": "hi"}}]}) + "\n\n"
         "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]}) + "\n\n"
@@ -309,7 +289,7 @@ def test_streaming_strips_upstream_cache_headers_so_route_values_win():
             "x-accel-buffering": "yes",
         }, content=sse)
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post("/v1/responses", json={"model": "m", "stream": True, "input": "hi"})
     assert resp.status_code == 200
     assert resp.headers["cache-control"] == "no-cache"
@@ -331,7 +311,7 @@ def test_streaming_strips_upstream_cache_headers_so_route_values_win():
         ("true", {}, "response.completed"),
     ],
 )
-def test_streaming_length_finish_reporting_mode(monkeypatch, env, headers, expected):
+def test_streaming_length_finish_reporting_mode(make_app, monkeypatch, env, headers, expected):
     if env is None:
         monkeypatch.delenv("CONVERTER_LENGTH_AS_COMPLETED", raising=False)
     else:
@@ -346,13 +326,13 @@ def test_streaming_length_finish_reporting_mode(monkeypatch, env, headers, expec
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post(
         "/v1/responses", headers=headers, json={"model": "m", "stream": True, "input": "hi"}
     )
     assert resp.status_code == 200
 
-    events = _parse_sse(resp.text)
+    events = parse_sse(resp.text)
     assert events[-1]["type"] == expected
 
 
@@ -369,7 +349,7 @@ def _namespace_request(stream=False):
     }
 
 
-def test_namespace_tool_call_flattened_and_stamped_end_to_end():
+def test_namespace_tool_call_flattened_and_stamped_end_to_end(make_app):
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -383,7 +363,7 @@ def test_namespace_tool_call_flattened_and_stamped_end_to_end():
             ).encode(),
         )
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post("/v1/responses", json=_namespace_request())
     assert resp.status_code == 200
     # the namespace's inner function was flattened onto the upstream chat request
@@ -395,7 +375,7 @@ def test_namespace_tool_call_flattened_and_stamped_end_to_end():
     assert fc["namespace"] == "multi_agent_v1"
 
 
-def test_namespace_tool_call_stamped_end_to_end_streaming():
+def test_namespace_tool_call_stamped_end_to_end_streaming(make_app):
     sse = (
         "data: " + json.dumps({"choices": [{"delta": {"tool_calls": [
             {"index": 0, "id": "call_1", "type": "function",
@@ -407,10 +387,10 @@ def test_namespace_tool_call_stamped_end_to_end_streaming():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
 
-    client = TestClient(_make_app(handler))
+    client = TestClient(make_app(handler))
     resp = client.post("/v1/responses", json=_namespace_request(stream=True))
     assert resp.status_code == 200
-    events = _parse_sse(resp.text)
+    events = parse_sse(resp.text)
     added = next(e for e in events
                  if e["type"] == "response.output_item.added"
                  and e["item"]["type"] == "function_call")

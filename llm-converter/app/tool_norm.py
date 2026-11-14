@@ -32,6 +32,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .system_norm import model_matches
+
 
 def _role(message: Any) -> Any:
     return message.get("role") if isinstance(message, dict) else None
@@ -55,16 +57,15 @@ def normalize_tool_messages(
     transcript comes back as the caller's own list.
 
     *model_pattern* gates the rewrite the same way as
-    :func:`app.system_norm.normalize_system_messages`: with a pattern, only a
-    string *model* the pattern searches successfully is reshaped. ``None``
-    normalizes unconditionally (the unit tests' contract).
+    :func:`app.system_norm.normalize_system_messages`
+    (:func:`app.system_norm.model_matches`): with a pattern, only a string
+    *model* the pattern searches successfully is reshaped. ``None`` normalizes
+    unconditionally (the unit tests' contract).
 
     Never mutates *messages* or its dicts, and is idempotent — ``/v1/responses``
     persists the translated transcript and re-translates it on every chained turn.
     """
-    if model_pattern is not None and not (
-        isinstance(model, str) and model_pattern.search(model)
-    ):
+    if not model_matches(model, model_pattern):
         return messages
     if not isinstance(messages, list):
         return messages

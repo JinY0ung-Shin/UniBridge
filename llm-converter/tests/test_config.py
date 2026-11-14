@@ -75,18 +75,6 @@ def test_upstream_url_is_bifrost(monkeypatch):
     assert config.settings.upstream_url == "http://bifrost.test:9000"
 
 
-@pytest.mark.parametrize("raw", ["bifrost", "litellm", ""])
-def test_a_leftover_llm_gateway_is_ignored(monkeypatch, raw):
-    """Compose still passes ``LLM_GATEWAY=bifrost`` for one release (so an older
-    image recreated on rollback does not default to LiteLLM); whatever it says,
-    the converter forwards to Bifrost and needs no ``LITELLM_URL``."""
-    monkeypatch.setenv("LLM_GATEWAY", raw)
-    monkeypatch.delenv("LITELLM_URL", raising=False)
-
-    assert config.settings.upstream_url == "http://bifrost:8080"
-    assert config.settings.models_timeout == 2.0
-
-
 def test_model_listing_cache_knobs(monkeypatch):
     assert config.settings.models_cache_ttl == 30.0
     assert config.settings.models_stale_max == 600.0
