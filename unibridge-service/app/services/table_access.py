@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 
-from app.services.sql_analysis import table_names
+from app.services.sql_analysis import code_texts, table_names
 
 # Matches table references after FROM, JOIN, INTO, UPDATE keywords.
 # Handles optional schema prefix: schema.table, [schema].[table]
@@ -37,22 +37,37 @@ _INDIVIDUAL_TABLE_RE = re.compile(
 )
 
 
+# `TABLE name` (Postgres' short form of SELECT * FROM name, which the parser
+# does not read inside UNION or IN) and DDL. Quoted names are blanked in the
+# code text, so one counts as the pseudo-table "table()".
+_TABLE_COMMAND_RE = re.compile(
+    r"""(?<![\w@#$])TABLE\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?(?:ONLY\s+)?"""
+    r"""(?:(?:[\w$]+|"")\s*\.\s*)*([\w$]+|"")""",
+    re.IGNORECASE,
+)
+
+
 def _clean_name(name: str) -> str:
     """Remove brackets and lowercase a table name."""
     return name.strip("[]").lower()
 
 
 def extract_tables(sql: str, db_type: str = "postgres") -> set[str]:
-    """Extract table names referenced in a SQL statement.
+    """Extract table names referenced in a SQL statement, lower-cased.
 
-    Strips string literals and comments first to avoid false positives.
-    Returns lowercase table names.
+    Reads them from the parsed statement (FROM/JOIN tables, ClickHouse
+    `x IN table` and joinGet(), and table functions such as merge() as the
+    pseudo-table "merge()", which no allow-list holds). When the parser finds
+    none, a regex over the raw text takes over, which also counts names inside
+    literals and comments. Names after TABLE count either way. A table read
+    another way (a view, a dictionary, a function that queries it) is not seen.
     """
-    parsed_tables = table_names(sql, db_type=db_type)
-    if parsed_tables:
-        return parsed_tables
-
-    return _extract_tables_with_regex(sql)
+    tables = table_names(sql, db_type=db_type) or _extract_tables_with_regex(sql)
+    for code in code_texts(sql, db_type):
+        for match in _TABLE_COMMAND_RE.finditer(code):
+            name = match.group(1)
+            tables.add("table()" if name == '""' else name.lower())
+    return tables
 
 
 def _extract_tables_with_regex(sql: str) -> set[str]:

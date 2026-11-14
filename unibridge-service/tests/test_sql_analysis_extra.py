@@ -1,15 +1,20 @@
-"""Extra tests covering sql_analysis helpers (strip strings, legacy fallback, blocked keywords)."""
+"""Extra tests covering sql_analysis helpers (code text, legacy fallback, blocked keywords)."""
 from __future__ import annotations
 
 from app.services.sql_analysis import (
-    _strip_strings_and_comments,
     blocked_ast_keyword,
+    sql_code_text,
+    sql_lexings,
     statement_type,
     table_names,
 )
 
 
-# ── _strip_strings_and_comments edge cases ──────────────────────────────────
+def _strip_strings_and_comments(sql: str) -> str:
+    return sql_code_text(sql, sql_lexings("postgres")[0])
+
+
+# ── code text (Postgres reading) edge cases ─────────────────────────────────
 
 
 def test_strip_line_comment():
@@ -65,16 +70,13 @@ def test_strip_dollar_quoted_unterminated_breaks_out():
     assert "SELECT" in out
 
 
-def test_strip_dollar_sign_not_a_tag_kept():
-    # $ followed by non-identifier shouldn't be treated as tag-quote
-    out = _strip_strings_and_comments("SELECT $$ from t")
-    # $$ is an empty tag, so it should be processed; ensure no crash
-    assert isinstance(out, str)
+def test_strip_unclosed_empty_dollar_tag_takes_the_rest():
+    # Postgres rejects an unclosed $$, so what follows it is never code.
+    assert _strip_strings_and_comments("SELECT $$ from t") == "SELECT ''"
 
 
 def test_strip_unterminated_string_breaks_out():
-    out = _strip_strings_and_comments("SELECT 'never closed")
-    assert isinstance(out, str)
+    assert _strip_strings_and_comments("SELECT 'never closed") == "SELECT ''"
 
 
 # ── legacy fallback (`_legacy_statement_type`) reachable via statement_type ──

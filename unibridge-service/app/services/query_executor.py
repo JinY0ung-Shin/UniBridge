@@ -36,7 +36,7 @@ from app.services.graphdb_utils import (
     graphdb_repository_path,
     read_capped_response,
 )
-from app.services.sql_analysis import statement_type
+from app.services.sql_analysis import has_statement_after_semicolon, statement_type
 
 # Re-exported for callers that import from this module
 __all__ = [
@@ -54,100 +54,51 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-def check_multi_statement(sql: str) -> bool:
+def check_multi_statement(sql: str, db_type: str | None = "postgres") -> bool:
+    """Whether ``sql`` carries a statement after a semicolon.
+
+    Semicolons inside literals, quoted names and comments do not count, read
+    the way ``db_type`` reads them; a single trailing semicolon is allowed.
     """
-    Detect semicolons outside of string literals and comments.
+    return has_statement_after_semicolon(sql, db_type)
 
-    Handles single quotes, double quotes, dollar-quoted strings (PostgreSQL),
-    single-line comments (--), and block comments (/* */).
-    Returns True if a semicolon is found outside of these contexts.
+
+_MULTI_STATEMENT_ERROR = (
+    "Multi-statement SQL is not allowed. Remove semicolons or contact an admin."
+)
+
+
+def _reject_multi_statement(sql: str, db_type: str) -> None:
+    """Refuse SQL carrying more than one statement, whoever sends it."""
+    if check_multi_statement(sql, db_type):
+        raise ValueError(_MULTI_STATEMENT_ERROR)
+
+
+def _query_bounds(limit: int | None, timeout: int | None) -> tuple[int, int]:
+    """The row limit and timeout (seconds) a query runs with.
+
+    MAX_ROW_LIMIT caps the rows ever pulled into service memory. A larger
+    request is clamped rather than rejected: callers legitimately ask for very
+    large result sets and ``truncated`` already tells them the response was
+    cut short.
     """
-    i = 0
-    length = len(sql)
-    while i < length:
-        c = sql[i]
-
-        # Single-line comment
-        if c == '-' and i + 1 < length and sql[i + 1] == '-':
-            i = sql.find('\n', i)
-            if i == -1:
-                break
-            i += 1
-            continue
-
-        # Block comment
-        if c == '/' and i + 1 < length and sql[i + 1] == '*':
-            end = sql.find('*/', i + 2)
-            if end == -1:
-                break
-            i = end + 2
-            continue
-
-        # Single-quoted string
-        if c == "'":
-            i += 1
-            while i < length:
-                if sql[i] == "'" :
-                    if i + 1 < length and sql[i + 1] == "'":
-                        i += 2  # escaped quote ''
-                    else:
-                        i += 1
-                        break
-                else:
-                    i += 1
-            continue
-
-        # Double-quoted identifier
-        if c == '"':
-            i += 1
-            while i < length:
-                if sql[i] == '"':
-                    if i + 1 < length and sql[i + 1] == '"':
-                        i += 2  # escaped quote ""
-                    else:
-                        i += 1
-                        break
-                else:
-                    i += 1
-            continue
-
-        # Dollar-quoted string (PostgreSQL)
-        if c == '$':
-            # Find the tag: $tag$ or $$
-            tag_end = sql.find('$', i + 1)
-            if tag_end != -1:
-                tag = sql[i:tag_end + 1]
-                # Validate tag content (only letters, digits, underscore)
-                tag_body = tag[1:-1]
-                if all(ch.isalnum() or ch == '_' for ch in tag_body):
-                    close = sql.find(tag, tag_end + 1)
-                    if close == -1:
-                        break
-                    i = close + len(tag)
-                    continue
-            i += 1
-            continue
-
-        if c == ';':
-            # Allow trailing semicolons — only block if there's a statement after
-            rest = sql[i + 1:].strip()
-            if rest:
-                return True
-
-        i += 1
-    return False
+    return (
+        min(limit or settings_manager.default_row_limit, settings.MAX_ROW_LIMIT),
+        timeout or settings.DEFAULT_QUERY_TIMEOUT,
+    )
 
 
-def detect_statement_type(sql: str) -> str:
+def detect_statement_type(sql: str, db_type: str | None = None) -> str:
     """
     Return the SQL statement type as a lowercase string.
 
     WITH ... SELECT is treated as 'select' unless the CTE body contains
     DML keywords (INSERT, UPDATE, DELETE), in which case the DML type is returned.
     EXEC/EXECUTE/CALL is treated as 'execute'.
-    Returns 'unknown' if not detected.
+    Returns 'unknown' if not detected. Pass ``db_type`` whenever it is known:
+    without it the text is parsed as any engine's SQL.
     """
-    return statement_type(sql)
+    return statement_type(sql, db_type)
 
 
 def check_permission(
@@ -321,7 +272,7 @@ async def _execute(
     """Core execution logic."""
     start = time.monotonic()
 
-    statement_type = detect_statement_type(sql)
+    statement_type = detect_statement_type(sql, db_type)
     is_select = statement_type in ("select", "explain")
 
     stmt = text(sql)
@@ -420,18 +371,8 @@ async def execute_query(
     Raises asyncio.TimeoutError on timeout.
     Raises any DB-level exceptions on failure.
     """
-    effective_limit = limit or settings_manager.default_row_limit
-    # Hard ceiling on rows ever pulled into service memory. Clamp rather than
-    # reject: callers legitimately ask for very large result sets and
-    # `truncated` already tells them the response was cut short.
-    effective_limit = min(effective_limit, settings.MAX_ROW_LIMIT)
-    effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
-
-    # Reject multi-statement SQL for non-admin users
-    if check_multi_statement(sql):
-        raise ValueError(
-            "Multi-statement SQL is not allowed. Remove semicolons or contact an admin."
-        )
+    effective_limit, effective_timeout = _query_bounds(limit, timeout)
+    _reject_multi_statement(sql, db_type)
 
     try:
         return await asyncio.wait_for(
@@ -479,7 +420,7 @@ async def _execute_clickhouse(
     """Core execution logic for ClickHouse via clickhouse-connect."""
     start = time.monotonic()
 
-    statement_type = detect_statement_type(sql)
+    statement_type = detect_statement_type(sql, "clickhouse")
     is_select = statement_type in ("select", "explain")
 
     if is_select:
@@ -539,13 +480,8 @@ async def execute_clickhouse_query(
     inside the worker thread. This keeps the client protected even when the
     awaiting coroutine times out while the thread continues running.
     """
-    effective_limit = min(limit or settings_manager.default_row_limit, settings.MAX_ROW_LIMIT)
-    effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
-
-    if check_multi_statement(sql):
-        raise ValueError(
-            "Multi-statement SQL is not allowed. Remove semicolons or contact an admin."
-        )
+    effective_limit, effective_timeout = _query_bounds(limit, timeout)
+    _reject_multi_statement(sql, "clickhouse")
 
     async def _run() -> QueryResponse:
         return await _execute_clickhouse(client, sql, params, effective_limit, lock)
@@ -769,13 +705,8 @@ async def execute_clickhouse_json(
     timeout also goes to the server as ``max_execution_time``: a query that
     has not written anything yet would not notice that the caller gave up.
     """
-    effective_limit = min(limit or settings_manager.default_row_limit, settings.MAX_ROW_LIMIT)
-    effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
-
-    if check_multi_statement(sql):
-        raise ValueError(
-            "Multi-statement SQL is not allowed. Remove semicolons or contact an admin."
-        )
+    effective_limit, effective_timeout = _query_bounds(limit, timeout)
+    _reject_multi_statement(sql, "clickhouse")
     ch_settings = {**_CLICKHOUSE_JSON_SETTINGS, "max_execution_time": effective_timeout}
     if effective_limit:
         ch_settings["max_result_rows"] = effective_limit + 1
@@ -929,8 +860,7 @@ async def execute_neo4j_query(
     ``readonly=True`` (the default) opens the session in READ access mode, so
     the server rejects writes; pass ``False`` only for authorized data writes.
     """
-    effective_limit = min(limit or settings_manager.default_row_limit, settings.MAX_ROW_LIMIT)
-    effective_timeout = timeout or settings.DEFAULT_QUERY_TIMEOUT
+    effective_limit, effective_timeout = _query_bounds(limit, timeout)
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(

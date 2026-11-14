@@ -274,7 +274,7 @@ def _detect_statement_type(sql: str, db_type: str) -> str:
         # _validate_read_only_template_sql) treat them uniformly. The raw form
         # is re-derived locally in the graphdb executor dispatch.
         return "select"
-    return detect_statement_type(sql)
+    return detect_statement_type(sql, db_type)
 
 
 def _extra_blocked_keyword_error(sql: str, blocked_keywords: list[str]) -> str | None:
