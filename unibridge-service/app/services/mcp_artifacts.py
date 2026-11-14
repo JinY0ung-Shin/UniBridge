@@ -11,9 +11,10 @@ named by an opaque id.
   A small file can instead come back in the result itself as a standard MCP
   embedded resource (``return_mode=resource``, up to ``Limits.inline_bytes``);
   that one is not staged at all.
-- The other way round, the host stages a workspace file with
-  ``POST /api/mcp/artifacts`` and ``upload_staged_artifacts`` sends staged
-  artifacts on to a gateway API as multipart/form-data.
+- The other way round, a workspace file is staged — by the ``stage_artifacts``
+  tool, whose file argument the MCP host fills in, or by the host posting it
+  to ``POST /api/mcp/artifacts`` — and ``upload_staged_artifacts`` sends
+  staged artifacts on to a gateway API as multipart/form-data.
 
 What holds for every artifact:
 

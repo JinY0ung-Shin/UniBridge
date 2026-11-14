@@ -978,7 +978,7 @@ async def test_api_tools_need_an_exposed_and_granted_route(client, seeded_db, ad
         listing.assert_not_awaited()
         await _expose(client, admin_token, "orders")
         names = await _tool_names(client, granted)
-        assert names[-4:] == ["search_apis", "call_api", "download_artifact", "upload_staged_artifacts"]
+        assert names[-5:] == ["search_apis", "call_api", "download_artifact", "stage_artifacts", "upload_staged_artifacts"]
         assert "search_apis" not in await _tool_names(client, ungranted)
         await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], apis=False)
         assert "search_apis" not in await _tool_names(client, granted)

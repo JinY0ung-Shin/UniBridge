@@ -33,6 +33,7 @@ from tests.test_mcp import (  # noqa: F401 - the gateway fixture is used by name
     _expose,
     _put_settings,
     _routes,
+    _rpc,
     _text,
     _tool_names,
     gateway,
@@ -835,6 +836,137 @@ async def test_upload_posts_staged_artifacts_as_multipart(client, seeded_db, adm
 
     # Sending does not consume: both stay staged until they expire.
     assert len(await _rows(seeded_db)) == 2
+
+
+# ── Workspace files staged through the MCP connection ───────────────────────
+
+
+def _workspace_file(body: bytes, name: str, mime: str = "image/png", **override) -> dict:
+    """The object an MCP host puts where the model named a workspace file."""
+    return {
+        "filename": name,
+        "mimeType": mime,
+        "size": len(body),
+        "sha256": _sha(body),
+        "data": base64.b64encode(body).decode(),
+        **override,
+    }
+
+
+async def test_stage_artifacts_takes_host_filled_files_and_upload_takes_its_answer_unchanged(
+    client, seeded_db, admin_token, gateway
+):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
+    await _expose(client, admin_token, "orders")
+    listed = (await _rpc(client, headers, "tools/list")).json()["result"]["tools"]
+    tools = {tool["name"]: tool for tool in listed}
+    # The schema marks the file argument for hosts that fill it in from the agent's workspace.
+    file_schema = tools["stage_artifacts"]["inputSchema"]["properties"]["files"]["items"]["properties"]["file"]
+    assert file_schema[mcp_tools.WORKSPACE_FILE_KEYWORD] is True
+
+    capture, map_1, map_2 = BINARY, b"\x89PNG map one", b"\x89PNG map two"
+    answer = _payload(
+        await _call(
+            client,
+            headers,
+            "stage_artifacts",
+            {
+                "files": [
+                    {"field": "capture", "file": _workspace_file(capture, "capture.png")},
+                    {"field": "maps", "file": _workspace_file(map_1, "map-1.png")},
+                    {"field": "maps", "file": _workspace_file(map_2, "dir/../map-2.png")},
+                ]
+            },
+        )
+    )
+    staged = answer["artifacts"]
+    assert [(a["field"], a["filename"], a["size"], a["sha256"]) for a in staged] == [
+        ("capture", "capture.png", len(capture), _sha(capture)),
+        ("maps", "map-1.png", len(map_1), _sha(map_1)),
+        ("maps", "map-2.png", len(map_2), _sha(map_2)),
+    ]
+    assert all(set(a) == {"artifact_id", "field", "filename", "size", "sha256"} for a in staged)
+    assert answer["expires_at"]
+    rows = await _rows(seeded_db)
+    assert [(row.source, row.size) for row in rows] == [("upload", len(capture)), ("upload", len(map_1)), ("upload", len(map_2))]
+
+    # Staging the same files again is the same artifacts: a repeated call is safe.
+    again = _payload(await _call(client, headers, "stage_artifacts", {"files": [{"field": "capture", "file": _workspace_file(capture, "capture.png")}]}))
+    assert again["artifacts"][0]["artifact_id"] == staged[0]["artifact_id"]
+    assert len(await _rows(seeded_db)) == 3
+
+    # The answer goes to the upload tool as it is; the receiver sees the exact parts and fields.
+    gateway.reply = httpx.Response(201, json={"ok": True})
+    with _routes():
+        result = await _call(
+            client,
+            headers,
+            "upload_staged_artifacts",
+            {"destination": {"api": "Orders", "path": "/api/ext/orders/7/files"}, "artifacts": staged, "fields": {"title": "점검"}},
+        )
+    assert result["isError"] is False, result
+    form = await _multipart(gateway.external[-1])
+    assert form["title"] == "점검"
+    assert form["capture"].filename == "capture.png" and form["capture"].content_type == "image/png"
+    assert await form["capture"].read() == capture
+    assert [(part.filename, await part.read()) for part in form.getlist("maps")] == [("map-1.png", map_1), ("map-2.png", map_2)]
+
+    # A size or checksum that is not the staged artifact's sends nothing.
+    sent_before = len(gateway.external)
+    for wrong in ({"size": len(capture) + 1}, {"sha256": _sha(b"other")}):
+        with _routes():
+            refused = await _call(
+                client,
+                headers,
+                "upload_staged_artifacts",
+                {"destination": {"api": "Orders", "path": "/api/ext/orders/7/files"}, "artifacts": [{**staged[0], **wrong}]},
+            )
+        assert refused["isError"] is True and "is not the file its size and sha256 name; nothing was sent" in _text(refused)
+    assert len(gateway.external) == sent_before
+
+
+@pytest.mark.parametrize(
+    ("bad", "message"),
+    [
+        ({"data": base64.b64encode(BINARY).decode()[:-3]}, "data is not valid base64; nothing was staged"),
+        ({"size": len(BINARY) + 1}, "not the size it declares; nothing was staged"),
+        ({"sha256": "0" * 64}, "does not hash to the sha256 it declares; nothing was staged"),
+        ({"data": ""}, "data must hold the file's bytes as base64"),
+        ({"filename": ".."}, "filename is not a usable file name"),
+        ({"path": "/etc/passwd"}, "file does not take: path"),
+    ],
+)
+async def test_stage_artifacts_keeps_nothing_when_one_file_is_bad(client, seeded_db, admin_token, gateway, bad, message):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
+    await _expose(client, admin_token, "orders")
+    result = await _call(
+        client,
+        headers,
+        "stage_artifacts",
+        # A good file first: it must not be kept either.
+        {"files": [{"file": _workspace_file(b"good file", "good.png")}, {"file": _workspace_file(BINARY, "bad.png", **bad)}]},
+    )
+    assert result["isError"] is True and message in _text(result), result
+    assert await _rows(seeded_db) == []
+
+
+async def test_stage_artifacts_is_bounded_like_every_artifact(client, seeded_db, admin_token, gateway):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES, databases=["store"])
+    await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], artifact_max_mb=1)
+    files = [{"file": _workspace_file(bytes([i]) * (600 * 1024), f"part-{i}.bin")} for i in range(2)]
+    # Each fits, together they pass the size one upload may carry: nothing is staged.
+    result = await _call(client, headers, "stage_artifacts", {"files": files})
+    assert result["isError"] is True and "nothing was staged" in _text(result), result
+    assert await _rows(seeded_db) == []
+    too_many = [{"file": _workspace_file(bytes([i]), f"f{i}.bin")} for i in range(11)]
+    result = await _call(client, headers, "stage_artifacts", {"files": too_many})
+    assert result["isError"] is True and "files holds 1 to 10 entries" in _text(result)
+    # Another key cannot use what this key staged.
+    one = _payload(await _call(client, headers, "stage_artifacts", {"files": files[:1]}))["artifacts"]
+    other = await _create_api_key(seeded_db, name="other", routes=EXT_KEY_ROUTES, databases=["store"])
+    with _routes():
+        refused = await _call(client, other, "upload_staged_artifacts", {"destination": {"api": "Orders", "path": "/api/ext/orders/7/files"}, "artifacts": one})
+    assert refused["isError"] is True and "nothing was sent" in _text(refused)
 
 
 @pytest.mark.parametrize(

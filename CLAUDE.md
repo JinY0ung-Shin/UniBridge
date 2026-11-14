@@ -112,7 +112,10 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   standard MCP `EmbeddedResource`; its shape (`artifact://<sha256>/<name>`, `mimeType`,
   `blob`, `_meta.size`/`_meta.sha256`) is what pi-gateway saves into a sandbox, so change it
   only together with that host. Only that block is standard MCP: staging by id and
-  `upload_staged_artifacts` are UniBridge extensions, and docs must keep saying so. Keep it that way round: sources are read through
+  `upload_staged_artifacts` are UniBridge extensions, and docs must keep saying so. `stage_artifacts` takes a workspace file
+  through the MCP connection: its `file` argument carries `"x-workspace-file": true` (`mcp_tools.WORKSPACE_FILE_KEYWORD`),
+  pi-gateway's mark for "the host fills this in" — the object's keys (`filename`, `mimeType`, `size`, `sha256`, `data`) are
+  what pi-gateway sends, so change them only together with that host. Keep it that way round: sources are read through
   the gateway REST routes as the caller and destinations are paths on an exposed route
   (`mcp_tools._resolve_api_call`), never a URL or a local path; an id answers only its own
   key, and every miss is the same 404. Limits live in the MCP settings, not env.

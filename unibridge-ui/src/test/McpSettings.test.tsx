@@ -400,7 +400,7 @@ describe('McpSettingsPage', () => {
     renderWithProviders(<McpSettingsPage />, { permissions: WRITE_PERMISSIONS });
 
     const artifacts = await screen.findByRole('checkbox', {
-      name: 'File artifacts (download_artifact · upload_staged_artifacts)',
+      name: 'File artifacts (download_artifact · stage_artifacts · upload_staged_artifacts)',
     });
     expect(artifacts).toBeChecked();
     expect(screen.getByRole('spinbutton', { name: 'Max artifact size (MiB)' })).toHaveValue(32);

@@ -35,6 +35,8 @@ admin's change at once.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import codecs
 import ipaddress
 from collections.abc import Awaitable, Callable
@@ -2688,8 +2690,15 @@ def _form_fields(fields: dict[str, Any]) -> dict[str, str | list[str]]:
     return form
 
 
-def _artifact_parts(items: list[Any]) -> list[tuple[str, str, str | None]]:
-    """(form field, artifact id, file name override) for each file part."""
+def _artifact_parts(
+    items: list[Any],
+) -> list[tuple[str, str, str | None, tuple[int | None, str | None]]]:
+    """(form field, artifact id, file name override, (size, sha256) to hold it to) for each file part.
+
+    ``size`` and ``sha256`` are optional: they let a client pass on what
+    stage_artifacts or download_artifact answered unchanged, and an artifact
+    that is not that file is then refused instead of sent.
+    """
     if not 1 <= len(items) <= _UPLOAD_MAX_ARTIFACTS:
         raise ToolError(f"artifacts holds 1 to {_UPLOAD_MAX_ARTIFACTS} entries")
     parts: list[tuple[str, str, str | None]] = []
@@ -2697,9 +2706,16 @@ def _artifact_parts(items: list[Any]) -> list[tuple[str, str, str | None]]:
         where = f"artifacts[{index}]"
         if not isinstance(item, dict) or not isinstance(item.get("artifact_id"), str):
             raise ToolError(f"{where} must be an object with an artifact_id")
-        unknown = sorted(set(item) - {"artifact_id", "field", "filename"})
+        unknown = sorted(set(item) - {"artifact_id", "field", "filename", "size", "sha256"})
         if unknown:
             raise ToolError(f"{where} does not take: {', '.join(unknown)}")
+        size, sha256 = item.get("size"), item.get("sha256")
+        if size is not None and (isinstance(size, bool) or not isinstance(size, int)):
+            raise ToolError(f"{where}.size must be the artifact's size in bytes")
+        if sha256 is not None and (
+            not isinstance(sha256, str) or not mcp_artifacts.SHA256_HEX.fullmatch(sha256.lower())
+        ):
+            raise ToolError(f"{where}.sha256 must be the artifact's SHA-256 as 64 hex characters")
         field_name = item.get("field")
         field_name = (
             _DEFAULT_FILE_FIELD if field_name is None else _form_name(field_name, f"{where}.field")
@@ -2709,7 +2725,9 @@ def _artifact_parts(items: list[Any]) -> list[tuple[str, str, str | None]]:
             filename = mcp_artifacts.clean_filename(filename)
             if filename is None:
                 raise ToolError(f"{where}.filename is not a usable file name")
-        parts.append((field_name, item["artifact_id"], filename))
+        parts.append(
+            (field_name, item["artifact_id"], filename, (size, sha256.lower() if sha256 else None))
+        )
     return parts
 
 
@@ -2740,11 +2758,16 @@ async def _upload_staged_artifacts(ctx: ToolContext, args: dict[str, Any]) -> Te
             # Every artifact is read back and checked before the first byte
             # leaves: one that is missing, expired or damaged sends nothing.
             total = 0
-            for index, (field_name, artifact_id, filename) in enumerate(parts):
+            for index, (field_name, artifact_id, filename, expected) in enumerate(parts):
                 try:
                     artifact, content = await mcp_artifacts.read(ctx.db, consumer, artifact_id)
                 except mcp_artifacts.ArtifactError as exc:
                     raise ToolError(f"artifacts[{index}]: {exc.detail}; nothing was sent") from exc
+                if expected[0] not in (None, artifact.size) or expected[1] not in (None, artifact.sha256):
+                    raise ToolError(
+                        f"artifacts[{index}]: the staged artifact is not the file its size and "
+                        "sha256 name; nothing was sent"
+                    )
                 total += artifact.size
                 if total > limits.max_bytes:
                     raise ToolError(
@@ -2781,13 +2804,175 @@ async def _upload_staged_artifacts(ctx: ToolContext, args: dict[str, Any]) -> Te
     return result
 
 
+# A file the MCP host fills in from its agent's workspace. The schema keyword is
+# pi-gateway's convention, not part of MCP: a host that knows it shows its
+# model a workspace path here and sends this object in its place; any other
+# host leaves the object for the model to fill in.
+WORKSPACE_FILE_KEYWORD = "x-workspace-file"
+_STAGE_FILE_KEYS = {"filename", "mimeType", "size", "sha256", "data"}
+
+
+async def _stage_artifacts(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    items = args["files"]
+    if not isinstance(items, list) or not 1 <= len(items) <= _UPLOAD_MAX_ARTIFACTS:
+        raise ToolError(f"files holds 1 to {_UPLOAD_MAX_ARTIFACTS} entries")
+    limits = mcp_artifacts.Limits.of(ctx.settings)
+    consumer = ctx.user.consumer_name
+    # Every file is decoded and held to its declared size and checksum before
+    # the first one is kept: a bad entry stages nothing.
+    checked: list[tuple[str, str, str, bytes]] = []
+    total = 0
+    for index, item in enumerate(items):
+        where = f"files[{index}]"
+        if not isinstance(item, dict) or not isinstance(item.get("file"), dict):
+            raise ToolError(f"{where} must be an object with a file")
+        unknown = sorted(set(item) - {"file", "field"})
+        if unknown:
+            raise ToolError(f"{where} does not take: {', '.join(unknown)}")
+        field_name = item.get("field")
+        field_name = (
+            _DEFAULT_FILE_FIELD if field_name is None else _form_name(field_name, f"{where}.field")
+        )
+        file = item["file"]
+        unknown = sorted(set(file) - _STAGE_FILE_KEYS)
+        if unknown:
+            raise ToolError(f"{where}.file does not take: {', '.join(unknown)}")
+        filename = mcp_artifacts.clean_filename(file.get("filename"))
+        if filename is None:
+            raise ToolError(f"{where}.file.filename is not a usable file name")
+        data = file.get("data")
+        try:
+            content = base64.b64decode(data, validate=True) if isinstance(data, str) else b""
+        except (binascii.Error, ValueError):
+            raise ToolError(f"{where}.file.data is not valid base64; nothing was staged") from None
+        if not content:
+            raise ToolError(f"{where}.file.data must hold the file's bytes as base64")
+        size = file.get("size")
+        if isinstance(size, bool) or not isinstance(size, int) or size != len(content):
+            raise ToolError(
+                f"{where}.file holds {len(content)} bytes, not the size it declares; nothing was staged"
+            )
+        declared = file.get("sha256")
+        if (
+            not isinstance(declared, str)
+            or await mcp_artifacts.sha256_hex(content) != declared.lower()
+        ):
+            raise ToolError(
+                f"{where}.file does not hash to the sha256 it declares; nothing was staged"
+            )
+        total += len(content)
+        if len(content) > limits.max_bytes or total > limits.max_bytes:
+            raise ToolError(f"{mcp_artifacts.too_large(limits).detail}; nothing was staged")
+        checked.append(
+            (field_name, filename, mcp_artifacts.clean_content_type(file.get("mimeType")), content)
+        )
+
+    staged: list[dict[str, Any]] = []
+    fresh: list[str] = []
+    expires_at: str | None = None
+    try:
+        with mcp_artifacts.transfer_slot(consumer, limits):
+            for field_name, filename, content_type, content in checked:
+                artifact, cached = await mcp_artifacts.stage(
+                    ctx.db,
+                    consumer=consumer,
+                    source="upload",
+                    filename=filename,
+                    content_type=content_type,
+                    content=content,
+                    limits=limits,
+                )
+                if not cached:
+                    fresh.append(artifact.id)
+                described = artifact.describe()
+                expires_at = min(expires_at or described["expires_at"], described["expires_at"])
+                staged.append(
+                    {
+                        "artifact_id": artifact.id,
+                        "field": field_name,
+                        "filename": artifact.filename,
+                        "size": artifact.size,
+                        "sha256": artifact.sha256,
+                    }
+                )
+    except mcp_artifacts.ArtifactError as exc:
+        # Whole or not at all: what this call had already kept goes again.
+        for artifact_id in fresh:
+            await mcp_artifacts.delete(ctx.db, consumer, artifact_id)
+        raise ToolError(f"{exc.detail}; nothing was staged") from exc
+    logger.info(
+        "MCP artifacts staged: consumer=%s artifacts=%s",
+        consumer,
+        ",".join(item["artifact_id"] for item in staged),
+    )
+    return {"artifacts": staged, "expires_at": expires_at}
+
+
+STAGE_ARTIFACTS_TOOL = Tool(
+    name="stage_artifacts",
+    title="Stage workspace files",
+    description=(
+        "Stage files of the agent's workspace so upload_staged_artifacts can send them: "
+        "each entry of files names one workspace file and the form field it will be "
+        f'sent in (default "{_DEFAULT_FILE_FIELD}"; several files may share a field). The MCP host '
+        "reads the file and sends it with its size and SHA-256, which are checked "
+        "against the bytes received: if one file is damaged, too large or refused, "
+        "nothing is staged. Returns artifacts — artifact_id, field, filename, size "
+        "and sha256 per file, in order — to pass to upload_staged_artifacts as they "
+        "are, and when they expire. Staging the same file again returns the same "
+        "artifact, so a failed call can simply be repeated. Nothing is sent "
+        "anywhere yet."
+    ),
+    group="artifacts",
+    input_schema=_object_schema(
+        {
+            "files": {
+                "type": "array",
+                "description": f"Files to stage, 1 to {_UPLOAD_MAX_ARTIFACTS}",
+                "minItems": 1,
+                "maxItems": _UPLOAD_MAX_ARTIFACTS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "object",
+                            WORKSPACE_FILE_KEYWORD: True,
+                            "description": "The workspace file to stage.",
+                            "properties": {
+                                "filename": {"type": "string"},
+                                "mimeType": {"type": "string"},
+                                "size": {"type": "integer", "description": "Bytes in data"},
+                                "sha256": {"type": "string", "description": "SHA-256 of data, hex"},
+                                "data": {"type": "string", "description": "The file, base64"},
+                            },
+                            "required": ["filename", "size", "sha256", "data"],
+                            "additionalProperties": False,
+                        },
+                        "field": {
+                            "type": "string",
+                            "description": f'Form field name (default "{_DEFAULT_FILE_FIELD}")',
+                        },
+                    },
+                    "required": ["file"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        ("files",),
+    ),
+    handler=_stage_artifacts,
+    read_only=False,
+)
+
+
 UPLOAD_STAGED_ARTIFACTS_TOOL = Tool(
     name="upload_staged_artifacts",
     title="Upload staged artifacts",
     description=(
         "Send staged artifacts to a gateway API from search_apis as one "
         "multipart/form-data POST. Each entry of artifacts goes out as a file part: "
-        "artifact_id (from download_artifact, or from the MCP host staging a "
+        "artifact_id (from download_artifact or stage_artifacts — an entry of "
+        "stage_artifacts' answer can be passed as it is — or from the MCP host staging a "
         "workspace file with POST /api/mcp/artifacts), the form field it is sent in "
         '(default "file") and optionally another filename. fields are the text '
         "parts. Only artifacts this API key staged can be sent, and each is checked "
@@ -2828,6 +3013,8 @@ UPLOAD_STAGED_ARTIFACTS_TOOL = Tool(
                         "artifact_id": {"type": "string", "description": "Staged artifact id"},
                         "field": {"type": "string", "description": 'Form field name (default "file")'},
                         "filename": {"type": "string", "description": "File name to send instead of the staged one"},
+                        "size": {"type": "integer", "description": "The artifact's size, to check it by (optional)"},
+                        "sha256": {"type": "string", "description": "The artifact's SHA-256, to check it by (optional)"},
                     },
                     "required": ["artifact_id"],
                     "additionalProperties": False,
@@ -2982,6 +3169,7 @@ async def build_tools(ctx: ToolContext) -> list[Tool]:
             inline_bytes = mcp_artifacts.Limits.of(ctx.settings).inline_bytes
             tools.append(_download_artifact_tool(sources, inline_bytes))
         if offers_api:
+            tools.append(STAGE_ARTIFACTS_TOOL)
             tools.append(UPLOAD_STAGED_ARTIFACTS_TOOL)
     if groups.external:
         tools.extend(await external_tools(ctx))

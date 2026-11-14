@@ -1466,7 +1466,7 @@
         "hint": "아래에서 고른 route를 GET 또는 POST로 호출합니다. 해당 route 권한이 있는 키에만 보입니다."
       },
       "artifacts": {
-        "label": "파일 아티팩트 (download_artifact · upload_staged_artifacts)",
+        "label": "파일 아티팩트 (download_artifact · stage_artifacts · upload_staged_artifacts)",
         "hint": "S3 객체, NAS 파일, 게이트웨이 API의 바이너리 응답을 UniBridge에 잠시 보관하고 id·크기·SHA-256·형식만 돌려줍니다. 파일 내용은 MCP 호스트가 같은 키로 /api/mcp/artifacts/<id>에서 받아가며, 호스트의 로컬 파일도 같은 경로로 보관할 수 있습니다. 작은 파일은 MCP 표준 embedded resource로 결과에 담아 바로 돌려줄 수도 있습니다(return_mode=resource). 보관된 파일은 아래에서 고른 게이트웨이 API에 multipart/form-data로 올릴 수 있습니다. 별도 권한은 없고 원본 쪽 권한(s3-api, nas-api, 노출한 route)을 그대로 따릅니다."
       },
       "external": {

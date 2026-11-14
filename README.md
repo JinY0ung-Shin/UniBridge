@@ -571,7 +571,7 @@ http_headers = { apikey = "<API_KEY>" }
   | Network map | `network_overview`, `network_list_regions`, `network_find_hosts`, `network_get_host`, `network_check_access`, `network_find_ports`, `network_list_openings`, `network_list_port_usages`, `network_list_probes`, `network_probe_targets` | `network-api` |
   | Network map (record) | `network_register_host`, `network_update_host`, `network_record_opening`, `network_update_opening`, `network_delete_opening`, `network_record_port_usage`, `network_delete_port_usage`, `network_report_probes` | `network-api` and `network-write-api` |
   | Gateway APIs | `search_apis`, `call_api` | each offered route's own grant |
-  | File artifacts | `download_artifact`, `upload_staged_artifacts` | none of their own: the source's grant (`s3-api`, `nas-api` or an offered route) and, to upload, an offered route |
+  | File artifacts | `download_artifact`, `stage_artifacts`, `upload_staged_artifacts` | none of their own: the source's grant (`s3-api`, `nas-api` or an offered route) and, to stage or upload, an offered route |
 
 - Each tool call that reaches a database, S3 or NAS goes back out through the
   gateway as the matching REST request, with the caller's own key
@@ -702,11 +702,23 @@ http_headers = { apikey = "<API_KEY>" }
     "https://<HOST_IP>:<UNIBRIDGE_UI_PORT>/api/mcp/artifacts/<artifact_id>"   # X-Artifact-Sha256 carries the checksum
   ```
 
-  The other way round, the host stages a local file and
+  The other way round, a file of the agent's workspace is staged and
   `upload_staged_artifacts` posts staged artifacts to an offered gateway API
   as one `multipart/form-data` request (`destination` = API and path,
   `artifacts` = id, form field and optional file name each, `fields` = text
-  parts):
+  parts). There are two ways to stage:
+
+  - **Through the MCP connection — `stage_artifacts`.** Its `file` argument is
+    marked `"x-workspace-file": true` in the tool's schema. A host that knows
+    the mark (pi-gateway) shows its model a workspace path there and sends
+    `{filename, mimeType, size, sha256, data}` in its place (`data` = base64),
+    so the model never writes file content and no credential leaves the host.
+    The bytes are held to `size` and `sha256`; one bad file stages nothing.
+    The answer's `artifacts` (id, field, file name, size, SHA-256 each) go to
+    `upload_staged_artifacts` as they are, and an entry whose `size`/`sha256`
+    is not the staged artifact's sends nothing. The mark is pi-gateway's
+    convention, not MCP's: another host leaves the object for its model.
+  - **Over HTTP**, for a host that would rather post the bytes itself:
 
   ```bash
   curl -X POST -H "apikey: $UNIBRIDGE_API_KEY" -H "Content-Type: application/pdf" \
