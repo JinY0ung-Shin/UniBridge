@@ -78,7 +78,6 @@ async def _run_cycle(state, *, trigger_after_failures=1, **overrides):
         ),
     ],
 )
-@pytest.mark.asyncio
 async def test_connection_rules_tag_their_dispatch(
     probe, results, expected_rule, expected_resource_type
 ):
@@ -92,7 +91,6 @@ async def test_connection_rules_tag_their_dispatch(
     assert kwargs["alert_type"] == "triggered"
 
 
-@pytest.mark.asyncio
 async def test_route_error_rate_tags_its_dispatch():
     state = AlertStateManager()
     settings = AsyncMock(return_value=(10.0, 0))
@@ -107,7 +105,6 @@ async def test_route_error_rate_tags_its_dispatch():
     assert kwargs["resource_type"] == "route"
 
 
-@pytest.mark.asyncio
 async def test_server_signal_tags_its_own_alert_type_as_the_rule(monkeypatch):
     signal = HostSignal(
         alert_type="server_disk",
@@ -136,7 +133,6 @@ async def test_server_signal_tags_its_own_alert_type_as_the_rule(monkeypatch):
     assert kwargs["resource_type"] == "server"
 
 
-@pytest.mark.asyncio
 async def test_external_service_signal_tags_its_rule(monkeypatch):
     signal = ServiceSignal(
         alert_type="external_service_down",
@@ -167,7 +163,6 @@ async def test_external_service_signal_tags_its_rule(monkeypatch):
 # ── The history row keeps both ───────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_history_row_records_rule_and_transition_separately(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -200,7 +195,6 @@ async def test_history_row_records_rule_and_transition_separately(engine):
     assert row.rule_type == "server_disk"
 
 
-@pytest.mark.asyncio
 async def test_rule_type_is_null_when_not_supplied(engine):
     """A caller that omits it still writes a row — the column is nullable."""
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -222,7 +216,6 @@ async def test_rule_type_is_null_when_not_supplied(engine):
 # ── History endpoint ─────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_history_endpoint_returns_and_filters_by_rule_type(
     client, admin_token, seeded_db
 ):
@@ -266,7 +259,6 @@ async def test_history_endpoint_returns_and_filters_by_rule_type(
     assert [row["message"] for row in resp.json()] == ["s3 up"]
 
 
-@pytest.mark.asyncio
 async def test_history_endpoint_tolerates_rows_without_a_rule_type(
     client, admin_token, seeded_db
 ):

@@ -34,7 +34,6 @@ def _mock_token(httpx_mock: HTTPXMock, *, status_code: int = 200, body: dict | N
 # ── Token management ────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_get_token_success(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     token = await kc_client.get_token()
@@ -42,7 +41,6 @@ async def test_get_token_success(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_get_token_caches_until_expiry(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     first = await kc_client.get_token()
@@ -51,7 +49,6 @@ async def test_get_token_caches_until_expiry(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_get_token_failure_raises_502(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock, status_code=401, body={"error": "invalid_client"})
     with pytest.raises(HTTPException) as exc:
@@ -63,7 +60,6 @@ async def test_get_token_failure_raises_502(kc_client, httpx_mock: HTTPXMock):
 # ── User CRUD ────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_get_user_success(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -76,7 +72,6 @@ async def test_get_user_success(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_get_user_404(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -91,7 +86,6 @@ async def test_get_user_404(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_list_users_success(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -110,7 +104,6 @@ async def test_list_users_success(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_list_users_no_search(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -129,7 +122,6 @@ async def test_list_users_no_search(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_list_users_count_failure_502(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -144,7 +136,6 @@ async def test_list_users_count_failure_502(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_list_users_list_failure_502(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -164,7 +155,6 @@ async def test_list_users_list_failure_502(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_create_user_success(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -183,7 +173,6 @@ async def test_create_user_success(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_create_user_no_optional_fields(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -197,7 +186,6 @@ async def test_create_user_no_optional_fields(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_create_user_conflict(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -212,7 +200,6 @@ async def test_create_user_conflict(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_create_user_other_error_502(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -227,7 +214,6 @@ async def test_create_user_other_error_502(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_update_user_enabled_success(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -239,7 +225,6 @@ async def test_update_user_enabled_success(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_update_user_enabled_404(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -253,7 +238,6 @@ async def test_update_user_enabled_404(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_update_user_enabled_other_error_502(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -267,7 +251,6 @@ async def test_update_user_enabled_other_error_502(kc_client, httpx_mock: HTTPXM
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_delete_user_success(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -279,7 +262,6 @@ async def test_delete_user_success(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_delete_user_404(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -293,7 +275,6 @@ async def test_delete_user_404(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_delete_user_other_error_502(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -307,7 +288,6 @@ async def test_delete_user_other_error_502(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_reset_password_success(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -319,7 +299,6 @@ async def test_reset_password_success(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_reset_password_404(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -333,7 +312,6 @@ async def test_reset_password_404(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_reset_password_other_error_502(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -350,7 +328,6 @@ async def test_reset_password_other_error_502(kc_client, httpx_mock: HTTPXMock):
 # ── Realm Roles ─────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_get_realm_roles_success(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -363,7 +340,6 @@ async def test_get_realm_roles_success(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_get_realm_roles_failure_502(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(method="GET", url=f"{ADMIN_URL}/roles", status_code=500)
@@ -373,7 +349,6 @@ async def test_get_realm_roles_failure_502(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_get_user_realm_roles_success(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -386,7 +361,6 @@ async def test_get_user_realm_roles_success(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_get_user_realm_roles_404(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -400,7 +374,6 @@ async def test_get_user_realm_roles_404(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_get_user_realm_roles_502(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -414,7 +387,6 @@ async def test_get_user_realm_roles_502(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_assign_realm_role_success(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -431,7 +403,6 @@ async def test_assign_realm_role_success(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_assign_realm_role_unknown_role_404(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -445,7 +416,6 @@ async def test_assign_realm_role_unknown_role_404(kc_client, httpx_mock: HTTPXMo
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_assign_realm_role_post_failure_502(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -464,7 +434,6 @@ async def test_assign_realm_role_post_failure_502(kc_client, httpx_mock: HTTPXMo
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_remove_realm_role_success(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -481,7 +450,6 @@ async def test_remove_realm_role_success(kc_client, httpx_mock: HTTPXMock):
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_remove_realm_role_unknown_role_404(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(
@@ -495,7 +463,6 @@ async def test_remove_realm_role_unknown_role_404(kc_client, httpx_mock: HTTPXMo
     await kc_client.close()
 
 
-@pytest.mark.asyncio
 async def test_remove_realm_role_delete_failure_502(kc_client, httpx_mock: HTTPXMock):
     _mock_token(httpx_mock)
     httpx_mock.add_response(

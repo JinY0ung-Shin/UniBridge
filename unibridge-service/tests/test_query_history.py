@@ -149,19 +149,6 @@ async def test_saved_query_crud_roundtrip(client, user_token):
     assert resp.status_code == 200
     assert [item["id"] for item in resp.json()] == [saved_id]
 
-    # Update (including clearing database_alias with explicit null)
-    resp = await client.put(
-        f"/query/saved/{saved_id}",
-        json={"name": "Renamed", "database_alias": None, "sql_text": "SELECT 42"},
-        headers=headers,
-    )
-    assert resp.status_code == 200
-    updated = resp.json()
-    assert updated["name"] == "Renamed"
-    assert updated["database_alias"] is None
-    assert updated["sql_text"] == "SELECT 42"
-    assert updated["description"] == "All users"  # untouched
-
     # Delete
     resp = await client.delete(f"/query/saved/{saved_id}", headers=headers)
     assert resp.status_code == 204
@@ -197,11 +184,7 @@ async def test_saved_query_is_isolated_per_user(client, admin_token, user_token)
     # Not visible in another user's list
     resp = await client.get("/query/saved", headers=other)
     assert resp.json() == []
-    # Update / delete of someone else's row → 404 (no existence leak)
-    resp = await client.put(
-        f"/query/saved/{saved_id}", json={"name": "hijack"}, headers=other
-    )
-    assert resp.status_code == 404
+    # Deleting someone else's row → 404 (no existence leak)
     resp = await client.delete(f"/query/saved/{saved_id}", headers=other)
     assert resp.status_code == 404
 
@@ -233,8 +216,6 @@ async def test_saved_query_validates_name_and_sql(client, user_token):
 
 async def test_saved_query_missing_id_returns_404(client, user_token):
     headers = auth_header(user_token)
-    resp = await client.put("/query/saved/9999", json={"name": "x"}, headers=headers)
-    assert resp.status_code == 404
     resp = await client.delete("/query/saved/9999", headers=headers)
     assert resp.status_code == 404
 

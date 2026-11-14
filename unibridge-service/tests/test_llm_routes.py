@@ -6,9 +6,8 @@ Pinned here:
    the route ids it had on LiteLLM, and injects the gateway virtual key;
    llm-not-found answers every other path.
 2. The converter routes carry the virtual key and nothing of LiteLLM's.
-3. Boot provisioning keeps the API-key grants of routes it rewrites (including
-   ones still on LiteLLM), leaves everything alone without a usable virtual
-   key, and takes what LiteLLM left in APISIX (its admin route and upstream) out.
+3. Boot provisioning keeps the API-key grants of routes it rewrites and leaves
+   everything alone without a usable virtual key.
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from app.main import _provision_llm_routes, _retire_litellm_routing
+from app.main import _provision_llm_routes
 from app.routers.gateway import (
     _SYSTEM_INJECTED_HEADERS,
     _SYSTEM_ROUTE_URIS,
@@ -212,7 +211,8 @@ def test_bifrost_upstream_is_protected_and_plain_http() -> None:
 
 
 def test_litellm_ids_stay_protected() -> None:
-    # Retiring deletes them, so no user resource may take either id.
+    # No longer deleted at boot, but kept protected until the llm-bi metric
+    # exclusions go too (after 2026-12-18).
     assert RETIRED_LITELLM_ROUTE_ID in PROTECTED_ROUTE_IDS
     assert RETIRED_LITELLM_UPSTREAM_ID in PROTECTED_UPSTREAM_IDS
 
@@ -225,14 +225,12 @@ def test_litellm_ids_stay_protected() -> None:
 class _FakeApisix:
     """Admin API stand-in recording every write in order.
 
-    ``existing`` maps ``(resource, id)`` to what a GET returns; a DELETE of
-    anything else is a 404. ``delete_errors`` / ``put_errors`` make one DELETE
-    or PUT raise instead.
+    ``existing`` maps ``(resource, id)`` to what a GET returns; anything else is
+    a 404. ``put_errors`` makes one PUT raise instead.
     """
 
-    def __init__(self, existing=None, delete_errors=None, put_errors=None):
+    def __init__(self, existing=None, put_errors=None):
         self.existing = dict(existing or {})
-        self.delete_errors = dict(delete_errors or {})
         self.put_errors = dict(put_errors or {})
         self.writes: list[tuple[str, str, str]] = []
         self.bodies: dict[tuple[str, str], dict] = {}
@@ -251,15 +249,6 @@ class _FakeApisix:
         self.bodies[(resource, resource_id)] = deepcopy(body)
         return body
 
-    async def delete_resource(self, resource, resource_id):
-        self.writes.append(("DELETE", resource, resource_id))
-        error = self.delete_errors.get((resource, resource_id))
-        if error is not None:
-            raise error
-        if (resource, resource_id) not in self.existing:
-            raise _status_error(404)
-
-
 
 def _patched(fake: _FakeApisix, **settings):
     config = SimpleNamespace(**{"BIFROST_TEST_VK": VK, **settings})
@@ -267,20 +256,13 @@ def _patched(fake: _FakeApisix, **settings):
         patch("app.main.settings", config),
         patch("app.services.apisix_client.get_resource", fake.get_resource),
         patch("app.services.apisix_client.put_resource", fake.put_resource),
-        patch("app.services.apisix_client.delete_resource", fake.delete_resource),
     )
 
 
 async def _provision(fake: _FakeApisix, **settings) -> None:
-    config, get, put, delete = _patched(fake, **settings)
-    with config, get, put, delete:
+    config, get, put = _patched(fake, **settings)
+    with config, get, put:
         await _provision_llm_routes()
-
-
-async def _retire(fake: _FakeApisix) -> None:
-    config, get, put, delete = _patched(fake)
-    with config, get, put, delete:
-        await _retire_litellm_routing()
 
 
 def _converter_writes() -> list[tuple[str, str, str]]:
@@ -306,85 +288,9 @@ async def test_provisioning_installs_the_exact_paths_then_the_404_route() -> Non
     assert fake.bodies[("routes", LLM_NOT_FOUND_ROUTE_ID)] == llm_routes.not_found_route()
 
 
-# What a boot on LiteLLM left in APISIX: its admin route and upstream, and
-# llm-proxy / llm-metrics pointing at that upstream.
-_LITELLM_UPSTREAM = {
-    "id": "litellm",
-    "name": "litellm",
-    "type": "roundrobin",
-    "scheme": "https",
-    "nodes": {"litellm:4000": 1},
-}
-_LITELLM_ROUTES = {
-    "llm-admin": {"uri": "/api/llm-admin/*", "upstream_id": "litellm"},
-    "llm-proxy": {"uri": "/api/llm/*", "upstream_id": "litellm"},
-    "llm-metrics": {"uri": "/api/llm/metrics", "priority": 10, "upstream_id": "litellm"},
-}
-
-
-def _litellm_leftovers() -> dict:
-    existing = {("upstreams", "litellm"): dict(_LITELLM_UPSTREAM)}
-    existing[("routes", "llm-admin")] = {
-        "id": "llm-admin",
-        "name": "llm-admin",
-        **_LITELLM_ROUTES["llm-admin"],
-        "plugins": {"key-auth": {}},
-    }
-    return existing
-
-
-async def test_retiring_litellm_removes_its_route_then_its_upstream() -> None:
-    fake = _FakeApisix(_litellm_leftovers())
-
-    await _retire(fake)
-
-    # APISIX refuses to delete an upstream a route still uses.
-    assert fake.writes == [
-        ("DELETE", "routes", RETIRED_LITELLM_ROUTE_ID),
-        ("DELETE", "upstreams", RETIRED_LITELLM_UPSTREAM_ID),
-    ]
-
-
-async def test_retiring_litellm_with_nothing_left_writes_nothing() -> None:
-    fake = _FakeApisix()
-
-    await _retire(fake)
-
-    assert fake.writes == []
-
-
-async def test_retiring_keeps_the_litellm_upstream_another_route_still_uses(caplog) -> None:
-    fake = _FakeApisix(
-        _litellm_leftovers(),
-        delete_errors={("upstreams", "litellm"): _status_error(400, "still referenced")},
-    )
-
-    with caplog.at_level(logging.WARNING, logger="app.main"):
-        await _retire(fake)
-
-    assert ("DELETE", "routes", "llm-admin") in fake.writes
-    assert "Kept APISIX upstream litellm" in caplog.text
-
-
-async def test_an_outage_removing_the_litellm_upstream_reaches_the_retry_loop() -> None:
-    fake = _FakeApisix(
-        _litellm_leftovers(), delete_errors={("upstreams", "litellm"): _status_error(503)}
-    )
-
-    with pytest.raises(Exception):
-        await _retire(fake)
-
-
-async def test_moving_off_litellm_keeps_the_grants() -> None:
+async def test_reprovisioning_keeps_the_grants() -> None:
     granted = {"whitelist": ["alice", "master-app"]}
-    start = {
-        "llm-proxy": _LITELLM_ROUTES["llm-proxy"],
-        "llm-metrics": _LITELLM_ROUTES["llm-metrics"],
-        **{
-            route_id: llm_routes.converter_route(route_id, VK)
-            for route_id in llm_routes.CONVERTER_ROUTE_IDS
-        },
-    }
+    start = _on_bifrost()
     existing = {}
     for route_id, body in start.items():
         route = {"id": route_id, "name": route_id, **deepcopy(body)}
@@ -397,8 +303,6 @@ async def test_moving_off_litellm_keeps_the_grants() -> None:
     for route_id in start:
         body = fake.bodies[("routes", route_id)]
         assert body["plugins"]["consumer-restriction"] == granted, route_id
-    assert fake.bodies[("routes", "llm-proxy")]["upstream_id"] == "bifrost"
-    assert fake.bodies[("routes", "llm-metrics")]["upstream_id"] == "bifrost"
 
 
 @pytest.mark.parametrize("value", ["", "sk-bf-short", "not-a-key"])

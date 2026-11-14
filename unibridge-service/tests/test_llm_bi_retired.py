@@ -1,14 +1,11 @@
-"""Retiring the /api/llm-bi routes of the Bifrost side-by-side test.
+"""What is left of /api/llm-bi, the Bifrost side-by-side test.
 
 Pinned here:
 
-1. Every provisioning boot deletes the four llm-bi-* routes and the
-   llm-converter-bi upstream (``bifrost`` stays: /api/llm runs on it), leaving
-   only llm-bi-not-found, a 404 that points to /api/llm.
-   APISIX refusing that route never keeps the service from booting.
+1. Every provisioning boot installs llm-bi-not-found, a 404 that points to
+   /api/llm; APISIX refusing that route never keeps the service from booting.
 2. The old ids stay system resources and /api/llm-bi stays a system namespace,
-   so no custom route takes what provisioning would delete; the OpenAPI export
-   leaves the 404 route out.
+   so no custom route takes them; the OpenAPI export leaves the 404 route out.
 """
 
 from __future__ import annotations
@@ -21,7 +18,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from app.main import _retire_llm_bi_routes, lifespan
+from app.main import _put_not_found_route, lifespan
 from app.routers.gateway import _SYSTEM_ROUTE_URIS, _shadowed_system_uri
 from app.services import llm_routes
 from app.services.apisix_system_resources import (
@@ -36,24 +33,11 @@ from tests.test_llm_routes import VK, _FakeApisix, _status_error
 from tests.test_main import _DummyTask, _fake_get_db, _keyed_get_resource
 
 
-def _installed() -> dict:
-    """What the side-by-side test left in APISIX."""
-    existing = {
-        ("upstreams", upstream_id): {"id": upstream_id}
-        for upstream_id in ("bifrost", RETIRED_LLM_BI_UPSTREAM_ID)
-    }
-    for route_id in RETIRED_LLM_BI_ROUTE_IDS:
-        existing[("routes", route_id)] = {"id": route_id, "uri": f"/api/llm-bi/{route_id}"}
-    return existing
-
-
-async def _retire(fake: _FakeApisix) -> None:
-    with (
-        patch("app.services.apisix_client.get_resource", fake.get_resource),
-        patch("app.services.apisix_client.put_resource", fake.put_resource),
-        patch("app.services.apisix_client.delete_resource", fake.delete_resource),
-    ):
-        await _retire_llm_bi_routes()
+async def _put_404_route(fake: _FakeApisix) -> None:
+    with patch("app.services.apisix_client.put_resource", fake.put_resource):
+        await _put_not_found_route(
+            LLM_BI_NOT_FOUND_ROUTE_ID, llm_routes.retired_llm_bi_route(), "/api/llm-bi"
+        )
 
 
 def test_the_404_route_points_to_api_llm() -> None:
@@ -69,7 +53,6 @@ def test_the_404_route_points_to_api_llm() -> None:
     assert restriction["type"] == "route_id"
     assert restriction["blacklist"] == [LLM_BI_NOT_FOUND_ROUTE_ID]
     assert restriction["rejected_code"] == 404
-    # scripts/deploy-bluegreen.sh keys on "has been removed".
     assert "has been removed" in restriction["rejected_msg"]
     assert "/api/llm serves the same endpoints" in restriction["rejected_msg"]
 
@@ -92,72 +75,33 @@ def test_custom_routes_cannot_take_the_llm_bi_namespace(uri: str, shadowed: bool
     assert (_shadowed_system_uri(uri, list(_SYSTEM_ROUTE_URIS)) is not None) is shadowed
 
 
-async def test_explains_first_then_removes_routes_before_upstreams() -> None:
-    fake = _FakeApisix(_installed())
-
-    await _retire(fake)
-
-    # The bifrost upstream stays: /api/llm runs on it.
-    assert fake.writes == [
-        ("PUT", "routes", LLM_BI_NOT_FOUND_ROUTE_ID),
-        *(("DELETE", "routes", route_id) for route_id in RETIRED_LLM_BI_ROUTE_IDS),
-        ("DELETE", "upstreams", RETIRED_LLM_BI_UPSTREAM_ID),
-    ]
-    assert fake.bodies[("routes", LLM_BI_NOT_FOUND_ROUTE_ID)] == llm_routes.retired_llm_bi_route()
-
-
-async def test_a_stack_that_never_had_them_only_gets_the_404_route() -> None:
+async def test_installs_the_404_route() -> None:
     fake = _FakeApisix()
 
-    await _retire(fake)
+    await _put_404_route(fake)
 
     assert fake.writes == [("PUT", "routes", LLM_BI_NOT_FOUND_ROUTE_ID)]
-
-
-async def test_keeps_an_upstream_another_route_still_uses(caplog) -> None:
-    in_use = _status_error(
-        400, '{"error_msg":"can not delete this upstream, route [mine] is still using it now"}'
-    )
-    fake = _FakeApisix(
-        _installed(), delete_errors={("upstreams", RETIRED_LLM_BI_UPSTREAM_ID): in_use}
-    )
-
-    with caplog.at_level(logging.WARNING, logger="app.main"):
-        await _retire(fake)
-
-    assert ("DELETE", "upstreams", RETIRED_LLM_BI_UPSTREAM_ID) in fake.writes
-    assert f"Kept APISIX upstream {RETIRED_LLM_BI_UPSTREAM_ID}" in caplog.text
-    assert "route [mine]" in caplog.text
-
-
-async def test_other_admin_errors_reach_the_retry_loop() -> None:
-    fake = _FakeApisix(
-        _installed(), delete_errors={("routes", "llm-bi-proxy"): _status_error(503)}
-    )
-
-    with pytest.raises(httpx.HTTPStatusError):
-        await _retire(fake)
+    assert fake.bodies[("routes", LLM_BI_NOT_FOUND_ROUTE_ID)] == llm_routes.retired_llm_bi_route()
 
 
 async def test_apisix_refusing_the_404_route_does_not_block_boot(caplog) -> None:
     refused = _status_error(400, '{"error_msg":"failed to check the configuration of plugin"}')
-    fake = _FakeApisix(_installed(), put_errors={("routes", LLM_BI_NOT_FOUND_ROUTE_ID): refused})
+    fake = _FakeApisix(put_errors={("routes", LLM_BI_NOT_FOUND_ROUTE_ID): refused})
 
     with caplog.at_level(logging.WARNING, logger="app.main"):
-        await _retire(fake)
+        await _put_404_route(fake)
 
-    assert "APISIX refused the llm-bi-not-found route" in caplog.text
-    assert ("DELETE", "upstreams", RETIRED_LLM_BI_UPSTREAM_ID) in fake.writes
+    assert "APISIX refused the llm-bi-not-found route, so /api/llm-bi answers" in caplog.text
 
 
 async def test_a_404_route_outage_still_reaches_the_retry_loop() -> None:
     fake = _FakeApisix(put_errors={("routes", LLM_BI_NOT_FOUND_ROUTE_ID): _status_error(503)})
 
     with pytest.raises(httpx.HTTPStatusError):
-        await _retire(fake)
+        await _put_404_route(fake)
 
 
-async def test_lifespan_retires_them_as_part_of_boot_provisioning() -> None:
+async def test_lifespan_installs_it_as_part_of_boot_provisioning() -> None:
     order: list[str] = []
     put_resource = AsyncMock(side_effect=lambda resource, resource_id, body: order.append(resource_id))
     replay = AsyncMock(side_effect=lambda db: order.append("<replay>"))

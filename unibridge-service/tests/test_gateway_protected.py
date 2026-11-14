@@ -42,9 +42,9 @@ from app.routers.gateway import (
     _attach_service_key_fields,
     _attach_timeout_fields,
     _extract_strip_prefix,
-    _mask_value,
     _redact_service_key_headers,
 )
+from app.services.audit import mask_secret
 from tests.conftest import auth_header
 
 SECRET = "sk-live-upstream-secret-9876"
@@ -702,7 +702,7 @@ class TestSystemInjectedHeaders:
         assert "startup provisioning" in resp.json()["detail"]
         mock_put.assert_not_awaited()
 
-    @pytest.mark.parametrize("value", ["", _mask_value(VIRTUAL_KEY)])
+    @pytest.mark.parametrize("value", ["", mask_secret(VIRTUAL_KEY)])
     async def test_blank_or_masked_system_header_is_not_an_override(
         self, client, admin_token, value
     ):
@@ -765,6 +765,9 @@ class TestSaveRouteUriShadowing:
             ("/api/llm/metrics", "shadow the Bifrost metrics route"),
             ("/api/llm/v1/models", "shadow the model-discovery route"),
             ("/api/llm/chat/*", "capture LLM traffic (API keys ride along)"),
+            ("/api/mcp", "take the MCP endpoint"),
+            ("/api/mcp/artifacts/abc", "capture artifact transfers"),
+            ("/api/network/hosts", "capture network map traffic"),
             ("/api/*", "swallow every namespace at once"),
             ("/api/q*", "partial-segment wildcard over /api/query"),
         ],
@@ -840,6 +843,28 @@ class TestSaveRouteUriShadowing:
             )
         assert resp.status_code == 400
         assert "/api/llm-v2/*" in resp.json()["detail"]
+        mock_put.assert_not_awaited()
+
+    async def test_guard_reads_the_uris_of_a_listed_system_route(self, client, admin_token):
+        """A system route with several paths (mcp-api) is protected on each of them."""
+        drifted = {
+            "id": "mcp-api",
+            "name": "mcp-api",
+            "uris": ["/api/mcp-v2", "/api/mcp-v2/artifacts/*"],
+            "upstream_id": "unibridge-service",
+        }
+        with _apisix(drifted) as mock_put:
+            resp = await client.put(
+                "/admin/gateway/routes/custom-1",
+                json={
+                    "name": "custom route",
+                    "uri": "/api/mcp-v2/artifacts/x",
+                    "upstream_id": "u1",
+                },
+                headers=auth_header(admin_token),
+            )
+        assert resp.status_code == 400
+        assert "/api/mcp-v2" in resp.json()["detail"]
         mock_put.assert_not_awaited()
 
     async def test_system_route_may_still_save_its_own_uri(self, client, admin_token):
@@ -1008,10 +1033,6 @@ class TestServiceKeyRedaction:
         data = resp.json()
         assert data["plugins"]["proxy-rewrite"]["headers"]["set"] == {
             "X-Api-Key": MASKED
-        }
-        assert data["service_key"] == {
-            "header_name": "X-Api-Key",
-            "header_value": MASKED,
         }
 
     async def test_save_route_echo_never_returns_the_secret(self, client, admin_token):

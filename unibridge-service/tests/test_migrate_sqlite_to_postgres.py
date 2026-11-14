@@ -23,7 +23,6 @@ async def _sqlite_source(revision: str | None = ALEMBIC_HEAD_REVISION):
     return engine
 
 
-@pytest.mark.asyncio
 async def test_ensure_source_at_head_accepts_current_revision():
     engine = await _sqlite_source()
     try:
@@ -32,7 +31,6 @@ async def test_ensure_source_at_head_accepts_current_revision():
         await engine.dispose()
 
 
-@pytest.mark.asyncio
 async def test_ensure_source_at_head_rejects_stale_revision():
     engine = await _sqlite_source("0001_initial")
     try:
@@ -42,7 +40,6 @@ async def test_ensure_source_at_head_rejects_stale_revision():
         await engine.dispose()
 
 
-@pytest.mark.asyncio
 async def test_ensure_source_at_head_requires_alembic_version_table():
     engine = await _sqlite_source(None)
     try:

@@ -6,11 +6,29 @@ import socket
 from urllib.parse import urlparse
 
 
+# The blue/green app services (docker-compose.app.yml) also answer on their
+# per-color container name and alias.
+_APP_SERVICES = ("unibridge-service", "llm-converter", "unibridge-ui")
+_APP_COLORS = ("blue", "green")
+
+# Every service, container name and network alias of the compose files
+# (docker-compose.yml and the split infra/app/edge layout); tests pin that.
+# The private-address check below is the real defence; these names are refused
+# before any lookup.
 _BLOCKED_HOSTNAMES = frozenset({
-    "localhost", "keycloak", "etcd", "apisix",
-    "litellm", "prometheus", "unibridge-service",
-    "keycloak-db", "litellm-db",
+    "localhost",
     "metadata.google.internal",
+    # docker-compose.yml / docker-compose.infra.yml
+    "apisix", "etcd", "etcd-init",
+    "keycloak", "keycloak-db",
+    "unibridge-db",
+    "bifrost", "bifrost-tls",
+    "prometheus", "alertmanager", "blackbox-exporter", "grafana",
+    # docker-compose.yml / docker-compose.app.yml
+    *_APP_SERVICES,
+    *(f"{name}-{color}" for name in _APP_SERVICES for color in _APP_COLORS),
+    # docker-compose.edge.yml
+    "edge", "unibridge-edge",
 })
 
 

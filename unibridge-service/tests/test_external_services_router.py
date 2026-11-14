@@ -18,7 +18,6 @@ def _no_prometheus_or_filesd():
         yield
 
 
-@pytest.mark.asyncio
 async def test_create_list_update_delete(client, admin_token):
     h = auth_header(admin_token)
 
@@ -57,7 +56,6 @@ async def test_create_list_update_delete(client, admin_token):
     assert resp.json() == []
 
 
-@pytest.mark.asyncio
 async def test_duplicate_name_conflicts(client, admin_token):
     h = auth_header(admin_token)
     body = {"name": "dup-svc", "address": "1.2.3.4:9000"}
@@ -66,7 +64,6 @@ async def test_duplicate_name_conflicts(client, admin_token):
     assert resp.status_code == 409
 
 
-@pytest.mark.asyncio
 async def test_invalid_address_name_and_metrics_path_rejected(client, admin_token):
     h = auth_header(admin_token)
     # bad address (no port)
@@ -83,7 +80,6 @@ async def test_invalid_address_name_and_metrics_path_rejected(client, admin_toke
             json={"name": "z", "address": "1.2.3.4:9000", "metrics_path": "metrics"})).status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_create_with_https_scheme_persists_and_returns(client, admin_token):
     h = auth_header(admin_token)
     resp = await client.post("/admin/servers/external-services", headers=h, json={
@@ -102,7 +98,6 @@ async def test_create_with_https_scheme_persists_and_returns(client, admin_token
     assert resp.json()["scheme"] == "http"
 
 
-@pytest.mark.asyncio
 async def test_invalid_scheme_rejected(client, admin_token):
     h = auth_header(admin_token)
     resp = await client.post("/admin/servers/external-services", headers=h,
@@ -116,7 +111,6 @@ async def test_invalid_scheme_rejected(client, admin_token):
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_requires_permission(client, user_token):
     """The seeded 'user' role lacks servers.read/write."""
     h = auth_header(user_token)
@@ -125,7 +119,6 @@ async def test_requires_permission(client, user_token):
             json={"name": "z", "address": "1.2.3.4:9000"})).status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_create_writes_file_sd_targets(client, admin_token):
     h = auth_header(admin_token)
     sync_mock = AsyncMock()
@@ -136,7 +129,6 @@ async def test_create_writes_file_sd_targets(client, admin_token):
     sync_mock.assert_awaited()  # registry mutation rewrote the file_sd targets
 
 
-@pytest.mark.asyncio
 async def test_status_up_down_unknown_mapping(client, admin_token):
     h = auth_header(admin_token)
     await client.post("/admin/servers/external-services", headers=h, json={"name": "up-svc", "address": "1.1.1.1:9000"})
@@ -156,7 +148,6 @@ async def test_status_up_down_unknown_mapping(client, admin_token):
     assert {r["status"] for r in resp.json()} == {"unknown"}
 
 
-@pytest.mark.asyncio
 async def test_disable_clears_alert_state(client, admin_token, seeded_db):
     h = auth_header(admin_token)
     created = await client.post("/admin/servers/external-services", headers=h,

@@ -328,6 +328,8 @@ async def get_current_user_or_apikey(
     """
     consumer_name = request.headers.get("x-consumer-username")
     if consumer_name and credentials is None:
+        # Local dev only: the dev-token flag also skips this proof that the
+        # header came through APISIX (see Settings.ENABLE_DEV_TOKEN_ENDPOINT).
         if not settings.ENABLE_DEV_TOKEN_ENDPOINT:
             expected = settings.APISIX_INTERNAL_PROXY_SECRET
             # During a rotation the shared routes may still carry the old value

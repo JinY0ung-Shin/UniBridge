@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-import pytest
 
 from app.services.nas_security import (
     NasSecurityError,
@@ -71,7 +70,6 @@ _LIST_PAYLOAD = {
 # ── _require_nas_browse: API-key path ─────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_browse_apikey_rejects_unallowed_alias(client, admin_token):
     await _create_apikey(
         client,
@@ -94,7 +92,6 @@ async def test_browse_apikey_rejects_unallowed_alias(client, admin_token):
     mgr.list_entries.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_browse_apikey_allows_configured_alias(client, admin_token):
     await _create_apikey(
         client,
@@ -117,7 +114,6 @@ async def test_browse_apikey_allows_configured_alias(client, admin_token):
     mgr.list_entries.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_browse_apikey_wildcard_allows_any_alias(client, admin_token):
     await _create_apikey(
         client,
@@ -141,7 +137,6 @@ async def test_browse_apikey_wildcard_allows_any_alias(client, admin_token):
 # ── _require_nas_browse: JWT path ─────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_browse_jwt_lacking_permission_403(client, user_token):
     """The seeded ``user`` role does NOT have nas.browse (admin-only)."""
     resp = await client.get(
@@ -151,7 +146,6 @@ async def test_browse_jwt_lacking_permission_403(client, user_token):
     assert resp.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_browse_admin_has_permission_but_alias_missing(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = False
@@ -165,7 +159,6 @@ async def test_browse_admin_has_permission_but_alias_missing(client, admin_token
 # ── /entries: success + response-shape contract ───────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_list_entries_success_shape(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -192,7 +185,6 @@ async def test_list_entries_success_shape(client, admin_token):
     assert "nlink" not in entry
 
 
-@pytest.mark.asyncio
 async def test_list_entries_default_path_empty(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -207,7 +199,6 @@ async def test_list_entries_default_path_empty(client, admin_token):
     assert call.args[0] == "x"
 
 
-@pytest.mark.asyncio
 async def test_list_entries_forwards_query(client, admin_token):
     """The `q` search term is forwarded to the manager as the `query` kwarg."""
     with patch("app.routers.nas.nas_manager") as mgr:
@@ -222,7 +213,6 @@ async def test_list_entries_forwards_query(client, admin_token):
     assert call.kwargs["query"] == "report"
 
 
-@pytest.mark.asyncio
 async def test_list_entries_invalid_limit_422(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -236,7 +226,6 @@ async def test_list_entries_invalid_limit_422(client, admin_token):
 # ── error mappings (§7) ───────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_list_entries_security_error_400(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -250,7 +239,6 @@ async def test_list_entries_security_error_400(client, admin_token):
     assert "/mnt" not in resp.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_list_entries_unavailable_503(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -262,7 +250,6 @@ async def test_list_entries_unavailable_503(client, admin_token):
     assert resp.status_code == 503
 
 
-@pytest.mark.asyncio
 async def test_list_entries_not_a_directory_404(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -274,7 +261,6 @@ async def test_list_entries_not_a_directory_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_list_entries_permission_error_403(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -289,7 +275,6 @@ async def test_list_entries_permission_error_403(client, admin_token):
 # ── /metadata ─────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_metadata_success_shape(client, admin_token):
     meta = {
         "name": "f.csv",
@@ -318,7 +303,6 @@ async def test_metadata_success_shape(client, admin_token):
     }
 
 
-@pytest.mark.asyncio
 async def test_metadata_requires_path_query(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -329,7 +313,6 @@ async def test_metadata_requires_path_query(client, admin_token):
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_metadata_hidden_target_404(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -341,7 +324,6 @@ async def test_metadata_hidden_target_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_metadata_alias_missing_404(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = False
@@ -352,7 +334,6 @@ async def test_metadata_alias_missing_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_metadata_is_a_directory_400(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -367,7 +348,6 @@ async def test_metadata_is_a_directory_400(client, admin_token):
 # ── /download ─────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_download_streams_body(client, admin_token):
     chunks = [b"hello ", b"world"]
 
@@ -389,7 +369,6 @@ async def test_download_streams_body(client, admin_token):
     assert "file.txt" in resp.headers["content-disposition"]
 
 
-@pytest.mark.asyncio
 async def test_download_too_large_413(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -401,7 +380,6 @@ async def test_download_too_large_413(client, admin_token):
     assert resp.status_code == 413
 
 
-@pytest.mark.asyncio
 async def test_download_hidden_or_missing_404(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -413,7 +391,6 @@ async def test_download_hidden_or_missing_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_download_special_file_400(client, admin_token):
     """A FIFO/socket/device surfaces as NasSecurityError → 400 (no path leak)."""
     with patch("app.routers.nas.nas_manager") as mgr:
@@ -429,7 +406,6 @@ async def test_download_special_file_400(client, admin_token):
     assert "/mnt" not in resp.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_download_unavailable_503(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -441,7 +417,6 @@ async def test_download_unavailable_503(client, admin_token):
     assert resp.status_code == 503
 
 
-@pytest.mark.asyncio
 async def test_download_alias_missing_404(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = False
@@ -452,7 +427,6 @@ async def test_download_alias_missing_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_download_requires_path_query(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -466,7 +440,6 @@ async def test_download_requires_path_query(client, admin_token):
 # ── no write/upload/delete/rename endpoints exist ─────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_no_write_endpoints(client, admin_token):
     """NAS is strictly read-only: mutating verbs on browse paths must not be
     routed (405/404), never 2xx."""

@@ -20,7 +20,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.auth import ALL_PERMISSIONS, create_token, invalidate_permission_cache
+from app.auth import create_token, invalidate_permission_cache
 from app.models import Base, Role, RolePermission
 
 
@@ -71,18 +71,16 @@ async def db_session(engine):
 
 @pytest.fixture
 async def seeded_db(engine):
-    """Engine with seeded admin/user roles."""
+    """Engine with the system roles (admin/user) as the app seeds them."""
+    from app.database import _seed_role_definitions
+
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
-        SEED_ROLES = {
-            "admin": ALL_PERMISSIONS,
-            "user": ["gateway.monitoring.self", "apikeys.self"],
-        }
-        for role_name, perms in SEED_ROLES.items():
-            role = Role(name=role_name, description=f"Test {role_name}", is_system=True)
+        for role_name, spec in _seed_role_definitions().items():
+            role = Role(name=role_name, description=spec["description"], is_system=True)
             db.add(role)
             await db.flush()
-            for perm in perms:
+            for perm in spec["permissions"]:
                 db.add(RolePermission(role_id=role.id, permission=perm))
         await db.commit()
     await invalidate_permission_cache()

@@ -7,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 
 from app.main import lifespan
+from app.routers.gateway import _SYSTEM_ROUTE_URIS, _route_paths, _shadowed_system_uri
 
 # A BIFROST_TEST_VK the /api/llm routes can carry (llm_routes.usable_virtual_key).
 VK = "sk-bf-" + "v" * 32
@@ -25,10 +26,7 @@ class _DummyTask:
 
 class _FakeDb:
     async def execute(self, _query):
-        return SimpleNamespace(
-            scalars=lambda: SimpleNamespace(all=lambda: []),
-            rowcount=0,  # the API key issuer backfill's UPDATE
-        )
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: []))
 
     async def commit(self):
         return None
@@ -60,7 +58,6 @@ def _keyed_get_resource(resources: dict[tuple[str, str], object]) -> AsyncMock:
     return AsyncMock(side_effect=_get)
 
 
-@pytest.mark.asyncio
 async def test_lifespan_provisions_the_system_routes():
     app = FastAPI()
     put_resource = AsyncMock()
@@ -117,9 +114,13 @@ async def test_lifespan_provisions_the_system_routes():
     }
 
     assert upstream_calls["bifrost"]["scheme"] == "http"
-    assert "litellm" not in upstream_calls
     assert "llm-proxy" in route_calls
-    assert "llm-admin" not in route_calls
+    # The gateway's shadowing guard knows every provisioned path, so a custom
+    # route cannot take one even when the live APISIX listing comes back
+    # without the system routes.
+    for route_id, body in route_calls.items():
+        for path in _route_paths(body):
+            assert _shadowed_system_uri(path, list(_SYSTEM_ROUTE_URIS)), (route_id, path)
     for route_id in (
         "query-api", "query-template-write-api", "s3-api", "network-api", "network-write-api"
     ):
@@ -133,7 +134,6 @@ async def test_lifespan_provisions_the_system_routes():
     assert route_calls["llm-proxy"]["plugins"]["proxy-rewrite"]["use_real_request_uri_unsafe"] is False
 
 
-@pytest.mark.asyncio
 async def test_lifespan_uses_configured_apisix_upstream_nodes():
     app = FastAPI()
     put_resource = AsyncMock()
@@ -183,7 +183,6 @@ async def test_lifespan_uses_configured_apisix_upstream_nodes():
     assert upstream_calls["prometheus"]["nodes"] == {"prometheus-alt:9090": 1}
 
 
-@pytest.mark.asyncio
 async def test_lifespan_provisions_prometheus_query_route():
     app = FastAPI()
     put_resource = AsyncMock()
@@ -249,7 +248,6 @@ async def test_lifespan_provisions_prometheus_query_route():
     assert "headers" not in route["plugins"]["proxy-rewrite"]
 
 
-@pytest.mark.asyncio
 async def test_lifespan_provisions_llm_metrics_route():
     app = FastAPI()
     put_resource = AsyncMock()
@@ -306,7 +304,6 @@ async def test_lifespan_provisions_llm_metrics_route():
     assert "Authorization" in headers["remove"]
 
 
-@pytest.mark.asyncio
 async def test_lifespan_provisions_llm_models_route():
     app = FastAPI()
     put_resource = AsyncMock()
@@ -363,7 +360,6 @@ async def test_lifespan_provisions_llm_models_route():
     assert "Authorization" not in headers
 
 
-@pytest.mark.asyncio
 async def test_lifespan_can_skip_apisix_route_provisioning():
     app = FastAPI()
     put_resource = AsyncMock()
@@ -421,7 +417,6 @@ async def test_lifespan_can_skip_apisix_route_provisioning():
     start_checker.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_lifespan_loads_persisted_alert_state_before_starting_checker():
     app = FastAPI()
     put_resource = AsyncMock()
@@ -452,7 +447,6 @@ async def test_lifespan_loads_persisted_alert_state_before_starting_checker():
     assert load_alert_state.await_args.args[1] is start_checker.await_args.args[0]
 
 
-@pytest.mark.asyncio
 async def test_metrics_endpoint_exposes_prometheus_text(client):
     response = await client.get("/metrics")
 
@@ -461,7 +455,6 @@ async def test_metrics_endpoint_exposes_prometheus_text(client):
     assert b"# HELP" in response.content
 
 
-@pytest.mark.asyncio
 async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
     app = FastAPI()
     put_resource = AsyncMock()
@@ -762,7 +755,6 @@ async def test_lifespan_preserves_consumer_restriction_for_protected_routes():
         assert route_calls[_route_id]["upstream_id"] == "llm-converter"
 
 
-@pytest.mark.asyncio
 async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation():
     app = FastAPI()
     put_resource = AsyncMock()
@@ -844,7 +836,6 @@ async def test_lifespan_treats_missing_protected_routes_as_first_boot_creation()
     }
 
 
-@pytest.mark.asyncio
 async def test_lifespan_retries_when_protected_route_state_lookup_fails():
     app = FastAPI()
     put_resource = AsyncMock()
@@ -892,7 +883,6 @@ async def test_lifespan_retries_when_protected_route_state_lookup_fails():
     assert "llm-admin" not in route_ids
 
 
-@pytest.mark.asyncio
 async def test_lifespan_skips_llm_routes_without_a_usable_virtual_key():
     app = FastAPI()
     put_resource = AsyncMock()
@@ -937,7 +927,6 @@ async def test_lifespan_skips_llm_routes_without_a_usable_virtual_key():
     assert "llm-not-found" not in route_ids
 
 
-@pytest.mark.asyncio
 async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_with_fresh_db_block():
     app = FastAPI()
     events: list[tuple[str, str]] = []
@@ -965,9 +954,6 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
             return SimpleNamespace(
                 scalars=lambda: SimpleNamespace(all=lambda: []),
             )
-
-    class _IssuerBackfillDb:
-        pass
 
     class _SettingsDb:
         pass
@@ -997,14 +983,12 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     replay_route_restrictions = AsyncMock(
         side_effect=lambda db: events.append(("replay", db.__class__.__name__))
     )
-    backfill_issuers = AsyncMock(return_value=0)
     db_iter = iter(
         [
             _ConnectionsDb(),
             _S3Db(),
             _NasDb(),
             _ServersDb(),
-            _IssuerBackfillDb(),
             _SettingsDb(),
             _McpServersDb(),
             _ReplayDb(),
@@ -1027,7 +1011,6 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
             "app.main.api_keys.sync_all_consumer_route_restrictions",
             replay_route_restrictions,
         ),
-        patch("app.main.api_keys.backfill_api_key_issuers", backfill_issuers),
         patch(
             "app.services.alert_checker.start_checker",
             new=AsyncMock(return_value=_DummyTask()),
@@ -1041,8 +1024,6 @@ async def test_lifespan_replays_api_key_route_restrictions_after_provisioning_wi
     assert replay_route_restrictions.await_count == 1
     db_arg = replay_route_restrictions.await_args.args[0]
     assert isinstance(db_arg, _ReplayDb)
-    backfill_issuers.assert_awaited_once()
-    assert isinstance(backfill_issuers.await_args.args[0], _IssuerBackfillDb)
     assert events[-1] == ("replay", "_ReplayDb")
     assert events.index(("routes", "query-api")) < events.index(("replay", "_ReplayDb"))
     assert events.index(("routes", "query-template-write-api")) < events.index(

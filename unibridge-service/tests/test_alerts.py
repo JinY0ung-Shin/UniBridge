@@ -341,7 +341,6 @@ class TestAlertState:
         mgr.discard("db_health", "never-existed")
         assert mgr.get_entries() == []
 
-    @pytest.mark.asyncio
     async def test_purge_stale_states(self, seeded_db):
         from app.services.alert_state import (
             purge_stale_states,
@@ -356,13 +355,8 @@ class TestAlertState:
         mgr.update("nas_health", "ghost-nas", is_healthy=False, trigger_after_failures=1)
         mgr.update("upstream_health", "live-up", is_healthy=False, trigger_after_failures=1)
         mgr.update("upstream_health", "ghost-up", is_healthy=False, trigger_after_failures=1)
-        # Route states are now keyed by the plain route_id.
         mgr.update("route_error_rate", "live-route", is_healthy=False, trigger_after_failures=1)
         mgr.update("route_error_rate", "ghost-route", is_healthy=False, trigger_after_failures=1)
-        # Legacy leftovers: global error_rate (monitoring removed) and a
-        # rule-scoped route target from the old model — both must be purged.
-        mgr.update("error_rate", "global:rule_1", is_healthy=False, trigger_after_failures=1)
-        mgr.update("route_error_rate", "live-route:rule_99", is_healthy=False, trigger_after_failures=1)
 
         async with session_factory() as db:
             for atype, target in [
@@ -374,8 +368,6 @@ class TestAlertState:
                 ("upstream_health", "ghost-up"),
                 ("route_error_rate", "live-route"),
                 ("route_error_rate", "ghost-route"),
-                ("error_rate", "global:rule_1"),
-                ("route_error_rate", "live-route:rule_99"),
             ]:
                 await save_alert_state_to_db(db, mgr, atype, target)
 
@@ -394,9 +386,7 @@ class TestAlertState:
         assert ("nas_health", "ghost-nas") in removed_set
         assert ("upstream_health", "ghost-up") in removed_set
         assert ("route_error_rate", "ghost-route") in removed_set
-        assert ("error_rate", "global:rule_1") in removed_set
-        assert ("route_error_rate", "live-route:rule_99") in removed_set
-        assert len(removed) == 6
+        assert len(removed) == 4
 
         assert mgr.get_status("db_health", "live-db") == "alert"
         assert mgr.get_status("db_health", "ghost-db") == "ok"
@@ -406,10 +396,7 @@ class TestAlertState:
         assert mgr.get_status("upstream_health", "ghost-up") == "ok"
         assert mgr.get_status("route_error_rate", "live-route") == "alert"
         assert mgr.get_status("route_error_rate", "ghost-route") == "ok"
-        assert mgr.get_status("error_rate", "global:rule_1") == "ok"
-        assert mgr.get_status("route_error_rate", "live-route:rule_99") == "ok"
 
-    @pytest.mark.asyncio
     async def test_purge_stale_states_skips_when_apisix_unknown(self, seeded_db):
         from app.services.alert_state import (
             purge_stale_states,
@@ -437,7 +424,49 @@ class TestAlertState:
         assert mgr.get_status("upstream_health", "any-up") == "alert"
         assert mgr.get_status("route_error_rate", "any-route") == "alert"
 
-    @pytest.mark.asyncio
+    @pytest.mark.parametrize("registries_loaded", [True, False])
+    async def test_purge_stale_host_and_service_states(self, seeded_db, registries_loaded):
+        from app.services.alert_state import (
+            purge_stale_states,
+            save_alert_state_to_db,
+        )
+
+        session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
+        mgr = AlertStateManager()
+        signals = [
+            ("server_down", "live-host"),
+            ("server_disk", "ghost-host"),
+            ("external_service_down", "live-svc"),
+            ("external_service_down", "ghost-svc"),
+        ]
+        async with session_factory() as db:
+            for atype, target in signals:
+                mgr.update(atype, target, is_healthy=False, trigger_after_failures=1)
+                await save_alert_state_to_db(db, mgr, atype, target)
+
+        async with session_factory() as db:
+            removed = await purge_stale_states(
+                db,
+                mgr,
+                known_db_aliases=set(),
+                known_nas_aliases=set(),
+                known_upstream_ids=None,
+                known_route_ids=None,
+                # None = the registry could not be loaded: leave its states alone.
+                known_host_names={"live-host"} if registries_loaded else None,
+                known_service_names={"live-svc"} if registries_loaded else None,
+            )
+
+        if registries_loaded:
+            assert set(removed) == {
+                ("server_disk", "ghost-host"),
+                ("external_service_down", "ghost-svc"),
+            }
+            assert mgr.get_status("server_down", "live-host") == "alert"
+            assert mgr.get_status("external_service_down", "live-svc") == "alert"
+        else:
+            assert removed == []
+
     async def test_delete_alert_state_removes_persisted_row(self, seeded_db):
         from app.services.alert_state import (
             delete_alert_state,
@@ -460,7 +489,6 @@ class TestAlertState:
             await load_alert_state_from_db(db, restored)
         assert restored.get_entries() == []
 
-    @pytest.mark.asyncio
     async def test_persist_and_restore_alert_state(self, seeded_db):
         from app.services.alert_state import (
             load_alert_state_from_db,
@@ -488,7 +516,6 @@ class TestAlertState:
         assert entry is not None
         assert entry["fail_count"] == 2
 
-    @pytest.mark.asyncio
     async def test_recovery_streak_survives_a_restart(self, seeded_db):
         """A restart mid-recovery must not hand the target a fresh streak."""
         from app.services.alert_state import (

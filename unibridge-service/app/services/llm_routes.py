@@ -13,8 +13,7 @@ the monitoring selectors keyed on route ids carried over when it left:
 - ``llm-metrics`` is Bifrost's own Prometheus exposition.
 
 Boot provisioning (app/main.py ``_provision_llm_routes``) does the writes. It
-also retires what LiteLLM left in APISIX (``RETIRED_LITELLM_ROUTE_ID``,
-``RETIRED_LITELLM_UPSTREAM_ID``) and the /api/llm-bi routes of the Bifrost
+also installs the 404 left in place of the /api/llm-bi routes of the Bifrost
 side-by-side test (``retired_llm_bi_route``).
 """
 from __future__ import annotations
@@ -95,8 +94,8 @@ CONVERTER_ROUTES: dict[str, tuple[tuple[str, ...], tuple[str, ...], bool]] = {
 }
 CONVERTER_ROUTE_IDS = tuple(CONVERTER_ROUTES)
 
-# The prefix of the Bifrost side-by-side test, whose routes provisioning now
-# deletes; ``retired_llm_bi_route`` keeps answering it with a pointer here.
+# The prefix of the removed Bifrost side-by-side test; ``retired_llm_bi_route``
+# keeps answering it with a pointer here.
 LLM_BI_PREFIX = "/api/llm-bi"
 
 
@@ -247,10 +246,9 @@ def not_found_route() -> dict[str, Any]:
 def retired_llm_bi_route() -> dict[str, Any]:
     """The ``/api/llm-bi/*`` route left behind by the Bifrost side-by-side test.
 
-    Its routes are gone (app/main.py ``_retire_llm_bi_routes`` deletes them on
-    every provisioning boot); this 404 tells a client still configured for the
-    old prefix where to go instead of APISIX's bare "404 Route Not Found".
-    scripts/deploy-bluegreen.sh looks for "has been removed" in it.
+    Its routes are gone; this 404, installed on every provisioning boot, tells a
+    client still configured for the old prefix where to go instead of APISIX's
+    bare "404 Route Not Found".
     """
     return explaining_404_route(
         LLM_BI_NOT_FOUND_ROUTE_ID,

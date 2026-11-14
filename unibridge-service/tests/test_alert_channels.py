@@ -4,12 +4,10 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from tests.conftest import auth_header
 
 
 class TestAlertChannelsAPI:
-    @pytest.mark.asyncio
     async def test_create_channel(self, client, admin_token):
         resp = await client.post("/admin/alerts/channels", json={
             "name": "email-api",
@@ -21,7 +19,6 @@ class TestAlertChannelsAPI:
         assert data["name"] == "email-api"
         assert data["enabled"] is True
 
-    @pytest.mark.asyncio
     async def test_list_channels(self, client, admin_token):
         await client.post("/admin/alerts/channels", json={
             "name": "ch1",
@@ -32,7 +29,6 @@ class TestAlertChannelsAPI:
         assert resp.status_code == 200
         assert len(resp.json()) >= 1
 
-    @pytest.mark.asyncio
     async def test_list_channels_masks_webhook_and_headers_for_non_writers(
         self, client, admin_token, alerts_reader_token
     ):
@@ -63,7 +59,6 @@ class TestAlertChannelsAPI:
         assert admin_ch["webhook_url"] == f"https://hooks.example.com{secret_path}"
         assert admin_ch["headers"] == {"Authorization": "Bearer super-secret"}
 
-    @pytest.mark.asyncio
     async def test_update_channel(self, client, admin_token):
         create = await client.post("/admin/alerts/channels", json={
             "name": "ch-update",
@@ -79,7 +74,6 @@ class TestAlertChannelsAPI:
         assert resp.json()["name"] == "ch-updated"
         assert resp.json()["enabled"] is False
 
-    @pytest.mark.asyncio
     async def test_channel_round_trips_recipient_item_template(self, client, admin_token):
         template = '{"emailAddress":"{{email}}","recipientType":"TO"}'
         resp = await client.post("/admin/alerts/channels", json={
@@ -98,7 +92,6 @@ class TestAlertChannelsAPI:
         assert update.status_code == 200
         assert update.json()["recipient_item_template"] == '{"mail":"{{email}}"}'
 
-    @pytest.mark.asyncio
     async def test_channel_test_injects_rendered_recipients_json(self, client, admin_token):
         resp = await client.post("/admin/alerts/channels", json={
             "name": "mail-json",
@@ -119,7 +112,6 @@ class TestAlertChannelsAPI:
         payload = json.loads(mock_send.await_args.kwargs["payload"])
         assert payload["recipients"][0]["emailAddress"] == "test@example.com"
 
-    @pytest.mark.asyncio
     async def test_channel_test_with_malformed_recipient_item_template_does_not_send(self, client, admin_token):
         resp = await client.post("/admin/alerts/channels", json={
             "name": "mail-json-bad-template",
@@ -140,7 +132,6 @@ class TestAlertChannelsAPI:
         assert test_resp.json()["success"] is False
         mock_send.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_default_mail_channel_test_requires_recipient_item_template(self, client, admin_token):
         resp = await client.post("/admin/alerts/channels", json={
             "name": "mail-json-missing-template",
@@ -165,7 +156,6 @@ class TestAlertChannelsAPI:
         assert "recipient_item_template" in test_resp.json()["error"]
         mock_send.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_delete_channel(self, client, admin_token):
         create = await client.post("/admin/alerts/channels", json={
             "name": "ch-delete",
@@ -176,7 +166,6 @@ class TestAlertChannelsAPI:
         resp = await client.delete(f"/admin/alerts/channels/{ch_id}", headers=auth_header(admin_token))
         assert resp.status_code == 204
 
-    @pytest.mark.asyncio
     async def test_user_cannot_create_channel(self, client, user_token):
         resp = await client.post("/admin/alerts/channels", json={
             "name": "nope",

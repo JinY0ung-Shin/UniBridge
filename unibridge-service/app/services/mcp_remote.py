@@ -51,12 +51,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import settings
 from app.models import ApiKeyAccess, McpRemoteServer, SystemConfig
 from app.services import apisix_client
-from app.services.apisix_system_resources import MCP_REMOTE_ID_PREFIX
+from app.services.apisix_system_resources import (
+    MCP_REMOTE_ID_PREFIX,
+    MCP_REMOTE_RELAY_PATH_PREFIX,
+)
 from app.services.connection_manager import decrypt_password, encrypt_password
 
 logger = logging.getLogger(__name__)
 
-RELAY_PATH_PREFIX = "/_mcp-ext/"
+RELAY_PATH_PREFIX = MCP_REMOTE_RELAY_PATH_PREFIX
 RELAY_HEADER = "X-UniBridge-MCP-Relay"
 # What the relay route removes before the request leaves: the relay secret and
 # the identity headers key-auth attaches for upstreams (the caller's consumer
@@ -459,6 +462,21 @@ def _error_text(status_code: int, body: bytes) -> str:
     return f"HTTP {status_code}: {text[:300] or 'no detail'}"
 
 
+# How much of an error answer is read for its message (_error_text keeps 300 chars).
+_ERROR_BODY_BYTES = 4096
+
+
+async def _read_error_body(response: httpx.Response) -> bytes:
+    """The start of an error answer. A longer one is cut, never an error of its
+    own: the caller must still see the status (an ended session, a 401)."""
+    data = bytearray()
+    async for chunk in response.aiter_bytes():
+        data.extend(chunk)
+        if len(data) >= _ERROR_BODY_BYTES:
+            break
+    return bytes(data[:_ERROR_BODY_BYTES])
+
+
 async def _read_capped(response: httpx.Response, max_bytes: int) -> bytes:
     data = bytearray()
     async for chunk in response.aiter_bytes():
@@ -559,11 +577,11 @@ async def _send(
     ) as response:
         # The spec says 404; some servers answer an unknown session with 400.
         if response.status_code in (400, 404) and session is not None and session.session_id:
-            detail = _error_text(response.status_code, await _read_capped(response, 4096))
+            detail = _error_text(response.status_code, await _read_error_body(response))
             raise _SessionExpired(detail)
         if response.status_code >= 400:
             raise RemoteError(
-                _error_text(response.status_code, await _read_capped(response, 4096)),
+                _error_text(response.status_code, await _read_error_body(response)),
                 status_code=response.status_code,
             )
         if "id" not in message:

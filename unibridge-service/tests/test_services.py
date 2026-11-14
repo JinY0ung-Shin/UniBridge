@@ -329,7 +329,6 @@ from app.services.connection_manager import (
     _build_url,
     decrypt_password,
     encrypt_password,
-    validate_encryption_key,
 )
 
 
@@ -391,14 +390,6 @@ class TestDecryptWithWrongKey:
 
         with pytest.raises(ValueError, match="Failed to decrypt"):
             decrypt_password(encrypted)
-
-
-class TestValidateEncryptionKey:
-    """Tests for validate_encryption_key()."""
-
-    def test_valid_key_does_not_raise(self):
-        # The test env already has a valid key configured
-        validate_encryption_key()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -493,17 +484,17 @@ class TestConnectionManagerClickHouse:
     """Tests for ConnectionManager ClickHouse client support."""
 
     def _fresh_manager(self) -> ConnectionManager:
-        """Create a fresh ConnectionManager (bypass singleton)."""
+        """Create a fresh ConnectionManager (bypass singleton).
+
+        ``ConnectionManager.__new__`` fills the registries only for the
+        singleton, so give this instance every dict registry the class declares.
+        """
         mgr = object.__new__(ConnectionManager)
-        mgr._engines = {}
-        mgr._ch_clients = {}
-        mgr._ch_locks = {}
-        mgr._neo4j_drivers = {}
-        mgr._db_types = {}
-        mgr._databases = {}
+        for name, annotation in ConnectionManager.__annotations__.items():
+            if str(annotation).startswith("dict["):
+                setattr(mgr, name, {})
         return mgr
 
-    @pytest.mark.asyncio
     async def test_add_clickhouse_connection(self):
         mgr = self._fresh_manager()
         mock_client = MagicMock()
@@ -520,7 +511,6 @@ class TestConnectionManagerClickHouse:
         assert "ch_test" not in mgr._engines
         set_pool_metric.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_add_sqlalchemy_connection_emits_initial_pool_metric(self):
         mgr = self._fresh_manager()
         fake_engine = MagicMock()
@@ -551,7 +541,6 @@ class TestConnectionManagerClickHouse:
 
         set_pool_metric.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_get_clickhouse_client(self):
         mgr = self._fresh_manager()
         mock_client = MagicMock()
@@ -562,19 +551,16 @@ class TestConnectionManagerClickHouse:
 
         assert mgr.get_clickhouse_client("ch_test") is mock_client
 
-    @pytest.mark.asyncio
     async def test_get_clickhouse_client_missing_raises(self):
         mgr = self._fresh_manager()
         with pytest.raises(KeyError, match="No ClickHouse client"):
             mgr.get_clickhouse_client("nonexistent")
 
-    @pytest.mark.asyncio
     async def test_get_clickhouse_lock_missing_raises(self):
         mgr = self._fresh_manager()
         with pytest.raises(KeyError, match="No ClickHouse lock"):
             mgr.get_clickhouse_lock("nonexistent")
 
-    @pytest.mark.asyncio
     async def test_has_connection_clickhouse(self):
         mgr = self._fresh_manager()
         mock_client = MagicMock()
@@ -585,7 +571,6 @@ class TestConnectionManagerClickHouse:
             await mgr.add_connection(conn)
         assert mgr.has_connection("ch_test") is True
 
-    @pytest.mark.asyncio
     async def test_remove_clickhouse_connection(self):
         mgr = self._fresh_manager()
         mock_client = MagicMock()
@@ -601,7 +586,6 @@ class TestConnectionManagerClickHouse:
         assert mgr.get_db_type("ch_test") == "unknown"
         mock_client.close.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_remove_clickhouse_connection_closes_under_lock(self):
         mgr = self._fresh_manager()
         close_entered = threading.Event()
@@ -624,7 +608,6 @@ class TestConnectionManagerClickHouse:
         await remove_task
         assert close_entered.is_set()
 
-    @pytest.mark.asyncio
     async def test_test_connection_clickhouse_success(self):
         mgr = self._fresh_manager()
         mock_client = MagicMock()
@@ -638,7 +621,6 @@ class TestConnectionManagerClickHouse:
         assert ok is True
         assert msg == "Connection successful"
 
-    @pytest.mark.asyncio
     async def test_test_connection_clickhouse_failure(self):
         mgr = self._fresh_manager()
         mock_client = MagicMock()
@@ -652,7 +634,6 @@ class TestConnectionManagerClickHouse:
         assert ok is False
         assert msg == "Ping failed"
 
-    @pytest.mark.asyncio
     async def test_get_status_clickhouse(self):
         mgr = self._fresh_manager()
         mock_client = MagicMock()
@@ -665,7 +646,6 @@ class TestConnectionManagerClickHouse:
         assert status["status"] == "registered"
         assert status["driver"] == "clickhouse-connect"
 
-    @pytest.mark.asyncio
     async def test_list_aliases_includes_clickhouse(self):
         mgr = self._fresh_manager()
         mock_client = MagicMock()
@@ -676,7 +656,6 @@ class TestConnectionManagerClickHouse:
 
         assert "ch_test" in mgr.list_aliases()
 
-    @pytest.mark.asyncio
     async def test_dispose_all_includes_clickhouse(self):
         mgr = self._fresh_manager()
         mock_client = MagicMock()
@@ -690,7 +669,6 @@ class TestConnectionManagerClickHouse:
         assert len(mgr._db_types) == 0
         mock_client.close.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_add_replaces_existing_clickhouse(self):
         mgr = self._fresh_manager()
         mock_client1 = MagicMock()
@@ -742,7 +720,6 @@ class TestExecuteClickHouseQuery:
     def _stream(self, column_names, rows, block_size=2):
         return _FakeClickHouseStream(column_names, rows, block_size)
 
-    @pytest.mark.asyncio
     async def test_select_query_returns_columns_and_rows(self):
         mock_client = MagicMock()
         mock_client.query_row_block_stream.return_value = self._stream(
@@ -754,7 +731,6 @@ class TestExecuteClickHouseQuery:
         assert resp.row_count == 2
         assert resp.truncated is False
 
-    @pytest.mark.asyncio
     async def test_select_query_truncation(self):
         mock_client = MagicMock()
         rows = [(i,) for i in range(12)]
@@ -765,7 +741,6 @@ class TestExecuteClickHouseQuery:
         settings_sent = mock_client.query_row_block_stream.call_args[1]["settings"]
         assert settings_sent == {"max_result_rows": 11, "result_overflow_mode": "break"}
 
-    @pytest.mark.asyncio
     async def test_select_stops_at_byte_budget_and_closes_the_stream(self, monkeypatch):
         from app.config import settings as app_settings
 
@@ -783,7 +758,6 @@ class TestExecuteClickHouseQuery:
         assert stream.closed is True
         assert stream.blocks_read == 3
 
-    @pytest.mark.asyncio
     async def test_dml_command(self):
         mock_client = MagicMock()
         mock_client.command.return_value = ""
@@ -793,7 +767,6 @@ class TestExecuteClickHouseQuery:
         assert resp.row_count == 0
         mock_client.command.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_ddl_command(self):
         mock_client = MagicMock()
         mock_client.command.return_value = ""
@@ -803,20 +776,17 @@ class TestExecuteClickHouseQuery:
         assert resp.columns == []
         assert resp.row_count == 0
 
-    @pytest.mark.asyncio
     async def test_multi_statement_rejected(self):
         mock_client = MagicMock()
         with pytest.raises(ValueError, match="Multi-statement SQL"):
             await execute_clickhouse_query(mock_client, "SELECT 1; SELECT 2")
 
-    @pytest.mark.asyncio
     async def test_elapsed_ms_populated(self):
         mock_client = MagicMock()
         mock_client.query_row_block_stream.return_value = self._stream(["x"], [(1,)])
         resp = await execute_clickhouse_query(mock_client, "SELECT 1")
         assert resp.elapsed_ms >= 0
 
-    @pytest.mark.asyncio
     async def test_explain_treated_as_select(self):
         mock_client = MagicMock()
         mock_client.query_row_block_stream.return_value = self._stream(
@@ -827,7 +797,6 @@ class TestExecuteClickHouseQuery:
         assert resp.rows == [["ReadFromStorage"]]
         mock_client.query_row_block_stream.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_params_forwarded(self):
         mock_client = MagicMock()
         mock_client.query_row_block_stream.return_value = self._stream(["x"], [(1,)])
@@ -836,7 +805,6 @@ class TestExecuteClickHouseQuery:
         call_args = mock_client.query_row_block_stream.call_args
         assert call_args[1]["parameters"] == params
 
-    @pytest.mark.asyncio
     async def test_timeout_raises(self):
         import asyncio as _asyncio
         import time
@@ -849,7 +817,6 @@ class TestExecuteClickHouseQuery:
         with pytest.raises(_asyncio.TimeoutError):
             await execute_clickhouse_query(mock_client, "SELECT 1", timeout=1)
 
-    @pytest.mark.asyncio
     async def test_lock_stays_held_after_timeout_until_worker_returns(self):
         import asyncio as _asyncio
 
@@ -1186,7 +1153,7 @@ class TestApisixErrorHandling:
 # prometheus_client
 # ═══════════════════════════════════════════════════════════════════════════════
 
-from app.services.prometheus_client import _parse_duration, instant_query, range_query
+from app.services.prometheus_client import _parse_duration
 
 
 class TestParseDuration:
@@ -1221,205 +1188,6 @@ class TestParseDuration:
 
     def test_2_hours(self):
         assert _parse_duration("2h") == 7200
-
-
-class TestInstantQuery:
-    """Tests for prometheus_client.instant_query()."""
-
-    async def test_instant_query_success(self):
-        mock_data = {
-            "status": "success",
-            "data": {
-                "resultType": "vector",
-                "result": [
-                    {"metric": {"__name__": "up"}, "value": [1234567890, "1"]},
-                ],
-            },
-        }
-        mock_resp = _mock_response(json_data=mock_data)
-
-        with patch("app.services.prometheus_client.httpx.AsyncClient") as MockClient:
-            instance = AsyncMock()
-            instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = instance
-
-            result = await instant_query("up")
-
-        assert len(result) == 1
-        assert result[0]["metric"]["__name__"] == "up"
-
-    async def test_instant_query_url_and_params(self):
-        mock_data = {"status": "success", "data": {"result": []}}
-        mock_resp = _mock_response(json_data=mock_data)
-
-        with patch("app.services.prometheus_client.httpx.AsyncClient") as MockClient:
-            instance = AsyncMock()
-            instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = instance
-
-            await instant_query("rate(http_requests_total[5m])")
-
-        call_args = instance.get.call_args
-        assert call_args[0][0] == "http://localhost:19090/api/v1/query"
-        assert call_args[1]["params"]["query"] == "rate(http_requests_total[5m])"
-
-    async def test_instant_query_non_success_returns_empty(self):
-        mock_data = {"status": "error", "errorType": "bad_data", "error": "parse error"}
-        mock_resp = _mock_response(json_data=mock_data)
-
-        with patch("app.services.prometheus_client.httpx.AsyncClient") as MockClient:
-            instance = AsyncMock()
-            instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = instance
-
-            result = await instant_query("bad{query")
-
-        assert result == []
-
-    async def test_instant_query_missing_data_key(self):
-        mock_data = {"status": "success"}
-        mock_resp = _mock_response(json_data=mock_data)
-
-        with patch("app.services.prometheus_client.httpx.AsyncClient") as MockClient:
-            instance = AsyncMock()
-            instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = instance
-
-            result = await instant_query("up")
-
-        assert result == []
-
-    async def test_instant_query_http_error_propagates(self):
-        error_resp = httpx.Response(
-            status_code=500,
-            text="Internal Server Error",
-            request=httpx.Request("GET", "http://test"),
-        )
-
-        with patch("app.services.prometheus_client.httpx.AsyncClient") as MockClient:
-            instance = AsyncMock()
-            instance.get.return_value = error_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = instance
-
-            with pytest.raises(httpx.HTTPStatusError):
-                await instant_query("up")
-
-
-class TestRangeQuery:
-    """Tests for prometheus_client.range_query()."""
-
-    async def test_range_query_success(self):
-        mock_data = {
-            "status": "success",
-            "data": {
-                "resultType": "matrix",
-                "result": [
-                    {
-                        "metric": {"__name__": "up"},
-                        "values": [[1234567890, "1"], [1234567950, "1"]],
-                    },
-                ],
-            },
-        }
-        mock_resp = _mock_response(json_data=mock_data)
-
-        with patch("app.services.prometheus_client.httpx.AsyncClient") as MockClient:
-            instance = AsyncMock()
-            instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = instance
-
-            result = await range_query("up", duration="1h", step="60s")
-
-        assert len(result) == 1
-        assert len(result[0]["values"]) == 2
-
-    async def test_range_query_url_and_params(self):
-        mock_data = {"status": "success", "data": {"result": []}}
-        mock_resp = _mock_response(json_data=mock_data)
-
-        with patch("app.services.prometheus_client.httpx.AsyncClient") as MockClient:
-            instance = AsyncMock()
-            instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = instance
-
-            await range_query("up", duration="6h", step="120s")
-
-        call_args = instance.get.call_args
-        assert call_args[0][0] == "http://localhost:19090/api/v1/query_range"
-        params = call_args[1]["params"]
-        assert params["query"] == "up"
-        assert params["step"] == "120s"
-        # start should be approximately end - 6h (21600s)
-        start = float(params["start"])
-        end = float(params["end"])
-        assert abs((end - start) - 21600) < 1
-
-    async def test_range_query_non_success_returns_empty(self):
-        mock_data = {"status": "error", "error": "some error"}
-        mock_resp = _mock_response(json_data=mock_data)
-
-        with patch("app.services.prometheus_client.httpx.AsyncClient") as MockClient:
-            instance = AsyncMock()
-            instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = instance
-
-            result = await range_query("bad_query")
-
-        assert result == []
-
-    async def test_range_query_default_duration_and_step(self):
-        mock_data = {"status": "success", "data": {"result": []}}
-        mock_resp = _mock_response(json_data=mock_data)
-
-        with patch("app.services.prometheus_client.httpx.AsyncClient") as MockClient:
-            instance = AsyncMock()
-            instance.get.return_value = mock_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = instance
-
-            await range_query("up")
-
-        call_args = instance.get.call_args
-        params = call_args[1]["params"]
-        assert params["step"] == "60s"
-        start = float(params["start"])
-        end = float(params["end"])
-        # Default duration is 1h = 3600s
-        assert abs((end - start) - 3600) < 1
-
-    async def test_range_query_http_error_propagates(self):
-        error_resp = httpx.Response(
-            status_code=502,
-            text="Bad Gateway",
-            request=httpx.Request("GET", "http://test"),
-        )
-
-        with patch("app.services.prometheus_client.httpx.AsyncClient") as MockClient:
-            instance = AsyncMock()
-            instance.get.return_value = error_resp
-            instance.__aenter__ = AsyncMock(return_value=instance)
-            instance.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = instance
-
-            with pytest.raises(httpx.HTTPStatusError):
-                await range_query("up")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

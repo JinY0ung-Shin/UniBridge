@@ -17,7 +17,7 @@ from app.auth import ApiKeyUser, CurrentUser, get_current_user_or_apikey, get_ro
 from app.database import get_db
 from app.models import S3Connection
 from app.schemas import S3ConnectionCreate, S3ConnectionResponse, S3ConnectionUpdate
-from app.services.audit import log_admin_action
+from app.services.audit import log_admin_action, mask_secret
 from app.services.connection_manager import decrypt_password, encrypt_password
 from app.services.s3_manager import S3_MAX_PAGE_KEYS, S3ListAllBusyError, s3_manager
 
@@ -25,15 +25,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["S3"])
 
-MASK_KEEP = 4
-
 _T = TypeVar("_T")
-
-
-def _mask_access_key(key: str) -> str:
-    if len(key) <= MASK_KEEP:
-        return "***"
-    return "***" + key[-MASK_KEEP:]
 
 
 def _stored_allowed_buckets(conn: S3Connection) -> list[str] | None:
@@ -65,7 +57,7 @@ def _audit_snapshot(conn: S3Connection) -> dict[str, Any]:
     recorded; the access key id is reduced to the usual ``***`` + last-4
     form (same masking the list/detail responses expose)."""
     try:
-        access_key_masked = _mask_access_key(decrypt_password(conn.access_key_id_encrypted))
+        access_key_masked = mask_secret(decrypt_password(conn.access_key_id_encrypted))
     except Exception:
         access_key_masked = "***"
     return {
@@ -84,7 +76,7 @@ def _to_response(conn: S3Connection) -> S3ConnectionResponse:
     resp = S3ConnectionResponse.model_validate(conn)
     try:
         plain_key = decrypt_password(conn.access_key_id_encrypted)
-        resp.access_key_id_masked = _mask_access_key(plain_key)
+        resp.access_key_id_masked = mask_secret(plain_key)
     except Exception:
         resp.access_key_id_masked = "***"
     return resp
@@ -159,21 +151,12 @@ async def list_s3_connections(
     return items
 
 
-@router.get("/admin/s3/connections/{alias}")
-async def get_s3_connection(
-    alias: str,
-    db: AsyncSession = Depends(get_db),
-    _admin: CurrentUser = Depends(require_permission("s3.connections.read")),
-) -> S3ConnectionResponse:
-    result = await db.execute(
-        select(S3Connection).where(S3Connection.alias == alias)
-    )
+async def _get_connection_or_404(db: AsyncSession, alias: str) -> S3Connection:
+    result = await db.execute(select(S3Connection).where(S3Connection.alias == alias))
     conn = result.scalar_one_or_none()
-    if not conn:
+    if conn is None:
         raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
-    resp = _to_response(conn)
-    resp.status = "registered" if s3_manager.has_connection(alias) else "disconnected"
-    return resp
+    return conn
 
 
 @router.put("/admin/s3/connections/{alias}")
@@ -183,12 +166,7 @@ async def update_s3_connection(
     db: AsyncSession = Depends(get_db),
     _admin: CurrentUser = Depends(require_permission("s3.connections.write")),
 ) -> S3ConnectionResponse:
-    result = await db.execute(
-        select(S3Connection).where(S3Connection.alias == alias)
-    )
-    conn = result.scalar_one_or_none()
-    if not conn:
-        raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
+    conn = await _get_connection_or_404(db, alias)
 
     before_snapshot = _audit_snapshot(conn)
 
@@ -248,12 +226,7 @@ async def delete_s3_connection(
     db: AsyncSession = Depends(get_db),
     _admin: CurrentUser = Depends(require_permission("s3.connections.write")),
 ) -> None:
-    result = await db.execute(
-        select(S3Connection).where(S3Connection.alias == alias)
-    )
-    conn = result.scalar_one_or_none()
-    if not conn:
-        raise HTTPException(status_code=404, detail=f"S3 connection '{alias}' not found")
+    conn = await _get_connection_or_404(db, alias)
 
     before_snapshot = _audit_snapshot(conn)
 

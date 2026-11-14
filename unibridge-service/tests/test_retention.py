@@ -64,7 +64,6 @@ def retention_manager():
 # ── Cleanup ──────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_cleanup_removes_old_rows_and_keeps_recent(engine, retention_manager):
     await _seed_rows(engine)
     retention_manager.audit_log_retention_days = 30
@@ -80,7 +79,6 @@ async def test_cleanup_removes_old_rows_and_keeps_recent(engine, retention_manag
     }
 
 
-@pytest.mark.asyncio
 async def test_cleanup_is_disabled_at_zero(engine, retention_manager):
     await _seed_rows(engine)
     before = await _counts(engine)
@@ -91,7 +89,6 @@ async def test_cleanup_is_disabled_at_zero(engine, retention_manager):
     assert await _counts(engine) == before
 
 
-@pytest.mark.asyncio
 async def test_each_table_honours_only_its_own_setting(engine, retention_manager):
     await _seed_rows(engine)
     retention_manager.alert_history_retention_days = 30
@@ -106,7 +103,6 @@ async def test_each_table_honours_only_its_own_setting(engine, retention_manager
     assert counts["admin_audit_logs"] == 6
 
 
-@pytest.mark.asyncio
 async def test_a_row_exactly_at_the_cutoff_is_kept(engine, retention_manager):
     now = datetime.now(timezone.utc)
     async with _session_factory(engine)() as db:
@@ -123,7 +119,6 @@ async def test_a_row_exactly_at_the_cutoff_is_kept(engine, retention_manager):
     assert (await _counts(engine))["alert_history"] == 1
 
 
-@pytest.mark.asyncio
 async def test_cleanup_deletes_in_batches(engine, retention_manager):
     old = datetime.now(timezone.utc) - timedelta(days=100)
     async with _session_factory(engine)() as db:
@@ -139,7 +134,6 @@ async def test_cleanup_deletes_in_batches(engine, retention_manager):
     assert (await _counts(engine))["alert_history"] == 0
 
 
-@pytest.mark.asyncio
 async def test_batch_ceiling_defers_the_rest_to_the_next_run(engine, retention_manager, caplog):
     old = datetime.now(timezone.utc) - timedelta(days=100)
     async with _session_factory(engine)() as db:
@@ -157,7 +151,6 @@ async def test_batch_ceiling_defers_the_rest_to_the_next_run(engine, retention_m
     assert (await _counts(engine))["alert_history"] == 2
 
 
-@pytest.mark.asyncio
 async def test_one_failing_table_does_not_stop_the_others(engine, retention_manager, caplog):
     await _seed_rows(engine)
     retention_manager.audit_log_retention_days = 30
@@ -178,7 +171,6 @@ async def test_one_failing_table_does_not_stop_the_others(engine, retention_mana
     assert "Retention cleanup failed for audit_logs" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_cleanup_logs_a_single_summary_line(engine, retention_manager, caplog):
     caplog.set_level(logging.INFO, logger="app.services.retention")
     await _seed_rows(engine)
@@ -192,7 +184,6 @@ async def test_cleanup_logs_a_single_summary_line(engine, retention_manager, cap
     assert "audit_logs=3" in summaries[0].getMessage()
 
 
-@pytest.mark.asyncio
 async def test_cleanup_stays_quiet_when_nothing_was_deleted(engine, retention_manager, caplog):
     caplog.set_level(logging.INFO, logger="app.services.retention")
     retention_manager.audit_log_retention_days = 30
@@ -208,7 +199,6 @@ def test_batch_size_stays_within_the_intended_band():
 # ── Loop ─────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_loop_waits_before_the_first_run_then_repeats():
     sleeps: list[float] = []
     calls = 0
@@ -233,7 +223,6 @@ async def test_loop_waits_before_the_first_run_then_repeats():
     assert calls == 2
 
 
-@pytest.mark.asyncio
 async def test_loop_survives_a_failing_cycle(caplog):
     sleeps = 0
 
@@ -254,7 +243,6 @@ async def test_loop_survives_a_failing_cycle(caplog):
     assert "Log retention cleanup cycle failed" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_loop_skips_the_sweep_on_the_standby_color():
     """Blue/green share one meta DB — only the active color may delete."""
     sleeps = 0
@@ -279,7 +267,6 @@ async def test_loop_skips_the_sweep_on_the_standby_color():
     assert sleeps == 3
 
 
-@pytest.mark.asyncio
 async def test_loop_starts_sweeping_after_a_promotion_without_a_restart():
     sleeps = 0
 
@@ -305,7 +292,6 @@ async def test_loop_starts_sweeping_after_a_promotion_without_a_restart():
 # ── Settings ─────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_settings_endpoint_exposes_retention_defaults(client, admin_token):
     resp = await client.get(SETTINGS_URL, headers=auth_header(admin_token))
     assert resp.status_code == 200, resp.text
@@ -315,7 +301,6 @@ async def test_settings_endpoint_exposes_retention_defaults(client, admin_token)
     assert body["alert_history_retention_days"] == 0
 
 
-@pytest.mark.asyncio
 async def test_settings_endpoint_updates_retention(client, admin_token):
     original = (
         settings_manager.audit_log_retention_days,
@@ -352,7 +337,6 @@ async def test_settings_endpoint_updates_retention(client, admin_token):
     "field",
     ["audit_log_retention_days", "admin_audit_log_retention_days", "alert_history_retention_days"],
 )
-@pytest.mark.asyncio
 async def test_negative_retention_is_rejected(client, admin_token, field):
     resp = await client.put(
         SETTINGS_URL, json={field: -1}, headers=auth_header(admin_token)
@@ -360,7 +344,6 @@ async def test_negative_retention_is_rejected(client, admin_token, field):
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_retention_update_is_audited(client, admin_token):
     original = settings_manager.alert_history_retention_days
     try:
@@ -387,7 +370,6 @@ async def test_retention_update_is_audited(client, admin_token):
         settings_manager.alert_history_retention_days = original
 
 
-@pytest.mark.asyncio
 async def test_manager_persists_and_reloads_retention(db_session):
     manager = SettingsManager()
     await manager.update(
@@ -404,14 +386,12 @@ async def test_manager_persists_and_reloads_retention(db_session):
     assert reloaded.alert_history_retention_days == 21
 
 
-@pytest.mark.asyncio
 async def test_manager_rejects_a_negative_day_count(db_session):
     manager = SettingsManager()
     with pytest.raises(ValueError, match="must be >= 0"):
         await manager.update(db_session, audit_log_retention_days=-5)
 
 
-@pytest.mark.asyncio
 async def test_manager_ignores_unusable_stored_values(db_session, caplog):
     db_session.add(SystemConfig(key="audit_log_retention_days", value="not-a-number"))
     db_session.add(SystemConfig(key="alert_history_retention_days", value="-3"))

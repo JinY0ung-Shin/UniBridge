@@ -14,9 +14,9 @@ from app.routers.gateway import (
     _extract_service_keys,
     _extract_strip_prefix,
     _extract_timeseries,
-    _mask_value,
     _validate_route,
 )
+from app.services.audit import mask_secret
 from tests.conftest import auth_header
 
 
@@ -29,9 +29,12 @@ def _http_status(code: int, body: str = "boom") -> httpx.HTTPStatusError:
 # ── Pure helpers ────────────────────────────────────────────────────────────
 
 
-def test_mask_value_short_and_long():
-    assert _mask_value("abc") == "***"
-    assert _mask_value("supersecretkey") == "***tkey"
+def test_mask_secret_short_long_and_non_string():
+    # One rule for route headers, API keys, S3 access keys and audit snapshots.
+    assert mask_secret("abc") == "***"
+    assert mask_secret("abcd") == "***"
+    assert mask_secret("supersecretkey") == "***tkey"
+    assert mask_secret(12345) == "***"
 
 
 def test_extract_service_keys_present_and_absent():
@@ -104,7 +107,6 @@ def test_extract_timeseries_normalizes():
 # ── Routes endpoints ────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_list_routes_marks_system_routes(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.list_resources = AsyncMock(return_value={
@@ -123,7 +125,6 @@ async def test_list_routes_marks_system_routes(client, admin_token):
     assert items["custom"]["system"] is False
 
 
-@pytest.mark.asyncio
 async def test_list_routes_apisix_http_error(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.list_resources = AsyncMock(side_effect=_http_status(500, "x"))
@@ -131,7 +132,6 @@ async def test_list_routes_apisix_http_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_list_routes_generic_error(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.list_resources = AsyncMock(side_effect=RuntimeError("nope"))
@@ -139,7 +139,6 @@ async def test_list_routes_generic_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_get_route_404(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.get_resource = AsyncMock(side_effect=_http_status(404, "not found"))
@@ -147,7 +146,6 @@ async def test_get_route_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_get_route_generic_error(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.get_resource = AsyncMock(side_effect=RuntimeError("ouch"))
@@ -155,7 +153,6 @@ async def test_get_route_generic_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_save_route_inline_upstream_rejected(client, admin_token):
     resp = await client.put(
         "/admin/gateway/routes/r1",
@@ -165,7 +162,6 @@ async def test_save_route_inline_upstream_rejected(client, admin_token):
     assert resp.status_code == 400
 
 
-@pytest.mark.asyncio
 async def test_save_route_uri_prefix_required(client, admin_token):
     resp = await client.put(
         "/admin/gateway/routes/r1",
@@ -175,7 +171,6 @@ async def test_save_route_uri_prefix_required(client, admin_token):
     assert resp.status_code == 400
 
 
-@pytest.mark.asyncio
 async def test_save_route_upstream_id_required(client, admin_token):
     resp = await client.put(
         "/admin/gateway/routes/r1",
@@ -185,7 +180,6 @@ async def test_save_route_upstream_id_required(client, admin_token):
     assert resp.status_code == 400
 
 
-@pytest.mark.asyncio
 async def test_save_route_apisix_http_and_generic_errors(client, admin_token):
     # The listing shows no existing route (new route), then put_resource
     # fails — both error variants must surface as 502 from the put path.
@@ -211,7 +205,6 @@ async def test_save_route_apisix_http_and_generic_errors(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_save_route_success(client, admin_token):
     body = {"name": "x-route", "uri": "/api/x", "upstream_id": "u1"}
     with patch("app.routers.gateway.apisix_client") as mock:
@@ -234,7 +227,6 @@ async def test_save_route_success(client, admin_token):
     assert "strip_prefix" in data
 
 
-@pytest.mark.asyncio
 async def test_save_keyauth_route_defaults_to_deny_all_when_no_master(client, admin_token):
     captured_body: dict = {}
 
@@ -262,7 +254,6 @@ async def test_save_keyauth_route_defaults_to_deny_all_when_no_master(client, ad
     }
 
 
-@pytest.mark.asyncio
 async def test_save_keyauth_route_whitelists_master_consumers(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as api_keys_apisix:
         api_keys_apisix.put_resource = AsyncMock(return_value={"username": "master-app"})
@@ -301,7 +292,6 @@ async def test_save_keyauth_route_whitelists_master_consumers(client, admin_toke
     }
 
 
-@pytest.mark.asyncio
 async def test_delete_route_protected_blocks(client, admin_token):
     for rid in PROTECTED_ROUTE_IDS:
         resp = await client.delete(
@@ -311,7 +301,6 @@ async def test_delete_route_protected_blocks(client, admin_token):
         assert resp.status_code == 400
 
 
-@pytest.mark.asyncio
 async def test_delete_route_apisix_errors(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.delete_resource = AsyncMock(side_effect=_http_status(404, "gone"))
@@ -327,7 +316,6 @@ async def test_delete_route_apisix_errors(client, admin_token):
 # ── Route test endpoint ─────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_route_test_no_upstream(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.get_resource = AsyncMock(return_value={"uri": "/x", "plugins": {}})
@@ -336,7 +324,6 @@ async def test_route_test_no_upstream(client, admin_token):
     assert "upstream" in resp.json()["detail"].lower()
 
 
-@pytest.mark.asyncio
 async def test_route_test_apisix_404(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.get_resource = AsyncMock(side_effect=_http_status(404, "no"))
@@ -344,7 +331,6 @@ async def test_route_test_apisix_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_route_test_apisix_generic(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.get_resource = AsyncMock(side_effect=RuntimeError("net"))
@@ -352,7 +338,6 @@ async def test_route_test_apisix_generic(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_route_test_upstream_no_nodes(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.get_resource = AsyncMock(side_effect=[
@@ -367,7 +352,6 @@ async def test_route_test_upstream_no_nodes(client, admin_token):
     assert "node" in resp.json()["detail"].lower()
 
 
-@pytest.mark.asyncio
 async def test_route_test_success_path(client, admin_token):
     fake_response = httpx.Response(200, json={"hello": "world"}, request=httpx.Request("GET", "http://x"))
     with patch("app.routers.gateway.apisix_client") as apisix, \
@@ -392,7 +376,6 @@ async def test_route_test_success_path(client, admin_token):
     assert body["status_code"] == 200
 
 
-@pytest.mark.asyncio
 async def test_route_test_uses_https_upstream_scheme(client, admin_token):
     fake_response = httpx.Response(200, json={"ok": True}, request=httpx.Request("GET", "https://x"))
     with patch("app.routers.gateway.apisix_client") as apisix, \
@@ -418,7 +401,6 @@ async def test_route_test_uses_https_upstream_scheme(client, admin_token):
     assert instance.get.await_args.kwargs["headers"]["Host"] == "secure.example.com"
 
 
-@pytest.mark.asyncio
 async def test_route_test_uses_rewrite_upstream_host(client, admin_token):
     fake_response = httpx.Response(200, json={"ok": True}, request=httpx.Request("GET", "https://x"))
     with patch("app.routers.gateway.apisix_client") as apisix, \
@@ -449,7 +431,6 @@ async def test_route_test_uses_rewrite_upstream_host(client, admin_token):
     assert instance.get.await_args.kwargs["headers"]["Host"] == "api.example.com"
 
 
-@pytest.mark.asyncio
 async def test_route_test_request_failure(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as apisix, \
             patch("httpx.AsyncClient") as cls:
@@ -476,7 +457,6 @@ async def test_route_test_request_failure(client, admin_token):
 # ── Curl generation ─────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_route_curl_basic(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.get_resource = AsyncMock(return_value={
@@ -492,7 +472,6 @@ async def test_route_curl_basic(client, admin_token):
     assert "apikey: <YOUR_API_KEY>" in curl
 
 
-@pytest.mark.asyncio
 async def test_route_curl_default_get_no_keyauth(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.get_resource = AsyncMock(return_value={
@@ -507,7 +486,6 @@ async def test_route_curl_default_get_no_keyauth(client, admin_token):
     assert "apikey" not in curl
 
 
-@pytest.mark.asyncio
 async def test_route_curl_apisix_404_and_error(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.get_resource = AsyncMock(side_effect=_http_status(404, "no"))
@@ -523,7 +501,6 @@ async def test_route_curl_apisix_404_and_error(client, admin_token):
 # ── Upstream endpoints ──────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_list_upstreams_marks_system(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.list_resources = AsyncMock(return_value={
@@ -536,7 +513,6 @@ async def test_list_upstreams_marks_system(client, admin_token):
     assert items["custom-up"] is False
 
 
-@pytest.mark.asyncio
 async def test_list_upstreams_errors(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.list_resources = AsyncMock(side_effect=_http_status(500))
@@ -549,25 +525,6 @@ async def test_list_upstreams_errors(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
-async def test_get_upstream_paths(client, admin_token):
-    with patch("app.routers.gateway.apisix_client") as mock:
-        mock.get_resource = AsyncMock(return_value={"id": "u1", "type": "roundrobin"})
-        resp = await client.get("/admin/gateway/upstreams/u1", headers=auth_header(admin_token))
-    assert resp.status_code == 200
-
-    with patch("app.routers.gateway.apisix_client") as mock:
-        mock.get_resource = AsyncMock(side_effect=_http_status(404))
-        resp = await client.get("/admin/gateway/upstreams/missing", headers=auth_header(admin_token))
-    assert resp.status_code == 404
-
-    with patch("app.routers.gateway.apisix_client") as mock:
-        mock.get_resource = AsyncMock(side_effect=RuntimeError("?"))
-        resp = await client.get("/admin/gateway/upstreams/x", headers=auth_header(admin_token))
-    assert resp.status_code == 502
-
-
-@pytest.mark.asyncio
 async def test_save_upstream_paths(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.put_resource = AsyncMock(return_value={"id": "u1"})
@@ -597,7 +554,6 @@ async def test_save_upstream_paths(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_delete_upstream_protected_blocks(client, admin_token):
     for uid in PROTECTED_UPSTREAM_IDS:
         resp = await client.delete(
@@ -607,7 +563,6 @@ async def test_delete_upstream_protected_blocks(client, admin_token):
         assert resp.status_code == 400
 
 
-@pytest.mark.asyncio
 async def test_delete_upstream_paths(client, admin_token):
     with patch("app.routers.gateway.apisix_client") as mock:
         mock.delete_resource = AsyncMock()
@@ -628,7 +583,6 @@ async def test_delete_upstream_paths(client, admin_token):
 # ── Generic metrics edge cases ──────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_metrics_requests_invalid_range_defaults(client, admin_token):
     with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,
                return_value=[]):
@@ -639,7 +593,6 @@ async def test_metrics_requests_invalid_range_defaults(client, admin_token):
     assert resp.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_metrics_requests_prometheus_error(client, admin_token):
     with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,
                side_effect=RuntimeError("p down")):
@@ -650,7 +603,6 @@ async def test_metrics_requests_prometheus_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_metrics_status_codes_filters_zero(client, admin_token):
     results = [
         {"metric": {"code": "200"}, "value": [0, "10"]},
@@ -668,7 +620,6 @@ async def test_metrics_status_codes_filters_zero(client, admin_token):
     assert {c["code"] for c in codes} == {"200"}
 
 
-@pytest.mark.asyncio
 async def test_metrics_status_codes_prometheus_error(client, admin_token):
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
                side_effect=RuntimeError("p")):
@@ -679,7 +630,6 @@ async def test_metrics_status_codes_prometheus_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_metrics_latency_prometheus_error(client, admin_token):
     with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,
                side_effect=RuntimeError("p")):
@@ -690,18 +640,6 @@ async def test_metrics_latency_prometheus_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
-async def test_metrics_top_routes_prometheus_error(client, admin_token):
-    with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
-               side_effect=RuntimeError("p")):
-        resp = await client.get(
-            "/admin/gateway/metrics/top-routes?range=1h",
-            headers=auth_header(admin_token),
-        )
-    assert resp.status_code == 502
-
-
-@pytest.mark.asyncio
 async def test_metrics_requests_total(client, admin_token):
     points = [{"values": [[1.0, "5"]]}]
     with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,
@@ -714,7 +652,6 @@ async def test_metrics_requests_total(client, admin_token):
     assert resp.json() == [{"timestamp": 1.0, "value": 5.0}]
 
 
-@pytest.mark.asyncio
 async def test_metrics_requests_total_prom_error(client, admin_token):
     with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,
                side_effect=RuntimeError("p")):
@@ -728,7 +665,6 @@ async def test_metrics_requests_total_prom_error(client, admin_token):
 # ── LLM metrics endpoints ───────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_summary_success(client, admin_token):
     side_effects = [
         [{"value": [0, "12000"]}],  # tokens
@@ -755,7 +691,6 @@ async def test_llm_metrics_summary_success(client, admin_token):
     assert data["cache_hit_rate"] == round(2000 / 8000, 4)
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_summary_zero_count(client, admin_token):
     """latency_count = 0 → avg_latency = 0."""
     side_effects = [[{"value": [0, "0"]}]] * 8
@@ -769,7 +704,6 @@ async def test_llm_metrics_summary_zero_count(client, admin_token):
     assert resp.json()["avg_latency_ms"] == 0.0
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_summary_prometheus_error(client, admin_token):
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
                side_effect=RuntimeError("p down")):
@@ -780,7 +714,6 @@ async def test_llm_metrics_summary_prometheus_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_summary_invalid_range_defaults(client, admin_token):
     side_effects = [[{"value": [0, "0"]}]] * 8
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
@@ -792,7 +725,6 @@ async def test_llm_metrics_summary_invalid_range_defaults(client, admin_token):
     assert resp.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_summary_cache_hit_rate_zero_prompt(client, admin_token):
     """cache_hit_rate is 0.0 when prompt tokens are 0 even if cached is present."""
     side_effects = [
@@ -817,7 +749,6 @@ async def test_llm_metrics_summary_cache_hit_rate_zero_prompt(client, admin_toke
     assert data["cache_hit_rate"] == 0.0
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_summary_reads_bifrost_only(client, admin_token):
     """Every summary figure is Bifrost's counter, pinned to its job; a total made
     of two counters tags each term with its own ``src`` so the union keeps both."""
@@ -851,12 +782,8 @@ async def test_llm_metrics_summary_reads_bifrost_only(client, admin_token):
         (latency_count, "bifrost_upstream_latency_seconds_count"),
     ):
         assert f'{bifrost}{{job="bifrost",fallback_index="0",method!="list_models"}}' in query
-    # LiteLLM's counters, from before /api/llm moved to Bifrost, are not read.
-    for query in (tokens, prompt, completion, spend, requests, latency_sum, latency_count, cached):
-        assert "litellm" not in query
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_api_key_scopes_every_term(client, admin_token):
     mock = AsyncMock(return_value=[])
     with patch("app.routers.gateway.prometheus_client.instant_query", mock):
@@ -870,7 +797,6 @@ async def test_llm_metrics_api_key_scopes_every_term(client, admin_token):
         assert query.count('consumer="svc.prod-1"') == query.count("increase(") > 0
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_tokens(client, admin_token):
     series = [{"values": [[1.0, "100"]]}]
     with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,
@@ -886,7 +812,6 @@ async def test_llm_metrics_tokens(client, admin_token):
     assert body["cached"] == [{"timestamp": 1.0, "value": 100.0}]
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_tokens_prom_error(client, admin_token):
     with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,
                side_effect=RuntimeError("p")):
@@ -897,7 +822,6 @@ async def test_llm_metrics_tokens_prom_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_by_model(client, admin_token):
     # The union query hands back one ``model`` label: the requested model name
     # (Bifrost's alias) or, without one, the model.
@@ -967,7 +891,6 @@ async def test_llm_metrics_by_model(client, admin_token):
     assert not any("requested_model" in q for q in queries)
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_by_model_adds_rows_that_share_a_model(client, admin_token):
     """Two series under one model (say, one per counter) add up instead of the
     last one overwriting the first, so the table agrees with /by-model-series."""
@@ -1003,7 +926,6 @@ async def test_llm_metrics_by_model_adds_rows_that_share_a_model(client, admin_t
     ]
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_by_model_prom_error(client, admin_token):
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
                side_effect=RuntimeError("p")):
@@ -1014,7 +936,6 @@ async def test_llm_metrics_by_model_prom_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_top_keys(client, admin_token):
     # The union query hands back the key as Bifrost's ``consumer`` label.
     tokens = [
@@ -1065,7 +986,6 @@ async def test_llm_metrics_top_keys(client, admin_token):
     assert not any("end_user" in q for q in queries)
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_top_keys_prom_error(client, admin_token):
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
                side_effect=RuntimeError("p")):
@@ -1076,7 +996,6 @@ async def test_llm_metrics_top_keys_prom_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_errors(client, admin_token):
     success = [{"values": [[1.0, "10"], [2.0, "20"]]}]
     error = [{"values": [[1.0, "1"], [2.0, "2"]]}]
@@ -1094,7 +1013,6 @@ async def test_llm_metrics_errors(client, admin_token):
     ]
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_errors_prom_error(client, admin_token):
     with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,
                side_effect=RuntimeError("p")):
@@ -1105,7 +1023,6 @@ async def test_llm_metrics_errors_prom_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_status_codes(client, admin_token):
     # Sourced from APISIX apisix_http_status (instant_query), broken out by code.
     results = [
@@ -1130,7 +1047,6 @@ async def test_llm_metrics_status_codes(client, admin_token):
     ]
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_status_codes_prom_error(client, admin_token):
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
                side_effect=RuntimeError("p")):
@@ -1141,7 +1057,6 @@ async def test_llm_metrics_status_codes_prom_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_metrics_consumers_comparison(client, admin_token):
     requests_result = [
         {"metric": {"consumer": "alice"}, "value": [0, "800"]},
@@ -1183,7 +1098,6 @@ async def test_metrics_consumers_comparison(client, admin_token):
     assert [c["consumer"] for c in data["consumers"]] == ["alice", "bob", "(no api key)"]
 
 
-@pytest.mark.asyncio
 async def test_metrics_consumers_comparison_prom_error(client, admin_token):
     with patch("app.routers.gateway.prometheus_client.instant_query", new_callable=AsyncMock,
                side_effect=RuntimeError("p")):
@@ -1194,7 +1108,6 @@ async def test_metrics_consumers_comparison_prom_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_requests_total(client, admin_token):
     series = [{"values": [[1.0, "42"]]}]
     with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,
@@ -1207,7 +1120,6 @@ async def test_llm_metrics_requests_total(client, admin_token):
     assert resp.json() == [{"timestamp": 1.0, "value": 42.0}]
 
 
-@pytest.mark.asyncio
 async def test_llm_metrics_requests_total_prom_error(client, admin_token):
     with patch("app.routers.gateway.prometheus_client.range_query", new_callable=AsyncMock,
                side_effect=RuntimeError("p")):

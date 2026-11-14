@@ -60,14 +60,12 @@ class _RacingSettingsDb:
 
 # ── Channels ────────────────────────────────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_list_channels_empty(client, admin_token):
     resp = await client.get("/admin/alerts/channels", headers=auth_header(admin_token))
     assert resp.status_code == 200
     assert resp.json() == []
 
 
-@pytest.mark.asyncio
 async def test_create_channel_success(client, admin_token):
     resp = await client.post(
         "/admin/alerts/channels",
@@ -86,7 +84,6 @@ async def test_create_channel_success(client, admin_token):
     assert body["headers"] == {"X-Token": "abc"}
 
 
-@pytest.mark.asyncio
 async def test_create_channel_duplicate_name(client, admin_token):
     payload = {
         "name": "dup-ch",
@@ -107,7 +104,6 @@ async def test_create_channel_duplicate_name(client, admin_token):
     assert r2.status_code == 409
 
 
-@pytest.mark.asyncio
 async def test_list_channels_after_create(client, admin_token):
     await client.post(
         "/admin/alerts/channels",
@@ -122,7 +118,6 @@ async def test_list_channels_after_create(client, admin_token):
     assert data[0]["headers"] == {"H": "v"}
 
 
-@pytest.mark.asyncio
 async def test_update_channel_success(client, admin_token):
     create = await client.post(
         "/admin/alerts/channels",
@@ -149,7 +144,6 @@ async def test_update_channel_success(client, admin_token):
     assert body["enabled"] is False
 
 
-@pytest.mark.asyncio
 async def test_update_channel_missing_fields_keeps_existing(client, admin_token):
     create = await client.post(
         "/admin/alerts/channels",
@@ -167,7 +161,6 @@ async def test_update_channel_missing_fields_keeps_existing(client, admin_token)
     assert resp.json()["headers"] == {"K": "V"}
 
 
-@pytest.mark.asyncio
 async def test_update_channel_404(client, admin_token):
     resp = await client.put(
         "/admin/alerts/channels/9999",
@@ -177,7 +170,6 @@ async def test_update_channel_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_update_channel_duplicate_name(client, admin_token):
     a = await client.post(
         "/admin/alerts/channels",
@@ -197,7 +189,6 @@ async def test_update_channel_duplicate_name(client, admin_token):
     assert resp.status_code == 409
 
 
-@pytest.mark.asyncio
 async def test_delete_channel_success(client, admin_token):
     create = await client.post(
         "/admin/alerts/channels",
@@ -212,7 +203,6 @@ async def test_delete_channel_success(client, admin_token):
     assert resp.status_code == 204
 
 
-@pytest.mark.asyncio
 async def test_delete_channel_404(client, admin_token):
     resp = await client.delete(
         "/admin/alerts/channels/9999",
@@ -221,7 +211,6 @@ async def test_delete_channel_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_test_channel_success(client, admin_token):
     create = await client.post(
         "/admin/alerts/channels",
@@ -244,7 +233,6 @@ async def test_test_channel_success(client, admin_token):
     assert call_kwargs["headers"] == {"X": "y"}
 
 
-@pytest.mark.asyncio
 async def test_test_channel_failure(client, admin_token):
     create = await client.post(
         "/admin/alerts/channels",
@@ -261,7 +249,6 @@ async def test_test_channel_failure(client, admin_token):
     assert resp.json() == {"success": False, "error": "timeout"}
 
 
-@pytest.mark.asyncio
 async def test_test_channel_not_found(client, admin_token):
     resp = await client.post(
         "/admin/alerts/channels/9999/test",
@@ -272,7 +259,6 @@ async def test_test_channel_not_found(client, admin_token):
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_get_and_update_alert_settings(client, admin_token):
     ch = await client.post(
         "/admin/alerts/channels",
@@ -307,7 +293,6 @@ async def test_get_and_update_alert_settings(client, admin_token):
         assert body[key] == value
 
 
-@pytest.mark.asyncio
 async def test_update_alert_settings_dedupes_admin_emails(client, admin_token):
     resp = await client.put(
         "/admin/alerts/settings",
@@ -318,7 +303,6 @@ async def test_update_alert_settings_dedupes_admin_emails(client, admin_token):
     assert resp.json()["admin_emails"] == ["a@x.com", "b@x.com"]
 
 
-@pytest.mark.asyncio
 async def test_update_alert_settings_accepts_empty_admin_emails(client, admin_token):
     resp = await client.put(
         "/admin/alerts/settings",
@@ -329,7 +313,6 @@ async def test_update_alert_settings_accepts_empty_admin_emails(client, admin_to
     assert resp.json()["admin_emails"] == []
 
 
-@pytest.mark.asyncio
 async def test_delete_mail_channel_in_use_returns_409(client, admin_token):
     ch = await client.post(
         "/admin/alerts/channels",
@@ -353,7 +336,6 @@ async def test_delete_mail_channel_in_use_returns_409(client, admin_token):
     assert "default mail channel" in resp.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_update_alert_settings_invalid_channel_does_not_create_settings_row(
     client, admin_token, seeded_db,
 ):
@@ -374,7 +356,6 @@ async def test_update_alert_settings_invalid_channel_does_not_create_settings_ro
     assert settings is None
 
 
-@pytest.mark.asyncio
 async def test_get_or_create_alert_settings_handles_concurrent_insert_race():
     db = _RacingSettingsDb()
 
@@ -386,7 +367,6 @@ async def test_get_or_create_alert_settings_handles_concurrent_insert_race():
     assert db.execute.await_count == 2
 
 
-@pytest.mark.asyncio
 async def test_update_alert_settings_rejects_explicit_numeric_nulls(client, admin_token):
     interval_resp = await client.put(
         "/admin/alerts/settings",
@@ -403,7 +383,6 @@ async def test_update_alert_settings_rejects_explicit_numeric_nulls(client, admi
     assert threshold_resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_update_alert_settings_rejects_invalid_disk_threshold_order(client, admin_token):
     resp = await client.put(
         "/admin/alerts/settings",
@@ -420,7 +399,6 @@ async def test_update_alert_settings_rejects_invalid_disk_threshold_order(client
     assert partial_resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_update_alert_settings_trigger_after_failures(client, admin_token):
     resp = await client.put(
         "/admin/alerts/settings",
@@ -439,7 +417,6 @@ async def test_update_alert_settings_trigger_after_failures(client, admin_token)
     assert resp_get.json()["trigger_after_failures"] == 5
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_value", [0, -1, 11, 100])
 async def test_update_alert_settings_trigger_after_failures_out_of_range(
     client, admin_token, invalid_value,
@@ -452,7 +429,6 @@ async def test_update_alert_settings_trigger_after_failures_out_of_range(
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("value", [1, 60])
 async def test_update_alert_settings_resolve_after_successes(client, admin_token, value):
     resp = await client.put(
@@ -471,7 +447,6 @@ async def test_update_alert_settings_resolve_after_successes(client, admin_token
     assert resp_get.json()["resolve_after_successes"] == value
 
 
-@pytest.mark.asyncio
 async def test_get_alert_settings_defaults_resolve_after_successes_to_five(
     client, admin_token,
 ):
@@ -481,7 +456,6 @@ async def test_get_alert_settings_defaults_resolve_after_successes_to_five(
     assert resp.json()["resolve_after_successes"] == 5
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_value", [0, -1, 61, 1000])
 async def test_update_alert_settings_resolve_after_successes_out_of_range(
     client, admin_token, invalid_value,
@@ -494,7 +468,6 @@ async def test_update_alert_settings_resolve_after_successes_out_of_range(
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_update_alert_settings_resolve_after_successes_rejects_null(
     client, admin_token,
 ):
@@ -506,7 +479,6 @@ async def test_update_alert_settings_resolve_after_successes_rejects_null(
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_update_alert_settings_trigger_after_failures_rejects_null(
     client, admin_token,
 ):
@@ -520,7 +492,6 @@ async def test_update_alert_settings_trigger_after_failures_rejects_null(
 
 # ── Recipients test ───────────────────────────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_recipients_test_sends_to_explicit_emails(client, admin_token):
     ch = await client.post(
         "/admin/alerts/channels",
@@ -555,7 +526,6 @@ async def test_recipients_test_sends_to_explicit_emails(client, admin_token):
     assert "lead@example.com" in call["payload"]
 
 
-@pytest.mark.asyncio
 async def test_recipients_test_requires_recipient_item_template(client, admin_token):
     ch = await client.post(
         "/admin/alerts/channels",
@@ -584,7 +554,6 @@ async def test_recipients_test_requires_recipient_item_template(client, admin_to
     send.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_recipients_test_channel_not_found(client, admin_token):
     resp = await client.post(
         "/admin/alerts/settings/recipients/test",
@@ -596,7 +565,6 @@ async def test_recipients_test_channel_not_found(client, admin_token):
     assert "not found" in resp.json()["error"].lower()
 
 
-@pytest.mark.asyncio
 async def test_recipients_test_rejects_empty_emails(client, admin_token):
     ch = await client.post(
         "/admin/alerts/channels",
@@ -614,8 +582,7 @@ async def test_recipients_test_rejects_empty_emails(client, admin_token):
 
 # ── Resource Owners (담당자) ───────────────────────────────────────────────────
 
-@pytest.mark.asyncio
-async def test_resource_owner_upsert_and_delete_for_db(client, admin_token, seeded_db):
+async def test_resource_owner_upsert_for_db(client, admin_token, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
         db.add(DBConnection(
@@ -661,19 +628,11 @@ async def test_resource_owner_upsert_and_delete_for_db(client, admin_token, seed
             for row in rows
         )
 
-        delete_resp = await client.delete(
-            "/admin/alerts/resource-owners/db/orders-db",
-            headers=auth_header(admin_token),
-        )
-
-    assert delete_resp.status_code == 204
-
     async with session_factory() as db:
-        owner = (await db.execute(select(ResourceOwner))).scalar_one_or_none()
-    assert owner is None
+        owner = (await db.execute(select(ResourceOwner))).scalar_one()
+    assert json.loads(owner.emails) == ["orders@example.com", "ops@example.com"]
 
 
-@pytest.mark.asyncio
 async def test_resource_owner_can_disable_alerts_without_assignees(client, admin_token, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -717,7 +676,6 @@ async def test_resource_owner_can_disable_alerts_without_assignees(client, admin
     assert owner.alerts_enabled is False
 
 
-@pytest.mark.asyncio
 async def test_resource_owner_empty_emails_clears_assignees(client, admin_token, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -753,7 +711,6 @@ async def test_resource_owner_empty_emails_clears_assignees(client, admin_token,
     assert owner is None
 
 
-@pytest.mark.asyncio
 async def test_resource_owner_rejects_unknown_resource(client, admin_token, seeded_db):
     resp = await client.put(
         "/admin/alerts/resource-owners/db/missing-db",
@@ -764,7 +721,6 @@ async def test_resource_owner_rejects_unknown_resource(client, admin_token, seed
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_resource_owner_upsert_handles_concurrent_insert_conflict(client, admin_token, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -811,7 +767,6 @@ async def test_resource_owner_upsert_handles_concurrent_insert_conflict(client, 
     assert json.loads(owner.emails) == ["race@example.com"]
 
 
-@pytest.mark.asyncio
 async def test_resource_owner_rejects_unsupported_resource_type(client, admin_token):
     resp = await client.put(
         "/admin/alerts/resource-owners/cache/redis",
@@ -821,15 +776,7 @@ async def test_resource_owner_rejects_unsupported_resource_type(client, admin_to
 
     assert resp.status_code == 422
 
-    delete_resp = await client.delete(
-        "/admin/alerts/resource-owners/cache/redis",
-        headers=auth_header(admin_token),
-    )
 
-    assert delete_resp.status_code == 422
-
-
-@pytest.mark.asyncio
 async def test_resource_owner_validates_route_and_nas_but_rejects_upstream(client, admin_token, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -877,7 +824,6 @@ async def test_resource_owner_validates_route_and_nas_but_rejects_upstream(clien
     assert upstream_resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_resource_owner_lists_apisix_resources_with_email_mapping(client, admin_token, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -939,7 +885,6 @@ async def test_resource_owner_lists_apisix_resources_with_email_mapping(client, 
     assert not any(row["resource_type"] == "upstream" for row in rows)
 
 
-@pytest.mark.asyncio
 async def test_resource_owner_list_returns_503_when_apisix_fails(client, admin_token):
     with patch("app.routers.alerts.apisix_client") as mock_apisix:
         mock_apisix.list_resources = AsyncMock(side_effect=RuntimeError("apisix down"))
@@ -951,7 +896,6 @@ async def test_resource_owner_list_returns_503_when_apisix_fails(client, admin_t
     assert resp.status_code == 503
 
 
-@pytest.mark.asyncio
 async def test_resource_owner_permissions_use_alert_read_and_write(
     client, admin_token, alerts_reader_token, seeded_db,
 ):
@@ -982,16 +926,9 @@ async def test_resource_owner_permissions_use_alert_read_and_write(
         )
         assert write_denied.status_code == 403
 
-        delete_denied = await client.delete(
-            "/admin/alerts/resource-owners/s3/reports-bucket",
-            headers=auth_header(alerts_reader_token),
-        )
-        assert delete_denied.status_code == 403
-
 
 # ── History ─────────────────────────────────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_history_filters(client, admin_token, seeded_db):
     SessionLocal = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     base = datetime(2026, 4, 30, 10, 0, tzinfo=timezone.utc)
@@ -1043,7 +980,6 @@ async def test_history_filters(client, admin_token, seeded_db):
 
 # ── Status ──────────────────────────────────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_alert_status_no_state(client, admin_token):
     alerts_router.set_alert_state(None)
     resp = await client.get("/admin/alerts/status", headers=auth_header(admin_token))
@@ -1051,7 +987,6 @@ async def test_alert_status_no_state(client, admin_token):
     assert resp.json() == {"global_muted_until": None, "items": []}
 
 
-@pytest.mark.asyncio
 async def test_alert_status_with_state(client, admin_token):
     state = AlertStateManager()
     state.update("db_health", "db-x", is_healthy=False, trigger_after_failures=2)

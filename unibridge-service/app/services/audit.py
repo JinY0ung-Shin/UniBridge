@@ -11,8 +11,10 @@ from app.models import AdminAuditLog, AuditLog
 
 logger = logging.getLogger(__name__)
 
-# How many trailing characters of a secret to keep when masking, matching the
-# gateway/api-key masking helpers (``"***" + value[-4:]``).
+# The one masking rule for secrets this API hands out or records: "***" plus
+# the last MASK_KEEP characters. app/routers/gateway.py derives the pattern that
+# recognises a mask sent back from both constants.
+MASK_PREFIX = "***"
 MASK_KEEP = 4
 
 # Dict keys whose scalar value is always a secret, regardless of nesting depth.
@@ -82,10 +84,11 @@ async def log_query(
     return entry
 
 
-def _mask_secret(value: Any) -> str:
+def mask_secret(value: Any) -> str:
+    """``MASK_PREFIX`` plus the last ``MASK_KEEP`` characters; bare for a short or non-string value."""
     if isinstance(value, str) and len(value) > MASK_KEEP:
-        return "***" + value[-MASK_KEEP:]
-    return "***"
+        return MASK_PREFIX + value[-MASK_KEEP:]
+    return MASK_PREFIX
 
 
 def _redact(value: Any, *, mask_all: bool = False, parent_key: str | None = None) -> Any:
@@ -111,7 +114,7 @@ def _redact(value: Any, *, mask_all: bool = False, parent_key: str | None = None
     if isinstance(value, list):
         return [_redact(item, mask_all=mask_all, parent_key=parent_key) for item in value]
     if mask_all and value is not None:
-        return _mask_secret(value)
+        return mask_secret(value)
     return value
 
 

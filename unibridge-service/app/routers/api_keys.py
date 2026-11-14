@@ -8,15 +8,14 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from httpx import HTTPStatusError
-from sqlalchemy import exists, or_, select, update
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from app.auth import CurrentUser, get_role_permissions, require_permission
 from app.database import get_db
 from app.db_types import utcnow
-from app.models import AdminAuditLog, ApiKeyAccess
+from app.models import ApiKeyAccess
 from app.schemas import (
     ApiKeyCreate,
     ApiKeyResponse,
@@ -25,7 +24,7 @@ from app.schemas import (
     ApiKeyUsageResponse,
 )
 from app.services import apisix_client, prometheus_client
-from app.services.audit import log_admin_action
+from app.services.audit import log_admin_action, mask_secret
 from app.services.consumer_restrictions import (
     DENY_ALL_CONSUMER,
     MASTER_ACCESS,
@@ -38,9 +37,6 @@ from app.services.consumer_restrictions import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/api-keys", tags=["API Keys"])
-
-MASK_KEEP = 4
-
 
 def _build_limit_count_plugin(rate_limit_per_minute: int | None) -> dict | None:
     """Build APISIX limit-count plugin config for a per-consumer rate limit.
@@ -73,18 +69,12 @@ def _generate_api_key() -> str:
     return secrets.token_urlsafe(32)
 
 
-def _mask_key(value: str) -> str:
-    if len(value) <= MASK_KEEP:
-        return "***"
-    return "***" + value[-MASK_KEEP:]
-
-
 def _extract_api_key(consumer: dict, mask: bool = True) -> str | None:
     plugins = consumer.get("plugins", {})
     key = plugins.get("key-auth", {}).get("key")
     if not key:
         return None
-    return _mask_key(key) if mask else key
+    return mask_secret(key) if mask else key
 
 
 def _is_master_access(allowed_databases: list[str], allowed_routes: list[str]) -> bool:
@@ -265,54 +255,6 @@ async def _sync_consumer_restriction(allowed_routes: list[str], consumer_name: s
                 detail=f"Failed to update consumer-restriction on route {route_id}: {exc}. "
                 f"Rolled back {len(applied)} previously applied change(s).",
             )
-
-
-async def backfill_api_key_issuers(db: AsyncSession) -> int:
-    """Record the issuer of admin keys that have none, from the admin audit log.
-
-    The issuer is the actor of the key name's latest successful ``create`` — unless
-    a successful ``delete`` followed it: then the current row was re-created by
-    someone whose audit write failed (audit writes are best-effort), and naming the
-    earlier creator would list the key as theirs. Keys older than the audit log
-    stay unknown. Runs at every boot rather than once in migration 0027: during a
-    blue-green deploy the old color keeps creating keys without an issuer while
-    the new one boots, and so does a rolled-back release. Only admin keys with no
-    issuer are touched (self-service keys are matched by ``owner``), so repeating
-    it is harmless. Returns the number of keys filled in.
-    """
-    create = aliased(AdminAuditLog)
-    later_delete = aliased(AdminAuditLog)
-    issuer = (
-        select(create.actor)
-        .where(
-            create.resource_type == "api_key",
-            create.action == "create",
-            create.status == "success",
-            create.resource_id == ApiKeyAccess.consumer_name,
-            ~exists().where(
-                later_delete.resource_type == "api_key",
-                later_delete.action == "delete",
-                later_delete.status == "success",
-                later_delete.resource_id == create.resource_id,
-                later_delete.id > create.id,
-            ),
-        )
-        .order_by(create.id.desc())
-        .limit(1)
-        .scalar_subquery()
-    )
-    result = await db.execute(
-        update(ApiKeyAccess)
-        .where(
-            ApiKeyAccess.created_by.is_(None),
-            ApiKeyAccess.owner.is_(None),
-            issuer.is_not(None),
-        )
-        .values(created_by=issuer)
-        .execution_options(synchronize_session=False)
-    )
-    await db.commit()
-    return result.rowcount
 
 
 async def sync_all_consumer_route_restrictions(db: AsyncSession) -> None:

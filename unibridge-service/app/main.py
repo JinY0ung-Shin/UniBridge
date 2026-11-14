@@ -54,10 +54,6 @@ from app.services.apisix_system_resources import (
     MCP_API_ROUTE_ID,
     NETWORK_API_ROUTE_ID,
     NETWORK_WRITE_ROUTE_ID,
-    RETIRED_LITELLM_ROUTE_ID,
-    RETIRED_LITELLM_UPSTREAM_ID,
-    RETIRED_LLM_BI_ROUTE_IDS,
-    RETIRED_LLM_BI_UPSTREAM_ID,
     QUERY_TEMPLATE_WRITE_ROUTE_ID,
 )
 from app.services.connection_manager import connection_manager
@@ -283,110 +279,25 @@ async def _put_upstream_if_unclaimed(upstream_id: str, body: dict[str, object]) 
     return True
 
 
-async def _delete_if_present(resource: str, resource_id: str) -> None:
-    from app.services import apisix_client
+async def _put_not_found_route(route_id: str, body: dict[str, object], prefix: str) -> None:
+    """Install a route that only explains a 404 (llm-not-found, llm-bi-not-found).
 
-    try:
-        await apisix_client.delete_resource(resource, resource_id)
-    except Exception as exc:
-        if not _is_missing_route_error(exc):
-            raise
-
-
-async def _delete_if_installed(resource: str, resource_id: str) -> None:
-    """Delete a resource only once a read shows it there: most boots have none to delete."""
-    from app.services import apisix_client
-
-    try:
-        await apisix_client.get_resource(resource, resource_id)
-    except Exception as exc:
-        if _is_missing_route_error(exc):
-            return
-        raise
-    await _delete_if_present(resource, resource_id)
-
-
-async def _delete_route_if_installed(route_id: str) -> None:
-    await _delete_if_installed("routes", route_id)
-
-
-async def _retire_llm_bi_routes() -> None:
-    """Take the Bifrost side-by-side test (/api/llm-bi) out of APISIX.
-
-    Every provisioning boot, so the first deploy after upgrading removes it
-    (scripts/deploy-bluegreen.sh ``apisix_llm_bi_retired`` re-provisions while
-    any of it is left). The 404 goes in first, so the paths answer it as the
-    routes go; routes go before upstreams, since APISIX refuses to delete an
-    upstream a route uses. A route this service does not manage keeps an
-    upstream, with a warning (``_delete_upstream_unless_used``).
-    APISIX refusing the 404 route (a 4xx) is only logged: it explains a 404 and
-    must not keep the service down.
+    APISIX refusing it (a 4xx) is only logged: it explains a 404 and must not
+    keep the service down. Anything else reaches the provisioning retry loop.
     """
     from app.services import apisix_client
 
     try:
-        await apisix_client.put_resource(
-            "routes", LLM_BI_NOT_FOUND_ROUTE_ID, llm_routes.retired_llm_bi_route()
-        )
+        await apisix_client.put_resource("routes", route_id, body)
     except HTTPStatusError as exc:
         if not 400 <= exc.response.status_code < 500:
             raise
         logger.warning(
-            "APISIX refused the %s route, so /api/llm-bi answers its bare 404: %s",
-            LLM_BI_NOT_FOUND_ROUTE_ID,
+            "APISIX refused the %s route, so %s answers its bare 404: %s",
+            route_id,
+            prefix,
             exc.response.text,
         )
-    for route_id in RETIRED_LLM_BI_ROUTE_IDS:
-        await _delete_route_if_installed(route_id)
-    await _delete_upstream_unless_used(RETIRED_LLM_BI_UPSTREAM_ID)
-
-
-async def _delete_upstream_unless_used(upstream_id: str) -> None:
-    """Delete an upstream if installed; APISIX refusing because a route uses it is only logged."""
-    try:
-        await _delete_if_installed("upstreams", upstream_id)
-    except HTTPStatusError as exc:
-        if exc.response.status_code != 400:
-            raise
-        logger.warning(
-            "Kept APISIX upstream %s, which another route still uses: %s",
-            upstream_id,
-            exc.response.text,
-        )
-
-
-async def _put_llm_not_found_route() -> None:
-    """Install llm-not-found; APISIX refusing it must not keep the service down.
-
-    Same reasoning as for llm-bi-not-found (``_retire_llm_bi_routes``): it only
-    explains a 404.
-    """
-    from app.services import apisix_client
-
-    try:
-        await apisix_client.put_resource(
-            "routes", LLM_NOT_FOUND_ROUTE_ID, llm_routes.not_found_route()
-        )
-    except HTTPStatusError as exc:
-        if not 400 <= exc.response.status_code < 500:
-            raise
-        logger.warning(
-            "APISIX refused the %s route, so /api/llm answers its bare 404: %s",
-            LLM_NOT_FOUND_ROUTE_ID,
-            exc.response.text,
-        )
-
-
-async def _retire_litellm_routing() -> None:
-    """Take what LiteLLM left in APISIX out: its admin UI route and its upstream.
-
-    LiteLLM is gone from the stack, so the route would only 502 and the alert
-    checker would report the upstream down. Every provisioning boot, after
-    ``_provision_llm_routes`` has moved llm-proxy and llm-metrics to Bifrost; the
-    route goes first, since APISIX refuses to delete an upstream a route uses.
-    """
-    await _delete_route_if_installed(RETIRED_LITELLM_ROUTE_ID)
-    await _delete_upstream_unless_used(RETIRED_LITELLM_UPSTREAM_ID)
 
 
 async def _provision_llm_routes() -> None:
@@ -443,7 +354,7 @@ async def _provision_llm_routes() -> None:
         "llm-metrics",
         await _preserve_consumer_restriction("llm-metrics", llm_routes.bifrost_metrics_route()),
     )
-    await _put_llm_not_found_route()
+    await _put_not_found_route(LLM_NOT_FOUND_ROUTE_ID, llm_routes.not_found_route(), "/api/llm")
     logger.info("APISIX /api/llm routes provisioned on Bifrost")
 
 
@@ -487,22 +398,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await server_monitor.sync_targets_from_db(db)
         await server_monitor.sync_service_targets_from_db(db)
         break
-
-    # Every boot, not just migration 0027: an old blue-green color (or a rolled-back
-    # release) keeps creating keys without an issuer. Best-effort — a key left
-    # without one is still listed under "all keys".
-    try:
-        async for db in get_db():
-            filled = await api_keys.backfill_api_key_issuers(db)
-            if filled:
-                logger.info("Recorded the issuer of %d API key(s) from the audit log", filled)
-            break
-    except Exception as exc:
-        logger.warning(
-            "Could not record API key issuers from the audit log (%s); "
-            "it is tried again on the next boot",
-            exc,
-        )
 
     logger.info("Loading system settings...")
     async for db in get_db():
@@ -927,11 +822,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 # ── /api/llm on Bifrost ──
                 await _provision_llm_routes()
 
-                # ── What LiteLLM left behind (llm-admin, litellm upstream) ──
-                await _retire_litellm_routing()
-
-                # ── The retired Bifrost side-by-side test (/api/llm-bi) ──
-                await _retire_llm_bi_routes()
+                # ── The removed Bifrost side-by-side test (/api/llm-bi) ──
+                # Its routes are gone; this 404 points callers to /api/llm.
+                await _put_not_found_route(
+                    LLM_BI_NOT_FOUND_ROUTE_ID, llm_routes.retired_llm_bi_route(), "/api/llm-bi"
+                )
 
                 # ── External MCP servers' relay routes (mcp-ext-*) ──
                 # Before the restriction replay below, which fills their
@@ -1316,6 +1211,8 @@ app.include_router(users.router)
 
 
 # ── Dev/Testing token endpoint ───────────────────────────────────────────────
+# The same flag also stops app.auth from checking the internal-proxy secret on
+# API-key requests (see Settings.ENABLE_DEV_TOKEN_ENDPOINT).
 
 if settings.ENABLE_DEV_TOKEN_ENDPOINT:
     logger.warning(

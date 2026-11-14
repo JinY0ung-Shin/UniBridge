@@ -102,7 +102,6 @@ def _disk_signal(healthy: bool, severity: str | None) -> HostSignal:
 _CYCLE = dict(trigger_after_failures=1, resolve_after_successes=1, repeat=0)
 
 
-@pytest.mark.asyncio
 async def test_failed_reannouncement_keeps_the_recovery(monkeypatch):
     """warning paged → critical escalation fails to send → recovery still goes out."""
     monkeypatch.setattr(alert_checker, "_persist_state_safely", AsyncMock())
@@ -134,7 +133,6 @@ def _muted_web1() -> MuteIndex:
     return MuteIndex(targets={("server", "web1"): datetime.now(timezone.utc) + timedelta(hours=1)})
 
 
-@pytest.mark.asyncio
 async def test_failed_escalation_is_retried_until_delivered(monkeypatch):
     """warning announced → the critical mail fails → critical must still go out,
     on the next critical cycle or the next crossing, without losing the recovery."""
@@ -154,7 +152,6 @@ async def test_failed_escalation_is_retried_until_delivered(monkeypatch):
     assert await _cycle(state, True, None) == ["resolved"]
 
 
-@pytest.mark.asyncio
 async def test_escalation_withheld_by_a_mute_fires_after_it_expires(monkeypatch):
     monkeypatch.setattr(alert_checker, "_persist_state_safely", AsyncMock())
     state = AlertStateManager()
@@ -167,7 +164,6 @@ async def test_escalation_withheld_by_a_mute_fires_after_it_expires(monkeypatch)
     assert state.get_pending_notify("server_disk", "web1") is False
 
 
-@pytest.mark.asyncio
 async def test_escalation_withheld_by_a_mute_fires_when_still_critical(monkeypatch):
     monkeypatch.setattr(alert_checker, "_persist_state_safely", AsyncMock())
     state = AlertStateManager()
@@ -187,7 +183,6 @@ def test_legacy_row_without_a_peak_treats_its_severity_as_announced():
     assert state.update("server_disk", "web1", is_healthy=False, severity="critical", **kw) == "triggered"
 
 
-@pytest.mark.asyncio
 async def test_failed_first_announcement_is_still_rearmed(monkeypatch):
     monkeypatch.setattr(alert_checker, "_persist_state_safely", AsyncMock())
     state = AlertStateManager()
@@ -206,7 +201,6 @@ async def test_failed_first_announcement_is_still_rearmed(monkeypatch):
 # ── Stale state after a disable/delete race ──────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_state_written_back_for_a_disabled_host_is_dropped_next_cycle(monkeypatch):
     """A cycle that loaded the registry before a disable can recreate the state
     the router just cleared; the next cycle drops it again, silently."""
@@ -230,7 +224,6 @@ async def test_state_written_back_for_a_disabled_host_is_dropped_next_cycle(monk
     assert state.get_entry("db_health", "web1") is not None
 
 
-@pytest.mark.asyncio
 async def test_state_of_a_disabled_service_is_dropped(monkeypatch):
     state = AlertStateManager()
     state.update("external_service_down", "orders", is_healthy=False, trigger_after_failures=1)
@@ -245,7 +238,6 @@ async def test_state_of_a_disabled_service_is_dropped(monkeypatch):
     assert state.get_entry("external_service_down", "billing") is None
 
 
-@pytest.mark.asyncio
 async def test_registry_load_failure_keeps_state(monkeypatch):
     state = AlertStateManager()
     state.update("server_down", "web1", is_healthy=False, trigger_after_failures=1)
@@ -283,7 +275,6 @@ def test_host_schema_accepts_ordinary_labels():
 # ── Unmatched disk mountpoints ───────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_unmatched_mountpoints_raise_a_disk_warning():
     """A typo'd whitelist must not switch disk alerting off silently."""
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
@@ -296,7 +287,6 @@ async def test_unmatched_mountpoints_raise_a_disk_warning():
     assert "/Data" in disk.message
 
 
-@pytest.mark.asyncio
 async def test_unmatched_mountpoints_use_critical_on_a_crit_only_host():
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _queries({'up{job="nodes"}': [_series("web1", 1)]})
@@ -307,7 +297,6 @@ async def test_unmatched_mountpoints_use_critical_on_a_crit_only_host():
     assert (disk.is_healthy, disk.severity) == (False, "critical")
 
 
-@pytest.mark.asyncio
 async def test_fixed_mountpoints_refresh_the_stored_observation(monkeypatch):
     """Fixed whitelist, usage still above warn: the alert stays open, but its
     current observation must describe the real usage, not the old mismatch."""
@@ -330,7 +319,6 @@ async def test_fixed_mountpoints_refresh_the_stored_observation(monkeypatch):
     assert "no filesystem" in entry["details"]["incident"]["message"]
 
 
-@pytest.mark.asyncio
 async def test_unmatched_mountpoints_stay_quiet_when_disk_is_off():
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _queries({'up{job="nodes"}': [_series("web1", 1)]})
@@ -340,7 +328,6 @@ async def test_unmatched_mountpoints_stay_quiet_when_disk_is_off():
     assert all(s.alert_type != "server_disk" for s in signals)
 
 
-@pytest.mark.asyncio
 async def test_failed_disk_query_is_not_read_as_unmatched_mountpoints():
     failed: list[str] = []
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
@@ -354,7 +341,6 @@ async def test_failed_disk_query_is_not_read_as_unmatched_mountpoints():
     assert failed == ["disk"]
 
 
-@pytest.mark.asyncio
 async def test_down_host_gets_no_unmatched_mountpoint_warning():
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _queries({'up{job="nodes"}': [_series("web1", 0)]})
@@ -365,7 +351,6 @@ async def test_down_host_gets_no_unmatched_mountpoint_warning():
 # ── file_sd ──────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_unchanged_targets_file_is_not_rewritten(tmp_path):
     path = tmp_path / "nodes.json"
     await server_monitor.write_targets_file([_host("web1")], str(path))
@@ -379,7 +364,6 @@ async def test_unchanged_targets_file_is_not_rewritten(tmp_path):
     assert len(json.loads(path.read_text())) == 2
 
 
-@pytest.mark.asyncio
 async def test_reconcile_rewrites_a_lost_targets_file(tmp_path, monkeypatch, db_session):
     from app.config import settings
     from app.models import MonitoredHost, MonitoredService

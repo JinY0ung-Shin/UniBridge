@@ -1,11 +1,14 @@
 """Tests for webhook URL validation (SSRF protection)."""
 from __future__ import annotations
 
+import re
 import socket
+from pathlib import Path
 
 import pytest
+import yaml
 
-from app.services.webhook_security import validate_webhook_url
+from app.services.webhook_security import _BLOCKED_HOSTNAMES, validate_webhook_url
 
 
 # ── Scheme & format ─────────────────────────────────────────────────────────
@@ -34,20 +37,66 @@ def test_rejects_url_without_hostname():
     "hostname",
     [
         "localhost",
+        "metadata.google.internal",
         "keycloak",
         "etcd",
         "apisix",
-        "litellm",
+        "bifrost",
+        "bifrost-tls",
         "prometheus",
+        "unibridge-db",
         "unibridge-service",
-        "keycloak-db",
-        "litellm-db",
-        "metadata.google.internal",
+        "unibridge-service-blue",
+        "llm-converter-green",
+        "unibridge-edge",
     ],
 )
 def test_blocks_internal_hostnames(hostname):
     with pytest.raises(ValueError, match="internal"):
         validate_webhook_url(f"http://{hostname}/hook")
+
+
+_COMPOSE_FILES = (
+    "docker-compose.yml",
+    "docker-compose.infra.yml",
+    "docker-compose.app.yml",
+    "docker-compose.edge.yml",
+)
+_COLOR_VARIABLE = re.compile(r"\$\{APP_COLOR[^}]*\}")
+
+
+def _compose_hostnames() -> set[str]:
+    """Service names, container names and network aliases of every compose file."""
+    repo_root = Path(__file__).resolve().parents[2]
+    names: set[str] = set()
+    for compose_file in _COMPOSE_FILES:
+        services = yaml.safe_load((repo_root / compose_file).read_text())["services"]
+        for service, config in services.items():
+            names.add(service)
+            if config.get("container_name"):
+                names.add(config["container_name"])
+            networks = config.get("networks")
+            if isinstance(networks, dict):
+                for network in networks.values():
+                    names.update((network or {}).get("aliases") or [])
+    expanded: set[str] = set()
+    for name in names:
+        if _COLOR_VARIABLE.search(name):
+            expanded.update(_COLOR_VARIABLE.sub(color, name) for color in ("blue", "green"))
+        else:
+            expanded.add(name)
+    return expanded
+
+
+def test_blocklist_covers_every_compose_hostname():
+    names = _compose_hostnames()
+    assert {"unibridge-service-blue", "bifrost", "unibridge-edge"} <= names
+    assert names <= _BLOCKED_HOSTNAMES, sorted(names - _BLOCKED_HOSTNAMES)
+
+
+def test_blocklist_names_no_service_the_compose_files_dropped():
+    stale = _BLOCKED_HOSTNAMES - _compose_hostnames() - {"localhost", "metadata.google.internal"}
+    assert not stale, sorted(stale)
 
 
 def test_blocklist_is_case_insensitive():

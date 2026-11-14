@@ -47,7 +47,6 @@ def _client_with_response(handler):
     return httpx.AsyncClient(base_url="http://gdb:7200", transport=transport)
 
 
-@pytest.mark.asyncio
 async def test_select_maps_bindings_and_coerces_types():
     def handler(request):
         assert request.url.path == "/repositories/repo1"
@@ -74,7 +73,6 @@ async def test_select_maps_bindings_and_coerces_types():
     assert resp.graph is None
 
 
-@pytest.mark.asyncio
 async def test_select_truncates_to_limit():
     body = {
         "head": {"vars": ["s"]},
@@ -94,7 +92,6 @@ async def test_select_truncates_to_limit():
     assert resp.truncated is True
 
 
-@pytest.mark.asyncio
 async def test_repository_id_is_encoded_in_request_path():
     seen = {}
 
@@ -118,7 +115,6 @@ async def test_repository_id_is_encoded_in_request_path():
     }
 
 
-@pytest.mark.asyncio
 async def test_ask_returns_boolean_table():
     def handler(_):
         return httpx.Response(200, json={"head": {}, "boolean": True})
@@ -133,7 +129,6 @@ async def test_ask_returns_boolean_table():
     assert resp.row_count == 1
 
 
-@pytest.mark.asyncio
 async def test_ask_rejects_missing_boolean():
     def handler(_):
         return httpx.Response(200, json={"head": {}})
@@ -148,7 +143,6 @@ async def test_ask_rejects_missing_boolean():
     assert "malformed ask" in exc.value.detail.lower()
 
 
-@pytest.mark.asyncio
 async def test_ask_rejects_non_boolean_values():
     def handler(_):
         return httpx.Response(200, json={"head": {}, "boolean": None})
@@ -163,7 +157,6 @@ async def test_ask_rejects_non_boolean_values():
     assert "malformed ask" in exc.value.detail.lower()
 
 
-@pytest.mark.asyncio
 async def test_ask_handles_string_boolean_safely():
     """A non-spec server returning {"boolean": "false"} must not be misread as True."""
     def handler(_):
@@ -177,7 +170,6 @@ async def test_ask_handles_string_boolean_safely():
     assert resp.rows == [[False]]
 
 
-@pytest.mark.asyncio
 async def test_ask_handles_string_true():
     def handler(_):
         return httpx.Response(200, json={"head": {}, "boolean": "TRUE"})
@@ -190,7 +182,6 @@ async def test_ask_handles_string_true():
     assert resp.rows == [[True]]
 
 
-@pytest.mark.asyncio
 async def test_construct_returns_graph_field():
     turtle = "@prefix ex: <http://ex/> .\nex:a ex:b ex:c .\n"
     def handler(request):
@@ -209,7 +200,6 @@ async def test_construct_returns_graph_field():
     assert resp.row_count == 0
 
 
-@pytest.mark.asyncio
 async def test_describe_returns_graph_field():
     turtle = "<http://ex/x> <http://ex/p> <http://ex/y> .\n"
     def handler(_):
@@ -223,7 +213,6 @@ async def test_describe_returns_graph_field():
     assert resp.graph == turtle
 
 
-@pytest.mark.asyncio
 async def test_413_when_content_length_exceeds_limit(monkeypatch):
     from app.services import query_executor as executor_mod
     monkeypatch.setattr(executor_mod.settings, "GRAPHDB_MAX_RESPONSE_BYTES", 100)
@@ -241,7 +230,6 @@ async def test_413_when_content_length_exceeds_limit(monkeypatch):
     assert exc.value.status_code == 413
 
 
-@pytest.mark.asyncio
 async def test_413_when_streamed_body_exceeds_limit(monkeypatch):
     """Force chunked transfer (no Content-Length) so the streaming guard fires."""
     from app.services import query_executor as executor_mod
@@ -264,7 +252,6 @@ async def test_413_when_streamed_body_exceeds_limit(monkeypatch):
     assert exc.value.status_code == 413
 
 
-@pytest.mark.asyncio
 async def test_413_with_misleading_small_content_length(monkeypatch):
     """If Content-Length lies (claims small body, actual body is huge),
     the streaming guard must still fire 413."""
@@ -288,7 +275,6 @@ async def test_413_with_misleading_small_content_length(monkeypatch):
     assert exc.value.status_code == 413
 
 
-@pytest.mark.asyncio
 async def test_401_maps_to_502():
     def handler(_):
         return httpx.Response(401, text="Unauthorized")
@@ -303,7 +289,6 @@ async def test_401_maps_to_502():
     assert "authentication" in exc.value.detail.lower()
 
 
-@pytest.mark.asyncio
 async def test_4xx_passes_400_with_body_preview():
     def handler(_):
         return httpx.Response(400, text="Lexical error at line 1, column 7.")
@@ -318,7 +303,6 @@ async def test_4xx_passes_400_with_body_preview():
     assert "Lexical" in exc.value.detail
 
 
-@pytest.mark.asyncio
 async def test_4xx_preserves_newlines_in_body_preview():
     body = "MalformedQueryException\n  at line 3 col 5\n  near 'SELEC'"
 
@@ -335,7 +319,6 @@ async def test_4xx_preserves_newlines_in_body_preview():
     assert "\n  at line 3 col 5\n" in exc.value.detail
 
 
-@pytest.mark.asyncio
 async def test_4xx_strips_control_chars_from_preview():
     """Control chars in the upstream body must not appear in the response detail."""
     def handler(_):
@@ -354,7 +337,6 @@ async def test_4xx_strips_control_chars_from_preview():
     assert "Badqueryhere" in exc.value.detail
 
 
-@pytest.mark.asyncio
 async def test_404_unknown_repository():
     def handler(_):
         return httpx.Response(404, text="Unknown repository: ghost")
@@ -369,7 +351,6 @@ async def test_404_unknown_repository():
     assert "repository" in exc.value.detail.lower()
 
 
-@pytest.mark.asyncio
 async def test_5xx_maps_to_502():
     def handler(_):
         return httpx.Response(503, text="overloaded")
@@ -383,7 +364,6 @@ async def test_5xx_maps_to_502():
     assert exc.value.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_timeout_maps_to_504():
     def handler(_):
         raise httpx.TimeoutException("slow")
@@ -397,7 +377,6 @@ async def test_timeout_maps_to_504():
     assert exc.value.status_code == 504
 
 
-@pytest.mark.asyncio
 async def test_non_utf8_body_maps_to_502():
     invalid = b"\xff\xfe\x00\x01 some bytes"
     def handler(_):
@@ -414,7 +393,6 @@ async def test_non_utf8_body_maps_to_502():
     assert "utf-8" in exc.value.detail.lower()
 
 
-@pytest.mark.asyncio
 async def test_xsd_datatypes_coerced():
     body = {
         "head": {"vars": ["i", "d", "f", "b", "s"]},
@@ -442,7 +420,6 @@ async def test_xsd_datatypes_coerced():
     assert resp.rows == [[-7, Decimal("123456789.987654321"), 3.14, False, "hello"]]
 
 
-@pytest.mark.asyncio
 async def test_language_tagged_literals_preserve_language_tag():
     body = {
         "head": {"vars": ["label"]},

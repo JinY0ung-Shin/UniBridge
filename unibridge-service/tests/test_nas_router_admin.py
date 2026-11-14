@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-import pytest
 
 from tests.conftest import auth_header
 
@@ -16,7 +15,6 @@ GOOD_BASE_2 = "/mnt/share2"
 # ── Admin CRUD ──────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_create_nas_connection_success(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -43,7 +41,6 @@ async def test_create_nas_connection_success(client, admin_token):
     assert data["follow_symlinks"] is False
 
 
-@pytest.mark.asyncio
 async def test_create_nas_connection_rejects_base_outside_roots(client, admin_token):
     """Schema validator rejects a base_path not under NAS_ALLOWED_ROOTS."""
     with patch("app.routers.nas.nas_manager") as mgr:
@@ -57,7 +54,6 @@ async def test_create_nas_connection_rejects_base_outside_roots(client, admin_to
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_create_nas_connection_rejects_traversal(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -70,7 +66,6 @@ async def test_create_nas_connection_rejects_traversal(client, admin_token):
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_create_nas_connection_rejects_read_only_false(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -83,7 +78,6 @@ async def test_create_nas_connection_rejects_read_only_false(client, admin_token
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_create_nas_connection_duplicate(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -102,7 +96,6 @@ async def test_create_nas_connection_duplicate(client, admin_token):
     assert resp2.status_code == 409
 
 
-@pytest.mark.asyncio
 async def test_create_nas_connection_add_failure_returns_error_status(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.add_connection = AsyncMock(side_effect=Exception("mount gone"))
@@ -116,7 +109,6 @@ async def test_create_nas_connection_add_failure_returns_error_status(client, ad
     assert resp.json()["status"] == "error"
 
 
-@pytest.mark.asyncio
 async def test_list_nas_connections(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -138,34 +130,6 @@ async def test_list_nas_connections(client, admin_token):
     assert items["inactive"] == "disconnected"
 
 
-@pytest.mark.asyncio
-async def test_get_nas_connection_404(client, admin_token):
-    resp = await client.get("/admin/nas/connections/missing", headers=auth_header(admin_token))
-    assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_get_nas_connection_success(client, admin_token):
-    with patch("app.routers.nas.nas_manager") as mgr:
-        mgr.add_connection = AsyncMock()
-        mgr.has_connection.return_value = True
-
-        await client.post(
-            "/admin/nas/connections",
-            json={"alias": "fetch", "base_path": GOOD_BASE},
-            headers=auth_header(admin_token),
-        )
-        resp = await client.get(
-            "/admin/nas/connections/fetch",
-            headers=auth_header(admin_token),
-        )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["alias"] == "fetch"
-    assert body["base_path"] == GOOD_BASE
-
-
-@pytest.mark.asyncio
 async def test_update_nas_connection_partial(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -200,7 +164,6 @@ async def test_update_nas_connection_partial(client, admin_token):
     assert body["follow_symlinks"] is True
 
 
-@pytest.mark.asyncio
 async def test_update_nas_connection_404(client, admin_token):
     resp = await client.put(
         "/admin/nas/connections/missing",
@@ -210,7 +173,6 @@ async def test_update_nas_connection_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_update_nas_connection_recreate_failure(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -233,7 +195,6 @@ async def test_update_nas_connection_recreate_failure(client, admin_token):
     assert resp.json()["status"] == "error"
 
 
-@pytest.mark.asyncio
 async def test_delete_nas_connection(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -253,7 +214,6 @@ async def test_delete_nas_connection(client, admin_token):
     mgr.remove_connection.assert_awaited_once_with("delme")
 
 
-@pytest.mark.asyncio
 async def test_delete_nas_connection_404(client, admin_token):
     resp = await client.delete(
         "/admin/nas/connections/missing",
@@ -262,7 +222,6 @@ async def test_delete_nas_connection_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_test_nas_connection_not_registered(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = False
@@ -273,7 +232,6 @@ async def test_test_nas_connection_not_registered(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_test_nas_connection_ok_and_error(client, admin_token):
     with patch("app.routers.nas.nas_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -297,7 +255,6 @@ async def test_test_nas_connection_ok_and_error(client, admin_token):
 # ── Permission gating ─────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_admin_crud_requires_permission(client, user_token):
     """The seeded ``user`` role has neither nas.connections.read nor
     nas.connections.write, so every admin endpoint must 403."""
@@ -315,7 +272,6 @@ async def test_admin_crud_requires_permission(client, user_token):
     assert write_resp.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_admin_endpoints_require_auth(client):
     resp = await client.get("/admin/nas/connections")
     assert resp.status_code in (401, 403)

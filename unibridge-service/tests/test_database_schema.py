@@ -5,51 +5,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.database import (
-    ensure_db_connection_columns,
-    set_sqlite_foreign_keys,
-)
+from app.database import set_sqlite_foreign_keys
 from app.models import Base, Permission, Role
 
 
-@pytest.mark.asyncio
-async def test_ensure_db_connection_columns_adds_clickhouse_fields():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-
-    async with engine.begin() as conn:
-        await conn.execute(text(
-            """
-            CREATE TABLE db_connections (
-                id INTEGER PRIMARY KEY,
-                alias VARCHAR NOT NULL,
-                db_type VARCHAR NOT NULL,
-                host VARCHAR NOT NULL,
-                port INTEGER NOT NULL,
-                database VARCHAR NOT NULL,
-                username VARCHAR NOT NULL,
-                password_encrypted VARCHAR NOT NULL,
-                pool_size INTEGER,
-                max_overflow INTEGER,
-                query_timeout INTEGER,
-                created_at DATETIME,
-                updated_at DATETIME
-            )
-            """
-        ))
-
-    await ensure_db_connection_columns(engine)
-
-    async with engine.begin() as conn:
-        column_names = await conn.run_sync(
-            lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("db_connections")}
-        )
-
-    assert {"protocol", "secure"}.issubset(column_names)
-
-    await engine.dispose()
-
-
-@pytest.mark.asyncio
 async def test_sqlite_foreign_keys_are_enabled_for_meta_engine():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     from sqlalchemy import event
@@ -63,7 +22,6 @@ async def test_sqlite_foreign_keys_are_enabled_for_meta_engine():
     await engine.dispose()
 
 
-@pytest.mark.asyncio
 async def test_permission_role_fk_rejects_orphan_role():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     from sqlalchemy import event
@@ -81,7 +39,6 @@ async def test_permission_role_fk_rejects_orphan_role():
     await engine.dispose()
 
 
-@pytest.mark.asyncio
 async def test_permission_role_fk_cascades_on_role_delete():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     from sqlalchemy import event
@@ -107,7 +64,6 @@ async def test_permission_role_fk_cascades_on_role_delete():
     await engine.dispose()
 
 
-@pytest.mark.asyncio
 async def test_init_db_runs_alembic_and_stamps_head_for_file_sqlite(tmp_path):
     from unittest.mock import patch
 
@@ -143,7 +99,6 @@ async def test_init_db_runs_alembic_and_stamps_head_for_file_sqlite(tmp_path):
     await engine.dispose()
 
 
-@pytest.mark.asyncio
 async def test_alert_owner_routing_schema_is_created_by_metadata():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
@@ -187,7 +142,6 @@ async def test_alert_owner_routing_schema_is_created_by_metadata():
     await engine.dispose()
 
 
-@pytest.mark.asyncio
 async def test_alert_settings_singleton_check_rejects_other_ids():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
@@ -204,7 +158,6 @@ async def test_alert_settings_singleton_check_rejects_other_ids():
     await engine.dispose()
 
 
-@pytest.mark.asyncio
 async def test_init_db_seeds_alert_settings_for_in_memory_sqlite():
     from unittest.mock import patch
 
@@ -226,7 +179,6 @@ async def test_init_db_seeds_alert_settings_for_in_memory_sqlite():
     await engine.dispose()
 
 
-@pytest.mark.asyncio
 async def test_init_db_leaves_a_database_migrated_by_a_newer_image_alone(tmp_path):
     """The old blue/green color restarting after a release with a migration must
     boot instead of crash-looping on the unknown revision, and must not rewrite

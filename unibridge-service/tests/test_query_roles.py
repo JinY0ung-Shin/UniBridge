@@ -1176,29 +1176,6 @@ class TestRoleList:
         assert "query.databases.write" not in user_role["permissions"]
 
 
-class TestRoleGetById:
-    """Tests for GET /admin/roles/{role_id}."""
-
-    async def test_get_single_role(self, client, admin_token):
-        # Get list to find an ID
-        resp = await client.get("/admin/roles", headers=auth_header(admin_token))
-        roles = resp.json()
-        role_id = roles[0]["id"]
-
-        resp = await client.get(
-            f"/admin/roles/{role_id}", headers=auth_header(admin_token)
-        )
-        assert resp.status_code == 200
-        assert resp.json()["id"] == role_id
-
-    async def test_get_nonexistent_role_returns_404(self, client, admin_token):
-        resp = await client.get(
-            "/admin/roles/99999", headers=auth_header(admin_token)
-        )
-        assert resp.status_code == 404
-        assert "not found" in resp.json()["detail"].lower()
-
-
 class TestRoleCreate:
     """Tests for POST /admin/roles."""
 
@@ -1351,10 +1328,8 @@ class TestRoleDelete:
         assert resp.status_code == 204
 
         # Confirm it is gone
-        resp = await client.get(
-            f"/admin/roles/{role_id}", headers=auth_header(admin_token)
-        )
-        assert resp.status_code == 404
+        resp = await client.get("/admin/roles", headers=auth_header(admin_token))
+        assert role_id not in [r["id"] for r in resp.json()]
 
     async def test_delete_system_role_returns_400(self, client, admin_token):
         """System roles (admin, user) cannot be deleted."""
@@ -1437,12 +1412,6 @@ class TestRolePermissionEnforcement:
         """User lacks admin.roles.read."""
         resp = await client.get(
             "/admin/roles", headers=auth_header(user_token)
-        )
-        assert resp.status_code == 403
-
-    async def test_user_cannot_get_role_by_id(self, client, user_token):
-        resp = await client.get(
-            "/admin/roles/1", headers=auth_header(user_token)
         )
         assert resp.status_code == 403
 

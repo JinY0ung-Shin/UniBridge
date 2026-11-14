@@ -16,7 +16,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from app.config import settings
 from app.models import S3Connection
-from app.services.connection_manager import decrypt_password, validate_encryption_key
+from app.services.connection_manager import decrypt_password
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,6 @@ class S3ConnectionManager:
             raise
 
     async def initialize(self, connections: list[S3Connection]) -> None:
-        validate_encryption_key()
         for conn in connections:
             try:
                 await self.add_connection(conn)

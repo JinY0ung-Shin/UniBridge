@@ -29,7 +29,6 @@ async def _seed_items(engine, names: list[str]):
         )
 
 
-@pytest.mark.asyncio
 async def test_select_limit_marks_truncated_with_real_sqlite_engine(engine_sqlite):
     await _create_items_table(engine_sqlite)
     await _seed_items(engine_sqlite, ["alpha", "bravo", "charlie", "delta"])
@@ -47,7 +46,6 @@ async def test_select_limit_marks_truncated_with_real_sqlite_engine(engine_sqlit
     assert response.truncated is True
 
 
-@pytest.mark.asyncio
 async def test_select_reads_through_server_side_cursor_and_stops_at_limit():
     """The SELECT path must stream, not buffer the whole result set.
 
@@ -121,7 +119,6 @@ def _pose_as_postgres(engine, monkeypatch, statements: list[str]) -> None:
         statements.append(statement)
 
 
-@pytest.mark.asyncio
 async def test_postgres_select_caps_rows_in_sql_instead_of_streaming(monkeypatch):
     produced: list[int] = []
     statements: list[str] = []
@@ -160,7 +157,6 @@ async def test_postgres_select_caps_rows_in_sql_instead_of_streaming(monkeypatch
         await engine.dispose()
 
 
-@pytest.mark.asyncio
 async def test_postgres_capped_select_keeps_params_and_tolerates_sql_tails(monkeypatch):
     statements: list[str] = []
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -186,7 +182,6 @@ async def test_postgres_capped_select_keeps_params_and_tolerates_sql_tails(monke
         await engine.dispose()
 
 
-@pytest.mark.asyncio
 async def test_postgres_explain_and_dml_are_not_capped(engine_sqlite, monkeypatch):
     statements: list[str] = []
     await _create_items_table(engine_sqlite)
@@ -212,7 +207,6 @@ async def test_postgres_explain_and_dml_are_not_capped(engine_sqlite, monkeypatc
     ("server_version", "fence"),
     [((16, 4), "AS MATERIALIZED ("), ((12, 0), "AS MATERIALIZED ("), ((11, 22), "AS (")],
 )
-@pytest.mark.asyncio
 async def test_postgres_cap_uses_materialized_cte_from_postgres_12(
     engine_sqlite, monkeypatch, server_version, fence
 ):
@@ -231,7 +225,6 @@ async def test_postgres_cap_uses_materialized_cte_from_postgres_12(
     assert statements[-1].startswith(f"WITH unibridge_capped {fence}\n")
 
 
-@pytest.mark.asyncio
 async def test_postgres_capped_select_error_reports_the_callers_sql(engine_sqlite, monkeypatch):
     statements: list[str] = []
     await _create_items_table(engine_sqlite)
@@ -247,7 +240,6 @@ async def test_postgres_capped_select_error_reports_the_callers_sql(engine_sqlit
     assert "unibridge_capped" not in str(excinfo.value)
 
 
-@pytest.mark.asyncio
 async def test_select_below_limit_is_not_truncated_on_streaming_path(engine_sqlite):
     await _create_items_table(engine_sqlite)
     await _seed_items(engine_sqlite, ["alpha", "bravo"])
@@ -264,7 +256,6 @@ async def test_select_below_limit_is_not_truncated_on_streaming_path(engine_sqli
     assert response.truncated is False
 
 
-@pytest.mark.asyncio
 async def test_select_exactly_at_limit_is_not_truncated(engine_sqlite):
     await _create_items_table(engine_sqlite)
     await _seed_items(engine_sqlite, ["alpha", "bravo", "charlie"])
@@ -280,7 +271,6 @@ async def test_select_exactly_at_limit_is_not_truncated(engine_sqlite):
     assert response.truncated is False
 
 
-@pytest.mark.asyncio
 async def test_explain_uses_streaming_path(engine_sqlite):
     await _create_items_table(engine_sqlite)
     await _seed_items(engine_sqlite, ["alpha"])
@@ -296,7 +286,6 @@ async def test_explain_uses_streaming_path(engine_sqlite):
     assert response.truncated is False
 
 
-@pytest.mark.asyncio
 async def test_execute_query_clamps_limit_to_max_row_limit(engine_sqlite):
     with patch(
         "app.services.query_executor._execute", new_callable=AsyncMock
@@ -314,7 +303,6 @@ async def test_execute_query_clamps_limit_to_max_row_limit(engine_sqlite):
     assert fake_execute.await_args.args[3] == settings.MAX_ROW_LIMIT
 
 
-@pytest.mark.asyncio
 async def test_execute_query_clamps_admin_default_row_limit(engine_sqlite, monkeypatch):
     monkeypatch.setattr(
         settings_manager, "default_row_limit", settings.MAX_ROW_LIMIT + 1
@@ -331,7 +319,6 @@ async def test_execute_query_clamps_admin_default_row_limit(engine_sqlite, monke
     assert fake_execute.await_args.args[3] == settings.MAX_ROW_LIMIT
 
 
-@pytest.mark.asyncio
 async def test_execute_query_leaves_reasonable_limit_untouched(engine_sqlite):
     with patch(
         "app.services.query_executor._execute", new_callable=AsyncMock
@@ -344,7 +331,6 @@ async def test_execute_query_leaves_reasonable_limit_untouched(engine_sqlite):
     assert fake_execute.await_args.args[3] == 42
 
 
-@pytest.mark.asyncio
 async def test_insert_returning_exposes_columns_rows_and_row_count(engine_sqlite):
     await _create_items_table(engine_sqlite)
 
@@ -362,7 +348,6 @@ async def test_insert_returning_exposes_columns_rows_and_row_count(engine_sqlite
     assert response.truncated is False
 
 
-@pytest.mark.asyncio
 async def test_insert_returning_applies_limit_and_marks_truncated(engine_sqlite):
     await _create_items_table(engine_sqlite)
 
@@ -383,7 +368,6 @@ async def test_insert_returning_applies_limit_and_marks_truncated(engine_sqlite)
     assert response.truncated is True
 
 
-@pytest.mark.asyncio
 async def test_update_without_returning_reports_row_count_only(engine_sqlite):
     await _create_items_table(engine_sqlite)
     await _seed_items(engine_sqlite, ["alpha", "bravo", "charlie"])
@@ -402,7 +386,6 @@ async def test_update_without_returning_reports_row_count_only(engine_sqlite):
     assert response.truncated is False
 
 
-@pytest.mark.asyncio
 async def test_multi_statement_sql_is_rejected_before_execution(engine_sqlite):
     with pytest.raises(ValueError, match="Multi-statement SQL is not allowed"):
         await execute_query(
@@ -413,7 +396,6 @@ async def test_multi_statement_sql_is_rejected_before_execution(engine_sqlite):
         )
 
 
-@pytest.mark.asyncio
 async def test_timeout_cancels_query_and_engine_can_be_reused():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
 
@@ -458,7 +440,6 @@ def test_estimated_size_counts_strings_and_nested_values():
     assert _estimated_size([1, "x"]) == 64 + 64 + 65
 
 
-@pytest.mark.asyncio
 async def test_streaming_select_stops_at_the_byte_budget(engine_sqlite, monkeypatch):
     await _create_items_table(engine_sqlite)
     await _seed_items(engine_sqlite, ["n" * 1000 for _ in range(20)])
@@ -474,7 +455,6 @@ async def test_streaming_select_stops_at_the_byte_budget(engine_sqlite, monkeypa
     assert response.truncated is True
 
 
-@pytest.mark.asyncio
 async def test_postgres_fast_path_applies_the_byte_budget(engine_sqlite, monkeypatch):
     statements: list[str] = []
     await _create_items_table(engine_sqlite)
@@ -491,7 +471,6 @@ async def test_postgres_fast_path_applies_the_byte_budget(engine_sqlite, monkeyp
     assert response.truncated is True
 
 
-@pytest.mark.asyncio
 async def test_large_postgres_request_streams_instead_of_buffering(monkeypatch):
     """Above the fast-path size the capped execute would buffer up to a million
     rows before the budget could see them, so those requests stream instead."""
@@ -537,7 +516,6 @@ async def test_large_postgres_request_streams_instead_of_buffering(monkeypatch):
         await engine.dispose()
 
 
-@pytest.mark.asyncio
 async def test_a_raised_default_row_limit_does_not_widen_the_fast_path(
     engine_sqlite, monkeypatch
 ):
@@ -561,7 +539,6 @@ async def test_a_raised_default_row_limit_does_not_widen_the_fast_path(
     assert "unibridge_capped LIMIT 11" in statements[-1]
 
 
-@pytest.mark.asyncio
 async def test_returning_rows_respect_the_byte_budget(engine_sqlite, monkeypatch):
     await _create_items_table(engine_sqlite)
     monkeypatch.setattr(settings, "MAX_RESULT_BYTES", 2500)

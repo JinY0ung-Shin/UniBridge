@@ -99,7 +99,6 @@ def _cm_patch(db_type: str = "postgres"):
 class TestCreateConnection:
     """POST /admin/query/databases"""
 
-    @pytest.mark.asyncio
     async def test_create_connection_success(self, client, admin_token):
         with _cm_patch():
             resp = await client.post(
@@ -123,7 +122,6 @@ class TestCreateConnection:
         assert "password" not in data
         assert "password_encrypted" not in data
 
-    @pytest.mark.asyncio
     async def test_create_duplicate_alias_returns_409(self, client, admin_token):
         with _cm_patch():
             await client.post(
@@ -139,7 +137,6 @@ class TestCreateConnection:
         assert resp.status_code == 409
         assert "already exists" in resp.json()["detail"]
 
-    @pytest.mark.asyncio
     async def test_create_connection_custom_pool_settings(self, client, admin_token):
         with _cm_patch():
             resp = await client.post(
@@ -158,7 +155,6 @@ class TestCreateConnection:
         assert data["max_overflow"] == 5
         assert data["query_timeout"] == 60
 
-    @pytest.mark.asyncio
     async def test_create_clickhouse_connection_success(self, client, admin_token):
         with _cm_patch():
             resp = await client.post(
@@ -172,7 +168,6 @@ class TestCreateConnection:
         assert data["protocol"] == "http"
         assert data["secure"] is False
 
-    @pytest.mark.asyncio
     async def test_create_neo4j_connection_success(self, client, admin_token):
         with _cm_patch():
             resp = await client.post(
@@ -186,7 +181,6 @@ class TestCreateConnection:
         assert data["protocol"] == "bolt"
         assert data["secure"] is None
 
-    @pytest.mark.asyncio
     async def test_create_neo4j_missing_protocol_returns_400(self, client, admin_token):
         with _cm_patch():
             resp = await client.post(
@@ -197,7 +191,6 @@ class TestCreateConnection:
         assert resp.status_code == 400
         assert "require protocol" in resp.json()["detail"].lower()
 
-    @pytest.mark.asyncio
     async def test_create_neo4j_with_secure_returns_400(self, client, admin_token):
         with _cm_patch():
             resp = await client.post(
@@ -208,7 +201,6 @@ class TestCreateConnection:
         assert resp.status_code == 400
         assert "secure" in resp.json()["detail"].lower()
 
-    @pytest.mark.asyncio
     async def test_create_postgres_with_clickhouse_fields_returns_400(self, client, admin_token):
         with _cm_patch():
             resp = await client.post(
@@ -219,7 +211,6 @@ class TestCreateConnection:
         assert resp.status_code == 400
         assert "only valid for clickhouse" in resp.json()["detail"].lower()
 
-    @pytest.mark.asyncio
     async def test_create_clickhouse_with_mismatched_protocol_and_secure_returns_400(
         self, client, admin_token
     ):
@@ -232,7 +223,6 @@ class TestCreateConnection:
         assert resp.status_code == 400
         assert "same transport" in resp.json()["detail"].lower()
 
-    @pytest.mark.asyncio
     async def test_create_clickhouse_with_neo4j_protocol_returns_400(self, client, admin_token):
         with _cm_patch():
             resp = await client.post(
@@ -243,7 +233,6 @@ class TestCreateConnection:
         assert resp.status_code == 400
         assert "clickhouse protocol" in resp.json()["detail"].lower()
 
-    @pytest.mark.asyncio
     async def test_create_neo4j_with_clickhouse_protocol_returns_400(self, client, admin_token):
         with _cm_patch():
             resp = await client.post(
@@ -254,7 +243,6 @@ class TestCreateConnection:
         assert resp.status_code == 400
         assert "neo4j protocol" in resp.json()["detail"].lower()
 
-    @pytest.mark.asyncio
     async def test_create_clickhouse_missing_protocol_or_secure_returns_400(
         self, client, admin_token
     ):
@@ -274,7 +262,6 @@ class TestCreateConnection:
         assert "require both protocol and secure" in resp_missing_protocol.json()["detail"].lower()
         assert "require both protocol and secure" in resp_missing_secure.json()["detail"].lower()
 
-    @pytest.mark.asyncio
     async def test_create_connection_engine_failure_still_creates(
         self, client, admin_token
     ):
@@ -294,7 +281,6 @@ class TestCreateConnection:
 class TestListConnections:
     """GET /admin/query/databases"""
 
-    @pytest.mark.asyncio
     async def test_list_empty(self, client, admin_token):
         with _cm_patch():
             resp = await client.get(
@@ -304,7 +290,6 @@ class TestListConnections:
         assert resp.status_code == 200
         assert resp.json() == []
 
-    @pytest.mark.asyncio
     async def test_list_returns_created_entries(self, client, admin_token):
         with _cm_patch():
             await client.post(
@@ -325,7 +310,6 @@ class TestListConnections:
         aliases = {c["alias"] for c in resp.json()}
         assert aliases == {"db1", "db2"}
 
-    @pytest.mark.asyncio
     async def test_list_clickhouse_protocol_and_secure_round_trip(self, client, admin_token):
         with _cm_patch():
             create_resp = await client.post(
@@ -346,38 +330,8 @@ class TestListConnections:
         assert analytics["secure"] is False
 
 
-class TestGetConnection:
-    """GET /admin/query/databases/{alias}"""
-
-    @pytest.mark.asyncio
-    async def test_get_existing_connection(self, client, admin_token):
-        with _cm_patch():
-            await client.post(
-                "/admin/query/databases",
-                json=_make_db_payload(),
-                headers=auth_header(admin_token),
-            )
-            resp = await client.get(
-                "/admin/query/databases/testdb",
-                headers=auth_header(admin_token),
-            )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["alias"] == "testdb"
-        assert data["status"] == "registered"
-
-    @pytest.mark.asyncio
-    async def test_get_nonexistent_returns_404(self, client, admin_token):
-        with _cm_patch():
-            resp = await client.get(
-                "/admin/query/databases/nope",
-                headers=auth_header(admin_token),
-            )
-        assert resp.status_code == 404
-        assert "not found" in resp.json()["detail"]
-
-    @pytest.mark.asyncio
-    async def test_get_clickhouse_protocol_and_secure_round_trip(self, client, admin_token):
+class TestClickhouseProtocolRoundTrip:
+    async def test_https_and_secure_round_trip(self, client, admin_token):
         with _cm_patch():
             create_resp = await client.post(
                 "/admin/query/databases",
@@ -387,11 +341,11 @@ class TestGetConnection:
             assert create_resp.status_code == 201
 
             resp = await client.get(
-                "/admin/query/databases/analytics_https",
+                "/admin/query/databases",
                 headers=auth_header(admin_token),
             )
         assert resp.status_code == 200
-        data = resp.json()
+        data = next(c for c in resp.json() if c["alias"] == "analytics_https")
         assert data["db_type"] == "clickhouse"
         assert data["protocol"] == "https"
         assert data["secure"] is True
@@ -400,7 +354,6 @@ class TestGetConnection:
 class TestUpdateConnection:
     """PUT /admin/query/databases/{alias}"""
 
-    @pytest.mark.asyncio
     async def test_update_connection_fields(self, client, admin_token):
         with _cm_patch():
             await client.post(
@@ -422,7 +375,6 @@ class TestUpdateConnection:
         assert data["alias"] == "testdb"
         assert data["db_type"] == "postgres"
 
-    @pytest.mark.asyncio
     async def test_update_nonexistent_returns_404(self, client, admin_token):
         with _cm_patch():
             resp = await client.put(
@@ -432,7 +384,6 @@ class TestUpdateConnection:
             )
         assert resp.status_code == 404
 
-    @pytest.mark.asyncio
     async def test_update_password(self, client, admin_token):
         """Password update should succeed without leaking the password."""
         with _cm_patch():
@@ -451,7 +402,6 @@ class TestUpdateConnection:
         assert "password" not in data
         assert "password_encrypted" not in data
 
-    @pytest.mark.asyncio
     async def test_update_clickhouse_protocol_and_secure(self, client, admin_token):
         with _cm_patch():
             create_resp = await client.post(
@@ -476,7 +426,6 @@ class TestUpdateConnection:
 class TestDeleteConnection:
     """DELETE /admin/query/databases/{alias}"""
 
-    @pytest.mark.asyncio
     async def test_delete_connection(self, client, admin_token):
         with _cm_patch():
             await client.post(
@@ -490,7 +439,6 @@ class TestDeleteConnection:
             )
         assert resp.status_code == 204
 
-    @pytest.mark.asyncio
     async def test_delete_nonexistent_returns_404(self, client, admin_token):
         with _cm_patch():
             resp = await client.delete(
@@ -499,8 +447,7 @@ class TestDeleteConnection:
             )
         assert resp.status_code == 404
 
-    @pytest.mark.asyncio
-    async def test_delete_then_get_returns_404(self, client, admin_token):
+    async def test_delete_removes_it_from_the_list(self, client, admin_token):
         with _cm_patch():
             await client.post(
                 "/admin/query/databases",
@@ -512,12 +459,12 @@ class TestDeleteConnection:
                 headers=auth_header(admin_token),
             )
             resp = await client.get(
-                "/admin/query/databases/testdb",
+                "/admin/query/databases",
                 headers=auth_header(admin_token),
             )
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+        assert "testdb" not in [c["alias"] for c in resp.json()]
 
-    @pytest.mark.asyncio
     async def test_delete_clears_lingering_alert_state(self, client, admin_token):
         """Deleting a DB connection must purge its db_health alert state.
 
@@ -553,7 +500,6 @@ class TestDeleteConnection:
 class TestTestConnection:
     """POST /admin/query/databases/{alias}/test"""
 
-    @pytest.mark.asyncio
     async def test_connection_ok(self, client, admin_token):
         with _cm_patch():
             resp = await client.post(
@@ -565,7 +511,6 @@ class TestTestConnection:
         assert data["status"] == "ok"
         assert data["alias"] == "anydb"
 
-    @pytest.mark.asyncio
     async def test_connection_not_registered(self, client, admin_token):
         with _cm_patch() as ctx:
             ctx.has_connection = MagicMock(return_value=False)
@@ -576,7 +521,6 @@ class TestTestConnection:
         assert resp.status_code == 404
         assert "not registered" in resp.json()["detail"]
 
-    @pytest.mark.asyncio
     async def test_connection_fails(self, client, admin_token):
         with _cm_patch() as ctx:
             ctx.test_connection = AsyncMock(return_value=(False, "Connection refused"))
@@ -597,14 +541,13 @@ class TestTestConnection:
 class TestListTables:
     """GET /admin/query/databases/{alias}/tables"""
 
-    @pytest.mark.asyncio
     async def test_list_tables_clickhouse(self, client, admin_token):
         mock_result = MagicMock()
         mock_result.result_rows = [("events",), ("users",)]
         mock_ch_client = MagicMock()
         mock_ch_client.query.return_value = mock_result
 
-        with _cm_patch() as ctx:
+        with _cm_patch() as ctx, patch("app.services.schema_browser.connection_manager", ctx):
             ctx.get_db_type = MagicMock(return_value="clickhouse")
             ctx.get_clickhouse_client = MagicMock(return_value=mock_ch_client)
             resp = await client.get(
@@ -614,7 +557,6 @@ class TestListTables:
         assert resp.status_code == 200
         assert resp.json() == ["events", "users"]
 
-    @pytest.mark.asyncio
     async def test_list_tables_not_registered(self, client, admin_token):
         with _cm_patch() as ctx:
             ctx.get_db_type = MagicMock(return_value="unknown")
@@ -633,7 +575,6 @@ class TestListTables:
 class TestPermissionChecks:
     """Verify that role-based permission enforcement works correctly."""
 
-    @pytest.mark.asyncio
     async def test_create_connection_user_forbidden(self, client, user_token):
         """User role lacks query.databases.write -> 403."""
         with _cm_patch():
@@ -644,7 +585,6 @@ class TestPermissionChecks:
             )
         assert resp.status_code == 403
 
-    @pytest.mark.asyncio
     async def test_list_connections_read_permission_allowed(self, client, querier_token):
         """query.databases.read alone (without .write) is sufficient -> 200."""
         with _cm_patch():
@@ -654,7 +594,6 @@ class TestPermissionChecks:
             )
         assert resp.status_code == 200
 
-    @pytest.mark.asyncio
     async def test_list_connections_user_forbidden(self, client, user_token):
         """User lacks query.databases.read -> 403."""
         with _cm_patch():
@@ -664,7 +603,6 @@ class TestPermissionChecks:
             )
         assert resp.status_code == 403
 
-    @pytest.mark.asyncio
     async def test_delete_connection_user_forbidden(
         self, client, admin_token, user_token
     ):
@@ -681,7 +619,6 @@ class TestPermissionChecks:
             )
         assert resp.status_code == 403
 
-    @pytest.mark.asyncio
     async def test_update_connection_user_forbidden(self, client, user_token):
         """User lacks query.databases.write -> 403 on PUT."""
         with _cm_patch():
@@ -692,31 +629,12 @@ class TestPermissionChecks:
             )
         assert resp.status_code == 403
 
-    @pytest.mark.asyncio
     async def test_no_token_returns_401(self, client):
         """FastAPI HTTPBearer returns 401 when Authorization header is missing."""
         with _cm_patch():
             resp = await client.get("/admin/query/databases")
         assert resp.status_code == 401
 
-    @pytest.mark.asyncio
-    async def test_get_single_connection_read_permission_allowed(
-        self, client, admin_token, querier_token
-    ):
-        """query.databases.read alone (without .write) is sufficient -> 200 on GET single."""
-        with _cm_patch():
-            await client.post(
-                "/admin/query/databases",
-                json=_make_db_payload(),
-                headers=auth_header(admin_token),
-            )
-            resp = await client.get(
-                "/admin/query/databases/testdb",
-                headers=auth_header(querier_token),
-            )
-        assert resp.status_code == 200
-
-    @pytest.mark.asyncio
     async def test_test_connection_user_forbidden(self, client, user_token):
         """User lacks query.databases.read -> 403 on test endpoint."""
         with _cm_patch():
@@ -735,7 +653,6 @@ class TestPermissionChecks:
 class TestListPermissions:
     """GET /admin/query/permissions"""
 
-    @pytest.mark.asyncio
     async def test_list_permissions_empty(self, client, admin_token):
         resp = await client.get(
             "/admin/query/permissions",
@@ -744,7 +661,6 @@ class TestListPermissions:
         assert resp.status_code == 200
         assert resp.json() == []
 
-    @pytest.mark.asyncio
     async def test_list_permissions_after_upsert(self, client, admin_token):
         await client.put(
             "/admin/query/permissions",
@@ -765,7 +681,6 @@ class TestListPermissions:
 class TestUpsertPermission:
     """PUT /admin/query/permissions"""
 
-    @pytest.mark.asyncio
     async def test_upsert_creates_new(self, client, admin_token):
         resp = await client.put(
             "/admin/query/permissions",
@@ -782,7 +697,6 @@ class TestUpsertPermission:
         assert data["allow_delete"] is False
         assert "id" in data
 
-    @pytest.mark.asyncio
     async def test_upsert_updates_existing(self, client, admin_token):
         """PUT with same role+db_alias updates rather than creating a duplicate."""
         resp1 = await client.put(
@@ -810,7 +724,6 @@ class TestUpsertPermission:
         assert data["allow_update"] is True
         assert data["allow_select"] is True
 
-    @pytest.mark.asyncio
     async def test_upsert_different_role_creates_new(self, client, admin_token):
         """Different role + same db_alias creates a separate permission."""
         await client.put(
@@ -832,7 +745,6 @@ class TestUpsertPermission:
         )
         assert len(list_resp.json()) == 2
 
-    @pytest.mark.asyncio
     async def test_upsert_preserves_empty_allowed_tables(self, client, admin_token):
         resp = await client.put(
             "/admin/query/permissions",
@@ -842,7 +754,6 @@ class TestUpsertPermission:
         assert resp.status_code == 200, resp.text
         assert resp.json()["allowed_tables"] == []
 
-    @pytest.mark.asyncio
     async def test_upsert_unknown_role_returns_400(self, client, admin_token):
         resp = await client.put(
             "/admin/query/permissions",
@@ -856,7 +767,6 @@ class TestUpsertPermission:
 class TestDeletePermission:
     """DELETE /admin/query/permissions/{id}"""
 
-    @pytest.mark.asyncio
     async def test_delete_permission(self, client, admin_token):
         create_resp = await client.put(
             "/admin/query/permissions",
@@ -871,7 +781,6 @@ class TestDeletePermission:
         )
         assert resp.status_code == 204
 
-    @pytest.mark.asyncio
     async def test_delete_nonexistent_returns_404(self, client, admin_token):
         resp = await client.delete(
             "/admin/query/permissions/99999",
@@ -879,7 +788,6 @@ class TestDeletePermission:
         )
         assert resp.status_code == 404
 
-    @pytest.mark.asyncio
     async def test_delete_then_list_is_empty(self, client, admin_token):
         create_resp = await client.put(
             "/admin/query/permissions",
@@ -902,7 +810,6 @@ class TestDeletePermission:
 class TestPermissionsRBAC:
     """Permission endpoint RBAC checks."""
 
-    @pytest.mark.asyncio
     async def test_user_cannot_list_permissions(self, client, user_token):
         """User lacks query.permissions.read -> 403."""
         resp = await client.get(
@@ -911,7 +818,6 @@ class TestPermissionsRBAC:
         )
         assert resp.status_code == 403
 
-    @pytest.mark.asyncio
     async def test_admin_can_list_permissions(self, client, admin_token):
         """Admin has query.permissions.read -> 200."""
         resp = await client.get(
@@ -920,7 +826,6 @@ class TestPermissionsRBAC:
         )
         assert resp.status_code == 200
 
-    @pytest.mark.asyncio
     async def test_user_cannot_upsert_permissions(self, client, user_token):
         """User lacks query.permissions.write -> 403."""
         resp = await client.put(
@@ -930,7 +835,6 @@ class TestPermissionsRBAC:
         )
         assert resp.status_code == 403
 
-    @pytest.mark.asyncio
     async def test_user_cannot_delete_permissions(self, client, user_token):
         """User lacks query.permissions.write -> 403."""
         resp = await client.delete(
@@ -939,7 +843,6 @@ class TestPermissionsRBAC:
         )
         assert resp.status_code == 403
 
-    @pytest.mark.asyncio
     async def test_no_token_permissions_returns_401(self, client):
         resp = await client.get("/admin/query/permissions")
         assert resp.status_code == 401
@@ -953,7 +856,6 @@ class TestPermissionsRBAC:
 class TestAuditLogs:
     """GET /admin/query/audit-logs"""
 
-    @pytest.mark.asyncio
     async def test_list_audit_logs_empty(self, client, admin_token):
         resp = await client.get(
             "/admin/query/audit-logs",
@@ -962,7 +864,6 @@ class TestAuditLogs:
         assert resp.status_code == 200
         assert resp.json() == []
 
-    @pytest.mark.asyncio
     async def test_user_cannot_read_audit_logs(self, client, user_token):
         """User lacks query.audit.read -> 403."""
         resp = await client.get(
@@ -971,7 +872,6 @@ class TestAuditLogs:
         )
         assert resp.status_code == 403
 
-    @pytest.mark.asyncio
     async def test_admin_can_read_audit_logs(self, client, admin_token):
         """Admin has query.audit.read -> 200."""
         resp = await client.get(
@@ -980,12 +880,10 @@ class TestAuditLogs:
         )
         assert resp.status_code == 200
 
-    @pytest.mark.asyncio
     async def test_no_token_audit_logs_returns_401(self, client):
         resp = await client.get("/admin/query/audit-logs")
         assert resp.status_code == 401
 
-    @pytest.mark.asyncio
     async def test_filter_by_database(self, client, admin_token, _seed_audit_logs):
         resp = await client.get(
             "/admin/query/audit-logs",
@@ -996,7 +894,6 @@ class TestAuditLogs:
         logs = resp.json()
         assert all(log["database_alias"] == "proddb" for log in logs)
 
-    @pytest.mark.asyncio
     async def test_filter_by_user(self, client, admin_token, _seed_audit_logs):
         resp = await client.get(
             "/admin/query/audit-logs",
@@ -1007,7 +904,6 @@ class TestAuditLogs:
         logs = resp.json()
         assert all(log["user"] == "alice" for log in logs)
 
-    @pytest.mark.asyncio
     async def test_filter_by_from_date(self, client, admin_token, _seed_audit_logs):
         resp = await client.get(
             "/admin/query/audit-logs",
@@ -1019,7 +915,6 @@ class TestAuditLogs:
         # Only the log at 2026-01-02 and 2026-01-03 should be included
         assert len(logs) >= 1
 
-    @pytest.mark.asyncio
     async def test_filter_by_to_date(self, client, admin_token, _seed_audit_logs):
         resp = await client.get(
             "/admin/query/audit-logs",
@@ -1030,7 +925,6 @@ class TestAuditLogs:
         logs = resp.json()
         assert len(logs) >= 1
 
-    @pytest.mark.asyncio
     async def test_filter_combined_from_and_to(
         self, client, admin_token, _seed_audit_logs
     ):
@@ -1044,7 +938,6 @@ class TestAuditLogs:
         )
         assert resp.status_code == 200
 
-    @pytest.mark.asyncio
     async def test_limit_and_offset(self, client, admin_token, _seed_audit_logs):
         resp = await client.get(
             "/admin/query/audit-logs",
@@ -1064,7 +957,6 @@ class TestAuditLogs:
         if resp.json() and resp2.json():
             assert resp.json()[0]["id"] != resp2.json()[0]["id"]
 
-    @pytest.mark.asyncio
     async def test_invalid_from_date_returns_400(self, client, admin_token):
         resp = await client.get(
             "/admin/query/audit-logs",
@@ -1074,7 +966,6 @@ class TestAuditLogs:
         assert resp.status_code == 400
         assert "Invalid from_date format" in resp.json()["detail"]
 
-    @pytest.mark.asyncio
     async def test_invalid_to_date_returns_400(self, client, admin_token):
         resp = await client.get(
             "/admin/query/audit-logs",

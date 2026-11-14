@@ -128,7 +128,6 @@ def test_effective_allowed_routes_propagates_a_malformed_row():
 # ── Reconcile ────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_expired_consumer_is_removed_from_every_key_auth_route(engine):
     await _add_keys(engine, _key("lapsed", ["query-api", "llm-proxy"], expires_in_days=-1))
     stub = _apisix_stub([
@@ -147,7 +146,6 @@ async def test_expired_consumer_is_removed_from_every_key_auth_route(engine):
     assert sorted(result.routes_changed) == ["llm-messages", "llm-proxy", "query-api"]
 
 
-@pytest.mark.asyncio
 async def test_consumers_unknown_to_the_database_are_left_alone(engine):
     """Hand-added or externally provisioned consumers are not ours to prune."""
     await _add_keys(engine, _key("ours", ["query-api"]))
@@ -159,7 +157,6 @@ async def test_consumers_unknown_to_the_database_are_left_alone(engine):
     assert _whitelist(stub, "query-api") == ["ours", "stranger"]
 
 
-@pytest.mark.asyncio
 async def test_emptied_whitelist_gets_the_deny_all_sentinel(engine):
     """An empty consumer-restriction means 'any consumer' to APISIX."""
     await _add_keys(engine, _key("lapsed", ["query-api"], expires_in_days=-1))
@@ -171,7 +168,6 @@ async def test_emptied_whitelist_gets_the_deny_all_sentinel(engine):
     assert _whitelist(stub, "query-api") == [DENY_ALL_CONSUMER]
 
 
-@pytest.mark.asyncio
 async def test_a_live_consumer_missing_from_its_route_is_added_back(engine):
     """The etcd-reset recovery path: routes exist, whitelists lost their names."""
     await _add_keys(engine, _key("live", ["query-api"], expires_in_days=10))
@@ -183,7 +179,6 @@ async def test_a_live_consumer_missing_from_its_route_is_added_back(engine):
     assert _whitelist(stub, "query-api") == ["live"]
 
 
-@pytest.mark.asyncio
 async def test_only_routes_whose_whitelist_changed_are_put(engine):
     await _add_keys(engine, _key("live", ["query-api"]))
     stub = _apisix_stub([
@@ -201,7 +196,6 @@ async def test_only_routes_whose_whitelist_changed_are_put(engine):
     assert _whitelist(stub, "nas-api") == [DENY_ALL_CONSUMER]
 
 
-@pytest.mark.asyncio
 async def test_master_wildcard_covers_every_key_auth_route(engine):
     await _add_keys(engine, _key("master-app", [MASTER_ACCESS]))
     stub = _apisix_stub([
@@ -217,7 +211,6 @@ async def test_master_wildcard_covers_every_key_auth_route(engine):
         assert _whitelist(stub, route_id) == ["master-app"], route_id
 
 
-@pytest.mark.asyncio
 async def test_llm_proxy_implies_the_converter_routes_but_never_llm_metrics(engine):
     await _add_keys(engine, _key("llm-user", ["llm-proxy"]))
     stub = _apisix_stub([
@@ -239,7 +232,6 @@ async def test_llm_proxy_implies_the_converter_routes_but_never_llm_metrics(engi
         assert _whitelist(stub, route_id) == [DENY_ALL_CONSUMER], route_id
 
 
-@pytest.mark.asyncio
 async def test_malformed_row_keeps_its_whitelist_and_is_reported(engine, caplog):
     """A storage bug must not revoke a working key."""
     await _add_keys(
@@ -258,7 +250,6 @@ async def test_malformed_row_keeps_its_whitelist_and_is_reported(engine, caplog)
     assert "bad-app" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_one_failing_put_still_attempts_the_rest_then_raises(engine):
     await _add_keys(engine, _key("lapsed", ["query-api", "s3-api"], expires_in_days=-1))
     stub = _apisix_stub(
@@ -281,7 +272,6 @@ async def test_one_failing_put_still_attempts_the_rest_then_raises(engine):
     assert _whitelist(stub, "s3-api") == [DENY_ALL_CONSUMER]
 
 
-@pytest.mark.asyncio
 async def test_routes_without_key_auth_are_ignored(engine):
     await _add_keys(engine, _key("master-app", [MASTER_ACCESS]))
     stub = _apisix_stub([
@@ -297,7 +287,6 @@ async def test_routes_without_key_auth_are_ignored(engine):
     assert "consumer-restriction" not in stub.state["public"]["plugins"]
 
 
-@pytest.mark.asyncio
 async def test_no_keys_means_no_apisix_call_at_all(engine):
     """The boot replay fails startup on an exception, so an install with no keys
     must not make startup depend on APISIX being reachable."""
@@ -311,7 +300,6 @@ async def test_no_keys_means_no_apisix_call_at_all(engine):
     assert result == cr.ReconcileResult()
 
 
-@pytest.mark.asyncio
 async def test_a_route_without_an_id_is_skipped(engine):
     await _add_keys(engine, _key("master-app", [MASTER_ACCESS]))
     stub = MagicMock()
@@ -326,7 +314,6 @@ async def test_a_route_without_an_id_is_skipped(engine):
     stub.put_resource.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_reconcile_honours_an_injected_now(engine):
     """``now`` in the future expires a key that is still live today."""
     await _add_keys(engine, _key("soon", ["query-api"], expires_in_days=1))
@@ -341,7 +328,6 @@ async def test_reconcile_honours_an_injected_now(engine):
     assert _whitelist(stub, "query-api") == [DENY_ALL_CONSUMER]
 
 
-@pytest.mark.asyncio
 async def test_a_steady_state_writes_nothing_and_logs_nothing(engine, caplog):
     await _add_keys(engine, _key("live", ["query-api"]))
     stub = _apisix_stub([
@@ -361,7 +347,6 @@ async def test_a_steady_state_writes_nothing_and_logs_nothing(engine, caplog):
 # ── Loop ─────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_loop_waits_before_the_first_run_then_repeats():
     sleeps: list[float] = []
     once = AsyncMock(return_value=cr.ReconcileResult())
@@ -385,7 +370,6 @@ async def test_loop_waits_before_the_first_run_then_repeats():
     assert once.await_count == 2
 
 
-@pytest.mark.asyncio
 async def test_loop_makes_no_apisix_call_on_the_standby_color(engine):
     """Blue/green share one APISIX — only the active color may rewrite routes."""
     sleeps = 0
@@ -414,7 +398,6 @@ async def test_loop_makes_no_apisix_call_on_the_standby_color(engine):
     assert sleeps == 3
 
 
-@pytest.mark.asyncio
 async def test_loop_reconciles_through_the_module_client_on_the_active_color(engine):
     await _add_keys(engine, _key("lapsed", ["query-api"], expires_in_days=-1))
     stub = _apisix_stub([_key_auth_route("query-api", ["lapsed"])])
@@ -437,7 +420,6 @@ async def test_loop_reconciles_through_the_module_client_on_the_active_color(eng
     assert _whitelist(stub, "query-api") == [DENY_ALL_CONSUMER]
 
 
-@pytest.mark.asyncio
 async def test_loop_survives_a_failing_cycle(caplog):
     sleeps = 0
 
@@ -463,7 +445,6 @@ async def test_loop_survives_a_failing_cycle(caplog):
 # ── Master lookup ────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_list_master_consumer_names_excludes_an_expired_master(engine):
     """A new key-auth route must not be born whitelisting a lapsed master key."""
     from app.routers.api_keys import list_master_consumer_names

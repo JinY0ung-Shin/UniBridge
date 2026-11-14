@@ -65,6 +65,7 @@ from app.routers import api_keys as api_keys_router
 from app.routers import nas as nas_router
 from app.routers import network as network_router
 from app.routers import query as query_router
+from app.routers import roles as roles_router
 from app.routers import s3 as s3_router
 from app.routers import servers as servers_router
 from app.schemas import (
@@ -908,16 +909,13 @@ async def _apply_route(
     from app.routers.gateway import (
         _SYSTEM_ROUTE_URIS,
         _invalidate_route_listing_cache,
+        _route_paths,
         _shadowed_system_uri,
     )
 
     # Every path counts: APISIX takes a route's paths from ``uris`` when it has
     # several, and an exact path there can outrank a system route by priority.
-    raw_uris = item.get("uris")
-    paths = [item.get("uri"), *(raw_uris if isinstance(raw_uris, list) else [])]
-    for uri in paths:
-        if not isinstance(uri, str):
-            continue
+    for uri in _route_paths(item):
         shadowed = _shadowed_system_uri(uri, sorted(_SYSTEM_ROUTE_URIS))
         if shadowed:
             raise HTTPException(
@@ -1025,18 +1023,6 @@ async def _sync_route_grants(ctx: _ImportContext) -> None:
 # ── Import: roles and grants ────────────────────────────────────────────────
 
 
-async def _role_snapshot(db: AsyncSession, role: Role) -> dict[str, Any]:
-    result = await db.execute(
-        select(RolePermission.permission).where(RolePermission.role_id == role.id)
-    )
-    return {
-        "name": role.name,
-        "description": role.description or "",
-        "is_system": role.is_system,
-        "permissions": sorted(row[0] for row in result.all()),
-    }
-
-
 async def _apply_role(
     ctx: _ImportContext, name: str, item: dict[str, Any]
 ) -> tuple[str, str | None]:
@@ -1062,7 +1048,7 @@ async def _apply_role(
     if ctx.dry_run:
         return action, reason
 
-    before = await _role_snapshot(ctx.db, existing) if existing is not None else None
+    before = await roles_router._role_audit_snapshot(ctx.db, existing) if existing is not None else None
     if existing is None:
         role = Role(name=name, description=body.description, is_system=False)
         ctx.db.add(role)
@@ -1084,7 +1070,7 @@ async def _apply_role(
         resource_id=str(role.id),
         summary=role.name,
         before=before,
-        after=await _role_snapshot(ctx.db, role),
+        after=await roles_router._role_audit_snapshot(ctx.db, role),
     )
     return action, reason
 

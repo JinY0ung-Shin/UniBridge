@@ -13,7 +13,6 @@ def observe(state, healthy=False, value=95):
                         observation={"message": "CPU utilisation", "value": value, "threshold": 90, "unit": "%"})
 
 
-@pytest.mark.asyncio
 async def test_incident_evidence_survives_recovery_and_restart(db_session):
     state = AlertStateManager()
     observe(state)
@@ -36,7 +35,6 @@ async def test_incident_evidence_survives_recovery_and_restart(db_session):
     assert restored.get_entry("server_cpu", "worker")["details"]["incident"]["value"] == 99
 
 
-@pytest.mark.asyncio
 async def test_status_distinguishes_recovering_stale_and_legacy(db_session, monkeypatch):
     state = AlertStateManager()
     observe(state)
@@ -69,7 +67,6 @@ def test_connection_diagnostics_do_not_expose_raw_errors(raw, expected):
     assert _connection_failure_reason(raw) == expected
 
 
-@pytest.mark.asyncio
 async def test_route_observation_refreshes_without_resending_alert(monkeypatch):
     from unittest.mock import AsyncMock
     from app.services import alert_checker

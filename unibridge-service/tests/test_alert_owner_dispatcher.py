@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -118,7 +117,6 @@ async def _history_rows(session_factory) -> list[AlertHistory]:
         return result.scalars().all()
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_sends_to_resource_assignees(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -153,7 +151,6 @@ async def test_dispatch_alert_sends_to_resource_assignees(engine):
     assert history.success is True
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_unions_assignees_with_admins_and_dedupes(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -189,7 +186,6 @@ async def test_dispatch_alert_unions_assignees_with_admins_and_dedupes(engine):
     assert histories[0].success is True
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_sends_to_admins_when_no_assignees(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -223,7 +219,6 @@ async def test_dispatch_alert_sends_to_admins_when_no_assignees(engine):
     assert histories[0].success is True
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_skips_resource_when_alerts_disabled(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -257,7 +252,6 @@ async def test_dispatch_alert_skips_resource_when_alerts_disabled(engine):
     assert histories[0].error_detail == "Alerts disabled for resource"
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_ignores_upstream_assignees_and_sends_to_admins(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -292,7 +286,6 @@ async def test_dispatch_alert_ignores_upstream_assignees_and_sends_to_admins(eng
     assert histories[0].success is True
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_adds_referenced_assignees_in_ref_order(engine):
     """An upstream alert reaches the assignees of the routes that reference it.
 
@@ -339,7 +332,6 @@ async def test_dispatch_alert_adds_referenced_assignees_in_ref_order(engine):
     assert json.loads(histories[0].recipients) == expected
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_tolerates_broken_referenced_assignees(engine):
     """A ref that is off, missing or corrupt drops itself, not the alert.
 
@@ -389,7 +381,6 @@ async def test_dispatch_alert_tolerates_broken_referenced_assignees(engine):
     assert histories[0].success is True
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_records_dispatch_metric(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -419,7 +410,6 @@ async def test_dispatch_alert_records_dispatch_metric(engine):
     )
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_skips_when_no_assignees_or_admins(engine):
     """No recipients is a skip (success None / returns None), not a delivery
     failure — the caller must not retry it and it must not count as a failure."""
@@ -449,7 +439,6 @@ async def test_dispatch_alert_skips_when_no_assignees_or_admins(engine):
     assert "No assignees or admins" in histories[0].error_detail
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_skips_when_no_mail_channel(engine):
     """No configured channel is a skip (success None / returns None): an
     unconfigured deployment must not be treated as a dispatch failure."""
@@ -479,7 +468,6 @@ async def test_dispatch_alert_skips_when_no_mail_channel(engine):
     assert "Mail channel not configured" in histories[0].error_detail
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_records_template_error(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -515,7 +503,6 @@ async def test_dispatch_alert_records_template_error(engine):
     assert json.loads(histories[0].recipients) == ["owner@example.com"]
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_skips_for_disabled_mail_channel(engine):
     """A disabled channel means alerts were intentionally switched off — a skip
     (success None), not a delivery failure that should retry or trip the
@@ -550,7 +537,6 @@ async def test_dispatch_alert_skips_for_disabled_mail_channel(engine):
     assert "disabled" in histories[0].error_detail
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_sends_headers_and_alert_placeholders(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     payload_template = (
@@ -602,7 +588,6 @@ async def test_dispatch_alert_sends_headers_and_alert_placeholders(engine):
     assert histories[0].success is True
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_labels_a_scheduled_report_as_such(engine):
     """A "report" must not borrow the recovery wording — it announces no incident."""
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -631,7 +616,6 @@ async def test_dispatch_alert_labels_a_scheduled_report_as_such(engine):
     assert (histories[0].alert_type, histories[0].rule_type) == ("report", "server_gpu_underutil")
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_requires_recipient_item_template(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -657,7 +641,6 @@ async def test_dispatch_alert_requires_recipient_item_template(engine):
     assert "recipient_item_template" in histories[0].error_detail
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_records_invalid_assignee_email_json(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -684,7 +667,6 @@ async def test_dispatch_alert_records_invalid_assignee_email_json(engine):
     assert "JSON array of strings" in histories[0].error_detail
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_records_webhook_failure_and_exception(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -721,7 +703,6 @@ async def test_dispatch_alert_records_webhook_failure_and_exception(engine):
     assert histories[1].error_detail == "network down"
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_return_value_is_tristate(engine):
     """The return mirrors AlertHistory.success: True sent, None skipped, False failed."""
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -758,7 +739,6 @@ async def test_dispatch_alert_return_value_is_tristate(engine):
     assert skipped is None
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_releases_read_session_before_webhook(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -788,7 +768,6 @@ async def test_dispatch_alert_releases_read_session_before_webhook(engine):
     assert histories[0].success is True
 
 
-@pytest.mark.asyncio
 async def test_dispatch_alert_does_not_raise_when_history_record_fails(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:

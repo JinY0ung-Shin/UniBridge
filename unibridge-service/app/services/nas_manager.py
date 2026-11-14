@@ -177,9 +177,6 @@ class NASConnectionManager:
     def list_aliases(self) -> list[str]:
         return list(self._bases.keys())
 
-    def get_config(self, alias: str) -> dict[str, Any]:
-        return self._configs.get(alias, {})
-
     def get_max_download_bytes(self, alias: str) -> int | None:
         return self._configs.get(alias, {}).get("max_download_bytes")
 

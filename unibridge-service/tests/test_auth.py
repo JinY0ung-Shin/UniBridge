@@ -836,7 +836,6 @@ def _make_credentials(token: str) -> _FakeCredentials:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-@pytest.mark.asyncio
 async def test_apikey_user_from_apisix_header():
     """When X-Consumer-Username header is present, return ApiKeyUser."""
     from unittest.mock import AsyncMock, MagicMock
@@ -872,7 +871,6 @@ async def test_apikey_user_from_apisix_header():
     assert user.allowed_tables is None
 
 
-@pytest.mark.asyncio
 async def test_apikey_user_rejects_untrusted_consumer_header_in_production(monkeypatch):
     """Production auth must not trust a spoofed X-Consumer-Username by itself."""
     from unittest.mock import AsyncMock, MagicMock
@@ -896,7 +894,6 @@ async def test_apikey_user_rejects_untrusted_consumer_header_in_production(monke
     mock_db.execute.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_apikey_user_rejects_apisix_admin_key_as_proxy_secret(monkeypatch):
     """The APISIX admin key is no longer a valid internal-proxy secret.
 
@@ -928,7 +925,6 @@ async def test_apikey_user_rejects_apisix_admin_key_as_proxy_secret(monkeypatch)
     mock_db.execute.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_apikey_user_rejects_consumer_header_when_proxy_secret_unset(monkeypatch):
     """With no dedicated secret configured there is nothing to trust.
 
@@ -958,7 +954,6 @@ async def test_apikey_user_rejects_consumer_header_when_proxy_secret_unset(monke
     mock_db.execute.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_apikey_user_rejects_non_ascii_proxy_secret_without_500(monkeypatch):
     """Malformed/non-ASCII proxy secret headers should fail as 401, not TypeError."""
     from unittest.mock import AsyncMock, MagicMock
@@ -985,7 +980,6 @@ async def test_apikey_user_rejects_non_ascii_proxy_secret_without_500(monkeypatc
     mock_db.execute.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_apikey_user_accepts_trusted_consumer_header_in_production(monkeypatch):
     """APISIX-injected consumer headers are accepted when the proxy secret matches."""
     from unittest.mock import AsyncMock, MagicMock
@@ -1023,7 +1017,6 @@ async def test_apikey_user_accepts_trusted_consumer_header_in_production(monkeyp
     assert user.consumer_name == "my-app-key"
 
 
-@pytest.mark.asyncio
 async def test_apikey_user_carries_write_flags_and_allowed_tables():
     """Per-key write flags and the table whitelist surface on ApiKeyUser."""
     from unittest.mock import AsyncMock, MagicMock
@@ -1057,7 +1050,6 @@ async def test_apikey_user_carries_write_flags_and_allowed_tables():
     assert user.allowed_tables == ["orders", "users"]
 
 
-@pytest.mark.asyncio
 async def test_apikey_user_expired_returns_401():
     """An expires_at in the past must be rejected with 401 'API key expired'."""
     from datetime import datetime, timedelta, timezone
@@ -1087,7 +1079,6 @@ async def test_apikey_user_expired_returns_401():
     assert exc_info.value.detail == "API key expired"
 
 
-@pytest.mark.asyncio
 async def test_apikey_user_future_expiry_allowed():
     """A key whose expires_at is still in the future authenticates normally."""
     from datetime import datetime, timedelta, timezone
@@ -1119,7 +1110,6 @@ async def test_apikey_user_future_expiry_allowed():
     assert user.consumer_name == "fresh-key"
 
 
-@pytest.mark.asyncio
 async def test_apikey_user_unknown_consumer_returns_401():
     """When X-Consumer-Username header has unknown consumer, raise 401."""
     from unittest.mock import AsyncMock, MagicMock

@@ -445,10 +445,6 @@ async def purge_stale_states(
     to skip the corresponding alert types when the source is unreachable —
     better to leave state alone than to wipe it because of a transient outage.
     Returns the (alert_type, target) pairs that were removed.
-
-    Route states are keyed by plain ``route_id``. Any legacy rule-scoped
-    states (``error_rate`` and ``{route}:rule_{id}`` targets from the old
-    rule-based model) are treated as stale and purged.
     """
     result = await db.execute(select(AlertState))
     removed: list[tuple[str, str]] = []
@@ -469,10 +465,7 @@ async def purge_stale_states(
             if known_upstream_ids is not None:
                 should_remove = target not in known_upstream_ids
         elif atype == "route_error_rate":
-            if ":rule_" in target:
-                # Legacy rule-scoped target; the new model keys by route_id.
-                should_remove = True
-            elif known_route_ids is not None:
+            if known_route_ids is not None:
                 should_remove = target not in known_route_ids
         elif atype.startswith("external_service_"):
             # External-service signals (external_service_down): key by service
@@ -484,9 +477,6 @@ async def purge_stale_states(
             # host name. Skip the purge when the registry could not be loaded.
             if known_host_names is not None:
                 should_remove = target not in known_host_names
-        elif atype == "error_rate":
-            # Global error-rate monitoring was removed; drop any leftover state.
-            should_remove = True
 
         if should_remove:
             state.discard(atype, target)

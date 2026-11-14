@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, patch
 
 from tests.conftest import auth_header
 
-pytestmark = pytest.mark.asyncio
 
 _INSTANT = "app.routers.external_metrics.prometheus_client.instant_query"
 _RANGE = "app.routers.external_metrics.prometheus_client.range_query"

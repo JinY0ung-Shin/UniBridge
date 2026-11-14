@@ -9,15 +9,14 @@ MCP_API_ROUTE_ID = "mcp-api"
 NETWORK_API_ROUTE_ID = "network-api"
 NETWORK_WRITE_ROUTE_ID = "network-write-api"
 
-# The /api/llm-bi routes of the Bifrost side-by-side test and the second
-# converter they used. Boot provisioning deletes them (app/main.py
-# _retire_llm_bi_routes); they stay protected so no user resource takes an id
-# provisioning would delete.
+# The removed /api/llm-bi routes of the Bifrost side-by-side test and the
+# second converter they used. They stay protected, so no user resource takes
+# one of their ids, while their old series are still in Prometheus (the LLM
+# route metric exclusions in app/routers/gateway.py name them too).
 RETIRED_LLM_BI_ROUTE_IDS = ("llm-bi-proxy", "llm-bi-messages", "llm-bi-responses", "llm-bi-models")
 RETIRED_LLM_BI_UPSTREAM_ID = "llm-converter-bi"
-# What LiteLLM had in APISIX: its admin UI route and its upstream. Boot
-# provisioning deletes them (app/main.py _retire_litellm_routing) and they stay
-# protected for the same reason.
+# What LiteLLM had in APISIX: its admin UI route and its upstream. Gone, and
+# protected for now like the llm-bi ids.
 RETIRED_LITELLM_ROUTE_ID = "llm-admin"
 RETIRED_LITELLM_UPSTREAM_ID = "litellm"
 # Answers all of /api/llm-bi with a 404 that points to /api/llm. It proxies
@@ -60,6 +59,8 @@ PROTECTED_UPSTREAM_IDS = {
 # each, ``mcp-ext-<name>``, written from the MCP admin page. They are system
 # resources to the gateway editor and the config transfer, like the ids above.
 MCP_REMOTE_ID_PREFIX = "mcp-ext-"
+# The path each relay route serves, under this prefix (mcp_remote.relay_path).
+MCP_REMOTE_RELAY_PATH_PREFIX = "/_mcp-ext/"
 
 
 def is_system_route(route_id: object) -> bool:

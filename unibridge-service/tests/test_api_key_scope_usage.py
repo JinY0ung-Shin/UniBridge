@@ -1,16 +1,13 @@
-"""Tests for the API key page's issuer scoping (``?scope=mine``), the boot-time
-issuer backfill, and the per-key 7-day usage counts (``/admin/api-keys/usage``)."""
+"""Tests for the API key page's issuer scoping (``?scope=mine``) and the
+per-key 7-day usage counts (``/admin/api-keys/usage``)."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth import CurrentUser, create_token, get_current_user, invalidate_permission_cache
-from app.models import AdminAuditLog, ApiKeyAccess, Role, RolePermission
-from app.routers.api_keys import backfill_api_key_issuers
+from app.models import ApiKeyAccess, Role, RolePermission
 from tests.conftest import auth_header
 
 
@@ -47,7 +44,6 @@ def _as_user(app, *, username: str, sub: str, role: str = "admin") -> None:
     app.dependency_overrides[get_current_user] = _fake_current_user
 
 
-@pytest.mark.asyncio
 async def test_mine_scope_lists_only_the_keys_the_caller_issued(client, admin_token):
     other_token = create_token("otheradmin", "admin")
     created = await _create_key(client, admin_token, "mine-app")
@@ -66,17 +62,15 @@ async def test_mine_scope_lists_only_the_keys_the_caller_issued(client, admin_to
     assert set(await _list_keys(client, auth_header(admin_token))) == {"mine-app", "their-app"}
 
 
-@pytest.mark.asyncio
 async def test_admin_keys_are_matched_by_username_not_sub(app, client):
-    # Under Keycloak the sub is a UUID while the audit log (and so the backfill)
-    # names the username: the issuer has to be the username for both to agree.
+    # Under Keycloak the sub is a UUID while the audit log names the username:
+    # the issuer has to be the username for both to agree.
     _as_user(app, username="alice", sub="0b7e4c52-8d4e-4a52-9a61-6f1e0c3d2b19")
     created = await _create_key(client, None, "alice-app")
     assert created["created_by"] == "alice"
     assert set(await _list_keys(client, scope="mine")) == {"alice-app"}
 
 
-@pytest.mark.asyncio
 async def test_mine_scope_includes_the_callers_own_self_service_key(app, client, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -94,7 +88,6 @@ async def test_mine_scope_includes_the_callers_own_self_service_key(app, client,
     assert set(await _list_keys(client, scope="all")) == {"self_alice", "self_bob", "legacy-app"}
 
 
-@pytest.mark.asyncio
 async def test_self_service_key_records_its_owner_as_issuer(app, client):
     _as_user(app, username="alice", sub="alice-sub")
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
@@ -105,58 +98,6 @@ async def test_self_service_key_records_its_owner_as_issuer(app, client):
     assert resp.json()["created_by"] == "alice"
 
 
-@pytest.mark.asyncio
-async def test_backfill_names_each_keys_creator_from_the_audit_log(seeded_db):
-    session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
-    async with session_factory() as db:
-        db.add_all([
-            ApiKeyAccess(consumer_name="recreated"),
-            ApiKeyAccess(consumer_name="audited"),
-            ApiKeyAccess(consumer_name="lost-audit"),
-            ApiKeyAccess(consumer_name="unaudited"),
-            ApiKeyAccess(consumer_name="self_x", owner="x-sub"),
-            ApiKeyAccess(consumer_name="kept", created_by="keeper"),
-        ])
-        for actor, action, resource_type, resource_id, outcome in [
-            # Deleted and re-created: the key belongs to whoever created it last.
-            ("alice", "create", "api_key", "recreated", "success"),
-            ("alice", "delete", "api_key", "recreated", "success"),
-            ("bob", "create", "api_key", "recreated", "success"),
-            ("carol", "create", "api_key", "audited", "success"),
-            ("mallory", "create", "api_key", "audited", "error"),
-            # Re-created by someone whose audit write was lost: no longer alice's.
-            ("alice", "create", "api_key", "lost-audit", "success"),
-            ("alice", "delete", "api_key", "lost-audit", "success"),
-            # Another resource type sharing the name is not this key's history.
-            ("dave", "create", "route", "unaudited", "success"),
-            # Self-service keys are matched by owner, and a recorded issuer stays.
-            ("erin", "create", "api_key", "self_x", "success"),
-            ("frank", "create", "api_key", "kept", "success"),
-        ]:
-            db.add(AdminAuditLog(
-                actor=actor, action=action, resource_type=resource_type,
-                resource_id=resource_id, status=outcome,
-            ))
-            await db.flush()  # ids follow the order above
-        await db.commit()
-
-        assert await backfill_api_key_issuers(db) == 2
-        assert await backfill_api_key_issuers(db) == 0  # every boot runs it again
-
-        issuers = dict((await db.execute(
-            select(ApiKeyAccess.consumer_name, ApiKeyAccess.created_by)
-        )).all())
-    assert issuers == {
-        "recreated": "bob",
-        "audited": "carol",
-        "lost-audit": None,
-        "unaudited": None,
-        "self_x": None,
-        "kept": "keeper",
-    }
-
-
-@pytest.mark.asyncio
 async def test_list_rejects_an_unknown_scope(client, admin_token):
     resp = await client.get(
         "/admin/api-keys", params={"scope": "team"}, headers=auth_header(admin_token)
@@ -164,7 +105,6 @@ async def test_list_rejects_an_unknown_scope(client, admin_token):
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_usage_counts_each_keys_requests_over_the_last_7_days(client, admin_token):
     await _create_key(client, admin_token, "busy-app")
     await _create_key(client, admin_token, "idle-app")
@@ -197,7 +137,6 @@ async def test_usage_counts_each_keys_requests_over_the_last_7_days(client, admi
     assert "min_over_time" in query and "offset 7d" in query
 
 
-@pytest.mark.asyncio
 async def test_usage_reports_502_when_prometheus_fails(client, admin_token):
     with patch(
         "app.routers.api_keys.prometheus_client.instant_query",
@@ -208,13 +147,11 @@ async def test_usage_reports_502_when_prometheus_fails(client, admin_token):
     assert "Prometheus error" in resp.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_usage_requires_apikeys_read(client, user_token):
     resp = await client.get("/admin/api-keys/usage", headers=auth_header(user_token))
     assert resp.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_usage_also_requires_gateway_monitoring_read(client, seeded_db):
     # A role that may list keys but not see gateway traffic gets the list only.
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)

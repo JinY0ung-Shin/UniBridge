@@ -45,11 +45,16 @@ class FakeMcp:
         self.call_result: dict[str, Any] | None = None
         self.page_size = 2
         self.expired_status = 404
+        # Bytes of filler in the ended-session answer and the 401 refusal.
+        self.error_padding = 0
         self.requests: list[httpx.Request] = []
         self.client_replies: list[dict[str, Any]] = []
         self.methods: list[str] = []
         # Authorization values answered with 401, like a revoked PAT.
         self.refused_authorizations: set[str] = set()
+
+    def _padding(self) -> dict[str, str]:
+        return {"padding": "x" * self.error_padding} if self.error_padding else {}
 
     def _reply(self, message: dict[str, Any], headers: dict[str, str] | None = None) -> httpx.Response:
         if not self.sse:
@@ -67,7 +72,7 @@ class FakeMcp:
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         if request.headers.get("authorization") in self.refused_authorizations:
-            return httpx.Response(401, json={"message": "Bad credentials"})
+            return httpx.Response(401, json={"message": "Bad credentials", **self._padding()})
         session = request.headers.get("mcp-session-id")
         if request.method == "DELETE":
             self.sessions.discard(session or "")
@@ -97,7 +102,8 @@ class FakeMcp:
             )
         if self.stateful and session not in self.sessions:
             return httpx.Response(
-                self.expired_status, json={"error": {"code": -32001, "message": "Session not found"}}
+                self.expired_status,
+                json={"error": {"code": -32001, "message": "Session not found"}, **self._padding()},
             )
         if "id" not in message:
             return httpx.Response(202)
@@ -606,13 +612,18 @@ async def test_tool_calls_go_through_the_relay_as_the_caller(client, admin_token
         assert [reply["error"]["code"] for reply in mcp.client_replies] == [-32601] * 3
 
 
+@pytest.mark.parametrize("error_padding", [0, 10_000], ids=["short", "long-body"])
 @pytest.mark.parametrize("expired_status", [404, 400])
-async def test_an_ended_session_is_opened_again(client, admin_token, seeded_db, net, expired_status):
+async def test_an_ended_session_is_opened_again(
+    client, admin_token, seeded_db, net, expired_status, error_padding
+):
     await _register(client, admin_token, approve=["search"])
     headers = await _key(seeded_db, net)
     mcp = net.apisix.mcp
     mcp.stateful = True
     mcp.expired_status = expired_status
+    # An answer longer than what is read of it still counts as an ended session.
+    mcp.error_padding = error_padding
     await _call(client, headers, "docs__search", {"q": "1"})
     mcp.sessions.clear()  # the server restarted
     mcp.methods.clear()
@@ -889,3 +900,17 @@ async def test_a_refused_end_user_token_is_named_in_the_error(client, admin_toke
     text = result["content"][0]["text"]
     assert "HTTP 401: Bad credentials" in text
     assert "X-MCP-Auth-docs" in text and "revoked-pat" not in text
+
+
+async def test_a_long_refusal_keeps_its_status(client, admin_token, seeded_db, net):
+    # Only the start of an error answer is read; the status must survive the cut.
+    await _register_user_token_server(client, admin_token)
+    headers = await _key(seeded_db, net)
+    net.apisix.mcp.refused_authorizations.add("Bearer revoked-pat")
+    net.apisix.mcp.error_padding = 10_000
+    result = await _call(client, {**headers, "X-MCP-Auth-docs": "revoked-pat"}, "docs__search", {"q": "x"})
+    assert result["isError"] is True
+    text = result["content"][0]["text"]
+    assert "HTTP 401:" in text
+    assert "over 4096 bytes" not in text
+    assert "X-MCP-Auth-docs" in text

@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import ApiKeyAccess, Permission
-from app.schemas import QueryResponse
+from app.schemas import QueryResponse, QueryTemplateCreate, QueryTemplateUpdate
 from tests.conftest import auth_header
 
 
@@ -851,3 +853,33 @@ async def test_template_usage_counts_recent_runs_per_template(client, admin_toke
 async def test_template_usage_requires_query_audit_read(client, querier_token):
     resp = await client.get("/admin/query/template-usage", headers=auth_header(querier_token))
     assert resp.status_code == 403
+
+
+# ── Blank text in the admin template schemas ─────────────────────────────────
+
+
+@pytest.mark.parametrize("field", ["name", "database", "sql"])
+def test_admin_template_schemas_reject_blank_text(field):
+    # min_length runs before the strip, so "   " used to pass as "".
+    base = {"path": "reports/x", "name": "X", "database": "maindb", "sql": "SELECT 1"}
+    with pytest.raises(ValidationError, match=f"{field} must not be empty"):
+        QueryTemplateCreate(**{**base, field: "   "})
+    with pytest.raises(ValidationError, match=f"{field} must not be empty"):
+        QueryTemplateUpdate(**{field: "   "})
+
+
+def test_admin_template_update_may_still_clear_the_description():
+    assert QueryTemplateUpdate(description="   ").description == ""
+    assert QueryTemplateUpdate(name=None).name is None
+
+
+async def test_admin_create_with_a_blank_name_is_422(client, admin_token):
+    await _create_database(client, admin_token)
+
+    resp = await client.post(
+        "/admin/query/templates",
+        json={"path": "reports/blank", "name": "   ", "database": "maindb", "sql": "SELECT 1"},
+        headers=auth_header(admin_token),
+    )
+
+    assert resp.status_code == 422

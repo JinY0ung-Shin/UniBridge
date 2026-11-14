@@ -865,6 +865,9 @@ class TestSkips:
         [
             ["/api/myservice/a", "/api/llm-bi/v1/models"],
             ["/api/query/exec"],
+            ["/api/mcp/artifacts/x"],
+            # The external MCP servers' relay routes sit outside /api/.
+            ["/_mcp-ext/github"],
         ],
     )
     async def test_route_with_several_paths_is_guarded_on_each(

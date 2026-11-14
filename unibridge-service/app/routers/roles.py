@@ -96,19 +96,6 @@ async def list_roles(
     return [await _role_to_response(db, r) for r in roles]
 
 
-@router.get("/admin/roles/{role_id}", response_model=RoleResponse)
-async def get_role(
-    role_id: int,
-    _user: CurrentUser = Depends(require_permission("admin.roles.read")),
-    db: AsyncSession = Depends(get_db),
-) -> RoleResponse:
-    result = await db.execute(select(Role).where(Role.id == role_id))
-    role = result.scalar_one_or_none()
-    if role is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
-    return await _role_to_response(db, role)
-
-
 @router.post("/admin/roles", response_model=RoleResponse, status_code=status.HTTP_201_CREATED)
 async def create_role(
     body: RoleCreate,

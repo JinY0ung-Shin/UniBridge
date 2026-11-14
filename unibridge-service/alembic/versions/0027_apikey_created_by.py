@@ -2,10 +2,11 @@
 
 The API key page lists the caller's own keys by default (``scope=mine``), which
 needs to know who issued an admin key — ``owner`` only covers self-service keys
-(it holds the owner's Keycloak sub). Existing admin keys get their issuer from
-the admin audit trail at boot (``api_keys.backfill_api_key_issuers``) rather than
-here: in a blue-green deploy the old color keeps creating keys without one while
-this migration runs on the new color, so a one-off backfill would miss them.
+(it holds the owner's Keycloak sub). Existing admin keys got their issuer from
+the admin audit trail at boot rather than here: in a blue-green deploy the old
+color kept creating keys without one while this migration ran on the new color,
+so a one-off backfill would have missed them. That boot backfill was removed
+once every color ran this migration.
 
 Revision ID: 0027_apikey_created_by
 Revises: 0026_bifrost_sso_sessions

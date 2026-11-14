@@ -141,7 +141,10 @@ async def test_list_tables_for_relational_database(
     manager = _manager(db_type=db_type)
     connection = _SqlConnection(rows=[("public.users",), ("public.orders",)])
     manager.get_engine.return_value = _Engine(connection)
-    with patch("app.routers.admin.connection_manager", manager):
+    with (
+        patch("app.routers.admin.connection_manager", manager),
+        patch("app.services.schema_browser.connection_manager", manager),
+    ):
         response = await client.get(
             "/admin/query/databases/main/tables",
             headers=auth_header(admin_token),
@@ -157,7 +160,10 @@ async def test_list_tables_maps_database_failure_to_500(client, admin_token):
     manager.get_engine.return_value = _Engine(
         _SqlConnection(error=RuntimeError("catalog unavailable"))
     )
-    with patch("app.routers.admin.connection_manager", manager):
+    with (
+        patch("app.routers.admin.connection_manager", manager),
+        patch("app.services.schema_browser.connection_manager", manager),
+    ):
         response = await client.get(
             "/admin/query/databases/main/tables",
             headers=auth_header(admin_token),

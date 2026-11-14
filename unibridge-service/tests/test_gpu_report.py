@@ -124,7 +124,6 @@ async def _marker(factory) -> datetime | None:
         return result.scalar_one()
 
 
-@pytest.mark.asyncio
 async def test_below_target_host_is_reported(engine):
     factory = await _seed(
         engine,
@@ -151,7 +150,6 @@ async def test_below_target_host_is_reported(engine):
     assert await _marker(factory) == NOW_DUE
 
 
-@pytest.mark.asyncio
 async def test_host_at_or_above_target_is_not_reported(engine):
     factory = await _seed(engine, global_target=50.0, hosts=(_gpu_host("gpu1"),))
     # Exactly on target counts as met: the report fires strictly below.
@@ -162,7 +160,6 @@ async def test_host_at_or_above_target_is_not_reported(engine):
     assert await _marker(factory) == NOW_DUE
 
 
-@pytest.mark.asyncio
 async def test_per_host_zero_target_switches_the_report_off(engine):
     factory = await _seed(engine, global_target=50.0, hosts=(_gpu_host("spare", target=0.0),))
     sent, dispatch, avg_map = await _run(factory, averages={"spare": 1.0})
@@ -173,7 +170,6 @@ async def test_per_host_zero_target_switches_the_report_off(engine):
     avg_map.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_null_per_host_target_inherits_the_global_default(engine):
     factory = await _seed(engine, global_target=40.0, hosts=(_gpu_host("gpu1", target=None),))
     sent, dispatch, _ = await _run(factory, averages={"gpu1": 39.9})
@@ -182,7 +178,6 @@ async def test_null_per_host_target_inherits_the_global_default(engine):
     assert dispatch.await_args.kwargs["threshold"] == 40.0
 
 
-@pytest.mark.asyncio
 async def test_per_host_target_works_while_the_global_default_is_off(engine):
     factory = await _seed(
         engine,
@@ -195,7 +190,6 @@ async def test_per_host_target_works_while_the_global_default_is_off(engine):
     assert dispatch.await_args.kwargs["resource_id"] == "watched"
 
 
-@pytest.mark.asyncio
 async def test_muted_host_is_skipped_for_the_day(engine):
     factory = await _seed(engine, global_target=50.0, hosts=(_gpu_host("gpu1"),))
     mutes = MuteIndex(targets={("server", "gpu1"): NOW_DUE + timedelta(hours=2)})
@@ -207,7 +201,6 @@ async def test_muted_host_is_skipped_for_the_day(engine):
     assert await _marker(factory) == NOW_DUE
 
 
-@pytest.mark.asyncio
 async def test_host_missing_from_prometheus_is_skipped(engine):
     factory = await _seed(engine, global_target=50.0, hosts=(_gpu_host("gpu1"),))
     sent, dispatch, _ = await _run(factory, averages={})
@@ -217,7 +210,6 @@ async def test_host_missing_from_prometheus_is_skipped(engine):
     assert await _marker(factory) == NOW_DUE
 
 
-@pytest.mark.asyncio
 async def test_disabled_and_non_gpu_hosts_are_ineligible(engine):
     factory = await _seed(
         engine,
@@ -234,7 +226,6 @@ async def test_disabled_and_non_gpu_hosts_are_ineligible(engine):
     avg_map.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_marker_written_when_no_host_is_eligible(engine):
     factory = await _seed(engine, global_target=0.0)
     sent, dispatch, avg_map = await _run(factory)
@@ -246,7 +237,6 @@ async def test_marker_written_when_no_host_is_eligible(engine):
     assert await _marker(factory) == NOW_DUE
 
 
-@pytest.mark.asyncio
 async def test_prometheus_failure_propagates_and_leaves_the_marker(engine):
     factory = await _seed(
         engine,
@@ -261,7 +251,6 @@ async def test_prometheus_failure_propagates_and_leaves_the_marker(engine):
     assert await _marker(factory) == SENT_YESTERDAY
 
 
-@pytest.mark.asyncio
 async def test_not_due_returns_none_without_querying(engine):
     factory = await _seed(engine, global_target=50.0, hosts=(_gpu_host("gpu1"),))
     sent, dispatch, avg_map = await _run(factory, averages={"gpu1": 1.0}, now=NOW_EARLY)
@@ -272,7 +261,6 @@ async def test_not_due_returns_none_without_querying(engine):
     assert await _marker(factory) is None
 
 
-@pytest.mark.asyncio
 async def test_already_sent_today_returns_none(engine):
     factory = await _seed(
         engine, global_target=50.0, last_sent=SENT_TODAY, hosts=(_gpu_host("gpu1"),)
@@ -285,7 +273,6 @@ async def test_already_sent_today_returns_none(engine):
     assert await _marker(factory) == SENT_TODAY
 
 
-@pytest.mark.asyncio
 async def test_missing_settings_row_returns_none(engine):
     factory = await _seed(engine, settings_row=False, hosts=(_gpu_host("gpu1"),))
     sent, dispatch, avg_map = await _run(factory, averages={"gpu1": 1.0})

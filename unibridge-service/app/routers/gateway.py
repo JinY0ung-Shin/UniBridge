@@ -32,10 +32,11 @@ from app.services import openapi_export
 from app.services.apisix_client import upstream_node_addresses
 from app.services import prometheus_client
 from app.services.alert_state import delete_alert_state
-from app.services.audit import log_admin_action
+from app.services.audit import MASK_KEEP, MASK_PREFIX, log_admin_action, mask_secret
 from app.services.settings_manager import settings_manager
 from app.services.apisix_system_resources import (
     MCP_API_ROUTE_ID,
+    MCP_REMOTE_RELAY_PATH_PREFIX,
     PROTECTED_ROUTE_IDS,
     PROTECTED_UPSTREAM_IDS,  # noqa: F401 -- tests import it from here
     is_mcp_remote_resource,
@@ -47,18 +48,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/gateway", tags=["Gateway"])
 
-MASK_KEEP = 4
-_MASK_PREFIX = "***"
-
-def _mask_value(value: str) -> str:
-    if len(value) <= MASK_KEEP:
-        return _MASK_PREFIX
-    return _MASK_PREFIX + value[-MASK_KEEP:]
-
-
-# Exactly what `_mask_value` can emit: the prefix alone, or the prefix plus the
+# Exactly what `mask_secret` can emit: the prefix alone, or the prefix plus the
 # trailing characters it keeps. Derived from both constants so it cannot drift.
-_MASKED_VALUE_RE = re.compile(rf"^{re.escape(_MASK_PREFIX)}(?:.{{{MASK_KEEP}}})?$")
+_MASKED_VALUE_RE = re.compile(rf"^{re.escape(MASK_PREFIX)}(?:.{{{MASK_KEEP}}})?$")
 
 
 def _is_masked_value(value: str) -> bool:
@@ -94,7 +86,7 @@ def _headers_set_for_route(route: dict[str, Any]) -> dict[str, str]:
 def _extract_service_keys(route: dict[str, Any]) -> list[dict[str, str]]:
     headers_set = _headers_set_for_route(route)
     return [
-        {"header_name": name, "header_value": _mask_value(value)}
+        {"header_name": name, "header_value": mask_secret(value)}
         for name, value in headers_set.items()
     ]
 
@@ -246,10 +238,7 @@ def _inject_plugins(
     ``protected`` marks a system-managed route, whose provisioned headers are
     carried through a service-key edit instead of being replaced by it.
     """
-    legacy_service_key = body.pop("service_key", None)
     service_keys = body.pop("service_keys", None)
-    if service_keys is None and legacy_service_key is not None:
-        service_keys = [legacy_service_key]
     require_auth = body.pop("require_auth", None)
     strip_prefix = body.pop("strip_prefix", None)
     plugins = dict(existing_plugins or {})
@@ -383,9 +372,6 @@ def _validate_service_keys(value: Any) -> None:
 def _validate_service_keys_payload(body: dict[str, Any]) -> None:
     if "service_keys" in body:
         _validate_service_keys(body.get("service_keys"))
-        return
-    if "service_key" in body and body.get("service_key") is not None:
-        _validate_service_keys([body.get("service_key")])
 
 
 def _redact_service_key_headers(route: dict[str, Any]) -> None:
@@ -412,7 +398,7 @@ def _redact_service_key_headers(route: dict[str, Any]) -> None:
         if not isinstance(values, dict):
             continue
         headers[op] = {
-            name: _mask_value(value) if isinstance(value, str) else value
+            name: mask_secret(value) if isinstance(value, str) else value
             for name, value in values.items()
         }
 
@@ -427,12 +413,11 @@ def _attach_service_key_fields(route: dict[str, Any]) -> None:
     """
     service_keys = _extract_service_keys(route)
     route["service_keys"] = service_keys
-    route["service_key"] = service_keys[0] if service_keys else None
     _redact_service_key_headers(route)
     # An external MCP server's relay route matches on a secret header value.
     if is_mcp_remote_resource(route.get("id")) and isinstance(route.get("vars"), list):
         route["vars"] = [
-            [*var[:2], _mask_value(var[2])]
+            [*var[:2], mask_secret(var[2])]
             if isinstance(var, list) and len(var) == 3 and isinstance(var[2], str)
             else var
             for var in route["vars"]
@@ -510,15 +495,22 @@ async def get_route(
 # turns the opaque schema error into a clean 400.
 _ROUTE_NAME_MAX_LEN = 100
 
-# URIs of the routes provisioned at startup (app/main.py's APISIX provisioning
-# block — keep in sync when a route is added there). Held as a constant so the
-# shadowing guard below still stands when the live APISIX listing is unavailable.
+# Paths of the routes provisioned at startup (app/main.py's APISIX provisioning
+# block — keep in sync when a route is added there; tests/test_main.py checks
+# every provisioned path is covered). Held as a constant so the shadowing guard
+# below still stands when the live APISIX listing is unavailable.
 _SYSTEM_ROUTE_URIS = (
     "/api/query/*",
     "/api/query/templates/*",
     "/api/s3/*",
     "/api/nas/*",
     "/api/usages",
+    # mcp-api (``uris``): the MCP endpoint and the artifact transfers.
+    "/api/mcp",
+    "/api/mcp/artifacts",
+    "/api/mcp/artifacts/*",
+    # network-api and network-write-api (same uri, split by method).
+    "/api/network/*",
     "/api/prometheus/*",
     "/api/llm/*",
     "/api/llm/v1/messages",
@@ -526,7 +518,17 @@ _SYSTEM_ROUTE_URIS = (
     # The whole prefix: llm-bi-not-found answers all of it since the Bifrost
     # side-by-side test was removed (llm_routes.retired_llm_bi_route).
     "/api/llm-bi/*",
+    # The external MCP servers' relay routes (mcp_remote.relay_path), which
+    # carry the relay secret and the callers' tokens.
+    f"{MCP_REMOTE_RELAY_PATH_PREFIX}*",
 )
+
+
+def _route_paths(route: dict[str, Any]) -> list[str]:
+    """Every path a route serves: its ``uri`` and, for a route with several, ``uris``."""
+    raw_uris = route.get("uris")
+    paths = [route.get("uri"), *(raw_uris if isinstance(raw_uris, list) else [])]
+    return [path for path in paths if isinstance(path, str)]
 
 
 def _uri_namespace(uri: str) -> str:
@@ -765,11 +767,9 @@ async def save_route(
         # provisioning constants; the constants cover a listing that came back
         # without it, so an APISIX hiccup cannot open the namespace.
         system_uris = set(_SYSTEM_ROUTE_URIS)
-        system_uris.update(
-            item["uri"]
-            for item in all_routes
-            if item.get("id") in PROTECTED_ROUTE_IDS and isinstance(item.get("uri"), str)
-        )
+        for item in all_routes:
+            if is_system_route(item.get("id")):
+                system_uris.update(_route_paths(item))
         shadowed = _shadowed_system_uri(uri, sorted(system_uris))
         if shadowed:
             raise HTTPException(
@@ -1085,23 +1085,6 @@ async def list_upstreams(
     for item in result.get("items", []):
         item["system"] = is_system_upstream(item.get("id"))
     return result
-
-
-@router.get("/upstreams/{upstream_id}")
-async def get_upstream(
-    upstream_id: str,
-    _admin: CurrentUser = Depends(require_permission("gateway.upstreams.read")),
-) -> dict[str, Any]:
-    try:
-        return await apisix_client.get_resource("upstreams", upstream_id)
-    except HTTPStatusError as exc:
-        _handle_apisix_error(exc, "Upstream")
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to connect to APISIX: {exc}",
-        )
-    return {}  # unreachable, satisfies type checker
 
 
 @router.put("/upstreams/{upstream_id}")
@@ -1654,26 +1637,16 @@ def _llm_labels(*extra: str) -> str:
 
 
 def _llm_key_matchers(api_key: str | None) -> tuple[str, ...]:
-    """PromQL matcher scoping Bifrost's LLM counters to one API key.
+    """PromQL matcher scoping the LLM series to one API key.
 
     The gateway routes stamp each LLM request with the UniBridge API-key name,
     which Bifrost keeps as its ``consumer`` label (``x-bf-dim-consumer:
-    $consumer_name``). Returns no matcher when unscoped.
+    $consumer_name``) and APISIX's ``apisix_http_status`` carries as
+    ``consumer`` too, so the same matcher scopes Bifrost's counters and, through
+    ``_llm_labels``, the status/error series. Returns no matcher when unscoped.
 
     Validating here as well as in each handler keeps every ``api_key`` filter on
     one check: the value is a consumer name, and it reaches a PromQL matcher.
-    """
-    _validate_consumer(api_key)
-    return (f'consumer="{_promql_str(api_key)}"',) if api_key else ()
-
-
-def _llm_consumer_extra(api_key: str | None) -> tuple[str, ...]:
-    """APISIX ``consumer`` label extras for ``_llm_labels``, scoped to one key.
-
-    ``apisix_http_status`` carries the API-key name as ``consumer`` (the same
-    value Bifrost's ``consumer`` holds), so
-    status/error series can be scoped to the same key the gateway counters are
-    filtered by. Validated like :func:`_llm_key_matchers`.
     """
     _validate_consumer(api_key)
     return (f'consumer="{_promql_str(api_key)}"',) if api_key else ()
@@ -1847,10 +1820,12 @@ def _extract_timeseries(
 ) -> list[dict[str, Any]]:
     """Extract time series points from Prometheus range query result.
 
-    NaN (or unparseable) samples become 0.0 — right for counts and rates. A
-    quantile series passes ``nan_as_none=True``: there NaN means no traffic in
-    the window, an undefined percentile rather than 0ms, so the point is kept
-    (index-aligned with sibling p50/p95/p99 series) with a ``None`` value.
+    NaN, ±Inf (or unparseable) samples become 0.0 — right for counts and rates.
+    A quantile series passes ``nan_as_none=True``: there NaN means no traffic in
+    the window and +Inf a quantile past the top bucket bound, an undefined
+    percentile rather than a number, so the point is kept (index-aligned with
+    sibling p50/p95/p99 series) with a ``None`` value. Either way no infinity
+    reaches the JSON response, which cannot encode one.
     """
     if not results:
         return []
@@ -1860,12 +1835,12 @@ def _extract_timeseries(
     for ts, val in values:
         try:
             v = float(val)
-            if v != v:  # NaN
-                points.append({"timestamp": int(ts), "value": missing})
-                continue
-            points.append({"timestamp": int(ts), "value": round(v, 4)})
         except (ValueError, TypeError):
-            points.append({"timestamp": int(ts), "value": missing})
+            v = math.nan
+        points.append({
+            "timestamp": int(ts),
+            "value": round(v, 4) if math.isfinite(v) else missing,
+        })
     return points
 
 
@@ -2261,45 +2236,6 @@ async def metrics_latency(
         "p95": _extract_timeseries(p95, nan_as_none=True),
         "p99": _extract_timeseries(p99, nan_as_none=True),
     }
-
-
-@router.get("/metrics/top-routes")
-async def metrics_top_routes(
-    tw: TimeWindow = Depends(resolve_time_window),
-    consumer: str | None = Query(None, description="Filter by APISIX consumer name (API key)"),
-    scope: _MonitoringScope = Depends(_gateway_monitoring_scope),
-) -> list[dict[str, Any]]:
-    # No per-route filter here (aggregates across routes; llm-proxy excluded by _labels default).
-    consumer = _scope_consumer(scope, None, consumer)
-    hs = _labels(None, consumer)
-    try:
-        results = await prometheus_client.instant_query(
-            f"topk(10, sum by (route) (increase(apisix_http_status{hs}[{tw.promql_window}])))",
-            eval_time=tw.eval_time,
-        )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Prometheus error: {exc}"
-        )
-
-    # Fold pre-prefer_name id rows onto their name row (same merge as
-    # usages_payload) so a window spanning the flip doesn't list one logical
-    # route twice and burn two top-10 slots.
-    name_map = _route_name_map(await _route_listing_or_empty())
-    counts: dict[str, int] = {}
-    for r in results:
-        route = r.get("metric", {}).get("route", "unknown")
-        value = r.get("value", [0, "0"])
-        try:
-            requests = round(float(value[1]))
-        except (IndexError, ValueError, TypeError):
-            requests = 0
-        if requests > 0:
-            canonical = name_map.get(route, route)
-            counts[canonical] = counts.get(canonical, 0) + requests
-    routes = [{"route": route, "requests": requests} for route, requests in counts.items()]
-    routes.sort(key=lambda r: r["requests"], reverse=True)
-    return routes
 
 
 USAGES_INCLUDE_DESCRIPTION = (
@@ -3098,7 +3034,7 @@ async def llm_metrics_status_codes(
     counters so every status code is broken out (200/400/429/500/…) and
     gateway-layer errors that never reach Bifrost are still counted.
     """
-    hs = _llm_labels(*_llm_consumer_extra(api_key))
+    hs = _llm_labels(*_llm_key_matchers(api_key))
     try:
         results = await prometheus_client.instant_query(
             f"sum by (code) (increase(apisix_http_status{hs}[{tw.promql_window}]))",
@@ -3138,7 +3074,7 @@ async def llm_metrics_errors(
     APISIX records — notably code 0 for client-aborted/timed-out streams — are not
     silently dropped.
     """
-    consumer_extra = _llm_consumer_extra(api_key)
+    consumer_extra = _llm_key_matchers(api_key)
     hs_ok = _llm_labels('code=~"2..|3.."', *consumer_extra)
     hs_err = _llm_labels('code!~"2..|3.."', *consumer_extra)
     try:

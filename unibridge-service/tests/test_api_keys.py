@@ -26,7 +26,6 @@ ROUTE_FIXTURES = {
 }
 
 
-@pytest.mark.asyncio
 async def test_query_template_write_route_is_granted_independently(client, admin_token):
     route_state = {
         "query-api": {
@@ -72,7 +71,6 @@ async def test_query_template_write_route_is_granted_independently(client, admin
     }
 
 
-@pytest.mark.asyncio
 async def test_sync_all_consumer_route_restrictions_replays_stored_allowed_routes():
     db = AsyncMock()
     db.execute.return_value = SimpleNamespace(
@@ -123,7 +121,6 @@ async def test_sync_all_consumer_route_restrictions_replays_stored_allowed_route
     }
 
 
-@pytest.mark.asyncio
 async def test_sync_consumer_restriction_grants_llm_messages_alongside_llm_proxy():
     """Granting ``llm-proxy`` implicitly grants every converter route carved out
     of ``/api/llm/*``: ``llm-messages``, ``llm-responses``, ``llm-models``.
@@ -196,7 +193,6 @@ async def test_sync_consumer_restriction_grants_llm_messages_alongside_llm_proxy
         }, route_id
 
 
-@pytest.mark.asyncio
 async def test_sync_consumer_restriction_wildcard_grants_all_keyauth_routes():
     from app.routers.api_keys import _sync_consumer_restriction
 
@@ -239,7 +235,6 @@ async def test_sync_consumer_restriction_wildcard_grants_all_keyauth_routes():
     assert "consumer-restriction" not in route_state["public"]["plugins"]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "malformed_allowed_routes",
     [
@@ -307,20 +302,17 @@ async def test_sync_all_consumer_route_restrictions_skips_malformed_allowed_rout
     }
 
 
-@pytest.mark.asyncio
 async def test_list_api_keys_empty(client, admin_token):
     resp = await client.get("/admin/api-keys", headers=auth_header(admin_token))
     assert resp.status_code == 200
     assert resp.json() == []
 
 
-@pytest.mark.asyncio
 async def test_list_api_keys_requires_permission(client, user_token):
     resp = await client.get("/admin/api-keys", headers=auth_header(user_token))
     assert resp.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_create_api_key(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
@@ -362,7 +354,6 @@ async def test_create_api_key(client, admin_token):
         }
 
 
-@pytest.mark.asyncio
 async def test_create_master_api_key_stores_wildcards_and_grants_all_routes(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
@@ -403,7 +394,6 @@ async def test_create_master_api_key_stores_wildcards_and_grants_all_routes(clie
     }
 
 
-@pytest.mark.asyncio
 async def test_create_api_key_rejects_reserved_dunder_name(client, admin_token):
     """Names wrapped in '__' are reserved for internal sentinels (e.g. the
     gateway-monitoring no-key sentinel '__no_self_api_key__'); a real key with
@@ -416,7 +406,6 @@ async def test_create_api_key_rejects_reserved_dunder_name(client, admin_token):
     assert resp.status_code == 400
 
 
-@pytest.mark.asyncio
 async def test_create_api_key_partial_routes_excludes_consumer_from_other_routes(client, admin_token):
     """Regression: a key with allowed_routes=["query-api"] must NOT appear
     in the llm-proxy whitelist.  Before the fix, the consumer-restriction
@@ -454,7 +443,6 @@ async def test_create_api_key_partial_routes_excludes_consumer_from_other_routes
         assert DENY_ALL_CONSUMER in llm_whitelist
 
 
-@pytest.mark.asyncio
 async def test_create_api_key_duplicate(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
@@ -477,7 +465,6 @@ async def test_create_api_key_duplicate(client, admin_token):
         assert resp.status_code == 409
 
 
-@pytest.mark.asyncio
 async def test_create_api_key_rejects_reserved_deny_all_name(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         resp = await client.post(
@@ -491,7 +478,6 @@ async def test_create_api_key_rejects_reserved_deny_all_name(client, admin_token
     mock_apisix.put_resource.assert_not_called()
 
 
-@pytest.mark.asyncio
 async def test_update_api_key_access(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
@@ -522,7 +508,6 @@ async def test_update_api_key_access(client, admin_token):
         assert data["description"] == "Updated"
 
 
-@pytest.mark.asyncio
 async def test_update_api_key_empty_allowed_routes_uses_deny_all_sentinel(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
@@ -581,7 +566,6 @@ async def test_update_api_key_empty_allowed_routes_uses_deny_all_sentinel(client
         }
 
 
-@pytest.mark.asyncio
 async def test_update_api_key_moves_consumer_between_allowed_routes(client, admin_token):
     route_state = {
         route["id"]: json.loads(json.dumps(route))
@@ -633,7 +617,6 @@ async def test_update_api_key_moves_consumer_between_allowed_routes(client, admi
     ]
 
 
-@pytest.mark.asyncio
 async def test_delete_api_key(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
@@ -659,7 +642,6 @@ async def test_delete_api_key(client, admin_token):
         assert all(k["name"] != "del-app" for k in resp.json())
 
 
-@pytest.mark.asyncio
 async def test_query_execute_via_apikey_header(client, admin_token):
     """Simulate APISIX-forwarded request with X-Consumer-Username."""
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
@@ -687,7 +669,6 @@ async def test_query_execute_via_apikey_header(client, admin_token):
     assert "not registered" in resp.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_query_execute_apikey_allowed_db_select_returns_200(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
@@ -741,7 +722,6 @@ async def test_query_execute_apikey_allowed_db_select_returns_200(client, admin_
     mock_execute_query.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_query_execute_apikey_allowed_db_rejects_insert(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
@@ -780,7 +760,6 @@ async def test_query_execute_apikey_allowed_db_rejects_insert(client, admin_toke
     )
 
 
-@pytest.mark.asyncio
 async def test_query_execute_apikey_db_not_allowed(client, admin_token):
     """API key user cannot query databases not in their allowed list."""
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
@@ -821,7 +800,6 @@ async def _create_key(client, admin_token, mock_apisix, body: dict):
     return resp
 
 
-@pytest.mark.asyncio
 async def test_create_api_key_defaults_write_flags_off_and_no_expiry(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         resp = await _create_key(client, admin_token, mock_apisix, {
@@ -838,7 +816,6 @@ async def test_create_api_key_defaults_write_flags_off_and_no_expiry(client, adm
     assert data["expires_at"] is None
 
 
-@pytest.mark.asyncio
 async def test_create_api_key_with_write_flags_and_allowed_tables(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         resp = await _create_key(client, admin_token, mock_apisix, {
@@ -856,7 +833,6 @@ async def test_create_api_key_with_write_flags_and_allowed_tables(client, admin_
     assert data["allowed_tables"] == ["orders", "users"]
 
 
-@pytest.mark.asyncio
 async def test_update_api_key_write_flags_and_clear_allowed_tables(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         await _create_key(client, admin_token, mock_apisix, {
@@ -888,7 +864,6 @@ async def test_update_api_key_write_flags_and_clear_allowed_tables(client, admin
         assert resp.json()["allow_update"] is True
 
 
-@pytest.mark.asyncio
 async def test_query_execute_apikey_insert_allowed_with_flag(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         await _create_key(client, admin_token, mock_apisix, {
@@ -926,7 +901,6 @@ async def test_query_execute_apikey_insert_allowed_with_flag(client, admin_token
     mock_execute_query.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_query_execute_apikey_update_delete_rejected_without_flags(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         await _create_key(client, admin_token, mock_apisix, {
@@ -959,7 +933,6 @@ async def test_query_execute_apikey_update_delete_rejected_without_flags(client,
     assert "DELETE" in delete_resp.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_query_execute_apikey_ddl_rejected_even_with_all_flags(client, admin_token):
     """DDL is never allowed for API keys, even when every write flag is set."""
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
@@ -987,7 +960,6 @@ async def test_query_execute_apikey_ddl_rejected_even_with_all_flags(client, adm
     assert resp.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_query_execute_apikey_table_acl_blocks_unlisted_table(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         await _create_key(client, admin_token, mock_apisix, {
@@ -1016,7 +988,6 @@ async def test_query_execute_apikey_table_acl_blocks_unlisted_table(client, admi
     assert "secrets" in resp.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_query_execute_apikey_table_acl_applies_to_writes(client, admin_token):
     """The table whitelist gates INSERT/UPDATE/DELETE too, not only SELECT."""
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
@@ -1060,7 +1031,6 @@ async def test_query_execute_apikey_table_acl_applies_to_writes(client, admin_to
     assert allowed.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_query_execute_apikey_expired_key_returns_401(client, admin_token, seeded_db):
     """A key past its expires_at must be rejected with 401 at the service."""
     from datetime import datetime, timedelta, timezone
@@ -1095,7 +1065,6 @@ async def test_query_execute_apikey_expired_key_returns_401(client, admin_token,
     assert resp.json()["detail"] == "API key expired"
 
 
-@pytest.mark.asyncio
 async def test_list_api_keys_includes_expires_at(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         await _create_key(client, admin_token, mock_apisix, {

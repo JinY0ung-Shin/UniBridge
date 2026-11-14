@@ -28,7 +28,6 @@ from app.schemas import (
     QueryHistoryResponse,
     SavedQueryCreate,
     SavedQueryResponse,
-    SavedQueryUpdate,
 )
 
 logger = logging.getLogger(__name__)
@@ -135,30 +134,6 @@ async def create_saved_query(
         description=body.description,
     )
     db.add(saved)
-    await db.commit()
-    await db.refresh(saved)
-    return SavedQueryResponse.model_validate(saved)
-
-
-@router.put("/query/saved/{saved_query_id}", response_model=SavedQueryResponse)
-async def update_saved_query(
-    saved_query_id: int,
-    body: SavedQueryUpdate,
-    user: CurrentUser = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> SavedQueryResponse:
-    """Update one of the current user's saved queries."""
-    saved = await _get_owned_saved_query(db, user, saved_query_id)
-
-    if body.name is not None:
-        saved.name = body.name
-    if "database_alias" in body.model_fields_set:
-        saved.database_alias = body.database_alias
-    if body.sql_text is not None:
-        saved.sql_text = body.sql_text
-    if body.description is not None:
-        saved.description = body.description
-
     await db.commit()
     await db.refresh(saved)
     return SavedQueryResponse.model_validate(saved)

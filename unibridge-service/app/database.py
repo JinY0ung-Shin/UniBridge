@@ -16,7 +16,6 @@ from app.models import Base
 
 logger = logging.getLogger(__name__)
 
-ALEMBIC_BASELINE_REVISION = "0001_initial"
 _SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -146,9 +145,7 @@ async def _run_alembic_upgrade(target_engine: AsyncEngine) -> bool:
         await _stamp_metadata_schema(target_engine, ALEMBIC_HEAD_REVISION)
         return True
 
-    tables = await _table_names(target_engine)
-    has_existing_schema = bool(tables - {"alembic_version"})
-    has_alembic_version = "alembic_version" in tables
+    has_alembic_version = "alembic_version" in await _table_names(target_engine)
     database_url = _engine_database_url(target_engine)
     config = _alembic_config(database_url)
 
@@ -163,37 +160,8 @@ async def _run_alembic_upgrade(target_engine: AsyncEngine) -> bool:
             )
             return False
 
-    if has_existing_schema and not has_alembic_version:
-        await ensure_db_connection_columns(target_engine)
-        await asyncio.to_thread(command.stamp, config, ALEMBIC_BASELINE_REVISION)
-
     await asyncio.to_thread(command.upgrade, config, "head")
     return True
-
-
-async def ensure_db_connection_columns(target_engine: AsyncEngine | None = None) -> None:
-    engine_to_use = target_engine or engine
-
-    async with engine_to_use.begin() as conn:
-        existing_tables = await conn.run_sync(
-            lambda sync_conn: set(inspect(sync_conn).get_table_names())
-        )
-        if "db_connections" not in existing_tables:
-            return
-
-        existing_columns = await conn.run_sync(
-            lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("db_connections")}
-        )
-
-        statements: list[str] = []
-        if "protocol" not in existing_columns:
-            statements.append("ALTER TABLE db_connections ADD COLUMN protocol VARCHAR(16)")
-        if "secure" not in existing_columns:
-            secure_type = "BIT" if conn.dialect.name == "mssql" else "BOOLEAN"
-            statements.append(f"ALTER TABLE db_connections ADD COLUMN secure {secure_type}")
-
-        for statement in statements:
-            await conn.execute(text(statement))
 
 
 async def init_db() -> None:

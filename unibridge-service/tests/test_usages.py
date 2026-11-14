@@ -46,7 +46,6 @@ def _patch_routes_listing():
         yield
 
 
-@pytest.mark.asyncio
 async def test_apikey_caller_scoped_to_own_consumer(client, admin_token):
     await _create_apikey(
         client, admin_token, name="usage-app", key="usage-key", allowed_routes=["usages-api"]
@@ -72,7 +71,6 @@ async def test_apikey_caller_scoped_to_own_consumer(client, admin_token):
     assert "[86400s]" in query
 
 
-@pytest.mark.asyncio
 async def test_apikey_caller_llm_routes_hidden(client, admin_token):
     await _create_apikey(
         client, admin_token, name="usage-app2", key="usage-key2", allowed_routes=["usages-api"]
@@ -94,7 +92,6 @@ async def test_apikey_caller_llm_routes_hidden(client, admin_token):
     assert resp.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_master_key_sees_all_consumers_combined(client, admin_token):
     await _create_apikey(
         client, admin_token, name="master-app", key="master-key",
@@ -118,7 +115,6 @@ async def test_master_key_sees_all_consumers_combined(client, admin_token):
     assert "consumer=" not in mock.call_args.args[0]
 
 
-@pytest.mark.asyncio
 async def test_master_key_can_filter_specific_consumer_and_include_llm(client, admin_token):
     await _create_apikey(
         client, admin_token, name="master-app2", key="master-key2",
@@ -137,7 +133,6 @@ async def test_master_key_can_filter_specific_consumer_and_include_llm(client, a
     assert 'route!="llm-' not in query  # include_llm honored for master keys
 
 
-@pytest.mark.asyncio
 async def test_unknown_consumer_rejected(client):
     resp = await client.get(
         "/usages?date=2026-06-15",
@@ -146,7 +141,6 @@ async def test_unknown_consumer_rejected(client):
     assert resp.status_code == 401
 
 
-@pytest.mark.asyncio
 async def test_apikey_caller_latency_scoped_to_own_consumer(client, admin_token):
     await _create_apikey(
         client, admin_token, name="lat-app", key="lat-key", allowed_routes=["usages-api"]
@@ -180,7 +174,6 @@ async def test_apikey_caller_latency_scoped_to_own_consumer(client, admin_token)
         assert "other-key" not in call.args[0]
 
 
-@pytest.mark.asyncio
 async def test_apikey_caller_future_date_empty(client, admin_token):
     await _create_apikey(
         client, admin_token, name="fut-app", key="fut-key", allowed_routes=["usages-api"]
@@ -201,13 +194,11 @@ async def test_apikey_caller_future_date_empty(client, admin_token):
     mock.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_missing_auth_rejected(client):
     resp = await client.get("/usages?date=2026-06-15")
     assert resp.status_code == 401
 
 
-@pytest.mark.asyncio
 async def test_jwt_admin_can_filter_any_consumer(client, admin_token):
     mock = AsyncMock(return_value=[])
     with patch("app.routers.gateway.prometheus_client.instant_query", mock):
@@ -220,7 +211,6 @@ async def test_jwt_admin_can_filter_any_consumer(client, admin_token):
     assert 'consumer="k1"' in mock.call_args.args[0]
 
 
-@pytest.mark.asyncio
 async def test_jwt_self_user_forced_to_sentinel_without_key(client, user_token):
     mock = AsyncMock(return_value=[])
     with patch("app.routers.gateway.prometheus_client.instant_query", mock):
@@ -235,7 +225,6 @@ async def test_jwt_self_user_forced_to_sentinel_without_key(client, user_token):
     assert resp.json()["consumer"] is None
 
 
-@pytest.mark.asyncio
 async def test_invalid_date_rejected_future_date_empty(client, admin_token):
     resp = await client.get(
         "/usages?date=not-a-date", headers=auth_header(admin_token)

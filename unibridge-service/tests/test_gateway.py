@@ -16,13 +16,13 @@ from app.routers.gateway import (
     _extract_timeseries,
     _inject_plugins,
     _labels,
-    _mask_value,
     _service_headers_for_route,
     _validate_consumer,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import ApiKeyAccess
+from app.services.audit import mask_secret
 from tests.conftest import auth_header
 
 
@@ -301,7 +301,7 @@ class TestInjectPlugins:
         body = {
             "uri": "/test",
             "service_keys": [
-                {"header_name": "X-Api-Key", "header_value": _mask_value(secret)}
+                {"header_name": "X-Api-Key", "header_value": mask_secret(secret)}
             ],
         }
         existing = {"proxy-rewrite": {"headers": {"set": {"X-Api-Key": secret}}}}
@@ -315,7 +315,7 @@ class TestInjectPlugins:
         body = {
             "uri": "/test",
             "service_keys": [
-                {"header_name": "X-Api-Key", "header_value": _mask_value("ab")}
+                {"header_name": "X-Api-Key", "header_value": mask_secret("ab")}
             ],
         }
         existing = {"proxy-rewrite": {"headers": {"set": {"X-Api-Key": "ab"}}}}
@@ -456,14 +456,9 @@ class TestListRoutes:
         assert item0["service_keys"] == [
             {"header_name": "X-Api-Key", "header_value": "***1234"}
         ]
-        assert item0["service_key"] == {
-            "header_name": "X-Api-Key",
-            "header_value": "***1234",
-        }
         assert item0["require_auth"] is True
         item1 = data["items"][1]
         assert item1["service_keys"] == []
-        assert item1["service_key"] is None
         assert item1["require_auth"] is False
 
     async def test_apisix_connection_error_returns_502(self, client, admin_token):
@@ -504,10 +499,6 @@ class TestGetRoute:
         assert data["service_keys"] == [
             {"header_name": "Authorization", "header_value": "***1234"}
         ]
-        assert data["service_key"] == {
-            "header_name": "Authorization",
-            "header_value": "***1234",
-        }
         assert data["require_auth"] is True
 
 
@@ -642,47 +633,6 @@ class TestSaveRoute:
         call_body = mock_put.call_args[0][2]
         assert "key-auth" not in call_body.get("plugins", {})
 
-    async def test_legacy_service_key_payload_is_accepted(self, client, admin_token):
-        saved_route = {
-            "id": "r1",
-            "uri": "/test",
-            "plugins": {
-                "proxy-rewrite": {"headers": {"set": {"X-Key": "legacy-secret"}}},
-            },
-        }
-        with (
-            patch(
-                "app.routers.gateway.apisix_client.list_resources",
-                new_callable=AsyncMock,
-                return_value={"items": []},
-            ),
-            patch(
-                "app.routers.gateway.apisix_client.put_resource",
-                new_callable=AsyncMock,
-                return_value=deepcopy(saved_route),
-            ) as mock_put,
-        ):
-            resp = await client.put(
-                "/admin/gateway/routes/r1",
-                json={
-                    "name": "test-route",
-                    "uri": "/api/test/*",
-                    "upstream_id": "u1",
-                    "service_key": {
-                        "header_name": "X-Key",
-                        "header_value": "legacy-secret",
-                    },
-                },
-                headers=auth_header(admin_token),
-            )
-
-        assert resp.status_code == 200
-        call_body = mock_put.call_args[0][2]
-        assert "service_key" not in call_body
-        assert call_body["plugins"]["proxy-rewrite"]["headers"]["set"] == {
-            "X-Key": "legacy-secret"
-        }
-
     async def test_inline_upstream_rejected(self, client, admin_token):
         resp = await client.put(
             "/admin/gateway/routes/r1",
@@ -788,19 +738,6 @@ class TestSaveRouteValidation:
                 "uri": "/api/test/*",
                 "upstream_id": "u1",
                 "service_keys": ["X-Api-Key: v"],
-            },
-            headers=auth_header(admin_token),
-        )
-        assert resp.status_code == 400
-
-    async def test_legacy_service_key_must_be_object(self, client, admin_token):
-        resp = await client.put(
-            "/admin/gateway/routes/r1",
-            json={
-                "name": "svc-route",
-                "uri": "/api/test/*",
-                "upstream_id": "u1",
-                "service_key": "X-Api-Key: v",
             },
             headers=auth_header(admin_token),
         )
@@ -1364,21 +1301,6 @@ class TestListUpstreams:
         assert resp.json()["total"] == 1
 
 
-class TestGetUpstream:
-    async def test_returns_upstream(self, client, admin_token):
-        upstream = {"id": "u1", "nodes": {"httpbin.org:80": 1}}
-        with patch(
-            "app.routers.gateway.apisix_client.get_resource",
-            new_callable=AsyncMock,
-            return_value=upstream,
-        ):
-            resp = await client.get(
-                "/admin/gateway/upstreams/u1", headers=auth_header(admin_token)
-            )
-        assert resp.status_code == 200
-        assert resp.json()["id"] == "u1"
-
-
 class TestSaveUpstream:
     async def test_saves_and_returns(self, client, admin_token):
         upstream = {"id": "u1", "nodes": {"httpbin.org:80": 1}, "type": "roundrobin"}
@@ -1553,82 +1475,6 @@ class TestMetricsLatency:
         assert data["p50"][0]["value"] == 10.5
         assert data["p95"][0]["value"] == 50.2
         assert data["p99"][0]["value"] == 100.9
-
-
-class TestMetricsTopRoutes:
-    @pytest.fixture(autouse=True)
-    def _patch_routes_listing(self):
-        """Default empty routes listing (id→name fold) without a real APISIX."""
-        with patch(
-            "app.routers.gateway.apisix_client.list_resources",
-            new=AsyncMock(return_value={"items": [], "total": 0}),
-        ):
-            yield
-
-    async def test_returns_top_routes(self, client, admin_token):
-        results = [
-            {"metric": {"route": "route-1"}, "value": [0, "1000"]},
-            {"metric": {"route": "route-2"}, "value": [0, "500"]},
-        ]
-        with patch(
-            "app.routers.gateway.prometheus_client.instant_query",
-            new_callable=AsyncMock,
-            return_value=results,
-        ):
-            resp = await client.get(
-                "/admin/gateway/metrics/top-routes?range=24h",
-                headers=auth_header(admin_token),
-            )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) == 2
-        assert data[0]["route"] == "route-1"
-        assert data[0]["requests"] == 1000
-
-    async def test_filters_zero_request_routes(self, client, admin_token):
-        results = [
-            {"metric": {"route": "active"}, "value": [0, "100"]},
-            {"metric": {"route": "dead"}, "value": [0, "0"]},
-        ]
-        with patch(
-            "app.routers.gateway.prometheus_client.instant_query",
-            new_callable=AsyncMock,
-            return_value=results,
-        ):
-            resp = await client.get(
-                "/admin/gateway/metrics/top-routes?range=1h",
-                headers=auth_header(admin_token),
-            )
-        data = resp.json()
-        assert len(data) == 1
-        assert data[0]["route"] == "active"
-
-    async def test_merges_id_and_name_rows_for_same_route(self, client, admin_token):
-        # Window spans the prefer_name flip: old samples carry the route id,
-        # newer ones the name — one logical route must occupy one top slot.
-        results = [
-            {"metric": {"route": "r1"}, "value": [0, "800"]},
-            {"metric": {"route": "orders"}, "value": [0, "150"]},
-            {"metric": {"route": "other"}, "value": [0, "500"]},
-        ]
-        listing = {"items": [{"id": "r1", "name": "orders"}], "total": 1}
-        with patch(
-            "app.routers.gateway.prometheus_client.instant_query",
-            new_callable=AsyncMock,
-            return_value=results,
-        ), patch(
-            "app.routers.gateway.apisix_client.list_resources",
-            new=AsyncMock(return_value=listing),
-        ):
-            resp = await client.get(
-                "/admin/gateway/metrics/top-routes?range=24h",
-                headers=auth_header(admin_token),
-            )
-        assert resp.status_code == 200
-        assert resp.json() == [
-            {"route": "orders", "requests": 950},
-            {"route": "other", "requests": 500},
-        ]
 
 
 class TestMetricsRoutesComparison:
@@ -2543,37 +2389,6 @@ class TestConsumerFilter:
         )
         assert resp.status_code == 400
 
-    async def test_top_routes_excludes_llm_proxy_by_default(self, client, admin_token):
-        results = [{"metric": {"route": "x"}, "value": [0, "10"]}]
-        mock = AsyncMock(return_value=results)
-        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
-            resp = await client.get(
-                "/admin/gateway/metrics/top-routes?range=1h",
-                headers=auth_header(admin_token),
-            )
-        assert resp.status_code == 200
-        assert 'route!="llm-proxy"' in mock.call_args.args[0]
-
-    async def test_top_routes_with_consumer(self, client, admin_token):
-        results = [{"metric": {"route": "x"}, "value": [0, "10"]}]
-        mock = AsyncMock(return_value=results)
-        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
-            resp = await client.get(
-                "/admin/gateway/metrics/top-routes?range=1h&consumer=alice",
-                headers=auth_header(admin_token),
-            )
-        assert resp.status_code == 200
-        q = mock.call_args.args[0]
-        assert 'consumer="alice"' in q
-        assert 'route!="llm-proxy"' in q
-
-    async def test_top_routes_invalid_consumer_returns_400(self, client, admin_token):
-        resp = await client.get(
-            '/admin/gateway/metrics/top-routes?range=1h&consumer=bad name',
-            headers=auth_header(admin_token),
-        )
-        assert resp.status_code == 400
-
 
 # ---------------------------------------------------------------------------
 # Request volume endpoint tests
@@ -2737,17 +2552,6 @@ class TestLongRanges:
         assert resp.status_code == 200
         _, kwargs = mock.call_args
         assert kwargs["step"] == "43200s"
-
-    async def test_top_routes_accepts_30d(self, client, admin_token):
-        results = [{"metric": {"route": "r1"}, "value": [0, "100"]}]
-        mock = AsyncMock(return_value=results)
-        with patch("app.routers.gateway.prometheus_client.instant_query", mock):
-            resp = await client.get(
-                "/admin/gateway/metrics/top-routes?range=30d",
-                headers=auth_header(admin_token),
-            )
-        assert resp.status_code == 200
-        assert "[30d]" in mock.call_args.args[0]
 
 
 # ---------------------------------------------------------------------------

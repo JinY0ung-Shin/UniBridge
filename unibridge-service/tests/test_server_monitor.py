@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 from unittest.mock import AsyncMock, patch
 
 from app.services import server_monitor
@@ -58,7 +57,6 @@ def test_build_targets_user_label_cannot_clobber_host():
     assert entries[0]["labels"]["host"] == "web1"
 
 
-@pytest.mark.asyncio
 async def test_write_targets_file_is_world_readable(tmp_path):
     # Prometheus scrapes file_sd as a different UID (nobody); the targets file
     # must be readable by group/other, not the 0600 that mkstemp defaults to.
@@ -102,7 +100,6 @@ def test_build_gpu_targets_user_label_cannot_clobber_host():
     assert entries[0]["labels"]["host"] == "gpu1"
 
 
-@pytest.mark.asyncio
 async def test_write_gpu_targets_file_is_world_readable(tmp_path):
     import json
     import os
@@ -118,7 +115,6 @@ async def test_write_gpu_targets_file_is_world_readable(tmp_path):
     assert json.loads(path.read_text())[0]["targets"] == ["10.0.0.1:9400"]
 
 
-@pytest.mark.asyncio
 async def test_sync_targets_from_db_writes_node_and_gpu_files(tmp_path):
     import json
 
@@ -258,7 +254,6 @@ def _patch_queries(mapping):
     return fake
 
 
-@pytest.mark.asyncio
 async def test_disk_warning_and_critical_severity():
     hosts = [_host("web1")]
     th = ServerThresholds(disk_warn_pct=80, disk_crit_pct=90, forecast_hours=0)
@@ -285,7 +280,6 @@ async def test_disk_warning_and_critical_severity():
     assert disk.severity == "critical"
 
 
-@pytest.mark.asyncio
 async def test_down_host_skips_other_signals():
     th = ServerThresholds(forecast_hours=0)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
@@ -298,7 +292,6 @@ async def test_down_host_skips_other_signals():
     assert down.description == "Primary web node"
 
 
-@pytest.mark.asyncio
 async def test_missing_up_series_is_treated_as_down():
     th = ServerThresholds(forecast_hours=0)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
@@ -307,7 +300,6 @@ async def test_missing_up_series_is_treated_as_down():
     assert signals[0].alert_type == "server_down" and signals[0].is_healthy is False
 
 
-@pytest.mark.asyncio
 async def test_per_host_threshold_override():
     th = ServerThresholds(disk_warn_pct=80, disk_crit_pct=90, forecast_hours=0)
     host = _host("web1", disk_warn_pct=50)
@@ -321,7 +313,6 @@ async def test_per_host_threshold_override():
     assert disk.is_healthy is False and disk.threshold == 50
 
 
-@pytest.mark.asyncio
 async def test_disk_invalid_threshold_order_still_alerts_at_critical():
     """A bad persisted warn/crit order must not suppress critical disk alerts."""
     th = ServerThresholds(disk_warn_pct=95, disk_crit_pct=90, forecast_hours=0)
@@ -337,7 +328,6 @@ async def test_disk_invalid_threshold_order_still_alerts_at_critical():
     assert disk.threshold == 90
 
 
-@pytest.mark.asyncio
 async def test_disk_forecast_fires_when_predicted_negative():
     th = ServerThresholds(forecast_hours=24)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
@@ -351,14 +341,12 @@ async def test_disk_forecast_fires_when_predicted_negative():
     assert forecast.is_healthy is False and forecast.severity == "warning"
 
 
-@pytest.mark.asyncio
 async def test_prometheus_failure_skips_cycle():
     with patch.object(server_monitor.prometheus_client, "instant_query", new=AsyncMock(side_effect=RuntimeError("down"))):
         signals = await evaluate_hosts([_host("web1")], ServerThresholds())
     assert signals == []
 
 
-@pytest.mark.asyncio
 async def test_no_enabled_hosts_returns_empty():
     assert await evaluate_hosts([_host(enabled=False)], ServerThresholds()) == []
 
@@ -375,7 +363,6 @@ def _gpu_queries(node_up=1, gpu_up=1, util=50, mem=50, host="gpu1"):
     })
 
 
-@pytest.mark.asyncio
 async def test_host_without_gpu_address_gets_no_gpu_signals():
     th = ServerThresholds(forecast_hours=0)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
@@ -386,7 +373,6 @@ async def test_host_without_gpu_address_gets_no_gpu_signals():
     assert not [call for call in q.call_args_list if "DCGM" in call.args[0]]
 
 
-@pytest.mark.asyncio
 async def test_down_node_reports_no_gpu_signals():
     """A host that is down produces server_down only — even with GPU monitoring on."""
     th = ServerThresholds(forecast_hours=0)
@@ -396,7 +382,6 @@ async def test_down_node_reports_no_gpu_signals():
     assert {s.alert_type for s in signals} == {"server_down"}
 
 
-@pytest.mark.asyncio
 async def test_gpu_scrape_down_suppresses_usage_signals():
     th = ServerThresholds(forecast_hours=0)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
@@ -408,7 +393,6 @@ async def test_gpu_scrape_down_suppresses_usage_signals():
     assert not [s for s in signals if s.alert_type in ("server_gpu_util", "server_gpu_mem")]
 
 
-@pytest.mark.asyncio
 async def test_gpu_usage_thresholds_and_per_host_override():
     th = ServerThresholds(forecast_hours=0, gpu_util_warn_pct=90, gpu_mem_warn_pct=90)
     hosts = [
@@ -436,7 +420,6 @@ async def test_gpu_usage_thresholds_and_per_host_override():
     assert by[("server_gpu_mem", "gpu2")].is_healthy is True
 
 
-@pytest.mark.asyncio
 async def test_zero_gpu_threshold_disables_only_that_signal():
     """0 disables globally; a positive per-host value re-enables it for one host."""
     th = ServerThresholds(forecast_hours=0, gpu_util_warn_pct=0, gpu_mem_warn_pct=0)
@@ -461,7 +444,6 @@ async def test_zero_gpu_threshold_disables_only_that_signal():
     assert {("server_gpu_down", "gpu1"), ("server_gpu_down", "gpu2")} <= emitted
 
 
-@pytest.mark.asyncio
 async def test_per_host_zero_gpu_threshold_disables_for_that_host():
     th = ServerThresholds(forecast_hours=0, gpu_util_warn_pct=90, gpu_mem_warn_pct=90)
     host = _host("gpu1", gpu_address="10.0.0.1:9400", gpu_util_warn_pct=0)
@@ -631,7 +613,6 @@ def test_build_service_targets_defaults_scheme_to_http():
     assert entry["labels"]["__scheme__"] == "http"
 
 
-@pytest.mark.asyncio
 async def test_write_service_targets_file_is_world_readable(tmp_path):
     import json
     import os
@@ -647,7 +628,6 @@ async def test_write_service_targets_file_is_world_readable(tmp_path):
     assert entry["labels"]["service"] == "orders"
 
 
-@pytest.mark.asyncio
 async def test_evaluate_services_up_and_down():
     services = [_service("up-svc"), _service("down-svc", description="Order API")]
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
@@ -662,7 +642,6 @@ async def test_evaluate_services_up_and_down():
     assert all(s.alert_type == "external_service_down" for s in signals)
 
 
-@pytest.mark.asyncio
 async def test_evaluate_services_missing_series_is_down():
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
         q.side_effect = _patch_queries({'up{job="external-services"}': []})  # not scraped yet
@@ -670,7 +649,6 @@ async def test_evaluate_services_missing_series_is_down():
     assert signals[0].alert_type == "external_service_down" and signals[0].is_healthy is False
 
 
-@pytest.mark.asyncio
 async def test_evaluate_services_prometheus_failure_skips_cycle():
     with patch.object(
         server_monitor.prometheus_client, "instant_query",
@@ -680,7 +658,6 @@ async def test_evaluate_services_prometheus_failure_skips_cycle():
     assert signals == []
 
 
-@pytest.mark.asyncio
 async def test_evaluate_services_no_enabled_returns_empty():
     assert await evaluate_services([_service(enabled=False)]) == []
 
@@ -694,7 +671,6 @@ class TestProbeMetricsEndpoint:
 
         return httpx.MockTransport(handler)
 
-    @pytest.mark.asyncio
     async def test_up_with_convention_metrics(self):
         import httpx
 
@@ -706,7 +682,6 @@ class TestProbeMetricsEndpoint:
         )
         assert (status, detail) == ("up", None)
 
-    @pytest.mark.asyncio
     async def test_up_but_convention_missing_gets_guidance(self):
         import httpx
 
@@ -719,7 +694,6 @@ class TestProbeMetricsEndpoint:
         assert status == "up"
         assert "http_requests_total" in detail
 
-    @pytest.mark.asyncio
     async def test_non_200_is_down(self):
         import httpx
 
@@ -732,7 +706,6 @@ class TestProbeMetricsEndpoint:
         assert status == "down"
         assert "404" in detail
 
-    @pytest.mark.asyncio
     async def test_connection_error_is_down(self):
         import httpx
 
@@ -768,7 +741,6 @@ _UP_HOSTS = {
 }
 
 
-@pytest.mark.asyncio
 async def test_failed_metric_query_keeps_server_down_and_other_signals():
     """A timed-out forecast query must not silence server_down for every host."""
     th = ServerThresholds(forecast_hours=24)
@@ -785,7 +757,6 @@ async def test_failed_metric_query_keeps_server_down_and_other_signals():
     assert failed == ["disk forecast"]
 
 
-@pytest.mark.asyncio
 async def test_failed_up_query_skips_cycle_and_reports_it():
     failed: list[str] = []
     with patch.object(
@@ -797,7 +768,6 @@ async def test_failed_up_query_skips_cycle_and_reports_it():
     assert failed == ["up"]
 
 
-@pytest.mark.asyncio
 async def test_failed_gpu_up_query_emits_no_gpu_signals():
     """Without GPU up, an absent exporter would read as down: emit nothing instead."""
     th = ServerThresholds(forecast_hours=0)
@@ -815,7 +785,6 @@ async def test_failed_gpu_up_query_emits_no_gpu_signals():
     assert failed == ["gpu up"]
 
 
-@pytest.mark.asyncio
 async def test_zero_cpu_and_memory_thresholds_disable_the_signals():
     th = ServerThresholds(forecast_hours=0, cpu_warn_pct=0)
     host = _host("web1", mem_warn_pct=0)
@@ -827,7 +796,6 @@ async def test_zero_cpu_and_memory_thresholds_disable_the_signals():
     assert "server_disk" in types
 
 
-@pytest.mark.asyncio
 async def test_zero_disk_warn_alerts_at_critical_only():
     th = ServerThresholds(disk_warn_pct=0, disk_crit_pct=90, forecast_hours=0)
     for pct, healthy, severity in ((50, True, None), (95, False, "critical")):
@@ -842,7 +810,6 @@ async def test_zero_disk_warn_alerts_at_critical_only():
         assert "warn off / crit 90%" in disk.message
 
 
-@pytest.mark.asyncio
 async def test_zero_disk_thresholds_disable_disk_but_keep_forecast():
     th = ServerThresholds(disk_warn_pct=0, disk_crit_pct=0, forecast_hours=24)
     with patch.object(server_monitor.prometheus_client, "instant_query") as q:
@@ -875,7 +842,6 @@ def test_disabled_signals_keeps_disk_on_when_only_warn_is_zero():
     assert ("server_disk", "web1") not in disabled_signals([_host("web1")], th)
 
 
-@pytest.mark.asyncio
 async def test_evaluate_services_reports_failed_query():
     failed: list[str] = []
     with patch.object(

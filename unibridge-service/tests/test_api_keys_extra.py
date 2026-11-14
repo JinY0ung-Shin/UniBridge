@@ -9,7 +9,6 @@ import pytest
 from app.routers.api_keys import (
     DENY_ALL_CONSUMER,
     _extract_api_key,
-    _mask_key,
     _sync_consumer_restriction,
 )
 from tests.conftest import auth_header
@@ -22,14 +21,6 @@ def _http_status_error(status_code: int, body: str = "boom") -> httpx.HTTPStatus
 
 
 # ── Pure helper functions ───────────────────────────────────────────────────
-
-def test_mask_key_short_value():
-    assert _mask_key("abc") == "***"
-
-
-def test_mask_key_long_value():
-    assert _mask_key("supersecretkey") == "***tkey"
-
 
 def test_extract_api_key_returns_none_when_missing():
     assert _extract_api_key({"plugins": {}}) is None
@@ -50,7 +41,6 @@ def test_extract_api_key_unmasked():
 
 # ── _sync_consumer_restriction error paths ──────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_sync_consumer_restriction_list_routes_failure():
     """list_resources failure should raise 502."""
     from fastapi import HTTPException
@@ -63,7 +53,6 @@ async def test_sync_consumer_restriction_list_routes_failure():
     assert "Failed to list APISIX routes" in exc_info.value.detail
 
 
-@pytest.mark.asyncio
 async def test_sync_consumer_restriction_skips_route_without_id_or_keyauth():
     """Routes without id or without key-auth plugin must be skipped."""
     routes = {
@@ -92,7 +81,6 @@ async def test_sync_consumer_restriction_skips_route_without_id_or_keyauth():
     assert captured[0][1] == "ok"
 
 
-@pytest.mark.asyncio
 async def test_sync_consumer_restriction_rollback_on_failure():
     """Mid-failure: previously applied changes must be rolled back."""
     from fastapi import HTTPException
@@ -131,7 +119,6 @@ async def test_sync_consumer_restriction_rollback_on_failure():
     assert "Rolled back 1 previously applied change(s)" in exc_info.value.detail
 
 
-@pytest.mark.asyncio
 async def test_sync_consumer_restriction_rollback_failure_swallowed():
     """If the rollback PUT also fails, we still raise the original 502 — logged only."""
     from fastapi import HTTPException
@@ -185,7 +172,6 @@ async def _create_key(client, admin_token, name="masked-app", api_key="key-12345
         )
 
 
-@pytest.mark.asyncio
 async def test_list_api_keys_includes_masked_key(client, admin_token):
     await _create_key(client, admin_token, "li-app", "veryverysecret123")
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
@@ -200,7 +186,6 @@ async def test_list_api_keys_includes_masked_key(client, admin_token):
     assert rows[0]["api_key"] == "***t123"
 
 
-@pytest.mark.asyncio
 async def test_list_api_keys_handles_apisix_failure_gracefully(client, admin_token):
     await _create_key(client, admin_token, "fail-app", "key-fail-789")
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
@@ -212,7 +197,6 @@ async def test_list_api_keys_handles_apisix_failure_gracefully(client, admin_tok
 
 # ── create_api_key error paths ──────────────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_create_api_key_apisix_http_status_error(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(side_effect=_http_status_error(500, "explosion"))
@@ -225,7 +209,6 @@ async def test_create_api_key_apisix_http_status_error(client, admin_token):
     assert "explosion" in resp.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_create_api_key_apisix_generic_error(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(side_effect=RuntimeError("boom"))
@@ -238,7 +221,6 @@ async def test_create_api_key_apisix_generic_error(client, admin_token):
     assert "Failed to create APISIX consumer" in resp.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_create_api_key_sync_failure_cleans_up_consumer(client, admin_token):
     """If consumer-restriction sync fails, the just-created consumer must be deleted."""
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
@@ -257,7 +239,6 @@ async def test_create_api_key_sync_failure_cleans_up_consumer(client, admin_toke
     mock_apisix.delete_resource.assert_awaited_once_with("consumers", "rollback-app")
 
 
-@pytest.mark.asyncio
 async def test_create_api_key_sync_failure_consumer_cleanup_failure_logged(
     client, admin_token,
 ):
@@ -280,7 +261,6 @@ async def test_create_api_key_sync_failure_consumer_cleanup_failure_logged(
 
 # ── update_api_key error paths ──────────────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_update_api_key_404(client, admin_token):
     resp = await client.put(
         "/admin/api-keys/nope",
@@ -290,7 +270,6 @@ async def test_update_api_key_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_update_api_key_fails_when_existing_consumer_unreadable(
     client, admin_token,
 ):
@@ -316,7 +295,6 @@ async def test_update_api_key_fails_when_existing_consumer_unreadable(
     assert consumer_puts == []
 
 
-@pytest.mark.asyncio
 async def test_update_rate_limit_only_fails_when_consumer_unreadable(
     client, admin_token,
 ):
@@ -342,7 +320,6 @@ async def test_update_rate_limit_only_fails_when_consumer_unreadable(
     assert consumer_puts == []
 
 
-@pytest.mark.asyncio
 async def test_update_api_key_put_consumer_failure(client, admin_token):
     await _create_key(client, admin_token, "upd-putfail", "k0")
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
@@ -360,7 +337,6 @@ async def test_update_api_key_put_consumer_failure(client, admin_token):
     assert "Failed to update APISIX consumer" in resp.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_update_api_key_sync_failure_rolls_back_key(client, admin_token):
     """If consumer-restriction sync fails after key change, key change is rolled back."""
     await _create_key(client, admin_token, "rb-app", "old-key")
@@ -402,7 +378,6 @@ async def test_update_api_key_sync_failure_rolls_back_key(client, admin_token):
     assert final_plugins["key-auth"]["key"] == "old-key"
 
 
-@pytest.mark.asyncio
 async def test_update_api_key_sync_failure_rollback_failure_logged(client, admin_token):
     await _create_key(client, admin_token, "rblog-app", "old-key")
 
@@ -438,7 +413,6 @@ async def test_update_api_key_sync_failure_rollback_failure_logged(client, admin
     log_err.assert_called()
 
 
-@pytest.mark.asyncio
 async def test_update_api_key_no_key_change_fetches_masked(client, admin_token):
     """When no api_key is sent, masked key should be fetched from APISIX."""
     await _create_key(client, admin_token, "no-key-up", "abcdefghijk")
@@ -458,7 +432,6 @@ async def test_update_api_key_no_key_change_fetches_masked(client, admin_token):
     assert resp.json()["key_created"] is False
 
 
-@pytest.mark.asyncio
 async def test_update_api_key_no_key_change_get_fails(client, admin_token):
     """get_resource failing during display lookup is silently handled."""
     await _create_key(client, admin_token, "no-key-up2", "abc1234567")
@@ -476,7 +449,6 @@ async def test_update_api_key_no_key_change_get_fails(client, admin_token):
 
 # ── delete_api_key error paths ──────────────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_delete_api_key_404(client, admin_token):
     resp = await client.delete(
         "/admin/api-keys/notthere",
@@ -485,7 +457,6 @@ async def test_delete_api_key_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_delete_api_key_404_from_apisix_is_swallowed(client, admin_token):
     """APISIX returning 404 on delete is treated as already-deleted (success)."""
     await _create_key(client, admin_token, "del-404", "k1")
@@ -499,7 +470,6 @@ async def test_delete_api_key_404_from_apisix_is_swallowed(client, admin_token):
     assert resp.status_code == 204
 
 
-@pytest.mark.asyncio
 async def test_delete_api_key_apisix_500_propagates(client, admin_token):
     await _create_key(client, admin_token, "del-500", "k1")
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
@@ -512,7 +482,6 @@ async def test_delete_api_key_apisix_500_propagates(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_delete_api_key_generic_error(client, admin_token):
     await _create_key(client, admin_token, "del-gen", "k1")
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
@@ -525,7 +494,6 @@ async def test_delete_api_key_generic_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_delete_api_key_with_old_routes_triggers_unwhitelist(client, admin_token):
     """Deleting a key that had allowed_routes should clear it from those routes' whitelist."""
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:

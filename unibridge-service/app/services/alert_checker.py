@@ -327,14 +327,15 @@ async def _check_nas_health() -> list[tuple[str, bool, str | None]]:
 # Three of the helpers below (_upstream_scheme / _node_host /
 # _upstream_host_header) mirror `app/routers/gateway.py`'s route-test probe
 # (_http_scheme_for_upstream / _node_host / _host_header_for_upstream); both
-# probe /health. They are replicated rather than
-# imported because nothing under `app/services/` imports a router today: pulling
-# `app.routers.gateway` in here would invert the layering and drag its whole
-# import chain (api_keys → auth → database → …) into a module that `app.main`
-# deliberately imports late, from its lifespan. Three tiny pure functions are the
-# cheaper half of that trade. Keep them in sync with gateway.py if that probe
-# changes. Node normalization is not among them: both sides call
-# `apisix_client.upstream_node_addresses`.
+# probe /health. They are copies, not imports, but not because services never
+# import routers: mcp_tools imports app.routers.gateway at module level, and
+# this module already imports app.routers.query inside a function (as do
+# mcp_remote and network_import with other routers). Importing gateway here at
+# module level would pull its whole import chain into a module `app.main`
+# imports late, from its lifespan; moving the three helpers somewhere both can
+# import (apisix_client) is the way to drop the copies. Until then keep them in
+# sync with gateway.py if that probe changes. Node normalization is not among
+# them: both sides call `apisix_client.upstream_node_addresses`.
 
 # Schemes this checker can probe. APISIX upstreams may also declare grpc, grpcs,
 # tcp, tls, udp or kafka; a GET /health against those proves nothing and usually

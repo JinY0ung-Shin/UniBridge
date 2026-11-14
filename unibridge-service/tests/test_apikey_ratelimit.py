@@ -1,6 +1,5 @@
 from unittest.mock import AsyncMock, patch
 
-import pytest
 
 from app.routers.api_keys import _build_limit_count_plugin
 from tests.conftest import auth_header
@@ -34,7 +33,6 @@ def _consumer_put_bodies(mock_apisix):
     ]
 
 
-@pytest.mark.asyncio
 async def test_create_api_key_provisions_limit_count(client, admin_token):
     """create_api_key with rate_limit_per_minute must provision the
     limit-count plugin on the APISIX consumer alongside key-auth."""
@@ -63,7 +61,6 @@ async def test_create_api_key_provisions_limit_count(client, admin_token):
         assert plugins["key-auth"] == {"key": "rl-key-1"}
 
 
-@pytest.mark.asyncio
 async def test_update_api_key_rate_limit_only_preserves_key_auth(client, admin_token):
     """A rate-limit-only update (no api_key) must add limit-count while
     PRESERVING the consumer's existing key-auth — regression guard against
@@ -105,7 +102,6 @@ async def test_update_api_key_rate_limit_only_preserves_key_auth(client, admin_t
         assert plugins["limit-count"] == EXPECTED_LIMIT_COUNT
 
 
-@pytest.mark.asyncio
 async def test_update_clears_rate_limit_when_explicit_null(client, admin_token):
     """An admin PUT with an EXPLICIT null rate_limit_per_minute must clear the
     limit: the consumer PUT body must drop limit-count, and the DB row's
@@ -153,7 +149,6 @@ async def test_update_clears_rate_limit_when_explicit_null(client, admin_token):
         assert plugins["key-auth"] == {"key": "rl-key-3"}
 
 
-@pytest.mark.asyncio
 async def test_update_omitted_rate_limit_preserves_existing(client, admin_token):
     """An admin PUT that OMITS rate_limit_per_minute must leave the existing
     limit untouched: limit-count stays on the consumer body and the DB row's

@@ -155,7 +155,6 @@ async def _run_lifespan(settings_ns, get_resource, put_resource, sleep=None) -> 
             pass
 
 
-@pytest.mark.asyncio
 async def test_boot_rewrites_stale_internal_proxy_header_without_provisioning():
     """The rotation path: old value in etcd, new value in env, provisioning off."""
     put_resource = AsyncMock()
@@ -191,7 +190,6 @@ async def test_boot_rewrites_stale_internal_proxy_header_without_provisioning():
         assert "update_time" not in body
 
 
-@pytest.mark.asyncio
 async def test_boot_leaves_matching_internal_proxy_header_untouched():
     put_resource = AsyncMock()
     get_resource = _keyed_get_resource(
@@ -209,7 +207,6 @@ async def test_boot_leaves_matching_internal_proxy_header_untouched():
     assert get_resource.await_count == len(INTERNAL_PROXY_ROUTE_IDS)
 
 
-@pytest.mark.asyncio
 async def test_boot_adds_internal_proxy_header_to_route_that_lacks_it():
     """A route provisioned before the header existed is repaired, not skipped.
 
@@ -234,7 +231,6 @@ async def test_boot_adds_internal_proxy_header_to_route_that_lacks_it():
     assert plugins["consumer-restriction"] == {"whitelist": ["s3-api-consumer"]}
 
 
-@pytest.mark.asyncio
 async def test_boot_skips_internal_proxy_routes_that_do_not_exist_yet():
     put_resource = AsyncMock()
     get_resource = _keyed_get_resource({})
@@ -249,7 +245,6 @@ async def test_boot_skips_internal_proxy_routes_that_do_not_exist_yet():
     assert get_resource.await_count == len(INTERNAL_PROXY_ROUTE_IDS)
 
 
-@pytest.mark.asyncio
 async def test_boot_fails_when_internal_proxy_reconcile_cannot_reach_apisix():
     """An unreachable admin API may be hiding a rotation, so fail startup."""
     put_resource = AsyncMock()
@@ -272,7 +267,6 @@ async def test_boot_fails_when_internal_proxy_reconcile_cannot_reach_apisix():
     assert _route_puts(put_resource) == {}
 
 
-@pytest.mark.asyncio
 async def test_internal_proxy_route_ids_match_the_provisioned_routes():
     """Drift guard for INTERNAL_PROXY_ROUTE_IDS.
 
@@ -307,7 +301,6 @@ async def test_internal_proxy_route_ids_match_the_provisioned_routes():
 # ── Only the active color writes the shared header ──────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_boot_on_the_standby_color_leaves_the_header_alone():
     """A restarted standby or rollback target may hold an older secret; writing
     it would 401 the active color's API-key traffic."""
@@ -324,7 +317,6 @@ async def test_boot_on_the_standby_color_leaves_the_header_alone():
     assert _route_puts(put_resource) == {}
 
 
-@pytest.mark.asyncio
 async def test_reconcile_loop_writes_only_while_active():
     from app.main import _run_internal_proxy_reconcile_loop
 
@@ -351,7 +343,6 @@ async def test_reconcile_loop_writes_only_while_active():
     assert reconcile.await_count == 2
 
 
-@pytest.mark.asyncio
 async def test_previous_secret_is_accepted_during_a_rotation(monkeypatch):
     from unittest.mock import MagicMock
 
@@ -395,7 +386,6 @@ async def test_previous_secret_is_accepted_during_a_rotation(monkeypatch):
     assert exc_info.value.status_code == 401
 
 
-@pytest.mark.asyncio
 async def test_empty_previous_secret_accepts_nothing_extra(monkeypatch):
     from unittest.mock import MagicMock
 

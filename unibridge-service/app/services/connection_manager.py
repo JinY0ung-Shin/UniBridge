@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app import metrics
-from app.config import settings
+from app.config import fernet_key, settings
 from app.models import DBConnection
 from app.services.graphdb_utils import graphdb_repository_path, read_capped_response
 
@@ -30,16 +30,11 @@ def run_clickhouse_locked(
 
 
 def _get_fernet() -> Fernet:
-    """Return a Fernet instance using the configured encryption key."""
-    key = settings.ENCRYPTION_KEY
-    # Pad or hash the key to make a valid Fernet key if needed
-    if len(key) != 44:
-        import base64
-        import hashlib
+    """Return a Fernet instance using the configured encryption key.
 
-        digest = hashlib.sha256(key.encode()).digest()
-        key = base64.urlsafe_b64encode(digest).decode()
-    return Fernet(key.encode())
+    validate_settings() refuses to boot with a key this cannot use.
+    """
+    return Fernet(fernet_key(settings.ENCRYPTION_KEY))
 
 
 def encrypt_password(plain: str) -> str:
@@ -55,17 +50,6 @@ def decrypt_password(encrypted: str) -> str:
         return f.decrypt(encrypted.encode()).decode()
     except InvalidToken as exc:
         raise ValueError("Failed to decrypt password. Check ENCRYPTION_KEY.") from exc
-
-
-def validate_encryption_key() -> None:
-    """Validate the encryption key at startup. Raises RuntimeError if invalid."""
-    try:
-        _get_fernet()
-    except (ValueError, Exception) as exc:
-        raise RuntimeError(
-            "Invalid ENCRYPTION_KEY configuration. Cannot initialize encryption. "
-            "Please check your ENCRYPTION_KEY environment variable."
-        ) from exc
 
 
 def _build_url(conn: DBConnection, password: str) -> str:
@@ -113,27 +97,8 @@ class ConnectionManager:
             cls._instance._databases = {}
         return cls._instance
 
-    def _ensure_registries(self) -> None:
-        """Initialize registries for test instances that bypass __new__."""
-        if not hasattr(self, "_engines"):
-            self._engines = {}
-        if not hasattr(self, "_ch_clients"):
-            self._ch_clients = {}
-        if not hasattr(self, "_ch_locks"):
-            self._ch_locks = {}
-        if not hasattr(self, "_neo4j_drivers"):
-            self._neo4j_drivers = {}
-        if not hasattr(self, "_graphdb_clients"):
-            self._graphdb_clients = {}
-        if not hasattr(self, "_db_types"):
-            self._db_types = {}
-        if not hasattr(self, "_databases"):
-            self._databases = {}
-
     async def initialize(self, connections: list[DBConnection]) -> None:
         """Create engines/clients for all saved connections on startup."""
-        self._ensure_registries()
-        validate_encryption_key()
         for conn in connections:
             try:
                 await self.add_connection(conn)
@@ -142,7 +107,6 @@ class ConnectionManager:
 
     async def add_connection(self, conn: DBConnection) -> None:
         """Create an engine/client and register it under the given alias."""
-        self._ensure_registries()
         if (
             conn.alias in self._engines
             or conn.alias in self._ch_clients
@@ -211,7 +175,6 @@ class ConnectionManager:
 
     async def remove_connection(self, alias: str) -> None:
         """Dispose of the connection for the given alias and remove it."""
-        self._ensure_registries()
         engine = self._engines.pop(alias, None)
         client = self._ch_clients.pop(alias, None)
         ch_lock = self._ch_locks.pop(alias, None)
@@ -288,7 +251,6 @@ class ConnectionManager:
 
     def has_connection(self, alias: str) -> bool:
         """Return True if the alias has a registered connection."""
-        self._ensure_registries()
         return (
             alias in self._engines
             or alias in self._ch_clients
@@ -344,7 +306,6 @@ class ConnectionManager:
 
     def get_status(self, alias: str) -> dict[str, Any]:
         """Return status info for the given alias."""
-        self._ensure_registries()
         if alias in self._ch_clients:
             return {
                 "alias": alias,
@@ -380,7 +341,6 @@ class ConnectionManager:
 
     def update_pool_metrics(self, alias: str | None = None) -> None:
         """Publish current checked-out pool counts for registered DB aliases."""
-        self._ensure_registries()
         aliases = [alias] if alias is not None else self.list_aliases()
         for current_alias in aliases:
             if (
@@ -403,7 +363,6 @@ class ConnectionManager:
 
     def list_aliases(self) -> list[str]:
         """Return all registered aliases."""
-        self._ensure_registries()
         return (
             list(self._engines.keys())
             + list(self._ch_clients.keys())

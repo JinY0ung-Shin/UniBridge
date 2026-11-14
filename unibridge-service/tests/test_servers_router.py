@@ -19,7 +19,6 @@ def _no_prometheus_or_filesd():
         yield
 
 
-@pytest.mark.asyncio
 async def test_create_list_update_delete(client, admin_token):
     h = auth_header(admin_token)
 
@@ -56,7 +55,6 @@ async def test_create_list_update_delete(client, admin_token):
     assert resp.json() == []
 
 
-@pytest.mark.asyncio
 async def test_duplicate_name_conflicts(client, admin_token):
     h = auth_header(admin_token)
     body = {"name": "dup", "address": "1.2.3.4:9100"}
@@ -65,7 +63,6 @@ async def test_duplicate_name_conflicts(client, admin_token):
     assert resp.status_code == 409
 
 
-@pytest.mark.asyncio
 async def test_invalid_address_and_name_rejected(client, admin_token):
     h = auth_header(admin_token)
     assert (await client.post("/admin/servers", headers=h, json={"name": "x", "address": "no-port"})).status_code == 422
@@ -84,7 +81,6 @@ _BAD_SCRAPE_ADDRESSES = (
 )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("address", _BAD_SCRAPE_ADDRESSES)
 async def test_scrape_addresses_with_scheme_path_or_spaces_rejected(client, admin_token, address):
     h = auth_header(admin_token)
@@ -97,7 +93,6 @@ async def test_scrape_addresses_with_scheme_path_or_spaces_rejected(client, admi
         assert resp.status_code == 422, (path, body, resp.text)
 
 
-@pytest.mark.asyncio
 async def test_host_name_and_ipv6_scrape_addresses_accepted(client, admin_token):
     h = auth_header(admin_token)
     for i, address in enumerate(("node-1.example.com:39100", "[fe80::1]:9100", " 10.0.0.5:9100 ")):
@@ -106,7 +101,6 @@ async def test_host_name_and_ipv6_scrape_addresses_accepted(client, admin_token)
         assert resp.json()["address"] == address.strip()
 
 
-@pytest.mark.asyncio
 async def test_invalid_disk_mountpoints_rejected(client, admin_token):
     h = auth_header(admin_token)
     for value in ("data", "/data/../secret", r"C:\\data"):
@@ -118,7 +112,6 @@ async def test_invalid_disk_mountpoints_rejected(client, admin_token):
         assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_invalid_disk_threshold_order_rejected(client, admin_token):
     h = auth_header(admin_token)
     resp = await client.post(
@@ -137,7 +130,6 @@ async def test_invalid_disk_threshold_order_rejected(client, admin_token):
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_requires_permission(client, user_token):
     """The seeded 'user' role lacks servers.read/write."""
     h = auth_header(user_token)
@@ -145,7 +137,6 @@ async def test_requires_permission(client, user_token):
     assert (await client.post("/admin/servers", headers=h, json={"name": "z", "address": "1.2.3.4:9100"})).status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_test_endpoint_reports_status(client, admin_token):
     h = auth_header(admin_token)
     created = await client.post("/admin/servers", headers=h, json={"name": "web9", "address": "1.2.3.4:9100"})
@@ -155,7 +146,6 @@ async def test_test_endpoint_reports_status(client, admin_token):
     assert resp.status_code == 200 and resp.json()["status"] == "up"
 
 
-@pytest.mark.asyncio
 async def test_metrics_returns_disk_series_per_mountpoint(client, admin_token):
     h = auth_header(admin_token)
     created = await client.post(
@@ -228,7 +218,6 @@ async def test_metrics_returns_disk_series_per_mountpoint(client, admin_token):
     ]
 
 
-@pytest.mark.asyncio
 async def test_gpu_fields_roundtrip_and_clear(client, admin_token):
     h = auth_header(admin_token)
     created = await client.post("/admin/servers", headers=h, json={
@@ -262,7 +251,6 @@ async def test_gpu_fields_roundtrip_and_clear(client, admin_token):
     })).status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_clearing_gpu_address_clears_only_gpu_alert_state(client, admin_token, seeded_db):
     h = auth_header(admin_token)
     created = await client.post("/admin/servers", headers=h, json={
@@ -289,7 +277,6 @@ async def test_clearing_gpu_address_clears_only_gpu_alert_state(client, admin_to
     assert [r.alert_type for r in rows] == ["server_down"]
 
 
-@pytest.mark.asyncio
 async def test_metrics_returns_one_gpu_series_per_card(client, admin_token):
     h = auth_header(admin_token)
     created = await client.post("/admin/servers", headers=h, json={
@@ -332,7 +319,6 @@ async def test_metrics_returns_one_gpu_series_per_card(client, admin_token):
     assert gpu_series[0]["points"] == [{"t": 1.0, "v": 40.0}]
 
 
-@pytest.mark.asyncio
 async def test_metrics_skips_gpu_queries_without_gpu_address(client, admin_token):
     h = auth_header(admin_token)
     created = await client.post(
@@ -353,7 +339,6 @@ async def test_metrics_skips_gpu_queries_without_gpu_address(client, admin_token
     assert not any(s["metric"].startswith("gpu_") for s in resp.json())
 
 
-@pytest.mark.asyncio
 async def test_test_endpoint_reports_gpu_status_only_when_configured(client, admin_token):
     h = auth_header(admin_token)
     plain = (await client.post(
@@ -380,7 +365,6 @@ async def test_test_endpoint_reports_gpu_status_only_when_configured(client, adm
     assert unknown.json()["gpu_status"] == "unknown"
 
 
-@pytest.mark.asyncio
 async def test_disabling_server_persists_alert_state_cleanup(client, admin_token, seeded_db):
     h = auth_header(admin_token)
     created = await client.post(

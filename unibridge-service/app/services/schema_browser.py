@@ -1,8 +1,8 @@
 """Read-only schema introspection for the MCP ``list_tables`` / ``describe_table`` tools.
 
-Table listing uses the same catalog queries as the admin endpoint
-(``app/routers/admin.py::list_tables``). Graph backends (neo4j, graphdb) have
-no tables: listing returns nothing and describing raises ``LookupError``.
+The admin endpoint (``app/routers/admin.py::list_tables``) and the query
+routes list tables through here too. Graph backends (neo4j, graphdb) have no
+tables: listing returns nothing and describing raises ``LookupError``.
 """
 from __future__ import annotations
 

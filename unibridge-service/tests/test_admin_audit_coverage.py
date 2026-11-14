@@ -477,7 +477,7 @@ class TestAlertChannelAuditing:
 
 
 class TestResourceOwnerAuditing:
-    async def test_upsert_and_delete_write_audit(self, client, admin_token):
+    async def test_upsert_writes_audit(self, client, admin_token):
         with _cm_patch():
             await client.post(
                 "/admin/query/databases", json=DB_PAYLOAD, headers=auth_header(admin_token)
@@ -489,16 +489,11 @@ class TestResourceOwnerAuditing:
             headers=auth_header(admin_token),
         )
         assert resp.status_code == 200, resp.text
-        resp = await client.delete(
-            "/admin/alerts/resource-owners/db/auditdb", headers=auth_header(admin_token)
-        )
-        assert resp.status_code == 204
 
         logs = await _audit_logs(client, admin_token, resource_type="resource_owner")
-        assert [e["action"] for e in logs] == ["delete", "create"]
-        assert all(e["resource_id"] == "db/auditdb" for e in logs)
-        assert json.loads(logs[1]["after"])["emails"] == ["owner@example.com"]
-        assert json.loads(logs[0]["before"])["emails"] == ["owner@example.com"]
+        assert [e["action"] for e in logs] == ["create"]
+        assert logs[0]["resource_id"] == "db/auditdb"
+        assert json.loads(logs[0]["after"])["emails"] == ["owner@example.com"]
 
 
 # ── Roles ────────────────────────────────────────────────────────────────────

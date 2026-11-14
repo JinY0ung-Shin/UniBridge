@@ -953,6 +953,23 @@ def _template_audit_snapshot(template: QueryTemplate) -> dict:
     }
 
 
+def _to_connection_response(conn: DBConnection, status_value: str) -> DBConnectionResponse:
+    return DBConnectionResponse(
+        alias=conn.alias,
+        db_type=conn.db_type,
+        host=conn.host,
+        port=conn.port,
+        database=conn.database,
+        username=conn.username,
+        protocol=conn.protocol,
+        secure=conn.secure,
+        pool_size=conn.pool_size if conn.pool_size is not None else 5,
+        max_overflow=conn.max_overflow if conn.max_overflow is not None else 3,
+        query_timeout=conn.query_timeout if conn.query_timeout is not None else 30,
+        status=status_value,
+    )
+
+
 def _to_template_response(template: QueryTemplate) -> QueryTemplateResponse:
     return QueryTemplateResponse(
         id=template.id,
@@ -1492,22 +1509,7 @@ async def list_databases(
     responses = []
     for conn in connections:
         pool_status = connection_manager.get_status(conn.alias)
-        responses.append(
-            DBConnectionResponse(
-                alias=conn.alias,
-                db_type=conn.db_type,
-                host=conn.host,
-                port=conn.port,
-                database=conn.database,
-                username=conn.username,
-                protocol=conn.protocol,
-                secure=conn.secure,
-                pool_size=conn.pool_size if conn.pool_size is not None else 5,
-                max_overflow=conn.max_overflow if conn.max_overflow is not None else 3,
-                query_timeout=conn.query_timeout if conn.query_timeout is not None else 30,
-                status=pool_status.get("status", "unknown"),
-            )
-        )
+        responses.append(_to_connection_response(conn, pool_status.get("status", "unknown")))
 
     return responses
 

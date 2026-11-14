@@ -9,7 +9,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import httpx
-import pytest
 
 from app.services import connection_manager as cm_mod
 from app.services.connection_manager import ConnectionManager, encrypt_password
@@ -50,7 +49,6 @@ class FakeStreamResponse:
             yield chunk
 
 
-@pytest.mark.asyncio
 async def test_add_remove_graphdb_round_trip(monkeypatch):
     created = []
 
@@ -88,7 +86,6 @@ async def test_add_remove_graphdb_round_trip(monkeypatch):
     assert client.closed is True
 
 
-@pytest.mark.asyncio
 async def test_dispose_all_closes_graphdb(monkeypatch):
     closed = []
 
@@ -107,7 +104,6 @@ async def test_dispose_all_closes_graphdb(monkeypatch):
     assert any("graphdb.local" in str(b) for b in closed)
 
 
-@pytest.mark.asyncio
 async def test_test_connection_uses_ask_filter_false(monkeypatch):
     captured = {}
 
@@ -140,7 +136,6 @@ async def test_test_connection_uses_ask_filter_false(monkeypatch):
     await cm.remove_connection("kg-ping")
 
 
-@pytest.mark.asyncio
 async def test_test_connection_failure_returns_message(monkeypatch):
     class FakeClient:
         def __init__(self, **kwargs):
@@ -162,7 +157,6 @@ async def test_test_connection_failure_returns_message(monkeypatch):
     await cm.remove_connection("kg-fail")
 
 
-@pytest.mark.asyncio
 async def test_test_connection_exception_returns_message(monkeypatch):
     """Verify that httpx exceptions during test_connection are caught and reported."""
     class ExplodingClient:
@@ -185,7 +179,6 @@ async def test_test_connection_exception_returns_message(monkeypatch):
     await cm.remove_connection("kg-explode")
 
 
-@pytest.mark.asyncio
 async def test_test_connection_encodes_repository_path(monkeypatch):
     captured = {}
 
@@ -212,7 +205,6 @@ async def test_test_connection_encodes_repository_path(monkeypatch):
     await cm.remove_connection("kg-path")
 
 
-@pytest.mark.asyncio
 async def test_test_connection_caps_large_response(monkeypatch):
     class FakeClient:
         def __init__(self, **kwargs):
@@ -235,7 +227,6 @@ async def test_test_connection_caps_large_response(monkeypatch):
     await cm.remove_connection("kg-big")
 
 
-@pytest.mark.asyncio
 async def test_update_pool_metrics_skips_graphdb(monkeypatch):
     """graphdb has no SQLAlchemy pool — update_pool_metrics must not crash."""
     class FakeClient:

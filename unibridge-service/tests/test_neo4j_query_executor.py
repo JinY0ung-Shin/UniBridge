@@ -59,7 +59,6 @@ class FakeDriver:
         return self._session
 
 
-@pytest.mark.asyncio
 async def test_execute_neo4j_query_limits_rows_and_returns_metadata():
     result = FakeResult(
         ["name", "age"],
@@ -93,7 +92,6 @@ async def test_execute_neo4j_query_limits_rows_and_returns_metadata():
     assert driver.default_access_mode == query_executor.NEO4J_READ_ACCESS
 
 
-@pytest.mark.asyncio
 async def test_execute_neo4j_query_write_mode_only_when_readonly_false():
     session = FakeSession(FakeResult(["n"], [FakeRecord(["node"])]))
     driver = FakeDriver(session)
@@ -109,7 +107,6 @@ async def test_execute_neo4j_query_write_mode_only_when_readonly_false():
     assert driver.default_access_mode == query_executor.NEO4J_WRITE_ACCESS
 
 
-@pytest.mark.asyncio
 async def test_execute_neo4j_query_uses_empty_params_when_params_is_none():
     session = FakeSession(FakeResult(["n"], [FakeRecord(["node"])]))
     driver = FakeDriver(session)
@@ -119,7 +116,6 @@ async def test_execute_neo4j_query_uses_empty_params_when_params_is_none():
     assert session.params == {}
 
 
-@pytest.mark.asyncio
 async def test_execute_neo4j_query_passes_conflicting_param_names_as_parameters_dict():
     session = FakeSession(FakeResult(["n"], [FakeRecord(["node"])]))
     driver = FakeDriver(session)
@@ -130,7 +126,6 @@ async def test_execute_neo4j_query_passes_conflicting_param_names_as_parameters_
     assert session.params == params
 
 
-@pytest.mark.asyncio
 async def test_execute_neo4j_query_serializes_nested_values_and_falls_back_to_string():
     class CustomObject:
         def __str__(self):
@@ -165,7 +160,6 @@ async def test_execute_neo4j_query_serializes_nested_values_and_falls_back_to_st
     ]
 
 
-@pytest.mark.asyncio
 async def test_execute_neo4j_query_uses_configured_query_timeout(monkeypatch):
     class FakeQuery:
         def __init__(self, text, timeout=None):
@@ -213,7 +207,6 @@ def test_neo4j_entity_id_preserves_falsy_element_id():
     assert _neo4j_entity_id(Entity()) == ""
 
 
-@pytest.mark.asyncio
 async def test_execute_neo4j_query_times_out():
     session = FakeSession(FakeResult(["n"], [FakeRecord(["node"])]), delay=0.05)
     driver = FakeDriver(session)
@@ -228,7 +221,6 @@ async def test_execute_neo4j_query_times_out():
         )
 
 
-@pytest.mark.asyncio
 async def test_execute_neo4j_query_stops_at_the_byte_budget(monkeypatch):
     from app.config import settings
 

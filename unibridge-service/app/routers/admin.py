@@ -26,6 +26,7 @@ from app.routers.query import (
     TEMPLATE_HEALTH_RULE,
     _encode_sample_params,
     _template_audit_snapshot,
+    _to_connection_response,
     _to_template_response,
     _validate_read_only_template_sql,
     _validate_sample_params,
@@ -52,6 +53,7 @@ from app.schemas import (
     SystemConfigUpdate,
     normalize_query_template_path,
 )
+from app.services import schema_browser
 from app.services.alert_state import delete_alert_state
 from app.services.apisix_system_resources import MCP_API_ROUTE_ID
 from app.services.audit import log_admin_action
@@ -139,23 +141,6 @@ def _validate_connection_options(
             detail="protocol is only valid for clickhouse, neo4j, or graphdb connections",
         )
     return None, None
-
-
-def _to_connection_response(conn: DBConnection, status_value: str) -> DBConnectionResponse:
-    return DBConnectionResponse(
-        alias=conn.alias,
-        db_type=conn.db_type,
-        host=conn.host,
-        port=conn.port,
-        database=conn.database,
-        username=conn.username,
-        protocol=conn.protocol,
-        secure=conn.secure,
-        pool_size=conn.pool_size if conn.pool_size is not None else 5,
-        max_overflow=conn.max_overflow if conn.max_overflow is not None else 3,
-        query_timeout=conn.query_timeout if conn.query_timeout is not None else 30,
-        status=status_value,
-    )
 
 
 def _connection_audit_snapshot(conn: DBConnection) -> dict:
@@ -303,27 +288,6 @@ async def list_connections(
     return responses
 
 
-@router.get("/admin/query/databases/{alias}", response_model=DBConnectionResponse)
-async def get_connection(
-    alias: str,
-    _admin: CurrentUser = Depends(require_permission("query.databases.read")),
-    db: AsyncSession = Depends(get_db),
-) -> DBConnectionResponse:
-    """Get details of a single database connection."""
-    result = await db.execute(
-        select(DBConnection).where(DBConnection.alias == alias)
-    )
-    conn = result.scalar_one_or_none()
-    if conn is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Database alias '{alias}' not found",
-        )
-
-    pool_status = connection_manager.get_status(alias)
-    return _to_connection_response(conn, pool_status.get("status", "unknown"))
-
-
 @router.put("/admin/query/databases/{alias}", response_model=DBConnectionResponse)
 async def update_connection(
     alias: str,
@@ -332,15 +296,7 @@ async def update_connection(
     db: AsyncSession = Depends(get_db),
 ) -> DBConnectionResponse:
     """Update an existing database connection."""
-    result = await db.execute(
-        select(DBConnection).where(DBConnection.alias == alias)
-    )
-    conn = result.scalar_one_or_none()
-    if conn is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Database alias '{alias}' not found",
-        )
+    conn = await _get_database_or_404(db, alias)
 
     before_snapshot = _connection_audit_snapshot(conn)
 
@@ -402,15 +358,7 @@ async def delete_connection(
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Delete a database connection."""
-    result = await db.execute(
-        select(DBConnection).where(DBConnection.alias == alias)
-    )
-    conn = result.scalar_one_or_none()
-    if conn is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Database alias '{alias}' not found",
-        )
+    conn = await _get_database_or_404(db, alias)
 
     # Snapshot before the row is gone, for the audit trail.
     before_snapshot = _connection_audit_snapshot(conn)
@@ -468,32 +416,9 @@ async def list_tables(
             detail=f"Database alias '{alias}' is not registered",
         )
 
-    # Graph backends do not expose relational tables; return empty list.
-    if db_type in ("neo4j", "graphdb"):
-        return []
-
+    # Graph backends have no relational tables: an empty list.
     try:
-        if db_type == "clickhouse":
-            client = connection_manager.get_clickhouse_client(alias)
-            ch_lock = connection_manager.get_clickhouse_lock(alias)
-            result = await asyncio.to_thread(
-                run_clickhouse_locked,
-                ch_lock,
-                client.query,
-                "SELECT name FROM system.tables WHERE database = currentDatabase() ORDER BY name",
-            )
-            return [row[0] for row in result.result_rows]
-
-        engine = connection_manager.get_engine(alias)
-        if db_type == "mssql":
-            sql = "SELECT TABLE_SCHEMA + '.' + TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME"
-        else:
-            sql = "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public' ORDER BY tablename"
-
-        from sqlalchemy import text
-        async with engine.connect() as conn:
-            result = await conn.execute(text(sql))
-            return [row[0] for row in result.fetchall()]
+        return await schema_browser.list_tables(alias)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -966,6 +891,16 @@ async def delete_query_template(
 # ── Audit Logs ───────────────────────────────────────────────────────────────
 
 
+def _parse_date_filter(name: str, value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid {name} format. Use ISO format.",
+        ) from None
+
+
 @router.get("/admin/query/audit-logs", response_model=list[AuditLogResponse])
 async def list_audit_logs(
     database: str | None = Query(None, description="Filter by database alias"),
@@ -978,8 +913,6 @@ async def list_audit_logs(
     db: AsyncSession = Depends(get_db),
 ) -> list[AuditLogResponse]:
     """Query audit logs with optional filters."""
-    from datetime import datetime
-
     stmt = select(AuditLog)
 
     if database:
@@ -987,23 +920,9 @@ async def list_audit_logs(
     if user:
         stmt = stmt.where(AuditLog.user == user)
     if from_date:
-        try:
-            dt = datetime.fromisoformat(from_date)
-            stmt = stmt.where(AuditLog.timestamp >= dt)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid from_date format. Use ISO format.",
-            )
+        stmt = stmt.where(AuditLog.timestamp >= _parse_date_filter("from_date", from_date))
     if to_date:
-        try:
-            dt = datetime.fromisoformat(to_date)
-            stmt = stmt.where(AuditLog.timestamp <= dt)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid to_date format. Use ISO format.",
-            )
+        stmt = stmt.where(AuditLog.timestamp <= _parse_date_filter("to_date", to_date))
 
     stmt = stmt.order_by(AuditLog.id.desc()).offset(offset).limit(limit)
 
@@ -1032,8 +951,6 @@ async def list_admin_audit_logs(
     db: AsyncSession = Depends(get_db),
 ) -> list[AdminAuditLogResponse]:
     """Query administrative change audit logs (gateway/API-key mutations)."""
-    from datetime import datetime
-
     stmt = select(AdminAuditLog)
 
     if actor:
@@ -1043,23 +960,9 @@ async def list_admin_audit_logs(
     if action:
         stmt = stmt.where(AdminAuditLog.action == action)
     if from_date:
-        try:
-            dt = datetime.fromisoformat(from_date)
-            stmt = stmt.where(AdminAuditLog.timestamp >= dt)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid from_date format. Use ISO format.",
-            )
+        stmt = stmt.where(AdminAuditLog.timestamp >= _parse_date_filter("from_date", from_date))
     if to_date:
-        try:
-            dt = datetime.fromisoformat(to_date)
-            stmt = stmt.where(AdminAuditLog.timestamp <= dt)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid to_date format. Use ISO format.",
-            )
+        stmt = stmt.where(AdminAuditLog.timestamp <= _parse_date_filter("to_date", to_date))
 
     stmt = stmt.order_by(AdminAuditLog.id.desc()).offset(offset).limit(limit)
 

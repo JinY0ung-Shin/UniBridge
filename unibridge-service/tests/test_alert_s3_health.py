@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
@@ -47,7 +46,6 @@ async def _run_s3_cycle(state, results, *, trigger_after_failures=2):
 # ── Probe ────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_check_s3_health_reports_every_registered_alias():
     manager = AsyncMock()
     manager.list_aliases = lambda: ["good", "bad"]
@@ -58,7 +56,6 @@ async def test_check_s3_health_reports_every_registered_alias():
         assert await alert_checker._check_s3_health() == [("good", True), ("bad", False)]
 
 
-@pytest.mark.asyncio
 async def test_check_s3_health_treats_a_raising_probe_as_unhealthy():
     manager = AsyncMock()
     manager.list_aliases = lambda: ["boom"]
@@ -67,7 +64,6 @@ async def test_check_s3_health_treats_a_raising_probe_as_unhealthy():
         assert await alert_checker._check_s3_health() == [("boom", False)]
 
 
-@pytest.mark.asyncio
 async def test_check_s3_health_with_no_connections():
     manager = AsyncMock()
     manager.list_aliases = lambda: []
@@ -78,7 +74,6 @@ async def test_check_s3_health_with_no_connections():
 # ── Rule behaviour ───────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_s3_health_debounces_until_the_failure_threshold():
     state = AlertStateManager()
 
@@ -101,7 +96,6 @@ async def test_s3_health_debounces_until_the_failure_threshold():
     assert kwargs["monitor_label"] == "S3 연결 상태"
 
 
-@pytest.mark.asyncio
 async def test_s3_health_recovery_notifies():
     state = AlertStateManager()
     await _run_s3_cycle(state, [("archive", False)])
@@ -117,7 +111,6 @@ async def test_s3_health_recovery_notifies():
     assert state.get_status("s3_health", "archive") == "ok"
 
 
-@pytest.mark.asyncio
 async def test_s3_health_respects_the_trigger_after_failures_setting():
     state = AlertStateManager()
     for _ in range(2):
@@ -127,7 +120,6 @@ async def test_s3_health_respects_the_trigger_after_failures_setting():
     dispatch.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_healthy_s3_never_notifies():
     state = AlertStateManager()
     dispatch = await _run_s3_cycle(state, [("archive", True)])
@@ -138,7 +130,6 @@ async def test_healthy_s3_never_notifies():
 # ── Recipients ───────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_s3_alert_reaches_the_s3_assignees_and_admins(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -188,7 +179,6 @@ async def test_s3_alert_reaches_the_s3_assignees_and_admins(engine):
     assert history.alert_type == "triggered"
 
 
-@pytest.mark.asyncio
 async def test_s3_alerts_can_be_switched_off_per_connection(engine):
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -224,7 +214,6 @@ async def test_s3_alerts_can_be_switched_off_per_connection(engine):
 # ── Stale-state purge ────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_purge_drops_s3_state_for_a_removed_alias(db_session):
     state = AlertStateManager()
     for alias in ("kept", "gone"):
@@ -244,7 +233,6 @@ async def test_purge_drops_s3_state_for_a_removed_alias(db_session):
     assert remaining == ["kept"]
 
 
-@pytest.mark.asyncio
 async def test_purge_skips_s3_when_the_registry_is_unavailable(db_session):
     state = AlertStateManager()
     db_session.add(AlertState(alert_type="s3_health", target="archive", status="alert"))

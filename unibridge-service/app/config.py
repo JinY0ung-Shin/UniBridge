@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import logging
 
 from pydantic import Field, field_validator, model_validator
@@ -39,6 +41,11 @@ class Settings(BaseSettings):
     MAX_RESULT_BYTES: int = 128 * 1024 * 1024
     RATE_LIMIT_PER_MINUTE: int = 60
     MAX_CONCURRENT_QUERIES: int = 5
+    # Local development only, and it does two things: mounts POST /auth/token
+    # (app/main.py), which issues a JWT for any username and existing role, and
+    # turns off the check that X-Consumer-Username arrived through APISIX
+    # (auth.get_current_user_or_apikey skips the X-UniBridge-Internal-Proxy
+    # secret), so any caller can claim to be any API key.
     ENABLE_DEV_TOKEN_ENDPOINT: bool = False
     # /docs, /redoc and /openapi.json disclose the full admin API surface and
     # the edge nginx forwards them (only /_api/metrics is blocked there), so
@@ -249,6 +256,19 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
+def fernet_key(encryption_key: str) -> bytes:
+    """The Fernet key an ENCRYPTION_KEY stands for.
+
+    A 44-character value is taken as a Fernet key itself; anything else is
+    hashed (SHA-256, urlsafe base64) into one. Stored credentials depend on
+    this derivation, so it must not change.
+    """
+    if len(encryption_key) != 44:
+        digest = hashlib.sha256(encryption_key.encode()).digest()
+        encryption_key = base64.urlsafe_b64encode(digest).decode()
+    return encryption_key.encode()
+
+
 def validate_settings() -> None:
     """Validate that critical secrets are set. Called at startup."""
     _INSECURE_DEFAULTS = {
@@ -266,13 +286,8 @@ def validate_settings() -> None:
     # Validate ENCRYPTION_KEY produces a usable Fernet key
     try:
         from cryptography.fernet import Fernet
-        import base64
-        import hashlib
-        key = settings.ENCRYPTION_KEY
-        if len(key) != 44:
-            digest = hashlib.sha256(key.encode()).digest()
-            key = base64.urlsafe_b64encode(digest).decode()
-        Fernet(key.encode())
+
+        Fernet(fernet_key(settings.ENCRYPTION_KEY))
     except Exception:
         raise RuntimeError(
             "ENCRYPTION_KEY is invalid. "

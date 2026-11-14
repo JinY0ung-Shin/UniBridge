@@ -5,7 +5,6 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import httpx
-import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.auth import CurrentUser, get_current_user
@@ -45,7 +44,6 @@ def test_self_consumer_name_strips_dashes():
     assert _self_consumer_name("abc-123-def") == "self_abc123def"
 
 
-@pytest.mark.asyncio
 async def test_get_me_returns_null_when_no_key(app, client):
     _override_user(app, sub="alice-sub-1")
     resp = await client.get("/admin/api-keys/me")
@@ -53,7 +51,6 @@ async def test_get_me_returns_null_when_no_key(app, client):
     assert resp.json() is None
 
 
-@pytest.mark.asyncio
 async def test_post_me_creates_key(app, client):
     _override_user(app, sub="alice-sub-1", username="alice")
     with _patch_apisix() as mock_apisix:
@@ -75,7 +72,6 @@ async def test_post_me_creates_key(app, client):
     assert data["name"] == _self_consumer_name("alice-sub-1")
 
 
-@pytest.mark.asyncio
 async def test_post_me_second_time_409(app, client):
     _override_user(app, sub="alice-sub-1")
     with _patch_apisix() as mock_apisix:
@@ -91,7 +87,6 @@ async def test_post_me_second_time_409(app, client):
     assert second.status_code == 409
 
 
-@pytest.mark.asyncio
 async def test_regenerate_changes_key(app, client):
     _override_user(app, sub="alice-sub-1")
     with _patch_apisix() as mock_apisix:
@@ -120,7 +115,6 @@ async def test_regenerate_changes_key(app, client):
     assert get.json()["name"] == _self_consumer_name("alice-sub-1")
 
 
-@pytest.mark.asyncio
 async def test_regenerate_non_404_apisix_error_returns_502(app, client):
     """A transient (non-404) APISIX error while fetching the consumer must
     surface as 502 rather than silently resetting the consumer plugins."""
@@ -147,7 +141,6 @@ async def test_regenerate_non_404_apisix_error_returns_502(app, client):
     assert len(consumer_puts) == 1
 
 
-@pytest.mark.asyncio
 async def test_delete_me(app, client):
     _override_user(app, sub="alice-sub-1")
     with _patch_apisix() as mock_apisix:
@@ -168,7 +161,6 @@ async def test_delete_me(app, client):
     assert get.json() is None
 
 
-@pytest.mark.asyncio
 async def test_get_me_requires_apikeys_self(app, client):
     """A role lacking apikeys.self must be rejected with 403.
 
@@ -180,7 +172,6 @@ async def test_get_me_requires_apikeys_self(app, client):
     assert resp.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_regenerate_preserves_other_plugins(app, client):
     """When the consumer already exists in APISIX, regenerate must PRESERVE
     unrelated plugins (and limit-count) while swapping only key-auth.key.
@@ -230,14 +221,12 @@ async def test_regenerate_preserves_other_plugins(app, client):
     assert put_plugins["key-auth"]["key"] != "old"
 
 
-@pytest.mark.asyncio
 async def test_post_me_missing_sub_returns_400(app, client):
     _override_user(app, sub="", username="x")
     resp = await client.post("/admin/api-keys/me")
     assert resp.status_code == 400
 
 
-@pytest.mark.asyncio
 async def test_post_me_cleans_up_consumer_on_sync_failure(app, client):
     """If _sync_consumer_restriction raises, the created APISIX consumer must
     be deleted and no DB row should persist."""
@@ -263,7 +252,6 @@ async def test_post_me_cleans_up_consumer_on_sync_failure(app, client):
     assert get.json() is None
 
 
-@pytest.mark.asyncio
 async def test_self_wildcard_allows_arbitrary_s3_alias(app, client):
     """Carry-over Task 11 coverage: a self key has allowed_databases=["*"],
     so an APISIX-forwarded S3 browse for an ARBITRARY (unlisted) alias must
@@ -301,7 +289,6 @@ async def test_self_wildcard_allows_arbitrary_s3_alias(app, client):
     mock_s3_manager.list_buckets.assert_awaited_once_with("some-arbitrary-unlisted-alias")
 
 
-@pytest.mark.asyncio
 async def test_post_me_integrity_error_returns_409_without_apisix_clobber(
     app, client, seeded_db
 ):
@@ -352,7 +339,6 @@ async def test_post_me_integrity_error_returns_409_without_apisix_clobber(
         assert consumer_puts == []
 
 
-@pytest.mark.asyncio
 async def test_post_me_rolls_back_db_on_apisix_failure(app, client):
     """If APISIX provisioning fails AFTER the DB claim, we must roll back the
     DB row (so GET /me returns null) and attempt to delete the consumer."""
@@ -390,7 +376,6 @@ def _days_from_now(iso_value: str) -> float:
     return (expires - datetime.now(timezone.utc)).total_seconds() / 86400
 
 
-@pytest.mark.asyncio
 async def test_post_me_sets_30_day_expiry(app, client):
     _override_user(app, sub="alice-sub-1", username="alice")
     with _patch_apisix() as mock_apisix:
@@ -407,7 +392,6 @@ async def test_post_me_sets_30_day_expiry(app, client):
     assert 29.9 < _days_from_now(expires_at) <= 30.0
 
 
-@pytest.mark.asyncio
 async def test_regenerate_resets_expiry(app, client, seeded_db):
     """Regenerate issues a new key value AND restarts the 30-day clock."""
     from datetime import datetime, timedelta, timezone
@@ -443,7 +427,6 @@ async def test_regenerate_resets_expiry(app, client, seeded_db):
     assert 29.9 < _days_from_now(regen.json()["expires_at"]) <= 30.0
 
 
-@pytest.mark.asyncio
 async def test_renew_keeps_key_value_and_extends_expiry(app, client, seeded_db):
     """Renew moves expires_at forward 30 days without touching the key value."""
     from datetime import datetime, timedelta, timezone
@@ -489,21 +472,18 @@ async def test_renew_keeps_key_value_and_extends_expiry(app, client, seeded_db):
     assert data["api_key"] == "***alue"
 
 
-@pytest.mark.asyncio
 async def test_renew_without_key_returns_404(app, client):
     _override_user(app, sub="nobody-sub-1")
     resp = await client.post("/admin/api-keys/me/renew")
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_renew_requires_apikeys_self(app, client):
     _override_user(app, sub="bob-sub-1", role="noselfrole", username="bob")
     resp = await client.post("/admin/api-keys/me/renew")
     assert resp.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_renew_writes_admin_audit_log(app, client, seeded_db):
     from sqlalchemy import select as sa_select
     from app.models import AdminAuditLog
@@ -534,7 +514,6 @@ async def test_renew_writes_admin_audit_log(app, client, seeded_db):
     assert renew_entries[0].resource_id == _self_consumer_name("alice-sub-1")
 
 
-@pytest.mark.asyncio
 async def test_expired_self_key_rejected_on_query_api(app, client, seeded_db):
     """An expired self key must get 401 on the APISIX-forwarded header path."""
     from datetime import datetime, timedelta, timezone
@@ -604,7 +583,6 @@ async def _read_expiry(seeded_db, sub):
         return result.scalar_one().expires_at
 
 
-@pytest.mark.asyncio
 async def test_renew_readds_the_consumer_to_route_whitelists(app, client, seeded_db):
     """The expiry reconcile drops a lapsed key from every whitelist; renewing
     has to put it back, or the key 403s at the gateway until the next cycle."""
@@ -664,7 +642,6 @@ async def test_renew_readds_the_consumer_to_route_whitelists(app, client, seeded
     assert renew.json()["key_created"] is False
 
 
-@pytest.mark.asyncio
 async def test_renew_aborts_with_502_and_keeps_the_stored_expiry(app, client, seeded_db):
     """An APISIX failure must not leave a stored expiry the gateway ignores."""
     from datetime import datetime, timedelta, timezone
@@ -701,7 +678,6 @@ async def test_renew_aborts_with_502_and_keeps_the_stored_expiry(app, client, se
     assert abs((stored - lapsed).total_seconds()) < 1
 
 
-@pytest.mark.asyncio
 async def test_regenerate_resyncs_the_route_whitelists(app, client, seeded_db):
     """A regenerated key is a fresh issuance — it belongs back on its routes."""
     from datetime import datetime, timedelta, timezone

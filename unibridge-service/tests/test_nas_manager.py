@@ -83,7 +83,6 @@ def test_singleton_returns_same_instance():
     assert NASConnectionManager() is NASConnectionManager()
 
 
-@pytest.mark.asyncio
 async def test_add_has_list_remove(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     base.mkdir()
@@ -93,7 +92,7 @@ async def test_add_has_list_remove(fresh_manager, tmp_path, monkeypatch):
     assert fresh_manager.has_connection("a") is True
     assert "a" in fresh_manager.list_aliases()
 
-    cfg = fresh_manager.get_config("a")
+    cfg = fresh_manager._configs["a"]
     assert cfg["base_path"] == str(base)
     assert cfg["show_hidden"] is False
     assert cfg["follow_symlinks"] is False
@@ -102,7 +101,6 @@ async def test_add_has_list_remove(fresh_manager, tmp_path, monkeypatch):
     assert fresh_manager.has_connection("a") is False
 
 
-@pytest.mark.asyncio
 async def test_add_connection_outside_allowed_roots_rejected(fresh_manager, tmp_path, monkeypatch):
     """Defense in depth: the manager itself enforces the allowed-root check."""
     base = tmp_path / "share"
@@ -115,7 +113,6 @@ async def test_add_connection_outside_allowed_roots_rejected(fresh_manager, tmp_
     assert not fresh_manager.has_connection("bad")
 
 
-@pytest.mark.asyncio
 async def test_initialize_skips_failures(fresh_manager, tmp_path, monkeypatch):
     good_base = tmp_path / "good"
     good_base.mkdir()
@@ -128,7 +125,6 @@ async def test_initialize_skips_failures(fresh_manager, tmp_path, monkeypatch):
     assert not fresh_manager.has_connection("bad")
 
 
-@pytest.mark.asyncio
 async def test_dispose_all(fresh_manager, tmp_path, monkeypatch):
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
@@ -139,7 +135,6 @@ async def test_dispose_all(fresh_manager, tmp_path, monkeypatch):
     assert fresh_manager.list_aliases() == []
 
 
-@pytest.mark.asyncio
 async def test_get_max_download_bytes(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     base.mkdir()
@@ -151,7 +146,6 @@ async def test_get_max_download_bytes(fresh_manager, tmp_path, monkeypatch):
 # ── test_connection / health probe ────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_test_connection_ok(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     base.mkdir()
@@ -162,7 +156,6 @@ async def test_test_connection_ok(fresh_manager, tmp_path, monkeypatch):
     assert isinstance(msg, str)
 
 
-@pytest.mark.asyncio
 async def test_test_connection_mount_disappeared_stdev(fresh_manager, tmp_path, monkeypatch):
     """If the cached st_dev no longer matches the live device id, the probe
     must report failure (mount went away / got replaced by a stub)."""
@@ -182,7 +175,6 @@ async def test_test_connection_mount_disappeared_stdev(fresh_manager, tmp_path, 
 # ── list_entries: shape, sorting, hidden policy, cap ──────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_list_entries_response_shape(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     base.mkdir()
@@ -233,7 +225,6 @@ async def test_list_entries_response_shape(fresh_manager, tmp_path, monkeypatch)
     assert res["next_cursor"] is None
 
 
-@pytest.mark.asyncio
 async def test_list_entries_path_is_alias_relative(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     sub = base / "a"
@@ -250,7 +241,6 @@ async def test_list_entries_path_is_alias_relative(fresh_manager, tmp_path, monk
     assert str(base) not in f["path"]
 
 
-@pytest.mark.asyncio
 async def test_list_entries_hides_dotfiles_by_default(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     base.mkdir()
@@ -267,7 +257,6 @@ async def test_list_entries_hides_dotfiles_by_default(fresh_manager, tmp_path, m
     assert ".DS_Store" not in names
 
 
-@pytest.mark.asyncio
 async def test_list_entries_shows_hidden_when_enabled(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     base.mkdir()
@@ -280,7 +269,6 @@ async def test_list_entries_shows_hidden_when_enabled(fresh_manager, tmp_path, m
     assert ".hidden" in names
 
 
-@pytest.mark.asyncio
 async def test_list_entries_pagination_offset_limit(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     base.mkdir()
@@ -302,7 +290,6 @@ async def test_list_entries_pagination_offset_limit(fresh_manager, tmp_path, mon
     assert res2["next_cursor"] is None
 
 
-@pytest.mark.asyncio
 async def test_list_entries_entry_cap_sets_truncated_and_terminates(
     fresh_manager, tmp_path, monkeypatch
 ):
@@ -327,7 +314,6 @@ async def test_list_entries_entry_cap_sets_truncated_and_terminates(
     assert res["next_cursor"] is None
 
 
-@pytest.mark.asyncio
 async def test_list_entries_query_in_capped_dir_does_not_loop(
     fresh_manager, tmp_path, monkeypatch
 ):
@@ -353,7 +339,6 @@ async def test_list_entries_query_in_capped_dir_does_not_loop(
     assert res["next_cursor"] is None
 
 
-@pytest.mark.asyncio
 async def test_list_entries_query_sets_truncated_when_matching_cap_is_hit(
     fresh_manager, tmp_path, monkeypatch
 ):
@@ -375,7 +360,6 @@ async def test_list_entries_query_sets_truncated_when_matching_cap_is_hit(
     assert res["next_cursor"] is None
 
 
-@pytest.mark.asyncio
 async def test_list_entries_query_filters_by_name_case_insensitive(
     fresh_manager, tmp_path, monkeypatch
 ):
@@ -400,7 +384,6 @@ async def test_list_entries_query_filters_by_name_case_insensitive(
     assert "summary.txt" not in file_names
 
 
-@pytest.mark.asyncio
 async def test_list_entries_query_no_match_is_empty(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     base.mkdir()
@@ -416,7 +399,6 @@ async def test_list_entries_query_no_match_is_empty(fresh_manager, tmp_path, mon
     assert res["next_cursor"] is None
 
 
-@pytest.mark.asyncio
 async def test_list_entries_blank_query_is_noop(fresh_manager, tmp_path, monkeypatch):
     """Whitespace-only query must not filter anything out."""
     base = tmp_path / "share"
@@ -430,7 +412,6 @@ async def test_list_entries_blank_query_is_noop(fresh_manager, tmp_path, monkeyp
     assert [f["name"] for f in res["files"]] == ["a.txt", "b.txt"]
 
 
-@pytest.mark.asyncio
 async def test_list_entries_mount_disappeared_raises(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     base.mkdir()
@@ -444,7 +425,6 @@ async def test_list_entries_mount_disappeared_raises(fresh_manager, tmp_path, mo
 # ── stat_path ─────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_stat_path_file_shape_and_content_type(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     base.mkdir()
@@ -468,7 +448,6 @@ async def test_stat_path_file_shape_and_content_type(fresh_manager, tmp_path, mo
     assert res["content_type"] in ("text/csv", "application/vnd.ms-excel", "application/csv")
 
 
-@pytest.mark.asyncio
 async def test_stat_path_dir_content_type_null(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     (base / "sub").mkdir(parents=True)
@@ -481,7 +460,6 @@ async def test_stat_path_dir_content_type_null(fresh_manager, tmp_path, monkeypa
     assert res["content_type"] is None
 
 
-@pytest.mark.asyncio
 async def test_stat_path_hidden_target_is_404_when_not_shown(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     base.mkdir()
@@ -492,7 +470,6 @@ async def test_stat_path_hidden_target_is_404_when_not_shown(fresh_manager, tmp_
         await fresh_manager.stat_path("s", ".secret")
 
 
-@pytest.mark.asyncio
 async def test_stat_path_special_file_rejected(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     base.mkdir()
@@ -506,7 +483,6 @@ async def test_stat_path_special_file_rejected(fresh_manager, tmp_path, monkeypa
 # ── open_read_stream ──────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_open_read_stream_reads_content(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     base.mkdir()
@@ -526,7 +502,6 @@ async def test_open_read_stream_reads_content(fresh_manager, tmp_path, monkeypat
     assert bytes(collected) == payload
 
 
-@pytest.mark.asyncio
 async def test_open_read_stream_size_cap_raises_too_large(fresh_manager, tmp_path, monkeypatch):
     """File larger than the (per-connection) cap raises NasTooLargeError BEFORE
     streaming begins."""
@@ -541,7 +516,6 @@ async def test_open_read_stream_size_cap_raises_too_large(fresh_manager, tmp_pat
         await fresh_manager.open_read_stream("s", "big.bin")
 
 
-@pytest.mark.asyncio
 async def test_open_read_stream_fifo_rejected_without_hanging(fresh_manager, tmp_path, monkeypatch):
     """open_read_stream on a FIFO must raise quickly, never block on the
     writer-less pipe. Wrapped in asyncio.wait_for as a tight watchdog."""
@@ -562,7 +536,6 @@ async def test_open_read_stream_fifo_rejected_without_hanging(fresh_manager, tmp
     assert not isinstance(excinfo.value, asyncio.TimeoutError), "open_read_stream HUNG on a FIFO"
 
 
-@pytest.mark.asyncio
 async def test_open_read_stream_fd_not_leaked_on_aborted_stream(fresh_manager, tmp_path, monkeypatch):
     """If a consumer aborts mid-stream (closes the generator), the underlying
     file descriptor must be released in the generator's finally block."""
@@ -591,7 +564,6 @@ async def test_open_read_stream_fd_not_leaked_on_aborted_stream(fresh_manager, t
         assert fds_after <= fds_before + 1, "file descriptor leaked across aborted stream"
 
 
-@pytest.mark.asyncio
 async def test_open_read_stream_hidden_target_404(fresh_manager, tmp_path, monkeypatch):
     base = tmp_path / "share"
     base.mkdir()
@@ -605,7 +577,6 @@ async def test_open_read_stream_hidden_target_404(fresh_manager, tmp_path, monke
 # ── EACCES handling ───────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_list_entries_eacces_propagates_permission_error(fresh_manager, tmp_path, monkeypatch):
     """An unreadable subdirectory surfaces as PermissionError (→ router 403)."""
     if os.geteuid() == 0:

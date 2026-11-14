@@ -44,7 +44,6 @@ async def _get_mutes(client, token):
 # ── CRUD ─────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_list_mutes_empty(client, admin_token):
     assert await _get_mutes(client, admin_token) == {
         "global_muted_until": None,
@@ -52,7 +51,6 @@ async def test_list_mutes_empty(client, admin_token):
     }
 
 
-@pytest.mark.asyncio
 async def test_create_resource_mute_and_list(client, admin_token):
     until = _future(hours=2)
     resp = await _put_mute(
@@ -70,7 +68,6 @@ async def test_create_resource_mute_and_list(client, admin_token):
     ]
 
 
-@pytest.mark.asyncio
 async def test_global_mute_reported_at_top_level(client, admin_token):
     resp = await _put_mute(
         client, admin_token, resource_type="global", resource_id="", muted_until=_future(hours=1)
@@ -82,7 +79,6 @@ async def test_global_mute_reported_at_top_level(client, admin_token):
     assert [m["resource_type"] for m in body["mutes"]] == ["global"]
 
 
-@pytest.mark.asyncio
 async def test_upsert_replaces_existing_window(client, admin_token, seeded_db):
     await _put_mute(
         client, admin_token, resource_type="nas", resource_id="reports", muted_until=_future(hours=1)
@@ -101,7 +97,6 @@ async def test_upsert_replaces_existing_window(client, admin_token, seeded_db):
     assert len(rows) == 1
 
 
-@pytest.mark.asyncio
 async def test_delete_mute(client, admin_token):
     await _put_mute(
         client, admin_token, resource_type="route", resource_id="r-1", muted_until=_future(hours=1)
@@ -115,7 +110,6 @@ async def test_delete_mute(client, admin_token):
     assert (await _get_mutes(client, admin_token))["mutes"] == []
 
 
-@pytest.mark.asyncio
 async def test_delete_unknown_mute_is_noop(client, admin_token):
     resp = await client.delete(
         MUTES_URL,
@@ -125,7 +119,6 @@ async def test_delete_unknown_mute_is_noop(client, admin_token):
     assert resp.status_code == 204
 
 
-@pytest.mark.asyncio
 async def test_listing_does_not_write_when_nothing_expired(seeded_db):
     """A read-path DELETE would take SQLite's writer lock on every listing."""
     from app.services import alert_mutes
@@ -148,7 +141,6 @@ async def test_listing_does_not_write_when_nothing_expired(seeded_db):
     assert [m.resource_id for m in rows] == ["live"]
 
 
-@pytest.mark.asyncio
 async def test_purge_reports_how_many_it_removed(seeded_db):
     from app.services import alert_mutes
 
@@ -167,7 +159,6 @@ async def test_purge_reports_how_many_it_removed(seeded_db):
         assert await alert_mutes.purge_expired_mutes(db) == 0
 
 
-@pytest.mark.asyncio
 async def test_expired_mutes_are_pruned_lazily(client, admin_token, seeded_db):
     session_factory = async_sessionmaker(seeded_db, class_=AsyncSession, expire_on_commit=False)
     async with session_factory() as db:
@@ -194,7 +185,6 @@ async def test_expired_mutes_are_pruned_lazily(client, admin_token, seeded_db):
         ({"resource_type": "db", "resource_id": "", "muted_until": "OK"}, "required"),
     ],
 )
-@pytest.mark.asyncio
 async def test_put_mute_validation(client, admin_token, body, detail_fragment):
     replacements = {
         "PAST": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
@@ -207,7 +197,6 @@ async def test_put_mute_validation(client, admin_token, body, detail_fragment):
     assert detail_fragment in resp.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_reader_can_list_but_not_mutate(client, alerts_reader_token):
     assert (await client.get(MUTES_URL, headers=auth_header(alerts_reader_token))).status_code == 200
     resp = await client.put(
@@ -227,7 +216,6 @@ async def test_reader_can_list_but_not_mutate(client, alerts_reader_token):
 # ── Status reporting ─────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_status_reports_target_and_global_mutes(client, admin_token):
     state = AlertStateManager()
     for _ in range(2):
@@ -261,7 +249,6 @@ async def test_status_reports_target_and_global_mutes(client, admin_token):
         alerts_router.set_alert_state(None)
 
 
-@pytest.mark.asyncio
 async def test_status_lists_healthy_targets_too(client, admin_token):
     """The dashboard counts "N tracked" from status rows, so a healthy target
     must still produce one — for every rule, not just the ones firing."""
@@ -290,7 +277,6 @@ async def test_status_lists_healthy_targets_too(client, admin_token):
     assert rows[("external_service_down", "orders")]["resource_type"] == "service"
 
 
-@pytest.mark.asyncio
 async def test_status_row_for_an_unmappable_rule_has_no_mute_key(client, admin_token):
     """A legacy/unknown rule renders without a mute button rather than guessing."""
     state = AlertStateManager()
@@ -308,7 +294,6 @@ async def test_status_row_for_an_unmappable_rule_has_no_mute_key(client, admin_t
     assert row["resource_id"] is None
 
 
-@pytest.mark.asyncio
 async def test_status_target_stays_the_display_label(client, admin_token):
     """``target`` is a label; ``resource_id`` is the addressable key."""
     state = AlertStateManager()
@@ -331,7 +316,6 @@ async def test_status_target_stays_the_display_label(client, admin_token):
     assert row["resource_id"] == "r-1"
 
 
-@pytest.mark.asyncio
 async def test_global_mute_round_trips_with_an_empty_resource_id(client, admin_token):
     resp = await _put_mute(
         client, admin_token, resource_type="global", resource_id="", muted_until=_future(hours=1)
@@ -348,7 +332,6 @@ async def test_global_mute_round_trips_with_an_empty_resource_id(client, admin_t
     assert (await _get_mutes(client, admin_token))["global_muted_until"] is None
 
 
-@pytest.mark.asyncio
 async def test_global_mute_delete_without_the_resource_id_param(client, admin_token):
     """``resource_id`` defaults to "" so the param may be omitted entirely."""
     await _put_mute(
@@ -445,7 +428,6 @@ async def _run_db_cycle(
     return dispatch
 
 
-@pytest.mark.asyncio
 async def test_trigger_while_muted_is_withheld_but_state_still_flips():
     state = AlertStateManager()
     dispatch = await _run_db_cycle(state, healthy=False, mutes=_muted("db", "mydb"))
@@ -455,7 +437,6 @@ async def test_trigger_while_muted_is_withheld_but_state_still_flips():
     assert state.get_pending_notify("db_health", "mydb") is True
 
 
-@pytest.mark.asyncio
 async def test_global_mute_withholds_every_target():
     state = AlertStateManager()
     global_mute = MuteIndex(global_until=datetime.now(timezone.utc) + timedelta(hours=1))
@@ -465,7 +446,6 @@ async def test_global_mute_withholds_every_target():
     assert state.get_pending_notify("db_health", "mydb") is True
 
 
-@pytest.mark.asyncio
 async def test_still_firing_after_mute_expiry_notifies_next_cycle():
     state = AlertStateManager()
     await _run_db_cycle(state, healthy=False, mutes=_muted("db", "mydb"))
@@ -486,7 +466,6 @@ async def test_still_firing_after_mute_expiry_notifies_next_cycle():
     dispatch.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_resolve_while_muted_sends_nothing_and_clears_the_flag():
     state = AlertStateManager()
     await _run_db_cycle(state, healthy=False, mutes=_muted("db", "mydb"))
@@ -503,7 +482,6 @@ async def test_resolve_while_muted_sends_nothing_and_clears_the_flag():
     dispatch.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_resolve_right_after_mute_expiry_stays_silent():
     """The trigger was never announced, so neither is the recovery."""
     state = AlertStateManager()
@@ -515,7 +493,6 @@ async def test_resolve_right_after_mute_expiry_stays_silent():
     assert state.get_pending_notify("db_health", "mydb") is False
 
 
-@pytest.mark.asyncio
 async def test_recovery_of_an_announced_incident_beats_the_mute():
     """Muting after being paged must not strand the incident open."""
     state = AlertStateManager()
@@ -529,7 +506,6 @@ async def test_recovery_of_an_announced_incident_beats_the_mute():
     assert dispatch.await_args.kwargs["alert_type"] == "resolved"
 
 
-@pytest.mark.asyncio
 async def test_recovery_of_an_announced_incident_beats_a_global_mute():
     state = AlertStateManager()
     await _run_db_cycle(state, healthy=False)
@@ -541,7 +517,6 @@ async def test_recovery_of_an_announced_incident_beats_a_global_mute():
     assert dispatch.await_args.kwargs["alert_type"] == "resolved"
 
 
-@pytest.mark.asyncio
 async def test_deferred_trigger_is_not_announced_during_a_recovery_streak():
     """Mute deferral meets recovery damping, end to end: the owed trigger waits
     for a cycle where the target is failing rather than describing it as down
@@ -646,7 +621,6 @@ def test_deferred_trigger_fires_once_the_target_is_failing_again():
     assert state.get_pending_notify("db_health", "mydb") is False
 
 
-@pytest.mark.asyncio
 async def test_repeat_cadence_reminder_muted_then_resolved_still_notifies(monkeypatch):
     """End-to-end version of the reminder case, through the host-signal path
     that actually passes ``repeat_after_cycles``."""
@@ -696,7 +670,6 @@ async def test_repeat_cadence_reminder_muted_then_resolved_still_notifies(monkey
     assert dispatch.await_args.kwargs["alert_type"] == "resolved"
 
 
-@pytest.mark.asyncio
 async def test_unmuted_target_notifies_normally():
     state = AlertStateManager()
     dispatch = await _run_db_cycle(state, healthy=False)
@@ -708,14 +681,12 @@ async def test_unmuted_target_notifies_normally():
     assert dispatch.await_args.kwargs["alert_type"] == "resolved"
 
 
-@pytest.mark.asyncio
 async def test_mute_on_a_different_target_does_not_suppress():
     state = AlertStateManager()
     dispatch = await _run_db_cycle(state, healthy=False, mutes=_muted("db", "someone-else"))
     dispatch.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_pending_notify_survives_a_restart(db_session):
     """The flag lives on the alert_state row, not only in memory."""
     from app.services.alert_state import load_alert_state_from_db, save_alert_state_to_db
@@ -730,7 +701,6 @@ async def test_pending_notify_survives_a_restart(db_session):
     assert reloaded.get_pending_notify("db_health", "mydb") is True
 
 
-@pytest.mark.asyncio
 async def test_load_mute_index_survives_a_broken_table(caplog):
     """Alerting must keep notifying when the mute table cannot be read."""
     from app.services import alert_mutes
@@ -743,7 +713,6 @@ async def test_load_mute_index_survives_a_broken_table(caplog):
     assert "Failed to load alert mutes" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_load_mute_index_reads_active_rows(seeded_db):
     from app.services import alert_mutes
 
@@ -770,7 +739,6 @@ async def test_load_mute_index_reads_active_rows(seeded_db):
 # ── Audit ────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
 async def test_lost_insert_race_is_audited_as_an_update(client, admin_token, seeded_db, app):
     """Losing the insert race means updating somebody else's row, and the audit
     entry must say so rather than claiming a create with an empty before."""
@@ -833,7 +801,6 @@ async def test_lost_insert_race_is_audited_as_an_update(client, admin_token, see
     assert before["muted_until"].startswith(rival_until.isoformat()[:19])
 
 
-@pytest.mark.asyncio
 async def test_mute_mutations_are_audited(client, admin_token):
     until = _future(hours=2)
     await _put_mute(client, admin_token, resource_type="db", resource_id="d1", muted_until=until)

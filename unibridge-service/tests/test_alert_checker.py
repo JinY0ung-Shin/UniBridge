@@ -79,7 +79,6 @@ def isolated_route_caches():
 
 
 class TestAlertChecker:
-    @pytest.mark.asyncio
     async def test_db_health_triggered(self):
         state = AlertStateManager()
         # Seed fail_count=1 so the next unhealthy observation crosses N=2.
@@ -104,7 +103,6 @@ class TestAlertChecker:
             assert kwargs["message"] == "Database 'mydb' connection failed."
             assert kwargs["display_target"] == "mydb"
 
-    @pytest.mark.asyncio
     async def test_db_health_resolved(self):
         state = AlertStateManager()
         state.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
@@ -129,7 +127,6 @@ class TestAlertChecker:
             assert kwargs["message"] == "Database 'mydb' connection restored."
             assert kwargs["display_target"] == "mydb"
 
-    @pytest.mark.asyncio
     async def test_db_health_resolve_damping_needs_two_healthy_cycles(self):
         """resolve_after_successes reaches every rule through run_single_check."""
         state = AlertStateManager()
@@ -156,7 +153,6 @@ class TestAlertChecker:
         dispatch.assert_called_once()
         assert dispatch.call_args.kwargs["alert_type"] == "resolved"
 
-    @pytest.mark.asyncio
     async def test_nas_health_triggered(self):
         state = AlertStateManager()
         # Seed fail_count=1 so the next unhealthy observation crosses N=2.
@@ -183,7 +179,6 @@ class TestAlertChecker:
             assert kwargs["message"] == "NAS connection 'reports-nas' is unavailable."
             assert kwargs["display_target"] == "reports-nas"
 
-    @pytest.mark.asyncio
     async def test_no_dispatch_when_no_transition(self):
         state = AlertStateManager()
 
@@ -198,7 +193,6 @@ class TestAlertChecker:
 
             mock_dispatch.assert_not_called()
 
-    @pytest.mark.asyncio
     async def test_upstream_health_triggered(self):
         state = AlertStateManager()
         # Seed fail_count=1 so the next unhealthy observation crosses N=2.
@@ -223,7 +217,6 @@ class TestAlertChecker:
             assert kwargs["message"] == "Upstream 'order-svc' is down (no reachable node)."
             assert kwargs["display_target"] == "order-svc"
 
-    @pytest.mark.asyncio
     async def test_upstream_with_no_weighted_nodes_says_so(self):
         """An empty node map is a config fault, not an unreachable backend."""
         state = AlertStateManager()
@@ -246,7 +239,6 @@ class TestAlertChecker:
             assert kwargs["target"] == "order-svc"
             assert kwargs["monitor_label"] == "업스트림 헬스체크"
 
-    @pytest.mark.asyncio
     async def test_upstream_recovery_message_is_unchanged(self):
         state = AlertStateManager()
         state.update("upstream_health", "order-svc", is_healthy=False, trigger_after_failures=1)
@@ -264,7 +256,6 @@ class TestAlertChecker:
             assert kwargs["alert_type"] == "resolved"
             assert kwargs["message"] == "Upstream 'order-svc' recovered."
 
-    @pytest.mark.asyncio
     async def test_upstream_alert_copies_and_names_the_routes_it_serves(self):
         """Upstreams have no assignees, so the routes on them supply the people."""
         from app.services import alert_checker
@@ -291,7 +282,6 @@ class TestAlertChecker:
             " Affected routes: Route One, r2."
         )
 
-    @pytest.mark.asyncio
     async def test_upstream_recovery_also_names_the_affected_routes(self):
         from app.services import alert_checker
 
@@ -316,7 +306,6 @@ class TestAlertChecker:
             "Upstream 'order-svc' recovered. Affected routes: Route One, r2."
         )
 
-    @pytest.mark.asyncio
     async def test_upstream_alert_survives_a_broken_route_mapping(self):
         """A mapping failure degrades to the admin-only alert, never blocks it."""
         state = AlertStateManager()
@@ -338,7 +327,6 @@ class TestAlertChecker:
         assert kwargs["assignee_refs"] == []
         assert kwargs["message"] == "Upstream 'order-svc' is down (no reachable node)."
 
-    @pytest.mark.asyncio
     async def test_upstream_health_dispatch_includes_name_in_display(self):
         from app.services import alert_checker
 
@@ -366,7 +354,6 @@ class TestAlertChecker:
         finally:
             alert_checker._UPSTREAM_NAME_BY_ID = {}
 
-    @pytest.mark.asyncio
     async def test_initial_unhealthy_db_cycle_is_silent_then_dispatches_if_still_down(self):
         state = AlertStateManager()
 
@@ -387,7 +374,6 @@ class TestAlertChecker:
             assert mock_dispatch.call_args.kwargs["target"] == "boot-db"
             assert state.get_status("db_health", "boot-db") == "alert"
 
-    @pytest.mark.asyncio
     async def test_initial_unhealthy_db_recovery_does_not_send_resolved_without_trigger(self):
         state = AlertStateManager()
 
@@ -404,7 +390,6 @@ class TestAlertChecker:
         mock_dispatch.assert_not_called()
         assert state.get_status("db_health", "boot-db") == "ok"
 
-    @pytest.mark.asyncio
     async def test_route_error_rate_dispatches_alert_with_route_context(self):
         state = AlertStateManager()
         # Seed fail_count=1 (state keyed by the plain route_id) so the next
@@ -442,7 +427,6 @@ class TestAlertChecker:
         assert kwargs["threshold"] == 10.0
         assert kwargs["monitor_label"] == "라우트 에러율"
 
-    @pytest.mark.asyncio
     async def test_route_error_rate_maps_name_label_back_to_route_id(self):
         """With APISIX prefer_name the Prometheus route label carries the route
         *name*; alert state and per-resource recipients stay keyed by id."""
@@ -477,7 +461,6 @@ class TestAlertChecker:
         assert kwargs["target"] == "route-a"
         assert kwargs["display_target"] == "checkout (route-a)"
 
-    @pytest.mark.asyncio
     async def test_route_error_rate_merges_old_and_new_labels_after_rename(self):
         """Right after a rename Prometheus reports the same route under both
         the old (id) and new (name) label for one window; the rows must merge
@@ -516,7 +499,6 @@ class TestAlertChecker:
         assert kwargs["resource_id"] == "route-a"
         assert kwargs["rate"] == 10.0
 
-    @pytest.mark.asyncio
     async def test_route_error_rate_uses_settings_threshold(self):
         state = AlertStateManager()
         # Seed fail_count=1 so the next unhealthy observation crosses N=2.
@@ -544,7 +526,6 @@ class TestAlertChecker:
         assert kwargs["threshold"] == 3.0
         assert "threshold: 3.0%" in kwargs["message"]
 
-    @pytest.mark.asyncio
     async def test_route_error_rate_below_threshold_does_not_dispatch(self):
         state = AlertStateManager()
         # Seed fail_count=1; but a healthy (below-threshold) reading resets it.
@@ -570,7 +551,6 @@ class TestAlertChecker:
         mock_dispatch.assert_not_called()
         assert state.get_status("route_error_rate", "route-a") == "ok"
 
-    @pytest.mark.asyncio
     async def test_route_error_rate_below_min_requests_does_not_dispatch(self):
         """A high error rate on a low-traffic route must not trigger an alert."""
         state = AlertStateManager()
@@ -598,7 +578,6 @@ class TestAlertChecker:
         mock_dispatch.assert_not_called()
         assert state.get_status("route_error_rate", "route-a") == "ok"
 
-    @pytest.mark.asyncio
     async def test_start_checker_schedules_from_cycle_start_to_avoid_drift(self):
         from app.services import alert_checker
 
@@ -620,7 +599,6 @@ class TestAlertChecker:
 
         assert sleep_delays == [45.0]
 
-    @pytest.mark.asyncio
     async def test_start_checker_uses_configured_check_interval(self):
         from app.services import alert_checker
 
@@ -642,7 +620,6 @@ class TestAlertChecker:
 
         assert sleep_delays == [75.0]
 
-    @pytest.mark.asyncio
     async def test_get_check_interval_seconds_reads_alert_settings(self):
         from app.services import alert_checker
 
@@ -653,7 +630,6 @@ class TestAlertChecker:
 
 
 class TestCheckRouteErrorRate:
-    @pytest.mark.asyncio
     async def test_computes_rate_per_route_with_resolved_zero(self):
         """Routes with traffic but no 5xx should yield rate=0 (not disappear)."""
         from app.services.alert_checker import _check_route_error_rate
@@ -684,7 +660,6 @@ class TestCheckRouteErrorRate:
         assert counts["r1"] == pytest.approx(20.0)   # sample_count = request volume
         assert counts["r2"] == pytest.approx(10.0)
 
-    @pytest.mark.asyncio
     async def test_returns_empty_when_no_traffic(self):
         from app.services.alert_checker import _check_route_error_rate
         with patch(
@@ -694,7 +669,6 @@ class TestCheckRouteErrorRate:
             results = await _check_route_error_rate()
         assert results == []
 
-    @pytest.mark.asyncio
     async def test_prometheus_failure_returns_none(self):
         from app.services.alert_checker import _check_route_error_rate
         with patch(
@@ -704,7 +678,6 @@ class TestCheckRouteErrorRate:
             results = await _check_route_error_rate()
         assert results is None
 
-    @pytest.mark.asyncio
     async def test_prometheus_up_gauge_flips_on_failure_and_success(self):
         """#48(b): the checker's Prometheus liveness gauge tracks its query."""
         from prometheus_client import REGISTRY
@@ -726,7 +699,6 @@ class TestCheckRouteErrorRate:
             assert await _check_route_error_rate() == []
         assert REGISTRY.get_sample_value("unibridge_alert_checker_prometheus_up") == 1.0
 
-    @pytest.mark.asyncio
     async def test_route_error_rate_resolves_active_alert_when_route_has_no_traffic(self):
         state = AlertStateManager()
         # Drive the route (keyed by plain route_id) into an active alert.
@@ -775,7 +747,6 @@ class TestCheckRouteErrorRate:
 
 
 class TestRouteLabelCache:
-    @pytest.mark.asyncio
     async def test_label_falls_back_to_id_on_miss(self):
         from app.services import alert_checker
         # Force fresh cache with one known mapping
@@ -788,7 +759,6 @@ class TestRouteLabelCache:
             alert_checker._ROUTE_LABEL_CACHE = {}
             alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
 
-    @pytest.mark.asyncio
     async def test_refresh_prefers_name_then_uri_then_id(self):
         from app.services import alert_checker
         alert_checker._ROUTE_LABEL_CACHE = {}
@@ -812,7 +782,6 @@ class TestRouteLabelCache:
             alert_checker._ROUTE_ID_BY_NAME = {}
             alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
 
-    @pytest.mark.asyncio
     async def test_refresh_indexes_route_ids_by_shared_upstream(self):
         """Routes with an inline upstream have no shared upstream to be alerted on."""
         from app.services import alert_checker
@@ -834,7 +803,6 @@ class TestRouteLabelCache:
         assert await alert_checker._get_route_ids_for_upstream("u1") == ["r1", "r2"]
         assert await alert_checker._get_route_ids_for_upstream("unknown") == []
 
-    @pytest.mark.asyncio
     async def test_route_ids_for_upstream_returns_a_copy(self):
         """Callers build assignee refs from it; mutating the cache would poison
         every later cycle."""
@@ -846,7 +814,6 @@ class TestRouteLabelCache:
 
         assert alert_checker._ROUTE_IDS_BY_UPSTREAM == {"u1": ["r1"]}
 
-    @pytest.mark.asyncio
     async def test_refresh_builds_reverse_name_map_skipping_collisions(self):
         from app.services import alert_checker
         alert_checker._ROUTE_LABEL_CACHE = {}
@@ -872,7 +839,6 @@ class TestRouteLabelCache:
             alert_checker._ROUTE_ID_BY_NAME = {}
             alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
 
-    @pytest.mark.asyncio
     async def test_resolve_route_id_translates_known_name(self):
         """prefer_name puts the route *name* in the Prometheus label; state and
         recipient lookups must stay keyed by route id."""
@@ -889,7 +855,6 @@ class TestRouteLabelCache:
             alert_checker._ROUTE_ID_BY_NAME = {}
             alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
 
-    @pytest.mark.asyncio
     async def test_refresh_failure_still_advances_ts(self):
         """APISIX outage must not cause per-call refresh storm:
         TS updates in finally block so TTL governs retry cadence."""
@@ -908,7 +873,6 @@ class TestRouteLabelCache:
             alert_checker._ROUTE_LABEL_CACHE = {}
             alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
 
-    @pytest.mark.asyncio
     async def test_never_refreshed_cache_refreshes_right_after_host_boot(self):
         """_monotonic() counts from host boot: seconds after a reboot the
         never-refreshed cache must still refresh, or the first cycles resolve
@@ -923,7 +887,6 @@ class TestRouteLabelCache:
             assert await checker._get_route_label("r1") == "orders"
         assert list_mock.await_count == 1  # refreshed once, then fresh within TTL
 
-    @pytest.mark.asyncio
     async def test_get_route_label_skips_refresh_within_ttl_after_failure(self):
         """After a failed refresh, subsequent calls within TTL must NOT
         re-fetch — otherwise N routes = N APISIX calls/cycle."""
@@ -951,7 +914,6 @@ class TestRouteLabelCache:
             alert_checker._ROUTE_LABEL_CACHE_TS = 0.0
 
 
-@pytest.mark.asyncio
 async def test_run_single_check_respects_trigger_after_failures(monkeypatch, seeded_db):
     """With N=3, two consecutive unhealthy cycles must not dispatch; the third does."""
     from app.services import alert_checker
@@ -990,7 +952,6 @@ async def test_run_single_check_respects_trigger_after_failures(monkeypatch, see
 
 
 class TestExternalServiceHealth:
-    @pytest.mark.asyncio
     async def test_external_service_down_dispatches(self):
         from app.services.alert_checker import _check_service_health
         from app.services.server_monitor import ServiceSignal
@@ -1023,7 +984,6 @@ class TestExternalServiceHealth:
         assert kwargs["severity"] == "critical"
         assert kwargs["target_description"] == "Order API"
 
-    @pytest.mark.asyncio
     async def test_no_enabled_services_no_dispatch(self):
         from app.services.alert_checker import _check_service_health
 
@@ -1050,7 +1010,6 @@ class TestUpstreamReachabilityProbe:
     through the dict guard into a permanent false "down".
     """
 
-    @pytest.mark.asyncio
     async def test_unreachable_node_is_unhealthy(self):
         import httpx
         from app.services import alert_checker
@@ -1065,7 +1024,6 @@ class TestUpstreamReachabilityProbe:
 
         assert result == [("orders", False, "unreachable")]
 
-    @pytest.mark.asyncio
     async def test_reachable_node_is_healthy(self):
         import httpx
         from app.services import alert_checker
@@ -1084,7 +1042,6 @@ class TestUpstreamReachabilityProbe:
         assert result == [("orders", True, None)]
         assert seen == ["http://orders-api:8080/health"]
 
-    @pytest.mark.asyncio
     async def test_any_http_status_counts_as_reachable(self):
         """A 404 on /health still proves the port is open and speaking HTTP."""
         import httpx
@@ -1100,7 +1057,6 @@ class TestUpstreamReachabilityProbe:
 
         assert result == [("orders", True, None)]
 
-    @pytest.mark.asyncio
     async def test_timeout_is_unhealthy(self):
         import httpx
         from app.services import alert_checker
@@ -1115,7 +1071,6 @@ class TestUpstreamReachabilityProbe:
 
         assert result == [("orders", False, "unreachable")]
 
-    @pytest.mark.asyncio
     async def test_list_form_nodes_are_probed_instead_of_reported_down(self):
         """Regression: list-form ``nodes`` used to be a permanent false "down"."""
         import httpx
@@ -1139,7 +1094,6 @@ class TestUpstreamReachabilityProbe:
         assert result == [("orders", True, None)]
         assert seen == ["http://orders-api:8080/health"]
 
-    @pytest.mark.asyncio
     async def test_list_form_nodes_still_report_down_when_unreachable(self):
         import httpx
         from app.services import alert_checker
@@ -1158,7 +1112,6 @@ class TestUpstreamReachabilityProbe:
 
         assert result == [("orders", False, "unreachable")]
 
-    @pytest.mark.asyncio
     async def test_one_reachable_node_is_enough(self):
         import httpx
         from app.services import alert_checker
@@ -1176,7 +1129,6 @@ class TestUpstreamReachabilityProbe:
 
         assert result == [("orders", True, None)]
 
-    @pytest.mark.asyncio
     async def test_upstream_without_weighted_nodes_is_unhealthy(self):
         import httpx
         from app.services import alert_checker
@@ -1191,7 +1143,6 @@ class TestUpstreamReachabilityProbe:
 
         assert result == [("orders", False, "no_nodes")]
 
-    @pytest.mark.asyncio
     async def test_non_http_upstream_with_nodes_is_healthy_without_probing(self):
         """A GET against a grpc/tcp/kafka port proves nothing, so it is not sent.
 
@@ -1212,7 +1163,6 @@ class TestUpstreamReachabilityProbe:
                 )
             assert result == [("orders", True, None)], scheme
 
-    @pytest.mark.asyncio
     async def test_non_http_upstream_without_weighted_nodes_is_unhealthy(self):
         import httpx
         from app.services import alert_checker
@@ -1232,7 +1182,6 @@ class TestUpstreamReachabilityProbe:
 
         assert result == [("orders", False, "no_nodes")]
 
-    @pytest.mark.asyncio
     async def test_every_upstream_is_probed_on_health(self):
         import httpx
         from app.services import alert_checker
@@ -1243,15 +1192,14 @@ class TestUpstreamReachabilityProbe:
             seen.append(request.url.path)
             return httpx.Response(200)
 
-        # Even an upstream left over from LiteLLM: /health/liveliness was its own.
-        with _upstream_listing({"id": "litellm", "nodes": {"litellm:4000": 1}}):
+        # One path for every upstream, whatever its own health endpoint is called.
+        with _upstream_listing({"id": "orders", "nodes": {"orders:4000": 1}}):
             await alert_checker._check_upstream_health(
                 transport=httpx.MockTransport(handler)
             )
 
         assert seen == ["/health"]
 
-    @pytest.mark.asyncio
     async def test_host_header_follows_pass_host_node(self):
         import httpx
         from app.services import alert_checker
@@ -1275,7 +1223,6 @@ class TestUpstreamReachabilityProbe:
 
         assert seen == ["orders-api"]
 
-    @pytest.mark.asyncio
     async def test_one_broken_upstream_does_not_abort_the_others(self):
         """A probe raising outside the transport must not lose the whole list."""
         import httpx
@@ -1331,7 +1278,6 @@ class TestActiveInstanceGating:
                   new=AsyncMock(side_effect=stop_after_sleep)),
         )
 
-    @pytest.mark.asyncio
     async def test_standby_color_skips_the_check_but_keeps_its_cadence(self):
         from app.services import alert_checker
 
@@ -1353,7 +1299,6 @@ class TestActiveInstanceGating:
         # Still wakes on the normal interval, so a promotion is picked up fast.
         assert delays == [45.0]
 
-    @pytest.mark.asyncio
     async def test_active_color_runs_the_check(self):
         from app.services import alert_checker
 
@@ -1374,7 +1319,6 @@ class TestActiveInstanceGating:
         check.assert_awaited_once()
         assert delays == [45.0]
 
-    @pytest.mark.asyncio
     async def test_promotion_is_picked_up_without_a_restart(self):
         """Standby → active between cycles must start checking on the next tick."""
         from app.services import alert_checker
@@ -1428,7 +1372,6 @@ class TestActiveInstanceGating:
                     p.stop()
         return calls
 
-    @pytest.mark.asyncio
     async def test_promotion_reloads_state_before_the_first_check(self):
         """A promoted standby must not check against the state it froze with."""
         calls = await self._run_loop(
@@ -1437,7 +1380,6 @@ class TestActiveInstanceGating:
         )
         assert calls == ["reload", "check", "check"]
 
-    @pytest.mark.asyncio
     async def test_active_from_boot_does_not_reload(self):
         """Boot already loaded the state; only a standby → active transition reloads."""
         calls = await self._run_loop(
@@ -1445,7 +1387,6 @@ class TestActiveInstanceGating:
         )
         assert calls == ["check", "check"]
 
-    @pytest.mark.asyncio
     async def test_failed_reload_skips_the_cycle_and_retries(self):
         calls = await self._run_loop(
             [False, True, True], [100.0, 115.0, 160.0, 175.0, 220.0, 235.0],
@@ -1453,7 +1394,6 @@ class TestActiveInstanceGating:
         )
         assert calls == ["reload", "reload", "check"]
 
-    @pytest.mark.asyncio
     async def test_demotion_and_repromotion_reloads_again(self):
         calls = await self._run_loop(
             [True, False, True],
@@ -1462,7 +1402,6 @@ class TestActiveInstanceGating:
         )
         assert calls == ["check", "reload", "check"]
 
-    @pytest.mark.asyncio
     async def test_daily_gpu_report_runs_only_on_the_active_color(self):
         from app.services import alert_checker
 
@@ -1484,7 +1423,6 @@ class TestActiveInstanceGating:
                     p.stop()
             assert report.await_count == expected
 
-    @pytest.mark.asyncio
     async def test_report_and_health_checks_cannot_break_each_other(self):
         """Each runs in its own try, so one failing never skips the other."""
         from app.services import alert_checker
@@ -1533,7 +1471,6 @@ class TestFailedDispatchRearm:
                   new=AsyncMock(return_value=dispatch_result)),
         )
 
-    @pytest.mark.asyncio
     async def test_failed_trigger_is_reannounced_next_cycle(self):
         state = AlertStateManager()
         # Seed fail_count=1 so the first cycle crosses N=2 and triggers.
@@ -1553,7 +1490,6 @@ class TestFailedDispatchRearm:
             assert mock_dispatch.await_args.kwargs["alert_type"] == "triggered"
             assert state.get_pending_notify("db_health", "mydb") is True
 
-    @pytest.mark.asyncio
     async def test_successful_trigger_is_not_reannounced(self):
         state = AlertStateManager()
         state.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
@@ -1566,7 +1502,6 @@ class TestFailedDispatchRearm:
             # No re-announcement: the first delivery succeeded.
             assert mock_dispatch.await_count == 1
 
-    @pytest.mark.asyncio
     async def test_skipped_dispatch_is_not_treated_as_failure(self):
         state = AlertStateManager()
         state.update("db_health", "mydb", is_healthy=False, trigger_after_failures=2)
@@ -1579,7 +1514,6 @@ class TestFailedDispatchRearm:
             await run_single_check(state, trigger_after_failures=2)
             assert mock_dispatch.await_count == 1
 
-    @pytest.mark.asyncio
     async def test_failed_resolved_is_not_rearmed(self):
         state = AlertStateManager()
         # An announced, active alert (pending_notify False = already announced).

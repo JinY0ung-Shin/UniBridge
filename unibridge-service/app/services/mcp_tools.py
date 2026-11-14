@@ -102,6 +102,7 @@ SERVER_INSTRUCTIONS = (
     "GET /api/mcp/artifacts/<id> and the same API key; where the tool offers "
     "return_mode=resource, a small file instead comes back as a standard "
     "embedded resource, for an MCP host that saves those into the workspace. "
+    "A file of the agent's own workspace is staged with stage_artifacts. "
     "upload_staged_artifacts sends staged artifacts to a gateway API as "
     "multipart/form-data, or as base64 text inside a JSON body for an API that "
     "takes a file that way: never write a file's base64 yourself. "

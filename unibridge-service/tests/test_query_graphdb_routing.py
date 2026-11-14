@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 import httpx
-import pytest
 
 from app.schemas import QueryResponse
 from tests.test_admin import _cm_patch, auth_header
@@ -79,7 +78,6 @@ def _patch_query_cm_db_type_only():
     )
 
 
-@pytest.mark.asyncio
 async def test_select_via_admin_token_returns_columns(client, admin_token):
     """Admin role executes SELECT against graphdb alias and gets bindings."""
     with _cm_patch("graphdb"):
@@ -99,7 +97,6 @@ async def test_select_via_admin_token_returns_columns(client, admin_token):
     assert data["rows"] == [["http://ex/a"]]
 
 
-@pytest.mark.asyncio
 async def test_ask_via_admin_token_returns_boolean(client, admin_token):
     with _cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-ask")
@@ -115,7 +112,6 @@ async def test_ask_via_admin_token_returns_boolean(client, admin_token):
     assert data["rows"] == [[True]]
 
 
-@pytest.mark.asyncio
 async def test_construct_via_admin_token_returns_graph(client, admin_token):
     with _cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-construct")
@@ -135,7 +131,6 @@ async def test_construct_via_admin_token_returns_graph(client, admin_token):
     assert data["rows"] == []
 
 
-@pytest.mark.asyncio
 async def test_insert_rejected_with_422(client, admin_token):
     """Write SPARQL must be rejected by statement-type detector before reaching upstream."""
     with _cm_patch("graphdb"):
@@ -163,7 +158,6 @@ async def test_insert_rejected_with_422(client, admin_token):
     assert "Unsupported SPARQL statement" in logs[0]["error_message"]
 
 
-@pytest.mark.asyncio
 async def test_write_sparql_template_returns_read_only_400(client, admin_token):
     with _cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-template")
@@ -182,7 +176,6 @@ async def test_write_sparql_template_returns_read_only_400(client, admin_token):
     assert "read-only" in resp.json()["detail"].lower()
 
 
-@pytest.mark.asyncio
 async def test_non_empty_params_rejected_with_422(client, admin_token):
     """GraphDB does not support bind parameters."""
     with _cm_patch("graphdb"):
@@ -201,7 +194,6 @@ async def test_non_empty_params_rejected_with_422(client, admin_token):
     assert "bind parameters" in resp.json()["detail"].lower()
 
 
-@pytest.mark.asyncio
 async def test_empty_params_allowed(client, admin_token):
     """Empty dict params is accepted (consistent with other backends)."""
     with _cm_patch("graphdb"):
@@ -219,7 +211,6 @@ async def test_empty_params_allowed(client, admin_token):
     assert resp.status_code == 200, resp.text
 
 
-@pytest.mark.asyncio
 async def test_validate_sql_skipped_for_graphdb(client, admin_token):
     """A SPARQL query that would trip the sqlglot blacklist if applied must pass for graphdb."""
     # First confirm the SPARQL string would fail validate_sql on a SQL backend:
@@ -248,7 +239,6 @@ async def test_validate_sql_skipped_for_graphdb(client, admin_token):
     assert resp.status_code == 200, resp.text
 
 
-@pytest.mark.asyncio
 async def test_extra_blocked_keywords_apply_to_graphdb(client, admin_token, monkeypatch):
     monkeypatch.setattr(
         "app.routers.query.settings_manager.blocked_sql_keywords",
@@ -274,7 +264,6 @@ async def test_extra_blocked_keywords_apply_to_graphdb(client, admin_token, monk
     assert "credit_card" in resp.json()["detail"].lower()
 
 
-@pytest.mark.asyncio
 async def test_graphdb_executor_http_exception_status_is_preserved(client, admin_token):
     """Executor HTTPException statuses must not be collapsed into generic 400."""
     with _cm_patch("graphdb"):
@@ -295,7 +284,6 @@ async def test_graphdb_executor_http_exception_status_is_preserved(client, admin
     assert resp.json()["detail"] == "too large"
 
 
-@pytest.mark.asyncio
 async def test_graphdb_executor_504_records_timeout(client, admin_token):
     with _cm_patch("graphdb"):
         await _register_graphdb(client, admin_token, "kg-slow")
@@ -334,7 +322,6 @@ async def test_graphdb_executor_504_records_timeout(client, admin_token):
     assert logs[0]["status"] == "timeout"
 
 
-@pytest.mark.asyncio
 async def test_timeout_override_forwarded_to_graphdb_executor(client, admin_token):
     execute_mock = AsyncMock(
         return_value=QueryResponse(

@@ -92,7 +92,6 @@ def _credentials(token: str):
     return type("Creds", (), {"credentials": token})()
 
 
-@pytest.mark.asyncio
 async def test_rs256_token_with_matching_kid_is_accepted(
     httpx_mock: HTTPXMock,
     make_jwks_key,
@@ -107,7 +106,6 @@ async def test_rs256_token_with_matching_kid_is_accepted(
     assert user.role == "admin"
 
 
-@pytest.mark.asyncio
 async def test_missing_kid_forces_jwks_refresh_and_accepts_rotated_key(
     httpx_mock: HTTPXMock,
     make_jwks_key,
@@ -123,7 +121,6 @@ async def test_missing_kid_forces_jwks_refresh_and_accepts_rotated_key(
     assert len(httpx_mock.get_requests(url=JWKS_URL)) == 2
 
 
-@pytest.mark.asyncio
 async def test_expired_keycloak_token_is_rejected(
     httpx_mock: HTTPXMock,
     make_jwks_key,
@@ -140,7 +137,6 @@ async def test_expired_keycloak_token_is_rejected(
     assert exc_info.value.detail == "Invalid or expired token"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("issuer", "audience"),
     [
@@ -166,7 +162,6 @@ async def test_wrong_issuer_or_audience_is_rejected(
     assert exc_info.value.detail == "Invalid or expired token"
 
 
-@pytest.mark.asyncio
 async def test_hs256_token_is_rejected_in_keycloak_mode(
     httpx_mock: HTTPXMock,
     make_jwks_key,
@@ -181,7 +176,6 @@ async def test_hs256_token_is_rejected_in_keycloak_mode(
     assert exc_info.value.detail == "Invalid or expired token"
 
 
-@pytest.mark.asyncio
 async def test_none_algorithm_token_is_rejected_in_keycloak_mode(
     httpx_mock: HTTPXMock,
     make_jwks_key,
@@ -204,7 +198,6 @@ async def test_none_algorithm_token_is_rejected_in_keycloak_mode(
     assert exc_info.value.detail == "Invalid or expired token"
 
 
-@pytest.mark.asyncio
 async def test_jwks_fetch_failure_uses_stale_cache_once_available(
     httpx_mock: HTTPXMock,
     make_jwks_key,
@@ -226,7 +219,6 @@ async def test_jwks_fetch_failure_uses_stale_cache_once_available(
     assert len(httpx_mock.get_requests(url=JWKS_URL)) == 2
 
 
-@pytest.mark.asyncio
 async def test_jwks_fetch_failure_without_cache_returns_502(
     httpx_mock: HTTPXMock,
     make_token,
@@ -240,7 +232,6 @@ async def test_jwks_fetch_failure_without_cache_returns_502(
     assert exc_info.value.detail == "Auth service unavailable"
 
 
-@pytest.mark.asyncio
 async def test_concurrent_verification_fetches_jwks_once(
     httpx_mock: HTTPXMock,
     make_jwks_key,
@@ -256,7 +247,6 @@ async def test_concurrent_verification_fetches_jwks_once(
     assert len(httpx_mock.get_requests(url=JWKS_URL)) == 1
 
 
-@pytest.mark.asyncio
 async def test_get_current_user_uses_keycloak_when_issuer_configured(
     httpx_mock: HTTPXMock,
     make_jwks_key,

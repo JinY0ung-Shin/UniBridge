@@ -51,7 +51,6 @@ def test_singleton_returns_same_instance():
     assert a is b
 
 
-@pytest.mark.asyncio
 async def test_add_and_remove_connection(fresh_manager):
     fake_client = MagicMock()
     with patch("app.services.s3_manager.boto3.client", return_value=fake_client) as boto:
@@ -71,7 +70,6 @@ async def test_add_and_remove_connection(fresh_manager):
     fake_client.close.assert_called_once()
 
 
-@pytest.mark.asyncio
 async def test_add_connection_replaces_existing(fresh_manager):
     first = MagicMock()
     second = MagicMock()
@@ -83,7 +81,6 @@ async def test_add_connection_replaces_existing(fresh_manager):
     assert fresh_manager.get_client("dup") is second
 
 
-@pytest.mark.asyncio
 async def test_remove_unknown_alias_is_noop(fresh_manager):
     await fresh_manager.remove_connection("does-not-exist")
     assert "does-not-exist" not in fresh_manager.list_aliases()
@@ -102,7 +99,6 @@ def test_has_connection_false(fresh_manager):
     assert fresh_manager.has_connection("missing") is False
 
 
-@pytest.mark.asyncio
 async def test_test_connection_default_bucket_success(fresh_manager):
     fake = MagicMock()
     fake.head_bucket.return_value = {}
@@ -114,7 +110,6 @@ async def test_test_connection_default_bucket_success(fresh_manager):
     fake.head_bucket.assert_called_once_with(Bucket="my-bucket")
 
 
-@pytest.mark.asyncio
 async def test_test_connection_no_default_bucket_uses_list_buckets(fresh_manager):
     fake = MagicMock()
     fake.list_buckets.return_value = {"Buckets": []}
@@ -125,7 +120,6 @@ async def test_test_connection_no_default_bucket_uses_list_buckets(fresh_manager
     fake.list_buckets.assert_called_once()
 
 
-@pytest.mark.asyncio
 async def test_test_connection_client_error(fresh_manager):
     fake = MagicMock()
     fake.list_buckets.side_effect = ClientError(
@@ -139,7 +133,6 @@ async def test_test_connection_client_error(fresh_manager):
     assert "InvalidAccessKey" in msg
 
 
-@pytest.mark.asyncio
 async def test_test_connection_client_error_no_code(fresh_manager):
     fake = MagicMock()
     fake.list_buckets.side_effect = ClientError(
@@ -153,7 +146,6 @@ async def test_test_connection_client_error_no_code(fresh_manager):
     assert msg == "Connection failed"
 
 
-@pytest.mark.asyncio
 async def test_test_connection_other_exception(fresh_manager):
     fake = MagicMock()
     fake.list_buckets.side_effect = RuntimeError("network gone")
@@ -164,7 +156,6 @@ async def test_test_connection_other_exception(fresh_manager):
     assert msg == "Connection failed"
 
 
-@pytest.mark.asyncio
 async def test_list_buckets_returns_normalized(fresh_manager):
     fake = MagicMock()
     fake.list_buckets.return_value = {
@@ -183,7 +174,6 @@ async def test_list_buckets_returns_normalized(fresh_manager):
     ]
 
 
-@pytest.mark.asyncio
 async def test_list_objects_with_continuation(fresh_manager):
     fake = MagicMock()
     fake.list_objects_v2.return_value = {
@@ -215,7 +205,6 @@ async def test_list_objects_with_continuation(fresh_manager):
     assert fake.list_objects_v2.call_args.kwargs["MaxKeys"] == 50
 
 
-@pytest.mark.asyncio
 async def test_list_objects_no_continuation(fresh_manager):
     fake = MagicMock()
     fake.list_objects_v2.return_value = {
@@ -259,7 +248,6 @@ async def _manager_with_pages(manager, alias, pages):
     return fake
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_follows_every_page(fresh_manager):
     fake = await _manager_with_pages(fresh_manager, "all", [
         _page(["a", "b"], token="t1", prefixes=["logs/"]),
@@ -281,7 +269,6 @@ async def test_list_all_objects_follows_every_page(fresh_manager):
     assert not fresh_manager._full_listing_slots().locked()
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_resumes_from_given_token(fresh_manager):
     fake = await _manager_with_pages(fresh_manager, "resume", [_page(["z"])])
 
@@ -290,7 +277,6 @@ async def test_list_all_objects_resumes_from_given_token(fresh_manager):
     assert fake.list_objects_v2.call_args.kwargs["ContinuationToken"] == "tok"
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_caps_entries_with_resume_token(fresh_manager, monkeypatch):
     monkeypatch.setattr(settings, "S3_LIST_ALL_MAX_KEYS", 1500)
     fake = await _manager_with_pages(fresh_manager, "cap", [
@@ -308,7 +294,6 @@ async def test_list_all_objects_caps_entries_with_resume_token(fresh_manager, mo
     assert [c.kwargs["MaxKeys"] for c in fake.list_objects_v2.call_args_list] == [1000, 500]
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_stops_at_time_budget(fresh_manager, monkeypatch):
     monkeypatch.setattr(settings, "S3_LIST_ALL_TIME_BUDGET_SECONDS", 0.0)
     fake = await _manager_with_pages(fresh_manager, "budget", [
@@ -324,7 +309,6 @@ async def test_list_all_objects_stops_at_time_budget(fresh_manager, monkeypatch)
     assert fake.list_objects_v2.call_count == 1
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_later_page_failure_keeps_partial(fresh_manager):
     await _manager_with_pages(fresh_manager, "partial", [
         _page(["a"], token="t1"),
@@ -338,7 +322,6 @@ async def test_list_all_objects_later_page_failure_keeps_partial(fresh_manager):
     assert res["next_continuation_token"] == "t1"
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_first_page_failure_raises(fresh_manager):
     await _manager_with_pages(
         fresh_manager,
@@ -351,7 +334,6 @@ async def test_list_all_objects_first_page_failure_raises(fresh_manager):
     assert not fresh_manager._full_listing_slots().locked()
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_truncated_without_token_stops(fresh_manager):
     tokenless = {"Contents": [{"Key": "a", "Size": 1}], "IsTruncated": True, "KeyCount": 1}
     # The larger retry is ignored too: the backend hands back the same page.
@@ -381,7 +363,6 @@ def _tokenless_backend(keys, ceiling=None):
     return list_page
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_tokenless_backend_gets_one_larger_page(fresh_manager):
     keys = [f"k{i:05d}" for i in range(2500)]
     fake = await _manager_with_pages(fresh_manager, "big", _tokenless_backend(keys))
@@ -396,7 +377,6 @@ async def test_list_all_objects_tokenless_backend_gets_one_larger_page(fresh_man
     assert all("ContinuationToken" not in c for c in calls)
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_tokenless_larger_page_is_bounded(fresh_manager, monkeypatch):
     monkeypatch.setattr(settings, "S3_LIST_ALL_TOKENLESS_MAX_KEYS", 1800)
     keys = [f"k{i:05d}" for i in range(2500)]
@@ -410,7 +390,6 @@ async def test_list_all_objects_tokenless_larger_page_is_bounded(fresh_manager, 
     assert [c.kwargs["MaxKeys"] for c in fake.list_objects_v2.call_args_list] == [1000, 1800]
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_tokenless_backend_capped_at_1000_stays_unresumable(fresh_manager):
     keys = [f"k{i:05d}" for i in range(2500)]
     fake = await _manager_with_pages(fresh_manager, "capped", _tokenless_backend(keys, ceiling=1000))
@@ -423,7 +402,6 @@ async def test_list_all_objects_tokenless_backend_capped_at_1000_stays_unresumab
     assert fake.list_objects_v2.call_count == 2
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_tokenless_mid_walk_retries_from_last_token(fresh_manager, monkeypatch):
     monkeypatch.setattr(settings, "S3_LIST_ALL_TOKENLESS_MAX_KEYS", 5000)
     keys = [f"k{i:05d}" for i in range(3000)]
@@ -449,7 +427,6 @@ async def test_list_all_objects_tokenless_mid_walk_retries_from_last_token(fresh
     assert calls == [(None, 1000), ("k00999", 1000), ("k00999", 5000)]
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_tokenless_complete_page_of_same_size_is_kept(fresh_manager):
     keys = [f"k{i:05d}" for i in range(1000)]
 
@@ -469,7 +446,6 @@ async def test_list_all_objects_tokenless_complete_page_of_same_size_is_kept(fre
     assert res["is_truncated"] is False
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_tokenless_retry_failure_keeps_the_page(fresh_manager):
     keys = [f"k{i:05d}" for i in range(2500)]
     tokenless = _tokenless_backend(keys)
@@ -488,7 +464,6 @@ async def test_list_all_objects_tokenless_retry_failure_keeps_the_page(fresh_man
     assert res["next_continuation_token"] is None
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_tokenless_retry_skipped_past_deadline(fresh_manager, monkeypatch):
     monkeypatch.setattr(settings, "S3_LIST_ALL_TIME_BUDGET_SECONDS", 0.0)
     keys = [f"k{i:05d}" for i in range(2500)]
@@ -501,7 +476,6 @@ async def test_list_all_objects_tokenless_retry_skipped_past_deadline(fresh_mana
     assert fake.list_objects_v2.call_count == 1
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_stops_when_token_does_not_advance(fresh_manager):
     fake = await _manager_with_pages(fresh_manager, "stuck", [
         _page(["a"], token="t1"),
@@ -518,7 +492,6 @@ async def test_list_all_objects_stops_when_token_does_not_advance(fresh_manager)
     assert fake.list_objects_v2.call_count == 2
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_resume_with_echoed_token_returns_nothing(fresh_manager):
     fake = await _manager_with_pages(fresh_manager, "echo", [_page(["a"], token="t1")])
 
@@ -530,7 +503,6 @@ async def test_list_all_objects_resume_with_echoed_token_returns_nothing(fresh_m
     assert fake.list_objects_v2.call_count == 1
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_slots_follow_a_size_change(fresh_manager, monkeypatch):
     monkeypatch.setattr(settings, "S3_LIST_ALL_MAX_CONCURRENT", 1)
     one = fresh_manager._full_listing_slots()
@@ -551,7 +523,6 @@ def _gated_pages(gate):
     return slow_page
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_queues_for_a_free_slot(fresh_manager, monkeypatch):
     monkeypatch.setattr(settings, "S3_LIST_ALL_MAX_CONCURRENT", 1)
     gate = threading.Event()
@@ -571,7 +542,6 @@ async def test_list_all_objects_queues_for_a_free_slot(fresh_manager, monkeypatc
     assert not fresh_manager._full_listing_slots().locked()
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_busy_when_no_slot_frees_within_budget(fresh_manager, monkeypatch):
     monkeypatch.setattr(settings, "S3_LIST_ALL_MAX_CONCURRENT", 1)
     monkeypatch.setattr(settings, "S3_LIST_ALL_TIME_BUDGET_SECONDS", 0.05)
@@ -590,7 +560,6 @@ async def test_list_all_objects_busy_when_no_slot_frees_within_budget(fresh_mana
     assert not fresh_manager._full_listing_slots().locked()
 
 
-@pytest.mark.asyncio
 async def test_list_all_objects_cancelled_walk_frees_its_slot(fresh_manager, monkeypatch):
     monkeypatch.setattr(settings, "S3_LIST_ALL_MAX_CONCURRENT", 1)
     gate = threading.Event()
@@ -609,7 +578,6 @@ async def test_list_all_objects_cancelled_walk_frees_its_slot(fresh_manager, mon
         gate.set()
 
 
-@pytest.mark.asyncio
 async def test_get_object_metadata_normalized(fresh_manager):
     fake = MagicMock()
     fake.head_object.return_value = {
@@ -629,7 +597,6 @@ async def test_get_object_metadata_normalized(fresh_manager):
     assert md["metadata"] == {"foo": "bar"}
 
 
-@pytest.mark.asyncio
 async def test_get_object_metadata_no_lastmodified(fresh_manager):
     fake = MagicMock()
     fake.head_object.return_value = {"ContentLength": 1, "ContentType": "x"}
@@ -640,7 +607,6 @@ async def test_get_object_metadata_no_lastmodified(fresh_manager):
     assert md["metadata"] == {}
 
 
-@pytest.mark.asyncio
 async def test_get_object_passthrough(fresh_manager):
     fake = MagicMock()
     fake.get_object.return_value = {"Body": "stream", "ContentLength": 4}
@@ -651,7 +617,6 @@ async def test_get_object_passthrough(fresh_manager):
     fake.get_object.assert_called_once_with(Bucket="b", Key="k")
 
 
-@pytest.mark.asyncio
 async def test_generate_presigned_url(fresh_manager):
     fake = MagicMock()
     fake.generate_presigned_url.return_value = "https://signed/url"
@@ -665,7 +630,6 @@ async def test_generate_presigned_url(fresh_manager):
     assert call.kwargs["ExpiresIn"] == 1234
 
 
-@pytest.mark.asyncio
 async def test_dispose_all(fresh_manager):
     a, b = MagicMock(), MagicMock()
     with patch("app.services.s3_manager.boto3.client", side_effect=[a, b]):
@@ -677,7 +641,6 @@ async def test_dispose_all(fresh_manager):
     b.close.assert_called_once()
 
 
-@pytest.mark.asyncio
 async def test_initialize_skips_failures(fresh_manager):
     good = _make_conn("good")
     bad = _make_conn("bad")
@@ -699,7 +662,6 @@ async def test_initialize_skips_failures(fresh_manager):
 
 # ── Bucket allow-list ───────────────────────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_add_connection_parses_allowed_buckets(fresh_manager):
     with patch("app.services.s3_manager.boto3.client", return_value=MagicMock()):
         await fresh_manager.add_connection(
@@ -709,7 +671,6 @@ async def test_add_connection_parses_allowed_buckets(fresh_manager):
     assert fresh_manager.allowed_buckets("allowed") == ["bucket-a", "bucket-b"]
 
 
-@pytest.mark.asyncio
 async def test_allowed_buckets_none_when_unrestricted(fresh_manager):
     with patch("app.services.s3_manager.boto3.client", return_value=MagicMock()):
         await fresh_manager.add_connection(_make_conn("unrestricted"))
@@ -720,28 +681,24 @@ def test_allowed_buckets_none_for_unknown_alias(fresh_manager):
     assert fresh_manager.allowed_buckets("nope") is None
 
 
-@pytest.mark.asyncio
 async def test_add_connection_invalid_allowed_buckets_json_is_unrestricted(fresh_manager):
     with patch("app.services.s3_manager.boto3.client", return_value=MagicMock()):
         await fresh_manager.add_connection(_make_conn("badjson", allowed="not json"))
     assert fresh_manager.allowed_buckets("badjson") is None
 
 
-@pytest.mark.asyncio
 async def test_add_connection_non_list_allowed_buckets_is_unrestricted(fresh_manager):
     with patch("app.services.s3_manager.boto3.client", return_value=MagicMock()):
         await fresh_manager.add_connection(_make_conn("notalist", allowed='{"bucket": true}'))
     assert fresh_manager.allowed_buckets("notalist") is None
 
 
-@pytest.mark.asyncio
 async def test_add_connection_empty_allowed_buckets_list_is_unrestricted(fresh_manager):
     with patch("app.services.s3_manager.boto3.client", return_value=MagicMock()):
         await fresh_manager.add_connection(_make_conn("emptylist", allowed="[]"))
     assert fresh_manager.allowed_buckets("emptylist") is None
 
 
-@pytest.mark.asyncio
 async def test_test_connection_heads_first_allowed_bucket(fresh_manager):
     fake = MagicMock()
     fake.head_bucket.return_value = {}
@@ -755,7 +712,6 @@ async def test_test_connection_heads_first_allowed_bucket(fresh_manager):
     fake.list_buckets.assert_not_called()
 
 
-@pytest.mark.asyncio
 async def test_test_connection_prefers_default_bucket_over_allowlist(fresh_manager):
     fake = MagicMock()
     fake.head_bucket.return_value = {}

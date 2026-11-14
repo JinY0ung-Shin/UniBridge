@@ -25,7 +25,6 @@ from fastapi import HTTPException
 from app.routers import gateway
 from app.routers.gateway import (
     _labels,
-    _llm_consumer_extra,
     _llm_increase,
     _llm_key_matchers,
     _promql_str,
@@ -114,7 +113,6 @@ class TestLlmKeyFilterValidation:
     def test_selector_builders_reject_hostile_values(self, bad):
         for builder in (
             _llm_key_matchers,
-            _llm_consumer_extra,
             lambda value: _llm_increase("requests", "1h", value),
         ):
             with pytest.raises(HTTPException) as ei:
@@ -123,7 +121,6 @@ class TestLlmKeyFilterValidation:
 
     def test_safe_values_build_the_selector(self):
         assert _llm_key_matchers("svc.prod-1") == ('consumer="svc.prod-1"',)
-        assert _llm_consumer_extra("svc.prod-1") == ('consumer="svc.prod-1"',)
         query = _llm_increase("requests", "1h", "svc.prod-1")
         assert (
             'bifrost_upstream_requests_total{job="bifrost",fallback_index="0",'
@@ -133,8 +130,6 @@ class TestLlmKeyFilterValidation:
     def test_unscoped_stays_unscoped(self):
         assert _llm_key_matchers(None) == ()
         assert _llm_key_matchers("") == ()
-        assert _llm_consumer_extra(None) == ()
-        assert _llm_consumer_extra("") == ()
         query = _llm_increase("requests", "1h", None)
         assert "consumer=" not in query
 

@@ -3,12 +3,10 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-import pytest
 
 from tests.conftest import auth_header
 
 
-@pytest.mark.asyncio
 async def test_s3_browse_apikey_rejects_unallowed_alias(client, admin_token):
     """API key consumers must not browse S3 aliases outside their allowed list."""
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
@@ -46,7 +44,6 @@ async def test_s3_browse_apikey_rejects_unallowed_alias(client, admin_token):
     mock_s3_manager.list_buckets.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_s3_browse_apikey_allows_configured_alias(client, admin_token):
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:
         mock_apisix.put_resource = AsyncMock(return_value={
@@ -83,7 +80,6 @@ async def test_s3_browse_apikey_allows_configured_alias(client, admin_token):
     mock_s3_manager.list_buckets.assert_awaited_once_with("allowed-s3")
 
 
-@pytest.mark.asyncio
 async def test_s3_browse_apikey_rejects_bucket_outside_connection_allowlist(client, admin_token):
     """The per-connection bucket allow-list also binds API-key consumers."""
     with patch("app.routers.api_keys.apisix_client") as mock_apisix:

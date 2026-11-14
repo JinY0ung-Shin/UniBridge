@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -533,47 +533,6 @@ async def upsert_resource_owner(
         emails=emails,
         alerts_enabled=alerts_enabled,
     )
-
-
-@router.delete(
-    "/resource-owners/{resource_type}/{resource_id}",
-    status_code=204,
-    response_model=None,
-)
-async def delete_resource_owner(
-    resource_type: str,
-    resource_id: str,
-    _user: CurrentUser = Depends(require_permission("alerts.write")),
-    db: AsyncSession = Depends(get_db),
-) -> None:
-    _validate_resource_type(resource_type)
-    result = await db.execute(
-        select(ResourceOwner).where(
-            ResourceOwner.resource_type == resource_type,
-            ResourceOwner.resource_id == resource_id,
-        )
-    )
-    owner = result.scalar_one_or_none()
-    before_snapshot = _resource_owner_snapshot(owner)
-    await db.execute(
-        sa_delete(ResourceOwner).where(
-            ResourceOwner.resource_type == resource_type,
-            ResourceOwner.resource_id == resource_id,
-        )
-    )
-    await db.commit()
-
-    if owner is not None:
-        await log_admin_action(
-            db,
-            actor=_user.username,
-            action="delete",
-            resource_type="resource_owner",
-            resource_id=f"{resource_type}/{resource_id}",
-            summary=None,
-            before=before_snapshot,
-            after=None,
-        )
 
 
 # ── Channels ────────────────────────────────────────────────────────────────

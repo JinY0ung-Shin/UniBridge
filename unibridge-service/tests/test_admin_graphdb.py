@@ -5,7 +5,8 @@ and patches connection_manager to avoid touching the network.
 """
 from __future__ import annotations
 
-import pytest
+from unittest.mock import patch
+
 
 from tests.conftest import auth_header
 from tests.test_admin import _cm_patch
@@ -26,7 +27,6 @@ def _make_graphdb_payload(**overrides):
     return payload
 
 
-@pytest.mark.asyncio
 async def test_create_graphdb_connection_with_http(client, admin_token):
     with _cm_patch("graphdb"):
         resp = await client.post(
@@ -40,7 +40,6 @@ async def test_create_graphdb_connection_with_http(client, admin_token):
     assert data["protocol"] == "http"
 
 
-@pytest.mark.asyncio
 async def test_create_graphdb_connection_with_https(client, admin_token):
     with _cm_patch("graphdb"):
         resp = await client.post(
@@ -52,7 +51,6 @@ async def test_create_graphdb_connection_with_https(client, admin_token):
     assert resp.json()["protocol"] == "https"
 
 
-@pytest.mark.asyncio
 async def test_create_graphdb_missing_protocol_returns_400(client, admin_token):
     payload = _make_graphdb_payload(alias="kg-noproto")
     del payload["protocol"]
@@ -66,7 +64,6 @@ async def test_create_graphdb_missing_protocol_returns_400(client, admin_token):
     assert "protocol" in resp.json()["detail"].lower()
 
 
-@pytest.mark.asyncio
 async def test_create_graphdb_invalid_protocol_returns_400(client, admin_token):
     with _cm_patch("graphdb"):
         resp = await client.post(
@@ -77,7 +74,6 @@ async def test_create_graphdb_invalid_protocol_returns_400(client, admin_token):
     assert resp.status_code == 400
 
 
-@pytest.mark.asyncio
 async def test_create_graphdb_with_secure_returns_400(client, admin_token):
     with _cm_patch("graphdb"):
         resp = await client.post(
@@ -89,9 +85,8 @@ async def test_create_graphdb_with_secure_returns_400(client, admin_token):
     assert "secure" in resp.json()["detail"].lower()
 
 
-@pytest.mark.asyncio
 async def test_list_tables_returns_empty_for_graphdb(client, admin_token):
-    with _cm_patch("graphdb"):
+    with _cm_patch("graphdb") as cm, patch("app.services.schema_browser.connection_manager", cm):
         # Create
         create = await client.post(
             "/admin/query/databases",
@@ -108,7 +103,6 @@ async def test_list_tables_returns_empty_for_graphdb(client, admin_token):
     assert resp.json() == []
 
 
-@pytest.mark.asyncio
 async def test_upsert_permission_rejects_allowed_tables_for_graphdb(client, admin_token):
     with _cm_patch("graphdb"):
         await client.post(
@@ -130,7 +124,6 @@ async def test_upsert_permission_rejects_allowed_tables_for_graphdb(client, admi
     assert "allowed_tables" in resp.json()["detail"].lower()
 
 
-@pytest.mark.asyncio
 async def test_upsert_permission_accepts_no_allowed_tables_for_graphdb(client, admin_token):
     with _cm_patch("graphdb"):
         await client.post(
@@ -154,7 +147,6 @@ async def test_upsert_permission_accepts_no_allowed_tables_for_graphdb(client, a
     assert data["db_alias"] == "kg-perm-accept"
 
 
-@pytest.mark.asyncio
 async def test_upsert_permission_rejects_empty_list_for_graphdb(client, admin_token):
     """GraphDB must reject any allowed_tables value, including an empty list."""
     with _cm_patch("graphdb"):

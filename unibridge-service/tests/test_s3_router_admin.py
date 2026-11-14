@@ -24,7 +24,6 @@ def _client_error(code: str, op: str = "ListObjectsV2") -> ClientError:
 
 # ── Admin CRUD ──────────────────────────────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_create_s3_connection_success(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -50,7 +49,6 @@ async def test_create_s3_connection_success(client, admin_token):
     assert data["access_key_id_masked"].endswith("MPLE")
 
 
-@pytest.mark.asyncio
 async def test_create_s3_connection_allows_private_dns_endpoint(client, admin_token, monkeypatch):
     def fake_getaddrinfo(*_args, **_kwargs):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 9000))]
@@ -78,7 +76,6 @@ async def test_create_s3_connection_allows_private_dns_endpoint(client, admin_to
     assert resp.json()["endpoint_url"] == "https://minio.corp.local:9000"
 
 
-@pytest.mark.asyncio
 async def test_create_s3_connection_short_key_masked(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -98,7 +95,6 @@ async def test_create_s3_connection_short_key_masked(client, admin_token):
     assert resp.json()["access_key_id_masked"] == "***"
 
 
-@pytest.mark.asyncio
 async def test_create_s3_connection_duplicate(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -127,7 +123,6 @@ async def test_create_s3_connection_duplicate(client, admin_token):
     assert resp2.status_code == 409
 
 
-@pytest.mark.asyncio
 async def test_create_s3_connection_add_failure_returns_error_status(client, admin_token):
     """If s3_manager.add_connection blows up, response status should be 'error'."""
     with patch("app.routers.s3.s3_manager") as mgr:
@@ -148,7 +143,6 @@ async def test_create_s3_connection_add_failure_returns_error_status(client, adm
     assert resp.json()["status"] == "error"
 
 
-@pytest.mark.asyncio
 async def test_create_s3_connection_decrypt_failure_masks(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr, \
             patch("app.routers.s3.decrypt_password", side_effect=ValueError("boom")):
@@ -169,7 +163,6 @@ async def test_create_s3_connection_decrypt_failure_masks(client, admin_token):
     assert resp.json()["access_key_id_masked"] == "***"
 
 
-@pytest.mark.asyncio
 async def test_list_s3_connections(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -196,37 +189,6 @@ async def test_list_s3_connections(client, admin_token):
     assert items["inactive"] == "disconnected"
 
 
-@pytest.mark.asyncio
-async def test_get_s3_connection_404(client, admin_token):
-    resp = await client.get("/admin/s3/connections/missing", headers=auth_header(admin_token))
-    assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_get_s3_connection_success(client, admin_token):
-    with patch("app.routers.s3.s3_manager") as mgr:
-        mgr.add_connection = AsyncMock()
-        mgr.has_connection.return_value = True
-
-        await client.post(
-            "/admin/s3/connections",
-            json={
-                "alias": "fetch",
-                "region": "us-east-1",
-                "access_key_id": "AKIA-FETCH-KEY",
-                "secret_access_key": "secret",
-            },
-            headers=auth_header(admin_token),
-        )
-        resp = await client.get(
-            "/admin/s3/connections/fetch",
-            headers=auth_header(admin_token),
-        )
-    assert resp.status_code == 200
-    assert resp.json()["alias"] == "fetch"
-
-
-@pytest.mark.asyncio
 async def test_update_s3_connection_partial(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -264,7 +226,6 @@ async def test_update_s3_connection_partial(client, admin_token):
     assert body["endpoint_url"] == "https://new.example.com"
 
 
-@pytest.mark.asyncio
 async def test_update_s3_connection_404(client, admin_token):
     resp = await client.put(
         "/admin/s3/connections/missing",
@@ -274,7 +235,6 @@ async def test_update_s3_connection_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_update_s3_connection_recreate_failure(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -304,7 +264,6 @@ async def test_update_s3_connection_recreate_failure(client, admin_token):
     assert resp.json()["status"] == "error"
 
 
-@pytest.mark.asyncio
 async def test_delete_s3_connection(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -330,7 +289,6 @@ async def test_delete_s3_connection(client, admin_token):
     mgr.remove_connection.assert_awaited_once_with("delme")
 
 
-@pytest.mark.asyncio
 async def test_delete_s3_connection_404(client, admin_token):
     resp = await client.delete(
         "/admin/s3/connections/missing",
@@ -339,7 +297,6 @@ async def test_delete_s3_connection_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_test_s3_connection_not_registered(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = False
@@ -350,7 +307,6 @@ async def test_test_s3_connection_not_registered(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_test_s3_connection_ok_and_error(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -373,7 +329,6 @@ async def test_test_s3_connection_ok_and_error(client, admin_token):
 
 # ── Browse endpoints (JWT path) ─────────────────────────────────────────────
 
-@pytest.mark.asyncio
 async def test_browse_jwt_lacking_permission_403(client, user_token):
     """User role does NOT have s3.browse permission per seeded_db."""
     resp = await client.get(
@@ -383,7 +338,6 @@ async def test_browse_jwt_lacking_permission_403(client, user_token):
     assert resp.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_browse_admin_has_permission_but_alias_missing(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = False
@@ -394,7 +348,6 @@ async def test_browse_admin_has_permission_but_alias_missing(client, admin_token
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_list_buckets_success(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -408,7 +361,6 @@ async def test_list_buckets_success(client, admin_token):
     assert resp.json() == [{"name": "a"}, {"name": "b"}]
 
 
-@pytest.mark.asyncio
 async def test_list_buckets_client_error_404(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -418,7 +370,6 @@ async def test_list_buckets_client_error_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_list_buckets_client_error_403(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -428,7 +379,6 @@ async def test_list_buckets_client_error_403(client, admin_token):
     assert resp.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_list_buckets_client_error_other_502(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -438,7 +388,6 @@ async def test_list_buckets_client_error_other_502(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_list_buckets_unexpected_error_502(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -448,7 +397,6 @@ async def test_list_buckets_unexpected_error_502(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_list_objects_success(client, admin_token):
     payload = {
         "folders": [{"prefix": "logs/"}],
@@ -470,7 +418,6 @@ async def test_list_objects_success(client, admin_token):
     mgr.list_objects.assert_awaited_once_with("x", "b", "p/", "/", 10, None)
 
 
-@pytest.mark.asyncio
 async def test_list_objects_all_uses_full_listing(client, admin_token):
     payload = {
         "folders": [],
@@ -494,7 +441,6 @@ async def test_list_objects_all_uses_full_listing(client, admin_token):
     mgr.list_objects.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_list_objects_all_busy_returns_429(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -505,7 +451,6 @@ async def test_list_objects_all_busy_returns_429(client, admin_token):
     assert resp.headers["retry-after"] == "5"
 
 
-@pytest.mark.asyncio
 async def test_list_objects_all_bucket_not_allowed_403(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -523,7 +468,6 @@ def _request_with_receive(receive) -> Request:
     return Request({"type": "http", "method": "GET", "path": "/", "headers": []}, receive)
 
 
-@pytest.mark.asyncio
 async def test_full_listing_cancelled_when_client_disconnects():
     gone = asyncio.Event()
     started = asyncio.Event()
@@ -552,7 +496,6 @@ async def test_full_listing_cancelled_when_client_disconnects():
     await asyncio.wait_for(cancelled.wait(), 1)
 
 
-@pytest.mark.asyncio
 async def test_full_listing_result_returned_while_client_connected():
     messages = [{"type": "http.request", "body": b"", "more_body": False}]
     disconnected = asyncio.Event()  # never set: the client stays connected
@@ -570,7 +513,6 @@ async def test_full_listing_result_returned_while_client_connected():
     assert result == {"key_count": 3}
 
 
-@pytest.mark.asyncio
 async def test_full_listing_survives_unobservable_disconnect():
     async def receive():
         raise RuntimeError("receive channel unavailable")
@@ -583,7 +525,6 @@ async def test_full_listing_survives_unobservable_disconnect():
     assert result == {"key_count": 1}
 
 
-@pytest.mark.asyncio
 async def test_list_objects_alias_404(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = False
@@ -591,7 +532,6 @@ async def test_list_objects_alias_404(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_list_objects_client_error(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -601,7 +541,6 @@ async def test_list_objects_client_error(client, admin_token):
     assert resp.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_list_objects_unexpected_error(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -611,7 +550,6 @@ async def test_list_objects_unexpected_error(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_get_object_metadata_success(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -625,7 +563,6 @@ async def test_get_object_metadata_success(client, admin_token):
     assert resp.json()["key"] == "k"
 
 
-@pytest.mark.asyncio
 async def test_get_object_metadata_alias_missing(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = False
@@ -636,7 +573,6 @@ async def test_get_object_metadata_alias_missing(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_get_object_metadata_nosuchkey(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -649,7 +585,6 @@ async def test_get_object_metadata_nosuchkey(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_get_object_metadata_unexpected(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -662,7 +597,6 @@ async def test_get_object_metadata_unexpected(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_presigned_url_success(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -676,7 +610,6 @@ async def test_presigned_url_success(client, admin_token):
     assert resp.json() == {"url": "https://signed/url", "expires_in": 120}
 
 
-@pytest.mark.asyncio
 async def test_presigned_url_alias_missing(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = False
@@ -687,7 +620,6 @@ async def test_presigned_url_alias_missing(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_presigned_url_client_error(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -700,7 +632,6 @@ async def test_presigned_url_client_error(client, admin_token):
     assert resp.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_presigned_url_unexpected(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -713,7 +644,6 @@ async def test_presigned_url_unexpected(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_download_object_too_large(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -726,7 +656,6 @@ async def test_download_object_too_large(client, admin_token):
     assert resp.status_code == 413
 
 
-@pytest.mark.asyncio
 async def test_download_object_unknown_size(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -739,7 +668,6 @@ async def test_download_object_unknown_size(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_download_object_metadata_clienterror(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -752,7 +680,6 @@ async def test_download_object_metadata_clienterror(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_download_object_metadata_unexpected(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -765,7 +692,6 @@ async def test_download_object_metadata_unexpected(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_download_object_alias_missing(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = False
@@ -776,7 +702,6 @@ async def test_download_object_alias_missing(client, admin_token):
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_download_object_get_clienterror(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -790,7 +715,6 @@ async def test_download_object_get_clienterror(client, admin_token):
     assert resp.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_download_object_get_unexpected(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -804,7 +728,6 @@ async def test_download_object_get_unexpected(client, admin_token):
     assert resp.status_code == 502
 
 
-@pytest.mark.asyncio
 async def test_download_object_rechecks_get_object_content_length(client, admin_token):
     class FakeBody:
         def __init__(self):
@@ -831,7 +754,6 @@ async def test_download_object_rechecks_get_object_content_length(client, admin_
     assert body.closed
 
 
-@pytest.mark.asyncio
 async def test_download_object_streams_body(client, admin_token):
     chunks = [b"hello ", b"world", b""]
 
@@ -895,7 +817,6 @@ async def _stored_allowed_buckets_json(seeded_db, alias: str) -> str | None:
         return result.scalar_one()
 
 
-@pytest.mark.asyncio
 async def test_create_with_allowed_buckets_persists_json(client, admin_token, seeded_db):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -915,7 +836,6 @@ async def test_create_with_allowed_buckets_persists_json(client, admin_token, se
     assert await _stored_allowed_buckets_json(seeded_db, "allow-json") == '["bucket-a", "bucket-b"]'
 
 
-@pytest.mark.asyncio
 async def test_create_normalizes_allowed_buckets(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -933,7 +853,6 @@ async def test_create_normalizes_allowed_buckets(client, admin_token):
     assert resp.json()["allowed_buckets"] == ["bucket-a", "bucket-b"]
 
 
-@pytest.mark.asyncio
 async def test_create_empty_allowed_buckets_means_unrestricted(client, admin_token, seeded_db):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -949,7 +868,6 @@ async def test_create_empty_allowed_buckets_means_unrestricted(client, admin_tok
     assert await _stored_allowed_buckets_json(seeded_db, "allow-empty") is None
 
 
-@pytest.mark.asyncio
 async def test_create_rejects_too_many_allowed_buckets(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -966,7 +884,6 @@ async def test_create_rejects_too_many_allowed_buckets(client, admin_token):
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_create_rejects_overlong_bucket_name(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -980,7 +897,6 @@ async def test_create_rejects_overlong_bucket_name(client, admin_token):
     assert resp.status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_create_rejects_default_bucket_outside_allowlist(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -999,7 +915,6 @@ async def test_create_rejects_default_bucket_outside_allowlist(client, admin_tok
     assert resp.json()["detail"] == "default_bucket must be one of allowed_buckets"
 
 
-@pytest.mark.asyncio
 async def test_update_sets_and_clears_allowed_buckets(client, admin_token, seeded_db):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -1030,7 +945,6 @@ async def test_update_sets_and_clears_allowed_buckets(client, admin_token, seede
     assert await _stored_allowed_buckets_json(seeded_db, "allow-upd") is None
 
 
-@pytest.mark.asyncio
 async def test_update_empty_allowed_buckets_clears_restriction(client, admin_token, seeded_db):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -1051,7 +965,6 @@ async def test_update_empty_allowed_buckets_clears_restriction(client, admin_tok
     assert await _stored_allowed_buckets_json(seeded_db, "allow-clear") is None
 
 
-@pytest.mark.asyncio
 async def test_update_allowlist_excluding_stored_default_bucket_422(client, admin_token, seeded_db):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -1073,7 +986,6 @@ async def test_update_allowlist_excluding_stored_default_bucket_422(client, admi
     assert await _stored_allowed_buckets_json(seeded_db, "allow-keepdefault") is None
 
 
-@pytest.mark.asyncio
 async def test_update_default_bucket_outside_stored_allowlist_422(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -1096,13 +1008,13 @@ async def test_update_default_bucket_outside_stored_allowlist_422(client, admin_
         assert resp.status_code == 422
 
         after = await client.get(
-            "/admin/s3/connections/allow-keeplist",
+            "/admin/s3/connections",
             headers=auth_header(admin_token),
         )
-    assert after.json()["default_bucket"] == "bucket-a"
+    saved = next(c for c in after.json() if c["alias"] == "allow-keeplist")
+    assert saved["default_bucket"] == "bucket-a"
 
 
-@pytest.mark.asyncio
 async def test_update_default_bucket_and_allowlist_together(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.add_connection = AsyncMock()
@@ -1128,7 +1040,6 @@ async def test_update_default_bucket_and_allowlist_together(client, admin_token)
     assert body["allowed_buckets"] == ["bucket-z"]
 
 
-@pytest.mark.asyncio
 async def test_list_buckets_restricted_returns_allowlist_only(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -1143,7 +1054,6 @@ async def test_list_buckets_restricted_returns_allowlist_only(client, admin_toke
     mgr.list_buckets.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_list_objects_bucket_not_allowed_403(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -1158,7 +1068,6 @@ async def test_list_objects_bucket_not_allowed_403(client, admin_token):
     mgr.list_objects.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_list_objects_allowed_bucket_succeeds(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -1172,7 +1081,6 @@ async def test_list_objects_allowed_bucket_succeeds(client, admin_token):
     mgr.list_objects.assert_awaited_once_with("x", "bucket-a", "", "/", 200, None)
 
 
-@pytest.mark.asyncio
 async def test_object_metadata_bucket_not_allowed_403(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -1186,7 +1094,6 @@ async def test_object_metadata_bucket_not_allowed_403(client, admin_token):
     mgr.get_object_metadata.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_presigned_url_bucket_not_allowed_403(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True
@@ -1200,7 +1107,6 @@ async def test_presigned_url_bucket_not_allowed_403(client, admin_token):
     mgr.generate_presigned_url.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_download_bucket_not_allowed_403(client, admin_token):
     with patch("app.routers.s3.s3_manager") as mgr:
         mgr.has_connection.return_value = True

@@ -34,7 +34,7 @@ from app.config import settings
 from app.database import get_db
 from app.db_types import utcnow
 from app.models import ApiKeyAccess, McpRemoteServer, QueryTemplate
-from app.routers.gateway import _is_masked_value, _mask_value
+from app.routers.gateway import _is_masked_value
 from app.schemas import (
     McpPreview,
     McpPreviewGroup,
@@ -52,7 +52,7 @@ from app.schemas import (
 )
 from app.services import mcp_artifacts, mcp_remote, mcp_tools
 from app.services.apisix_system_resources import MCP_API_ROUTE_ID
-from app.services.audit import log_admin_action
+from app.services.audit import log_admin_action, mask_secret
 
 logger = logging.getLogger(__name__)
 
@@ -562,7 +562,7 @@ def _server_info(server: McpRemoteServer) -> McpRemoteServerInfo:
         enabled=server.enabled,
         timeout_seconds=server.timeout_seconds,
         headers=[
-            McpRemoteHeader.model_construct(name=name, value=_mask_value(value))
+            McpRemoteHeader.model_construct(name=name, value=mask_secret(value))
             for name, value in headers.items()
         ],
         user_token_header=server.user_token_header,
@@ -570,7 +570,7 @@ def _server_info(server: McpRemoteServer) -> McpRemoteServerInfo:
         user_token_client_header=mcp_remote.client_token_header(server.name)
         if server.user_token_header
         else None,
-        user_token_refresh=_mask_value(refresh_token) if refresh_token else None,
+        user_token_refresh=mask_secret(refresh_token) if refresh_token else None,
         route_id=mcp_remote.route_id(server.name),
         tools=tools,
         refreshed_at=server.refreshed_at,

@@ -108,21 +108,12 @@ async def list_nas_connections(
     return items
 
 
-@router.get("/admin/nas/connections/{alias}")
-async def get_nas_connection(
-    alias: str,
-    db: AsyncSession = Depends(get_db),
-    _admin: CurrentUser = Depends(require_permission("nas.connections.read")),
-) -> NasConnectionResponse:
-    result = await db.execute(
-        select(NASConnection).where(NASConnection.alias == alias)
-    )
+async def _get_connection_or_404(db: AsyncSession, alias: str) -> NASConnection:
+    result = await db.execute(select(NASConnection).where(NASConnection.alias == alias))
     conn = result.scalar_one_or_none()
-    if not conn:
+    if conn is None:
         raise HTTPException(status_code=404, detail=f"NAS connection '{alias}' not found")
-    resp = _to_response(conn)
-    resp.status = "registered" if nas_manager.has_connection(alias) else "disconnected"
-    return resp
+    return conn
 
 
 @router.put("/admin/nas/connections/{alias}")
@@ -132,12 +123,7 @@ async def update_nas_connection(
     db: AsyncSession = Depends(get_db),
     _admin: CurrentUser = Depends(require_permission("nas.connections.write")),
 ) -> NasConnectionResponse:
-    result = await db.execute(
-        select(NASConnection).where(NASConnection.alias == alias)
-    )
-    conn = result.scalar_one_or_none()
-    if not conn:
-        raise HTTPException(status_code=404, detail=f"NAS connection '{alias}' not found")
+    conn = await _get_connection_or_404(db, alias)
 
     before_snapshot = _audit_snapshot(conn)
 
@@ -184,12 +170,7 @@ async def delete_nas_connection(
     db: AsyncSession = Depends(get_db),
     _admin: CurrentUser = Depends(require_permission("nas.connections.write")),
 ) -> None:
-    result = await db.execute(
-        select(NASConnection).where(NASConnection.alias == alias)
-    )
-    conn = result.scalar_one_or_none()
-    if not conn:
-        raise HTTPException(status_code=404, detail=f"NAS connection '{alias}' not found")
+    conn = await _get_connection_or_404(db, alias)
 
     before_snapshot = _audit_snapshot(conn)
 

@@ -338,3 +338,24 @@ class TestLatencyNanIsNull:
     def test_unparseable_quantile_sample_is_null(self):
         points = _extract_timeseries([{"values": [[1000, "bad"]]}], nan_as_none=True)
         assert points == [{"timestamp": 1000, "value": None}]
+
+    @pytest.mark.parametrize(
+        "path, target",
+        [
+            ("/admin/gateway/metrics/latency", _GW_RANGE),
+            ("/admin/external/metrics/latency", _EXT_RANGE),
+        ],
+    )
+    async def test_infinite_percentile_is_null(self, client, admin_token, path, target):
+        # histogram_quantile answers +Inf past the top bucket bound; JSON has no
+        # infinity, so it must not reach the response.
+        series = [{"values": [[1000, "12.5"], [1060, "+Inf"], [1120, "-Inf"]]}]
+        with patch(target, AsyncMock(return_value=series)):
+            resp = await client.get(f"{path}?range=1h", headers=auth_header(admin_token))
+        assert resp.status_code == 200
+        for key in ("p50", "p95", "p99"):
+            assert [p["value"] for p in resp.json()[key]] == [12.5, None, None]
+
+    def test_infinite_count_sample_is_zero(self):
+        points = _extract_timeseries([{"values": [[1000, "+Inf"], [1060, "3"]]}])
+        assert [p["value"] for p in points] == [0.0, 3.0]

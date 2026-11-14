@@ -49,7 +49,6 @@ def _make_neo4j_conn(**overrides) -> DBConnection:
     return DBConnection(**defaults)
 
 
-@pytest.mark.asyncio
 async def test_add_connection_creates_neo4j_driver_and_registers_alias(manager, fake_neo4j):
     graph_database, driver = fake_neo4j
 
@@ -64,7 +63,6 @@ async def test_add_connection_creates_neo4j_driver_and_registers_alias(manager, 
     assert manager.get_database_name("graph") == "neo4j"
 
 
-@pytest.mark.asyncio
 async def test_remove_connection_closes_neo4j_driver_and_removes_alias(manager, fake_neo4j):
     _, driver = fake_neo4j
     await manager.add_connection(_make_neo4j_conn())
@@ -78,7 +76,6 @@ async def test_remove_connection_closes_neo4j_driver_and_removes_alias(manager, 
         manager.get_database_name("graph")
 
 
-@pytest.mark.asyncio
 async def test_test_connection_verifies_neo4j_connectivity(manager, fake_neo4j):
     _, driver = fake_neo4j
     await manager.add_connection(_make_neo4j_conn())
@@ -89,7 +86,6 @@ async def test_test_connection_verifies_neo4j_connectivity(manager, fake_neo4j):
     assert result == (True, "Connection successful")
 
 
-@pytest.mark.asyncio
 async def test_get_status_returns_neo4j_registered_status(manager, fake_neo4j):
     await manager.add_connection(_make_neo4j_conn())
 

@@ -129,7 +129,6 @@ class TestRecipientItemRendering:
 
 
 class TestSendWebhook:
-    @pytest.mark.asyncio
     async def test_send_webhook_success(self, httpx_mock: HTTPXMock):
         httpx_mock.add_response(url="http://example.com/hook", status_code=200)
         ok, err = await send_webhook(
@@ -140,7 +139,6 @@ class TestSendWebhook:
         assert ok is True
         assert err is None
 
-    @pytest.mark.asyncio
     async def test_send_webhook_failure(self, httpx_mock: HTTPXMock):
         httpx_mock.add_response(url="http://example.com/hook", status_code=500)
         ok, err = await send_webhook(
@@ -151,7 +149,6 @@ class TestSendWebhook:
         assert ok is False
         assert err is not None
 
-    @pytest.mark.asyncio
     async def test_send_webhook_with_custom_headers(self, httpx_mock: HTTPXMock):
         httpx_mock.add_response(url="http://example.com/hook", status_code=200)
         ok, _ = await send_webhook(
@@ -163,7 +160,6 @@ class TestSendWebhook:
         req = httpx_mock.get_request()
         assert req.headers["X-Token"] == "secret"
 
-    @pytest.mark.asyncio
     async def test_send_webhook_failure_detail_names_the_exception(self, httpx_mock: HTTPXMock):
         httpx_mock.add_response(url="http://example.com/hook", status_code=500)
         _, err = await send_webhook(
@@ -174,7 +170,6 @@ class TestSendWebhook:
         assert err.startswith("HTTPStatusError: ")
         assert "500" in err
 
-    @pytest.mark.asyncio
     async def test_send_webhook_failure_hides_url_token(self, httpx_mock: HTTPXMock, caplog):
         """The detail is persisted on the history row that alerts.read can list."""
         url = "https://hooks.example.com/services/T1/B2?token=SUPERSECRETTOKEN"
@@ -191,7 +186,6 @@ class TestSendWebhook:
         assert "SUPERSECRETTOKEN" not in caplog.text
         assert "/services/T1/B2" not in caplog.text
 
-    @pytest.mark.asyncio
     async def test_send_webhook_failure_hides_token_in_transport_error(self, httpx_mock: HTTPXMock):
         url = "https://hooks.example.com/hook?token=SUPERSECRETTOKEN"
         httpx_mock.add_exception(
@@ -202,7 +196,6 @@ class TestSendWebhook:
         assert "SUPERSECRETTOKEN" not in err
         assert err == "ConnectError: connection to https://hooks.example.com/*** failed"
 
-    @pytest.mark.asyncio
     async def test_send_webhook_rejects_hostname_that_resolves_private(self, monkeypatch):
         def fake_getaddrinfo(*_args, **_kwargs):
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 443))]

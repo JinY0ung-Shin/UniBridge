@@ -127,6 +127,14 @@ class QueryTemplateCreate(BaseModel):
     def strip_text(cls, value: str) -> str:
         return value.strip()
 
+    @model_validator(mode="after")
+    def reject_blank_required_fields(self) -> "QueryTemplateCreate":
+        # min_length runs before the strip above, so "   " gets through it.
+        for field_name in ("name", "database", "sql"):
+            if not getattr(self, field_name):
+                raise ValueError(f"{field_name} must not be empty")
+        return self
+
 
 class QueryTemplateUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
@@ -146,6 +154,14 @@ class QueryTemplateUpdate(BaseModel):
     @classmethod
     def strip_optional_text(cls, value: str | None) -> str | None:
         return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def reject_blank_fields(self) -> "QueryTemplateUpdate":
+        # As in QueryTemplateCreate; an empty description still clears it.
+        for field_name in ("name", "database", "sql"):
+            if getattr(self, field_name) == "":
+                raise ValueError(f"{field_name} must not be empty")
+        return self
 
 
 class QueryTemplateAgentCreate(BaseModel):
@@ -412,35 +428,6 @@ class SavedQueryCreate(BaseModel):
     @classmethod
     def strip_description(cls, value: str) -> str:
         return value.strip()
-
-
-class SavedQueryUpdate(BaseModel):
-    name: str | None = Field(None, min_length=1, max_length=200)
-    database_alias: str | None = Field(None, max_length=100)
-    sql_text: str | None = Field(None, min_length=1, max_length=MAX_SAVED_QUERY_SQL_LENGTH)
-    description: str | None = Field(None, max_length=255)
-
-    @field_validator("name")
-    @classmethod
-    def strip_optional_name(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        if not value:
-            raise ValueError("name must not be empty")
-        return value
-
-    @field_validator("sql_text")
-    @classmethod
-    def require_optional_sql_text(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("sql_text must not be empty")
-        return value
-
-    @field_validator("description")
-    @classmethod
-    def strip_optional_description(cls, value: str | None) -> str | None:
-        return value.strip() if value is not None else None
 
 
 class SavedQueryResponse(BaseModel):
@@ -1860,7 +1847,6 @@ OpeningStatus = Literal["open", "closed"]
 # managed = a server we run; external = someone else's, recorded only so that
 # openings can name it (no region, no port finder, no monitoring link).
 NetworkHostKind = Literal["managed", "external"]
-NETWORK_PROTOCOLS: tuple[str, ...] = ("tcp", "udp")
 _REGION_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f/\\]{1,64}$")
 
 
