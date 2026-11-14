@@ -1901,6 +1901,11 @@ def _key_auth_runs(route: dict[str, Any]) -> bool:
     return not (isinstance(meta, dict) and meta.get("disable"))
 
 
+def _star_inside(uri: str) -> bool:
+    """Whether ``uri`` has a ``*`` anywhere but at its end (see _path_match)."""
+    return "*" in uri[:-1]
+
+
 def offerable_route(route: dict[str, Any]) -> bool:
     """Whether an administrator may offer ``route`` over MCP at all."""
     return (
@@ -1910,6 +1915,8 @@ def offerable_route(route: dict[str, Any]) -> bool:
         and bool(_route_paths(route))
         and bool(_route_api_methods(route))
         and not any(route.get(field) for field in _CONDITION_FIELDS)
+        # Which paths such a uri answers is only known as an upper bound.
+        and not any(_star_inside(uri) for uri in _route_paths(route))
         # Plugins bound elsewhere: whether key-auth runs, and so whether the
         # caller's key may be sent, cannot be read off the route.
         and not route.get("service_id")
@@ -2005,11 +2012,20 @@ def _path_match(pattern: str, path: str) -> int | None:
     """APISIX-style specificity of ``pattern`` for ``path``, or None if it misses.
 
     An exact uri beats every prefix; among prefixes the longest wins.
+
+    A ``*`` makes a uri a prefix wherever it stands, and the prefix ends at the
+    first one. What APISIX does with the rest depends on its shape (measured on
+    3.15: ``/a/*/admin`` answers ``/a/1/admin`` but not ``/a/1/other``, while
+    ``/a/x*/admin`` answers everything under ``/a/x``), so a uri with a ``*``
+    inside counts as answering every path under its prefix. That is exact for
+    a trailing ``*`` and an upper bound for the rest: right for a route that
+    might take a call away, wrong for the route a call is meant for, which is
+    why offerable_route leaves such routes out.
     """
-    if pattern.endswith("*"):
-        prefix = pattern[:-1]
-        return len(prefix) if path.startswith(prefix) else None
-    return 1_000_000 + len(pattern) if path == pattern else None
+    star = pattern.find("*")
+    if star < 0:
+        return 1_000_000 + len(pattern) if path == pattern else None
+    return star if path.startswith(pattern[:star]) else None
 
 
 def _match_rank(route: dict[str, Any], method: str, path: str) -> tuple[int, int] | None:

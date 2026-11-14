@@ -1489,7 +1489,7 @@
     "apisHint": "체크한 route만, 그 route 권한이 있는 키에만 노출됩니다. call_api는 GET과 POST만 보냅니다(POST는 상대 시스템의 데이터를 바꿀 수 있습니다). 설명은 선택입니다. 비워 두면 모델이 API 자체 문서(/docs, /openapi.json 등)나 사용자가 준 skill을 보고 호출합니다.",
     "apisGroupOff": "게이트웨이 API 그룹이 꺼져 있어 MCP에 API가 노출되지 않습니다.",
     "apisLoadFailed": "게이트웨이 route 목록을 불러오지 못했습니다.",
-    "apisEmpty": "노출할 수 있는 route가 없습니다. 제외 대상: 시스템·비활성 route, GET/POST가 없는 route, 매칭 조건(hosts·vars·remote_addrs)이 있는 route, 플러그인을 service·plugin config로 받는 route.",
+    "apisEmpty": "노출할 수 있는 route가 없습니다. 제외 대상: 시스템·비활성 route, GET/POST가 없는 route, 매칭 조건(hosts·vars·remote_addrs)이 있는 route, uri 끝이 아닌 곳에 *가 있는 route, 플러그인을 service·plugin config로 받는 route.",
     "apisMissing": "노출 목록의 route {{count}}개가 삭제됐거나 더 이상 노출할 수 없습니다.",
     "apisRemoveMissing": "목록에서 제거",
     "apisFilter": "이름·ID·경로로 필터",

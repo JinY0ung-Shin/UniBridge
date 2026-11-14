@@ -1200,6 +1200,49 @@ async def test_call_api_yields_to_a_broader_host_route(client, seeded_db, admin_
     assert gateway.calls == []
 
 
+@pytest.mark.parametrize(
+    ("uri", "priority", "path", "sent"),
+    [
+        # APISIX 3.15, measured: a * inside a uri is a wildcard too, and at the
+        # same priority that route wins over the plain /orders/* one.
+        ("/api/ext/orders/*/audit", 0, "/api/ext/orders/7/audit", False),
+        ("/api/ext/orders/*/audit", 0, "/api/ext/orders/7/8/audit", False),
+        # /orders/x*/audit answers everything under /orders/x.
+        ("/api/ext/orders/x*/audit", 0, "/api/ext/orders/xyz/items", False),
+        ("/api/ext/orders/x*/audit", 0, "/api/ext/orders/y/items", True),
+        ("/api/ext/orders/*/x/*", 0, "/api/ext/orders/1/x/2", False),
+        # Its prefix is shorter than orders': APISIX tries the longer one first.
+        ("/api/ext/*/audit", 5, "/api/ext/orders/7/audit", True),
+        # Refused although APISIX would pick orders: only an upper bound of what
+        # such a uri answers is known.
+        ("/api/ext/orders/*/audit", 0, "/api/ext/orders/7/items", False),
+        # orders (priority 0) outranks it.
+        ("/api/ext/orders/*/audit", -1, "/api/ext/orders/7/audit", True),
+    ],
+)
+async def test_call_api_yields_to_a_star_inside_another_uri(
+    client, seeded_db, admin_token, gateway, uri, priority, path, sent
+):
+    headers = await _create_api_key(seeded_db, routes=[*EXT_KEY_ROUTES, "audit"])
+    await _expose(client, admin_token, "orders", "audit")
+    # Open, so a call it took would also hand the caller's key to its upstream.
+    routes = [*EXT_ROUTES, {"id": "audit", "name": "Audit", "uri": uri, "priority": priority}]
+    with _routes(routes):
+        # Offered and granted, but what it answers cannot be told: not listed.
+        apis = json.loads(_text(await _call(client, headers, "search_apis", {})))["apis"]
+        assert [api["api"] for api in apis] == ["orders"]
+        result = await _call(client, headers, "call_api", {"api": "audit", "method": "GET", "path": path})
+        assert "call search_apis" in _text(result)
+        result = await _call(client, headers, "call_api", {"api": "orders", "method": "GET", "path": path})
+    if sent:
+        assert result["isError"] is False, result
+        assert gateway.calls == [("ext", "GET", path)]
+    else:
+        assert result["isError"] is True
+        assert "another gateway route" in _text(result)
+        assert gateway.calls == []
+
+
 async def test_call_api_bounds_a_trickling_answer(client, seeded_db, admin_token, gateway):
     headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
     await _expose(client, admin_token, "orders")

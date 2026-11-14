@@ -603,10 +603,13 @@ http_headers = { apikey = "<API_KEY>" }
   route. There are no request schemas: write notes, point the model at the
   API's own docs (`/docs`, `/openapi.json`), or give it a skill. A path a more
   specific route would answer, `.`/`..` segments and encoded slashes are
-  refused; open routes (no key-auth) never receive the caller's key. Responses
+  refused (a `*` inside another route's uri counts as a wildcard, as APISIX
+  reads it: `/api/x/*/admin` may answer anything under `/api/x/`);
+  open routes (no key-auth) never receive the caller's key. Responses
   come back as text (status, content type, body cut at `max_result_bytes`);
   binary bodies are not returned. System routes, disabled routes, routes with
-  match conditions (`hosts`, `vars`, `remote_addrs`, `filter_func`) and routes
+  match conditions (`hosts`, `vars`, `remote_addrs`, `filter_func`), routes
+  with a `*` anywhere but at the end of a uri and routes
   whose plugins come from a `service_id` or `plugin_config_id` (whether
   key-auth runs cannot be read off the route) cannot be offered.
   The tools are listed only while an offered route the key holds still exists
