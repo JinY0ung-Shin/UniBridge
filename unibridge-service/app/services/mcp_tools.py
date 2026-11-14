@@ -18,7 +18,8 @@ Binary files go through staging (:mod:`app.services.mcp_artifacts`):
 ``download_artifact`` fetches one from S3, NAS or an exposed API as the caller
 and returns a reference instead of bytes, or, for a small file, the file
 itself as a standard MCP embedded resource; ``upload_staged_artifacts`` posts
-staged ones to an exposed API as multipart/form-data. Only that embedded
+staged ones to an exposed API as multipart/form-data, or as base64 text inside
+a JSON body. Only that embedded
 resource is MCP's own file representation: staging by id, the
 /api/mcp/artifacts transfer and the multipart upload are UniBridge's
 extensions (MCP defines no upload).
@@ -39,11 +40,12 @@ import base64
 import binascii
 import codecs
 import ipaddress
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 import json
 import logging
 import re
+import secrets
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -101,7 +103,8 @@ SERVER_INSTRUCTIONS = (
     "return_mode=resource, a small file instead comes back as a standard "
     "embedded resource, for an MCP host that saves those into the workspace. "
     "upload_staged_artifacts sends staged artifacts to a gateway API as "
-    "multipart/form-data. "
+    "multipart/form-data, or as base64 text inside a JSON body for an API that "
+    "takes a file that way: never write a file's base64 yourself. "
     "For whether one server can reach another, call network_check_access: hosts "
     "in one region reach each other on every port, other regions only through a "
     "recorded firewall opening, and a blocked answer carries a request_draft for "
@@ -2186,6 +2189,8 @@ async def _send_api_call(
     json_body: Any = None,
     form: dict[str, Any] | None = None,
     files: list[tuple[str, tuple[str, bytes, str]]] | None = None,
+    content: AsyncIterator[bytes] | None = None,
+    content_headers: dict[str, str] | None = None,
     no_answer: str = "",
     binary_is_error: bool = True,
 ) -> TextFile:
@@ -2206,7 +2211,8 @@ async def _send_api_call(
             json=json_body,
             data=form,
             files=files,
-            headers=call.headers,
+            content=content,
+            headers={**call.headers, **(content_headers or {})},
             timeout=httpx.Timeout(call.deadline, connect=10),
         ) as response:
             content_type = response.headers.get("content-type", "")
@@ -2280,7 +2286,9 @@ API_TOOLS = (
             "paths; query holds URL parameters; body is sent as JSON with POST. "
             "Returns the HTTP status, content type and response text, cut at the "
             "result size cap (truncated=true). Binary responses are not returned "
-            "(download_artifact stages a GET's binary answer as a file). "
+            "(download_artifact stages a GET's binary answer as a file). A body "
+            "that carries a file as base64 text is sent with upload_staged_artifacts "
+            "(json), not written out here. "
             "POST can change data on the other system."
         ),
         group="apis",
@@ -2339,6 +2347,13 @@ _UPLOAD_MAX_FIELDS = 64
 _UPLOAD_MAX_FIELD_BYTES = 256 * 1024
 _FORM_NAME_MAX_CHARS = 200
 _DEFAULT_FILE_FIELD = "file"
+# In upload_staged_artifacts' json: {"$artifact": "<id>"} stands for that
+# artifact's bytes as base64 text, or as a data: URL with "as": "data_url".
+ARTIFACT_REFERENCE_KEY = "$artifact"
+_REFERENCE_FORMS = ("base64", "data_url")
+# Bytes encoded per chunk of a JSON body: a multiple of 3, so the chunks'
+# base64 joins into the base64 of the whole.
+_BASE64_CHUNK_BYTES = 3 * 64 * 1024
 _UNKNOWN_OUTCOME = "; whether it processed the upload is not known"
 
 
@@ -2747,6 +2762,162 @@ def _artifact_parts(
     return parts
 
 
+@dataclass(frozen=True)
+class _ArtifactReference:
+    """One ``{"$artifact": ...}`` of a JSON body."""
+
+    # Where in the body it stands, as the model is told: json.images[0].
+    where: str
+    artifact_id: str
+    form: str
+
+
+def _json_template(body: Any) -> tuple[list[bytes], list[_ArtifactReference]]:
+    """Split a JSON body at its artifact references.
+
+    Returns the references in the order they stand in the encoded body and the
+    JSON text around them, one piece more than there are references.
+    """
+    references: list[_ArtifactReference] = []
+    # Stands in for a reference while the body is encoded. Drawn after the body
+    # arrived, so nothing in the body can hold it.
+    token = secrets.token_hex(16)
+
+    def walk(value: Any, where: str) -> Any:
+        if isinstance(value, list):
+            return [walk(item, f"{where}[{index}]") for index, item in enumerate(value)]
+        if not isinstance(value, dict):
+            return value
+        if ARTIFACT_REFERENCE_KEY not in value:
+            return {key: walk(item, f"{where}.{key}") for key, item in value.items()}
+        # An object with the key is a reference or a mistake, never sent as it is.
+        form = value.get("as", _REFERENCE_FORMS[0])
+        if (
+            set(value) - {ARTIFACT_REFERENCE_KEY, "as"}
+            or not isinstance(value[ARTIFACT_REFERENCE_KEY], str)
+            or form not in _REFERENCE_FORMS
+        ):
+            raise ToolError(
+                f'{where} must be {{"{ARTIFACT_REFERENCE_KEY}": "<artifact_id>"}}, optionally '
+                f'with "as": {" or ".join(_REFERENCE_FORMS)}, and nothing else'
+            )
+        if len(references) == _UPLOAD_MAX_ARTIFACTS:
+            raise ToolError(f"json holds at most {_UPLOAD_MAX_ARTIFACTS} artifact references")
+        references.append(_ArtifactReference(where, value[ARTIFACT_REFERENCE_KEY], form))
+        return f"{token}:{len(references) - 1}"
+
+    try:
+        text = json.dumps(
+            walk(body, "json"), ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        )
+        pieces = [piece.encode() for piece in re.split(f'"{token}:[0-9]+"', text)]
+    except RecursionError:
+        raise ToolError("json is nested too deeply") from None
+    except ValueError:  # NaN or Infinity, or text that is not Unicode
+        raise ToolError("json holds a value a JSON body cannot carry") from None
+    if not references:
+        raise ToolError(
+            f'json holds no {{"{ARTIFACT_REFERENCE_KEY}": "<artifact_id>"}}: a body without a '
+            "file is sent with call_api"
+        )
+    return pieces, references
+
+
+def _json_with_artifacts(
+    pieces: list[bytes], parts: list[tuple[bytes, bytes]]
+) -> tuple[int, AsyncIterator[bytes]]:
+    """The body's length and the body itself, encoded as it is sent.
+
+    ``parts`` are (text before the base64, file bytes) for each reference.
+    Building the body in one piece would hold the base64 three times over
+    (the text, the encoded JSON, its bytes: over four times the file on top
+    of the file), where a transfer is budgeted for the file and one copy.
+    """
+    length = sum(len(piece) for piece in pieces) + sum(
+        2 + len(prefix) + 4 * ((len(content) + 2) // 3) for prefix, content in parts
+    )
+
+    async def chunks() -> AsyncIterator[bytes]:
+        for index, piece in enumerate(pieces):
+            yield piece
+            if index == len(parts):
+                break
+            prefix, content = parts[index]
+            yield b'"' + prefix
+            view = memoryview(content)
+            for start in range(0, len(content), _BASE64_CHUNK_BYTES):
+                yield base64.b64encode(view[start : start + _BASE64_CHUNK_BYTES])
+            yield b'"'
+
+    return length, chunks()
+
+
+async def _upload_in_json(ctx: ToolContext, call: _ApiCall, body: Any) -> TextFile:
+    """POST ``body`` as JSON with each artifact reference replaced by its file."""
+    pieces, references = _json_template(body)
+    limits = mcp_artifacts.Limits.of(ctx.settings)
+    consumer = ctx.user.consumer_name
+    read: dict[str, tuple[mcp_artifacts.Artifact, bytes]] = {}
+    parts: list[tuple[bytes, bytes]] = []
+    sent: list[dict[str, Any]] = []
+    try:
+        with mcp_artifacts.transfer_slot(consumer, limits):
+            # As with the multipart upload: every artifact is read back and
+            # checked before the first byte leaves.
+            total = 0
+            for reference in references:
+                if reference.artifact_id not in read:
+                    try:
+                        read[reference.artifact_id] = await mcp_artifacts.read(
+                            ctx.db, consumer, reference.artifact_id
+                        )
+                    except mcp_artifacts.ArtifactError as exc:
+                        raise ToolError(f"{reference.where}: {exc.detail}; nothing was sent") from exc
+                artifact, content = read[reference.artifact_id]
+                # Counted each time it stands in the body: that is what is sent.
+                total += artifact.size
+                if total > limits.max_bytes:
+                    raise ToolError(
+                        "One upload carries at most "
+                        f"{limits.max_bytes // mcp_artifacts.MIB} MiB of artifacts; nothing was sent"
+                    )
+                prefix = b""
+                if reference.form == "data_url":
+                    media = mcp_artifacts.clean_content_type(artifact.content_type)
+                    prefix = f"data:{media};base64,".encode()
+                parts.append((prefix, content))
+                sent.append(
+                    {
+                        "at": reference.where,
+                        "artifact_id": artifact.id,
+                        "as": reference.form,
+                        "filename": artifact.filename,
+                        "size": artifact.size,
+                        "sha256": artifact.sha256,
+                    }
+                )
+            length, chunks = _json_with_artifacts(pieces, parts)
+            result = await _send_api_call(
+                ctx,
+                call,
+                content=chunks,
+                content_headers={"Content-Type": "application/json", "Content-Length": str(length)},
+                no_answer=_UNKNOWN_OUTCOME,
+                binary_is_error=False,
+            )
+    except mcp_artifacts.ArtifactError as exc:
+        raise ToolError(exc.detail) from exc
+    result.meta["artifacts"] = sent
+    logger.info(
+        "MCP artifacts uploaded in JSON: consumer=%s api=%s status=%s artifacts=%s",
+        consumer,
+        call.api.route_id,
+        result.meta["status"],
+        ",".join(item["artifact_id"] for item in sent),
+    )
+    return result
+
+
 async def _upload_staged_artifacts(ctx: ToolContext, args: dict[str, Any]) -> TextFile:
     destination = args["destination"]
     unknown = sorted(set(destination) - {"api", "path", "query"})
@@ -2762,6 +2933,15 @@ async def _upload_staged_artifacts(ctx: ToolContext, args: dict[str, Any]) -> Te
     # The destination is a path on an API the administrator offered and this
     # key holds: never a URL, never a route nobody offered.
     call = await _resolve_api_call(ctx, api, "POST", path, query or {})
+    if args.get("json") is not None:
+        if args.get("artifacts") is not None or args.get("fields"):
+            raise ToolError(
+                "json is the whole request body: artifacts and fields are the parts of a "
+                "multipart upload and do not go with it"
+            )
+        return await _upload_in_json(ctx, call, args["json"])
+    if args.get("artifacts") is None:
+        raise ToolError("Pass artifacts (multipart file parts) or json (a JSON body)")
     form = _form_fields(args.get("fields") or {})
     parts = _artifact_parts(args["artifacts"])
 
@@ -2985,13 +3165,18 @@ UPLOAD_STAGED_ARTIFACTS_TOOL = Tool(
     name="upload_staged_artifacts",
     title="Upload staged artifacts",
     description=(
-        "Send staged artifacts to a gateway API from search_apis as one "
-        "multipart/form-data POST. Each entry of artifacts goes out as a file part: "
+        "Send staged artifacts to a gateway API from search_apis in one POST, either "
+        "as multipart/form-data (artifacts, fields) or inside a JSON body (json), "
+        "whichever the API takes. Multipart: each entry of artifacts goes out as a file part: "
         "artifact_id (from download_artifact or stage_artifacts — an entry of "
         "stage_artifacts' answer can be passed as it is — or from the MCP host staging a "
         "workspace file with POST /api/mcp/artifacts), the form field it is sent in "
         '(default "file") and optionally another filename. fields are the text '
-        "parts. Only artifacts this API key staged can be sent, and each is checked "
+        "parts. JSON, for an API that takes a file as base64 text: json is the request "
+        'body, and wherever it holds {"$artifact": "<artifact_id>"} that file is sent '
+        'in its place as a base64 string, or with "as": "data_url" as '
+        "data:<type>;base64,…; the base64 never passes through you. "
+        "Only artifacts this API key staged can be sent, and each is checked "
         "against its recorded size and SHA-256 first: if one is missing, expired or "
         "damaged, nothing is sent. Returns the HTTP status, content type and "
         "response text like call_api (a binary answer is left out; the status says "
@@ -3040,8 +3225,15 @@ UPLOAD_STAGED_ARTIFACTS_TOOL = Tool(
                 "type": "object",
                 "description": "Text form fields: name → string, number, boolean or a list of them",
             },
+            "json": {
+                "description": (
+                    "JSON request body, instead of artifacts and fields: "
+                    '{"$artifact": "<artifact_id>"} (optionally "as": "data_url") stands '
+                    "where a file's base64 text goes"
+                ),
+            },
         },
-        ("destination", "artifacts"),
+        ("destination",),
     ),
     handler=_upload_staged_artifacts,
     read_only=False,

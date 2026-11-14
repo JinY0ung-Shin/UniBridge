@@ -1467,7 +1467,7 @@
       },
       "artifacts": {
         "label": "File artifacts (download_artifact · stage_artifacts · upload_staged_artifacts)",
-        "hint": "Stages an S3 object, a NAS file or a gateway API's binary response on UniBridge for a short time and returns only its id, size, SHA-256 and type. The MCP host fetches the bytes from /api/mcp/artifacts/<id> with the same key, and can stage a local file there. A small file can instead come back in the result itself as a standard MCP embedded resource (return_mode=resource). Staged files can be posted as multipart/form-data to the gateway APIs chosen below. It has no grant of its own: each source needs its usual one (s3-api, nas-api or the offered route)."
+        "hint": "Stages an S3 object, a NAS file or a gateway API's binary response on UniBridge for a short time and returns only its id, size, SHA-256 and type. The MCP host fetches the bytes from /api/mcp/artifacts/<id> with the same key, and can stage a local file there. A small file can instead come back in the result itself as a standard MCP embedded resource (return_mode=resource). Staged files can be posted to the gateway APIs chosen below as multipart/form-data, or inside a JSON body for an API that takes a file as base64. It has no grant of its own: each source needs its usual one (s3-api, nas-api or the offered route)."
       },
       "external": {
         "label": "External MCP servers",

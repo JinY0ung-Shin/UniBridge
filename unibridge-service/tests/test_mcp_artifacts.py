@@ -838,6 +838,203 @@ async def test_upload_posts_staged_artifacts_as_multipart(client, seeded_db, adm
     assert len(await _rows(seeded_db)) == 2
 
 
+# ── upload_staged_artifacts: files inside a JSON body ───────────────────────
+
+
+async def test_upload_puts_staged_artifacts_into_a_json_body(client, seeded_db, admin_token, gateway):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await _expose(client, admin_token, "orders")
+    # Longer than one encoding chunk and not a multiple of 3: the chunks' base64
+    # has to join into the base64 of the whole.
+    photo = bytes(range(256)) * 2000 + b"\x01"
+    photo_id = (await _stage(client, headers, photo, name="photo.png", content_type="image/png")).json()["artifact_id"]
+    scan_id = (await _stage(client, headers, BINARY, name="scan.pdf")).json()["artifact_id"]
+
+    gateway.reply = httpx.Response(200, json={"defects": 2})
+    with _routes():
+        result = await _call(
+            client,
+            headers,
+            "upload_staged_artifacts",
+            {
+                "destination": {"api": "orders", "path": "/api/ext/orders/analyze", "query": {"v": 2}},
+                "json": {
+                    "prompt": '불량 위치 "찾기"',
+                    "image": {"$artifact": photo_id},
+                    "messages": [
+                        {"content": [{"type": "image_url", "image_url": {"url": {"$artifact": photo_id, "as": "data_url"}}}]}
+                    ],
+                    "attachment": {"$artifact": scan_id, "as": "base64"},
+                    "options": {"threshold": 0.5, "labels": None, "keep": True},
+                },
+            },
+        )
+    assert result["isError"] is False, result
+    meta = json.loads(_text(result, 0))
+    assert meta["status"] == 200 and meta["api"] == "orders" and meta["method"] == "POST"
+    described = {"filename": "photo.png", "size": len(photo), "sha256": _sha(photo)}
+    assert meta["artifacts"] == [
+        {"at": "json.image", "artifact_id": photo_id, "as": "base64", **described},
+        {"at": "json.messages[0].content[0].image_url.url", "artifact_id": photo_id, "as": "data_url", **described},
+        {
+            "at": "json.attachment",
+            "artifact_id": scan_id,
+            "as": "base64",
+            "filename": "scan.pdf",
+            "size": len(BINARY),
+            "sha256": _sha(BINARY),
+        },
+    ]
+    assert json.loads(_text(result, 1)) == {"defects": 2}
+
+    sent = gateway.external[-1]
+    assert sent.method == "POST" and sent.url.path == "/api/ext/orders/analyze"
+    assert sent.url.params["v"] == "2"
+    assert sent.headers["apikey"] == "key:agent"
+    assert sent.headers["content-type"] == "application/json"
+    assert sent.headers["content-length"] == str(len(sent.content))
+    assert "transfer-encoding" not in sent.headers
+    encoded = base64.b64encode(photo).decode()
+    assert json.loads(sent.content) == {
+        "prompt": '불량 위치 "찾기"',
+        "image": encoded,
+        "messages": [
+            {"content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded}"}}]}
+        ],
+        "attachment": base64.b64encode(BINARY).decode(),
+        "options": {"threshold": 0.5, "labels": None, "keep": True},
+    }
+    # Sending does not consume: both stay staged until they expire.
+    assert len(await _rows(seeded_db)) == 2
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"artifacts": [{"artifact_id": "0" * 32}]}, "do not go with it"),
+        ({"fields": {"title": "x"}}, "do not go with it"),
+        ({"json": None}, "Pass artifacts (multipart file parts) or json"),
+        ({"json": {"prompt": "no file"}}, "sent with call_api"),
+        ({"json": {"image": {"$artifact": "GOOD", "filename": "a.png"}}}, "json.image must be"),
+        ({"json": {"image": {"$artifact": "GOOD", "as": "hex"}}}, "json.image must be"),
+        ({"json": {"images": [{"$artifact": 7}]}}, "json.images[0] must be"),
+        ({"json": {"images": [{"$artifact": "GOOD"}] * 11}}, "at most 10 artifact references"),
+        ({"json": {"image": {"$artifact": "0" * 32}}}, "json.image: Artifact not found; nothing was sent"),
+        ({"json": {"a": {"$artifact": "GOOD"}, "b": {"$artifact": "/etc/passwd"}}}, "json.b: Artifact not found"),
+        ({"destination": {"api": "orders", "path": "/api/ext/orders/admin/x"}}, "another gateway route"),
+        ({"destination": {"api": "status"}}, "not POST"),
+    ],
+)
+async def test_json_upload_refuses_before_anything_is_sent(client, seeded_db, admin_token, gateway, change, message):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await _expose(client, admin_token, "orders", "status")
+    good = (await _stage(client, headers, BINARY)).json()["artifact_id"]
+    arguments = {
+        "destination": {"api": "orders", "path": "/api/ext/orders/analyze"},
+        "json": {"image": {"$artifact": "GOOD"}},
+        **change,
+    }
+    arguments = json.loads(json.dumps(arguments).replace("GOOD", good))
+    with _routes():
+        result = await _call(client, headers, "upload_staged_artifacts", arguments)
+    assert result["isError"] is True
+    assert message in _text(result)
+    assert gateway.external == []
+
+
+async def test_json_upload_takes_only_the_keys_own_live_artifacts(client, seeded_db, admin_token, gateway):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
+    other = await _create_api_key(seeded_db, "other", routes=EXT_KEY_ROUTES)
+    await _expose(client, admin_token, "orders")
+    mine = (await _stage(client, headers, BINARY)).json()["artifact_id"]
+    theirs = (await _stage(client, other, b"\x00their bytes")).json()["artifact_id"]
+    expired = (await _stage(client, headers, b"\x00old")).json()["artifact_id"]
+    await _backdate(seeded_db, expired, seconds=901)
+    with _routes():
+        for bad in (theirs, expired):
+            result = await _call(
+                client,
+                headers,
+                "upload_staged_artifacts",
+                {
+                    "destination": {"api": "orders", "path": "/api/ext/orders/analyze"},
+                    "json": {"first": {"$artifact": mine}, "second": {"$artifact": bad}},
+                },
+            )
+            assert result["isError"] is True
+            assert "json.second: Artifact not found; nothing was sent" in _text(result)
+    assert gateway.external == []
+
+
+async def test_json_upload_counts_a_file_each_time_it_is_sent(client, seeded_db, admin_token, gateway):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await _put_settings(client, admin_token, exposed_routes=[{"route_id": "orders"}], artifact_max_mb=1)
+    artifact_id = (await _stage(client, headers, b"\x07" * (600 * 1024))).json()["artifact_id"]
+    destination = {"api": "orders", "path": "/api/ext/orders/analyze"}
+    with _routes():
+        result = await _call(
+            client, headers, "upload_staged_artifacts", {"destination": destination, "json": [{"$artifact": artifact_id}]}
+        )
+        assert result["isError"] is False, result
+        result = await _call(
+            client,
+            headers,
+            "upload_staged_artifacts",
+            {"destination": destination, "json": [{"$artifact": artifact_id}, {"$artifact": artifact_id}]},
+        )
+    assert result["isError"] is True
+    assert "at most 1 MiB of artifacts; nothing was sent" in _text(result)
+    assert len(gateway.external) == 1
+
+
+async def test_json_upload_reports_a_refusal_and_an_unknown_outcome(client, seeded_db, admin_token, gateway):
+    headers = await _create_api_key(seeded_db, routes=EXT_KEY_ROUTES)
+    await _expose(client, admin_token, "orders")
+    artifact_id = (await _stage(client, headers, BINARY)).json()["artifact_id"]
+    arguments = {
+        "destination": {"api": "orders", "path": "/api/ext/orders/analyze"},
+        "json": {"image": {"$artifact": artifact_id}},
+    }
+    with _routes():
+        gateway.reply = httpx.Response(422, json={"detail": "not an image"})
+        result = await _call(client, headers, "upload_staged_artifacts", arguments)
+        assert result["isError"] is True
+        assert json.loads(_text(result, 0))["status"] == 422
+        assert "not an image" in _text(result, 1)
+        with patch.object(gateway, "handle_async_request", side_effect=httpx.ReadTimeout("slow")):
+            result = await _call(client, headers, "upload_staged_artifacts", arguments)
+    assert result["isError"] is True
+    assert "whether it processed the upload is not known" in _text(result)
+
+
+async def test_a_json_body_is_encoded_as_it_is_sent():
+    """The body is never built whole: that would hold the base64 several times over."""
+    pieces, references = mcp_tools._json_template(
+        {"a": {"$artifact": "x"}, "text": "a\"b", "list": [1, {"$artifact": "y", "as": "data_url"}]}
+    )
+    assert [(r.where, r.artifact_id, r.form) for r in references] == [
+        ("json.a", "x", "base64"),
+        ("json.list[1]", "y", "data_url"),
+    ]
+    assert pieces == [b'{"a":', b',"text":"a\\"b","list":[1,', b"]}"]
+    file = bytes(range(256)) * 3000  # 768 kB: four chunks
+    length, chunks = mcp_tools._json_with_artifacts(pieces, [(b"", file), (b"data:image/png;base64,", b"")])
+    sent = [chunk async for chunk in chunks]
+    assert max(len(chunk) for chunk in sent) <= 4 * mcp_tools._BASE64_CHUNK_BYTES // 3
+    body = b"".join(sent)
+    assert length == len(body)
+    assert json.loads(body) == {
+        "a": base64.b64encode(file).decode(),
+        "text": 'a"b',
+        "list": [1, "data:image/png;base64,"],
+    }
+    # A reference as the whole body, and values a JSON body cannot carry.
+    assert mcp_tools._json_template({"$artifact": "x"})[0] == [b"", b""]
+    for bad in ({"n": float("nan"), "f": {"$artifact": "x"}}, {"s": "\ud800", "f": {"$artifact": "x"}}):
+        with pytest.raises(mcp_tools.ToolError, match="cannot carry"):
+            mcp_tools._json_template(bad)
+
+
 # ── Workspace files staged through the MCP connection ───────────────────────
 
 

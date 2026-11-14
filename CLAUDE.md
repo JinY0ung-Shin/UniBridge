@@ -112,7 +112,11 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   standard MCP `EmbeddedResource`; its shape (`artifact://<sha256>/<name>`, `mimeType`,
   `blob`, `_meta.size`/`_meta.sha256`) is what pi-gateway saves into a sandbox, so change it
   only together with that host. Only that block is standard MCP: staging by id and
-  `upload_staged_artifacts` are UniBridge extensions, and docs must keep saying so. `stage_artifacts` takes a workspace file
+  `upload_staged_artifacts` are UniBridge extensions, and docs must keep saying so.
+  `upload_staged_artifacts` sends multipart parts or, with `json`, a JSON body whose
+  `{"$artifact": id}` objects become the file's base64: that body is streamed
+  (`_json_with_artifacts`) — built whole it costs over four times the file in memory —
+  and `call_api`'s `body` stays literal (no references there). `stage_artifacts` takes a workspace file
   through the MCP connection: its `file` argument carries `"x-workspace-file": true` (`mcp_tools.WORKSPACE_FILE_KEYWORD`),
   pi-gateway's mark for "the host fills this in" — the object's keys (`filename`, `mimeType`, `size`, `sha256`, `data`) are
   what pi-gateway sends, so change them only together with that host. Keep it that way round: sources are read through

@@ -707,9 +707,10 @@ http_headers = { apikey = "<API_KEY>" }
 
   The other way round, a file of the agent's workspace is staged and
   `upload_staged_artifacts` posts staged artifacts to an offered gateway API
-  as one `multipart/form-data` request (`destination` = API and path,
-  `artifacts` = id, form field and optional file name each, `fields` = text
-  parts). There are two ways to stage:
+  in one request, in the form the API takes: `multipart/form-data`
+  (`destination` = API and path, `artifacts` = id, form field and optional
+  file name each, `fields` = text parts) or inside a JSON body (`json`, see
+  below). There are two ways to stage:
 
   - **Through the MCP connection — `stage_artifacts`.** Its `file` argument is
     marked `"x-workspace-file": true` in the tool's schema. A host that knows
@@ -756,9 +757,24 @@ http_headers = { apikey = "<API_KEY>" }
     has side effects: check first, or send the same idempotency key again
     where the API takes one as a field or query parameter. A binary answer is
     left out of the result; the status alone says whether the upload worked.
-  - Multipart is all an upload can be. A large JSON or base64 request body
-    (a model or batch API that takes its input inline) cannot be built from
-    an artifact reference: that is not covered.
+  - An API that takes a file as base64 text inside JSON (an image for a vision
+    or inspection model, say) gets `json` instead of `artifacts` and `fields`:
+    the request body, with `{"$artifact": "<artifact_id>"}` wherever a file
+    goes.
+
+    ```json
+    {"destination": {"api": "vision", "path": "/api/vision/analyze"},
+     "json": {"prompt": "find the defect", "image": {"$artifact": "<artifact_id>"}}}
+    ```
+
+    UniBridge sends the body with that object replaced by the file's base64
+    string, or by `data:<type>;base64,…` with `"as": "data_url"` (the type is
+    the staged one), so the model never writes or reads the base64. At most
+    ten references; a file counts toward the upload's size once per reference;
+    an object holding `$artifact` with anything else but `as` is refused, not
+    sent as it is. The body is encoded while it is sent, so it costs no more
+    memory than the file. `call_api` sends its `body` exactly as written and
+    knows no references.
   - Limits are on the **MCP** page: one artifact's size (default 32 MiB, at
     most 90: it crosses the proxies' `client_max_body_size 100m` in one
     body), lifetime (default 15 minutes), bytes staged per key (256 MiB) and
