@@ -19,7 +19,7 @@ RETENTION_DAYS="${RETENTION_DAYS:-14}"
 
 # Blue-green layout (mirrors scripts/deploy-bluegreen.sh).
 INFRA_PROJECT="${UNIBRIDGE_INFRA_PROJECT:-unibridge-infra}"
-BLUEGREEN_STATE_FILE="${BLUEGREEN_STATE_FILE:-$PROJECT_ROOT/.deploy/bluegreen-active}"
+BLUEGREEN_STATE_FILE="${BLUEGREEN_STATE_FILE:-${BLUEGREEN_STATE_DIR:-$PROJECT_ROOT/.deploy}/bluegreen-active}"
 APP_PROJECT_PREFIX="unibridge-"
 APP_COLORS=(blue green)
 

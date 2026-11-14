@@ -1,6 +1,6 @@
 # API Hub (UniBridge)
 
-Internal API/DB gateway platform. Register multiple databases (PostgreSQL, MSSQL, ClickHouse), execute SQL through a single endpoint, manage API routes via APISIX, and control access with RBAC + API keys.
+Internal API/DB gateway platform. Register multiple databases (PostgreSQL, MSSQL, ClickHouse, Neo4j), execute SQL through a single endpoint, manage API routes via APISIX, and control access with RBAC + API keys.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ Browser ──HTTPS──> unibridge-ui (nginx)
                        ├── /_api/* ──> unibridge-service (FastAPI)
                        └── /api/*  ──> apisix (API Gateway)
                                           │
-                                          ├── /api/query/*     → Registered databases (Postgres, MSSQL, ClickHouse)
+                                          ├── /api/query/*     → Registered databases (Postgres, MSSQL, ClickHouse, Neo4j)
                                           ├── /api/llm/v1/messages
                                           │                  → llm-converter → Bifrost
                                           ├── /api/llm/v1/responses
@@ -30,7 +30,7 @@ Prometheus ── APISIX/Bifrost/FastAPI metrics + DB TCP probes
 Bifrost    ── LLM gateway behind /api/llm (UI via bifrost-tls)
 ```
 
-**Services (11):** etcd, APISIX, Keycloak + Postgres, unibridge-service, Prometheus, Blackbox Exporter, Grafana, Bifrost + bifrost-tls, unibridge-ui
+**Services (`docker-compose.yml`):** etcd + etcd-init, APISIX, Keycloak + its Postgres, unibridge-db (the meta-store Postgres), unibridge-service, llm-converter, Prometheus, Blackbox Exporter, Alertmanager, Grafana, Bifrost + bifrost-tls, unibridge-ui
 
 ## Prerequisites
 
@@ -51,17 +51,20 @@ cp .env.example .env
 
 **Must set before first boot:**
 
-`.env.example` intentionally leaves deployment secrets blank. After `cp .env.example .env`, fill in the values below before running `docker compose up`.
+`.env.example` intentionally leaves deployment secrets blank. After `cp .env.example .env`, fill in the values below before running `docker compose up`. Compose refuses to start while a fail-fast one is blank or missing.
 
 | Variable | Description |
 |----------|-------------|
 | `ENCRYPTION_KEY` | Fail-fast secret used to encrypt stored database credentials. Generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `UNIBRIDGE_DB_PASSWORD` | Fail-fast secret for `unibridge-db`, the Postgres meta store |
 | `KC_ADMIN_PASSWORD` | Fail-fast secret for the Keycloak admin console |
 | `KC_DB_PASSWORD` | Fail-fast secret for the Keycloak database |
 | `APISIX_ADMIN_KEY` | Fail-fast secret for the APISIX admin API |
 | `APISIX_INTERNAL_PROXY_SECRET` | Fail-fast secret APISIX injects as `X-UniBridge-Internal-Proxy`; unibridge-service trusts gateway-set API-key identity headers only on requests carrying it. Generate a **dedicated** value with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"` — never reuse `APISIX_ADMIN_KEY` |
 | `KEYCLOAK_SERVICE_CLIENT_SECRET` | Fail-fast shared secret used by Keycloak and unibridge-service |
 | `BIFROST_ENCRYPTION_KEY`, `BIFROST_ADMIN_PASSWORD`, `BIFROST_TEST_VK` | Fail-fast secrets for the LLM gateway; see [Bifrost](#bifrost) step 1 for their format |
+| `GRAFANA_ADMIN_PASSWORD` | Fail-fast secret for the Grafana admin login |
+| `GRAFANA_OAUTH_CLIENT_SECRET` | Fail-fast secret of the `grafana` Keycloak client (UniBridge SSO for Grafana) |
 | `ETCD_ROOT_PASSWORD` | Set this unless `ETCD_ALLOW_NONE_AUTH=yes` for dev-only etcd without auth |
 | `HOST_IP` | Server IP or hostname that browsers access (not `localhost` in production) |
 | `JWT_SECRET` | Required when not using Keycloak-issued tokens; generate a separate strong value |
@@ -394,14 +397,19 @@ The default `KEYCLOAK_REDIRECT_URI` (`https://<HOST_IP>:<port>/*`) already does.
 cd unibridge-service
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-pip install pytest pytest-asyncio pytest-cov
+pip install -r requirements-dev.txt   # pytest, ruff and the test helpers
 
 # Minimal .env for temporary backend-only dev
 # Do not reuse these example values for Docker/production deployments.
 export META_DB_URL="sqlite+aiosqlite:///data/meta.db"
 export ENCRYPTION_KEY="dev-key-change-in-prod-32chars!"
 export JWT_SECRET="dev-jwt-secret"
+export APISIX_ADMIN_KEY="dev-apisix-admin-key"
+export APISIX_INTERNAL_PROXY_SECRET="dev-internal-proxy-secret"
 export ENABLE_DEV_TOKEN_ENDPOINT=true
+# Optional: serve /docs, /redoc and /openapi.json. No compose file passes it,
+# so it only works on a run like this one.
+export ENABLE_API_DOCS=true
 
 uvicorn app.main:app --reload --port 8000
 ```
@@ -454,7 +462,7 @@ Operational defaults in `docker-compose.yml`:
 - Docker `json-file` logs rotate at `50m` with `5` retained files per service.
 - Each service has an initial `deploy.resources.limits` CPU/memory cap for Docker Compose v2, plus `mem_limit`/`cpus` fallbacks for older Compose compatibility. Treat these as conservative starting values and tune from `docker stats` on the deploy host.
 - `unibridge-service` and `unibridge-ui` run with `init: true` for PID 1 signal handling and child process reaping.
-- Prometheus scrapes APISIX, Bifrost, unibridge-service `/metrics`, and Blackbox TCP probes for the Postgres-backed services. Alert rules live under `prometheus/rules/`.
+- Prometheus scrapes APISIX, Bifrost, unibridge-service `/metrics`, and a Blackbox TCP probe of the Keycloak database. Alert rules live under `prometheus/rules/`.
 
 ### API key expiry at the gateway
 
@@ -816,8 +824,10 @@ aliases are not decorative: `claude/qwen3.5-32b` is callable at
 `/api/llm/v1/messages` exactly like `qwen3.5-32b`, because `llm-converter` strips
 the prefix on the way in. Every entry carries both the OpenAI and Anthropic field
 sets — including the `display_name` Claude Code requires — so either client's
-parser reads the same response. Set `CONVERTER_MODEL_ALIAS_PREFIX=""` to turn
-aliasing off entirely.
+parser reads the same response. The `claude/` prefix is fixed in both compose
+layouts: neither passes `CONVERTER_MODEL_ALIAS_PREFIX` to the converter, so
+setting it in `.env` changes nothing (only a converter started by hand reads it,
+and an empty value there turns aliasing off).
 
 **Context windows from SMG.** Bifrost lists a model served through a Shepherd
 Model Gateway (SMG) by id alone, so a client cannot read its context window
@@ -982,7 +992,7 @@ re-applied on every unibridge-service boot (no APISIX restart involved, and it
 runs even with `APISIX_PROVISION_ON_START=false`), and series recorded before
 the switch (or before a route rename) keep their old label value — the in-app
 monitoring bridges id↔name when filtering and merges id/name rows in the
-usages and top-routes views, but Grafana panels (and any external PromQL
+usages view, but Grafana panels (and any external PromQL
 pinned to a route id) show the old and new label as separate series across
 that boundary.
 Avoid giving two routes the same name: their metrics would merge into one
@@ -1002,20 +1012,22 @@ under `/v1/mcp/*`, not `/metrics` other than through `llm-metrics`. Off the
 gateway, Bifrost answers inference only with the virtual key APISIX injects.
 
 **`/api/llm-bi` has been removed.** Earlier releases ran Bifrost side by side
-with LiteLLM on `/api/llm-bi` (the `llm-bi-*` routes, a second converter
-`llm-converter-bi`, the `BIFROST_GATEWAY_ROUTES` switch). Provisioning now
-deletes those routes and the `llm-converter-bi` upstream (on a blue-green host,
-the first deploy after updating does it), and `/api/llm-bi` answers a 404 that
-points to `/api/llm`, which serves the same endpoints. Point clients at
-`/api/llm`; grants for the `llm-bi-*` routes no longer do anything, and
-`BIFROST_GATEWAY_ROUTES` can go from `.env`. `llm-converter-bi` is no longer in
-either compose file, so on an existing host its container keeps running as an
-orphan. Remove it by name, not with `--remove-orphans`: find it with
-`docker ps -a --filter name=llm-converter-bi` and `docker rm -f` it, then
-`docker volume rm unibridge_llm-converter-bi-state` (or the
-`LLM_CONVERTER_BI_STATE_VOLUME` you set) if you do not want its stored
-responses ([`docs/blue-green-deploy.md`](docs/blue-green-deploy.md#upgrading-past-the-apillm-bi-removal)
-has the exact commands).
+with LiteLLM on `/api/llm-bi`. It now answers a 404 that points to `/api/llm`,
+which serves the same endpoints; grants for the old `llm-bi-*` routes do
+nothing. A host that ran it may still have the orphaned `llm-converter-bi`
+container: remove it by name, never with `--remove-orphans` or `down -v` (the
+volume names are fixed, so that would delete the shared data volumes).
+
+```bash
+# Expect unibridge-infra-llm-converter-bi-1
+docker ps -a --filter label=com.docker.compose.project=unibridge-infra \
+  --filter label=com.docker.compose.service=llm-converter-bi --format '{{.Names}}'
+docker stop unibridge-infra-llm-converter-bi-1
+docker rm unibridge-infra-llm-converter-bi-1
+# Optional: its previous_response_id store and its image
+docker volume rm unibridge_llm-converter-bi-state
+docker image rm llm-converter:bifrost-test
+```
 
 The Bifrost UI is served over HTTPS by the `bifrost-tls` nginx at
 `https://<HOST_IP>:<BIFROST_UI_PORT>` (default `18443`), because Bifrost itself
@@ -1263,8 +1275,8 @@ Earlier releases could run LiteLLM behind `/api/llm` (`LLM_GATEWAY=litellm`,
 the old default) and captured its conversations for fine-tuning. Both are gone:
 `litellm` and `litellm-db` are no longer in any compose file, Prometheus no
 longer scrapes or alerts on them, and the LLM Monitoring page has no LiteLLM
-button. Boot provisioning deletes the `llm-admin` route and the `litellm`
-upstream from APISIX (an upstream that a route of your own still uses stays).
+button. Releases up to the removal deleted the `llm-admin` route and the
+`litellm` upstream from APISIX at boot; later ones no longer touch them.
 Nothing deletes data, so a host that ran LiteLLM keeps its containers, volumes,
 dumps and Keycloak client until you remove them:
 
@@ -1274,13 +1286,12 @@ dumps and Keycloak client until you remove them:
    new service image no longer keeps quiet. The data volume stays:
    `docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --force-recreate prometheus`
    (single stack: `docker compose up -d --force-recreate prometheus`).
-2. **Deploy as usual.** The deploy refuses an `LLM_GATEWAY` in `.env` other
-   than `bifrost`. Nothing reads it or any `LITELLM_*` variable any more, so
-   they can go from `.env` once no checkout from before this release will be
-   deployed again. Until then keep `LLM_GATEWAY=bifrost` (an older checkout reads
-   a missing value as `litellm` and would start LiteLLM again) and
-   `LITELLM_MASTER_KEY`, `LITELLM_DB_PASSWORD`, `LITELLM_OAUTH_CLIENT_SECRET`
-   (its compose files require them, so every compose command fails without). A host still serving
+2. **Deploy as usual.** Nothing reads `LLM_GATEWAY` or any `LITELLM_*`
+   variable any more, so they can go from `.env`. Deploying a checkout from
+   before 2026-10-28 (the LiteLLM removal) needs them back: it reads a missing
+   `LLM_GATEWAY` as `litellm`, so set `LLM_GATEWAY=bifrost`, and its compose
+   files require `LITELLM_MASTER_KEY`, `LITELLM_DB_PASSWORD` and
+   `LITELLM_OAUTH_CLIENT_SECRET`. A host still serving
    `/api/llm` from LiteLLM must first register its models in Bifrost under the
    same names ([Bifrost](#bifrost) steps 1–3); LiteLLM's models, keys and spend
    history are not migrated. A bare-code run (`uvicorn` from `unibridge-service/`)
@@ -1413,6 +1424,23 @@ Until the old series age out of the selected range, windows that mix old and
 new buckets can read a little off. Query execution time
 (`unibridge_query_duration_seconds`) now has buckets up to the 300s query
 timeout; that ships with the service image and needs no extra step.
+
+### Read-only queries
+
+A key or role that may only read (and MCP `run_query`) gets a statement
+refused unless the gate reads it as one read. Each engine's own quoting,
+comment, dollar-quote/heredoc and literal rules are applied when the SQL is
+read (`unibridge-service/app/services/sql_analysis.py`). Besides the obvious
+writes, a read-only caller is refused:
+
+- `SELECT … INTO` on Postgres and MSSQL, `INTO #tmp` included: it creates a
+  table.
+- On MSSQL, a batch that adds session or control statements after the SELECT
+  without a semicolon (`USE`, `SET`, `DECLARE`, `WAITFOR`, `BEGIN`/`COMMIT`,
+  `IF`, …): `USE` and `SET` would stay on the pooled connection.
+- Text the parser is not given (over 50,000 tokens, or a chain of more than 32
+  subscripts) is typed by a keyword scan instead, and MCP `run_query` refuses
+  it.
 
 ### DB query monitoring
 
@@ -1750,17 +1778,19 @@ docker volume rm unibridge_etcd-data
 docker compose -p unibridge-infra -f docker-compose.infra.yml up -d --wait
 ```
 
-> APISIX 라우트와 업스트림은 `unibridge-service` 시작 시 자동으로 재생성됩니다. 수동으로 추가한
-> 커스텀 라우트/업스트림만 다시 등록하면 됩니다.
+> 블루/그린에서는 정상 배포로 만든 색이 `APISIX_PROVISION_ON_START=false`로 떠 있어 재시작만으로는
+> APISIX 라우트와 업스트림이 생기지 않습니다. 볼륨 초기화 후 `scripts/deploy-bluegreen.sh deploy`를
+> 실행하세요. 라우트가 없으면 새 색에서 강제로 재프로비저닝합니다(단일 스택은 `unibridge-service`
+> 시작 시 자동으로 재생성). 수동으로 추가한 커스텀 라우트/업스트림만 다시 등록하면 됩니다.
 
 ## Key Features
 
-- **Multi-DB support** — PostgreSQL, MSSQL, ClickHouse via a single query endpoint
+- **Multi-DB support** — PostgreSQL, MSSQL, ClickHouse, Neo4j via a single query endpoint
 - **LLM Proxy** — Bifrost LLM gateway with centralized auth, usage metrics, and per-model analytics
 - **S3 Connections** — Register S3-compatible storage and browse objects through the gateway
 - **Alerts** — Rule-based alerting with webhook delivery and history
 - **APISIX Gateway** — Route management, upstream config, API key auth
-- **RBAC** — 22 granular permissions, dynamic role management
+- **RBAC** — granular permissions, dynamic role management
 - **API Keys** — External access with per-database/route restrictions
 - **Monitoring** — Prometheus metrics, request trends, latency percentiles, per-API-key × per-database query stats
 - **User Management** — Keycloak integration, role assignment

@@ -57,8 +57,10 @@ export LLM_TLS_VERIFY=false          # self-signed UI cert
 pytest -v
 ```
 
-If `LLM_API_KEY` is unset the suite reports all tests as skipped — safe to leave
-wired into CI behind a deployment-gated job.
+If `LLM_API_KEY` is unset or empty the suite reports all tests as skipped. The
+local release checks run it either way (there is no CI): live with a key, skip
+health without. A key in `e2e/.env` counts, so check skip health with an empty
+one (`LLM_API_KEY= pytest -v`); unsetting it is not enough.
 
 ## What is covered
 

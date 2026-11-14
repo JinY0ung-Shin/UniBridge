@@ -71,21 +71,27 @@ step "Frontend install/lint/test/build"
 )
 
 step "Shell script syntax"
-run bash -n backup/backup.sh backup/restore.sh backup/lib/*.sh keycloak/enable-self-registration.sh scripts/deploy-bluegreen.sh
-run sh -n apisix/docker-entrypoint.sh keycloak/docker-entrypoint.sh unibridge-ui/entrypoint.sh
+# One file per call: `bash -n a b` checks only a (b becomes its $1).
+for script in backup/backup.sh backup/restore.sh backup/lib/*.sh \
+  keycloak/enable-self-registration.sh scripts/*.sh; do
+  run bash -n "$script"
+done
+for script in apisix/docker-entrypoint.sh keycloak/docker-entrypoint.sh \
+  unibridge-ui/entrypoint.sh bifrost/entrypoint.sh etcd/init-auth.sh; do
+  run sh -n "$script"
+done
 
+# The E2E tests run live whenever LLM_API_KEY is set, including from the
+# gitignored e2e/.env that e2e/conftest.py loads; without it they skip.
+# RUN_LIVE_E2E only names the step.
 if [[ "${RUN_LIVE_E2E:-}" == "1" ]]; then
   step "Live E2E"
-  (
-    cd e2e
-    run pytest -v
-  )
 else
-  step "Live E2E skip health"
-  (
-    cd e2e
-    run pytest -v --tb=short
-  )
+  step "Live E2E skip health (live if LLM_API_KEY is set, e2e/.env included)"
 fi
+(
+  cd e2e
+  run pytest -v --tb=short
+)
 
 step "Release checks complete"

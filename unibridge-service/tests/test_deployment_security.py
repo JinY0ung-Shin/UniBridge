@@ -450,8 +450,8 @@ def test_prometheus_scrapes_service_and_loads_alert_rules() -> None:
     ]
     assert scrape_jobs["infra-db-tcp"]["metrics_path"] == "/probe"
     assert scrape_jobs["infra-db-tcp"]["params"] == {"module": ["tcp_connect"]}
-    # The LLM monitoring page and Grafana add Bifrost's counters to LiteLLM's,
-    # picking them out by this job name; bifrost/config.json whitelists /metrics.
+    # The LLM monitoring page and Grafana pick Bifrost's counters out by this
+    # job name; bifrost/config.json whitelists /metrics.
     assert scrape_jobs["bifrost"]["metrics_path"] == "/metrics"
     assert scrape_jobs["bifrost"]["static_configs"] == [{"targets": ["bifrost:8080"]}]
     assert "scheme" not in scrape_jobs["bifrost"]  # plain HTTP inside the network
@@ -513,6 +513,40 @@ def test_env_example_leaves_required_secrets_blank() -> None:
         ".env.example should leave required deployment secrets blank: "
         f"{non_blank_required}"
     )
+
+
+def _compose_required_variables() -> set[str]:
+    """What some compose file refuses to start without (``${NAME:?...}``),
+    leaving out what the deploy script exports itself."""
+    names: set[str] = set()
+    for path in COMPOSE_FILES:
+        names |= set(re.findall(r"\$\{([A-Z][A-Z0-9_]*):\?", path.read_text(encoding="utf-8")))
+    return names - DEPLOY_SCRIPT_PROVIDED_ENV
+
+
+def test_readme_lists_exactly_the_secrets_compose_requires() -> None:
+    # The table under "2. Edit .env" is the one list of them: .env.example
+    # points to it rather than keeping a copy that drifts.
+    section = (REPO_ROOT / "README.md").read_text(encoding="utf-8").split(
+        "**Must set before first boot:**", 1
+    )[1]
+    rows: list[str] = []
+    for line in section.splitlines():
+        if line.startswith("|"):
+            rows.append(line)
+        elif rows:
+            break
+    fail_fast = {
+        name
+        for row in rows
+        if "Fail-fast" in row
+        for name in re.findall(r"`([A-Z][A-Z0-9_]*)`", row.split("|")[1])
+    }
+    required = _compose_required_variables()
+    assert fail_fast == required
+    # Listed in .env.example, and blank there.
+    assignments = _parse_env_assignments(ENV_EXAMPLE_FILE)
+    assert {name: assignments.get(name) for name in required} == dict.fromkeys(required, "")
 
 
 def test_realm_export_keeps_only_service_account_user() -> None:
@@ -1009,8 +1043,8 @@ def test_require_existing_infra_healthy_rejects_crashed_or_failed_services() -> 
     assert failed_bootstrap.returncode == 1
     assert "infra service is not ready: etcd-init" in failed_bootstrap.stderr
 
-    # A color's llm-converter forwards to Bifrost under LLM_GATEWAY=bifrost but
-    # lives in another compose project, so no depends_on can hold it back: this
+    # A color's llm-converter forwards to Bifrost but lives in another compose
+    # project, so no depends_on can hold it back: this
     # check is what refuses an app deploy until Bifrost is healthy (#95).
     booting = _run_require_existing_infra_healthy({"bifrost": "running|starting|unless-stopped|0"})
     assert booting.returncode == 1
@@ -1050,7 +1084,6 @@ deploy_color blue
     env["ENV_FILE"] = str(tmp_path / "absent.env")
     env["STOP_OLD_AFTER_PROMOTE"] = "false"
     env.pop("APISIX_ADMIN_KEY", None)
-    env.pop("LLM_GATEWAY", None)
     env["BIFROST_TEST_VK"] = BIFROST_VK
     for name in ("BIFROST_UI_HOSTNAME", "TLS_BIFROST_CERT_PATH", "TLS_BIFROST_KEY_PATH"):
         env.pop(name, None)
@@ -1261,6 +1294,18 @@ def test_active_color_state_write_is_atomic(tmp_path: Path) -> None:
     assert (state_dir / "bluegreen-active").read_text(encoding="utf-8") == "green\n"
     assert list(state_dir.glob("*.tmp.*")) == []
 
+    # The backup reads the file where the deploy wrote it.
+    env.pop("BLUEGREEN_STATE_FILE", None)
+    backup_common = REPO_ROOT / "backup" / "lib" / "common.sh"
+    result = subprocess.run(
+        ["bash", "-c", f"source {shlex.quote(str(backup_common))}; bluegreen_active_color"],
+        check=False,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert (result.returncode, result.stdout) == (0, "green"), result.stderr
+
 
 def test_active_color_write_failure_rolls_edge_and_apisix_back(tmp_path: Path) -> None:
     blocked_state_dir = tmp_path / "not-a-directory"
@@ -1334,9 +1379,6 @@ def test_bifrost_services_run_by_default_and_are_identical_in_both_layouts() -> 
         assert services["bifrost"]["ports"] == [
             "127.0.0.1:${BIFROST_TEST_ADMIN_PORT:-18080}:8080"
         ]
-        # The /api/llm-bi side-by-side test and its second converter are gone.
-        assert "llm-converter-bi" not in services
-        assert "llm-converter-bi-state" not in compose.get("volumes", {})
         assert services["bifrost-tls"]["ports"] == ["${BIFROST_UI_PORT:-18443}:443"]
 
     # The split layout is what production runs; it must not drift from the
@@ -2054,59 +2096,9 @@ def test_service_gets_the_bifrost_virtual_key() -> None:
         # Optional: without a usable key the service leaves /api/llm as it is
         # and logs why.
         assert env["BIFROST_TEST_VK"] == "${BIFROST_TEST_VK:-}", path.name
-        # The /api/llm-bi switch went with the routes.
-        assert "BIFROST_GATEWAY_ROUTES" not in env, path.name
-
-
-def test_llm_bi_switch_and_test_script_are_gone() -> None:
-    assert not (REPO_ROOT / "scripts" / "bifrost-test.sh").exists()
-    names = _env_example_names()
-    assert "BIFROST_GATEWAY_ROUTES" not in names
-    assert "LLM_CONVERTER_BI_STATE_VOLUME" not in names
 
 
 BIFROST_VK = "sk-bf-" + "v" * 32
-
-
-def _llm_bi_retired() -> dict[str, dict]:
-    """What boot provisioning leaves of /api/llm-bi: the 404 saying it is gone."""
-    from app.services import llm_routes
-    from app.services.apisix_system_resources import (
-        LLM_BI_NOT_FOUND_ROUTE_ID,
-        RETIRED_LLM_BI_ROUTE_IDS,
-        RETIRED_LLM_BI_UPSTREAM_ID,
-    )
-
-    resources: dict[str, dict] = {
-        f"routes/{LLM_BI_NOT_FOUND_ROUTE_ID}": llm_routes.retired_llm_bi_route(),
-        f"upstreams/{RETIRED_LLM_BI_UPSTREAM_ID}": None,
-    }
-    for route_id in RETIRED_LLM_BI_ROUTE_IDS:
-        resources[f"routes/{route_id}"] = None
-    return resources
-
-
-# What the /api/llm-bi side-by-side test left in APISIX, as an older release
-# installed it (shapes trimmed to what the deploy looks at).
-_LLM_BI_SIDE_BY_SIDE = {
-    "upstreams/llm-converter-bi": {"nodes": {"llm-converter-bi:4001": 1}},
-    "routes/llm-bi-proxy": {"uris": ["/api/llm-bi/v1/chat/completions"], "upstream_id": "bifrost"},
-    "routes/llm-bi-messages": {"uri": "/api/llm-bi/v1/messages", "upstream_id": "llm-converter-bi"},
-    "routes/llm-bi-responses": {"uri": "/api/llm-bi/v1/responses", "upstream_id": "llm-converter-bi"},
-    "routes/llm-bi-models": {"uri": "/api/llm-bi/v1/models", "upstream_id": "llm-converter-bi"},
-    "routes/llm-bi-not-found": {
-        "uri": "/api/llm-bi/*",
-        "plugins": {
-            "consumer-restriction": {
-                "type": "route_id",
-                "blacklist": ["llm-bi-not-found"],
-                "rejected_code": 404,
-                "rejected_msg": "/api/llm-bi (Bifrost) is switched off on this UniBridge "
-                "(BIFROST_GATEWAY_ROUTES=false); /api/llm serves the same endpoints.",
-            }
-        },
-    },
-}
 
 
 _DEPLOY_CORE_ROUTES = {
@@ -2164,17 +2156,6 @@ curl() {{
   for arg in "$@"; do [[ "$arg" == "%{{http_code}}" ]] && code_only=1; done
   local path="${{url#*/apisix/admin/}}"
   local file={shlex.quote(str(root))}/"$path"
-  if [[ "$path" == "routes" && -z "$code_only" ]]; then
-    local route first=1
-    printf '{{"list":['
-    for route in {shlex.quote(str(root))}/routes/*; do
-      [[ -n "$first" ]] || printf ','
-      first=""
-      cat "$route"
-    done
-    printf ']}}'
-    return 0
-  fi
   if [[ -f "$file" ]]; then
     if [[ -n "$code_only" ]]; then printf '200'; else cat "$file"; fi
     return 0
@@ -2204,10 +2185,9 @@ if apisix_has_core_routes; then echo yes; else echo no; fi
 def test_deploy_reprovisions_when_the_mcp_route_is_missing(tmp_path: Path) -> None:
     # Steady-state deploys boot with provisioning off, so the release that adds
     # /api/mcp only creates the route if its absence forces re-provisioning.
-    retired = _llm_bi_retired()
-    assert _deploy_has_core_routes(tmp_path / "present", retired, BIFROST_TEST_VK=BIFROST_VK)
+    assert _deploy_has_core_routes(tmp_path / "present", {}, BIFROST_TEST_VK=BIFROST_VK)
     assert not _deploy_has_core_routes(
-        tmp_path / "missing", {**retired, "routes/mcp-api": None}, BIFROST_TEST_VK=BIFROST_VK
+        tmp_path / "missing", {"routes/mcp-api": None}, BIFROST_TEST_VK=BIFROST_VK
     )
 
 
@@ -2225,7 +2205,7 @@ def test_deploy_reprovisions_when_the_mcp_route_lacks_the_artifact_paths(tmp_pat
         },
     }
     assert not _deploy_has_core_routes(
-        tmp_path, {**_llm_bi_retired(), "routes/mcp-api": before_artifacts}, BIFROST_TEST_VK=BIFROST_VK
+        tmp_path, {"routes/mcp-api": before_artifacts}, BIFROST_TEST_VK=BIFROST_VK
     )
     # What the check looks for is what provisioning writes.
     main_py = (REPO_ROOT / "unibridge-service" / "app" / "main.py").read_text(encoding="utf-8")
@@ -2238,12 +2218,8 @@ def test_deploy_reprovisions_when_the_network_routes_are_missing_or_stale(
 ) -> None:
     # The release that adds /api/network creates both routes only if their
     # absence forces re-provisioning on a deploy that boots with it off.
-    retired = _llm_bi_retired()
-
     def check(resources: dict[str, dict | None], case: str) -> bool:
-        return _deploy_has_core_routes(
-            tmp_path / case, {**retired, **resources}, BIFROST_TEST_VK=BIFROST_VK
-        )
+        return _deploy_has_core_routes(tmp_path / case, resources, BIFROST_TEST_VK=BIFROST_VK)
 
     assert check({}, "present")
     assert not check({"routes/network-api": None}, "read-missing")
@@ -2258,43 +2234,7 @@ def test_deploy_reprovisions_when_the_network_routes_are_missing_or_stale(
     )
 
 
-def test_deploy_reprovisions_until_the_llm_bi_routes_are_retired(tmp_path: Path) -> None:
-    retired = _llm_bi_retired()
-
-    def check(resources: dict[str, dict], case: str) -> bool:
-        return _deploy_has_core_routes(tmp_path / case, resources, BIFROST_TEST_VK=BIFROST_VK)
-
-    assert check(retired, "retired")
-    # Upgrading from the side-by-side test, switched on or off.
-    assert not check({**retired, **_LLM_BI_SIDE_BY_SIDE}, "side-by-side")
-    old_not_found = {"routes/llm-bi-not-found": _LLM_BI_SIDE_BY_SIDE["routes/llm-bi-not-found"]}
-    assert not check({**retired, **old_not_found}, "switched-off")
-    # Any one leftover is enough, and so is a missing 404 route.
-    for path, body in _LLM_BI_SIDE_BY_SIDE.items():
-        if path != "routes/llm-bi-not-found":
-            assert not check({**retired, path: body}, f"left-{path.replace('/', '-')}")
-    assert not check({**retired, "routes/llm-bi-not-found": None}, "no-not-found")
-
-
-def test_deploy_checks_the_ids_and_message_the_service_retires() -> None:
-    from app.services import llm_routes
-    from app.services.apisix_system_resources import (
-        LLM_BI_NOT_FOUND_ROUTE_ID,
-        RETIRED_LLM_BI_ROUTE_IDS,
-        RETIRED_LLM_BI_UPSTREAM_ID,
-    )
-
-    check = _shell_function(DEPLOY_SCRIPT_FILE.read_text(encoding="utf-8"), "apisix_llm_bi_retired")
-    for route_id in (*RETIRED_LLM_BI_ROUTE_IDS, LLM_BI_NOT_FOUND_ROUTE_ID):
-        assert route_id in check, route_id
-    assert f'"upstreams/{RETIRED_LLM_BI_UPSTREAM_ID}"' in check
-    # The script finds the marker in whitespace-stripped JSON.
-    compact = "".join(json.dumps(llm_routes.retired_llm_bi_route()).split())
-    assert "hasbeenremoved" in compact
-    assert '*"hasbeenremoved"*' in check
-
-
-def test_deploy_takes_the_same_virtual_keys_as_the_service() -> None:
+def test_deploy_and_bifrost_take_the_same_virtual_keys_as_the_service() -> None:
     from tests.test_llm_routes import VIRTUAL_KEY_CASES
 
     for value, usable in VIRTUAL_KEY_CASES:
@@ -2313,6 +2253,27 @@ def test_deploy_takes_the_same_virtual_keys_as_the_service() -> None:
             capture_output=True,
         )
         assert (result.returncode == 0) is usable, repr(value)
+
+        # The bifrost container refuses the same keys. A usable one gets past
+        # the checks to the image's own entrypoint, which is not here.
+        result = subprocess.run(
+            ["sh", str(BIFROST_DIR / "entrypoint.sh")],
+            env={
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "BIFROST_ENCRYPTION_KEY": "k" * 32,
+                "BIFROST_ADMIN_USERNAME": "admin",
+                "BIFROST_ADMIN_PASSWORD": "secret",
+                "BIFROST_TEST_VK": value,
+                "LANG": "C.UTF-8",
+                "LC_ALL": "C.UTF-8",
+            },
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        assert ("refusing to start" not in result.stderr) is usable, (repr(value), result.stderr)
+        if not usable:
+            assert result.returncode == 1, repr(value)
 
 
 def _run_vk_drift_warning(container_env: str | None, **env: str) -> str:
@@ -2367,22 +2328,19 @@ def test_deploy_checks_for_vk_drift_before_choosing_whether_to_provision() -> No
 
 
 def _llm_on_bifrost(vk: str = BIFROST_VK) -> dict[str, dict]:
-    """What boot provisioning leaves in APISIX for /api/llm."""
+    """What boot provisioning leaves in APISIX for /api/llm and the retired /api/llm-bi."""
     from app.services import llm_routes
     from app.services.apisix_system_resources import (
+        LLM_BI_NOT_FOUND_ROUTE_ID,
         LLM_NOT_FOUND_ROUTE_ID,
-        RETIRED_LITELLM_ROUTE_ID,
-        RETIRED_LITELLM_UPSTREAM_ID,
     )
 
     resources = {
         "upstreams/bifrost": llm_routes.BIFROST_UPSTREAM,
-        # What LiteLLM left behind goes at boot.
-        f"upstreams/{RETIRED_LITELLM_UPSTREAM_ID}": None,
-        f"routes/{RETIRED_LITELLM_ROUTE_ID}": None,
         "routes/llm-proxy": llm_routes.bifrost_proxy_route(vk),
         "routes/llm-metrics": llm_routes.bifrost_metrics_route(),
         f"routes/{LLM_NOT_FOUND_ROUTE_ID}": llm_routes.not_found_route(),
+        f"routes/{LLM_BI_NOT_FOUND_ROUTE_ID}": llm_routes.retired_llm_bi_route(),
     }
     for route_id in llm_routes.CONVERTER_ROUTE_IDS:
         resources[f"routes/{route_id}"] = llm_routes.converter_route(route_id, vk)
@@ -2392,8 +2350,6 @@ def _llm_on_bifrost(vk: str = BIFROST_VK) -> dict[str, dict]:
 # What a host that served /api/llm through LiteLLM had under the same route ids
 # (shapes trimmed to what the deploy looks at).
 _LLM_ON_LITELLM = {
-    "upstreams/litellm": {"scheme": "https", "nodes": {"litellm:4000": 1}},
-    "routes/llm-admin": {"uri": "/api/llm-admin/*", "upstream_id": "litellm"},
     "routes/llm-proxy": {"uri": "/api/llm/*", "upstream_id": "litellm"},
     "routes/llm-metrics": {"uri": "/api/llm/metrics", "upstream_id": "litellm"},
     "routes/llm-not-found": None,
@@ -2409,65 +2365,39 @@ def _raw_path_rewrite(route: dict) -> dict:
 
 def test_deploy_holds_the_llm_routes_to_bifrost(tmp_path: Path) -> None:
     def check(resources: dict[str, dict], case: str) -> bool:
-        return _deploy_has_core_routes(tmp_path / case, {**_llm_bi_retired(), **resources})
+        return _deploy_has_core_routes(tmp_path / case, resources)
 
     on_bifrost = _llm_on_bifrost()
     assert check(on_bifrost, "bifrost")
 
-    # A host still on LiteLLM's routes re-provisions onto Bifrost.
+    # Routes left on an older gateway re-provision onto Bifrost.
     assert not check({**on_bifrost, **_LLM_ON_LITELLM}, "litellm")
     # A rotated key, a missing 404 route, a route left on LiteLLM.
     assert not check(_llm_on_bifrost("sk-bf-" + "o" * 32), "rotated")
     assert not check({**on_bifrost, "routes/llm-not-found": None}, "no-not-found")
+    assert not check({**on_bifrost, "routes/llm-bi-not-found": None}, "no-llm-bi-not-found")
+    moved = {**on_bifrost["routes/llm-bi-not-found"], "uri": "/api/llm-bi"}
+    assert not check({**on_bifrost, "routes/llm-bi-not-found": moved}, "moved-llm-bi-not-found")
     stale_metrics = {**on_bifrost, "routes/llm-metrics": _LLM_ON_LITELLM["routes/llm-metrics"]}
     assert not check(stale_metrics, "stale-metrics")
     # A route to Bifrost forwarding the raw path lets %2e%2e reach Bifrost.
     for route_id in ("llm-proxy", "llm-metrics"):
         raw = {**on_bifrost, f"routes/{route_id}": _raw_path_rewrite(on_bifrost[f"routes/{route_id}"])}
         assert not check(raw, f"raw-{route_id}")
-    # LiteLLM's admin route left over from before re-provisions, which takes it
-    # and the upstream out. So does an upstream left behind once no route uses
-    # it; one that a route of someone else's still uses stays.
-    with_admin = {**on_bifrost, "routes/llm-admin": _LLM_ON_LITELLM["routes/llm-admin"]}
-    assert not check(with_admin, "with-llm-admin")
-    left_upstream = {**on_bifrost, "upstreams/litellm": _LLM_ON_LITELLM["upstreams/litellm"]}
-    assert not check(left_upstream, "left-upstream")
-    used_upstream = {**left_upstream, "routes/custom": {"uri": "/custom/*", "upstream_id": "litellm"}}
-    assert check(used_upstream, "used-upstream")
-    # An APISIX service can hold it as well.
-    service_listing = {"list": [{"value": {"id": "custom", "upstream_id": "litellm"}}]}
-    assert check({**left_upstream, "services": service_listing}, "service-upstream")
-
-
-def test_deploy_checks_the_ids_the_service_retires_for_litellm() -> None:
-    from app.services.apisix_system_resources import (
-        RETIRED_LITELLM_ROUTE_ID,
-        RETIRED_LITELLM_UPSTREAM_ID,
-    )
-
-    check = _shell_function(DEPLOY_SCRIPT_FILE.read_text(encoding="utf-8"), "apisix_llm_routes_match")
-    assert f'apisix_absent "routes/{RETIRED_LITELLM_ROUTE_ID}" || return 1' in check
-    assert f'apisix_absent "upstreams/{RETIRED_LITELLM_UPSTREAM_ID}"' in check
-    assert f'"upstream_id":"{RETIRED_LITELLM_UPSTREAM_ID}"' in check
 
 
 @pytest.mark.parametrize(
     "env, refused",
     [
         ({"BIFROST_TEST_VK": BIFROST_VK}, None),
-        ({"LLM_GATEWAY": "", "BIFROST_TEST_VK": BIFROST_VK}, None),
-        ({"LLM_GATEWAY": "bifrost", "BIFROST_TEST_VK": BIFROST_VK}, None),
-        # LiteLLM support is gone, whatever the spelling.
-        ({"LLM_GATEWAY": "litellm", "BIFROST_TEST_VK": BIFROST_VK}, "LiteLLM support was removed"),
-        ({"LLM_GATEWAY": "LiteLLM", "BIFROST_TEST_VK": BIFROST_VK}, "LiteLLM support was removed"),
-        ({"LLM_GATEWAY": "Bifrost", "BIFROST_TEST_VK": BIFROST_VK}, "LiteLLM support was removed"),
-        ({"LLM_GATEWAY": "lite", "BIFROST_TEST_VK": BIFROST_VK}, "LiteLLM support was removed"),
         # Without a usable key the service leaves /api/llm as it is.
         ({"BIFROST_TEST_VK": "sk-bf-short"}, "usable BIFROST_TEST_VK"),
         ({}, "usable BIFROST_TEST_VK"),
     ],
 )
-def test_deploy_refuses_a_gateway_it_cannot_run_on(env: dict[str, str], refused: str | None) -> None:
+def test_deploy_refuses_a_virtual_key_the_service_would_not_use(
+    env: dict[str, str], refused: str | None
+) -> None:
     result = subprocess.run(
         ["bash", "-c", f"source {shlex.quote(str(DEPLOY_SCRIPT_FILE))}; require_usable_llm_gateway"],
         env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "ENV_FILE": "/nonexistent", **env},
@@ -2482,63 +2412,14 @@ def test_deploy_refuses_a_gateway_it_cannot_run_on(env: dict[str, str], refused:
         assert BIFROST_VK not in result.stderr
 
 
-def test_deploy_refuses_before_anything_and_leaves_litellm_alone() -> None:
-    script = DEPLOY_SCRIPT_FILE.read_text(encoding="utf-8")
-    deploy = _shell_function(script, "deploy_color")
-    # Refused before anything happens.
+def test_deploy_refuses_an_unusable_virtual_key_before_anything() -> None:
+    deploy = _shell_function(DEPLOY_SCRIPT_FILE.read_text(encoding="utf-8"), "deploy_color")
     assert deploy.index("require_usable_llm_gateway") < deploy.index("up_infra")
-    # No step starts, probes or stops LiteLLM any more: what is left of it on a
-    # host is cleaned up by hand (README).
-    for gone in (
-        "start_litellm_if_stopped",
-        "stop_litellm_when_unused",
-        "warn_if_target_needs_stopped_litellm",
-        "litellm_still_needed",
-        "converter_gateway",
-        "llm_gateway_state",
-        "compose-gate",
-        "docker exec",
-    ):
-        assert gone not in script, gone
-
-
-def test_both_layouts_pin_the_rollback_guard_and_nothing_reads_the_switch() -> None:
-    for compose_file in (COMPOSE_FILE, BLUEGREEN_APP_COMPOSE_FILE):
-        compose = _load_yaml(compose_file)
-        # A literal, so an older image recreated on rollback does not default
-        # to LiteLLM (the UI to its admin button); .env no longer feeds it.
-        for service in ("unibridge-service", "llm-converter", "unibridge-ui"):
-            env = _service_environment(compose, service)
-            assert env["LLM_GATEWAY"] == "bifrost", (compose_file.name, service)
-    for compose_file in COMPOSE_FILES:
-        text = compose_file.read_text(encoding="utf-8")
-        assert "${LLM_GATEWAY" not in text, compose_file.name
 
 
 # ---------------------------------------------------------------------------
-# LiteLLM is gone from every layout
+# Compose layouts
 # ---------------------------------------------------------------------------
-
-
-def test_litellm_is_gone_from_every_layout() -> None:
-    assert not (REPO_ROOT / "litellm").exists()
-    assert not (REPO_ROOT / "scripts" / "build_finetune_dataset.py").exists()
-    for compose_file in COMPOSE_FILES:
-        compose = _load_yaml(compose_file)
-        services = compose.get("services", {})
-        assert not {"litellm", "litellm-db"} & set(services), compose_file.name
-        assert not [name for name in compose.get("volumes") or {} if "litellm" in name], compose_file.name
-        for name, service in services.items():
-            assert "extends" not in service, (compose_file.name, name)
-            depends_on = service.get("depends_on") or {}
-            assert not {"litellm", "litellm-db"} & set(depends_on), (compose_file.name, name)
-            env = _service_environment(compose, name) if "environment" in service else {}
-            assert not [key for key in env if key.startswith("LITELLM_")], (compose_file.name, name)
-            for volume in service.get("volumes") or []:
-                assert "litellm" not in str(volume), (compose_file.name, name, volume)
-    names = _env_example_names()
-    assert not {name for name in names if name.startswith("LITELLM_")}
-    assert "LLM_GATEWAY" not in names
 
 
 def test_single_stack_converter_waits_for_bifrost() -> None:
@@ -2559,7 +2440,7 @@ def _has_docker_compose() -> bool:
 def _compose_services(compose_file: Path, **env: str) -> subprocess.CompletedProcess:
     """``docker compose config --services`` with every required secret set and no .env."""
     required = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*):\?", compose_file.read_text(encoding="utf-8")))
-    full_env = {key: value for key, value in os.environ.items() if key != "LLM_GATEWAY"}
+    full_env = dict(os.environ)
     full_env.update({name: "x" * 40 for name in required})
     full_env.update(env)
     return subprocess.run(
@@ -2575,17 +2456,14 @@ def _compose_services(compose_file: Path, **env: str) -> subprocess.CompletedPro
 
 
 @pytest.mark.skipif(not _has_docker_compose(), reason="needs the docker compose CLI")
-def test_compose_runs_bifrost_whatever_an_old_env_says() -> None:
+def test_compose_runs_bifrost_in_both_layouts() -> None:
     for compose_file in (COMPOSE_FILE, BLUEGREEN_INFRA_COMPOSE_FILE):
-        # An .env left on LiteLLM changes nothing: compose no longer reads it.
-        for env in ({}, {"LLM_GATEWAY": "litellm"}, {"LLM_GATEWAY": "Bifrost"}):
-            result = _compose_services(compose_file, **env)
-            assert result.returncode == 0, (compose_file.name, env, result.stderr)
-            services = set(result.stdout.split())
-            assert not {"litellm", "litellm-db"} & services, (compose_file.name, env)
-            assert {"bifrost", "bifrost-tls"} <= services, (compose_file.name, env)
-            if compose_file == COMPOSE_FILE:
-                assert {"unibridge-service", "llm-converter"} <= services, env
+        result = _compose_services(compose_file)
+        assert result.returncode == 0, (compose_file.name, result.stderr)
+        services = set(result.stdout.split())
+        assert {"bifrost", "bifrost-tls"} <= services, compose_file.name
+        if compose_file == COMPOSE_FILE:
+            assert {"unibridge-service", "llm-converter"} <= services
 
 
 @pytest.mark.parametrize("running", [True, False])
@@ -3000,23 +2878,6 @@ def test_restore_bifrost_changes_nothing_without_confirmation(tmp_path: Path) ->
     assert "aborted" in result.stderr
     assert not any(call.startswith(("compose stop", "docker run ")) for call in calls)
     assert _bifrost_providers(volume / "config.db") == ["added-later", "vllm-a"]
-
-
-def test_litellm_alert_and_scrape_targets_are_gone() -> None:
-    rules = PROMETHEUS_RULES_DIR.joinpath("unibridge-alerts.yml").read_text(encoding="utf-8")
-    assert "LiteLLMDbDown" not in rules
-    # The gauge that told the alert which gateway ran went with it.
-    assert "unibridge_llm_gateway" not in rules
-    config = _load_yaml(PROMETHEUS_CONFIG_FILE)
-    jobs = {job["job_name"]: job for job in config["scrape_configs"]}
-    assert "litellm" not in jobs
-    targets = [
-        target
-        for job in jobs.values()
-        for static in job.get("static_configs", [])
-        for target in static.get("targets", [])
-    ]
-    assert not [target for target in targets if "litellm" in target]
 
 
 # Rules that read unibridge_* metrics from both scrape jobs at once, as the top

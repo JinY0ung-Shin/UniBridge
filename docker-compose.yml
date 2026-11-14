@@ -284,10 +284,6 @@ services:
       # The virtual key the /api/llm routes inject (app/services/llm_routes.py):
       # the value the bifrost container runs with.
       - BIFROST_TEST_VK=${BIFROST_TEST_VK:-}
-      # Rollback guard only: an older image recreated on rollback would
-      # otherwise default to LiteLLM, whose support is gone. Nothing new reads
-      # it; drop it after the next release.
-      - LLM_GATEWAY=bifrost
       # Bearer token verifying the internal Alertmanager webhook receiver.
       # Empty = receiver disabled (503); set it to enable infra-alert email.
       - ALERTMANAGER_WEBHOOK_TOKEN=${ALERTMANAGER_WEBHOOK_TOKEN:-}
@@ -583,10 +579,6 @@ services:
           memory: 512m
           cpus: "0.50"
     environment:
-      # Rollback guard only: an older image recreated on rollback would
-      # otherwise default to LiteLLM, whose support is gone. Nothing new reads
-      # it; drop it after the next release.
-      - LLM_GATEWAY=bifrost
       # Upstream httpx timeouts (seconds; read 0 = unbounded for long streams).
       - CONVERTER_REQUEST_TIMEOUT=${CONVERTER_REQUEST_TIMEOUT:-0}
       - CONVERTER_CONNECT_TIMEOUT=${CONVERTER_CONNECT_TIMEOUT:-10}
@@ -768,11 +760,6 @@ services:
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}
         NPM_REGISTRY: ${NPM_REGISTRY:-}
-        VITE_KEYCLOAK_URL: ${KEYCLOAK_EXTERNAL_URL:-}
-        VITE_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-apihub}
-        VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_JWT_AUDIENCE:-apihub-ui}
-        HOST_IP: ${HOST_IP:-localhost}
-        KEYCLOAK_PORT: ${KEYCLOAK_PORT:-8443}
     restart: unless-stopped
     init: true
     logging: *default-logging
@@ -797,10 +784,6 @@ services:
       # (nginx-bifrost-ui.conf); the button then opens https://NAME on the port
       # UniBridge was opened on.
       - BIFROST_UI_HOSTNAME=${BIFROST_UI_HOSTNAME:-}
-      # Rollback guard only: an older image recreated on rollback would
-      # otherwise show the LiteLLM Admin button, whose service is gone. Nothing
-      # new reads it; drop it after the next release.
-      - LLM_GATEWAY=bifrost
       - GRAFANA_EXTERNAL_URL=${GRAFANA_EXTERNAL_URL:-}
       - GRAFANA_UPSTREAM=${GRAFANA_UPSTREAM:-grafana}
       - UNIBRIDGE_SERVICE_UPSTREAM=${UNIBRIDGE_SERVICE_UPSTREAM:-unibridge-service}

@@ -437,18 +437,6 @@ route_rewrites_normalized_path() {
   [[ "$compact" == *'"use_real_request_uri_unsafe":false'* ]]
 }
 
-# True only when APISIX answers 404 for $path: an admin API that fails any
-# other way proves nothing about absence.
-apisix_absent() {
-  local path="$1"
-  local base_url status
-  base_url="$(admin_url)"
-  status="$(curl -sS -o /dev/null -w '%{http_code}' \
-    -H "X-API-KEY: $APISIX_ADMIN_KEY" \
-    "$base_url/apisix/admin/$path" 2>/dev/null)" || return 1
-  [[ "$status" == "404" ]]
-}
-
 # The rule boot provisioning applies to BIFROST_TEST_VK (unibridge-service
 # app/services/llm_routes.py usable_virtual_key): URL-safe only, since the route
 # checks below string-match it in route JSON. Without a usable key the service
@@ -458,44 +446,15 @@ bifrost_vk_usable() {
   [[ "${BIFROST_TEST_VK:-}" =~ ^sk-bf-[A-Za-z0-9_-]{16,}$ ]]
 }
 
-# LiteLLM support was removed: Bifrost is the only gateway behind /api/llm and
-# nothing this checkout builds reads LLM_GATEWAY (compose passes a literal
-# bifrost, for an older image recreated on rollback). A .env that still names
-# litellm, or anything else, asks for a gateway this release cannot run, so say
-# so before touching anything. A BIFROST_TEST_VK the service would not use is
-# refused too: the Bifrost routes inject it, so the new color would leave the
+# A BIFROST_TEST_VK the service would not use is refused before anything
+# happens: the Bifrost routes inject it, so the new color would leave the
 # /api/llm routes as they are, on a key that may no longer be Bifrost's.
 require_usable_llm_gateway() {
-  case "${LLM_GATEWAY:-}" in
-    ""|bifrost) ;;
-    *)
-      echo "ERROR: $ENV_FILE sets LLM_GATEWAY='${LLM_GATEWAY}', but LiteLLM support was removed and" >&2
-      echo "       Bifrost is the only gateway behind /api/llm. Delete the LLM_GATEWAY line." >&2
-      exit 1
-      ;;
-  esac
   if ! bifrost_vk_usable; then
     echo "ERROR: /api/llm needs a usable BIFROST_TEST_VK (sk-bf- and 16 or more of A-Z a-z 0-9 _ -)," >&2
     echo "       the virtual key the bifrost container runs with." >&2
     exit 1
   fi
-}
-
-# /api/llm-bi (the Bifrost side-by-side test) is gone: boot provisioning
-# (unibridge-service app/main.py _retire_llm_bi_routes) deletes its four routes
-# and the llm-converter-bi upstream and leaves llm-bi-not-found behind, saying
-# so. A host that still has the old routes, or the old "switched off" 404,
-# therefore re-provisions on its first deploy after upgrading.
-apisix_llm_bi_retired() {
-  local not_found_route compact route_id
-  not_found_route="$(apisix_get "routes/llm-bi-not-found")" || return 1
-  json_contains_pair "$not_found_route" "uri" "/api/llm-bi/*" || return 1
-  compact="${not_found_route//[[:space:]]/}"
-  [[ "$compact" == *"hasbeenremoved"* ]] || return 1
-  for route_id in llm-bi-proxy llm-bi-messages llm-bi-responses llm-bi-models; do
-    apisix_absent "routes/$route_id" || return 1
-  done
-  apisix_absent "upstreams/llm-converter-bi" || return 1
 }
 
 # A rotated BIFROST_TEST_VK reaches the /api/llm routes through the deploy,
@@ -574,10 +533,10 @@ wait_apisix_admin() {
 }
 
 # True only when the core routes already exist in etcd and still match the
-# built-in auth/header shape, the /api/llm routes match Bifrost and the
-# /api/llm-bi routes are retired. A 404 or stale route shape (for example, missing
-# the internal proxy trust header, or llm-proxy still pointing at an older
-# gateway upstream) returns non-zero so the caller can force re-provisioning.
+# built-in auth/header shape and the /api/llm routes match Bifrost. A 404 or
+# stale route shape (for example, missing the internal proxy trust header, or
+# llm-proxy still pointing at an older gateway upstream) returns non-zero so the
+# caller can force re-provisioning.
 apisix_has_core_routes() {
   local query_route query_template_write_route s3_route nas_route usages_route mcp_route prometheus_route
   local network_route network_write_route
@@ -627,20 +586,18 @@ apisix_has_core_routes() {
   json_contains_pair "$prometheus_route" "upstream_id" "prometheus" || return 1
 
   apisix_llm_routes_match || return 1
-
-  apisix_llm_bi_retired || return 1
 }
 
 # The /api/llm routes point at Bifrost under the route ids they had on LiteLLM
 # (grants carry over): llm-proxy and llm-metrics go to Bifrost, the converter
 # routes to llm-converter, every one of them injects the current
-# BIFROST_TEST_VK, llm-not-found answers the rest of the prefix and LiteLLM's
-# llm-admin is gone. So a rotated key, or a host still carrying LiteLLM's
-# routes, re-provisions.
+# BIFROST_TEST_VK, llm-not-found answers the rest of the prefix and
+# llm-bi-not-found the retired /api/llm-bi one. So a rotated key, or a stale
+# route, re-provisions.
 apisix_llm_routes_match() {
-  # ASCII-only matching, and fast over a large route listing.
+  # ASCII-only matching.
   local LC_ALL=C
-  local route routes services route_id bifrost_upstream
+  local route route_id bifrost_upstream
 
   for route_id in llm-messages llm-responses llm-models; do
     route="$(apisix_get "routes/$route_id")" || return 1
@@ -663,15 +620,8 @@ apisix_llm_routes_match() {
   route="$(apisix_get "routes/llm-not-found")" || return 1
   json_contains_pair "$route" "uri" "/api/llm/*" || return 1
 
-  # Boot provisioning deletes LiteLLM's admin route, and its upstream with it
-  # unless a route or service of someone else's still uses it. Re-provisioning
-  # removes an upstream left behind once nothing uses it.
-  apisix_absent "routes/llm-admin" || return 1
-  if ! apisix_absent "upstreams/litellm"; then
-    routes="$(apisix_get "routes")" || return 1
-    services="$(apisix_get "services")" || services=""
-    [[ "${routes//[[:space:]]/}${services//[[:space:]]/}" == *'"upstream_id":"litellm"'* ]] || return 1
-  fi
+  route="$(apisix_get "routes/llm-bi-not-found")" || return 1
+  json_contains_pair "$route" "uri" "/api/llm-bi/*" || return 1
 
   bifrost_upstream="$(apisix_get "upstreams/bifrost")" || return 1
   [[ "${bifrost_upstream//[[:space:]]/}" == *"\"bifrost:8080\""* ]] || return 1

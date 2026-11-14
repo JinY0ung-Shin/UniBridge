@@ -26,13 +26,23 @@ if [ "${#BIFROST_ENCRYPTION_KEY}" -lt 16 ]; then
   exit 1
 fi
 # A config.json virtual key without the sk-bf- prefix is silently replaced by a
-# random one, which would turn every gateway request into a 401.
+# random one, which would turn every gateway request into a 401. The rest must
+# be URL-safe, the rule unibridge-service (app/services/llm_routes.py
+# usable_virtual_key) and the blue-green deploy (bifrost_vk_usable) apply:
+# with any other character the service leaves the /api/llm routes as they are.
+# The characters are spelled out because a range such as A-Z depends on the
+# locale.
+vk_usable=yes
 case "$BIFROST_TEST_VK" in
   sk-bf-????????????????*) ;;
-  *)
-    echo "bifrost: refusing to start, BIFROST_TEST_VK must be sk-bf- followed by at least 16 characters" >&2
-    exit 1
-    ;;
+  *) vk_usable=no ;;
 esac
+case "${BIFROST_TEST_VK#sk-bf-}" in
+  *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-]*) vk_usable=no ;;
+esac
+if [ "$vk_usable" != yes ]; then
+  echo "bifrost: refusing to start, BIFROST_TEST_VK must be sk-bf- followed by at least 16 of A-Z a-z 0-9 _ -" >&2
+  exit 1
+fi
 
 exec /app/docker-entrypoint.sh "$@"

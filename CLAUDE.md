@@ -66,7 +66,8 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
 - **Test env is set in `tests/conftest.py` before app import** (in-memory SQLite, dev JWT,
   `ENABLE_DEV_TOKEN_ENDPOINT=true`). Don't rely on a real `.env` in tests.
 - **Fail-fast secrets**: compose `${VAR:?}` refuses to start without its secrets (APISIX,
-  Keycloak, Bifrost, Grafana and DB secrets); `validate_settings()` separately rejects a
+  Keycloak, Bifrost, Grafana and DB secrets; README's "2. Edit `.env`" table is the one list,
+  test-pinned to that set, and blank in `.env.example`); `validate_settings()` separately rejects a
   missing/placeholder ENCRYPTION_KEY (must yield a Fernet key), APISIX_ADMIN_KEY,
   APISIX_INTERNAL_PROXY_SECRET, and JWT_SECRET in dev HS256 mode. Keycloak/CORS URLs
   auto-derive from `HOST_IP`; Keycloak URLs derive only when `KEYCLOAK_JWT_AUDIENCE` is set
@@ -123,6 +124,13 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   the gateway REST routes as the caller and destinations are paths on an exposed route
   (`mcp_tools._resolve_api_call`), never a URL or a local path; an id answers only its own
   key, and every miss is the same 404. Limits live in the MCP settings, not env.
+- **SQL gate** (README "Read-only queries"): statement type, `validate_sql`, the
+  multi-statement check and `extract_tables` all read SQL through one per-engine lexer in
+  `app/services/sql_analysis.py` (pass `db_type` everywhere; without it every engine's
+  reading is checked). Never add a second lexer or a `\b` keyword regex: run
+  keyword regexes over `keyword_texts()`. Skipping the backslash
+  (`standard_conforming_strings=off`) reading for statement splitting relies on asyncpg's
+  one-statement-per-query; `test_postgres_runs_one_statement_per_query` pins it.
 - **Template samples** (`query_templates.sample_params`; README "Query template sample
   checks"): run once on save (`query.verify_template_sample`: refused on a failed run or
   0 rows) as the CALLER, through `_run_query` — never as the service, or a key without
@@ -140,13 +148,14 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   call MCP `run_template` checks with: a new placeholder syntax goes there.
 - **Bifrost** (`bifrost`, `bifrost-tls`; identical in both compose layouts, tested) is the
   only LLM gateway: it serves `/api/llm` (next bullet). The old `/api/llm-bi` side-by-side
-  routes are gone: every provisioning boot deletes the
-  `llm-bi-*` routes and the `llm-converter-bi` upstream (`main.py::_retire_llm_bi_routes`)
-  and keeps only `llm-bi-not-found`, a 404 pointing to `/api/llm`; its ids stay protected
-  and in the LLM-route metric exclusions for old series. `BIFROST_TEST_VK` keeps its name
+  routes are gone; what is left is `llm-bi-not-found`, a 404 pointing to `/api/llm` that
+  every provisioning boot puts back (the deploy re-provisions without it), while the old
+  `llm-bi-*` ids stay protected and in the LLM-route metric exclusions for old series.
+  `BIFROST_TEST_VK` keeps its name
   but is the virtual key the `/api/llm` routes inject as `x-bf-vk`; the deploy script
   string-matches it in route JSON, hence the URL-safe-only key rule shared by
-  `llm_routes.usable_virtual_key` and the deploy's `bifrost_vk_usable`.
+  `llm_routes.usable_virtual_key`, the deploy's `bifrost_vk_usable` and
+  `bifrost/entrypoint.sh` (the container refuses to start on another key).
   `bifrost/tls-proxy.conf` (the LLM Monitoring page's Bifrost button) is an allowlist:
   UI + management API only, never inference or `/metrics`. With `BIFROST_UI_HOSTNAME` the UI nginx serves the same
   allowlist on the UniBridge port under that DNS name (`unibridge-ui/nginx-bifrost-ui.conf`,
@@ -162,13 +171,10 @@ is set, including from the gitignored `e2e/.env` that `e2e/conftest.py` auto-loa
   sessions 30 days, so `app/services/bifrost_sessions.py` logs each handed-out one out
   after `BIFROST_SSO_SESSION_HOURS` (tokens encrypted in `bifrost_sso_sessions`).
 - **LiteLLM is gone** (removed after production moved to Bifrost on 2026-10-18). `/api/llm`
-  route ids stayed so grants carried over (`app/services/llm_routes.py`); boot provisioning
-  deletes the `llm-admin` route and the `litellm` upstream (`main.py::_retire_litellm_routing`)
-  and the deploy re-provisions while either is left. `llm-proxy` is exact paths +
+  route ids stayed so grants carried over (`app/services/llm_routes.py`); the retired
+  `llm-admin` route and `litellm` upstream ids stay protected. `llm-proxy` is exact paths +
   `llm-not-found` 404s the rest (Bifrost's UI/management API must never be reachable).
-  Rollback guard, one release only: compose passes a literal `LLM_GATEWAY=bifrost` to the
-  service, converter and UI so an older image recreated on rollback doesn't default to litellm;
-  nothing current reads it, and the deploy refuses any other `.env` value. Leftover
+  Nothing reads `LLM_GATEWAY` any more. Leftover
   containers, volumes, dumps and the Keycloak client are cleaned up by hand (README
   "Upgrading past the LiteLLM removal"), never by code.
 - **`unibridge_*` metrics are scraped by two jobs**: `unibridge-service` is a DNS alias both

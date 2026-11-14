@@ -317,16 +317,21 @@ as best-effort.
 
 When the central Prometheus cannot reach a host's `:39100` (host behind a
 firewall/NAT), run a forwarding agent on the host that pushes metrics out
-instead. Enable the remote-write receiver on Prometheus:
+instead. UniBridge does not set this up: it is a manual change to Prometheus,
+and nothing in front of it carries writes (the gateway's `/api/prometheus/*`
+route is read-only). Add the remote-write receiver to `prometheus.command` in
+`docker-compose.infra.yml` on a blue-green host (`docker-compose.yml` on a
+single stack), then recreate Prometheus:
 
 ```yaml
-# docker-compose.yml → prometheus.command
 - '--web.enable-remote-write-receiver'
 ```
 
-…and on the host run [grafana-agent](https://github.com/grafana/agent) or
+The port is published on `127.0.0.1` only (`PROMETHEUS_BIND`), and the receiver
+asks for no credentials, so open it only to the pushing hosts. On the host run
+[grafana-agent](https://github.com/grafana/agent) or
 [vmagent](https://docs.victoriametrics.com/vmagent.html) scraping local
-node_exporter and remote-writing to `http(s)://<prometheus-host>:9090/api/v1/write`.
+node_exporter and remote-writing to `http://<prometheus-host>:9090/api/v1/write`.
 Add a `host` label in the agent's `external_labels` matching the name you
 registered in UniBridge so the alert checker's queries line up. Pull mode is the
 default and is simpler; use push only for the hosts that need it. GPU hosts work

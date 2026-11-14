@@ -15,15 +15,11 @@ export KEYCLOAK_REDIRECT_URI KEYCLOAK_WEB_ORIGIN GRAFANA_REDIRECT_URI
 KCADM=/opt/keycloak/bin/kcadm.sh
 
 # Print the UUID of an apihub client by clientId (empty if absent).
-# Requires an authenticated kcadm session.
+# Requires an authenticated kcadm session. kcadm.sh prints a JSON array,
+# [ { "id" : "uuid" } ], and the image has no jq.
 client_uuid() {
-  if command -v jq >/dev/null 2>&1; then
-    "$KCADM" get clients -r apihub -q "clientId=$1" --fields id 2>/dev/null \
-      | jq -r '.[0].id // empty'
-  else
-    "$KCADM" get clients -r apihub -q "clientId=$1" --fields id 2>/dev/null \
-      | grep '"id"' | head -1 | sed 's/.*"id" *: *"//;s/".*//'
-  fi
+  "$KCADM" get clients -r apihub -q "clientId=$1" --fields id 2>/dev/null \
+    | grep '"id"' | head -1 | sed 's/.*"id" *: *"//;s/".*//'
 }
 
 # Substitute environment variables in realm template and write to import dir
@@ -32,18 +28,15 @@ IMPORT_DIR="/opt/keycloak/data/import"
 mkdir -p "$IMPORT_DIR"
 if [ ! -f "$TEMPLATE" ]; then
   echo "[init] WARNING: realm template missing at $TEMPLATE"
-elif command -v envsubst >/dev/null 2>&1; then
-  envsubst < "$TEMPLATE" > "$IMPORT_DIR/realm-export.json"
-  echo "[init] Environment variables substituted in realm-export.json (envsubst)"
 else
-  # envsubst is not present in keycloak's ubi-micro image; fall back to sed.
+  # The image has no envsubst, so sed fills in the template's two placeholders.
   # Escape sed replacement metachars (\, &, |) in the secrets before substitution.
   SECRET_ESCAPED=$(printf '%s' "${KEYCLOAK_SERVICE_CLIENT_SECRET}" | sed -e 's/[\\&|]/\\&/g')
   GRAFANA_SECRET_ESCAPED=$(printf '%s' "${GRAFANA_OAUTH_CLIENT_SECRET}" | sed -e 's/[\\&|]/\\&/g')
   sed -e "s|\${KEYCLOAK_SERVICE_CLIENT_SECRET}|${SECRET_ESCAPED}|g" \
       -e "s|\${GRAFANA_OAUTH_CLIENT_SECRET}|${GRAFANA_SECRET_ESCAPED}|g" \
     "$TEMPLATE" > "$IMPORT_DIR/realm-export.json"
-  echo "[init] Environment variables substituted in realm-export.json (sed fallback)"
+  echo "[init] Environment variables substituted in realm-export.json"
 fi
 
 # Start mode: set KEYCLOAK_DEV_MODE=true for development (relaxed security)
@@ -78,25 +71,15 @@ for i in $(seq 1 60); do
            -s ssoSessionIdleTimeout=86400 \
            -s ssoSessionMaxLifespan=604800 >/dev/null 2>&1; then
       echo "[init] Synced session policy: access=5m, idle=24h, max=7d"
-      "$KCADM" config credentials --server http://localhost:8080 --realm apihub \
-        --client "${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}" \
-        --secret "${KEYCLOAK_SERVICE_CLIENT_SECRET}" >/dev/null 2>&1 || true
     else
       echo "[init] WARNING: Failed to sync Keycloak session policy"
-      "$KCADM" config credentials --server http://localhost:8080 --realm apihub \
-        --client "${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}" \
-        --secret "${KEYCLOAK_SERVICE_CLIENT_SECRET}" >/dev/null 2>&1 || true
     fi
+    "$KCADM" config credentials --server http://localhost:8080 --realm apihub \
+      --client "${KEYCLOAK_SERVICE_CLIENT_ID:-apihub-service}" \
+      --secret "${KEYCLOAK_SERVICE_CLIENT_SECRET}" >/dev/null 2>&1 || true
 
     # Update apihub-ui client redirect URIs and web origins
-    # kcadm.sh returns JSON array: [ { "id" : "uuid" } ]
-    if command -v jq >/dev/null 2>&1; then
-      CLIENT_UUID=$(/opt/keycloak/bin/kcadm.sh get clients -r apihub -q clientId=apihub-ui --fields id 2>/dev/null \
-        | jq -r '.[0].id // empty')
-    else
-      CLIENT_UUID=$(/opt/keycloak/bin/kcadm.sh get clients -r apihub -q clientId=apihub-ui --fields id 2>/dev/null \
-        | grep '"id"' | head -1 | sed 's/.*"id" *: *"//;s/".*//')
-    fi
+    CLIENT_UUID=$(client_uuid apihub-ui)
     if [ -n "$CLIENT_UUID" ]; then
       /opt/keycloak/bin/kcadm.sh update "clients/$CLIENT_UUID" -r apihub \
         -s "redirectUris=[\"${KEYCLOAK_REDIRECT_URI}\"]" \

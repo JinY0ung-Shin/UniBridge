@@ -34,7 +34,7 @@ The scripts run on either layout and detect which one they are on:
 - **single stack** — everything from `docker-compose.yml` (compose project `unibridge`).
 - **blue-green** (`scripts/deploy-bluegreen.sh`) — shared infra in project `unibridge-infra` (`docker-compose.infra.yml`) plus one app stack per color, `unibridge-blue` / `unibridge-green` (`docker-compose.app.yml`).
 
-Detection picks blue-green when `.deploy/bluegreen-active` exists (override the path with `BLUEGREEN_STATE_FILE`) or the `unibridge-infra` project has containers; single stack otherwise. Set `BACKUP_STACK=single` or `BACKUP_STACK=bluegreen` to force it — useful when a blue-green host's infra project is fully down and no state file was ever written. Every run logs the mode it picked (`stack mode: ...`).
+Detection picks blue-green when `.deploy/bluegreen-active` exists (the path follows `BLUEGREEN_STATE_DIR` and `BLUEGREEN_STATE_FILE` as in the deploy script) or the `unibridge-infra` project has containers; single stack otherwise. Set `BACKUP_STACK=single` or `BACKUP_STACK=bluegreen` to force it — useful when a blue-green host's infra project is fully down and no state file was ever written. Every run logs the mode it picked (`stack mode: ...`).
 
 What the mode changes:
 
